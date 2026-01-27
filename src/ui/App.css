@@ -27,8 +27,8 @@
   border-radius: 18px;
   pointer-events: none;
   background:
-    linear-gradient(115deg, rgba(110, 243, 197, 0.22), transparent 30%),
-    linear-gradient(245deg, rgba(122, 167, 255, 0.22), transparent 34%),
+    linear-gradient(115deg, rgba(40, 199, 217, 0.22), transparent 30%),
+    linear-gradient(245deg, rgba(242, 193, 77, 0.18), transparent 34%),
     linear-gradient(0deg, rgba(255, 94, 125, 0.12), transparent 38%);
   mask:
     linear-gradient(#000, #000) content-box,
@@ -56,13 +56,10 @@
   width: 26px;
   height: 26px;
   border-radius: 9px;
-  background:
-    radial-gradient(16px 16px at 26% 24%, rgba(110, 243, 197, 0.95), transparent 62%),
-    radial-gradient(16px 16px at 78% 30%, rgba(122, 167, 255, 0.92), transparent 60%),
-    radial-gradient(20px 20px at 62% 82%, rgba(255, 94, 125, 0.55), transparent 64%),
-    rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  object-fit: contain;
 }
 
 .aoTitle {
@@ -141,8 +138,8 @@
 
 .aoSelect:focus,
 .aoInput:focus {
-  border-color: rgba(110, 243, 197, 0.55);
-  box-shadow: 0 0 0 3px rgba(110, 243, 197, 0.12);
+  border-color: rgba(40, 199, 217, 0.55);
+  box-shadow: 0 0 0 3px rgba(40, 199, 217, 0.12);
 }
 
 .aoBtn {
@@ -168,8 +165,8 @@
 }
 
 .aoBtnPrimary {
-  background: linear-gradient(135deg, rgba(110, 243, 197, 0.34), rgba(122, 167, 255, 0.22));
-  border-color: rgba(110, 243, 197, 0.32);
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.3), rgba(242, 193, 77, 0.22));
+  border-color: rgba(40, 199, 217, 0.3);
 }
 
 .aoBtnDanger {
@@ -306,4 +303,3 @@
     grid-template-columns: 1fr;
   }
 }
-

@@ -7,8 +7,9 @@
   --ao-card: rgba(255, 255, 255, 0.06);
   --ao-card2: rgba(255, 255, 255, 0.085);
   --ao-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
-  --ao-accent: #6ef3c5;
-  --ao-accent2: #7aa7ff;
+  /* Match app icon: cyan + gold */
+  --ao-accent: #28c7d9;
+  --ao-accent2: #f2c14d;
   --ao-danger: #ff5e7d;
 
   /* Windows-focused typography with good fallback. */
@@ -32,8 +33,8 @@ body {
   margin: 0;
   color: var(--ao-fg);
   background:
-    radial-gradient(900px 540px at 18% 10%, rgba(110, 243, 197, 0.16), transparent 56%),
-    radial-gradient(900px 540px at 88% 22%, rgba(122, 167, 255, 0.16), transparent 54%),
+    radial-gradient(900px 540px at 18% 10%, rgba(40, 199, 217, 0.16), transparent 56%),
+    radial-gradient(900px 540px at 88% 22%, rgba(242, 193, 77, 0.14), transparent 54%),
     radial-gradient(1200px 900px at 52% 110%, rgba(255, 94, 125, 0.09), transparent 62%),
     linear-gradient(180deg, var(--ao-bg0), var(--ao-bg1));
   overflow: hidden; /* we scale content to fit instead of scrolling */

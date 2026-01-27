@@ -93,7 +93,8 @@ export default function App() {
       const available = container.clientHeight - 10
       const needed = content.scrollHeight
       if (needed <= 0) return
-      const scale = Math.min(1, Math.max(0.72, available / needed))
+      // Prefer readability: only shrink a little, and rely on a larger default window size.
+      const scale = Math.min(1, Math.max(0.92, available / needed))
       setUiScale(scale)
     }
 
@@ -107,6 +108,16 @@ export default function App() {
       window.removeEventListener('resize', recompute)
     }
   }, [status, config, showEvents, err])
+
+  // If anything is still scrollable (mouse wheel / touchpad), block it.
+  // We want "fits in window" rather than hidden scrollbars.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => e.preventDefault()
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel as any)
+  }, [])
 
   async function applyOverride(next: string) {
     await invoke('set_manual_override', { provider: next === '' ? null : next })
@@ -176,7 +187,7 @@ export default function App() {
       <div className="aoScale" style={{ ['--ui-scale' as any]: uiScale }}>
         <div className="aoShell" ref={contentRef}>
           <div className="aoBrand">
-            <div className="aoMark" />
+            <img className="aoMark" src="/ao-icon.png" alt="Agent Orchestrator icon" />
             <div>
               <div className="aoTitle">Agent Orchestrator</div>
               <div className="aoSubtitle">Local gateway + smart failover for Codex</div>
