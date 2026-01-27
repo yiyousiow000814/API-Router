@@ -1,96 +1,48 @@
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+  --ao-bg0: #0b0e14;
+  --ao-bg1: #0f1522;
+  --ao-fg: #e8edf7;
+  --ao-muted: rgba(232, 237, 247, 0.72);
+  --ao-line: rgba(232, 237, 247, 0.14);
+  --ao-card: rgba(255, 255, 255, 0.06);
+  --ao-card2: rgba(255, 255, 255, 0.085);
+  --ao-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  --ao-accent: #6ef3c5;
+  --ao-accent2: #7aa7ff;
+  --ao-danger: #ff5e7d;
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
+  /* Windows-focused typography with good fallback. */
+  font-family:
+    "Segoe UI Variable Text",
+    "Segoe UI",
+    system-ui,
+    -apple-system,
+    sans-serif;
+  text-rendering: geometricPrecision;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
+html,
+body {
+  height: 100%;
 }
 
 body {
   margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
-}
-
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+  color: var(--ao-fg);
+  background:
+    radial-gradient(900px 540px at 18% 10%, rgba(110, 243, 197, 0.16), transparent 56%),
+    radial-gradient(900px 540px at 88% 22%, rgba(122, 167, 255, 0.16), transparent 54%),
+    radial-gradient(1200px 900px at 52% 110%, rgba(255, 94, 125, 0.09), transparent 62%),
+    linear-gradient(180deg, var(--ao-bg0), var(--ao-bg1));
+  overflow: hidden; /* we scale content to fit instead of scrolling */
 }
 
 #app {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  height: 100%;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.vanilla:hover {
-  filter: drop-shadow(0 0 2em #3178c6aa);
-}
-
-.card {
-  padding: 2em;
-}
-
-.read-the-docs {
-  color: #888;
-}
-
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
+* {
+  box-sizing: border-box;
 }
