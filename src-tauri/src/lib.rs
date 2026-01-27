@@ -24,11 +24,6 @@ pub fn run() {
       let state = build_state(config_dir.join("config.toml"), data_dir)?;
       app.manage(state);
 
-      // Start in background (tray-style behavior).
-      if let Some(w) = app.get_webview_window("main") {
-        let _ = w.hide();
-      }
-
       // Spawn the local OpenAI-compatible gateway.
       let st = app.state::<app_state::AppState>();
       let gateway = st.gateway.clone();
@@ -44,16 +39,14 @@ pub fn run() {
       let menu = tauri::menu::MenuBuilder::new(app).items(&[&show, &quit]).build()?;
 
       // Ensure the tray icon has an actual image on Windows; otherwise it can appear as "blank".
-      let icon = app
-        .default_window_icon()
-        .cloned()
-        .or_else(|| {
-          // Decode a bundled PNG as a fallback (Tauri Image expects RGBA bytes).
-          let bytes = include_bytes!("../icons/32x32.png");
-          let img = image::load_from_memory(bytes).ok()?.to_rgba8();
-          let (w, h) = img.dimensions();
-          Some(tauri::image::Image::new_owned(img.into_raw(), w, h))
-        });
+      // We always provide an explicit tray icon (rather than relying on default_window_icon)
+      // because on Windows the "default" can still render as an empty square.
+      let icon = (|| {
+        let bytes = include_bytes!("../icons/32x32.png");
+        let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+        let (w, h) = img.dimensions();
+        Some(tauri::image::Image::new_owned(img.into_raw(), w, h))
+      })();
 
       let mut tray_builder = tauri::tray::TrayIconBuilder::new()
         .menu(&menu)
@@ -78,6 +71,17 @@ pub fn run() {
       }
 
       let _tray = tray_builder.build(app)?;
+
+      // Closing the window should minimize to tray instead of exiting (background mode).
+      if let Some(w) = app.get_webview_window("main") {
+        let w2 = w.clone();
+        w.on_window_event(move |event| {
+          if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = w2.hide();
+          }
+        });
+      }
 
       Ok(())
     })

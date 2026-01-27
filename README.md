@@ -42,10 +42,10 @@ The app creates its config at:
 
 ```powershell
 npm install
-npm run tauri build
+npm run build:root-exe
 ```
 
-Then launch via `Agent Orchestrator.cmd` at repo root (it starts `src-tauri/target/release/agent_orchestrator.exe`).
+Then launch `Agent Orchestrator.exe` at repo root.
 
 Note: `tauri build --debug` produces a debug build that can still try to load the dev server URL and may show "localhost refused to connect" if no dev server is running.
 

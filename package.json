@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:root-exe": "tauri build && node scripts/copy-root-exe.mjs"
   },
   "devDependencies": {
     "@types/react": "^19.1.0",
