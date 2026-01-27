@@ -20,6 +20,9 @@ config.toml
 data/
 _trash_from_xauusd/
 
+# Local convenience launcher (built binary, never commit)
+Agent Orchestrator.exe
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
