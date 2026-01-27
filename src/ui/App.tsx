@@ -174,7 +174,7 @@ export default function App() {
                 <div className="aoCard">
                   <div className="aoCardHeader">
                     <div className="aoCardTitle">Status</div>
-                    <span className="aoPill">
+                    <span className="aoPill aoPulse">
                       <span className="aoDot" />
                       <span className="aoPillText">running</span>
                     </span>
@@ -194,7 +194,7 @@ export default function App() {
                 <div className="aoCard">
                   <div className="aoCardHeader">
                     <div className="aoCardTitle">Routing</div>
-                    <span className="aoPill">
+                    <span className={`aoPill ${override === '' ? 'aoPulse' : ''}`.trim()}>
                       <span className={override === '' ? 'aoDot' : 'aoDot aoDotBad'} />
                       <span className="aoPillText">{override === '' ? 'auto' : 'locked'}</span>
                     </span>
@@ -330,7 +330,7 @@ export default function App() {
                       <tr>
                         <th style={{ width: 120 }}>Name</th>
                         <th>Base URL</th>
-                        <th style={{ width: 190 }}>Capabilities</th>
+                        <th style={{ width: 190 }}>Wire API</th>
                         <th style={{ width: 90 }}>Key</th>
                         <th style={{ width: 340, textAlign: 'right' }}>Actions</th>
                       </tr>

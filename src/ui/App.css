@@ -278,6 +278,49 @@
   top: -0.5px; /* optical centering for Segoe UI on Windows */
 }
 
+@keyframes aoPulse {
+  0% {
+    box-shadow:
+      0 0 0 3px rgb(var(--ao-accent-rgb) / 0.16),
+      0 0 0 0 rgb(var(--ao-accent-rgb) / 0);
+    transform: translateZ(0);
+  }
+  50% {
+    box-shadow:
+      0 0 0 5px rgb(var(--ao-accent-rgb) / 0.1),
+      0 0 0 10px rgb(var(--ao-accent-rgb) / 0.04);
+  }
+  100% {
+    box-shadow:
+      0 0 0 3px rgb(var(--ao-accent-rgb) / 0.16),
+      0 0 0 0 rgb(var(--ao-accent-rgb) / 0);
+  }
+}
+
+.aoPulse .aoDot {
+  animation: aoPulse 1s ease-in-out infinite;
+}
+
+.aoPulse {
+  /* subtle synced breathing so the state reads as "alive" */
+  animation: aoPillBreath 1s ease-in-out infinite;
+}
+
+@keyframes aoPillBreath {
+  0% {
+    border-color: rgb(var(--ao-accent-rgb) / 0.22);
+    background: rgb(13 18 32 / 0.035);
+  }
+  50% {
+    border-color: rgb(var(--ao-accent2-rgb) / 0.28);
+    background: rgb(13 18 32 / 0.045);
+  }
+  100% {
+    border-color: rgb(var(--ao-accent-rgb) / 0.22);
+    background: rgb(13 18 32 / 0.035);
+  }
+}
+
 .aoActions {
   display: flex;
   gap: 6px;
