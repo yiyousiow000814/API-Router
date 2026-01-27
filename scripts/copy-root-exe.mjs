@@ -10,6 +10,16 @@ if (!fs.existsSync(src)) {
   process.exit(1)
 }
 
-fs.copyFileSync(src, dst)
+// On Windows the destination can still be running; copy via a temp file then replace.
+const tmp = path.join(root, 'Agent Orchestrator.exe.tmp')
+try {
+  fs.copyFileSync(src, tmp)
+  fs.renameSync(tmp, dst)
+} finally {
+  try {
+    if (fs.existsSync(tmp)) fs.unlinkSync(tmp)
+  } catch {
+    // ignore
+  }
+}
 console.log(`Wrote: ${dst}`)
-

@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "Agent Orchestrator",
-        "width": 1040,
-        "height": 760,
-        "minWidth": 980,
-        "minHeight": 700,
+        "width": 1240,
+        "height": 860,
+        "minWidth": 1100,
+        "minHeight": 780,
         "resizable": true,
         "fullscreen": false
       }

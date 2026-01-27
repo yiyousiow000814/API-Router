@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 
@@ -63,10 +63,10 @@ export default function App() {
   const [newProviderName, setNewProviderName] = useState<string>('')
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
   const [showEvents, setShowEvents] = useState<boolean>(false)
+  const [eventsMax, setEventsMax] = useState<number>(20)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
-  const [uiScale, setUiScale] = useState<number>(1)
 
   const providers = useMemo(() => Object.keys(status?.providers ?? {}), [status])
 
@@ -83,41 +83,7 @@ export default function App() {
     }
   }
 
-  useLayoutEffect(() => {
-    function recompute() {
-      const container = containerRef.current
-      const content = contentRef.current
-      if (!container || !content) return
-
-      // Fit all content without scroll by scaling down when needed.
-      const available = container.clientHeight - 10
-      const needed = content.scrollHeight
-      if (needed <= 0) return
-      // Prefer readability: only shrink a little, and rely on a larger default window size.
-      const scale = Math.min(1, Math.max(0.92, available / needed))
-      setUiScale(scale)
-    }
-
-    recompute()
-    const ro = new ResizeObserver(() => recompute())
-    if (containerRef.current) ro.observe(containerRef.current)
-    if (contentRef.current) ro.observe(contentRef.current)
-    window.addEventListener('resize', recompute)
-    return () => {
-      ro.disconnect()
-      window.removeEventListener('resize', recompute)
-    }
-  }, [status, config, showEvents, err])
-
-  // If anything is still scrollable (mouse wheel / touchpad), block it.
-  // We want "fits in window" rather than hidden scrollbars.
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const onWheel = (e: WheelEvent) => e.preventDefault()
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel as any)
-  }, [])
+  const events = useMemo(() => (status?.recent_events ?? []).slice(0, eventsMax), [status, eventsMax])
 
   async function applyOverride(next: string) {
     await invoke('set_manual_override', { provider: next === '' ? null : next })
@@ -184,7 +150,7 @@ export default function App() {
 
   return (
     <div className="aoRoot" ref={containerRef}>
-      <div className="aoScale" style={{ ['--ui-scale' as any]: uiScale }}>
+      <div className="aoScale">
         <div className="aoShell" ref={contentRef}>
           <div className="aoBrand">
             <img className="aoMark" src="/ao-icon.png" alt="Agent Orchestrator icon" />
@@ -444,20 +410,33 @@ export default function App() {
               <div className="aoSection">
                 <div className="aoSectionHeader">
                   <h3 className="aoH3">Events</h3>
-                  <div className="aoRow">
+                  <div className="aoRow" style={{ gap: 8 }}>
+                    <select
+                      className="aoSelect"
+                      value={String(eventsMax)}
+                      onChange={(e) => setEventsMax(Number(e.target.value))}
+                      title="Max events shown"
+                    >
+                      <option value="10">10</option>
+                      <option value="20">20</option>
+                      <option value="50">50</option>
+                      <option value="100">100</option>
+                    </select>
                     <button className="aoBtn" onClick={() => setShowEvents((v) => !v)}>
                       {showEvents ? 'Hide' : 'Show'}
                     </button>
                   </div>
                 </div>
                 {showEvents ? (
-                  <ol className="aoEventList">
-                    {status.recent_events.map((e, i) => (
-                      <li key={i}>
-                        {fmtWhen(e.unix_ms)} [{e.level}] {e.provider}: {e.message}
-                      </li>
-                    ))}
-                  </ol>
+                  <div className="aoEventsBox">
+                    <ol className="aoEventList">
+                      {events.map((e, i) => (
+                        <li key={i}>
+                          {fmtWhen(e.unix_ms)} [{e.level}] {e.provider}: {e.message}
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
                 ) : (
                   <div className="aoHint">Hidden (keeps the window compact; click Show when debugging).</div>
                 )}

@@ -1,16 +1,17 @@
 :root {
-  --ao-bg0: #0b0e14;
-  --ao-bg1: #0f1522;
-  --ao-fg: #e8edf7;
-  --ao-muted: rgba(232, 237, 247, 0.72);
-  --ao-line: rgba(232, 237, 247, 0.14);
-  --ao-card: rgba(255, 255, 255, 0.06);
-  --ao-card2: rgba(255, 255, 255, 0.085);
-  --ao-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
-  /* Match app icon: cyan + gold */
+  /* Light theme: white base + cyan + gold (match app icon). */
+  --ao-bg0: #ffffff;
+  --ao-bg1: #f6f8fb;
+  --ao-fg: #0d1220;
+  --ao-muted: rgba(13, 18, 32, 0.64);
+  --ao-line: rgba(13, 18, 32, 0.12);
+  --ao-card: rgba(255, 255, 255, 0.82);
+  --ao-card2: rgba(255, 255, 255, 0.94);
+  --ao-shadow: 0 18px 50px rgba(13, 18, 32, 0.15);
   --ao-accent: #28c7d9;
   --ao-accent2: #f2c14d;
-  --ao-danger: #ff5e7d;
+  --ao-danger: #ff3d66;
+  --ao-bgInk: rgba(13, 18, 32, 0.04);
 
   /* Windows-focused typography with good fallback. */
   font-family:
@@ -33,11 +34,11 @@ body {
   margin: 0;
   color: var(--ao-fg);
   background:
-    radial-gradient(900px 540px at 18% 10%, rgba(40, 199, 217, 0.16), transparent 56%),
-    radial-gradient(900px 540px at 88% 22%, rgba(242, 193, 77, 0.14), transparent 54%),
-    radial-gradient(1200px 900px at 52% 110%, rgba(255, 94, 125, 0.09), transparent 62%),
+    radial-gradient(1100px 680px at 16% -8%, rgba(40, 199, 217, 0.22), transparent 58%),
+    radial-gradient(1100px 680px at 94% 0%, rgba(242, 193, 77, 0.22), transparent 60%),
+    radial-gradient(900px 620px at 55% 118%, rgba(40, 199, 217, 0.14), transparent 62%),
     linear-gradient(180deg, var(--ao-bg0), var(--ao-bg1));
-  overflow: hidden; /* we scale content to fit instead of scrolling */
+  overflow: hidden; /* app content manages its own scroll */
 }
 
 #app {
