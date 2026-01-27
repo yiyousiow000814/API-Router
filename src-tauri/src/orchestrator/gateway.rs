@@ -13,10 +13,7 @@ use parking_lot::RwLock;
 use serde_json::{json, Value};
 
 use super::config::AppConfig;
-use super::openai::{
-    build_response_object, extract_text_from_chat_completions, extract_text_from_responses,
-    input_to_messages, messages_to_responses_input, new_id, sse_events_for_text,
-};
+use super::openai::{build_response_object, extract_text_from_responses, input_to_messages, messages_to_responses_input, new_id, sse_events_for_text};
 use super::router::RouterState;
 use super::secrets::SecretStore;
 use super::store::{unix_ms, Store};
@@ -193,7 +190,7 @@ async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut 
             }
         }
 
-        // Non-stream mode: call upstream without streaming; if upstream is chat completions, we adapt.
+        // Non-stream mode: call upstream without streaming.
         body.as_object_mut().map(|m| m.insert("stream".to_string(), Value::Bool(false)));
 
         let upstream_result = if p.supports_responses {
@@ -202,19 +199,8 @@ async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut 
                 .post_json(&p, "/v1/responses", &body, api_key.as_deref(), client_auth, timeout)
                 .await
                 .map(|(code, j)| (code, j, "responses"))
-        } else if p.supports_chat_completions {
-            let chat_payload = json!({
-                "model": model,
-                "messages": messages,
-                "stream": false
-            });
-            let api_key = st.secrets.get_provider_key(&provider_name);
-            st.upstream
-                .post_json(&p, "/v1/chat/completions", &chat_payload, api_key.as_deref(), client_auth, timeout)
-                .await
-                .map(|(code, j)| (code, j, "chat_completions"))
         } else {
-            last_err = format!("provider {provider_name} supports neither responses nor chat_completions");
+            last_err = format!("provider {provider_name} does not support responses");
             st.router.mark_failure(&provider_name, &cfg, &last_err, unix_ms());
             st.store.add_event(&provider_name, "error", &last_err);
             continue;
@@ -224,8 +210,8 @@ async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut 
             Ok((code, upstream_json, kind)) if (200..300).contains(&code) => {
                 st.router.mark_success(&provider_name, unix_ms());
 
-                // If upstream already speaks Responses, keep its response object (and id) so the client
-                // can continue the chain. If we adapted from chat completions, we synthesize a Responses object.
+                // If upstream speaks Responses, keep its response object (and id) so the client
+                // can continue the chain.
                 let (response_id, response_obj, text) = if kind == "responses" {
                     let rid = upstream_json
                         .get("id")
@@ -235,10 +221,10 @@ async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut 
                     let t = extract_text_from_responses(&upstream_json);
                     (rid, upstream_json, t)
                 } else {
-                    let t = extract_text_from_chat_completions(&upstream_json);
+                    // We don't support chat completions fallback in this project.
                     let rid = new_id("resp");
-                    let obj = build_response_object(&model, &rid, &t);
-                    (rid, obj, t)
+                    let obj = build_response_object(&model, &rid, "");
+                    (rid, obj, String::new())
                 };
 
                 // Persist the exchange so we can keep continuity if provider changes later.

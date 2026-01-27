@@ -17,7 +17,6 @@ pub struct ProviderConfig {
     /// If empty, the gateway tries to passthrough the client's Authorization header (OAuth).
     pub api_key: String,
     pub supports_responses: bool,
-    pub supports_chat_completions: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,7 +42,6 @@ impl AppConfig {
                 base_url: "https://api.openai.com".to_string(),
                 api_key: "".to_string(),
                 supports_responses: true,
-                supports_chat_completions: true,
             },
         );
         providers.insert(
@@ -53,7 +51,6 @@ impl AppConfig {
                 base_url: "https://example-a.com".to_string(),
                 api_key: "REPLACE_ME".to_string(),
                 supports_responses: false,
-                supports_chat_completions: true,
             },
         );
         providers.insert(
@@ -63,7 +60,6 @@ impl AppConfig {
                 base_url: "https://example-b.com".to_string(),
                 api_key: "REPLACE_ME".to_string(),
                 supports_responses: true,
-                supports_chat_completions: true,
             },
         );
 
@@ -84,4 +80,3 @@ impl AppConfig {
         }
     }
 }
-

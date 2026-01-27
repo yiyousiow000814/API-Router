@@ -147,7 +147,6 @@ fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
       "display_name": p.display_name,
       "base_url": p.base_url,
       "supports_responses": p.supports_responses,
-      "supports_chat_completions": p.supports_chat_completions,
       "has_key": has_key
     }))
   }).collect();
@@ -180,7 +179,6 @@ fn upsert_provider(
   display_name: String,
   base_url: String,
   supports_responses: bool,
-  supports_chat_completions: bool,
 ) -> Result<(), String> {
   if name.trim().is_empty() {
     return Err("name is required".to_string());
@@ -192,7 +190,6 @@ fn upsert_provider(
       base_url,
       api_key: String::new(),
       supports_responses,
-      supports_chat_completions,
     });
   }
   persist_config(&state).map_err(|e| e.to_string())?;

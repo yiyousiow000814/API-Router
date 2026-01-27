@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 
 type ProviderHealth = {
-  is_healthy: boolean
+  status: 'unknown' | 'healthy' | 'unhealthy' | 'cooldown'
   consecutive_failures: number
   cooldown_until_unix_ms: number
   last_error: string
@@ -36,7 +36,6 @@ type Config = {
       display_name: string
       base_url: string
       supports_responses: boolean
-      supports_chat_completions: boolean
       has_key: boolean
     }
   >
@@ -64,6 +63,11 @@ export default function App() {
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
   const [showEvents, setShowEvents] = useState<boolean>(false)
   const [eventsMax, setEventsMax] = useState<number>(20)
+  const [keyModal, setKeyModal] = useState<{ open: boolean; provider: string; value: string }>({
+    open: false,
+    provider: '',
+    value: '',
+  })
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -103,7 +107,6 @@ export default function App() {
       displayName: p.display_name,
       baseUrl: p.base_url,
       supportsResponses: p.supports_responses,
-      supportsChatCompletions: p.supports_chat_completions,
     })
     await refresh()
   }
@@ -113,10 +116,12 @@ export default function App() {
     await refresh()
   }
 
-  async function setKey(name: string) {
-    const key = window.prompt(`Set API key for provider "${name}" (stored in Windows Credential Manager):`, '')
-    if (!key) return
-    await invoke('set_provider_key', { provider: name, key })
+  async function saveKey() {
+    const provider = keyModal.provider
+    const key = keyModal.value
+    if (!provider || !key) return
+    await invoke('set_provider_key', { provider, key })
+    setKeyModal({ open: false, provider: '', value: '' })
     await refresh()
   }
 
@@ -135,7 +140,6 @@ export default function App() {
       displayName: name,
       baseUrl,
       supportsResponses: true,
-      supportsChatCompletions: true,
     })
     setNewProviderName('')
     setNewProviderBaseUrl('')
@@ -236,13 +240,29 @@ export default function App() {
                       const h = status.providers[p]
                       const m = status.metrics?.[p]
                       const cooldownActive = h.cooldown_until_unix_ms > Date.now()
+                      const healthLabel =
+                        h.status === 'healthy'
+                          ? 'yes'
+                          : h.status === 'unhealthy'
+                            ? 'no'
+                            : h.status === 'cooldown'
+                              ? 'cooldown'
+                              : 'unknown'
+                      const dotClass =
+                        h.status === 'healthy'
+                          ? 'aoDot'
+                          : h.status === 'cooldown'
+                            ? 'aoDot'
+                            : h.status === 'unhealthy'
+                              ? 'aoDot aoDotBad'
+                              : 'aoDot aoDotBad'
                       return (
                         <tr key={p}>
                           <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{p}</td>
                           <td>
                             <span className="aoPill">
-                              <span className={h.is_healthy ? 'aoDot' : 'aoDot aoDotBad'} />
-                              <span className="aoPillText">{h.is_healthy ? 'yes' : 'no'}</span>
+                              <span className={dotClass} />
+                              <span className="aoPillText">{healthLabel}</span>
                             </span>
                           </td>
                           <td>{h.consecutive_failures}</td>
@@ -361,26 +381,6 @@ export default function App() {
                                 />
                                 responses
                               </label>
-                              <label className="aoCheckbox">
-                                <input
-                                  type="checkbox"
-                                  checked={p.supports_chat_completions}
-                                  onChange={(e) =>
-                                    setConfig((c) =>
-                                      c
-                                        ? {
-                                            ...c,
-                                            providers: {
-                                              ...c.providers,
-                                              [name]: { ...c.providers[name], supports_chat_completions: e.target.checked },
-                                            },
-                                          }
-                                        : c,
-                                    )
-                                  }
-                                />
-                                chat
-                              </label>
                             </div>
                           </td>
                           <td>{p.has_key ? 'set' : 'empty'}</td>
@@ -389,7 +389,10 @@ export default function App() {
                               <button className="aoBtn" onClick={() => void saveProvider(name)}>
                                 Save
                               </button>
-                              <button className="aoBtn" onClick={() => void setKey(name)}>
+                              <button
+                                className="aoBtn"
+                                onClick={() => setKeyModal({ open: true, provider: name, value: '' })}
+                              >
                                 Set key
                               </button>
                               <button className="aoBtn" onClick={() => void clearKey(name)}>
@@ -445,6 +448,37 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {keyModal.open ? (
+        <div className="aoModalBackdrop" role="dialog" aria-modal="true">
+          <div className="aoModal">
+            <div className="aoModalTitle">Set API key</div>
+            <div className="aoModalSub">
+              Provider:{' '}
+              <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>
+                {keyModal.provider}
+              </span>
+              <br />
+              Stored in Windows Credential Manager.
+            </div>
+            <input
+              className="aoInput"
+              style={{ width: '100%', height: 36, borderRadius: 12 }}
+              placeholder="Paste API key…"
+              value={keyModal.value}
+              onChange={(e) => setKeyModal((m) => ({ ...m, value: e.target.value }))}
+            />
+            <div className="aoModalActions">
+              <button className="aoBtn" onClick={() => setKeyModal({ open: false, provider: '', value: '' })}>
+                Cancel
+              </button>
+              <button className="aoBtn aoBtnPrimary" onClick={() => void saveKey()} disabled={!keyModal.value}>
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
