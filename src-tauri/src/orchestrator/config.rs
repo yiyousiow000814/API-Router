@@ -15,8 +15,11 @@ pub struct ProviderConfig {
     pub display_name: String,
     pub base_url: String,
     /// If empty, the gateway tries to passthrough the client's Authorization header (OAuth).
+    ///
+    /// This is only used for one-time migration into `user-data/secrets.json`.
+    /// The UI/API never exposes it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub api_key: String,
-    pub supports_responses: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,27 +44,19 @@ impl AppConfig {
                 display_name: "Official (OAuth passthrough)".to_string(),
                 base_url: "https://api.openai.com".to_string(),
                 api_key: "".to_string(),
-                supports_responses: true,
             },
         );
-        providers.insert(
-            "provider_a".to_string(),
-            ProviderConfig {
-                display_name: "Provider A".to_string(),
-                base_url: "https://example-a.com".to_string(),
-                api_key: "REPLACE_ME".to_string(),
-                supports_responses: false,
-            },
-        );
-        providers.insert(
-            "provider_b".to_string(),
-            ProviderConfig {
-                display_name: "Provider B".to_string(),
-                base_url: "https://example-b.com".to_string(),
-                api_key: "REPLACE_ME".to_string(),
-                supports_responses: true,
-            },
-        );
+        for i in 1..=2 {
+            let name = format!("provider_{i}");
+            providers.insert(
+                name.clone(),
+                ProviderConfig {
+                    display_name: format!("Provider {i}"),
+                    base_url: String::new(),
+                    api_key: String::new(),
+                },
+            );
+        }
 
         Self {
             listen: ListenConfig {

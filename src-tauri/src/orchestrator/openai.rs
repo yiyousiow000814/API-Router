@@ -1,11 +1,4 @@
 use serde_json::{json, Value};
-use uuid::Uuid;
-
-use super::store::unix_ms;
-
-pub fn new_id(prefix: &str) -> String {
-    format!("{prefix}_{}", Uuid::new_v4().simple())
-}
 
 pub fn input_to_messages(input: &Value) -> Vec<Value> {
     match input {
@@ -78,31 +71,6 @@ pub fn extract_text_from_responses(resp: &Value) -> String {
     out
 }
 
-pub fn extract_text_from_chat_completions(resp: &Value) -> String {
-    resp.pointer("/choices/0/message/content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string()
-}
-
-pub fn build_response_object(model: &str, response_id: &str, text: &str) -> Value {
-    json!({
-        "id": response_id,
-        "object": "response",
-        "created": (unix_ms() / 1000),
-        "model": model,
-        "output": [{
-            "id": new_id("msg"),
-            "type": "message",
-            "role": "assistant",
-            "content": [{
-                "type": "output_text",
-                "text": text
-            }]
-        }]
-    })
-}
-
 pub fn sse_events_for_text(response_id: &str, full_response: &Value, text: &str) -> Vec<String> {
     let mut events = Vec::new();
 
@@ -150,4 +118,3 @@ fn sse_data(v: &Value) -> String {
     let s = serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string());
     format!("data: {s}\n\n")
 }
-

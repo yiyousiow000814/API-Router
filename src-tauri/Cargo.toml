@@ -39,7 +39,6 @@ anyhow = "1"
 futures-util = "0.3"
 async-stream = "0.3"
 bytes = "1"
-keyring = { version = "3", features = ["windows-native"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]

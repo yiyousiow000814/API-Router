@@ -13,7 +13,9 @@ use parking_lot::RwLock;
 use serde_json::{json, Value};
 
 use super::config::AppConfig;
-use super::openai::{build_response_object, extract_text_from_responses, input_to_messages, messages_to_responses_input, new_id, sse_events_for_text};
+use super::openai::{
+    extract_text_from_responses, input_to_messages, messages_to_responses_input, sse_events_for_text,
+};
 use super::router::RouterState;
 use super::secrets::SecretStore;
 use super::store::{unix_ms, Store};
@@ -78,6 +80,9 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
 }
 
 async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Some(resp) = require_gateway_auth(&st, &headers) {
+        return resp;
+    }
     let cfg = st.cfg.read().clone();
     let (provider_name, _) = st.router.decide(&cfg);
     let p = match cfg.providers.get(&provider_name) {
@@ -89,6 +94,7 @@ async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl Into
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
     let api_key = st.secrets.get_provider_key(&provider_name);
+    let client_auth = upstream_auth(&st, client_auth);
 
     let timeout = cfg.routing.request_timeout_seconds;
     match st
@@ -102,17 +108,16 @@ async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl Into
 }
 
 async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut body): Json<Value>) -> Response {
+    if let Some(resp) = require_gateway_auth(&st, &headers) {
+        return resp;
+    }
     let cfg = st.cfg.read().clone();
     let client_auth = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
+    let client_auth = upstream_auth(&st, client_auth);
 
     let want_stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
-    let model = body
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
 
     let previous_response_id = body
         .get("previous_response_id")
@@ -153,7 +158,7 @@ async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut 
 
         // Stream mode (best-effort): if upstream supports Responses streaming, we pass it through
         // and tap the stream to persist the final response for continuity.
-        if want_stream && p.supports_responses {
+        if want_stream {
             body.as_object_mut().map(|m| m.insert("stream".to_string(), Value::Bool(true)));
             let api_key = st.secrets.get_provider_key(&provider_name);
             match st
@@ -193,39 +198,24 @@ async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut 
         // Non-stream mode: call upstream without streaming.
         body.as_object_mut().map(|m| m.insert("stream".to_string(), Value::Bool(false)));
 
-        let upstream_result = if p.supports_responses {
-            let api_key = st.secrets.get_provider_key(&provider_name);
-            st.upstream
-                .post_json(&p, "/v1/responses", &body, api_key.as_deref(), client_auth, timeout)
-                .await
-                .map(|(code, j)| (code, j, "responses"))
-        } else {
-            last_err = format!("provider {provider_name} does not support responses");
-            st.router.mark_failure(&provider_name, &cfg, &last_err, unix_ms());
-            st.store.add_event(&provider_name, "error", &last_err);
-            continue;
-        };
+        let api_key = st.secrets.get_provider_key(&provider_name);
+        let upstream_result = st
+            .upstream
+            .post_json(&p, "/v1/responses", &body, api_key.as_deref(), client_auth, timeout)
+            .await;
 
         match upstream_result {
-            Ok((code, upstream_json, kind)) if (200..300).contains(&code) => {
+            Ok((code, upstream_json)) if (200..300).contains(&code) => {
                 st.router.mark_success(&provider_name, unix_ms());
 
-                // If upstream speaks Responses, keep its response object (and id) so the client
-                // can continue the chain.
-                let (response_id, response_obj, text) = if kind == "responses" {
-                    let rid = upstream_json
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_else(|| "resp_unknown")
-                        .to_string();
-                    let t = extract_text_from_responses(&upstream_json);
-                    (rid, upstream_json, t)
-                } else {
-                    // We don't support chat completions fallback in this project.
-                    let rid = new_id("resp");
-                    let obj = build_response_object(&model, &rid, "");
-                    (rid, obj, String::new())
-                };
+                // Keep the upstream response object (and id) so the client can continue the chain.
+                let response_id = upstream_json
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| "resp_unknown")
+                    .to_string();
+                let text = extract_text_from_responses(&upstream_json);
+                let response_obj = upstream_json;
 
                 // Persist the exchange so we can keep continuity if provider changes later.
                 let _ = st.store.put_exchange(
@@ -248,11 +238,8 @@ async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut 
                 }
                 return (StatusCode::OK, Json(response_obj)).into_response();
             }
-            Ok((code, upstream_json, kind)) => {
-                last_err = format!(
-                    "upstream {provider_name} returned {code} ({kind}): {}",
-                    upstream_json
-                );
+            Ok((code, upstream_json)) => {
+                last_err = format!("upstream {provider_name} returned {code}: {}", upstream_json);
                 st.router.mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                 st.store.record_failure(&provider_name);
                 st.store.add_event(&provider_name, "error", &last_err);
@@ -291,6 +278,61 @@ fn sse_response(response_id: &str, response_obj: &Value, text: &str) -> Response
     headers.insert(header::CONNECTION, header::HeaderValue::from_static("keep-alive"));
     headers.insert(header::HeaderName::from_static("x-response-id"), header::HeaderValue::from_str(response_id).unwrap());
     resp
+}
+
+fn bearer_token(auth: &str) -> Option<&str> {
+    let s = auth.trim();
+    let prefix = "Bearer ";
+    if s.len() > prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        return Some(s[prefix.len()..].trim());
+    }
+    None
+}
+
+fn require_gateway_auth(st: &GatewayState, headers: &HeaderMap) -> Option<Response> {
+    let Some(expected) = st.secrets.get_gateway_token() else {
+        // No token configured: allow for local dev.
+        return None;
+    };
+    let expected = expected.trim();
+    if expected.is_empty() {
+        return None;
+    }
+    let Some(auth) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) else {
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": {"message":"missing Authorization (set OPENAI_API_KEY in .codex/auth.json to the gateway token)","type":"unauthorized"}})),
+            )
+                .into_response(),
+        );
+    };
+    let Some(tok) = bearer_token(auth) else {
+        return Some((StatusCode::UNAUTHORIZED, Json(json!({"error":{"message":"invalid Authorization format","type":"unauthorized"}}))).into_response());
+    };
+    if tok != expected {
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": {"message":"invalid gateway token","type":"unauthorized"}})),
+            )
+                .into_response(),
+        );
+    }
+    None
+}
+
+fn upstream_auth<'a>(st: &GatewayState, client_auth: Option<&'a str>) -> Option<&'a str> {
+    let Some(auth) = client_auth else {
+        return None;
+    };
+    // Never forward the local gateway token upstream.
+    if let (Some(tok), Some(b)) = (st.secrets.get_gateway_token(), bearer_token(auth)) {
+        if !tok.trim().is_empty() && b == tok.trim() {
+            return None;
+        }
+    }
+    Some(auth)
 }
 
 fn passthrough_sse_and_persist(

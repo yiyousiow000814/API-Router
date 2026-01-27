@@ -18,7 +18,7 @@ This file mirrors shared policies in `AGENTS.md`. Model-specific notes may be ad
 
 ## Safety & Data Handling
 - **Never commit secrets**: API keys, OAuth tokens, cookies, browser profiles, or raw conversation logs.
-- **Key storage**: Provider API keys must be stored in the OS credential store (Windows Credential Manager / macOS Keychain / Linux Secret Service), not in `config.toml`.
+- **Key storage**: Provider API keys must be stored in `user-data/secrets.json` (gitignored), not in `config.toml`.
 - **Artifacts**: Do not commit binaries (`.exe`, `.msi`, installers). Publish binaries via GitHub Releases assets.
 
 ## Engineering Constraints
@@ -27,4 +27,3 @@ This file mirrors shared policies in `AGENTS.md`. Model-specific notes may be ad
 
 ## Model-Specific Notes
 - (none)
-

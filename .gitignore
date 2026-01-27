@@ -16,9 +16,7 @@ dist-ssr
 src-tauri/target
 
 # Local state (never commit keys or logs)
-config.toml
-data/
-_trash_from_xauusd/
+user-data/
 
 # Local convenience launcher (built binary, never commit)
 Agent Orchestrator.exe

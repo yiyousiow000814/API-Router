@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 
@@ -35,8 +35,8 @@ type Config = {
     {
       display_name: string
       base_url: string
-      supports_responses: boolean
       has_key: boolean
+      key_preview?: string | null
     }
   >
 }
@@ -57,7 +57,8 @@ function fmtWhen(unixMs: number): string {
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
-  const [err, setErr] = useState<string>('')
+  const [baselineBaseUrls, setBaselineBaseUrls] = useState<Record<string, string>>({})
+  const [toast, setToast] = useState<string>('')
   const [override, setOverride] = useState<string>('') // '' => auto
   const [newProviderName, setNewProviderName] = useState<string>('')
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
@@ -68,66 +69,130 @@ export default function App() {
     provider: '',
     value: '',
   })
+  const overrideDirtyRef = useRef<boolean>(false)
+  const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>('')
+  const [gatewayTokenReveal, setGatewayTokenReveal] = useState<string>('')
+  const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
+  const toastTimerRef = useRef<number | null>(null)
 
   const providers = useMemo(() => Object.keys(status?.providers ?? {}), [status])
+  const nextProviderPlaceholder = useMemo(() => {
+    const keys = Object.keys(config?.providers ?? {})
+    let maxN = 0
+    for (const k of keys) {
+      const m = /^provider_(\d+)$/.exec(k)
+      if (!m) continue
+      const n = Number(m[1])
+      if (Number.isFinite(n) && n > maxN) maxN = n
+    }
+    return `provider_${maxN > 0 ? maxN + 1 : 1}`
+  }, [config])
 
-  async function refresh() {
+  function flashToast(msg: string, kind: 'info' | 'error' = 'info') {
+    setToast(msg)
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current)
+    const ms = kind === 'error' ? 5200 : 2400
+    toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
+  }
+
+  async function refreshStatus() {
     try {
       const s = await invoke<Status>('get_status')
       setStatus(s)
-      setOverride(s.manual_override ?? '')
+      if (!overrideDirtyRef.current) setOverride(s.manual_override ?? '')
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+  async function refreshConfig() {
+    try {
       const c = await invoke<Config>('get_config')
       setConfig(c)
-      setErr('')
+      setBaselineBaseUrls(
+        Object.fromEntries(Object.entries(c.providers).map(([name, p]) => [name, p.base_url])),
+      )
+      const p = await invoke<string>('get_gateway_token_preview')
+      setGatewayTokenPreview(p)
     } catch (e) {
-      setErr(String(e))
+      console.error(e)
     }
   }
 
   const events = useMemo(() => (status?.recent_events ?? []).slice(0, eventsMax), [status, eventsMax])
 
   async function applyOverride(next: string) {
-    await invoke('set_manual_override', { provider: next === '' ? null : next })
-    await refresh()
+    try {
+      await invoke('set_manual_override', { provider: next === '' ? null : next })
+      overrideDirtyRef.current = false
+      flashToast(next === '' ? 'Routing: auto' : `Routing locked`)
+      await refreshStatus()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
   }
 
   async function setPreferred(next: string) {
     await invoke('set_preferred_provider', { provider: next })
-    await refresh()
+    await refreshStatus()
+    await refreshConfig()
   }
 
   async function saveProvider(name: string) {
     if (!config) return
     const p = config.providers[name]
-    await invoke('upsert_provider', {
-      name,
-      displayName: p.display_name,
-      baseUrl: p.base_url,
-      supportsResponses: p.supports_responses,
-    })
-    await refresh()
+    try {
+      await invoke('upsert_provider', {
+        name,
+        displayName: p.display_name,
+        baseUrl: p.base_url,
+      })
+      flashToast(`Saved: ${name}`)
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
   }
 
   async function deleteProvider(name: string) {
-    await invoke('delete_provider', { name })
-    await refresh()
+    try {
+      await invoke('delete_provider', { name })
+      flashToast(`Deleted: ${name}`)
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
   }
 
   async function saveKey() {
     const provider = keyModal.provider
     const key = keyModal.value
     if (!provider || !key) return
-    await invoke('set_provider_key', { provider, key })
-    setKeyModal({ open: false, provider: '', value: '' })
-    await refresh()
+    try {
+      await invoke('set_provider_key', { provider, key })
+      setKeyModal({ open: false, provider: '', value: '' })
+      flashToast(`Key set: ${provider}`)
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
   }
 
   async function clearKey(name: string) {
-    await invoke('clear_provider_key', { provider: name })
-    await refresh()
+    try {
+      await invoke('clear_provider_key', { provider: name })
+      flashToast(`Key cleared: ${name}`)
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
   }
 
   async function addProvider() {
@@ -135,20 +200,26 @@ export default function App() {
     const baseUrl = newProviderBaseUrl.trim()
     if (!name || !baseUrl) return
 
-    await invoke('upsert_provider', {
-      name,
-      displayName: name,
-      baseUrl,
-      supportsResponses: true,
-    })
-    setNewProviderName('')
-    setNewProviderBaseUrl('')
-    await refresh()
+    try {
+      await invoke('upsert_provider', {
+        name,
+        displayName: name,
+        baseUrl,
+      })
+      setNewProviderName('')
+      setNewProviderBaseUrl('')
+      flashToast(`Added: ${name}`)
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
   }
 
   useEffect(() => {
-    void refresh()
-    const t = setInterval(() => void refresh(), 1500)
+    void refreshStatus()
+    void refreshConfig()
+    const t = setInterval(() => void refreshStatus(), 1500)
     return () => clearInterval(t)
   }, [])
 
@@ -156,6 +227,11 @@ export default function App() {
     <div className="aoRoot" ref={containerRef}>
       <div className="aoScale">
         <div className="aoShell" ref={contentRef}>
+          {toast ? (
+            <div className="aoToast" role="status" aria-live="polite">
+              {toast}
+            </div>
+          ) : null}
           <div className="aoBrand">
             <img className="aoMark" src="/ao-icon.png" alt="Agent Orchestrator icon" />
             <div>
@@ -164,7 +240,7 @@ export default function App() {
             </div>
           </div>
 
-          {err ? <div className="aoErrorBanner">UI error: {err}</div> : null}
+          {/* Surface errors via toast to avoid layout shifts. */}
 
           {!status ? (
             <div className="aoHint">Loading…</div>
@@ -200,7 +276,15 @@ export default function App() {
                     </span>
                   </div>
                   <div className="aoRow">
-                    <select className="aoSelect" value={override} onChange={(e) => setOverride(e.target.value)}>
+                    <select
+                      className="aoSelect"
+                      value={override}
+                      onChange={(e) => {
+                        setOverride(e.target.value)
+                        overrideDirtyRef.current = true
+                        void applyOverride(e.target.value)
+                      }}
+                    >
                       <option value="">Auto (preferred + failover)</option>
                       {providers.map((p) => (
                         <option key={p} value={p}>
@@ -208,9 +292,6 @@ export default function App() {
                         </option>
                       ))}
                     </select>
-                    <button className="aoBtn aoBtnPrimary" onClick={() => void applyOverride(override)}>
-                      Apply
-                    </button>
                   </div>
                   <div className="aoHint" style={{ marginTop: 8 }}>
                     Tip: closing the window hides to tray. Use tray menu to show/quit.
@@ -281,58 +362,83 @@ export default function App() {
                 <div className="aoSection">
                   <div className="aoSectionHeader">
                     <h3 className="aoH3">Config</h3>
-                    <div className="aoHint">keys are stored in Windows Credential Manager</div>
+                    <div className="aoHint">keys are stored in ./user-data/secrets.json (gitignored)</div>
                   </div>
 
                   <div className="aoCard" style={{ paddingBottom: 12 }}>
-                    <div className="aoRow" style={{ flexWrap: 'wrap' }}>
-                      <div className="aoHint" style={{ minWidth: 120 }}>
-                        Preferred provider
+                    <div className="aoMiniGroup">
+                      <div className="aoMiniTitle">Codex auth</div>
+                      <div className="aoRow" style={{ flexWrap: 'wrap', marginTop: 8 }}>
+                        <div className="aoHint" style={{ minWidth: 120 }}>
+                          Gateway token
+                        </div>
+                        <div className="aoHint" style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>
+                          {gatewayTokenPreview}
+                        </div>
+                        <button className="aoBtn" onClick={() => setGatewayModalOpen(true)}>
+                          Show / Rotate
+                        </button>
                       </div>
-                      <select
-                        className="aoSelect"
-                        value={config.routing.preferred_provider}
-                        onChange={(e) => void setPreferred(e.target.value)}
-                      >
-                        {Object.keys(config.providers).map((p) => (
-                          <option key={p} value={p}>
-                            {p}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="aoHint" style={{ marginTop: 6 }}>
+                        Put this into <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>.codex/auth.json</span> as
+                        <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}> OPENAI_API_KEY</span>.
+                      </div>
                     </div>
 
-                    <div className="aoRow" style={{ flexWrap: 'wrap', marginTop: 10 }}>
-                      <div className="aoHint" style={{ minWidth: 120 }}>
-                        Add provider
+                    <div className="aoMiniDivider" />
+
+                    <div className="aoMiniGroup">
+                      <div className="aoMiniTitle">Routing defaults</div>
+                      <div className="aoRow" style={{ flexWrap: 'wrap', marginTop: 8 }}>
+                        <div className="aoHint" style={{ minWidth: 120 }}>
+                          Preferred provider
+                        </div>
+                        <select
+                          className="aoSelect"
+                          value={config.routing.preferred_provider}
+                          onChange={(e) => void setPreferred(e.target.value)}
+                        >
+                          {Object.keys(config.providers).map((p) => (
+                            <option key={p} value={p}>
+                              {p}
+                            </option>
+                          ))}
+                        </select>
                       </div>
-                      <input
-                        className="aoInput"
-                        placeholder="name"
-                        value={newProviderName}
-                        onChange={(e) => setNewProviderName(e.target.value)}
-                      />
-                      <input
-                        className="aoInput"
-                        style={{ width: 360 }}
-                        placeholder="base_url (e.g. http://127.0.0.1:4001 or https://api.example.com)"
-                        value={newProviderBaseUrl}
-                        onChange={(e) => setNewProviderBaseUrl(e.target.value)}
-                      />
-                      <button className="aoBtn aoBtnPrimary" onClick={() => void addProvider()}>
-                        Add
-                      </button>
+                    </div>
+
+                    <div className="aoMiniDivider" />
+
+                    <div className="aoMiniGroup">
+                      <div className="aoMiniTitle">Add provider</div>
+                      <div className="aoRow" style={{ flexWrap: 'wrap', marginTop: 8 }}>
+                        <input
+                          className="aoInput"
+                          placeholder={nextProviderPlaceholder}
+                          value={newProviderName}
+                          onChange={(e) => setNewProviderName(e.target.value)}
+                        />
+                        <input
+                          className="aoInput"
+                          style={{ width: 360 }}
+                          placeholder="https://api.example.com (or http://127.0.0.1:4001)"
+                          value={newProviderBaseUrl}
+                          onChange={(e) => setNewProviderBaseUrl(e.target.value)}
+                        />
+                        <button className="aoBtn aoBtnPrimary" onClick={() => void addProvider()}>
+                          Add
+                        </button>
+                      </div>
                     </div>
                   </div>
 
-                  <table className="aoTable" style={{ marginTop: 10 }}>
+                  <table className="aoTable aoTableFixed" style={{ marginTop: 10 }}>
                     <thead>
                       <tr>
-                        <th style={{ width: 120 }}>Name</th>
-                        <th>Base URL</th>
-                        <th style={{ width: 190 }}>Wire API</th>
-                        <th style={{ width: 90 }}>Key</th>
-                        <th style={{ width: 340, textAlign: 'right' }}>Actions</th>
+                        <th style={{ width: 130 }}>Name</th>
+                        <th style={{ width: 300 }}>Base URL</th>
+                        <th style={{ width: 260 }}>Key</th>
+                        <th style={{ width: 220, textAlign: 'right' }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -341,8 +447,7 @@ export default function App() {
                           <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{name}</td>
                           <td>
                             <input
-                              className="aoInput"
-                              style={{ width: '100%' }}
+                              className="aoInput aoUrlInput"
                               value={p.base_url}
                               onChange={(e) =>
                                 setConfig((c) =>
@@ -359,47 +464,57 @@ export default function App() {
                               }
                             />
                           </td>
-                          <td>
-                            <div className="aoRow" style={{ gap: 10 }}>
-                              <label className="aoCheckbox">
-                                <input
-                                  type="checkbox"
-                                  checked={p.supports_responses}
-                                  onChange={(e) =>
-                                    setConfig((c) =>
-                                      c
-                                        ? {
-                                            ...c,
-                                            providers: {
-                                              ...c.providers,
-                                              [name]: { ...c.providers[name], supports_responses: e.target.checked },
-                                            },
-                                          }
-                                        : c,
-                                    )
-                                  }
-                                />
-                                responses
-                              </label>
-                            </div>
+                          <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>
+                            {p.has_key ? (p.key_preview ? p.key_preview : 'set') : 'empty'}
                           </td>
-                          <td>{p.has_key ? 'set' : 'empty'}</td>
                           <td>
                             <div className="aoActions">
-                              <button className="aoBtn" onClick={() => void saveProvider(name)}>
-                                Save
-                              </button>
+                              {p.base_url !== (baselineBaseUrls[name] ?? '') ? (
+                                <button className="aoActionBtn" title="Save" onClick={() => void saveProvider(name)}>
+                                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+                                    <path d="M17 21v-8H7v8" />
+                                    <path d="M7 3v5h8" />
+                                  </svg>
+                                  <span>Save</span>
+                                </button>
+                              ) : null}
                               <button
-                                className="aoBtn"
+                                className="aoActionBtn"
+                                title="Set key"
                                 onClick={() => setKeyModal({ open: true, provider: name, value: '' })}
                               >
-                                Set key
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                  <g transform="rotate(-28 12 12)">
+                                    <circle cx="7.2" cy="12" r="3.2" />
+                                    <circle cx="7.2" cy="12" r="1.15" />
+                                    <path d="M10.8 12H21" />
+                                    <path d="M17.2 12v2.4" />
+                                    <path d="M19.2 12v3.4" />
+                                  </g>
+                                </svg>
+                                <span>Key</span>
                               </button>
-                              <button className="aoBtn" onClick={() => void clearKey(name)}>
-                                Clear key
+                              <button className="aoActionBtn" title="Clear key" onClick={() => void clearKey(name)}>
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                  <path d="m7 21-4-4a2 2 0 0 1 0-3l10-10a2 2 0 0 1 3 0l5 5a2 2 0 0 1 0 3l-8 8" />
+                                  <path d="M6 18h8" />
+                                </svg>
+                                <span>Clear</span>
                               </button>
-                              <button className="aoBtn aoBtnDanger" onClick={() => void deleteProvider(name)}>
-                                Delete
+                              <button
+                                className="aoActionBtn aoActionBtnDanger"
+                                title="Delete provider"
+                                aria-label="Delete provider"
+                                onClick={() => void deleteProvider(name)}
+                              >
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                  <path d="M3 6h18" />
+                                  <path d="M8 6V4h8v2" />
+                                  <path d="M19 6 18 20H6L5 6" />
+                                  <path d="M10 11v6" />
+                                  <path d="M14 11v6" />
+                                </svg>
                               </button>
                             </div>
                           </td>
@@ -459,12 +574,12 @@ export default function App() {
                 {keyModal.provider}
               </span>
               <br />
-              Stored in Windows Credential Manager.
+              Stored in ./user-data/secrets.json (gitignored).
             </div>
             <input
               className="aoInput"
               style={{ width: '100%', height: 36, borderRadius: 12 }}
-              placeholder="Paste API key…"
+              placeholder="Paste API key..."
               value={keyModal.value}
               onChange={(e) => setKeyModal((m) => ({ ...m, value: e.target.value }))}
             />
@@ -474,6 +589,59 @@ export default function App() {
               </button>
               <button className="aoBtn aoBtnPrimary" onClick={() => void saveKey()} disabled={!keyModal.value}>
                 Save
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {gatewayModalOpen ? (
+        <div className="aoModalBackdrop" role="dialog" aria-modal="true">
+          <div className="aoModal">
+            <div className="aoModalTitle">Codex gateway token</div>
+            <div className="aoModalSub">
+              Set <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>OPENAI_API_KEY</span> in{' '}
+              <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>.codex/auth.json</span> to this value.
+              <br />
+              Stored in <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>./user-data/secrets.json</span>.
+            </div>
+            <input
+              className="aoInput"
+              style={{ width: '100%', height: 36, borderRadius: 12 }}
+              readOnly
+              value={gatewayTokenReveal || gatewayTokenPreview}
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <div className="aoModalActions">
+              <button
+                className="aoBtn"
+                onClick={() => {
+                  setGatewayModalOpen(false)
+                  setGatewayTokenReveal('')
+                }}
+              >
+                Close
+              </button>
+              <button
+                className="aoBtn"
+                onClick={async () => {
+                  const t = await invoke<string>('get_gateway_token')
+                  setGatewayTokenReveal(t)
+                }}
+              >
+                Reveal
+              </button>
+              <button
+                className="aoBtn aoBtnDanger"
+                onClick={async () => {
+                  const t = await invoke<string>('rotate_gateway_token')
+                  setGatewayTokenReveal(t)
+                  const p = await invoke<string>('get_gateway_token_preview')
+                  setGatewayTokenPreview(p)
+                  flashToast('Gateway token rotated')
+                }}
+              >
+                Rotate
               </button>
             </div>
           </div>

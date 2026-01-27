@@ -181,6 +181,19 @@
   border-color: rgba(40, 199, 217, 0.3);
 }
 
+.aoBtnPrimary:hover {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.38), rgba(242, 193, 77, 0.28));
+  border-color: rgba(40, 199, 217, 0.42);
+}
+
+.aoBtn:focus-visible,
+.aoIconBtn:focus-visible,
+.aoMenuItem:focus-visible,
+.aoActionBtn:focus-visible {
+  outline: 2px solid rgba(var(--ao-accent-rgb), 0.55);
+  outline-offset: 2px;
+}
+
 .aoBtnDanger {
   background: rgba(255, 94, 125, 0.12);
   border-color: rgba(255, 94, 125, 0.26);
@@ -323,9 +336,189 @@
 
 .aoActions {
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
+  gap: 8px;
+  flex-wrap: nowrap;
   justify-content: flex-end;
+}
+
+.aoActionBtn {
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(13, 18, 32, 0.84);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  cursor: pointer;
+  font-weight: 670;
+  letter-spacing: 0.1px;
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+  background-clip: padding-box;
+}
+
+.aoActionBtn:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.92);
+  background: rgba(var(--ao-accent-rgb), 0.06);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 0 0 1px rgba(13, 18, 32, 0.04);
+}
+
+.aoActionBtn:active {
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoActionBtn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: rgba(13, 18, 32, 0.74);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  shape-rendering: geometricPrecision;
+}
+
+.aoActionBtnDanger {
+  border-color: rgba(255, 94, 125, 0.24);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  background: rgba(255, 94, 125, 0.06);
+  color: rgba(145, 12, 43, 0.92);
+}
+
+.aoActionBtnDanger:hover {
+  border-color: rgba(255, 94, 125, 0.52);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 0 0 1px rgba(13, 18, 32, 0.04);
+  background: rgba(255, 94, 125, 0.1);
+}
+
+.aoActionBtnDanger svg {
+  stroke: rgba(145, 12, 43, 0.92);
+}
+
+.aoIconBtn {
+  width: 34px;
+  height: 30px;
+  border-radius: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(255, 255, 255, 0.86);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+  outline: none;
+}
+
+.aoIconBtn:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.35);
+  background: rgba(255, 255, 255, 0.96);
+  transform: translateY(-1px);
+}
+
+.aoIconBtn:active {
+  transform: translateY(0px);
+}
+
+.aoIconBtn svg {
+  width: 16px;
+  height: 16px;
+  fill: rgba(13, 18, 32, 0.82);
+  shape-rendering: geometricPrecision;
+}
+
+.aoIconBtnDanger:hover {
+  border-color: rgba(255, 94, 125, 0.45);
+}
+
+.aoIconBtnDanger svg {
+  fill: rgba(145, 12, 43, 0.9);
+}
+
+.aoActionsMenuWrap {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.aoMenu {
+  position: absolute;
+  right: 0;
+  top: 36px;
+  z-index: 5;
+  width: 172px;
+  border-radius: 14px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow:
+    0 10px 28px rgba(13, 18, 32, 0.14),
+    0 2px 8px rgba(13, 18, 32, 0.08);
+  padding: 6px;
+}
+
+.aoMenuItem {
+  width: 100%;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(13, 18, 32, 0.86);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  cursor: pointer;
+  font-weight: 650;
+  letter-spacing: 0.1px;
+}
+
+.aoMenuItem:hover {
+  background: rgba(13, 18, 32, 0.04);
+  border-color: rgba(13, 18, 32, 0.08);
+}
+
+.aoMenuIcon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.aoMenuIcon svg {
+  width: 18px;
+  height: 18px;
+  fill: rgba(13, 18, 32, 0.78);
+  shape-rendering: geometricPrecision;
+}
+
+.aoMenuItemDanger {
+  color: rgba(145, 12, 43, 0.92);
+}
+
+.aoMenuItemDanger:hover {
+  background: rgba(255, 94, 125, 0.08);
+  border-color: rgba(255, 94, 125, 0.18);
+}
+
+.aoMenuItemDanger .aoMenuIcon svg {
+  fill: rgba(145, 12, 43, 0.92);
+}
+
+.aoTableFixed {
+  table-layout: fixed;
+}
+
+.aoUrlInput {
+  width: 100%;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  overflow: hidden;
 }
 
 .aoCheckbox {
@@ -339,6 +532,28 @@
   width: 14px;
   height: 14px;
   accent-color: var(--ao-accent);
+}
+
+.aoMiniGroup {
+  display: block;
+}
+
+.aoMiniTitle {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.52);
+}
+
+.aoMiniDivider {
+  height: 1px;
+  background: rgba(13, 18, 32, 0.08);
+  margin: 12px 2px;
+  border-radius: 999px;
+}
+
+.aoInput::placeholder {
+  color: rgba(13, 18, 32, 0.34);
 }
 
 .aoEventList {
@@ -361,6 +576,28 @@
   color: rgba(119, 11, 33, 0.92);
   margin: 10px 0 12px;
   font-size: 12px;
+}
+
+.aoToast {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  max-width: min(860px, calc(100vw - 28px));
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(13, 18, 32, 0.16);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow:
+    0 14px 34px rgba(13, 18, 32, 0.18),
+    0 2px 10px rgba(13, 18, 32, 0.1);
+  color: rgba(13, 18, 32, 0.9);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.1px;
+  pointer-events: none;
+  backdrop-filter: blur(10px);
 }
 
 .aoEventsBox {

@@ -26,9 +26,19 @@ pub fn run() {
         )?;
       }
 
-      let config_dir = app.path().app_config_dir()?;
-      let data_dir = app.path().app_data_dir()?;
-      let state = build_state(config_dir.join("config.toml"), data_dir)?;
+      // Keep all local state next to the EXE so it's easy to find, backup, and move between machines.
+      // Layout:
+      // - user-data/config.toml
+      // - user-data/secrets.json
+      // - user-data/data/* (sled store, metrics, events)
+      let user_data_dir = (|| -> Option<std::path::PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        let dir = exe.parent()?.to_path_buf();
+        Some(dir.join("user-data"))
+      })()
+      .unwrap_or(app.path().app_data_dir()?);
+
+      let state = build_state(user_data_dir.join("config.toml"), user_data_dir.join("data"))?;
       app.manage(state);
 
       // Spawn the local OpenAI-compatible gateway.
@@ -96,6 +106,9 @@ pub fn run() {
       get_status,
       set_manual_override,
       get_config,
+      get_gateway_token_preview,
+      get_gateway_token,
+      rotate_gateway_token,
       set_preferred_provider,
       upsert_provider,
       delete_provider,
@@ -142,12 +155,14 @@ fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
   let cfg = state.gateway.cfg.read().clone();
   // Never expose keys in UI/API.
   let providers: serde_json::Map<String, serde_json::Value> = cfg.providers.iter().map(|(name, p)| {
-    let has_key = state.secrets.get_provider_key(name).is_some();
+    let key = state.secrets.get_provider_key(name);
+    let has_key = key.is_some();
+    let key_preview = key.as_deref().map(mask_key_preview);
     (name.clone(), serde_json::json!({
       "display_name": p.display_name,
       "base_url": p.base_url,
-      "supports_responses": p.supports_responses,
       "has_key": has_key
+      ,"key_preview": key_preview
     }))
   }).collect();
 
@@ -156,6 +171,22 @@ fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
     "routing": cfg.routing,
     "providers": providers
   })
+}
+
+#[tauri::command]
+fn get_gateway_token_preview(state: tauri::State<'_, app_state::AppState>) -> String {
+  let tok = state.secrets.get_gateway_token().unwrap_or_default();
+  mask_key_preview(&tok)
+}
+
+#[tauri::command]
+fn get_gateway_token(state: tauri::State<'_, app_state::AppState>) -> String {
+  state.secrets.get_gateway_token().unwrap_or_default()
+}
+
+#[tauri::command]
+fn rotate_gateway_token(state: tauri::State<'_, app_state::AppState>) -> Result<String, String> {
+  state.secrets.rotate_gateway_token()
 }
 
 #[tauri::command]
@@ -178,7 +209,6 @@ fn upsert_provider(
   name: String,
   display_name: String,
   base_url: String,
-  supports_responses: bool,
 ) -> Result<(), String> {
   if name.trim().is_empty() {
     return Err("name is required".to_string());
@@ -189,7 +219,6 @@ fn upsert_provider(
       display_name,
       base_url,
       api_key: String::new(),
-      supports_responses,
     });
   }
   persist_config(&state).map_err(|e| e.to_string())?;
@@ -199,16 +228,36 @@ fn upsert_provider(
 
 #[tauri::command]
 fn delete_provider(state: tauri::State<'_, app_state::AppState>, name: String) -> Result<(), String> {
-  if name == state.gateway.cfg.read().routing.preferred_provider {
-    return Err("cannot delete preferred provider".to_string());
-  }
+  let mut next_preferred: Option<String> = None;
   {
     let mut cfg = state.gateway.cfg.write();
     cfg.providers.remove(&name);
+
+    if cfg.providers.is_empty() {
+      return Err("cannot delete the last provider".to_string());
+    }
+
+    if cfg.routing.preferred_provider == name {
+      next_preferred = cfg.providers.keys().next().cloned();
+      if let Some(p) = next_preferred.clone() {
+        cfg.routing.preferred_provider = p;
+      }
+    }
+  }
+
+  // If the deleted provider was manually locked, return to auto.
+  {
+    let mut mo = state.gateway.router.manual_override.write();
+    if mo.as_deref() == Some(&name) {
+      *mo = None;
+    }
   }
   let _ = state.secrets.clear_provider_key(&name);
   persist_config(&state).map_err(|e| e.to_string())?;
   state.gateway.store.add_event(&name, "info", "provider deleted");
+  if let Some(p) = next_preferred {
+    state.gateway.store.add_event(&p, "info", "preferred_provider updated (deleted old preferred)");
+  }
   Ok(())
 }
 
@@ -218,7 +267,7 @@ fn set_provider_key(state: tauri::State<'_, app_state::AppState>, provider: Stri
     return Err(format!("unknown provider: {provider}"));
   }
   state.secrets.set_provider_key(&provider, &key)?;
-  state.gateway.store.add_event(&provider, "info", "provider key updated (stored in keyring)");
+  state.gateway.store.add_event(&provider, "info", "provider key updated (stored in user-data/secrets.json)");
   Ok(())
 }
 
@@ -228,8 +277,20 @@ fn clear_provider_key(state: tauri::State<'_, app_state::AppState>, provider: St
     return Err(format!("unknown provider: {provider}"));
   }
   state.secrets.clear_provider_key(&provider)?;
-  state.gateway.store.add_event(&provider, "info", "provider key cleared (keyring)");
+  state.gateway.store.add_event(&provider, "info", "provider key cleared (user-data/secrets.json)");
   Ok(())
+}
+
+fn mask_key_preview(key: &str) -> String {
+  let k = key.trim();
+  let chars: Vec<char> = k.chars().collect();
+  if chars.len() < 10 {
+    return "set".to_string();
+  }
+  let start_len = std::cmp::min(6, chars.len().saturating_sub(4));
+  let start: String = chars.iter().take(start_len).collect();
+  let end: String = chars.iter().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+  format!("{start}******{end}")
 }
 
 fn persist_config(state: &tauri::State<'_, app_state::AppState>) -> anyhow::Result<()> {
