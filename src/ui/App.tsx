@@ -172,7 +172,7 @@ export default function App() {
                     <div className="aoCardTitle">Status</div>
                     <span className="aoPill">
                       <span className="aoDot" />
-                      running
+                      <span className="aoPillText">running</span>
                     </span>
                   </div>
                   <div className="aoKvp">
@@ -192,7 +192,7 @@ export default function App() {
                     <div className="aoCardTitle">Routing</div>
                     <span className="aoPill">
                       <span className={override === '' ? 'aoDot' : 'aoDot aoDotBad'} />
-                      {override === '' ? 'auto' : 'locked'}
+                      <span className="aoPillText">{override === '' ? 'auto' : 'locked'}</span>
                     </span>
                   </div>
                   <div className="aoRow">
@@ -242,7 +242,7 @@ export default function App() {
                           <td>
                             <span className="aoPill">
                               <span className={h.is_healthy ? 'aoDot' : 'aoDot aoDotBad'} />
-                              {h.is_healthy ? 'yes' : 'no'}
+                              <span className="aoPillText">{h.is_healthy ? 'yes' : 'no'}</span>
                             </span>
                           </td>
                           <td>{h.consecutive_failures}</td>

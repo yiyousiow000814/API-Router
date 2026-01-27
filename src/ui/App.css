@@ -257,7 +257,7 @@
   background: rgba(13, 18, 32, 0.035);
   font-size: 12px;
   font-weight: 650;
-  line-height: 1;
+  line-height: 24px;
 }
 
 .aoDot {
@@ -271,6 +271,11 @@
 .aoDotBad {
   background: var(--ao-danger);
   box-shadow: 0 0 0 3px rgba(255, 61, 102, 0.16);
+}
+
+.aoPillText {
+  position: relative;
+  top: -0.5px; /* optical centering for Segoe UI on Windows */
 }
 
 .aoActions {
