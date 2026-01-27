@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import './App.css'
 
 type ProviderHealth = {
@@ -151,15 +152,47 @@ export default function App() {
   return (
     <div className="aoRoot" ref={containerRef}>
       <div className="aoScale">
-        <div className="aoShell" ref={contentRef}>
-          <div className="aoBrand">
-            <img className="aoMark" src="/ao-icon.png" alt="Agent Orchestrator icon" />
-            <div>
-              <div className="aoTitle">Agent Orchestrator</div>
-              <div className="aoSubtitle">Local gateway + smart failover for Codex</div>
+        <div className="aoWindowBar" data-tauri-drag-region>
+          <div className="aoWindowBarLeft" data-tauri-drag-region>
+            <img className="aoMark" src="/ao-icon.png" alt="Agent Orchestrator icon" data-tauri-drag-region />
+            <div className="aoWindowBarTitleWrap" data-tauri-drag-region>
+              <div className="aoWindowBarTitle" data-tauri-drag-region>
+                Agent Orchestrator
+              </div>
+              <div className="aoWindowBarSub" data-tauri-drag-region>
+                Local gateway + smart failover for Codex
+              </div>
             </div>
           </div>
+          <div className="aoWinControls">
+            <button
+              className="aoWinBtn"
+              onClick={() => void getCurrentWindow().minimize()}
+              aria-label="Minimize"
+              title="Minimize"
+            >
+              –
+            </button>
+            <button
+              className="aoWinBtn"
+              onClick={() => void getCurrentWindow().toggleMaximize()}
+              aria-label="Maximize"
+              title="Maximize"
+            >
+              ☐
+            </button>
+            <button
+              className="aoWinBtn aoWinBtnClose"
+              onClick={() => void getCurrentWindow().close()}
+              aria-label="Close"
+              title="Close"
+            >
+              ×
+            </button>
+          </div>
+        </div>
 
+        <div className="aoShell" ref={contentRef}>
           {err ? <div className="aoErrorBanner">UI error: {err}</div> : null}
 
           {!status ? (
