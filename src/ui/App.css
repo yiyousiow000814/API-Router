@@ -18,7 +18,7 @@
 }
 
 .aoShell {
-  width: min(980px, 100%);
+  width: min(1240px, 100%);
   margin: 0 auto;
   padding: 14px 14px 12px;
   border: 1px solid var(--ao-line);

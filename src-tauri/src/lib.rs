@@ -135,6 +135,7 @@ pub fn run() {
             set_usage_base_url,
             clear_usage_base_url,
             official_web_open,
+            official_web_close,
             official_web_refresh,
             official_web_report
         ])
@@ -494,10 +495,20 @@ fn official_web_open(app: tauri::AppHandle) -> Result<(), String> {
     tauri::WebviewWindowBuilder::new(&app, "official_web", WebviewUrl::External(url))
         .title("Official (Web)")
         .resizable(true)
+        .decorations(true)
         .inner_size(980.0, 760.0)
         .build()
         .map_err(|e| e.to_string())?;
 
+    Ok(())
+}
+
+#[tauri::command]
+fn official_web_close(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(w) = app.get_webview_window("official_web") else {
+        return Ok(());
+    };
+    w.close().map_err(|e| e.to_string())?;
     Ok(())
 }
 

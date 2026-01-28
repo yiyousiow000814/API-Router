@@ -421,6 +421,19 @@ export default function App() {
                       Open
                     </button>
                     <button
+                      className="aoBtn"
+                      onClick={async () => {
+                        try {
+                          await invoke('official_web_close')
+                          flashToast('Official web closed')
+                        } catch (e) {
+                          flashToast(String(e), 'error')
+                        }
+                      }}
+                    >
+                      Close
+                    </button>
+                    <button
                       className="aoBtn aoBtnPrimary"
                       onClick={async () => {
                         try {
@@ -667,7 +680,7 @@ export default function App() {
                                             })
                                           }
                                         >
-                                          Base
+                                          Usage Base
                                         </button>
                                         {p.usage_base_url ? (
                                           <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
@@ -701,7 +714,7 @@ export default function App() {
                                             })
                                           }
                                         >
-                                          Base
+                                          Usage Base
                                         </button>
                                         {p.usage_base_url ? (
                                           <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
@@ -737,7 +750,7 @@ export default function App() {
                                           })
                                         }
                                       >
-                                        Base
+                                        Usage Base
                                       </button>
                                       {p.usage_base_url ? (
                                         <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
