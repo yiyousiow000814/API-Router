@@ -367,10 +367,10 @@ export default function App() {
                         void applyOverride(e.target.value)
                       }}
                     >
-                      <option value="">Auto (preferred + failover)</option>
+                      <option value="">Auto</option>
                       {providers.map((p) => (
                         <option key={p} value={p}>
-                          Lock to: {p}
+                          {p}
                         </option>
                       ))}
                     </select>
@@ -503,7 +503,7 @@ export default function App() {
                         <input
                           className="aoInput"
                           style={{ width: 360 }}
-                          placeholder="https://api.example.com (or http://127.0.0.1:4001)"
+                          placeholder="Base URL (e.g. http://127.0.0.1:4001)"
                           value={newProviderBaseUrl}
                           onChange={(e) => setNewProviderBaseUrl(e.target.value)}
                         />

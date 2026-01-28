@@ -51,21 +51,11 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         .map(|s| s.contains("api_key"))
         .unwrap_or(false);
 
-    // Migration: older defaults used provider_a/provider_b. If they are still the untouched
-    // example placeholders, rename them to provider_1/provider_2 so the UI and docs match.
+    // Migration: older defaults used provider_a/provider_b. Rename to provider_1/provider_2 so the
+    // UI and docs match.
     let mut changed = false;
-    changed |= migrate_provider_name(
-        &mut cfg,
-        "provider_a",
-        "provider_1",
-        "https://example-a.com",
-    );
-    changed |= migrate_provider_name(
-        &mut cfg,
-        "provider_b",
-        "provider_2",
-        "https://example-b.com",
-    );
+    changed |= migrate_provider_name(&mut cfg, "provider_a", "provider_1");
+    changed |= migrate_provider_name(&mut cfg, "provider_b", "provider_2");
     if changed {
         // keep preferred_provider consistent if it pointed at an old name
         if cfg.routing.preferred_provider == "provider_a"
@@ -89,26 +79,7 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         }
     }
 
-    // Migration: auto-detect quota source from base_url if not explicitly configured.
-    for p in cfg.providers.values_mut() {
-        if !p.quota_kind.trim().is_empty() {
-            continue;
-        }
-        let u = p.base_url.to_ascii_lowercase();
-        if u.contains("ppchat.vip") {
-            p.quota_kind = "ppchat".to_string();
-            if p.quota_base_url.as_deref().unwrap_or("").trim().is_empty() {
-                p.quota_base_url = Some("https://his.ppchat.vip".to_string());
-            }
-            changed = true;
-        } else if u.contains("packycode.com") {
-            p.quota_kind = "packycode".to_string();
-            if p.quota_base_url.as_deref().unwrap_or("").trim().is_empty() {
-                p.quota_base_url = Some("https://codex.packycode.com".to_string());
-            }
-            changed = true;
-        }
-    }
+    // Migration note: quota endpoints are intentionally not auto-detected to keep the app generic.
 
     // Migration: if a provider api_key is present in config.toml, move it into user-data/secrets.json
     // and blank it. This avoids committing or leaving plaintext keys in config.toml.
@@ -142,23 +113,13 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
     })
 }
 
-fn migrate_provider_name(
-    cfg: &mut AppConfig,
-    old: &str,
-    new: &str,
-    expected_base_url: &str,
-) -> bool {
+fn migrate_provider_name(cfg: &mut AppConfig, old: &str, new: &str) -> bool {
     if cfg.providers.contains_key(new) {
         return false;
     }
     let Some(p) = cfg.providers.get(old).cloned() else {
         return false;
     };
-
-    // Only auto-rename if it still looks like the old placeholder.
-    if p.base_url.trim() != expected_base_url {
-        return false;
-    }
 
     cfg.providers.remove(old);
     cfg.providers.insert(new.to_string(), p);

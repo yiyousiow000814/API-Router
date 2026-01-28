@@ -86,30 +86,49 @@ pub fn detect_quota_kind(provider: &ProviderConfig) -> QuotaKind {
         return explicit;
     }
 
-    let u = provider.base_url.to_ascii_lowercase();
-    if u.contains("ppchat.vip") {
-        return QuotaKind::Ppchat;
-    }
-    if u.contains("packycode.com") {
-        return QuotaKind::Packycode;
-    }
+    // Intentionally do not infer from domains; keep it provider-agnostic.
     QuotaKind::None
 }
 
-fn quota_base(provider: &ProviderConfig, kind: QuotaKind) -> String {
+fn derive_origin(base_url: &str) -> Option<String> {
+    let u = reqwest::Url::parse(base_url).ok()?;
+    let mut origin = u.clone();
+    origin.set_path("");
+    origin.set_query(None);
+    origin.set_fragment(None);
+    Some(origin.as_str().trim_end_matches('/').to_string())
+}
+
+fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
+    // User-provided quota_base_url always wins.
     if let Some(u) = provider.quota_base_url.as_deref() {
         let t = u.trim().trim_end_matches('/');
         if !t.is_empty() {
-            return t.to_string();
+            return vec![t.to_string()];
         }
     }
 
-    match kind {
-        // IMPORTANT: do not hardcode the PPCHAT dashboard URL in code.
-        QuotaKind::Ppchat => "https://his.ppchat.vip".to_string(),
-        QuotaKind::Packycode => "https://codex.packycode.com".to_string(),
-        QuotaKind::None => String::new(),
+    let mut out = Vec::new();
+    if let Some(origin) = derive_origin(&provider.base_url) {
+        out.push(origin.clone());
+
+        // Heuristic: if upstream uses a "*-api." hostname, also try the non-api hostname.
+        // This stays generic and does not encode any provider-specific domains.
+        if let Ok(mut u) = reqwest::Url::parse(&origin) {
+            if let Some(host) = u.host_str().map(|s| s.to_string()) {
+                if host.contains("-api.") {
+                    let alt = host.replacen("-api.", ".", 1);
+                    if u.set_host(Some(&alt)).is_ok() {
+                        out.push(u.as_str().trim_end_matches('/').to_string());
+                    }
+                }
+            }
+        }
     }
+
+    out.sort();
+    out.dedup();
+    out
 }
 
 pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) -> QuotaSnapshot {
@@ -120,15 +139,39 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
         return out;
     };
 
-    let kind = detect_quota_kind(p);
-    if kind == QuotaKind::None {
-        return QuotaSnapshot::empty(kind);
-    }
-
     let provider_key = st.secrets.get_provider_key(provider_name);
     let usage_token = st.secrets.get_usage_token(provider_name);
+    let bases = candidate_quota_bases(p);
+    if bases.is_empty() {
+        let mut out = QuotaSnapshot::empty(QuotaKind::None);
+        out.last_error = "missing base_url".to_string();
+        return out;
+    }
 
-    let snap = fetch_quota(kind, p, provider_key.as_deref(), usage_token.as_deref()).await;
+    let kind = detect_quota_kind(p);
+    let snap = match kind {
+        QuotaKind::Ppchat => fetch_ppchat_any(&bases, provider_key.as_deref()).await,
+        QuotaKind::Packycode => fetch_packycode_any(&bases, usage_token.as_deref()).await,
+        QuotaKind::None => {
+            // Auto mode: probe endpoints based on available credentials.
+            if provider_key.as_deref().is_some() {
+                let s = fetch_ppchat_any(&bases, provider_key.as_deref()).await;
+                if s.last_error.is_empty() {
+                    s
+                } else if usage_token.as_deref().is_some() {
+                    fetch_packycode_any(&bases, usage_token.as_deref()).await
+                } else {
+                    s
+                }
+            } else if usage_token.as_deref().is_some() {
+                fetch_packycode_any(&bases, usage_token.as_deref()).await
+            } else {
+                let mut out = QuotaSnapshot::empty(QuotaKind::None);
+                out.last_error = "missing credentials for quota refresh".to_string();
+                out
+            }
+        }
+    };
     let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
 
     // Reset local "since last refresh" ledger only when we successfully fetched provider usage.
@@ -218,22 +261,20 @@ pub async fn fetch_quota(
 }
 
 async fn fetch_ppchat(provider: &ProviderConfig, provider_key: Option<&str>) -> QuotaSnapshot {
+    let bases = candidate_quota_bases(provider);
+    fetch_ppchat_any(&bases, provider_key).await
+}
+
+async fn fetch_ppchat_any(bases: &[String], provider_key: Option<&str>) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(QuotaKind::Ppchat);
     let Some(k) = provider_key else {
         out.last_error = "missing provider key".to_string();
         return out;
     };
-
-    // PPCHAT: the same key is used as token_key for usage query.
-    let base = quota_base(provider, QuotaKind::Ppchat);
-    if base.is_empty() {
-        out.last_error = "missing quota_base_url".to_string();
+    if bases.is_empty() {
+        out.last_error = "missing quota base".to_string();
         return out;
     }
-    let url = format!(
-        "{base}/api/token-stats?token_key={}",
-        urlencoding::encode(k)
-    );
 
     let client = match reqwest::Client::builder()
         .user_agent("agent-orchestrator/0.1")
@@ -246,58 +287,80 @@ async fn fetch_ppchat(provider: &ProviderConfig, provider_key: Option<&str>) -> 
         }
     };
 
-    match client
-        .get(url)
-        .timeout(Duration::from_secs(15))
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let j = resp.json::<Value>().await.unwrap_or(Value::Null);
-            if !(200..300).contains(&status) {
-                out.last_error = format!("http {status}");
+    let mut last_err = String::new();
+    for base in bases {
+        let base = base.trim_end_matches('/');
+        if base.is_empty() {
+            continue;
+        }
+        let url = format!(
+            "{base}/api/token-stats?token_key={}",
+            urlencoding::encode(k)
+        );
+        match client
+            .get(url)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let j = resp.json::<Value>().await.unwrap_or(Value::Null);
+                if !(200..300).contains(&status) {
+                    last_err = format!("http {status}");
+                    continue;
+                }
+
+                let info = j.pointer("/data/info").cloned().unwrap_or(Value::Null);
+                if info.is_null() {
+                    last_err = "unexpected response".to_string();
+                    continue;
+                }
+                let stats = j
+                    .pointer("/data/stats/today_stats")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+
+                out.remaining = as_f64(info.get("remain_quota_display"))
+                    .or_else(|| as_f64(info.get("remain_quota")));
+                out.today_used = as_f64(stats.get("used_quota"))
+                    .or_else(|| as_f64(stats.get("used_quota_display")));
+                out.today_added = as_f64(stats.get("added_quota"))
+                    .or_else(|| as_f64(stats.get("added_quota_display")));
+                out.updated_at_unix_ms = unix_ms();
+                out.last_error.clear();
                 return out;
             }
-
-            // Schema (observed from PPCHAT dashboard JS):
-            // - data.info.remain_quota_display
-            // - data.stats.today_stats.used_quota / added_quota
-            let info = j.pointer("/data/info").cloned().unwrap_or(Value::Null);
-            let stats = j
-                .pointer("/data/stats/today_stats")
-                .cloned()
-                .unwrap_or(Value::Null);
-
-            out.remaining = as_f64(info.get("remain_quota_display"))
-                .or_else(|| as_f64(info.get("remain_quota")));
-            out.today_used =
-                as_f64(stats.get("used_quota")).or_else(|| as_f64(stats.get("used_quota_display")));
-            out.today_added = as_f64(stats.get("added_quota"))
-                .or_else(|| as_f64(stats.get("added_quota_display")));
-            out.updated_at_unix_ms = unix_ms();
-            out
-        }
-        Err(e) => {
-            out.last_error = format!("request error: {e}");
-            out
+            Err(e) => {
+                last_err = format!("request error: {e}");
+                continue;
+            }
         }
     }
+
+    out.last_error = if last_err.is_empty() {
+        "quota endpoint not found".to_string()
+    } else {
+        last_err
+    };
+    out
 }
 
 async fn fetch_packycode(provider: &ProviderConfig, jwt: Option<&str>) -> QuotaSnapshot {
+    let bases = candidate_quota_bases(provider);
+    fetch_packycode_any(&bases, jwt).await
+}
+
+async fn fetch_packycode_any(bases: &[String], jwt: Option<&str>) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(QuotaKind::Packycode);
     let Some(token) = jwt else {
-        out.last_error = "missing packycode jwt".to_string();
+        out.last_error = "missing usage token".to_string();
         return out;
     };
-
-    let base = quota_base(provider, QuotaKind::Packycode);
-    if base.is_empty() {
-        out.last_error = "missing quota_base_url".to_string();
+    if bases.is_empty() {
+        out.last_error = "missing quota base".to_string();
         return out;
     }
-    let url = format!("{base}/api/backend/users/info");
 
     let client = match reqwest::Client::builder()
         .user_agent("agent-orchestrator/0.1")
@@ -310,37 +373,59 @@ async fn fetch_packycode(provider: &ProviderConfig, jwt: Option<&str>) -> QuotaS
         }
     };
 
-    match client
-        .get(url)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-        .timeout(Duration::from_secs(15))
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let j = resp.json::<Value>().await.unwrap_or(Value::Null);
-            if !(200..300).contains(&status) {
-                out.last_error = format!("http {status}");
+    let mut last_err = String::new();
+    for base in bases {
+        let base = base.trim_end_matches('/');
+        if base.is_empty() {
+            continue;
+        }
+        let url = format!("{base}/api/backend/users/info");
+        match client
+            .get(url)
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let j = resp.json::<Value>().await.unwrap_or(Value::Null);
+                if !(200..300).contains(&status) {
+                    last_err = format!("http {status}");
+                    continue;
+                }
+
+                // Some endpoints wrap the payload in { success, data }.
+                let root = j.get("data").unwrap_or(&j);
+                // Ensure this looks like a budget response to avoid mis-detecting.
+                if root.get("daily_spent_usd").is_none() && root.get("monthly_spent_usd").is_none()
+                {
+                    last_err = "unexpected response".to_string();
+                    continue;
+                }
+
+                out.daily_spent_usd = as_f64(root.get("daily_spent_usd"));
+                out.daily_budget_usd = as_f64(root.get("daily_budget_usd"));
+                out.monthly_spent_usd = as_f64(root.get("monthly_spent_usd"));
+                out.monthly_budget_usd = as_f64(root.get("monthly_budget_usd"));
+                out.remaining = as_f64(root.get("remaining_quota"));
+                out.updated_at_unix_ms = unix_ms();
+                out.last_error.clear();
                 return out;
             }
-
-            // Some endpoints wrap the payload in { success, data }.
-            let root = j.get("data").unwrap_or(&j);
-
-            out.daily_spent_usd = as_f64(root.get("daily_spent_usd"));
-            out.daily_budget_usd = as_f64(root.get("daily_budget_usd"));
-            out.monthly_spent_usd = as_f64(root.get("monthly_spent_usd"));
-            out.monthly_budget_usd = as_f64(root.get("monthly_budget_usd"));
-            out.remaining = as_f64(root.get("remaining_quota"));
-            out.updated_at_unix_ms = unix_ms();
-            out
-        }
-        Err(e) => {
-            out.last_error = format!("request error: {e}");
-            out
+            Err(e) => {
+                last_err = format!("request error: {e}");
+                continue;
+            }
         }
     }
+
+    out.last_error = if last_err.is_empty() {
+        "quota endpoint not found".to_string()
+    } else {
+        last_err
+    };
+    out
 }
 
 fn as_f64(v: Option<&Value>) -> Option<f64> {

@@ -20,10 +20,6 @@ pub struct ProviderConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub quota_kind: String,
     /// Optional base URL for usage/quota API (often different from the OpenAI-compatible base_url).
-    ///
-    /// Examples:
-    /// - PPCHAT: https://his.ppchat.vip
-    /// - Packycode: https://codex.packycode.com
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_base_url: Option<String>,
     /// If empty, the gateway tries to passthrough the client's Authorization header (OAuth).
