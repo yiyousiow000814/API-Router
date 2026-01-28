@@ -2,6 +2,7 @@ mod app_state;
 mod orchestrator;
 
 use tauri::Manager;
+use tauri::WebviewUrl;
 
 use crate::app_state::build_state;
 use crate::orchestrator::gateway::serve_in_background;
@@ -132,7 +133,10 @@ pub fn run() {
             set_usage_token,
             clear_usage_token,
             set_usage_base_url,
-            clear_usage_base_url
+            clear_usage_base_url,
+            official_web_open,
+            official_web_refresh,
+            official_web_report
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -149,6 +153,11 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
     let quota = state.gateway.store.list_quota_snapshots();
     let ledgers = state.gateway.store.list_ledgers();
     let last_activity = state.gateway.last_activity_unix_ms.load(Ordering::Relaxed);
+    let official_web = state
+        .gateway
+        .store
+        .get_official_web_snapshot()
+        .unwrap_or(serde_json::json!({"ok": false}));
 
     serde_json::json!({
       "listen": { "host": cfg.listen.host, "port": cfg.listen.port },
@@ -159,7 +168,8 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
       "recent_events": recent_events,
       "quota": quota,
       "ledgers": ledgers,
-      "last_activity_unix_ms": last_activity
+      "last_activity_unix_ms": last_activity,
+      "official_web": official_web
     })
 }
 
@@ -465,6 +475,130 @@ fn clear_usage_base_url(
         .gateway
         .store
         .add_event(&provider, "info", "usage base url cleared");
+    Ok(())
+}
+
+const OFFICIAL_WEB_URL: &str = "https://chatgpt.com/codex/settings/usage";
+
+#[tauri::command]
+fn official_web_open(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("official_web") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+
+    let url = OFFICIAL_WEB_URL
+        .parse()
+        .map_err(|e| format!("invalid url: {e}"))?;
+    tauri::WebviewWindowBuilder::new(&app, "official_web", WebviewUrl::External(url))
+        .title("Official (Web)")
+        .resizable(true)
+        .inner_size(980.0, 760.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn official_web_refresh(app: tauri::AppHandle, state: tauri::State<'_, app_state::AppState>) -> Result<(), String> {
+    let Some(w) = app.get_webview_window("official_web") else {
+        return Err("official web window not open".to_string());
+    };
+
+    // Rotate nonce so random pages can't spoof a report without a fresh refresh.
+    let nonce = {
+        let mut g = state.official_web_nonce.lock();
+        *g = format!("ow_{}", uuid::Uuid::new_v4().simple());
+        g.clone()
+    };
+
+    // Use webview JS execution to extract minimal signals from the logged-in web session.
+    // This avoids needing to read cookies from the host platform.
+    let js = format!(
+        r#"(async () => {{
+  try {{
+    const href = String(location.href || "");
+    const bodyText = String(document?.body?.innerText || "");
+    const payload = {{
+      nonce: {nonce_json},
+      href,
+      bodyText,
+    }};
+    if (window.__TAURI__?.core?.invoke) {{
+      await window.__TAURI__.core.invoke("official_web_report", payload);
+    }}
+  }} catch (e) {{
+    try {{
+      if (window.__TAURI__?.core?.invoke) {{
+        await window.__TAURI__.core.invoke("official_web_report", {{
+          nonce: {nonce_json},
+          href: String(location.href || ""),
+          bodyText: "",
+          error: String(e)
+        }});
+      }}
+    }} catch (_) {{}}
+  }}
+}})();"#,
+        nonce_json = serde_json::to_string(&nonce).unwrap_or_else(|_| "\"\"".to_string())
+    );
+    w.eval(&js).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct OfficialWebReport {
+    nonce: String,
+    #[serde(default)]
+    href: String,
+    #[serde(default, alias = "bodyText")]
+    body_text: String,
+    #[serde(default)]
+    error: String,
+}
+
+#[tauri::command]
+fn official_web_report(state: tauri::State<'_, app_state::AppState>, report: OfficialWebReport) -> Result<(), String> {
+    let expected = state.official_web_nonce.lock().clone();
+    if report.nonce != expected {
+        return Err("stale nonce".to_string());
+    }
+
+    let href = report.href;
+    let body = report.body_text;
+
+    // Very lightweight parser (best-effort). We don't rely on a stable API;
+    // this is just for displaying "signed in" and a remaining value if present.
+    let mut signed_in = true;
+    let low = body.to_ascii_lowercase();
+    if low.contains("log in") || low.contains("sign in") {
+        signed_in = false;
+    }
+
+    let mut remaining: Option<f64> = None;
+    if !body.is_empty() {
+        let re = regex::Regex::new(r"(?i)credits remaining[^0-9]*([0-9]+(?:\\.[0-9]+)?)").ok();
+        if let Some(re) = re {
+            if let Some(caps) = re.captures(&body) {
+                if let Some(m) = caps.get(1) {
+                    remaining = m.as_str().parse::<f64>().ok();
+                }
+            }
+        }
+    }
+
+    let snap = serde_json::json!({
+      "ok": true,
+      "checked_at_unix_ms": unix_ms(),
+      "signed_in": signed_in,
+      "href": href,
+      "remaining": remaining,
+      "error": report.error
+    });
+
+    state.gateway.store.put_official_web_snapshot(&snap);
     Ok(())
 }
 

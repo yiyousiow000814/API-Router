@@ -23,6 +23,7 @@ dependencies = [
  "image",
  "log",
  "parking_lot 0.12.5",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

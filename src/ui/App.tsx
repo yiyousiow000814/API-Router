@@ -41,6 +41,14 @@ type Status = {
     }
   >
   last_activity_unix_ms: number
+  official_web: {
+    ok: boolean
+    checked_at_unix_ms?: number
+    signed_in?: boolean
+    remaining?: number | null
+    href?: string
+    error?: string
+  }
 }
 
 type Config = {
@@ -378,6 +386,59 @@ export default function App() {
                     <div className="aoKey">Override</div>
                     <div className="aoVal">{status.manual_override ?? '(auto)'}</div>
                   </div>
+                </div>
+
+                <div className="aoCard">
+                  <div className="aoCardHeader">
+                    <div className="aoCardTitle">Official (Web)</div>
+                    <span className={`aoPill ${status.official_web?.signed_in ? 'aoPulse' : ''}`.trim()}>
+                      <span className={status.official_web?.signed_in ? 'aoDot' : 'aoDot aoDotBad'} />
+                      <span className="aoPillText">{status.official_web?.signed_in ? 'signed in' : 'signed out'}</span>
+                    </span>
+                  </div>
+                  <div className="aoKvp">
+                    <div className="aoKey">Remaining</div>
+                    <div className="aoVal">
+                      {status.official_web?.remaining != null ? String(status.official_web.remaining) : '-'}
+                    </div>
+                    <div className="aoKey">Checked</div>
+                    <div className="aoVal">
+                      {status.official_web?.checked_at_unix_ms ? fmtWhen(status.official_web.checked_at_unix_ms) : '-'}
+                    </div>
+                  </div>
+                  <div className="aoRow" style={{ marginTop: 10, justifyContent: 'flex-end' }}>
+                    <button
+                      className="aoBtn"
+                      onClick={async () => {
+                        try {
+                          await invoke('official_web_open')
+                          flashToast('Official web opened')
+                        } catch (e) {
+                          flashToast(String(e), 'error')
+                        }
+                      }}
+                    >
+                      Open
+                    </button>
+                    <button
+                      className="aoBtn aoBtnPrimary"
+                      onClick={async () => {
+                        try {
+                          await invoke('official_web_refresh')
+                          flashToast('Checking…')
+                        } catch (e) {
+                          flashToast(String(e), 'error')
+                        }
+                      }}
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  {status.official_web?.error ? (
+                    <div className="aoHint" style={{ marginTop: 8, color: 'rgba(145, 12, 43, 0.92)' }}>
+                      {status.official_web.error}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="aoCard">

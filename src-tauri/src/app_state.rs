@@ -10,11 +10,13 @@ use crate::orchestrator::secrets::SecretStore;
 use crate::orchestrator::store::unix_ms;
 use crate::orchestrator::upstream::UpstreamClient;
 use std::sync::atomic::AtomicU64;
+use uuid::Uuid;
 
 pub struct AppState {
     pub config_path: PathBuf,
     pub gateway: GatewayState,
     pub secrets: SecretStore,
+    pub official_web_nonce: Arc<parking_lot::Mutex<String>>,
 }
 
 pub fn load_or_init_config(path: &PathBuf) -> anyhow::Result<AppConfig> {
@@ -111,6 +113,10 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         config_path,
         gateway,
         secrets,
+        official_web_nonce: Arc::new(parking_lot::Mutex::new(format!(
+            "ow_{}",
+            Uuid::new_v4().simple()
+        ))),
     })
 }
 

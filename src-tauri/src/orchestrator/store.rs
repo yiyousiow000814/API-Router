@@ -236,6 +236,19 @@ impl Store {
         out.sort_by_key(|v| v.get("unix_ms").and_then(|x| x.as_u64()).unwrap_or(0));
         out.into_iter().rev().take(limit).collect()
     }
+
+    pub fn put_official_web_snapshot(&self, snapshot: &Value) {
+        let _ = self.db.insert(
+            b"official_web:snapshot",
+            serde_json::to_vec(snapshot).unwrap_or_default(),
+        );
+        let _ = self.db.flush();
+    }
+
+    pub fn get_official_web_snapshot(&self) -> Option<Value> {
+        let v = self.db.get(b"official_web:snapshot").ok()??;
+        serde_json::from_slice(&v).ok()
+    }
 }
 
 pub fn unix_ms() -> u64 {
