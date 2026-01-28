@@ -24,6 +24,9 @@ Agent Orchestrator.exe
 # Local research / temporary clones (never commit)
 packycode-cost/
 
+# MCP build artifacts
+mcp/target/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

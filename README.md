@@ -4,7 +4,7 @@
 
 # Agent Orchestrator
 
-Rust + Tauri app that runs a local **OpenAI-compatible gateway** on a stable `base_url` (default: `http://127.0.0.1:4000`) and routes requests across multiple upstream providers (official OAuth passthrough, 3rd-party keys, etc.).
+Desktop app that runs a local **OpenAI-compatible gateway** on a stable `base_url` (default: `http://127.0.0.1:4000`) and routes requests across multiple upstream providers.
 
 Key features (MVP):
 - `wire_api = "responses"` gateway endpoint: `POST /v1/responses` (supports SSE streaming by simulating events).
@@ -36,7 +36,7 @@ npm run tauri dev
 ```
 
 The app creates its config at:
-- `config.toml` under the app config directory (Tauri `app_config_dir`)
+- `./user-data/config.toml` next to the executable (gitignored)
 
 ## Run (Release EXE locally)
 
@@ -58,5 +58,12 @@ Note: `tauri build --debug` produces a debug build that can still try to load th
 
 ## Official OAuth
 
-If the configured provider `api_key` is empty, the gateway tries to forward the client’s `Authorization` header to the upstream.
-This is the least invasive way to support OAuth-based clients.
+The local gateway requires its own token (stored in `./user-data/secrets.json`) so the localhost base_url is not exposed to other processes.
+Because clients authenticate to the gateway using this token, the gateway cannot automatically reuse the client's OAuth credentials for the upstream.
+
+Official upstream support currently requires an API key configured in the app, or a future built-in OAuth flow.
+
+## Usage / quota display
+
+Usage display is best-effort and depends on the upstream exposing a compatible usage endpoint.
+If an upstream's usage API lives on a different host than the OpenAI-compatible `base_url`, set a per-provider "Usage base URL" in the UI.
