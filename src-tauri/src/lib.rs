@@ -484,8 +484,11 @@ const OFFICIAL_WEB_URL: &str = "https://chatgpt.com/codex/settings/usage";
 #[tauri::command]
 fn official_web_open(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("official_web") {
-        let _ = w.show();
-        let _ = w.set_focus();
+        let w2 = w.clone();
+        let _ = w.run_on_main_thread(move || {
+            let _ = w2.show();
+            let _ = w2.set_focus();
+        });
         return Ok(());
     }
 
@@ -498,7 +501,18 @@ fn official_web_open(app: tauri::AppHandle) -> Result<(), String> {
         .decorations(true)
         .inner_size(980.0, 760.0)
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+        .inspect(|w| {
+            // On Windows, closing a remote WebView can occasionally hang; treat it like the main
+            // window and hide on close so the app stays usable.
+            let w2 = w.clone();
+            w.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = w2.hide();
+                }
+            });
+        })?;
 
     Ok(())
 }
@@ -508,7 +522,12 @@ fn official_web_close(app: tauri::AppHandle) -> Result<(), String> {
     let Some(w) = app.get_webview_window("official_web") else {
         return Ok(());
     };
-    w.close().map_err(|e| e.to_string())?;
+    // Use main-thread scheduling to ensure the hide takes effect even if the webview is busy.
+    let w2 = w.clone();
+    w.run_on_main_thread(move || {
+        let _ = w2.hide();
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -555,7 +574,11 @@ fn official_web_refresh(app: tauri::AppHandle, state: tauri::State<'_, app_state
 }})();"#,
         nonce_json = serde_json::to_string(&nonce).unwrap_or_else(|_| "\"\"".to_string())
     );
-    w.eval(&js).map_err(|e| e.to_string())?;
+    let w2 = w.clone();
+    w.run_on_main_thread(move || {
+        let _ = w2.eval(&js);
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
