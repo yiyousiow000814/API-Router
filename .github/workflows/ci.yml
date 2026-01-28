@@ -69,6 +69,15 @@ jobs:
           node-version: "20"
           cache: npm
 
+      - name: Install Linux system deps (Tauri)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev
+
       - name: Node install
         run: npm ci
 
