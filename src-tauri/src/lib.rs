@@ -130,7 +130,9 @@ pub fn run() {
             refresh_quota,
             refresh_quota_all,
             set_usage_token,
-            clear_usage_token
+            clear_usage_token,
+            set_usage_base_url,
+            clear_usage_base_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -411,6 +413,58 @@ fn clear_usage_token(
         "info",
         "usage token cleared (user-data/secrets.json)",
     );
+    Ok(())
+}
+
+#[tauri::command]
+fn set_usage_base_url(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    url: String,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let u = url.trim().trim_end_matches('/').to_string();
+    if u.is_empty() {
+        return Err("url is required".to_string());
+    }
+    if reqwest::Url::parse(&u).is_err() {
+        return Err("invalid url".to_string());
+    }
+    {
+        let mut cfg = state.gateway.cfg.write();
+        if let Some(p) = cfg.providers.get_mut(&provider) {
+            p.usage_base_url = Some(u);
+        }
+    }
+    persist_config(&state).map_err(|e| e.to_string())?;
+    state
+        .gateway
+        .store
+        .add_event(&provider, "info", "usage base url updated");
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_usage_base_url(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    {
+        let mut cfg = state.gateway.cfg.write();
+        if let Some(p) = cfg.providers.get_mut(&provider) {
+            p.usage_base_url = None;
+        }
+    }
+    persist_config(&state).map_err(|e| e.to_string())?;
+    state
+        .gateway
+        .store
+        .add_event(&provider, "info", "usage base url cleared");
     Ok(())
 }
 

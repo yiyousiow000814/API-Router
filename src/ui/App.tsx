@@ -100,6 +100,11 @@ export default function App() {
     provider: '',
     value: '',
   })
+  const [usageBaseModal, setUsageBaseModal] = useState<{ open: boolean; provider: string; value: string }>({
+    open: false,
+    provider: '',
+    value: '',
+  })
   const overrideDirtyRef = useRef<boolean>(false)
   const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>('')
   const [gatewayTokenReveal, setGatewayTokenReveal] = useState<string>('')
@@ -267,6 +272,32 @@ export default function App() {
       flashToast(`Usage token cleared: ${name}`)
       await refreshStatus()
       await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }
+
+  async function saveUsageBaseUrl() {
+    const provider = usageBaseModal.provider
+    const url = usageBaseModal.value.trim()
+    if (!provider || !url) return
+    try {
+      await invoke('set_usage_base_url', { provider, url })
+      setUsageBaseModal({ open: false, provider: '', value: '' })
+      flashToast(`Usage base saved: ${provider}`)
+      await refreshConfig()
+      await refreshStatus()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }
+
+  async function clearUsageBaseUrl(name: string) {
+    try {
+      await invoke('clear_usage_base_url', { provider: name })
+      flashToast(`Usage base cleared: ${name}`)
+      await refreshConfig()
+      await refreshStatus()
     } catch (e) {
       flashToast(String(e), 'error')
     }
@@ -563,10 +594,29 @@ export default function App() {
                                 return (
                                   <div className="aoUsageCell">
                                     <div className="aoUsageTop">
-                                      <span className="aoHint">{kind}</span>
-                                      <button className="aoTinyBtn" onClick={() => void refreshQuota(name)}>
-                                        Refresh
-                                      </button>
+                                      <span className="aoHint">usage</span>
+                                      <div className="aoUsageBtns">
+                                        <button
+                                          className="aoTinyBtn"
+                                          onClick={() =>
+                                            setUsageBaseModal({
+                                              open: true,
+                                              provider: name,
+                                              value: p.usage_base_url ?? '',
+                                            })
+                                          }
+                                        >
+                                          Base
+                                        </button>
+                                        {p.usage_base_url ? (
+                                          <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
+                                            Clear
+                                          </button>
+                                        ) : null}
+                                        <button className="aoTinyBtn" onClick={() => void refreshQuota(name)}>
+                                          Refresh
+                                        </button>
+                                      </div>
                                     </div>
                                     <div className="aoHint">updated: {updated}</div>
                                     <div className="aoUsageErr">{q.last_error}</div>
@@ -579,9 +629,28 @@ export default function App() {
                                   <div className="aoUsageCell">
                                     <div className="aoUsageTop">
                                       <span className="aoHint">usage</span>
-                                      <button className="aoTinyBtn" onClick={() => void refreshQuota(name)}>
-                                        Refresh
-                                      </button>
+                                      <div className="aoUsageBtns">
+                                        <button
+                                          className="aoTinyBtn"
+                                          onClick={() =>
+                                            setUsageBaseModal({
+                                              open: true,
+                                              provider: name,
+                                              value: p.usage_base_url ?? '',
+                                            })
+                                          }
+                                        >
+                                          Base
+                                        </button>
+                                        {p.usage_base_url ? (
+                                          <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
+                                            Clear
+                                          </button>
+                                        ) : null}
+                                        <button className="aoTinyBtn" onClick={() => void refreshQuota(name)}>
+                                          Refresh
+                                        </button>
+                                      </div>
                                     </div>
                                     <div className="aoUsageLine">remaining: {q?.remaining ?? '-'}</div>
                                     <div className="aoUsageLine">
@@ -597,6 +666,23 @@ export default function App() {
                                   <div className="aoUsageTop">
                                     <span className="aoHint">usage</span>
                                     <div className="aoUsageBtns">
+                                      <button
+                                        className="aoTinyBtn"
+                                        onClick={() =>
+                                          setUsageBaseModal({
+                                            open: true,
+                                            provider: name,
+                                            value: p.usage_base_url ?? '',
+                                          })
+                                        }
+                                      >
+                                        Base
+                                      </button>
+                                      {p.usage_base_url ? (
+                                        <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
+                                          Clear
+                                        </button>
+                                      ) : null}
                                       <button
                                         className="aoTinyBtn"
                                         onClick={() => setUsageTokenModal({ open: true, provider: name, value: '' })}
@@ -776,6 +862,40 @@ export default function App() {
                 Cancel
               </button>
               <button className="aoBtn aoBtnPrimary" onClick={() => void saveUsageToken()} disabled={!usageTokenModal.value}>
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {usageBaseModal.open ? (
+        <div className="aoModalBackdrop" role="dialog" aria-modal="true">
+          <div className="aoModal">
+            <div className="aoModalTitle">Usage base URL</div>
+            <div className="aoModalSub">
+              Provider:{' '}
+              <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>
+                {usageBaseModal.provider}
+              </span>
+              <br />
+              Optional. If empty, we derive from the provider base_url.
+            </div>
+            <input
+              className="aoInput"
+              style={{ width: '100%', height: 36, borderRadius: 12 }}
+              placeholder="https://..."
+              value={usageBaseModal.value}
+              onChange={(e) => setUsageBaseModal((m) => ({ ...m, value: e.target.value }))}
+            />
+            <div className="aoModalActions">
+              <button className="aoBtn" onClick={() => setUsageBaseModal({ open: false, provider: '', value: '' })}>
+                Cancel
+              </button>
+              <button className="aoBtn" onClick={() => void clearUsageBaseUrl(usageBaseModal.provider)}>
+                Clear
+              </button>
+              <button className="aoBtn aoBtnPrimary" onClick={() => void saveUsageBaseUrl()} disabled={!usageBaseModal.value.trim()}>
                 Save
               </button>
             </div>
