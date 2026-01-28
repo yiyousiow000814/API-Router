@@ -272,6 +272,7 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
     };
 
     let mut last_err = String::new();
+    let mut saw_404 = false;
     for base in bases {
         let base = base.trim_end_matches('/');
         if base.is_empty() {
@@ -291,6 +292,9 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
                 let status = resp.status().as_u16();
                 let j = resp.json::<Value>().await.unwrap_or(Value::Null);
                 if !(200..300).contains(&status) {
+                    if status == 404 {
+                        saw_404 = true;
+                    }
                     last_err = format!("http {status}");
                     continue;
                 }
@@ -322,11 +326,11 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
         }
     }
 
-    out.last_error = if last_err.is_empty() {
-        "quota endpoint not found".to_string()
+    if last_err.is_empty() || (saw_404 && last_err == "http 404") {
+        out.last_error = "usage endpoint not found (set Usage base URL)".to_string();
     } else {
-        last_err
-    };
+        out.last_error = last_err;
+    }
     out
 }
 
@@ -353,6 +357,7 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
     };
 
     let mut last_err = String::new();
+    let mut saw_404 = false;
     for base in bases {
         let base = base.trim_end_matches('/');
         if base.is_empty() {
@@ -370,6 +375,9 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
                 let status = resp.status().as_u16();
                 let j = resp.json::<Value>().await.unwrap_or(Value::Null);
                 if !(200..300).contains(&status) {
+                    if status == 404 {
+                        saw_404 = true;
+                    }
                     last_err = format!("http {status}");
                     continue;
                 }
@@ -399,11 +407,11 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
         }
     }
 
-    out.last_error = if last_err.is_empty() {
-        "quota endpoint not found".to_string()
+    if last_err.is_empty() || (saw_404 && last_err == "http 404") {
+        out.last_error = "usage endpoint not found (set Usage base URL)".to_string();
     } else {
-        last_err
-    };
+        out.last_error = last_err;
+    }
     out
 }
 
