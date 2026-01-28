@@ -35,7 +35,10 @@ pub fn messages_to_responses_input(messages: &[Value]) -> Value {
     let mut out = Vec::new();
     for m in messages {
         let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("user");
-        let content = m.get("content").cloned().unwrap_or(Value::String(String::new()));
+        let content = m
+            .get("content")
+            .cloned()
+            .unwrap_or(Value::String(String::new()));
         let text = match content {
             Value::String(s) => s,
             Value::Array(arr) => arr
@@ -56,9 +59,17 @@ pub fn messages_to_responses_input(messages: &[Value]) -> Value {
 
 pub fn extract_text_from_responses(resp: &Value) -> String {
     let mut out = String::new();
-    let output = resp.get("output").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let output = resp
+        .get("output")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     for item in output {
-        let content = item.get("content").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let content = item
+            .get("content")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         for c in content {
             let ty = c.get("type").and_then(|v| v.as_str()).unwrap_or("");
             if ty == "output_text" {

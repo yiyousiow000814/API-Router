@@ -142,7 +142,9 @@ impl RouterState {
 
     fn is_routable(&self, provider: &str) -> bool {
         let health = self.health.read();
-        let Some(h) = health.get(provider) else { return false };
+        let Some(h) = health.get(provider) else {
+            return false;
+        };
         !h.in_cooldown()
     }
 

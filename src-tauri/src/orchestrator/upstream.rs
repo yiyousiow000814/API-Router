@@ -1,5 +1,5 @@
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::header::ACCEPT;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::Value;
 
 use super::config::ProviderConfig;
@@ -27,7 +27,11 @@ impl UpstreamClient {
         client_auth: Option<&str>,
         timeout_seconds: u64,
     ) -> Result<(u16, Value), reqwest::Error> {
-        let url = format!("{}/{}", provider.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+        let url = format!(
+            "{}/{}",
+            provider.base_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
@@ -63,7 +67,11 @@ impl UpstreamClient {
         client_auth: Option<&str>,
         timeout_seconds: u64,
     ) -> Result<reqwest::Response, reqwest::Error> {
-        let url = format!("{}/{}", provider.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+        let url = format!(
+            "{}/{}",
+            provider.base_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
@@ -94,7 +102,11 @@ impl UpstreamClient {
         client_auth: Option<&str>,
         timeout_seconds: u64,
     ) -> Result<(u16, Value), reqwest::Error> {
-        let url = format!("{}/{}", provider.base_url.trim_end_matches('/'), path.trim_start_matches('/'));
+        let url = format!(
+            "{}/{}",
+            provider.base_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
         let mut headers = HeaderMap::new();
         if let Some(k) = api_key {
             let hv = HeaderValue::from_str(&format!("Bearer {}", k)).unwrap();
