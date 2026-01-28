@@ -16,12 +16,20 @@ pub struct ProviderConfig {
     pub base_url: String,
     /// Optional usage/quota source type for this provider.
     ///
-    /// Known values: "ppchat", "packycode". Empty/"none" disables quota fetching.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub quota_kind: String,
+    /// Empty disables usage fetching; otherwise the orchestrator may use it as a hint.
+    #[serde(
+        default,
+        skip_serializing_if = "String::is_empty",
+        alias = "quota_kind"
+    )]
+    pub usage_adapter: String,
     /// Optional base URL for usage/quota API (often different from the OpenAI-compatible base_url).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quota_base_url: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "quota_base_url"
+    )]
+    pub usage_base_url: Option<String>,
     /// If empty, the gateway tries to passthrough the client's Authorization header (OAuth).
     ///
     /// This is only used for one-time migration into `user-data/secrets.json`.
@@ -51,8 +59,8 @@ impl AppConfig {
             ProviderConfig {
                 display_name: "Official (OAuth passthrough)".to_string(),
                 base_url: "https://api.openai.com".to_string(),
-                quota_kind: String::new(),
-                quota_base_url: None,
+                usage_adapter: String::new(),
+                usage_base_url: None,
                 api_key: "".to_string(),
             },
         );
@@ -63,8 +71,8 @@ impl AppConfig {
                 ProviderConfig {
                     display_name: format!("Provider {i}"),
                     base_url: String::new(),
-                    quota_kind: String::new(),
-                    quota_base_url: None,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
                     api_key: String::new(),
                 },
             );

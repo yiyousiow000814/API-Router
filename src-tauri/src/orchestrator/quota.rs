@@ -9,17 +9,17 @@ use super::gateway::GatewayState;
 use super::store::unix_ms;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuotaKind {
+pub enum UsageKind {
     None,
-    Ppchat,
-    Packycode,
+    TokenStats,
+    BudgetInfo,
 }
 
-impl QuotaKind {
+impl UsageKind {
     pub fn from_str(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
-            "ppchat" => Self::Ppchat,
-            "packycode" => Self::Packycode,
+            "token_stats" => Self::TokenStats,
+            "budget_info" => Self::BudgetInfo,
             "" | "none" => Self::None,
             _ => Self::None,
         }
@@ -28,15 +28,15 @@ impl QuotaKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::None => "none",
-            Self::Ppchat => "ppchat",
-            Self::Packycode => "packycode",
+            Self::TokenStats => "token_stats",
+            Self::BudgetInfo => "budget_info",
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct QuotaSnapshot {
-    pub kind: QuotaKind,
+    pub kind: UsageKind,
     pub updated_at_unix_ms: u64,
     pub remaining: Option<f64>,
     pub today_used: Option<f64>,
@@ -49,7 +49,7 @@ pub struct QuotaSnapshot {
 }
 
 impl QuotaSnapshot {
-    pub fn empty(kind: QuotaKind) -> Self {
+    pub fn empty(kind: UsageKind) -> Self {
         Self {
             kind,
             updated_at_unix_ms: 0,
@@ -80,14 +80,14 @@ impl QuotaSnapshot {
     }
 }
 
-pub fn detect_quota_kind(provider: &ProviderConfig) -> QuotaKind {
-    let explicit = QuotaKind::from_str(&provider.quota_kind);
-    if explicit != QuotaKind::None {
+pub fn detect_usage_kind(provider: &ProviderConfig) -> UsageKind {
+    let explicit = UsageKind::from_str(&provider.usage_adapter);
+    if explicit != UsageKind::None {
         return explicit;
     }
 
     // Intentionally do not infer from domains; keep it provider-agnostic.
-    QuotaKind::None
+    UsageKind::None
 }
 
 fn derive_origin(base_url: &str) -> Option<String> {
@@ -100,8 +100,8 @@ fn derive_origin(base_url: &str) -> Option<String> {
 }
 
 fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
-    // User-provided quota_base_url always wins.
-    if let Some(u) = provider.quota_base_url.as_deref() {
+    // User-provided usage_base_url always wins.
+    if let Some(u) = provider.usage_base_url.as_deref() {
         let t = u.trim().trim_end_matches('/');
         if !t.is_empty() {
             return vec![t.to_string()];
@@ -134,7 +134,7 @@ fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
 pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) -> QuotaSnapshot {
     let cfg = st.cfg.read().clone();
     let Some(p) = cfg.providers.get(provider_name) else {
-        let mut out = QuotaSnapshot::empty(QuotaKind::None);
+        let mut out = QuotaSnapshot::empty(UsageKind::None);
         out.last_error = format!("unknown provider: {provider_name}");
         return out;
     };
@@ -143,30 +143,30 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     let usage_token = st.secrets.get_usage_token(provider_name);
     let bases = candidate_quota_bases(p);
     if bases.is_empty() {
-        let mut out = QuotaSnapshot::empty(QuotaKind::None);
+        let mut out = QuotaSnapshot::empty(UsageKind::None);
         out.last_error = "missing base_url".to_string();
         return out;
     }
 
-    let kind = detect_quota_kind(p);
+    let kind = detect_usage_kind(p);
     let snap = match kind {
-        QuotaKind::Ppchat => fetch_ppchat_any(&bases, provider_key.as_deref()).await,
-        QuotaKind::Packycode => fetch_packycode_any(&bases, usage_token.as_deref()).await,
-        QuotaKind::None => {
+        UsageKind::TokenStats => fetch_token_stats_any(&bases, provider_key.as_deref()).await,
+        UsageKind::BudgetInfo => fetch_budget_info_any(&bases, usage_token.as_deref()).await,
+        UsageKind::None => {
             // Auto mode: probe endpoints based on available credentials.
             if provider_key.as_deref().is_some() {
-                let s = fetch_ppchat_any(&bases, provider_key.as_deref()).await;
+                let s = fetch_token_stats_any(&bases, provider_key.as_deref()).await;
                 if s.last_error.is_empty() {
                     s
                 } else if usage_token.as_deref().is_some() {
-                    fetch_packycode_any(&bases, usage_token.as_deref()).await
+                    fetch_budget_info_any(&bases, usage_token.as_deref()).await
                 } else {
                     s
                 }
             } else if usage_token.as_deref().is_some() {
-                fetch_packycode_any(&bases, usage_token.as_deref()).await
+                fetch_budget_info_any(&bases, usage_token.as_deref()).await
             } else {
-                let mut out = QuotaSnapshot::empty(QuotaKind::None);
+                let mut out = QuotaSnapshot::empty(UsageKind::None);
                 out.last_error = "missing credentials for quota refresh".to_string();
                 out
             }
@@ -221,8 +221,10 @@ pub async fn run_quota_scheduler(st: GatewayState) {
 
         let cfg = st.cfg.read().clone();
         for (name, p) in cfg.providers.iter() {
-            let kind = detect_quota_kind(p);
-            if kind == QuotaKind::None {
+            let _ = p;
+            let has_any_credential = st.secrets.get_provider_key(name).is_some()
+                || st.secrets.get_usage_token(name).is_some();
+            if !has_any_credential {
                 continue;
             }
 
@@ -247,26 +249,8 @@ pub async fn run_quota_scheduler(st: GatewayState) {
     }
 }
 
-pub async fn fetch_quota(
-    kind: QuotaKind,
-    provider: &ProviderConfig,
-    provider_key: Option<&str>,
-    usage_token: Option<&str>,
-) -> QuotaSnapshot {
-    match kind {
-        QuotaKind::None => QuotaSnapshot::empty(kind),
-        QuotaKind::Ppchat => fetch_ppchat(provider, provider_key).await,
-        QuotaKind::Packycode => fetch_packycode(provider, usage_token).await,
-    }
-}
-
-async fn fetch_ppchat(provider: &ProviderConfig, provider_key: Option<&str>) -> QuotaSnapshot {
-    let bases = candidate_quota_bases(provider);
-    fetch_ppchat_any(&bases, provider_key).await
-}
-
-async fn fetch_ppchat_any(bases: &[String], provider_key: Option<&str>) -> QuotaSnapshot {
-    let mut out = QuotaSnapshot::empty(QuotaKind::Ppchat);
+async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> QuotaSnapshot {
+    let mut out = QuotaSnapshot::empty(UsageKind::TokenStats);
     let Some(k) = provider_key else {
         out.last_error = "missing provider key".to_string();
         return out;
@@ -346,13 +330,8 @@ async fn fetch_ppchat_any(bases: &[String], provider_key: Option<&str>) -> Quota
     out
 }
 
-async fn fetch_packycode(provider: &ProviderConfig, jwt: Option<&str>) -> QuotaSnapshot {
-    let bases = candidate_quota_bases(provider);
-    fetch_packycode_any(&bases, jwt).await
-}
-
-async fn fetch_packycode_any(bases: &[String], jwt: Option<&str>) -> QuotaSnapshot {
-    let mut out = QuotaSnapshot::empty(QuotaKind::Packycode);
+async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnapshot {
+    let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
     let Some(token) = jwt else {
         out.last_error = "missing usage token".to_string();
         return out;
@@ -429,11 +408,160 @@ async fn fetch_packycode_any(bases: &[String], jwt: Option<&str>) -> QuotaSnapsh
 }
 
 fn as_f64(v: Option<&Value>) -> Option<f64> {
-    let Some(v) = v else {
-        return None;
-    };
+    let v = v?;
     v.as_f64()
         .or_else(|| v.as_i64().map(|n| n as f64))
         .or_else(|| v.as_u64().map(|n| n as f64))
         .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::orchestrator::config::{AppConfig, ListenConfig, RoutingConfig};
+    use crate::orchestrator::gateway::open_store_dir;
+    use crate::orchestrator::router::RouterState;
+    use crate::orchestrator::secrets::SecretStore;
+    use crate::orchestrator::upstream::UpstreamClient;
+    use parking_lot::RwLock;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
+
+    async fn start_mock_server(token_stats_ok: bool) -> (String, tokio::task::JoinHandle<()>) {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        use axum::{Json, Router};
+
+        let app = Router::new()
+            .route(
+                "/api/token-stats",
+                get(move || async move {
+                    if !token_stats_ok {
+                        return (StatusCode::NOT_FOUND, Json(serde_json::json!({})));
+                    }
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                          "data": {
+                            "info": { "remain_quota_display": 12.3 },
+                            "stats": { "today_stats": { "used_quota": 1.0, "added_quota": 2.0 } }
+                          }
+                        })),
+                    )
+                }),
+            )
+            .route(
+                "/api/backend/users/info",
+                get(|| async move {
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                          "daily_spent_usd": "0.5",
+                          "daily_budget_usd": 1,
+                          "monthly_spent_usd": 2,
+                          "monthly_budget_usd": 10,
+                          "remaining_quota": 123
+                        })),
+                    )
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}:{}", addr.ip(), addr.port());
+        let h = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (url, h)
+    }
+
+    fn mk_state(base_url: String, secrets: SecretStore) -> GatewayState {
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            },
+            routing: RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 1,
+                failure_threshold: 1,
+                cooldown_seconds: 1,
+                request_timeout_seconds: 5,
+            },
+            providers: std::collections::BTreeMap::from([(
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            )]),
+        };
+
+        // Keep the sled directory alive for the test duration.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.keep();
+        let store = open_store_dir(base).unwrap();
+        let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+        GatewayState {
+            cfg: Arc::new(RwLock::new(cfg)),
+            router,
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    #[tokio::test]
+    async fn derive_origin_drops_path_and_query() {
+        let origin = derive_origin("http://example.com:123/v1?x=y").unwrap();
+        assert_eq!(origin, "http://example.com:123");
+    }
+
+    #[tokio::test]
+    async fn candidate_quota_bases_adds_non_api_hostname_variant() {
+        let p = ProviderConfig {
+            display_name: "P".to_string(),
+            base_url: "http://codex-api.example.com/v1".to_string(),
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        };
+        let bases = candidate_quota_bases(&p);
+        assert!(bases.contains(&"http://codex-api.example.com".to_string()));
+        assert!(bases.contains(&"http://codex.example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn auto_probe_prefers_token_stats_when_key_present() {
+        let (base, _h) = start_mock_server(true).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "k1").unwrap();
+        let st = mk_state(format!("{base}/v1"), secrets);
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        assert!(snap.last_error.is_empty());
+        assert_eq!(snap.kind.as_str(), "token_stats");
+        assert_eq!(snap.remaining.unwrap_or(0.0), 12.3);
+    }
+
+    #[tokio::test]
+    async fn auto_probe_falls_back_to_budget_info_when_token_stats_missing() {
+        let (base, _h) = start_mock_server(false).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "k1").unwrap();
+        secrets.set_usage_token("p1", "t1").unwrap();
+        let st = mk_state(format!("{base}/v1"), secrets);
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        assert!(snap.last_error.is_empty());
+        assert_eq!(snap.kind.as_str(), "budget_info");
+        assert_eq!(snap.daily_spent_usd.unwrap_or(0.0), 0.5);
+    }
 }

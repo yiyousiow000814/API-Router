@@ -118,7 +118,7 @@ async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl Into
         .get_json(&p, "/v1/models", api_key.as_deref(), client_auth, timeout)
         .await
     {
-        Ok((code, j)) if code >= 200 && code < 300 => (StatusCode::OK, Json(j)).into_response(),
+        Ok((code, j)) if (200..300).contains(&code) => (StatusCode::OK, Json(j)).into_response(),
         _ => (StatusCode::OK, Json(json!({"object":"list","data":[]}))).into_response(),
     }
 }
@@ -259,7 +259,7 @@ async fn responses(
                 let response_id = upstream_json
                     .get("id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or_else(|| "resp_unknown")
+                    .unwrap_or("resp_unknown")
                     .to_string();
                 let text = extract_text_from_responses(&upstream_json);
                 let response_obj = upstream_json;
@@ -319,11 +319,8 @@ async fn responses(
 
 fn sse_response(response_id: &str, response_obj: &Value, text: &str) -> Response {
     let events = sse_events_for_text(response_id, response_obj, text);
-    let stream = futures_util::stream::iter(
-        events
-            .into_iter()
-            .map(|s| Ok::<_, std::convert::Infallible>(s)),
-    );
+    let stream =
+        futures_util::stream::iter(events.into_iter().map(Ok::<_, std::convert::Infallible>));
     let body = Body::from_stream(stream);
 
     let mut resp = Response::new(body);
@@ -394,9 +391,7 @@ fn require_gateway_auth(st: &GatewayState, headers: &HeaderMap) -> Option<Respon
 }
 
 fn upstream_auth<'a>(st: &GatewayState, client_auth: Option<&'a str>) -> Option<&'a str> {
-    let Some(auth) = client_auth else {
-        return None;
-    };
+    let auth = client_auth?;
     // Never forward the local gateway token upstream.
     if let (Some(tok), Some(b)) = (st.secrets.get_gateway_token(), bearer_token(auth)) {
         if !tok.trim().is_empty() && b == tok.trim() {

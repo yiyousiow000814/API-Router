@@ -197,8 +197,8 @@ fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                 serde_json::json!({
                   "display_name": p.display_name,
                   "base_url": p.base_url,
-                  "quota_kind": p.quota_kind.clone(),
-                  "quota_base_url": p.quota_base_url.clone(),
+                  "usage_adapter": p.usage_adapter.clone(),
+                  "usage_base_url": p.usage_base_url.clone(),
                   "has_key": has_key
                   ,"key_preview": key_preview,
                   "has_usage_token": usage_token.is_some()
@@ -267,8 +267,8 @@ fn upsert_provider(
             crate::orchestrator::config::ProviderConfig {
                 display_name,
                 base_url,
-                quota_kind: String::new(),
-                quota_base_url: None,
+                usage_adapter: String::new(),
+                usage_base_url: None,
                 api_key: String::new(),
             },
         );

@@ -85,11 +85,12 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
     // and blank it. This avoids committing or leaving plaintext keys in config.toml.
     let mut migrated_keys = false;
     for (name, p) in cfg.providers.iter_mut() {
-        if !p.api_key.is_empty() && p.api_key != "REPLACE_ME" {
-            if secrets.set_provider_key(name, &p.api_key).is_ok() {
-                p.api_key.clear();
-                migrated_keys = true;
-            }
+        if !p.api_key.is_empty()
+            && p.api_key != "REPLACE_ME"
+            && secrets.set_provider_key(name, &p.api_key).is_ok()
+        {
+            p.api_key.clear();
+            migrated_keys = true;
         }
     }
     if changed || migrated_keys || normalize_api_key_field {

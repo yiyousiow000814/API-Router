@@ -21,7 +21,7 @@ type Status = {
   quota: Record<
     string,
     {
-      kind: 'none' | 'ppchat' | 'packycode'
+      kind: 'none' | 'token_stats' | 'budget_info'
       updated_at_unix_ms: number
       remaining: number | null
       today_used: number | null
@@ -58,8 +58,8 @@ type Config = {
     {
       display_name: string
       base_url: string
-      quota_kind?: string
-      quota_base_url?: string | null
+      usage_adapter?: string
+      usage_base_url?: string | null
       has_key: boolean
       key_preview?: string | null
       has_usage_token?: boolean
@@ -554,10 +554,7 @@ export default function App() {
                             {(() => {
                               const q = status?.quota?.[name]
                               const l = status?.ledgers?.[name]
-                              const kind = (q?.kind ?? (p.quota_kind as any) ?? 'none') as
-                                | 'none'
-                                | 'ppchat'
-                                | 'packycode'
+                              const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
                               if (kind === 'none') return <span className="aoHint">-</span>
                               const updated = q?.updated_at_unix_ms ? fmtWhen(q.updated_at_unix_ms) : 'never'
                               const deltaTok = l?.since_last_quota_refresh_total_tokens ?? 0
@@ -577,11 +574,11 @@ export default function App() {
                                 )
                               }
 
-                              if (kind === 'ppchat') {
+                              if (kind === 'token_stats') {
                                 return (
                                   <div className="aoUsageCell">
                                     <div className="aoUsageTop">
-                                      <span className="aoHint">ppchat</span>
+                                      <span className="aoHint">usage</span>
                                       <button className="aoTinyBtn" onClick={() => void refreshQuota(name)}>
                                         Refresh
                                       </button>
@@ -598,17 +595,17 @@ export default function App() {
                               return (
                                 <div className="aoUsageCell">
                                   <div className="aoUsageTop">
-                                    <span className="aoHint">packycode</span>
+                                    <span className="aoHint">usage</span>
                                     <div className="aoUsageBtns">
                                       <button
                                         className="aoTinyBtn"
                                         onClick={() => setUsageTokenModal({ open: true, provider: name, value: '' })}
                                       >
-                                        JWT
+                                        Token
                                       </button>
                                       {p.has_usage_token ? (
                                         <button className="aoTinyBtn" onClick={() => void clearUsageToken(name)}>
-                                          Logout
+                                          Clear
                                         </button>
                                       ) : null}
                                       <button className="aoTinyBtn" onClick={() => void refreshQuota(name)}>
@@ -758,7 +755,7 @@ export default function App() {
       {usageTokenModal.open ? (
         <div className="aoModalBackdrop" role="dialog" aria-modal="true">
           <div className="aoModal">
-            <div className="aoModalTitle">Packycode JWT</div>
+            <div className="aoModalTitle">Usage token</div>
             <div className="aoModalSub">
               Provider:{' '}
               <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>
@@ -770,7 +767,7 @@ export default function App() {
             <input
               className="aoInput"
               style={{ width: '100%', height: 36, borderRadius: 12 }}
-              placeholder="Paste JWT..."
+              placeholder="Paste token..."
               value={usageTokenModal.value}
               onChange={(e) => setUsageTokenModal((m) => ({ ...m, value: e.target.value }))}
             />

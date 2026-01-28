@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
 
     use axum::body::Body;
@@ -18,6 +19,7 @@ mod tests {
     async fn health_and_status_work_without_upstream() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
 
         let cfg = AppConfig::default_config();
         let router = Arc::new(RouterState::new(&cfg, unix_ms()));
@@ -26,7 +28,8 @@ mod tests {
             router,
             store,
             upstream: UpstreamClient::new(),
-            secrets: SecretStore::new("agent-orchestrator-test"),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
         };
 
         let app = build_router(state);

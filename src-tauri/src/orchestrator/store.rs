@@ -102,13 +102,11 @@ impl Store {
 
     pub fn get_metrics(&self) -> serde_json::Value {
         let mut out = serde_json::Map::new();
-        for item in self.db.scan_prefix(b"metrics:") {
-            if let Ok((k, v)) = item {
-                let key = String::from_utf8_lossy(&k).to_string();
-                let name = key.trim_start_matches("metrics:").to_string();
-                if let Ok(j) = serde_json::from_slice::<Value>(&v) {
-                    out.insert(name, j);
-                }
+        for (k, v) in self.db.scan_prefix(b"metrics:").flatten() {
+            let key = String::from_utf8_lossy(&k).to_string();
+            let name = key.trim_start_matches("metrics:").to_string();
+            if let Ok(j) = serde_json::from_slice::<Value>(&v) {
+                out.insert(name, j);
             }
         }
         Value::Object(out)
@@ -163,21 +161,13 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_quota_snapshot(&self, provider: &str) -> Option<Value> {
-        let key = format!("quota:{provider}");
-        let v = self.db.get(key.as_bytes()).ok()??;
-        serde_json::from_slice(&v).ok()
-    }
-
     pub fn list_quota_snapshots(&self) -> serde_json::Value {
         let mut out = serde_json::Map::new();
-        for item in self.db.scan_prefix(b"quota:") {
-            if let Ok((k, v)) = item {
-                let key = String::from_utf8_lossy(&k).to_string();
-                let name = key.trim_start_matches("quota:").to_string();
-                if let Ok(j) = serde_json::from_slice::<Value>(&v) {
-                    out.insert(name, j);
-                }
+        for (k, v) in self.db.scan_prefix(b"quota:").flatten() {
+            let key = String::from_utf8_lossy(&k).to_string();
+            let name = key.trim_start_matches("quota:").to_string();
+            if let Ok(j) = serde_json::from_slice::<Value>(&v) {
+                out.insert(name, j);
             }
         }
         Value::Object(out)
@@ -195,13 +185,11 @@ impl Store {
 
     pub fn list_ledgers(&self) -> Value {
         let mut out = serde_json::Map::new();
-        for item in self.db.scan_prefix(b"ledger:") {
-            if let Ok((k, v)) = item {
-                let key = String::from_utf8_lossy(&k).to_string();
-                let name = key.trim_start_matches("ledger:").to_string();
-                if let Ok(j) = serde_json::from_slice::<Value>(&v) {
-                    out.insert(name, j);
-                }
+        for (k, v) in self.db.scan_prefix(b"ledger:").flatten() {
+            let key = String::from_utf8_lossy(&k).to_string();
+            let name = key.trim_start_matches("ledger:").to_string();
+            if let Ok(j) = serde_json::from_slice::<Value>(&v) {
+                out.insert(name, j);
             }
         }
         Value::Object(out)
@@ -239,11 +227,9 @@ impl Store {
 
     pub fn list_events(&self, limit: usize) -> Vec<Value> {
         let mut out = Vec::new();
-        for item in self.db.scan_prefix(b"event:") {
-            if let Ok((_, v)) = item {
-                if let Ok(j) = serde_json::from_slice::<Value>(&v) {
-                    out.push(j);
-                }
+        for (_, v) in self.db.scan_prefix(b"event:").flatten() {
+            if let Ok(j) = serde_json::from_slice::<Value>(&v) {
+                out.push(j);
             }
         }
         // Keep most-recent-last semantics by sorting on unix_ms then slicing.
