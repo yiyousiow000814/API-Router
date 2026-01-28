@@ -10,6 +10,9 @@ use uuid::Uuid;
 struct SecretsFile {
     #[serde(default)]
     providers: BTreeMap<String, String>,
+    /// Optional non-upstream secrets used by the app (e.g. usage JWTs).
+    #[serde(default)]
+    usage_tokens: BTreeMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -56,6 +59,23 @@ impl SecretStore {
     pub fn clear_provider_key(&self, provider: &str) -> Result<(), String> {
         let mut data = self.inner.lock();
         data.providers.remove(provider);
+        self.persist(&data)
+    }
+
+    pub fn get_usage_token(&self, provider: &str) -> Option<String> {
+        self.inner.lock().usage_tokens.get(provider).cloned()
+    }
+
+    pub fn set_usage_token(&self, provider: &str, token: &str) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        data.usage_tokens
+            .insert(provider.to_string(), token.to_string());
+        self.persist(&data)
+    }
+
+    pub fn clear_usage_token(&self, provider: &str) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        data.usage_tokens.remove(provider);
         self.persist(&data)
     }
 

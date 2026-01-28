@@ -521,6 +521,59 @@
   overflow: hidden;
 }
 
+.aoUsageCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.aoUsageTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.aoUsageBtns {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoTinyBtn {
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(255, 255, 255, 0.86);
+  color: rgba(13, 18, 32, 0.82);
+  padding: 0 10px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.aoTinyBtn:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.55);
+  background: rgba(var(--ao-accent-rgb), 0.06);
+}
+
+.aoUsageLine {
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.84);
+}
+
+.aoUsageErr {
+  font-size: 12px;
+  color: rgba(145, 12, 43, 0.92);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
 .aoCheckbox {
   display: inline-flex;
   align-items: center;

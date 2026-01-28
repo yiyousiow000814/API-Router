@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -14,7 +15,8 @@ use serde_json::{json, Value};
 
 use super::config::AppConfig;
 use super::openai::{
-    extract_text_from_responses, input_to_messages, messages_to_responses_input, sse_events_for_text,
+    extract_text_from_responses, input_to_messages, messages_to_responses_input,
+    sse_events_for_text,
 };
 use super::router::RouterState;
 use super::secrets::SecretStore;
@@ -28,6 +30,7 @@ pub struct GatewayState {
     pub store: Store,
     pub upstream: UpstreamClient,
     pub secrets: SecretStore,
+    pub last_activity_unix_ms: Arc<AtomicU64>,
 }
 
 pub fn build_router(state: GatewayState) -> Router {
@@ -68,6 +71,9 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
 
     let recent_events = st.store.list_events(50);
     let metrics = st.store.get_metrics();
+    let quota = st.store.list_quota_snapshots();
+    let ledgers = st.store.list_ledgers();
+    let last_activity = st.last_activity_unix_ms.load(Ordering::Relaxed);
 
     Json(json!({
         "listen": { "host": cfg.listen.host, "port": cfg.listen.port },
@@ -75,7 +81,10 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
         "manual_override": manual_override,
         "providers": providers,
         "metrics": metrics,
-        "recent_events": recent_events
+        "recent_events": recent_events,
+        "quota": quota,
+        "ledgers": ledgers,
+        "last_activity_unix_ms": last_activity
     }))
 }
 
@@ -83,11 +92,18 @@ async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl Into
     if let Some(resp) = require_gateway_auth(&st, &headers) {
         return resp;
     }
+    st.last_activity_unix_ms.store(unix_ms(), Ordering::Relaxed);
     let cfg = st.cfg.read().clone();
     let (provider_name, _) = st.router.decide(&cfg);
     let p = match cfg.providers.get(&provider_name) {
         Some(p) => p.clone(),
-        None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"no provider"}))).into_response(),
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"no provider"})),
+            )
+                .into_response()
+        }
     };
 
     let client_auth = headers
@@ -107,17 +123,25 @@ async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl Into
     }
 }
 
-async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut body): Json<Value>) -> Response {
+async fn responses(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+    Json(mut body): Json<Value>,
+) -> Response {
     if let Some(resp) = require_gateway_auth(&st, &headers) {
         return resp;
     }
+    st.last_activity_unix_ms.store(unix_ms(), Ordering::Relaxed);
     let cfg = st.cfg.read().clone();
     let client_auth = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
     let client_auth = upstream_auth(&st, client_auth);
 
-    let want_stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let want_stream = body
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let previous_response_id = body
         .get("previous_response_id")
@@ -159,17 +183,28 @@ async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut 
         // Stream mode (best-effort): if upstream supports Responses streaming, we pass it through
         // and tap the stream to persist the final response for continuity.
         if want_stream {
-            body.as_object_mut().map(|m| m.insert("stream".to_string(), Value::Bool(true)));
+            body.as_object_mut()
+                .map(|m| m.insert("stream".to_string(), Value::Bool(true)));
             let api_key = st.secrets.get_provider_key(&provider_name);
             match st
                 .upstream
-                .post_sse(&p, "/v1/responses", &body, api_key.as_deref(), client_auth, timeout)
+                .post_sse(
+                    &p,
+                    "/v1/responses",
+                    &body,
+                    api_key.as_deref(),
+                    client_auth,
+                    timeout,
+                )
                 .await
             {
                 Ok(resp) if resp.status().is_success() => {
                     st.router.mark_success(&provider_name, unix_ms());
-                    st.store
-                        .add_event(&provider_name, "info", &format!("stream via {provider_name} ({reason})"));
+                    st.store.add_event(
+                        &provider_name,
+                        "info",
+                        &format!("stream via {provider_name} ({reason})"),
+                    );
                     return passthrough_sse_and_persist(
                         resp,
                         st.clone(),
@@ -181,14 +216,18 @@ async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut 
                 Ok(resp) => {
                     let code = resp.status().as_u16();
                     let txt = resp.text().await.unwrap_or_default();
-                    last_err = format!("upstream {provider_name} returned {code} (responses stream): {txt}");
-                    st.router.mark_failure(&provider_name, &cfg, &last_err, unix_ms());
+                    last_err = format!(
+                        "upstream {provider_name} returned {code} (responses stream): {txt}"
+                    );
+                    st.router
+                        .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                     st.store.add_event(&provider_name, "error", &last_err);
                     continue;
                 }
                 Err(e) => {
                     last_err = format!("upstream {provider_name} error (responses stream): {e}");
-                    st.router.mark_failure(&provider_name, &cfg, &last_err, unix_ms());
+                    st.router
+                        .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                     st.store.add_event(&provider_name, "error", &last_err);
                     continue;
                 }
@@ -196,12 +235,20 @@ async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut 
         }
 
         // Non-stream mode: call upstream without streaming.
-        body.as_object_mut().map(|m| m.insert("stream".to_string(), Value::Bool(false)));
+        body.as_object_mut()
+            .map(|m| m.insert("stream".to_string(), Value::Bool(false)));
 
         let api_key = st.secrets.get_provider_key(&provider_name);
         let upstream_result = st
             .upstream
-            .post_json(&p, "/v1/responses", &body, api_key.as_deref(), client_auth, timeout)
+            .post_json(
+                &p,
+                "/v1/responses",
+                &body,
+                api_key.as_deref(),
+                client_auth,
+                timeout,
+            )
             .await;
 
         match upstream_result {
@@ -239,14 +286,19 @@ async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut 
                 return (StatusCode::OK, Json(response_obj)).into_response();
             }
             Ok((code, upstream_json)) => {
-                last_err = format!("upstream {provider_name} returned {code}: {}", upstream_json);
-                st.router.mark_failure(&provider_name, &cfg, &last_err, unix_ms());
+                last_err = format!(
+                    "upstream {provider_name} returned {code}: {}",
+                    upstream_json
+                );
+                st.router
+                    .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                 st.store.record_failure(&provider_name);
                 st.store.add_event(&provider_name, "error", &last_err);
             }
             Err(e) => {
                 last_err = format!("upstream {provider_name} error: {e}");
-                st.router.mark_failure(&provider_name, &cfg, &last_err, unix_ms());
+                st.router
+                    .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                 st.store.record_failure(&provider_name);
                 st.store.add_event(&provider_name, "error", &last_err);
             }
@@ -267,16 +319,32 @@ async fn responses(State(st): State<GatewayState>, headers: HeaderMap, Json(mut 
 
 fn sse_response(response_id: &str, response_obj: &Value, text: &str) -> Response {
     let events = sse_events_for_text(response_id, response_obj, text);
-    let stream = futures_util::stream::iter(events.into_iter().map(|s| Ok::<_, std::convert::Infallible>(s)));
+    let stream = futures_util::stream::iter(
+        events
+            .into_iter()
+            .map(|s| Ok::<_, std::convert::Infallible>(s)),
+    );
     let body = Body::from_stream(stream);
 
     let mut resp = Response::new(body);
     *resp.status_mut() = StatusCode::OK;
     let headers = resp.headers_mut();
-    headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("text/event-stream"));
-    headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-cache"));
-    headers.insert(header::CONNECTION, header::HeaderValue::from_static("keep-alive"));
-    headers.insert(header::HeaderName::from_static("x-response-id"), header::HeaderValue::from_str(response_id).unwrap());
+    headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("text/event-stream"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache"),
+    );
+    headers.insert(
+        header::CONNECTION,
+        header::HeaderValue::from_static("keep-alive"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("x-response-id"),
+        header::HeaderValue::from_str(response_id).unwrap(),
+    );
     resp
 }
 
@@ -298,7 +366,10 @@ fn require_gateway_auth(st: &GatewayState, headers: &HeaderMap) -> Option<Respon
     if expected.is_empty() {
         return None;
     }
-    let Some(auth) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) else {
+    let Some(auth) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    else {
         return Some(
             (
                 StatusCode::UNAUTHORIZED,
@@ -349,18 +420,16 @@ fn passthrough_sse_and_persist(
     let st_err = st.clone();
     let provider_err = provider_name.clone();
 
-    let bytes_stream = upstream_resp.bytes_stream().map(move |item| {
-        match item {
-            Ok(b) => {
-                tap2.lock().feed(&b);
-                Ok::<Bytes, std::convert::Infallible>(b)
-            }
-            Err(e) => {
-                st_err
-                    .store
-                    .add_event(&provider_err, "error", &format!("stream read error: {e}"));
-                Ok::<Bytes, std::convert::Infallible>(Bytes::new())
-            }
+    let bytes_stream = upstream_resp.bytes_stream().map(move |item| match item {
+        Ok(b) => {
+            tap2.lock().feed(&b);
+            Ok::<Bytes, std::convert::Infallible>(b)
+        }
+        Err(e) => {
+            st_err
+                .store
+                .add_event(&provider_err, "error", &format!("stream read error: {e}"));
+            Ok::<Bytes, std::convert::Infallible>(Bytes::new())
         }
     });
 
@@ -384,9 +453,18 @@ fn passthrough_sse_and_persist(
     let mut resp = Response::new(body);
     *resp.status_mut() = StatusCode::OK;
     let headers = resp.headers_mut();
-    headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("text/event-stream"));
-    headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-cache"));
-    headers.insert(header::CONNECTION, header::HeaderValue::from_static("keep-alive"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("text/event-stream"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache"),
+    );
+    headers.insert(
+        header::CONNECTION,
+        header::HeaderValue::from_static("keep-alive"),
+    );
     resp
 }
 
@@ -422,12 +500,16 @@ impl SseTap {
 
     fn consume_message(&mut self, msg: &str) {
         for line in msg.lines() {
-            let Some(rest) = line.strip_prefix("data:") else { continue };
+            let Some(rest) = line.strip_prefix("data:") else {
+                continue;
+            };
             let data = rest.trim();
             if data == "[DONE]" {
                 return;
             }
-            let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
             if v.get("type").and_then(|x| x.as_str()) == Some("response.completed") {
                 if let Some(resp) = v.get("response") {
                     if let Some(id) = resp.get("id").and_then(|x| x.as_str()) {
