@@ -213,10 +213,11 @@ const devConfig: Config = {
 }
 
 export default function App() {
-  const tauriReady = useMemo(() => {
+  const isDevPreview = useMemo(() => {
+    if (!import.meta.env.DEV) return false
     if (typeof window === 'undefined') return false
     const w = window as unknown as { __TAURI__?: { core?: { invoke?: unknown } } }
-    return Boolean(w.__TAURI__?.core?.invoke)
+    return !Boolean(w.__TAURI__?.core?.invoke)
   }, [])
   const [status, setStatus] = useState<Status | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
@@ -265,7 +266,7 @@ export default function App() {
   }
 
   async function refreshStatus() {
-    if (!tauriReady) {
+    if (isDevPreview) {
       setStatus(devStatus)
       return
     }
@@ -279,7 +280,7 @@ export default function App() {
   }
 
   async function refreshConfig() {
-    if (!tauriReady) {
+    if (isDevPreview) {
       setConfig(devConfig)
       setBaselineBaseUrls(
         Object.fromEntries(Object.entries(devConfig.providers).map(([name, p]) => [name, p.base_url])),
@@ -459,7 +460,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!tauriReady) {
+    if (isDevPreview) {
       setStatus(devStatus)
       setConfig(devConfig)
       setBaselineBaseUrls(
@@ -688,7 +689,6 @@ export default function App() {
               <div className="aoSection">
                 <div className="aoSectionHeader aoSectionHeaderStack">
                   <h3 className="aoH3">Providers</h3>
-                  <div className="aoHint">tokens are best-effort (from usage.total_tokens)</div>
                 </div>
                 <table className="aoTable aoTableFixed">
                   <thead>
@@ -696,7 +696,6 @@ export default function App() {
                       <th style={{ width: 140 }}>Name</th>
                       <th style={{ width: 120 }}>Healthy</th>
                       <th style={{ width: 90 }}>Failures</th>
-                      <th style={{ width: 120 }}>Tokens</th>
                       <th style={{ width: 170 }}>Cooldown</th>
                       <th style={{ width: 170 }}>Last OK</th>
                       <th style={{ width: 240 }}>Usage</th>
@@ -706,7 +705,6 @@ export default function App() {
                   <tbody>
                     {providers.map((p) => {
                       const h = status.providers[p]
-                      const m = status.metrics?.[p]
                       const q = status?.quota?.[p]
                       const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
                       const cooldownActive = h.cooldown_until_unix_ms > Date.now()
@@ -765,7 +763,6 @@ export default function App() {
                             </span>
                           </td>
                           <td>{h.consecutive_failures}</td>
-                          <td>{m ? m.total_tokens : 0}</td>
                           <td>{cooldownActive ? fmtWhen(h.cooldown_until_unix_ms) : '-'}</td>
                           <td>{fmtWhen(h.last_ok_at_unix_ms)}</td>
                           <td>{usageNode}</td>
