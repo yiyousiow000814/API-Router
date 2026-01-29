@@ -649,49 +649,48 @@ async fn refresh_codex_account_snapshot(
     match rate_limits {
         Ok(result) => {
             signed_in = true;
-            let used_percent = result
-                .get("rateLimits")
-                .and_then(|v| v.get("secondary"))
-                .and_then(|v| v.get("usedPercent"))
-                .and_then(parse_number);
-            let rate_limits = result.get("rateLimits");
+            let rate_limits = get_rate_limits_obj(&result);
+            let used_percent = rate_limits
+                .and_then(|v| v.get("secondary").or_else(|| v.get("Secondary")))
+                .and_then(get_used_percent);
+
             if let Some(rate_limits) = rate_limits {
-                if let Some(primary) = rate_limits.get("primary") {
-                    if let Some(used) = primary.get("usedPercent").and_then(parse_number) {
-                        let window_mins = primary
-                            .get("windowDurationMins")
-                            .and_then(parse_number)
-                            .map(|v| v.round() as i64);
-                        if window_mins == Some(300) {
-                            limit_5h_remaining = Some(format_percent(100.0 - used));
-                        } else if window_mins == Some(10080) {
-                            limit_weekly_remaining = Some(format_percent(100.0 - used));
+                for (key, target) in [
+                    ("primary", "primary"),
+                    ("Primary", "primary"),
+                    ("secondary", "secondary"),
+                    ("Secondary", "secondary"),
+                ] {
+                    if let Some(node) = rate_limits.get(key) {
+                        if let Some(used) = get_used_percent(node) {
+                            let window_mins = get_window_minutes(node);
+                            if window_mins == Some(300) {
+                                limit_5h_remaining = Some(format_percent(100.0 - used));
+                            } else if window_mins == Some(10080) {
+                                limit_weekly_remaining = Some(format_percent(100.0 - used));
+                            } else if target == "secondary" && limit_weekly_remaining.is_none() {
+                                limit_weekly_remaining = Some(format_percent(100.0 - used));
+                            }
                         }
                     }
                 }
-                if let Some(secondary) = rate_limits.get("secondary") {
-                    if let Some(used) = secondary.get("usedPercent").and_then(parse_number) {
-                        let window_mins = secondary
-                            .get("windowDurationMins")
-                            .and_then(parse_number)
-                            .map(|v| v.round() as i64);
-                        if window_mins == Some(300) {
-                            limit_5h_remaining = Some(format_percent(100.0 - used));
-                        } else if window_mins == Some(10080) {
-                            limit_weekly_remaining = Some(format_percent(100.0 - used));
-                        } else if limit_weekly_remaining.is_none() {
-                            limit_weekly_remaining = Some(format_percent(100.0 - used));
-                        }
-                    }
-                }
+
                 if code_review_remaining.is_none() {
-                    code_review_remaining = rate_limits
-                        .get("codeReview")
-                        .or_else(|| rate_limits.get("code_review"))
-                        .or_else(|| rate_limits.get("review"))
-                        .and_then(|v| v.get("usedPercent"))
-                        .and_then(parse_number)
-                        .map(|used| format_percent(100.0 - used));
+                    for key in [
+                        "codeReview",
+                        "code_review",
+                        "codeReviewRemaining",
+                        "code_review_remaining",
+                        "review",
+                        "CodeReview",
+                    ] {
+                        if let Some(node) = rate_limits.get(key) {
+                            if let Some(rem) = get_remaining_percent(node) {
+                                code_review_remaining = Some(rem);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             if let Some(credits) = result
@@ -740,21 +739,55 @@ async fn refresh_codex_account_snapshot(
 }
 
 fn format_percent(value: f64) -> String {
-    let mut pct = if value.is_finite() { value } else { 0.0 };
-    if pct < 1.0 {
-        pct = 0.0;
-    }
+  let mut pct = if value.is_finite() { value } else { 0.0 };
+  if pct < 1.0 {
+    pct = 0.0;
+  }
     if pct > 100.0 {
         pct = 100.0;
     }
-    format!("{}%", pct.floor() as i64)
+  format!("{}%", pct.floor() as i64)
+}
+
+fn get_rate_limits_obj<'a>(result: &'a Value) -> Option<&'a Value> {
+    result.get("rateLimits").or_else(|| result.get("rate_limits"))
+}
+
+fn get_used_percent(obj: &Value) -> Option<f64> {
+    obj.get("usedPercent")
+        .or_else(|| obj.get("used_percent"))
+        .and_then(parse_number)
+}
+
+fn get_window_minutes(obj: &Value) -> Option<i64> {
+    obj.get("windowDurationMins")
+        .or_else(|| obj.get("window_minutes"))
+        .or_else(|| obj.get("window_mins"))
+        .and_then(parse_number)
+        .map(|v| v.round() as i64)
+}
+
+fn get_remaining_percent(obj: &Value) -> Option<String> {
+    if let Some(used) = get_used_percent(obj) {
+        return Some(format_percent(100.0 - used));
+    }
+    if let Some(rem) = obj
+        .get("remainingPercent")
+        .or_else(|| obj.get("remaining_percent"))
+        .and_then(parse_number)
+    {
+        return Some(format_percent(rem));
+    }
+    obj.get("remaining")
+        .and_then(parse_number)
+        .map(format_percent)
 }
 
 fn parse_number(v: &Value) -> Option<f64> {
-    v.as_f64()
-        .or_else(|| v.as_i64().map(|n| n as f64))
-        .or_else(|| v.as_u64().map(|n| n as f64))
-        .or_else(|| {
+  v.as_f64()
+      .or_else(|| v.as_i64().map(|n| n as f64))
+      .or_else(|| v.as_u64().map(|n| n as f64))
+      .or_else(|| {
             v.as_str().and_then(|s| {
                 let cleaned = s.trim().replace([',', '%'], "");
                 if cleaned.is_empty() {
