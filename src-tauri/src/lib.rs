@@ -806,7 +806,9 @@ fn format_percent(value: f64) -> String {
 }
 
 fn get_rate_limits_obj(result: &Value) -> Option<&Value> {
-    result.get("rateLimits").or_else(|| result.get("rate_limits"))
+    result
+        .get("rateLimits")
+        .or_else(|| result.get("rate_limits"))
 }
 
 fn get_used_percent(obj: &Value) -> Option<f64> {
