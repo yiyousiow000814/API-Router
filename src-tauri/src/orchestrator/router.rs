@@ -70,6 +70,16 @@ impl RouterState {
         *self.manual_override.write() = provider;
     }
 
+    pub fn sync_with_config(&self, cfg: &AppConfig, now_ms: u64) {
+        let mut health = self.health.write();
+        for name in cfg.providers.keys() {
+            health
+                .entry(name.clone())
+                .or_insert_with(|| ProviderHealth::new(now_ms));
+        }
+        health.retain(|name, _| cfg.providers.contains_key(name));
+    }
+
     pub fn decide(&self, cfg: &AppConfig) -> (String, &'static str) {
         if let Some(p) = self.manual_override.read().clone() {
             if self.is_routable(&p) {

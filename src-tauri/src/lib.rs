@@ -1,13 +1,15 @@
 mod app_state;
+mod codex_app_server;
 mod orchestrator;
 
 use tauri::Manager;
-use tauri::WebviewUrl;
 
 use crate::app_state::build_state;
 use crate::orchestrator::gateway::serve_in_background;
 use crate::orchestrator::store::unix_ms;
+use serde_json::Value;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -134,10 +136,10 @@ pub fn run() {
             clear_usage_token,
             set_usage_base_url,
             clear_usage_base_url,
-            official_web_open,
-            official_web_close,
-            official_web_refresh,
-            official_web_report
+            probe_provider,
+            codex_account_login,
+            codex_account_logout,
+            codex_account_refresh
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -147,6 +149,7 @@ pub fn run() {
 fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value {
     let cfg = state.gateway.cfg.read().clone();
     let now = unix_ms();
+    state.gateway.router.sync_with_config(&cfg, now);
     let providers = state.gateway.router.snapshot(now);
     let manual_override = state.gateway.router.manual_override.read().clone();
     let recent_events = state.gateway.store.list_events(50);
@@ -154,10 +157,10 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
     let quota = state.gateway.store.list_quota_snapshots();
     let ledgers = state.gateway.store.list_ledgers();
     let last_activity = state.gateway.last_activity_unix_ms.load(Ordering::Relaxed);
-    let official_web = state
+    let codex_account = state
         .gateway
         .store
-        .get_official_web_snapshot()
+        .get_codex_account_snapshot()
         .unwrap_or(serde_json::json!({"ok": false}));
 
     serde_json::json!({
@@ -170,7 +173,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
       "quota": quota,
       "ledgers": ledgers,
       "last_activity_unix_ms": last_activity,
-      "official_web": official_web
+      "codex_account": codex_account
     })
 }
 
@@ -479,160 +482,123 @@ fn clear_usage_base_url(
     Ok(())
 }
 
-const OFFICIAL_WEB_URL: &str = "https://chatgpt.com/codex/settings/usage";
-
 #[tauri::command]
-fn official_web_open(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("official_web") {
-        let w2 = w.clone();
-        let _ = w.run_on_main_thread(move || {
-            let _ = w2.show();
-            let _ = w2.set_focus();
-        });
-        return Ok(());
-    }
+async fn probe_provider(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+) -> Result<(), String> {
+    let cfg = state.gateway.cfg.read().clone();
+    let Some(p) = cfg.providers.get(&provider) else {
+        return Err(format!("unknown provider: {provider}"));
+    };
+    let now = unix_ms();
+    state.gateway.router.sync_with_config(&cfg, now);
+    let key = state.secrets.get_provider_key(&provider);
 
-    let url = OFFICIAL_WEB_URL
-        .parse()
-        .map_err(|e| format!("invalid url: {e}"))?;
-    tauri::WebviewWindowBuilder::new(&app, "official_web", WebviewUrl::External(url))
-        .title("Official (Web)")
-        .resizable(true)
-        .decorations(true)
-        .inner_size(980.0, 760.0)
-        .build()
-        .map_err(|e| e.to_string())
-        .inspect(|w| {
-            // On Windows, closing a remote WebView can occasionally hang; treat it like the main
-            // window and hide on close so the app stays usable.
-            let w2 = w.clone();
-            w.on_window_event(move |event| {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = w2.hide();
-                }
-            });
+    let (status, _payload) = state
+        .gateway
+        .upstream
+        .get_json(
+            p,
+            "/v1/models",
+            key.as_deref(),
+            None,
+            cfg.routing.request_timeout_seconds,
+        )
+        .await
+        .map_err(|e| {
+            state
+                .gateway
+                .router
+                .mark_failure(&provider, &cfg, &format!("request error: {e}"), now);
+            state.gateway.store.add_event(
+                &provider,
+                "error",
+                "health probe failed (request error)",
+            );
+            format!("request error: {e}")
         })?;
 
-    Ok(())
-}
-
-#[tauri::command]
-fn official_web_close(app: tauri::AppHandle) -> Result<(), String> {
-    let Some(w) = app.get_webview_window("official_web") else {
+    if (200..300).contains(&status) {
+        state.gateway.router.mark_success(&provider, now);
+        state
+            .gateway
+            .store
+            .add_event(&provider, "info", "health probe ok");
         return Ok(());
-    };
-    // Use main-thread scheduling to ensure the hide takes effect even if the webview is busy.
-    let w2 = w.clone();
-    w.run_on_main_thread(move || {
-        let _ = w2.hide();
-    })
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    }
+
+    let err = format!("http {status}");
+    state
+        .gateway
+        .router
+        .mark_failure(&provider, &cfg, &err, now);
+    state
+        .gateway
+        .store
+        .add_event(&provider, "error", "health probe failed");
+    Err(err)
 }
 
 #[tauri::command]
-fn official_web_refresh(app: tauri::AppHandle, state: tauri::State<'_, app_state::AppState>) -> Result<(), String> {
-    let Some(w) = app.get_webview_window("official_web") else {
-        return Err("official web window not open".to_string());
-    };
-
-    // Rotate nonce so random pages can't spoof a report without a fresh refresh.
-    let nonce = {
-        let mut g = state.official_web_nonce.lock();
-        *g = format!("ow_{}", uuid::Uuid::new_v4().simple());
-        g.clone()
-    };
-
-    // Use webview JS execution to extract minimal signals from the logged-in web session.
-    // This avoids needing to read cookies from the host platform.
-    let js = format!(
-        r#"(async () => {{
-  try {{
-    const href = String(location.href || "");
-    const bodyText = String(document?.body?.innerText || "");
-    const payload = {{
-      nonce: {nonce_json},
-      href,
-      bodyText,
-    }};
-    if (window.__TAURI__?.core?.invoke) {{
-      await window.__TAURI__.core.invoke("official_web_report", payload);
-    }}
-  }} catch (e) {{
-    try {{
-      if (window.__TAURI__?.core?.invoke) {{
-        await window.__TAURI__.core.invoke("official_web_report", {{
-          nonce: {nonce_json},
-          href: String(location.href || ""),
-          bodyText: "",
-          error: String(e)
-        }});
-      }}
-    }} catch (_) {{}}
-  }}
-}})();"#,
-        nonce_json = serde_json::to_string(&nonce).unwrap_or_else(|_| "\"\"".to_string())
-    );
-    let w2 = w.clone();
-    w.run_on_main_thread(move || {
-        let _ = w2.eval(&js);
-    })
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[derive(serde::Deserialize)]
-struct OfficialWebReport {
-    nonce: String,
-    #[serde(default)]
-    href: String,
-    #[serde(default, alias = "bodyText")]
-    body_text: String,
-    #[serde(default)]
-    error: String,
-}
-
-#[tauri::command]
-fn official_web_report(state: tauri::State<'_, app_state::AppState>, report: OfficialWebReport) -> Result<(), String> {
-    let expected = state.official_web_nonce.lock().clone();
-    if report.nonce != expected {
-        return Err("stale nonce".to_string());
-    }
-
-    let href = report.href;
-    let body = report.body_text;
-
-    // Very lightweight parser (best-effort). We don't rely on a stable API;
-    // this is just for displaying "signed in" and a remaining value if present.
-    let mut signed_in = true;
-    let low = body.to_ascii_lowercase();
-    if low.contains("log in") || low.contains("sign in") {
-        signed_in = false;
-    }
-
-    let mut remaining: Option<f64> = None;
-    if !body.is_empty() {
-        let re = regex::Regex::new(r"(?i)credits remaining[^0-9]*([0-9]+(?:\\.[0-9]+)?)").ok();
-        if let Some(re) = re {
-            if let Some(caps) = re.captures(&body) {
-                if let Some(m) = caps.get(1) {
-                    remaining = m.as_str().parse::<f64>().ok();
-                }
-            }
-        }
-    }
-
+async fn codex_account_login(state: tauri::State<'_, app_state::AppState>) -> Result<(), String> {
+    let result = codex_app_server::request(
+        "account/login/start",
+        serde_json::json!({ "type": "chatgpt" }),
+    )
+    .await?;
+    let auth_url = result
+        .get("authUrl")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "codex login response missing authUrl".to_string())?;
+    codex_app_server::open_external_url(auth_url)?;
     let snap = serde_json::json!({
       "ok": true,
       "checked_at_unix_ms": unix_ms(),
-      "signed_in": signed_in,
-      "href": href,
-      "remaining": remaining,
-      "error": report.error
+      "signed_in": false,
+      "remaining": null,
+      "unlimited": null,
+      "error": ""
     });
+    state.gateway.store.put_codex_account_snapshot(&snap);
+    let gateway = state.gateway.clone();
+    tauri::async_runtime::spawn(async move {
+        let deadline = unix_ms().saturating_add(120_000);
+        loop {
+            if unix_ms() >= deadline {
+                break;
+            }
+            if let Ok(true) = refresh_codex_account_snapshot(&gateway).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
+    Ok(())
+}
 
-    state.gateway.store.put_official_web_snapshot(&snap);
+#[tauri::command]
+async fn codex_account_logout(state: tauri::State<'_, app_state::AppState>) -> Result<(), String> {
+    let mut error = String::new();
+    if let Err(e) = codex_app_server::request("account/logout", Value::Null).await {
+        error = e;
+    }
+    let snap = serde_json::json!({
+      "ok": error.is_empty(),
+      "checked_at_unix_ms": unix_ms(),
+      "signed_in": false,
+      "remaining": null,
+      "unlimited": null,
+      "error": error
+    });
+    state.gateway.store.put_codex_account_snapshot(&snap);
+    Ok(())
+}
+
+#[tauri::command]
+async fn codex_account_refresh(state: tauri::State<'_, app_state::AppState>) -> Result<(), String> {
+    let gateway = state.gateway.clone();
+    let _ = refresh_codex_account_snapshot(&gateway).await?;
     Ok(())
 }
 
@@ -659,4 +625,97 @@ fn persist_config(state: &tauri::State<'_, app_state::AppState>) -> anyhow::Resu
     let cfg = state.gateway.cfg.read().clone();
     std::fs::write(&state.config_path, toml::to_string_pretty(&cfg)?)?;
     Ok(())
+}
+
+async fn refresh_codex_account_snapshot(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+) -> Result<bool, String> {
+    let mut signed_in = false;
+    let mut remaining: Option<String> = None;
+    let mut unlimited: Option<bool> = None;
+    let mut error = String::new();
+
+    let auth = codex_app_server::request("getAuthStatus", Value::Null).await?;
+    if let Some(tok) = auth.get("authToken").and_then(|v| v.as_str()) {
+        if !tok.trim().is_empty() {
+            signed_in = true;
+        }
+    }
+
+    let rate_limits = codex_app_server::request("account/rateLimits/read", Value::Null).await;
+    match rate_limits {
+        Ok(result) => {
+            signed_in = true;
+            let used_percent = result
+                .get("rateLimits")
+                .and_then(|v| v.get("secondary"))
+                .and_then(|v| v.get("usedPercent"))
+                .and_then(parse_number);
+            if let Some(credits) = result
+                .get("rateLimits")
+                .and_then(|v| v.get("credits"))
+                .and_then(|v| v.as_object())
+            {
+                remaining = credits
+                    .get("balance")
+                    .and_then(parse_number)
+                    .map(|n| n.to_string())
+                    .or_else(|| {
+                        credits
+                            .get("balance")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    });
+                unlimited = credits.get("unlimited").and_then(|v| v.as_bool());
+            }
+            if unlimited != Some(true) {
+                if let Some(used) = used_percent {
+                    remaining = Some(format_percent(100.0 - used));
+                }
+            }
+        }
+        Err(e) => {
+            if !signed_in {
+                error = e;
+            }
+        }
+    }
+
+    let snap = serde_json::json!({
+      "ok": error.is_empty(),
+      "checked_at_unix_ms": unix_ms(),
+      "signed_in": signed_in,
+      "remaining": remaining,
+      "unlimited": unlimited,
+      "error": error
+    });
+    gateway.store.put_codex_account_snapshot(&snap);
+    Ok(signed_in)
+}
+
+fn format_percent(value: f64) -> String {
+    let mut pct = if value.is_finite() { value } else { 0.0 };
+    if pct < 1.0 {
+        pct = 0.0;
+    }
+    if pct > 100.0 {
+        pct = 100.0;
+    }
+    format!("{}%", pct.floor() as i64)
+}
+
+fn parse_number(v: &Value) -> Option<f64> {
+    v.as_f64()
+        .or_else(|| v.as_i64().map(|n| n as f64))
+        .or_else(|| v.as_u64().map(|n| n as f64))
+        .or_else(|| {
+            v.as_str().and_then(|s| {
+                let cleaned = s.trim().replace([',', '%'], "");
+                if cleaned.is_empty() {
+                    None
+                } else {
+                    cleaned.parse::<f64>().ok()
+                }
+            })
+        })
 }

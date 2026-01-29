@@ -27,7 +27,7 @@ tauri-plugin-single-instance = "2"
 axum = "0.7"
 http = "1"
 hyper = { version = "1", features = ["http1", "server"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "time"] }
 tower = "0.5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "gzip", "brotli", "deflate"] }
 uuid = { version = "1", features = ["v4"] }
@@ -42,7 +42,7 @@ bytes = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 urlencoding = "2"
 fastrand = "2"
-regex = "1"
+open = "5"
 
 [dev-dependencies]
 tempfile = "3"

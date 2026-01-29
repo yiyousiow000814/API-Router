@@ -99,6 +99,22 @@ fn derive_origin(base_url: &str) -> Option<String> {
     Some(origin.as_str().trim_end_matches('/').to_string())
 }
 
+fn is_packycode_base(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .map(|host| host.ends_with("packycode.com"))
+        .unwrap_or(false)
+}
+
+fn is_ppchat_base(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .map(|host| host.ends_with("ppchat.vip"))
+        .unwrap_or(false)
+}
+
 fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
     // User-provided usage_base_url always wins.
     if let Some(u) = provider.usage_base_url.as_deref() {
@@ -126,6 +142,15 @@ fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
         }
     }
 
+    if is_packycode_base(&provider.base_url) {
+        out.push("https://www.packycode.com".to_string());
+        out.push("https://packycode.com".to_string());
+    }
+
+    if is_ppchat_base(&provider.base_url) {
+        out.push("https://his.ppchat.vip".to_string());
+    }
+
     out.sort();
     out.dedup();
     out
@@ -140,7 +165,10 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     };
 
     let provider_key = st.secrets.get_provider_key(provider_name);
-    let usage_token = st.secrets.get_usage_token(provider_name);
+    let mut usage_token = st.secrets.get_usage_token(provider_name);
+    if usage_token.is_none() && is_packycode_base(&p.base_url) {
+        usage_token = provider_key.clone();
+    }
     let bases = candidate_quota_bases(p);
     if bases.is_empty() {
         let mut out = QuotaSnapshot::empty(UsageKind::None);
@@ -299,25 +327,28 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
                     continue;
                 }
 
-                let info = j.pointer("/data/info").cloned().unwrap_or(Value::Null);
-                if info.is_null() {
-                    last_err = "unexpected response".to_string();
-                    continue;
+                if let Some((remaining, today_used, today_added)) = extract_token_stats(&j) {
+                    out.remaining = remaining;
+                    out.today_used = today_used;
+                    out.today_added = today_added;
+                    out.updated_at_unix_ms = unix_ms();
+                    out.last_error.clear();
+                    return out;
                 }
-                let stats = j
-                    .pointer("/data/stats/today_stats")
-                    .cloned()
-                    .unwrap_or(Value::Null);
 
-                out.remaining = as_f64(info.get("remain_quota_display"))
-                    .or_else(|| as_f64(info.get("remain_quota")));
-                out.today_used = as_f64(stats.get("used_quota"))
-                    .or_else(|| as_f64(stats.get("used_quota_display")));
-                out.today_added = as_f64(stats.get("added_quota"))
-                    .or_else(|| as_f64(stats.get("added_quota_display")));
-                out.updated_at_unix_ms = unix_ms();
-                out.last_error.clear();
-                return out;
+                if let Some((remaining, today_used, today_added)) =
+                    fetch_token_logs_stats(&client, base, k).await
+                {
+                    out.remaining = remaining;
+                    out.today_used = today_used;
+                    out.today_added = today_added;
+                    out.updated_at_unix_ms = unix_ms();
+                    out.last_error.clear();
+                    return out;
+                }
+
+                last_err = "unexpected response".to_string();
+                continue;
             }
             Err(e) => {
                 last_err = format!("request error: {e}");
@@ -332,6 +363,110 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
         out.last_error = last_err;
     }
     out
+}
+
+fn extract_token_stats(payload: &Value) -> Option<(Option<f64>, Option<f64>, Option<f64>)> {
+    if let Some(info) = payload.pointer("/data/info") {
+        if info.is_object() {
+            let stats = payload
+                .pointer("/data/stats/today_stats")
+                .unwrap_or(&Value::Null);
+            let remaining = as_f64(info.get("remain_quota_display"))
+                .or_else(|| as_f64(info.get("remain_quota")));
+            let today_used =
+                as_f64(stats.get("used_quota")).or_else(|| as_f64(stats.get("used_quota_display")));
+            let today_added = as_f64(stats.get("added_quota"))
+                .or_else(|| as_f64(stats.get("added_quota_display")));
+            return Some((remaining, today_used, today_added));
+        }
+    }
+
+    let token_info = payload
+        .pointer("/data/token_info")
+        .or_else(|| payload.pointer("/data/data/token_info"))
+        .or_else(|| payload.pointer("/token_info"));
+    let token_info = token_info?;
+    if !token_info.is_object() {
+        return None;
+    }
+
+    let mut remaining = as_f64(token_info.get("remain_quota_display"))
+        .or_else(|| as_f64(token_info.get("remain_quota")))
+        .or_else(|| as_f64(token_info.get("remaining_quota")));
+    let mut today_used = as_f64(token_info.get("today_used_quota"))
+        .or_else(|| as_f64(token_info.get("today_used_quota_display")))
+        .or_else(|| as_f64(token_info.get("used_quota")))
+        .or_else(|| as_f64(token_info.get("used_quota_display")));
+    let mut today_added = as_f64(token_info.get("today_added_quota"))
+        .or_else(|| as_f64(token_info.get("today_added_quota_display")))
+        .or_else(|| as_f64(token_info.get("added_quota")))
+        .or_else(|| as_f64(token_info.get("added_quota_display")));
+    let today_stats = payload
+        .pointer("/data/today_stats")
+        .or_else(|| payload.pointer("/data/stats/today_stats"));
+    if let Some(stats) = today_stats {
+        if today_used.is_none() {
+            today_used =
+                as_f64(stats.get("used_quota")).or_else(|| as_f64(stats.get("used_quota_display")));
+        }
+        if today_added.is_none() {
+            today_added = as_f64(stats.get("added_quota"))
+                .or_else(|| as_f64(stats.get("added_quota_display")));
+        }
+    }
+    if remaining.is_none() {
+        if let (Some(added), Some(used)) = (today_added, today_used) {
+            remaining = Some(added - used);
+        }
+    }
+    if remaining.is_none() && today_used.is_none() && today_added.is_none() {
+        return None;
+    }
+    Some((remaining, today_used, today_added))
+}
+
+async fn fetch_token_logs_stats(
+    client: &reqwest::Client,
+    base: &str,
+    token_key: &str,
+) -> Option<(Option<f64>, Option<f64>, Option<f64>)> {
+    let url = format!(
+        "{base}/api/token-logs?token_key={}&page=1&page_size=1",
+        urlencoding::encode(token_key)
+    );
+    let resp = client
+        .get(url)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let j = resp.json::<Value>().await.ok()?;
+    let token_info = j
+        .pointer("/data/token_info")
+        .or_else(|| j.pointer("/data/data/token_info"))
+        .or_else(|| j.pointer("/token_info"))?;
+    if !token_info.is_object() {
+        return None;
+    }
+
+    let remaining = as_f64(token_info.get("remain_quota_display"))
+        .or_else(|| as_f64(token_info.get("remain_quota")))
+        .or_else(|| as_f64(token_info.get("remaining_quota")));
+    let today_used = as_f64(token_info.get("today_used_quota"))
+        .or_else(|| as_f64(token_info.get("today_used_quota_display")))
+        .or_else(|| as_f64(token_info.get("used_quota")))
+        .or_else(|| as_f64(token_info.get("used_quota_display")));
+    let today_added = as_f64(token_info.get("today_added_quota"))
+        .or_else(|| as_f64(token_info.get("today_added_quota_display")))
+        .or_else(|| as_f64(token_info.get("added_quota")))
+        .or_else(|| as_f64(token_info.get("added_quota_display")));
+    if remaining.is_none() && today_used.is_none() && today_added.is_none() {
+        return None;
+    }
+    Some((remaining, today_used, today_added))
 }
 
 async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnapshot {
@@ -420,7 +555,16 @@ fn as_f64(v: Option<&Value>) -> Option<f64> {
     v.as_f64()
         .or_else(|| v.as_i64().map(|n| n as f64))
         .or_else(|| v.as_u64().map(|n| n as f64))
-        .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+        .or_else(|| {
+            v.as_str().and_then(|s| {
+                let cleaned = s.trim().replace([',', '%'], "");
+                if cleaned.is_empty() {
+                    None
+                } else {
+                    cleaned.parse::<f64>().ok()
+                }
+            })
+        })
 }
 
 #[cfg(test)]
@@ -556,6 +700,176 @@ mod tests {
         assert!(snap.last_error.is_empty());
         assert_eq!(snap.kind.as_str(), "token_stats");
         assert_eq!(snap.remaining.unwrap_or(0.0), 12.3);
+    }
+
+    async fn start_mock_server_token_info() -> (String, tokio::task::JoinHandle<()>) {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        use axum::{Json, Router};
+
+        let app = Router::new().route(
+            "/api/token-stats",
+            get(|| async move {
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                      "data": {
+                        "data": {
+                          "token_info": {
+                            "remain_quota_display": 2953,
+                            "today_used_quota_display": 12040,
+                            "today_added_quota_display": 14993
+                          }
+                        }
+                      }
+                    })),
+                )
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}:{}", addr.ip(), addr.port());
+        let h = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (url, h)
+    }
+
+    async fn start_mock_server_today_stats_only() -> (String, tokio::task::JoinHandle<()>) {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        use axum::{Json, Router};
+
+        let app = Router::new().route(
+            "/api/token-stats",
+            get(|| async move {
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                      "data": {
+                        "today_stats": {
+                          "used_quota": 1561,
+                          "added_quota": 15000
+                        },
+                        "token_info": {
+                          "remain_quota_display": 13439
+                        }
+                      }
+                    })),
+                )
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}:{}", addr.ip(), addr.port());
+        let h = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (url, h)
+    }
+
+    async fn start_mock_server_token_logs_only() -> (String, tokio::task::JoinHandle<()>) {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        use axum::{Json, Router};
+
+        let app = Router::new()
+            .route(
+                "/api/token-stats",
+                get(|| async move {
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                          "data": {}
+                        })),
+                    )
+                }),
+            )
+            .route(
+                "/api/token-logs",
+                get(|| async move {
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                          "data": {
+                            "data": {
+                              "token_info": {
+                                "remain_quota_display": "1,343",
+                                "today_used_quota_display": "12,040",
+                                "today_added_quota_display": "14,993"
+                              }
+                            }
+                          }
+                        })),
+                    )
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}:{}", addr.ip(), addr.port());
+        let h = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (url, h)
+    }
+
+    #[tokio::test]
+    async fn token_stats_accepts_token_info_shape() {
+        let (base, _h) = start_mock_server_token_info().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "k1").unwrap();
+        let st = mk_state(format!("{base}/v1"), secrets);
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        assert!(snap.last_error.is_empty());
+        assert_eq!(snap.kind.as_str(), "token_stats");
+        assert_eq!(snap.remaining.unwrap_or(0.0), 2953.0);
+        assert_eq!(snap.today_used.unwrap_or(0.0), 12040.0);
+        assert_eq!(snap.today_added.unwrap_or(0.0), 14993.0);
+    }
+
+    #[tokio::test]
+    async fn token_logs_fallback_uses_token_info() {
+        let (base, _h) = start_mock_server_token_logs_only().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "k1").unwrap();
+        let st = mk_state(format!("{base}/v1"), secrets);
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        assert!(snap.last_error.is_empty());
+        assert_eq!(snap.kind.as_str(), "token_stats");
+        assert_eq!(snap.remaining.unwrap_or(0.0), 1343.0);
+        assert_eq!(snap.today_used.unwrap_or(0.0), 12040.0);
+        assert_eq!(snap.today_added.unwrap_or(0.0), 14993.0);
+    }
+
+    #[tokio::test]
+    async fn token_stats_uses_today_stats_when_present() {
+        let (base, _h) = start_mock_server_today_stats_only().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "k1").unwrap();
+        let st = mk_state(format!("{base}/v1"), secrets);
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        assert!(snap.last_error.is_empty());
+        assert_eq!(snap.kind.as_str(), "token_stats");
+        assert_eq!(snap.remaining.unwrap_or(0.0), 13439.0);
+        assert_eq!(snap.today_used.unwrap_or(0.0), 1561.0);
+        assert_eq!(snap.today_added.unwrap_or(0.0), 15000.0);
+    }
+
+    #[test]
+    fn as_f64_strips_commas_and_percent() {
+        let v = serde_json::json!("14,993");
+        assert_eq!(as_f64(Some(&v)).unwrap_or(0.0), 14993.0);
+        let v = serde_json::json!("13%");
+        assert_eq!(as_f64(Some(&v)).unwrap_or(0.0), 13.0);
     }
 
     #[tokio::test]

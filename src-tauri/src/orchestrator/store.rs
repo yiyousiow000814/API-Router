@@ -237,15 +237,18 @@ impl Store {
         out.into_iter().rev().take(limit).collect()
     }
 
-    pub fn put_official_web_snapshot(&self, snapshot: &Value) {
+    pub fn put_codex_account_snapshot(&self, snapshot: &Value) {
         let _ = self.db.insert(
-            b"official_web:snapshot",
+            b"codex_account:snapshot",
             serde_json::to_vec(snapshot).unwrap_or_default(),
         );
         let _ = self.db.flush();
     }
 
-    pub fn get_official_web_snapshot(&self) -> Option<Value> {
+    pub fn get_codex_account_snapshot(&self) -> Option<Value> {
+        if let Ok(Some(v)) = self.db.get(b"codex_account:snapshot") {
+            return serde_json::from_slice(&v).ok();
+        }
         let v = self.db.get(b"official_web:snapshot").ok()??;
         serde_json::from_slice(&v).ok()
     }

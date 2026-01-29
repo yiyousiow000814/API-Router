@@ -41,12 +41,12 @@ type Status = {
     }
   >
   last_activity_unix_ms: number
-  official_web: {
+  codex_account: {
     ok: boolean
     checked_at_unix_ms?: number
     signed_in?: boolean
-    remaining?: number | null
-    href?: string
+    remaining?: string | null
+    unlimited?: boolean | null
     error?: string
   }
 }
@@ -88,7 +88,136 @@ function fmtWhen(unixMs: number): string {
   return `${dd}-${mm}-${yyyy} ${hh}:${min}:${ss}`
 }
 
+function pctOf(part?: number | null, total?: number | null): number | null {
+  if (part == null || total == null) return null
+  if (!Number.isFinite(part) || !Number.isFinite(total) || total <= 0) return null
+  const pct = (part / total) * 100
+  if (!Number.isFinite(pct)) return null
+  return Math.max(0, Math.min(100, pct))
+}
+
+function fmtPct(pct: number | null): string {
+  if (pct == null) return '-'
+  const v = pct < 1 ? 0 : Math.floor(pct)
+  return `${v}%`
+}
+
+function fmtAmount(value?: number | null): string {
+  if (value == null || !Number.isFinite(value)) return '-'
+  return Math.round(value).toLocaleString()
+}
+
+function parsePct(value?: string | null): string | null {
+  if (!value) return null
+  const match = String(value).match(/(\d+(?:\.\d+)?)\s*%/)
+  if (!match) return null
+  const num = Math.max(0, Math.min(100, Number(match[1])))
+  if (!Number.isFinite(num)) return null
+  return `${Math.floor(num)}%`
+}
+
+const devStatus: Status = {
+  listen: { host: '127.0.0.1', port: 4000 },
+  preferred_provider: 'provider_1',
+  manual_override: null,
+  providers: {
+    provider_1: {
+      status: 'healthy',
+      consecutive_failures: 0,
+      cooldown_until_unix_ms: 0,
+      last_error: '',
+      last_ok_at_unix_ms: Date.now() - 120000,
+      last_fail_at_unix_ms: 0,
+    },
+    provider_2: {
+      status: 'unknown',
+      consecutive_failures: 1,
+      cooldown_until_unix_ms: Date.now() + 300000,
+      last_error: 'endpoint not found',
+      last_ok_at_unix_ms: Date.now() - 3600000,
+      last_fail_at_unix_ms: Date.now() - 240000,
+    },
+  },
+  metrics: {
+    provider_1: { ok_requests: 210, error_requests: 3, total_tokens: 128400 },
+    provider_2: { ok_requests: 12, error_requests: 2, total_tokens: 3400 },
+  },
+  recent_events: [],
+  quota: {
+    provider_1: {
+      kind: 'token_stats',
+      updated_at_unix_ms: Date.now() - 90000,
+      remaining: 8320,
+      today_used: 2680,
+      today_added: 11000,
+      daily_spent_usd: null,
+      daily_budget_usd: null,
+      monthly_spent_usd: null,
+      monthly_budget_usd: null,
+      last_error: '',
+    },
+    provider_2: {
+      kind: 'budget_info',
+      updated_at_unix_ms: Date.now() - 420000,
+      remaining: null,
+      today_used: null,
+      today_added: null,
+      daily_spent_usd: 1.4,
+      daily_budget_usd: 5,
+      monthly_spent_usd: 12.3,
+      monthly_budget_usd: 40,
+      last_error: '',
+    },
+  },
+  ledgers: {},
+  last_activity_unix_ms: Date.now() - 30000,
+  codex_account: {
+    ok: true,
+    checked_at_unix_ms: Date.now() - 90000,
+    signed_in: true,
+    remaining: '13%',
+    unlimited: false,
+  },
+}
+
+const devConfig: Config = {
+  listen: { host: '127.0.0.1', port: 4000 },
+  routing: {
+    preferred_provider: 'provider_1',
+    auto_return_to_preferred: true,
+    preferred_stable_seconds: 120,
+    failure_threshold: 2,
+    cooldown_seconds: 120,
+    request_timeout_seconds: 120,
+  },
+  providers: {
+    provider_1: {
+      display_name: 'provider_1',
+      base_url: 'https://code.ppchat.vip/v1',
+      usage_adapter: 'ppchat',
+      usage_base_url: 'https://code.ppchat.vip',
+      has_key: true,
+      key_preview: 'sk-pp********c61',
+      has_usage_token: false,
+    },
+    provider_2: {
+      display_name: 'provider_2',
+      base_url: 'https://codex-api.packycode.com/v1',
+      usage_adapter: 'packycode',
+      usage_base_url: 'https://codex-api.packycode.com',
+      has_key: true,
+      key_preview: 'sk-pk********mN5',
+      has_usage_token: true,
+    },
+  },
+}
+
 export default function App() {
+  const tauriReady = useMemo(() => {
+    if (typeof window === 'undefined') return false
+    const w = window as unknown as { __TAURI__?: { core?: { invoke?: unknown } } }
+    return Boolean(w.__TAURI__?.core?.invoke)
+  }, [])
   const [status, setStatus] = useState<Status | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
   const [baselineBaseUrls, setBaselineBaseUrls] = useState<Record<string, string>>({})
@@ -96,14 +225,7 @@ export default function App() {
   const [override, setOverride] = useState<string>('') // '' => auto
   const [newProviderName, setNewProviderName] = useState<string>('')
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
-  const [showEvents, setShowEvents] = useState<boolean>(false)
-  const [eventsMax, setEventsMax] = useState<number>(20)
   const [keyModal, setKeyModal] = useState<{ open: boolean; provider: string; value: string }>({
-    open: false,
-    provider: '',
-    value: '',
-  })
-  const [usageTokenModal, setUsageTokenModal] = useState<{ open: boolean; provider: string; value: string }>({
     open: false,
     provider: '',
     value: '',
@@ -143,6 +265,10 @@ export default function App() {
   }
 
   async function refreshStatus() {
+    if (!tauriReady) {
+      setStatus(devStatus)
+      return
+    }
     try {
       const s = await invoke<Status>('get_status')
       setStatus(s)
@@ -153,6 +279,14 @@ export default function App() {
   }
 
   async function refreshConfig() {
+    if (!tauriReady) {
+      setConfig(devConfig)
+      setBaselineBaseUrls(
+        Object.fromEntries(Object.entries(devConfig.providers).map(([name, p]) => [name, p.base_url])),
+      )
+      setGatewayTokenPreview('ao_dev********7f2a')
+      return
+    }
     try {
       const c = await invoke<Config>('get_config')
       setConfig(c)
@@ -165,8 +299,6 @@ export default function App() {
       console.error(e)
     }
   }
-
-  const events = useMemo(() => (status?.recent_events ?? []).slice(0, eventsMax), [status, eventsMax])
 
   async function applyOverride(next: string) {
     try {
@@ -195,6 +327,16 @@ export default function App() {
         baseUrl: p.base_url,
       })
       flashToast(`Saved: ${name}`)
+      try {
+        await invoke('probe_provider', { provider: name })
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+      try {
+        await invoke('refresh_quota', { provider: name })
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
       await refreshStatus()
       await refreshConfig()
     } catch (e) {
@@ -221,6 +363,16 @@ export default function App() {
       await invoke('set_provider_key', { provider, key })
       setKeyModal({ open: false, provider: '', value: '' })
       flashToast(`Key set: ${provider}`)
+      try {
+        await invoke('probe_provider', { provider })
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+      try {
+        await invoke('refresh_quota', { provider })
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
       await refreshStatus()
       await refreshConfig()
     } catch (e) {
@@ -254,32 +406,6 @@ export default function App() {
       await invoke('refresh_quota_all')
       await refreshStatus()
       flashToast('Usage refreshed')
-    } catch (e) {
-      flashToast(String(e), 'error')
-    }
-  }
-
-  async function saveUsageToken() {
-    const provider = usageTokenModal.provider
-    const token = usageTokenModal.value
-    if (!provider || !token) return
-    try {
-      await invoke('set_usage_token', { provider, token })
-      setUsageTokenModal({ open: false, provider: '', value: '' })
-      flashToast(`Usage token set: ${provider}`)
-      await refreshStatus()
-      await refreshConfig()
-    } catch (e) {
-      flashToast(String(e), 'error')
-    }
-  }
-
-  async function clearUsageToken(name: string) {
-    try {
-      await invoke('clear_usage_token', { provider: name })
-      flashToast(`Usage token cleared: ${name}`)
-      await refreshStatus()
-      await refreshConfig()
     } catch (e) {
       flashToast(String(e), 'error')
     }
@@ -333,6 +459,15 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!tauriReady) {
+      setStatus(devStatus)
+      setConfig(devConfig)
+      setBaselineBaseUrls(
+        Object.fromEntries(Object.entries(devConfig.providers).map(([name, p]) => [name, p.base_url])),
+      )
+      setGatewayTokenPreview('ao_dev********7f2a')
+      return
+    }
     void refreshStatus()
     void refreshConfig()
     // Fetch usage once when opening the app (then only refresh during active gateway usage, or manually).
@@ -367,8 +502,8 @@ export default function App() {
             <div className="aoHint">Loading…</div>
           ) : (
             <>
-              <div className="aoTop">
-                <div className="aoCard">
+              <div className="aoHero">
+                <div className="aoCard aoHeroCard">
                   <div className="aoCardHeader">
                     <div className="aoCardTitle">Status</div>
                     <span className="aoPill aoPulse">
@@ -376,68 +511,109 @@ export default function App() {
                       <span className="aoPillText">running</span>
                     </span>
                   </div>
-                  <div className="aoKvp">
-                    <div className="aoKey">Gateway</div>
-                    <div className="aoVal">
+                  <div className="aoStatGrid">
+                    <div className="aoStatLabel">Gateway</div>
+                    <div className="aoStatValue">
                       {status.listen.host}:{status.listen.port}
                     </div>
-                    <div className="aoKey">Preferred</div>
-                    <div className="aoVal">{status.preferred_provider}</div>
-                    <div className="aoKey">Override</div>
-                    <div className="aoVal">{status.manual_override ?? '(auto)'}</div>
+                    <div className="aoStatLabel">Preferred</div>
+                    <div className="aoStatValue">{status.preferred_provider}</div>
+                    <div className="aoStatLabel">Override</div>
+                    <div className="aoStatValue">{status.manual_override ?? '(auto)'}</div>
+                  </div>
+                  <div className="aoDivider" />
+                  <div className="aoRow aoRowWrap">
+                    <div className="aoHint" style={{ minWidth: 120 }}>
+                      Gateway token
+                    </div>
+                    <div className="aoVal aoValSmall">{gatewayTokenPreview}</div>
+                    <button
+                      className="aoBtn"
+                      onClick={() => {
+                        setGatewayModalOpen(true)
+                        setGatewayTokenReveal('')
+                      }}
+                    >
+                      Show / Rotate
+                    </button>
+                  </div>
+                  <div className="aoHint">
+                    Put this into{' '}
+                    <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>
+                      .codex/auth.json
+                    </span>{' '}
+                    as
+                    <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>
+                      {' '}
+                      OPENAI_API_KEY
+                    </span>
+                    .
                   </div>
                 </div>
 
-                <div className="aoCard">
+                <div className="aoCard aoHeroCard">
                   <div className="aoCardHeader">
-                    <div className="aoCardTitle">Official (Web)</div>
-                    <span className={`aoPill ${status.official_web?.signed_in ? 'aoPulse' : ''}`.trim()}>
-                      <span className={status.official_web?.signed_in ? 'aoDot' : 'aoDot aoDotBad'} />
-                      <span className="aoPillText">{status.official_web?.signed_in ? 'signed in' : 'signed out'}</span>
+                    <div className="aoCardTitle">Codex (Auth)</div>
+                    <span className={`aoPill ${status.codex_account?.signed_in ? 'aoPulse' : ''}`.trim()}>
+                      <span className={status.codex_account?.signed_in ? 'aoDot' : 'aoDot aoDotBad'} />
+                      <span className="aoPillText">
+                        {status.codex_account?.signed_in ? 'signed in' : 'signed out'}
+                      </span>
                     </span>
                   </div>
                   <div className="aoKvp">
-                    <div className="aoKey">Remaining</div>
-                    <div className="aoVal">
-                      {status.official_web?.remaining != null ? String(status.official_web.remaining) : '-'}
-                    </div>
                     <div className="aoKey">Checked</div>
                     <div className="aoVal">
-                      {status.official_web?.checked_at_unix_ms ? fmtWhen(status.official_web.checked_at_unix_ms) : '-'}
+                      {status.codex_account?.checked_at_unix_ms
+                        ? fmtWhen(status.codex_account.checked_at_unix_ms)
+                        : '-'}
                     </div>
                   </div>
-                  <div className="aoRow" style={{ marginTop: 10, justifyContent: 'flex-end' }}>
+                  <div className="aoDivider" />
+                  <div className="aoLimitGrid">
+                    <div className="aoLimitCard">
+                      <div className="aoMiniLabel">5-hour limit</div>
+                      <div className="aoLimitValue">
+                        -
+                      </div>
+                    </div>
+                    <div className="aoLimitCard">
+                      <div className="aoMiniLabel">Weekly limit</div>
+                      <div className="aoLimitValue">
+                        {parsePct(status.codex_account?.remaining) ?? '-'}
+                      </div>
+                    </div>
+                    <div className="aoLimitCard">
+                      <div className="aoMiniLabel">Code review</div>
+                      <div className="aoLimitValue">
+                        -
+                      </div>
+                    </div>
+                  </div>
+                  <div className="aoHeroActions" style={{ marginTop: 15 }}>
                     <button
-                      className="aoBtn"
+                      className={`aoBtn ${status.codex_account?.signed_in ? 'aoBtnDanger' : ''}`.trim()}
                       onClick={async () => {
                         try {
-                          await invoke('official_web_open')
-                          flashToast('Official web opened')
+                          if (status.codex_account?.signed_in) {
+                            await invoke('codex_account_logout')
+                            flashToast('Codex logged out')
+                          } else {
+                            await invoke('codex_account_login')
+                            flashToast('Codex login opened in browser')
+                          }
                         } catch (e) {
                           flashToast(String(e), 'error')
                         }
                       }}
                     >
-                      Open
-                    </button>
-                    <button
-                      className="aoBtn"
-                      onClick={async () => {
-                        try {
-                          await invoke('official_web_close')
-                          flashToast('Official web closed')
-                        } catch (e) {
-                          flashToast(String(e), 'error')
-                        }
-                      }}
-                    >
-                      Close
+                      {status.codex_account?.signed_in ? 'Log out' : 'Log in'}
                     </button>
                     <button
                       className="aoBtn aoBtnPrimary"
                       onClick={async () => {
                         try {
-                          await invoke('official_web_refresh')
+                          await invoke('codex_account_refresh')
                           flashToast('Checking…')
                         } catch (e) {
                           flashToast(String(e), 'error')
@@ -447,14 +623,14 @@ export default function App() {
                       Refresh
                     </button>
                   </div>
-                  {status.official_web?.error ? (
+                  {status.codex_account?.error ? (
                     <div className="aoHint" style={{ marginTop: 8, color: 'rgba(145, 12, 43, 0.92)' }}>
-                      {status.official_web.error}
+                      {status.codex_account.error}
                     </div>
                   ) : null}
                 </div>
 
-                <div className="aoCard">
+                <div className="aoCard aoHeroCard">
                   <div className="aoCardHeader">
                     <div className="aoCardTitle">Routing</div>
                     <span className={`aoPill ${override === '' ? 'aoPulse' : ''}`.trim()}>
@@ -462,24 +638,47 @@ export default function App() {
                       <span className="aoPillText">{override === '' ? 'auto' : 'locked'}</span>
                     </span>
                   </div>
-                  <div className="aoRow">
-                    <select
-                      className="aoSelect"
-                      value={override}
-                      onChange={(e) => {
-                        setOverride(e.target.value)
-                        overrideDirtyRef.current = true
-                        void applyOverride(e.target.value)
-                      }}
-                    >
-                      <option value="">Auto</option>
-                      {providers.map((p) => (
-                        <option key={p} value={p}>
-                          {p}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  {config ? (
+                    <div className="aoRoutingGrid">
+                      <label className="aoRoutingRow">
+                        <span className="aoMiniLabel">Mode</span>
+                        <select
+                          className="aoSelect"
+                          value={override}
+                          onChange={(e) => {
+                            setOverride(e.target.value)
+                            overrideDirtyRef.current = true
+                            void applyOverride(e.target.value)
+                          }}
+                        >
+                          <option value="">Auto</option>
+                          {providers.map((p) => (
+                            <option key={p} value={p}>
+                              {p}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="aoRoutingRow">
+                        <span className="aoMiniLabel">Preferred</span>
+                        <select
+                          className="aoSelect"
+                          value={config.routing.preferred_provider}
+                          onChange={(e) => void setPreferred(e.target.value)}
+                        >
+                          {Object.keys(config.providers).map((p) => (
+                            <option key={p} value={p}>
+                              {p}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  ) : (
+                    <div className="aoHint" style={{ marginTop: 8 }}>
+                      Loading…
+                    </div>
+                  )}
                   <div className="aoHint" style={{ marginTop: 8 }}>
                     Tip: closing the window hides to tray. Use tray menu to show/quit.
                   </div>
@@ -487,19 +686,20 @@ export default function App() {
               </div>
 
               <div className="aoSection">
-                <div className="aoSectionHeader">
+                <div className="aoSectionHeader aoSectionHeaderStack">
                   <h3 className="aoH3">Providers</h3>
                   <div className="aoHint">tokens are best-effort (from usage.total_tokens)</div>
                 </div>
-                <table className="aoTable">
+                <table className="aoTable aoTableFixed">
                   <thead>
                     <tr>
-                      <th>Name</th>
-                      <th>Healthy</th>
-                      <th>Failures</th>
-                      <th>Tokens</th>
-                      <th>Cooldown</th>
-                      <th>Last OK</th>
+                      <th style={{ width: 140 }}>Name</th>
+                      <th style={{ width: 120 }}>Healthy</th>
+                      <th style={{ width: 90 }}>Failures</th>
+                      <th style={{ width: 120 }}>Tokens</th>
+                      <th style={{ width: 170 }}>Cooldown</th>
+                      <th style={{ width: 170 }}>Last OK</th>
+                      <th style={{ width: 240 }}>Usage</th>
                       <th>Last Error</th>
                     </tr>
                   </thead>
@@ -507,6 +707,8 @@ export default function App() {
                     {providers.map((p) => {
                       const h = status.providers[p]
                       const m = status.metrics?.[p]
+                      const q = status?.quota?.[p]
+                      const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
                       const cooldownActive = h.cooldown_until_unix_ms > Date.now()
                       const healthLabel =
                         h.status === 'healthy'
@@ -524,6 +726,35 @@ export default function App() {
                             : h.status === 'unhealthy'
                               ? 'aoDot aoDotBad'
                               : 'aoDot aoDotBad'
+                      const usageNode =
+                        kind === 'token_stats' ? (
+                          (() => {
+                            const total = q?.today_added ?? null
+                            const remaining = q?.remaining ?? null
+                            const used = q?.today_used ?? (total != null && remaining != null ? total - remaining : null)
+                            const usedPct = pctOf(used ?? null, total)
+                            const remainingPct = pctOf(remaining ?? null, total)
+                            return (
+                              <div className="aoUsageMini">
+                                <div className="aoUsageLine">remaining: {fmtPct(remainingPct)}</div>
+                                <div className="aoUsageLine">
+                                  today: {fmtAmount(used)} / {fmtAmount(total)} ({fmtPct(usedPct)})
+                                </div>
+                              </div>
+                            )
+                          })()
+                        ) : kind === 'budget_info' ? (
+                          <div className="aoUsageMini">
+                            <div className="aoUsageLine">
+                              daily: ${q?.daily_spent_usd ?? '-'} / ${q?.daily_budget_usd ?? '-'}
+                            </div>
+                            <div className="aoUsageLine">
+                              monthly: ${q?.monthly_spent_usd ?? '-'} / ${q?.monthly_budget_usd ?? '-'}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="aoHint">-</span>
+                        )
                       return (
                         <tr key={p}>
                           <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{p}</td>
@@ -537,7 +768,8 @@ export default function App() {
                           <td>{m ? m.total_tokens : 0}</td>
                           <td>{cooldownActive ? fmtWhen(h.cooldown_until_unix_ms) : '-'}</td>
                           <td>{fmtWhen(h.last_ok_at_unix_ms)}</td>
-                          <td>{h.last_error ? h.last_error : '-'}</td>
+                          <td>{usageNode}</td>
+                          <td className="aoCellWrap">{h.last_error ? h.last_error : '-'}</td>
                         </tr>
                       )
                     })}
@@ -552,53 +784,11 @@ export default function App() {
                     <div className="aoHint">keys are stored in ./user-data/secrets.json (gitignored)</div>
                   </div>
 
-                  <div className="aoCard" style={{ paddingBottom: 12 }}>
-                    <div className="aoMiniGroup">
-                      <div className="aoMiniTitle">Codex auth</div>
-                      <div className="aoRow" style={{ flexWrap: 'wrap', marginTop: 8 }}>
-                        <div className="aoHint" style={{ minWidth: 120 }}>
-                          Gateway token
-                        </div>
-                        <div className="aoHint" style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>
-                          {gatewayTokenPreview}
-                        </div>
-                        <button className="aoBtn" onClick={() => setGatewayModalOpen(true)}>
-                          Show / Rotate
-                        </button>
-                      </div>
-                      <div className="aoHint" style={{ marginTop: 6 }}>
-                        Put this into <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>.codex/auth.json</span> as
-                        <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}> OPENAI_API_KEY</span>.
-                      </div>
-                    </div>
-
-                    <div className="aoMiniDivider" />
-
-                    <div className="aoMiniGroup">
-                      <div className="aoMiniTitle">Routing defaults</div>
-                      <div className="aoRow" style={{ flexWrap: 'wrap', marginTop: 8 }}>
-                        <div className="aoHint" style={{ minWidth: 120 }}>
-                          Preferred provider
-                        </div>
-                        <select
-                          className="aoSelect"
-                          value={config.routing.preferred_provider}
-                          onChange={(e) => void setPreferred(e.target.value)}
-                        >
-                          {Object.keys(config.providers).map((p) => (
-                            <option key={p} value={p}>
-                              {p}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="aoMiniDivider" />
-
-                    <div className="aoMiniGroup">
+                <div className="aoCard aoConfigCard">
+                  <div className="aoConfigDeck">
+                    <div className="aoConfigPanel">
                       <div className="aoMiniTitle">Add provider</div>
-                      <div className="aoRow" style={{ flexWrap: 'wrap', marginTop: 8 }}>
+                      <div className="aoAddProviderRow">
                         <input
                           className="aoInput"
                           placeholder={nextProviderPlaceholder}
@@ -607,7 +797,6 @@ export default function App() {
                         />
                         <input
                           className="aoInput"
-                          style={{ width: 360 }}
                           placeholder="Base URL (e.g. http://127.0.0.1:4001)"
                           value={newProviderBaseUrl}
                           onChange={(e) => setNewProviderBaseUrl(e.target.value)}
@@ -618,22 +807,66 @@ export default function App() {
                       </div>
                     </div>
                   </div>
+                </div>
 
-                  <table className="aoTable aoTableFixed" style={{ marginTop: 10 }}>
-                    <thead>
-                      <tr>
-                        <th style={{ width: 130 }}>Name</th>
-                        <th style={{ width: 240 }}>Base URL</th>
-                        <th style={{ width: 210 }}>Key</th>
-                        <th style={{ width: 260 }}>Usage</th>
-                        <th style={{ width: 220, textAlign: 'right' }}>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {Object.entries(config.providers).map(([name, p]) => (
-                        <tr key={name}>
-                          <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{name}</td>
-                          <td>
+                  <div className="aoProviderConfigList">
+                    {Object.entries(config.providers).map(([name, p]) => (
+                      <div className="aoProviderConfigCard" key={name}>
+                        <div className="aoProviderConfigBody">
+                          <div className="aoProviderField aoProviderLeft">
+                            <div className="aoProviderHeadRow">
+                              <div className="aoProviderName">{name}</div>
+                              <div className="aoProviderHeadActions">
+                                {p.base_url !== (baselineBaseUrls[name] ?? '') ? (
+                                  <button className="aoActionBtn" title="Save" onClick={() => void saveProvider(name)}>
+                                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                                      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+                                      <path d="M17 21v-8H7v8" />
+                                      <path d="M7 3v5h8" />
+                                    </svg>
+                                    <span>Save</span>
+                                  </button>
+                                ) : null}
+                                <button
+                                  className="aoActionBtn"
+                                  title="Set key"
+                                  onClick={() => setKeyModal({ open: true, provider: name, value: '' })}
+                                >
+                                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <g transform="rotate(-28 12 12)">
+                                      <circle cx="7.2" cy="12" r="3.2" />
+                                      <circle cx="7.2" cy="12" r="1.15" />
+                                      <path d="M10.8 12H21" />
+                                      <path d="M17.2 12v2.4" />
+                                      <path d="M19.2 12v3.4" />
+                                    </g>
+                                  </svg>
+                                  <span>Key</span>
+                                </button>
+                                <button className="aoActionBtn" title="Clear key" onClick={() => void clearKey(name)}>
+                                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="m7 21-4-4a2 2 0 0 1 0-3l10-10a2 2 0 0 1 3 0l5 5a2 2 0 0 1 0 3l-8 8" />
+                                    <path d="M6 18h8" />
+                                  </svg>
+                                  <span>Clear</span>
+                                </button>
+                                <button
+                                  className="aoActionBtn aoActionBtnDanger"
+                                  title="Delete provider"
+                                  aria-label="Delete provider"
+                                  onClick={() => void deleteProvider(name)}
+                                >
+                                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="M3 6h18" />
+                                    <path d="M8 6V4h8v2" />
+                                    <path d="M19 6 18 20H6L5 6" />
+                                    <path d="M10 11v6" />
+                                    <path d="M14 11v6" />
+                                  </svg>
+                                </button>
+                              </div>
+                            </div>
+                            <div className="aoMiniLabel">Base URL</div>
                             <input
                               className="aoInput aoUrlInput"
                               value={p.base_url}
@@ -651,231 +884,55 @@ export default function App() {
                                 )
                               }
                             />
-                          </td>
-                          <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>
-                            {p.has_key ? (p.key_preview ? p.key_preview : 'set') : 'empty'}
-                          </td>
-                          <td>
-                            {(() => {
-                              const q = status?.quota?.[name]
-                              const l = status?.ledgers?.[name]
-                              const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
-                              if (kind === 'none') return <span className="aoHint">-</span>
-                              const updated = q?.updated_at_unix_ms ? fmtWhen(q.updated_at_unix_ms) : 'never'
-                              const deltaTok = l?.since_last_quota_refresh_total_tokens ?? 0
-
-                              if (q?.last_error) {
-                                return (
-                                  <div className="aoUsageCell">
-                                    <div className="aoUsageTop">
-                                      <span className="aoHint">usage</span>
-                                      <div className="aoUsageBtns">
-                                        <button
-                                          className="aoTinyBtn"
-                                          onClick={() =>
-                                            setUsageBaseModal({
-                                              open: true,
-                                              provider: name,
-                                              value: p.usage_base_url ?? '',
-                                            })
-                                          }
-                                        >
-                                          Usage Base
-                                        </button>
-                                        {p.usage_base_url ? (
-                                          <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
-                                            Clear
-                                          </button>
-                                        ) : null}
-                                        <button className="aoTinyBtn" onClick={() => void refreshQuota(name)}>
-                                          Refresh
-                                        </button>
-                                      </div>
-                                    </div>
-                                    <div className="aoHint">updated: {updated}</div>
-                                    <div className="aoUsageErr">{q.last_error}</div>
-                                  </div>
-                                )
-                              }
-
-                              if (kind === 'token_stats') {
-                                return (
-                                  <div className="aoUsageCell">
-                                    <div className="aoUsageTop">
-                                      <span className="aoHint">usage</span>
-                                      <div className="aoUsageBtns">
-                                        <button
-                                          className="aoTinyBtn"
-                                          onClick={() =>
-                                            setUsageBaseModal({
-                                              open: true,
-                                              provider: name,
-                                              value: p.usage_base_url ?? '',
-                                            })
-                                          }
-                                        >
-                                          Usage Base
-                                        </button>
-                                        {p.usage_base_url ? (
-                                          <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
-                                            Clear
-                                          </button>
-                                        ) : null}
-                                        <button className="aoTinyBtn" onClick={() => void refreshQuota(name)}>
-                                          Refresh
-                                        </button>
-                                      </div>
-                                    </div>
-                                    <div className="aoUsageLine">remaining: {q?.remaining ?? '-'}</div>
-                                    <div className="aoUsageLine">
-                                      today: used {q?.today_used ?? '-'} / added {q?.today_added ?? '-'}
-                                    </div>
-                                    <div className="aoHint">updated: {updated} · +{deltaTok} tok</div>
-                                  </div>
-                                )
-                              }
-
-                              return (
-                                <div className="aoUsageCell">
-                                  <div className="aoUsageTop">
-                                    <span className="aoHint">usage</span>
-                                    <div className="aoUsageBtns">
-                                      <button
-                                        className="aoTinyBtn"
-                                        onClick={() =>
-                                          setUsageBaseModal({
-                                            open: true,
-                                            provider: name,
-                                            value: p.usage_base_url ?? '',
-                                          })
-                                        }
-                                      >
-                                        Usage Base
-                                      </button>
-                                      {p.usage_base_url ? (
-                                        <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
-                                          Clear
-                                        </button>
-                                      ) : null}
-                                      <button
-                                        className="aoTinyBtn"
-                                        onClick={() => setUsageTokenModal({ open: true, provider: name, value: '' })}
-                                      >
-                                        Token
-                                      </button>
-                                      {p.has_usage_token ? (
-                                        <button className="aoTinyBtn" onClick={() => void clearUsageToken(name)}>
-                                          Clear
-                                        </button>
-                                      ) : null}
-                                      <button className="aoTinyBtn" onClick={() => void refreshQuota(name)}>
-                                        Refresh
-                                      </button>
-                                    </div>
-                                  </div>
-                                  <div className="aoUsageLine">
-                                    daily: ${q?.daily_spent_usd ?? '-'} / ${q?.daily_budget_usd ?? '-'}
-                                  </div>
-                                  <div className="aoUsageLine">
-                                    monthly: ${q?.monthly_spent_usd ?? '-'} / ${q?.monthly_budget_usd ?? '-'}
-                                  </div>
-                                  <div className="aoHint">updated: {updated} · +{deltaTok} tok</div>
-                                </div>
-                              )
-                            })()}
-                          </td>
-                          <td>
-                            <div className="aoActions">
-                              {p.base_url !== (baselineBaseUrls[name] ?? '') ? (
-                                <button className="aoActionBtn" title="Save" onClick={() => void saveProvider(name)}>
-                                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
-                                    <path d="M17 21v-8H7v8" />
-                                    <path d="M7 3v5h8" />
-                                  </svg>
-                                  <span>Save</span>
+                            <div className="aoMiniLabel">Key</div>
+                            <div className="aoKeyValue">
+                              {p.has_key ? (p.key_preview ? p.key_preview : 'set') : 'empty'}
+                            </div>
+                          </div>
+                          <div className="aoProviderField aoProviderRight">
+                            <div className="aoMiniLabel">Usage controls</div>
+                            <div className="aoUsageBtns">
+                              <button
+                                className="aoTinyBtn"
+                                onClick={() =>
+                                  setUsageBaseModal({
+                                    open: true,
+                                    provider: name,
+                                    value: p.usage_base_url ?? '',
+                                  })
+                                }
+                              >
+                                Usage Base
+                              </button>
+                              {p.usage_base_url ? (
+                                <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
+                                  Clear
                                 </button>
                               ) : null}
-                              <button
-                                className="aoActionBtn"
-                                title="Set key"
-                                onClick={() => setKeyModal({ open: true, provider: name, value: '' })}
-                              >
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                  <g transform="rotate(-28 12 12)">
-                                    <circle cx="7.2" cy="12" r="3.2" />
-                                    <circle cx="7.2" cy="12" r="1.15" />
-                                    <path d="M10.8 12H21" />
-                                    <path d="M17.2 12v2.4" />
-                                    <path d="M19.2 12v3.4" />
-                                  </g>
-                                </svg>
-                                <span>Key</span>
-                              </button>
-                              <button className="aoActionBtn" title="Clear key" onClick={() => void clearKey(name)}>
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                  <path d="m7 21-4-4a2 2 0 0 1 0-3l10-10a2 2 0 0 1 3 0l5 5a2 2 0 0 1 0 3l-8 8" />
-                                  <path d="M6 18h8" />
-                                </svg>
-                                <span>Clear</span>
-                              </button>
-                              <button
-                                className="aoActionBtn aoActionBtnDanger"
-                                title="Delete provider"
-                                aria-label="Delete provider"
-                                onClick={() => void deleteProvider(name)}
-                              >
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                  <path d="M3 6h18" />
-                                  <path d="M8 6V4h8v2" />
-                                  <path d="M19 6 18 20H6L5 6" />
-                                  <path d="M10 11v6" />
-                                  <path d="M14 11v6" />
-                                </svg>
+                              <button className="aoTinyBtn" onClick={() => void refreshQuota(name)}>
+                                Refresh
                               </button>
                             </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                            <div className="aoHint">
+                              Usage base sets the usage endpoint. If empty, we use the provider base URL.
+                            </div>
+                            <div className="aoHint">
+                              updated:{' '}
+                              {status?.quota?.[name]?.updated_at_unix_ms
+                                ? fmtWhen(status.quota[name].updated_at_unix_ms)
+                                : 'never'}
+                            </div>
+                            {status?.quota?.[name]?.last_error ? (
+                              <div className="aoUsageErr">{status.quota[name].last_error}</div>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ) : null}
 
-              <div className="aoSection">
-                <div className="aoSectionHeader">
-                  <h3 className="aoH3">Events</h3>
-                  <div className="aoRow" style={{ gap: 8 }}>
-                    <select
-                      className="aoSelect"
-                      value={String(eventsMax)}
-                      onChange={(e) => setEventsMax(Number(e.target.value))}
-                      title="Max events shown"
-                    >
-                      <option value="10">10</option>
-                      <option value="20">20</option>
-                      <option value="50">50</option>
-                      <option value="100">100</option>
-                    </select>
-                    <button className="aoBtn" onClick={() => setShowEvents((v) => !v)}>
-                      {showEvents ? 'Hide' : 'Show'}
-                    </button>
-                  </div>
-                </div>
-                {showEvents ? (
-                  <div className="aoEventsBox">
-                    <ol className="aoEventList">
-                      {events.map((e, i) => (
-                        <li key={i}>
-                          {fmtWhen(e.unix_ms)} [{e.level}] {e.provider}: {e.message}
-                        </li>
-                      ))}
-                    </ol>
-                  </div>
-                ) : (
-                  <div className="aoHint">Hidden (keeps the window compact; click Show when debugging).</div>
-                )}
-              </div>
             </>
           )}
         </div>
@@ -912,37 +969,6 @@ export default function App() {
         </div>
       ) : null}
 
-      {usageTokenModal.open ? (
-        <div className="aoModalBackdrop" role="dialog" aria-modal="true">
-          <div className="aoModal">
-            <div className="aoModalTitle">Usage token</div>
-            <div className="aoModalSub">
-              Provider:{' '}
-              <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>
-                {usageTokenModal.provider}
-              </span>
-              <br />
-              Stored in <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>./user-data/secrets.json</span>.
-            </div>
-            <input
-              className="aoInput"
-              style={{ width: '100%', height: 36, borderRadius: 12 }}
-              placeholder="Paste token..."
-              value={usageTokenModal.value}
-              onChange={(e) => setUsageTokenModal((m) => ({ ...m, value: e.target.value }))}
-            />
-            <div className="aoModalActions">
-              <button className="aoBtn" onClick={() => setUsageTokenModal({ open: false, provider: '', value: '' })}>
-                Cancel
-              </button>
-              <button className="aoBtn aoBtnPrimary" onClick={() => void saveUsageToken()} disabled={!usageTokenModal.value}>
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
       {usageBaseModal.open ? (
         <div className="aoModalBackdrop" role="dialog" aria-modal="true">
           <div className="aoModal">
@@ -953,7 +979,7 @@ export default function App() {
                 {usageBaseModal.provider}
               </span>
               <br />
-              Optional. If empty, we derive from the provider base_url.
+              Override the usage endpoint used for quota/usage fetch. If empty, we use the provider base URL.
             </div>
             <input
               className="aoInput"
