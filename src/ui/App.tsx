@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 
@@ -226,6 +226,7 @@ export default function App() {
   const [override, setOverride] = useState<string>('') // '' => auto
   const [newProviderName, setNewProviderName] = useState<string>('')
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
+  const [providerPanelsOpen, setProviderPanelsOpen] = useState<Record<string, boolean>>({})
   const [keyModal, setKeyModal] = useState<{ open: boolean; provider: string; value: string }>({
     open: false,
     provider: '',
@@ -478,6 +479,15 @@ export default function App() {
       clearInterval(t)
       window.clearTimeout(once)
     }
+  }, [])
+
+  const isProviderOpen = useCallback(
+    (name: string) => providerPanelsOpen[name] ?? true,
+    [providerPanelsOpen],
+  )
+
+  const toggleProviderOpen = useCallback((name: string) => {
+    setProviderPanelsOpen((prev) => ({ ...prev, [name]: !(prev[name] ?? true) }))
   }, [])
 
   return (
@@ -738,6 +748,11 @@ export default function App() {
                                 <div className="aoUsageLine">
                                   today: {fmtAmount(used)} / {fmtAmount(total)} ({fmtPct(usedPct)})
                                 </div>
+                                <div className="aoUsageActions">
+                                  <button className="aoTinyBtn" onClick={() => void refreshQuota(p)}>
+                                    Refresh
+                                  </button>
+                                </div>
                               </div>
                             )
                           })()
@@ -749,9 +764,21 @@ export default function App() {
                             <div className="aoUsageLine">
                               monthly: ${q?.monthly_spent_usd ?? '-'} / ${q?.monthly_budget_usd ?? '-'}
                             </div>
+                            <div className="aoUsageActions">
+                              <button className="aoTinyBtn" onClick={() => void refreshQuota(p)}>
+                                Refresh
+                              </button>
+                            </div>
                           </div>
                         ) : (
-                          <span className="aoHint">-</span>
+                          <div className="aoUsageMini">
+                            <span className="aoHint">-</span>
+                            <div className="aoUsageActions">
+                              <button className="aoTinyBtn" onClick={() => void refreshQuota(p)}>
+                                Refresh
+                              </button>
+                            </div>
+                          </div>
                         )
                       return (
                         <tr key={p}>
@@ -861,66 +888,80 @@ export default function App() {
                                     <path d="M14 11v6" />
                                   </svg>
                                 </button>
+                                <button
+                                  className="aoTinyBtn aoToggleBtn"
+                                  onClick={() => toggleProviderOpen(name)}
+                                >
+                                  {isProviderOpen(name) ? 'Hide' : 'Show'}
+                                </button>
                               </div>
                             </div>
-                            <div className="aoMiniLabel">Base URL</div>
-                            <input
-                              className="aoInput aoUrlInput"
-                              value={p.base_url}
-                              onChange={(e) =>
-                                setConfig((c) =>
-                                  c
-                                    ? {
-                                        ...c,
-                                        providers: {
-                                          ...c.providers,
-                                          [name]: { ...c.providers[name], base_url: e.target.value },
-                                        },
-                                      }
-                                    : c,
-                                )
-                              }
-                            />
-                            <div className="aoMiniLabel">Key</div>
-                            <div className="aoKeyValue">
-                              {p.has_key ? (p.key_preview ? p.key_preview : 'set') : 'empty'}
-                            </div>
+                            {isProviderOpen(name) ? null : (
+                              <div className="aoHint">Details hidden</div>
+                            )}
+                            {isProviderOpen(name) ? (
+                              <>
+                                <div className="aoMiniLabel">Base URL</div>
+                                <input
+                                  className="aoInput aoUrlInput"
+                                  value={p.base_url}
+                                  onChange={(e) =>
+                                    setConfig((c) =>
+                                      c
+                                        ? {
+                                            ...c,
+                                            providers: {
+                                              ...c.providers,
+                                              [name]: { ...c.providers[name], base_url: e.target.value },
+                                            },
+                                          }
+                                        : c,
+                                    )
+                                  }
+                                />
+                                <div className="aoMiniLabel">Key</div>
+                                <div className="aoKeyValue">
+                                  {p.has_key ? (p.key_preview ? p.key_preview : 'set') : 'empty'}
+                                </div>
+                              </>
+                            ) : null}
                           </div>
                           <div className="aoProviderField aoProviderRight">
-                            <div className="aoMiniLabel">Usage controls</div>
-                            <div className="aoUsageBtns">
-                              <button
-                                className="aoTinyBtn"
-                                onClick={() =>
-                                  setUsageBaseModal({
-                                    open: true,
-                                    provider: name,
-                                    value: p.usage_base_url ?? '',
-                                  })
-                                }
-                              >
-                                Usage Base
-                              </button>
-                              {p.usage_base_url ? (
-                                <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
-                                  Clear
-                                </button>
-                              ) : null}
-                              <button className="aoTinyBtn" onClick={() => void refreshQuota(name)}>
-                                Refresh
-                              </button>
-                            </div>
-                            <div className="aoHint">
-                              Usage base sets the usage endpoint. If empty, we use the provider base URL.
-                            </div>
-                            <div className="aoHint">
-                              updated:{' '}
-                              {status?.quota?.[name]?.updated_at_unix_ms
-                                ? fmtWhen(status.quota[name].updated_at_unix_ms)
-                                : 'never'}
-                            </div>
-                            {status?.quota?.[name]?.last_error ? (
-                              <div className="aoUsageErr">{status.quota[name].last_error}</div>
+                            {isProviderOpen(name) ? (
+                              <>
+                                <div className="aoMiniLabel">Usage controls</div>
+                                <div className="aoUsageBtns">
+                                  <button
+                                    className="aoTinyBtn"
+                                    onClick={() =>
+                                      setUsageBaseModal({
+                                        open: true,
+                                        provider: name,
+                                        value: p.usage_base_url ?? '',
+                                      })
+                                    }
+                                  >
+                                    Usage Base
+                                  </button>
+                                  {p.usage_base_url ? (
+                                    <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
+                                      Clear
+                                    </button>
+                                  ) : null}
+                                </div>
+                                <div className="aoHint">
+                                  Usage base sets the usage endpoint. If empty, we use the provider base URL.
+                                </div>
+                                <div className="aoHint">
+                                  updated:{' '}
+                                  {status?.quota?.[name]?.updated_at_unix_ms
+                                    ? fmtWhen(status.quota[name].updated_at_unix_ms)
+                                    : 'never'}
+                                </div>
+                                {status?.quota?.[name]?.last_error ? (
+                                  <div className="aoUsageErr">{status.quota[name].last_error}</div>
+                                ) : null}
+                              </>
                             ) : null}
                           </div>
                         </div>

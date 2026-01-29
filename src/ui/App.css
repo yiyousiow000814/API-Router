@@ -446,6 +446,11 @@
   flex-wrap: wrap;
 }
 
+.aoToggleBtn {
+  height: 24px;
+  letter-spacing: 0.04em;
+}
+
 .aoKeyRow {
   display: flex;
   align-items: center;
@@ -463,6 +468,10 @@
 .aoUsageMini {
   display: grid;
   gap: 4px;
+}
+
+.aoUsageActions {
+  margin-top: 4px;
 }
 
 .aoCellWrap {
