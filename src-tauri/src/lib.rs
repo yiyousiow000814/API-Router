@@ -128,6 +128,7 @@ pub fn run() {
             set_preferred_provider,
             upsert_provider,
             delete_provider,
+            rename_provider,
             set_provider_key,
             clear_provider_key,
             refresh_quota,
@@ -339,6 +340,61 @@ fn delete_provider(
             "preferred_provider updated (deleted old preferred)",
         );
     }
+    Ok(())
+}
+
+#[tauri::command]
+fn rename_provider(
+    state: tauri::State<'_, app_state::AppState>,
+    old_name: String,
+    new_name: String,
+) -> Result<(), String> {
+    let old = old_name.trim();
+    let new = new_name.trim();
+    if old.is_empty() || new.is_empty() {
+        return Err("name is required".to_string());
+    }
+    if old == new {
+        return Ok(());
+    }
+
+    {
+        let mut cfg = state.gateway.cfg.write();
+        if !cfg.providers.contains_key(old) {
+            return Err(format!("unknown provider: {old}"));
+        }
+        if cfg.providers.contains_key(new) {
+            return Err(format!("provider already exists: {new}"));
+        }
+        if !app_state::migrate_provider_name(&mut cfg, old, new) {
+            return Err("rename failed".to_string());
+        }
+        if let Some(p) = cfg.providers.get_mut(new) {
+            p.display_name = new.to_string();
+        }
+        if cfg.routing.preferred_provider == old {
+            cfg.routing.preferred_provider = new.to_string();
+        }
+    }
+
+    {
+        let mut mo = state.gateway.router.manual_override.write();
+        if mo.as_deref() == Some(old) {
+            *mo = Some(new.to_string());
+        }
+    }
+
+    state.gateway.store.rename_provider(old, new);
+    state.secrets.rename_provider(old, new)?;
+    persist_config(&state).map_err(|e| e.to_string())?;
+    state
+        .gateway
+        .router
+        .sync_with_config(&state.gateway.cfg.read(), unix_ms());
+    state
+        .gateway
+        .store
+        .add_event(new, "info", "provider renamed");
     Ok(())
 }
 
@@ -666,9 +722,9 @@ async fn refresh_codex_account_snapshot(
                             let window_mins = get_window_minutes(node);
                             if window_mins == Some(300) {
                                 limit_5h_remaining = Some(format_percent(100.0 - used));
-                            } else if window_mins == Some(10080) {
-                                limit_weekly_remaining = Some(format_percent(100.0 - used));
-                            } else if target == "secondary" && limit_weekly_remaining.is_none() {
+                            } else if window_mins == Some(10080)
+                                || (target == "secondary" && limit_weekly_remaining.is_none())
+                            {
                                 limit_weekly_remaining = Some(format_percent(100.0 - used));
                             }
                         }
@@ -739,17 +795,17 @@ async fn refresh_codex_account_snapshot(
 }
 
 fn format_percent(value: f64) -> String {
-  let mut pct = if value.is_finite() { value } else { 0.0 };
-  if pct < 1.0 {
-    pct = 0.0;
-  }
+    let mut pct = if value.is_finite() { value } else { 0.0 };
+    if pct < 1.0 {
+        pct = 0.0;
+    }
     if pct > 100.0 {
         pct = 100.0;
     }
-  format!("{}%", pct.floor() as i64)
+    format!("{}%", pct.floor() as i64)
 }
 
-fn get_rate_limits_obj<'a>(result: &'a Value) -> Option<&'a Value> {
+fn get_rate_limits_obj(result: &Value) -> Option<&Value> {
     result.get("rateLimits").or_else(|| result.get("rate_limits"))
 }
 
@@ -784,10 +840,10 @@ fn get_remaining_percent(obj: &Value) -> Option<String> {
 }
 
 fn parse_number(v: &Value) -> Option<f64> {
-  v.as_f64()
-      .or_else(|| v.as_i64().map(|n| n as f64))
-      .or_else(|| v.as_u64().map(|n| n as f64))
-      .or_else(|| {
+    v.as_f64()
+        .or_else(|| v.as_i64().map(|n| n as f64))
+        .or_else(|| v.as_u64().map(|n| n as f64))
+        .or_else(|| {
             v.as_str().and_then(|s| {
                 let cleaned = s.trim().replace([',', '%'], "");
                 if cleaned.is_empty() {

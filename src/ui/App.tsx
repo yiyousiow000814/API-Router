@@ -248,10 +248,45 @@ export default function App() {
   const [gatewayTokenReveal, setGatewayTokenReveal] = useState<string>('')
   const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
   const [configOpen, setConfigOpen] = useState<boolean>(true)
+  const [editingProviderName, setEditingProviderName] = useState<string | null>(null)
+  const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const toastTimerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const savedConfigOpen = window.localStorage.getItem('ao.configOpen')
+      if (savedConfigOpen !== null) setConfigOpen(savedConfigOpen === 'true')
+      const savedProviderPanels = window.localStorage.getItem('ao.providerPanelsOpen')
+      if (savedProviderPanels) {
+        const parsed = JSON.parse(savedProviderPanels) as Record<string, boolean>
+        if (parsed && typeof parsed === 'object') setProviderPanelsOpen(parsed)
+      }
+    } catch (e) {
+      console.warn('Failed to load UI prefs', e)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem('ao.configOpen', String(configOpen))
+    } catch (e) {
+      console.warn('Failed to save config open', e)
+    }
+  }, [configOpen])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem('ao.providerPanelsOpen', JSON.stringify(providerPanelsOpen))
+    } catch (e) {
+      console.warn('Failed to save provider panels', e)
+    }
+  }, [providerPanelsOpen])
 
   const providers = useMemo(() => Object.keys(status?.providers ?? {}), [status])
   const nextProviderPlaceholder = useMemo(() => {
@@ -497,6 +532,36 @@ export default function App() {
     setProviderPanelsOpen((prev) => ({ ...prev, [name]: !(prev[name] ?? true) }))
   }, [])
 
+  const beginRenameProvider = useCallback((name: string) => {
+    setEditingProviderName(name)
+    setProviderNameDrafts((prev) => ({ ...prev, [name]: prev[name] ?? name }))
+  }, [])
+
+  const commitRenameProvider = useCallback(
+    async (name: string) => {
+      const next = (providerNameDrafts[name] ?? '').trim()
+      setEditingProviderName(null)
+      if (!next || next === name) {
+        setProviderNameDrafts((prev) => ({ ...prev, [name]: name }))
+        return
+      }
+      try {
+        await invoke('rename_provider', { oldName: name, newName: next })
+        setProviderPanelsOpen((prev) => {
+          if (!(name in prev)) return prev
+          const { [name]: value, ...rest } = prev
+          return { ...rest, [next]: value }
+        })
+        flashToast(`Renamed: ${name} → ${next}`)
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+      await refreshStatus()
+      await refreshConfig()
+    },
+    [providerNameDrafts, refreshConfig, refreshStatus],
+  )
+
   return (
     <div className="aoRoot" ref={containerRef}>
       <div className="aoScale">
@@ -606,7 +671,9 @@ export default function App() {
                     <div className="aoLimitCard">
                       <div className="aoMiniLabel">Code review</div>
                       <div className="aoLimitValue">
-                        {status.codex_account?.code_review_remaining ?? '-'}
+                        {status.codex_account?.code_review_remaining ??
+                          status.codex_account?.limit_5h_remaining ??
+                          '-'}
                       </div>
                     </div>
                   </div>
@@ -631,13 +698,11 @@ export default function App() {
                     </button>
                     <button
                       className="aoBtn aoBtnPrimary"
-                      onClick={async () => {
-                        try {
-                          await invoke('codex_account_refresh')
-                          flashToast('Checking…')
-                        } catch (e) {
+                      onClick={() => {
+                        flashToast('Checking…')
+                        invoke('codex_account_refresh').catch((e) => {
                           flashToast(String(e), 'error')
-                        }
+                        })
                       }}
                     >
                       Refresh
@@ -753,8 +818,13 @@ export default function App() {
                             const remainingPct = pctOf(remaining ?? null, total)
                             return (
                               <div className="aoUsageMini">
-                                <div className="aoUsageHeaderRow">
-                                  <div className="aoUsageLine">remaining: {fmtPct(remainingPct)}</div>
+                                <div className="aoUsageSplit">
+                                  <div className="aoUsageText">
+                                    <div className="aoUsageLine">remaining: {fmtPct(remainingPct)}</div>
+                                    <div className="aoUsageLine">
+                                      today: {fmtAmount(used)} / {fmtAmount(total)} ({fmtPct(usedPct)})
+                                    </div>
+                                  </div>
                                   <button
                                     className="aoUsageRefreshBtn"
                                     title="Refresh usage"
@@ -762,22 +832,24 @@ export default function App() {
                                     onClick={() => void refreshQuota(p)}
                                   >
                                     <svg viewBox="0 0 24 24" aria-hidden="true">
-                                      <path d="M20 12a8 8 0 1 1-2.34-5.66" />
-                                      <path d="M20 5v5h-5" />
+                                      <path d="M20 6v6h-6" />
+                                      <path d="M20 12a8 8 0 1 1-2.3-5.7" />
                                     </svg>
                                   </button>
-                                </div>
-                                <div className="aoUsageLine">
-                                  today: {fmtAmount(used)} / {fmtAmount(total)} ({fmtPct(usedPct)})
                                 </div>
                               </div>
                             )
                           })()
                         ) : kind === 'budget_info' ? (
                           <div className="aoUsageMini">
-                            <div className="aoUsageHeaderRow">
-                              <div className="aoUsageLine">
-                                daily: ${q?.daily_spent_usd ?? '-'} / ${q?.daily_budget_usd ?? '-'}
+                            <div className="aoUsageSplit">
+                              <div className="aoUsageText">
+                                <div className="aoUsageLine">
+                                  daily: ${q?.daily_spent_usd ?? '-'} / ${q?.daily_budget_usd ?? '-'}
+                                </div>
+                                <div className="aoUsageLine">
+                                  monthly: ${q?.monthly_spent_usd ?? '-'} / ${q?.monthly_budget_usd ?? '-'}
+                                </div>
                               </div>
                               <button
                                 className="aoUsageRefreshBtn"
@@ -786,19 +858,18 @@ export default function App() {
                                 onClick={() => void refreshQuota(p)}
                               >
                                 <svg viewBox="0 0 24 24" aria-hidden="true">
-                                  <path d="M20 12a8 8 0 1 1-2.34-5.66" />
-                                  <path d="M20 5v5h-5" />
+                                  <path d="M20 6v6h-6" />
+                                  <path d="M20 12a8 8 0 1 1-2.3-5.7" />
                                 </svg>
                               </button>
-                            </div>
-                            <div className="aoUsageLine">
-                              monthly: ${q?.monthly_spent_usd ?? '-'} / ${q?.monthly_budget_usd ?? '-'}
                             </div>
                           </div>
                         ) : (
                           <div className="aoUsageMini">
-                            <div className="aoUsageHeaderRow">
-                              <span className="aoHint">-</span>
+                            <div className="aoUsageSplit">
+                              <div className="aoUsageText">
+                                <span className="aoHint">-</span>
+                              </div>
                               <button
                                 className="aoUsageRefreshBtn"
                                 title="Refresh usage"
@@ -806,8 +877,8 @@ export default function App() {
                                 onClick={() => void refreshQuota(p)}
                               >
                                 <svg viewBox="0 0 24 24" aria-hidden="true">
-                                  <path d="M20 12a8 8 0 1 1-2.34-5.66" />
-                                  <path d="M20 5v5h-5" />
+                                  <path d="M20 6v6h-6" />
+                                  <path d="M20 12a8 8 0 1 1-2.3-5.7" />
                                 </svg>
                               </button>
                             </div>
@@ -882,7 +953,45 @@ export default function App() {
                             <div className="aoProviderConfigBody">
                               <div className="aoProviderField aoProviderLeft">
                                 <div className="aoProviderHeadRow">
-                                  <div className="aoProviderName">{name}</div>
+                                  <div className="aoProviderNameRow">
+                                    {editingProviderName === name ? (
+                                      <input
+                                        className="aoNameInput"
+                                        value={providerNameDrafts[name] ?? name}
+                                        onChange={(e) =>
+                                          setProviderNameDrafts((prev) => ({
+                                            ...prev,
+                                            [name]: e.target.value,
+                                          }))
+                                        }
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') {
+                                            void commitRenameProvider(name)
+                                          } else if (e.key === 'Escape') {
+                                            setEditingProviderName(null)
+                                            setProviderNameDrafts((prev) => ({ ...prev, [name]: name }))
+                                          }
+                                        }}
+                                        onBlur={() => void commitRenameProvider(name)}
+                                        autoFocus
+                                      />
+                                    ) : (
+                                      <>
+                                        <span className="aoProviderName">{name}</span>
+                                        <button
+                                          className="aoIconGhost"
+                                          title="Rename"
+                                          aria-label="Rename"
+                                          onClick={() => beginRenameProvider(name)}
+                                        >
+                                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                                            <path d="M12 20h9" />
+                                            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                                          </svg>
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
                                   <div className="aoProviderHeadActions">
                                     {p.base_url !== (baselineBaseUrls[name] ?? '') ? (
                                       <button className="aoActionBtn" title="Save" onClick={() => void saveProvider(name)}>
@@ -931,17 +1040,8 @@ export default function App() {
                                         <path d="M14 11v6" />
                                       </svg>
                                     </button>
-                                    <button
-                                      className="aoTinyBtn aoToggleBtn"
-                                      onClick={() => toggleProviderOpen(name)}
-                                    >
-                                      {isProviderOpen(name) ? 'Hide' : 'Show'}
-                                    </button>
                                   </div>
                                 </div>
-                                {isProviderOpen(name) ? null : (
-                                  <div className="aoHint">Details hidden</div>
-                                )}
                                 {isProviderOpen(name) ? (
                                   <>
                                     <div className="aoMiniLabel">Base URL</div>
@@ -970,9 +1070,17 @@ export default function App() {
                                 ) : null}
                               </div>
                               <div className="aoProviderField aoProviderRight">
+                                <div className="aoUsageControlsHeader">
+                                  <div className="aoMiniLabel">Usage controls</div>
+                                  <button
+                                    className="aoTinyBtn aoToggleBtn"
+                                    onClick={() => toggleProviderOpen(name)}
+                                  >
+                                    {isProviderOpen(name) ? 'Hide' : 'Show'}
+                                  </button>
+                                </div>
                                 {isProviderOpen(name) ? (
                                   <>
-                                    <div className="aoMiniLabel">Usage controls</div>
                                     <div className="aoUsageBtns">
                                       <button
                                         className="aoTinyBtn"
@@ -1005,7 +1113,9 @@ export default function App() {
                                       <div className="aoUsageErr">{status.quota[name].last_error}</div>
                                     ) : null}
                                   </>
-                                ) : null}
+                                ) : (
+                                  <div className="aoHint">Details hidden</div>
+                                )}
                               </div>
                             </div>
                           </div>

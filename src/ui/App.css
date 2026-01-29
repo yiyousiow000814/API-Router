@@ -330,6 +330,53 @@
   color: rgba(13, 18, 32, 0.9);
 }
 
+.aoProviderNameRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoIconGhost {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: rgba(13, 18, 32, 0.7);
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.aoIconGhost:hover {
+  color: rgba(var(--ao-accent-rgb), 0.9);
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoIconGhost svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.aoNameInput {
+  height: 24px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 18, 32, 0.18);
+  padding: 0 8px;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.92);
+  background: rgba(255, 255, 255, 0.95);
+}
+
 .aoH3 {
   margin: 0;
   font-size: 12px;
@@ -410,6 +457,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  padding-top: 15px;
 }
 
 .aoProviderLeft {
@@ -477,15 +525,37 @@
   gap: 8px;
 }
 
+.aoUsageSplit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.aoUsageText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.aoUsageControlsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .aoUsageRefreshBtn {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 8px;
   border: 1px solid rgba(13, 18, 32, 0.12);
   background: rgba(255, 255, 255, 0.9);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  align-self: center;
+  color: rgba(13, 18, 32, 0.78);
   cursor: pointer;
   transition: border-color 120ms ease, background 120ms ease;
 }
@@ -499,7 +569,7 @@
   width: 14px;
   height: 14px;
   fill: none;
-  stroke: rgba(13, 18, 32, 0.72);
+  stroke: currentColor;
   stroke-width: 1.7;
   stroke-linecap: round;
   stroke-linejoin: round;

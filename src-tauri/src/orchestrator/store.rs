@@ -209,6 +209,21 @@ impl Store {
         let _ = self.db.flush();
     }
 
+    pub fn rename_provider(&self, old: &str, new: &str) {
+        if old == new {
+            return;
+        }
+        for prefix in ["metrics:", "quota:", "ledger:"] {
+            let old_key = format!("{prefix}{old}");
+            if let Ok(Some(v)) = self.db.get(old_key.as_bytes()) {
+                let new_key = format!("{prefix}{new}");
+                let _ = self.db.insert(new_key.as_bytes(), v);
+                let _ = self.db.remove(old_key.as_bytes());
+            }
+        }
+        let _ = self.db.flush();
+    }
+
     fn bump_ledger(&self, provider: &str, input_inc: u64, output_inc: u64, total_inc: u64) {
         let key = format!("ledger:{provider}");
         let cur = self.get_ledger(provider);

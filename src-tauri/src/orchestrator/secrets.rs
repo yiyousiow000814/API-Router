@@ -79,6 +79,20 @@ impl SecretStore {
         self.persist(&data)
     }
 
+    pub fn rename_provider(&self, old: &str, new: &str) -> Result<(), String> {
+        if old == new {
+            return Ok(());
+        }
+        let mut data = self.inner.lock();
+        if let Some(v) = data.providers.remove(old) {
+            data.providers.insert(new.to_string(), v);
+        }
+        if let Some(v) = data.usage_tokens.remove(old) {
+            data.usage_tokens.insert(new.to_string(), v);
+        }
+        self.persist(&data)
+    }
+
     pub fn get_gateway_token(&self) -> Option<String> {
         self.inner.lock().providers.get(GATEWAY_TOKEN_KEY).cloned()
     }

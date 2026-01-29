@@ -114,7 +114,7 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
     })
 }
 
-fn migrate_provider_name(cfg: &mut AppConfig, old: &str, new: &str) -> bool {
+pub(crate) fn migrate_provider_name(cfg: &mut AppConfig, old: &str, new: &str) -> bool {
     if cfg.providers.contains_key(new) {
         return false;
     }

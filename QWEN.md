@@ -20,6 +20,7 @@ This file mirrors shared policies in `AGENTS.md`. Model-specific notes may be ad
 - **Never commit secrets**: API keys, OAuth tokens, cookies, browser profiles, or raw conversation logs.
 - **Key storage**: Provider API keys must be stored in `user-data/secrets.json` (gitignored), not in `config.toml`.
 - **Artifacts**: Do not commit binaries (`.exe`, `.msi`, installers). Publish binaries via GitHub Releases assets.
+- **Do not run**: `Get-Process -Name node -ErrorAction SilentlyContinue | Stop-Process -Force` (interrupts Codex).
 
 ## Engineering Constraints
 - **Cross-platform**: Keep the gateway and tooling compatible with Windows + Linux (WSL2) at minimum.
