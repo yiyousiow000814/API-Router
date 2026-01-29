@@ -470,8 +470,39 @@
   gap: 4px;
 }
 
-.aoUsageActions {
-  margin-top: 4px;
+.aoUsageHeaderRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aoUsageRefreshBtn {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(255, 255, 255, 0.9);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.aoUsageRefreshBtn:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.55);
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoUsageRefreshBtn svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: rgba(13, 18, 32, 0.72);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .aoCellWrap {

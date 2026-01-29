@@ -247,6 +247,7 @@ export default function App() {
   const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>('')
   const [gatewayTokenReveal, setGatewayTokenReveal] = useState<string>('')
   const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
+  const [configOpen, setConfigOpen] = useState<boolean>(true)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -752,38 +753,62 @@ export default function App() {
                             const remainingPct = pctOf(remaining ?? null, total)
                             return (
                               <div className="aoUsageMini">
-                                <div className="aoUsageLine">remaining: {fmtPct(remainingPct)}</div>
+                                <div className="aoUsageHeaderRow">
+                                  <div className="aoUsageLine">remaining: {fmtPct(remainingPct)}</div>
+                                  <button
+                                    className="aoUsageRefreshBtn"
+                                    title="Refresh usage"
+                                    aria-label="Refresh usage"
+                                    onClick={() => void refreshQuota(p)}
+                                  >
+                                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                                      <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+                                      <path d="M20 5v5h-5" />
+                                    </svg>
+                                  </button>
+                                </div>
                                 <div className="aoUsageLine">
                                   today: {fmtAmount(used)} / {fmtAmount(total)} ({fmtPct(usedPct)})
-                                </div>
-                                <div className="aoUsageActions">
-                                  <button className="aoTinyBtn" onClick={() => void refreshQuota(p)}>
-                                    Refresh
-                                  </button>
                                 </div>
                               </div>
                             )
                           })()
                         ) : kind === 'budget_info' ? (
                           <div className="aoUsageMini">
-                            <div className="aoUsageLine">
-                              daily: ${q?.daily_spent_usd ?? '-'} / ${q?.daily_budget_usd ?? '-'}
+                            <div className="aoUsageHeaderRow">
+                              <div className="aoUsageLine">
+                                daily: ${q?.daily_spent_usd ?? '-'} / ${q?.daily_budget_usd ?? '-'}
+                              </div>
+                              <button
+                                className="aoUsageRefreshBtn"
+                                title="Refresh usage"
+                                aria-label="Refresh usage"
+                                onClick={() => void refreshQuota(p)}
+                              >
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                  <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+                                  <path d="M20 5v5h-5" />
+                                </svg>
+                              </button>
                             </div>
                             <div className="aoUsageLine">
                               monthly: ${q?.monthly_spent_usd ?? '-'} / ${q?.monthly_budget_usd ?? '-'}
                             </div>
-                            <div className="aoUsageActions">
-                              <button className="aoTinyBtn" onClick={() => void refreshQuota(p)}>
-                                Refresh
-                              </button>
-                            </div>
                           </div>
                         ) : (
                           <div className="aoUsageMini">
-                            <span className="aoHint">-</span>
-                            <div className="aoUsageActions">
-                              <button className="aoTinyBtn" onClick={() => void refreshQuota(p)}>
-                                Refresh
+                            <div className="aoUsageHeaderRow">
+                              <span className="aoHint">-</span>
+                              <button
+                                className="aoUsageRefreshBtn"
+                                title="Refresh usage"
+                                aria-label="Refresh usage"
+                                onClick={() => void refreshQuota(p)}
+                              >
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                  <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+                                  <path d="M20 5v5h-5" />
+                                </svg>
                               </button>
                             </div>
                           </div>
@@ -813,169 +838,183 @@ export default function App() {
                 <div className="aoSection">
                   <div className="aoSectionHeader">
                     <h3 className="aoH3">Config</h3>
-                    <div className="aoHint">keys are stored in ./user-data/secrets.json (gitignored)</div>
-                  </div>
-
-                <div className="aoCard aoConfigCard">
-                  <div className="aoConfigDeck">
-                    <div className="aoConfigPanel">
-                      <div className="aoMiniTitle">Add provider</div>
-                      <div className="aoAddProviderRow">
-                        <input
-                          className="aoInput"
-                          placeholder={nextProviderPlaceholder}
-                          value={newProviderName}
-                          onChange={(e) => setNewProviderName(e.target.value)}
-                        />
-                        <input
-                          className="aoInput"
-                          placeholder="Base URL (e.g. http://127.0.0.1:4001)"
-                          value={newProviderBaseUrl}
-                          onChange={(e) => setNewProviderBaseUrl(e.target.value)}
-                        />
-                        <button className="aoBtn aoBtnPrimary" onClick={() => void addProvider()}>
-                          Add
-                        </button>
-                      </div>
+                    <div className="aoRow">
+                      <div className="aoHint">keys are stored in ./user-data/secrets.json (gitignored)</div>
+                      <button
+                        className="aoTinyBtn aoToggleBtn"
+                        onClick={() => setConfigOpen((prev) => !prev)}
+                      >
+                        {configOpen ? 'Hide' : 'Show'}
+                      </button>
                     </div>
                   </div>
-                </div>
 
-                  <div className="aoProviderConfigList">
-                    {Object.entries(config.providers).map(([name, p]) => (
-                      <div className="aoProviderConfigCard" key={name}>
-                        <div className="aoProviderConfigBody">
-                          <div className="aoProviderField aoProviderLeft">
-                            <div className="aoProviderHeadRow">
-                              <div className="aoProviderName">{name}</div>
-                              <div className="aoProviderHeadActions">
-                                {p.base_url !== (baselineBaseUrls[name] ?? '') ? (
-                                  <button className="aoActionBtn" title="Save" onClick={() => void saveProvider(name)}>
-                                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                                      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
-                                      <path d="M17 21v-8H7v8" />
-                                      <path d="M7 3v5h8" />
-                                    </svg>
-                                    <span>Save</span>
-                                  </button>
-                                ) : null}
-                                <button
-                                  className="aoActionBtn"
-                                  title="Set key"
-                                  onClick={() => setKeyModal({ open: true, provider: name, value: '' })}
-                                >
-                                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                                    <g transform="rotate(-28 12 12)">
-                                      <circle cx="7.2" cy="12" r="3.2" />
-                                      <circle cx="7.2" cy="12" r="1.15" />
-                                      <path d="M10.8 12H21" />
-                                      <path d="M17.2 12v2.4" />
-                                      <path d="M19.2 12v3.4" />
-                                    </g>
-                                  </svg>
-                                  <span>Key</span>
-                                </button>
-                                <button className="aoActionBtn" title="Clear key" onClick={() => void clearKey(name)}>
-                                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                                    <path d="m7 21-4-4a2 2 0 0 1 0-3l10-10a2 2 0 0 1 3 0l5 5a2 2 0 0 1 0 3l-8 8" />
-                                    <path d="M6 18h8" />
-                                  </svg>
-                                  <span>Clear</span>
-                                </button>
-                                <button
-                                  className="aoActionBtn aoActionBtnDanger"
-                                  title="Delete provider"
-                                  aria-label="Delete provider"
-                                  onClick={() => void deleteProvider(name)}
-                                >
-                                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                                    <path d="M3 6h18" />
-                                    <path d="M8 6V4h8v2" />
-                                    <path d="M19 6 18 20H6L5 6" />
-                                    <path d="M10 11v6" />
-                                    <path d="M14 11v6" />
-                                  </svg>
-                                </button>
-                                <button
-                                  className="aoTinyBtn aoToggleBtn"
-                                  onClick={() => toggleProviderOpen(name)}
-                                >
-                                  {isProviderOpen(name) ? 'Hide' : 'Show'}
-                                </button>
-                              </div>
+                  {configOpen ? (
+                    <>
+                      <div className="aoCard aoConfigCard">
+                        <div className="aoConfigDeck">
+                          <div className="aoConfigPanel">
+                            <div className="aoMiniTitle">Add provider</div>
+                            <div className="aoAddProviderRow">
+                              <input
+                                className="aoInput"
+                                placeholder={nextProviderPlaceholder}
+                                value={newProviderName}
+                                onChange={(e) => setNewProviderName(e.target.value)}
+                              />
+                              <input
+                                className="aoInput"
+                                placeholder="Base URL (e.g. http://127.0.0.1:4001)"
+                                value={newProviderBaseUrl}
+                                onChange={(e) => setNewProviderBaseUrl(e.target.value)}
+                              />
+                              <button className="aoBtn aoBtnPrimary" onClick={() => void addProvider()}>
+                                Add
+                              </button>
                             </div>
-                            {isProviderOpen(name) ? null : (
-                              <div className="aoHint">Details hidden</div>
-                            )}
-                            {isProviderOpen(name) ? (
-                              <>
-                                <div className="aoMiniLabel">Base URL</div>
-                                <input
-                                  className="aoInput aoUrlInput"
-                                  value={p.base_url}
-                                  onChange={(e) =>
-                                    setConfig((c) =>
-                                      c
-                                        ? {
-                                            ...c,
-                                            providers: {
-                                              ...c.providers,
-                                              [name]: { ...c.providers[name], base_url: e.target.value },
-                                            },
-                                          }
-                                        : c,
-                                    )
-                                  }
-                                />
-                                <div className="aoMiniLabel">Key</div>
-                                <div className="aoKeyValue">
-                                  {p.has_key ? (p.key_preview ? p.key_preview : 'set') : 'empty'}
-                                </div>
-                              </>
-                            ) : null}
-                          </div>
-                          <div className="aoProviderField aoProviderRight">
-                            {isProviderOpen(name) ? (
-                              <>
-                                <div className="aoMiniLabel">Usage controls</div>
-                                <div className="aoUsageBtns">
-                                  <button
-                                    className="aoTinyBtn"
-                                    onClick={() =>
-                                      setUsageBaseModal({
-                                        open: true,
-                                        provider: name,
-                                        value: p.usage_base_url ?? '',
-                                      })
-                                    }
-                                  >
-                                    Usage Base
-                                  </button>
-                                  {p.usage_base_url ? (
-                                    <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
-                                      Clear
-                                    </button>
-                                  ) : null}
-                                </div>
-                                <div className="aoHint">
-                                  Usage base sets the usage endpoint. If empty, we use the provider base URL.
-                                </div>
-                                <div className="aoHint">
-                                  updated:{' '}
-                                  {status?.quota?.[name]?.updated_at_unix_ms
-                                    ? fmtWhen(status.quota[name].updated_at_unix_ms)
-                                    : 'never'}
-                                </div>
-                                {status?.quota?.[name]?.last_error ? (
-                                  <div className="aoUsageErr">{status.quota[name].last_error}</div>
-                                ) : null}
-                              </>
-                            ) : null}
                           </div>
                         </div>
                       </div>
-                    ))}
-                  </div>
+
+                      <div className="aoProviderConfigList">
+                        {Object.entries(config.providers).map(([name, p]) => (
+                          <div className="aoProviderConfigCard" key={name}>
+                            <div className="aoProviderConfigBody">
+                              <div className="aoProviderField aoProviderLeft">
+                                <div className="aoProviderHeadRow">
+                                  <div className="aoProviderName">{name}</div>
+                                  <div className="aoProviderHeadActions">
+                                    {p.base_url !== (baselineBaseUrls[name] ?? '') ? (
+                                      <button className="aoActionBtn" title="Save" onClick={() => void saveProvider(name)}>
+                                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                                          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+                                          <path d="M17 21v-8H7v8" />
+                                          <path d="M7 3v5h8" />
+                                        </svg>
+                                        <span>Save</span>
+                                      </button>
+                                    ) : null}
+                                    <button
+                                      className="aoActionBtn"
+                                      title="Set key"
+                                      onClick={() => setKeyModal({ open: true, provider: name, value: '' })}
+                                    >
+                                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                                        <g transform="rotate(-28 12 12)">
+                                          <circle cx="7.2" cy="12" r="3.2" />
+                                          <circle cx="7.2" cy="12" r="1.15" />
+                                          <path d="M10.8 12H21" />
+                                          <path d="M17.2 12v2.4" />
+                                          <path d="M19.2 12v3.4" />
+                                        </g>
+                                      </svg>
+                                      <span>Key</span>
+                                    </button>
+                                    <button className="aoActionBtn" title="Clear key" onClick={() => void clearKey(name)}>
+                                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="m7 21-4-4a2 2 0 0 1 0-3l10-10a2 2 0 0 1 3 0l5 5a2 2 0 0 1 0 3l-8 8" />
+                                        <path d="M6 18h8" />
+                                      </svg>
+                                      <span>Clear</span>
+                                    </button>
+                                    <button
+                                      className="aoActionBtn aoActionBtnDanger"
+                                      title="Delete provider"
+                                      aria-label="Delete provider"
+                                      onClick={() => void deleteProvider(name)}
+                                    >
+                                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="M3 6h18" />
+                                        <path d="M8 6V4h8v2" />
+                                        <path d="M19 6 18 20H6L5 6" />
+                                        <path d="M10 11v6" />
+                                        <path d="M14 11v6" />
+                                      </svg>
+                                    </button>
+                                    <button
+                                      className="aoTinyBtn aoToggleBtn"
+                                      onClick={() => toggleProviderOpen(name)}
+                                    >
+                                      {isProviderOpen(name) ? 'Hide' : 'Show'}
+                                    </button>
+                                  </div>
+                                </div>
+                                {isProviderOpen(name) ? null : (
+                                  <div className="aoHint">Details hidden</div>
+                                )}
+                                {isProviderOpen(name) ? (
+                                  <>
+                                    <div className="aoMiniLabel">Base URL</div>
+                                    <input
+                                      className="aoInput aoUrlInput"
+                                      value={p.base_url}
+                                      onChange={(e) =>
+                                        setConfig((c) =>
+                                          c
+                                            ? {
+                                                ...c,
+                                                providers: {
+                                                  ...c.providers,
+                                                  [name]: { ...c.providers[name], base_url: e.target.value },
+                                                },
+                                              }
+                                            : c,
+                                        )
+                                      }
+                                    />
+                                    <div className="aoMiniLabel">Key</div>
+                                    <div className="aoKeyValue">
+                                      {p.has_key ? (p.key_preview ? p.key_preview : 'set') : 'empty'}
+                                    </div>
+                                  </>
+                                ) : null}
+                              </div>
+                              <div className="aoProviderField aoProviderRight">
+                                {isProviderOpen(name) ? (
+                                  <>
+                                    <div className="aoMiniLabel">Usage controls</div>
+                                    <div className="aoUsageBtns">
+                                      <button
+                                        className="aoTinyBtn"
+                                        onClick={() =>
+                                          setUsageBaseModal({
+                                            open: true,
+                                            provider: name,
+                                            value: p.usage_base_url ?? '',
+                                          })
+                                        }
+                                      >
+                                        Usage Base
+                                      </button>
+                                      {p.usage_base_url ? (
+                                        <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
+                                          Clear
+                                        </button>
+                                      ) : null}
+                                    </div>
+                                    <div className="aoHint">
+                                      Usage base sets the usage endpoint. If empty, we use the provider base URL.
+                                    </div>
+                                    <div className="aoHint">
+                                      updated:{' '}
+                                      {status?.quota?.[name]?.updated_at_unix_ms
+                                        ? fmtWhen(status.quota[name].updated_at_unix_ms)
+                                        : 'never'}
+                                    </div>
+                                    {status?.quota?.[name]?.last_error ? (
+                                      <div className="aoUsageErr">{status.quota[name].last_error}</div>
+                                    ) : null}
+                                  </>
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="aoHint">Config hidden</div>
+                  )}
                 </div>
               ) : null}
 
