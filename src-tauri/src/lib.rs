@@ -633,6 +633,9 @@ async fn refresh_codex_account_snapshot(
     let mut signed_in = false;
     let mut remaining: Option<String> = None;
     let mut unlimited: Option<bool> = None;
+    let mut limit_5h_remaining: Option<String> = None;
+    let mut limit_weekly_remaining: Option<String> = None;
+    let mut code_review_remaining: Option<String> = None;
     let mut error = String::new();
 
     let auth = codex_app_server::request("getAuthStatus", Value::Null).await?;
@@ -651,6 +654,46 @@ async fn refresh_codex_account_snapshot(
                 .and_then(|v| v.get("secondary"))
                 .and_then(|v| v.get("usedPercent"))
                 .and_then(parse_number);
+            let rate_limits = result.get("rateLimits");
+            if let Some(rate_limits) = rate_limits {
+                if let Some(primary) = rate_limits.get("primary") {
+                    if let Some(used) = primary.get("usedPercent").and_then(parse_number) {
+                        let window_mins = primary
+                            .get("windowDurationMins")
+                            .and_then(parse_number)
+                            .map(|v| v.round() as i64);
+                        if window_mins == Some(300) {
+                            limit_5h_remaining = Some(format_percent(100.0 - used));
+                        } else if window_mins == Some(10080) {
+                            limit_weekly_remaining = Some(format_percent(100.0 - used));
+                        }
+                    }
+                }
+                if let Some(secondary) = rate_limits.get("secondary") {
+                    if let Some(used) = secondary.get("usedPercent").and_then(parse_number) {
+                        let window_mins = secondary
+                            .get("windowDurationMins")
+                            .and_then(parse_number)
+                            .map(|v| v.round() as i64);
+                        if window_mins == Some(300) {
+                            limit_5h_remaining = Some(format_percent(100.0 - used));
+                        } else if window_mins == Some(10080) {
+                            limit_weekly_remaining = Some(format_percent(100.0 - used));
+                        } else if limit_weekly_remaining.is_none() {
+                            limit_weekly_remaining = Some(format_percent(100.0 - used));
+                        }
+                    }
+                }
+                if code_review_remaining.is_none() {
+                    code_review_remaining = rate_limits
+                        .get("codeReview")
+                        .or_else(|| rate_limits.get("code_review"))
+                        .or_else(|| rate_limits.get("review"))
+                        .and_then(|v| v.get("usedPercent"))
+                        .and_then(parse_number)
+                        .map(|used| format_percent(100.0 - used));
+                }
+            }
             if let Some(credits) = result
                 .get("rateLimits")
                 .and_then(|v| v.get("credits"))
@@ -686,6 +729,9 @@ async fn refresh_codex_account_snapshot(
       "checked_at_unix_ms": unix_ms(),
       "signed_in": signed_in,
       "remaining": remaining,
+      "limit_5h_remaining": limit_5h_remaining,
+      "limit_weekly_remaining": limit_weekly_remaining,
+      "code_review_remaining": code_review_remaining,
       "unlimited": unlimited,
       "error": error
     });

@@ -46,6 +46,9 @@ type Status = {
     checked_at_unix_ms?: number
     signed_in?: boolean
     remaining?: string | null
+    limit_5h_remaining?: string | null
+    limit_weekly_remaining?: string | null
+    code_review_remaining?: string | null
     unlimited?: boolean | null
     error?: string
   }
@@ -176,6 +179,9 @@ const devStatus: Status = {
     checked_at_unix_ms: Date.now() - 90000,
     signed_in: true,
     remaining: '13%',
+    limit_5h_remaining: '87%',
+    limit_weekly_remaining: '13%',
+    code_review_remaining: '92%',
     unlimited: false,
   },
 }
@@ -585,19 +591,21 @@ export default function App() {
                     <div className="aoLimitCard">
                       <div className="aoMiniLabel">5-hour limit</div>
                       <div className="aoLimitValue">
-                        -
+                        {status.codex_account?.limit_5h_remaining ??
+                          (parsePct(status.codex_account?.remaining) ?? '-')}
                       </div>
                     </div>
                     <div className="aoLimitCard">
                       <div className="aoMiniLabel">Weekly limit</div>
                       <div className="aoLimitValue">
-                        {parsePct(status.codex_account?.remaining) ?? '-'}
+                        {status.codex_account?.limit_weekly_remaining ??
+                          (parsePct(status.codex_account?.remaining) ?? '-')}
                       </div>
                     </div>
                     <div className="aoLimitCard">
                       <div className="aoMiniLabel">Code review</div>
                       <div className="aoLimitValue">
-                        -
+                        {status.codex_account?.code_review_remaining ?? '-'}
                       </div>
                     </div>
                   </div>
