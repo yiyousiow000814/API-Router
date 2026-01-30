@@ -16,8 +16,8 @@ use serde_json::{json, Value};
 
 use super::config::AppConfig;
 use super::openai::{
-    extract_text_from_responses, input_to_messages, messages_to_plain_text,
-    messages_to_responses_input, messages_to_simple_input_list, sse_events_for_text,
+    extract_text_from_responses, input_to_messages, messages_to_responses_input,
+    messages_to_simple_input_list, sse_events_for_text,
 };
 use super::router::RouterState;
 use super::secrets::SecretStore;
@@ -26,22 +26,22 @@ use super::upstream::UpstreamClient;
 
 #[derive(Clone)]
 pub struct GatewayState {
-  pub cfg: Arc<RwLock<AppConfig>>,
-  pub router: Arc<RouterState>,
-  pub store: Store,
-  pub upstream: UpstreamClient,
-  pub secrets: SecretStore,
-  pub last_activity_unix_ms: Arc<AtomicU64>,
-  pub last_used_provider: Arc<RwLock<Option<String>>>,
-  pub last_used_reason: Arc<RwLock<Option<String>>>,
-  pub usage_base_speed_cache: Arc<RwLock<HashMap<String, UsageBaseSpeedCacheEntry>>>,
+    pub cfg: Arc<RwLock<AppConfig>>,
+    pub router: Arc<RouterState>,
+    pub store: Store,
+    pub upstream: UpstreamClient,
+    pub secrets: SecretStore,
+    pub last_activity_unix_ms: Arc<AtomicU64>,
+    pub last_used_provider: Arc<RwLock<Option<String>>>,
+    pub last_used_reason: Arc<RwLock<Option<String>>>,
+    pub usage_base_speed_cache: Arc<RwLock<HashMap<String, UsageBaseSpeedCacheEntry>>>,
 }
 
 #[derive(Clone, Debug)]
 pub struct UsageBaseSpeedCacheEntry {
-  pub updated_at_unix_ms: u64,
-  pub bases_key: Vec<String>,
-  pub ordered_bases: Vec<String>,
+    pub updated_at_unix_ms: u64,
+    pub bases_key: Vec<String>,
+    pub ordered_bases: Vec<String>,
 }
 
 pub fn build_router(state: GatewayState) -> Router {
@@ -213,15 +213,14 @@ async fn responses(
         // Avoid upstream rejecting our server-side continuity ids.
         body.as_object_mut()
             .map(|m| m.remove("previous_response_id"));
-        body.as_object_mut()
-            .map(|m| {
-                let input = if prefers_simple_input_list(&p.base_url) {
-                    messages_to_simple_input_list(&messages)
-                } else {
-                    messages_to_responses_input(&messages)
-                };
-                m.insert("input".to_string(), input)
-            });
+        body.as_object_mut().map(|m| {
+            let input = if prefers_simple_input_list(&p.base_url) {
+                messages_to_simple_input_list(&messages)
+            } else {
+                messages_to_responses_input(&messages)
+            };
+            m.insert("input".to_string(), input)
+        });
 
         let timeout = cfg.routing.request_timeout_seconds;
 

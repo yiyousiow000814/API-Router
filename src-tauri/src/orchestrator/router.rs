@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use reqwest::Url;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use parking_lot::RwLock;
@@ -190,7 +190,9 @@ impl RouterState {
 
 fn provider_group(cfg: &AppConfig, name: &str) -> Option<String> {
     let p = cfg.providers.get(name)?;
-    let host = Url::parse(&p.base_url).ok().and_then(|u| u.host_str().map(|s| s.to_string()))?;
+    let host = Url::parse(&p.base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))?;
     if host.ends_with("ppchat.vip") || host.ends_with("pumpkinai.vip") {
         return Some("ppchat_pumpkin".to_string());
     }

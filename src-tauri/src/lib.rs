@@ -47,6 +47,12 @@ pub fn run() {
             })()
             .unwrap_or(app.path().app_data_dir()?);
 
+            // Isolate Codex auth/session from the default ~/.codex directory to avoid overwrites.
+            // This keeps the app's login independent from CLI logins.
+            let codex_home = user_data_dir.join("codex-home");
+            let _ = std::fs::create_dir_all(&codex_home);
+            std::env::set_var("CODEX_HOME", &codex_home);
+
             let state = build_state(
                 user_data_dir.join("config.toml"),
                 user_data_dir.join("data"),
@@ -620,11 +626,7 @@ async fn get_effective_usage_base(
     if !state.gateway.cfg.read().providers.contains_key(&provider) {
         return Err(format!("unknown provider: {provider}"));
     }
-    Ok(crate::orchestrator::quota::effective_usage_base(
-        &state.gateway,
-        &provider,
-    )
-    .await)
+    Ok(crate::orchestrator::quota::effective_usage_base(&state.gateway, &provider).await)
 }
 
 #[tauri::command]

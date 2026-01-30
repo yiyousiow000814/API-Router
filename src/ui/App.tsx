@@ -640,13 +640,16 @@ export default function App() {
     setProviderPanelsOpen((prev) => ({ ...prev, [name]: !(prev[name] ?? true) }))
   }, [])
 
-  const isProviderCardClick = useCallback((event: React.MouseEvent) => {
-    const target = event.target as HTMLElement | null
-    if (!target) return false
-    return !target.closest(
-      'button, input, select, textarea, a, label, .aoDragHandle, .aoIconGhost, .aoActionBtn, .aoTinyBtn',
-    )
-  }, [])
+  const setAllProviderPanels = useCallback((open: boolean) => {
+    setProviderPanelsOpen((prev) => {
+      const next: Record<string, boolean> = { ...prev }
+      for (const name of orderedConfigProviders) {
+        next[name] = open
+      }
+      return next
+    })
+  }, [orderedConfigProviders])
+
 
   const beginRenameProvider = useCallback((name: string) => {
     setEditingProviderName(name)
@@ -1224,9 +1227,17 @@ export default function App() {
           <div className="aoModal aoModalWide" onClick={(e) => e.stopPropagation()}>
             <div className="aoModalHeader">
               <div className="aoModalTitle">Config</div>
-              <button className="aoBtn" onClick={() => setConfigModalOpen(false)}>
-                Close
-              </button>
+              <div className="aoRow">
+                <button className="aoBtn" onClick={() => setAllProviderPanels(true)}>
+                  Show all
+                </button>
+                <button className="aoBtn" onClick={() => setAllProviderPanels(false)}>
+                  Hide all
+                </button>
+                <button className="aoBtn" onClick={() => setConfigModalOpen(false)}>
+                  Close
+                </button>
+              </div>
             </div>
             <div className="aoModalBody">
               <div className="aoModalSub">keys are stored in ./user-data/secrets.json (gitignored)</div>
@@ -1265,11 +1276,6 @@ export default function App() {
                   <div
                     className={`aoProviderConfigCard${isDragging ? ' aoProviderConfigDragging' : ''}${isDragOver ? ' aoProviderConfigDragOver' : ''}${!isProviderOpen(name) ? ' aoProviderConfigCollapsed' : ''}`}
                     key={name}
-                    onClick={(e) => {
-                      if (!isProviderOpen(name) && isProviderCardClick(e)) {
-                        toggleProviderOpen(name)
-                      }
-                    }}
                     onDragOver={(e) => {
                       e.preventDefault()
                       e.dataTransfer.dropEffect = 'move'
@@ -1302,19 +1308,13 @@ export default function App() {
                       <div className="aoProviderField aoProviderLeft">
                         <div
                           className="aoProviderHeadRow"
-                          onClick={(e) => {
-                            if (isProviderOpen(name) && isProviderCardClick(e)) {
-                              toggleProviderOpen(name)
-                            }
-                          }}
                         >
                           <div className="aoProviderNameRow">
-                            <div
+                            <button
                               className="aoDragHandle"
                               title="Drag to reorder"
                               aria-label="Drag to reorder"
-                              role="button"
-                              tabIndex={0}
+                              type="button"
                               draggable
                               onDragStart={(e) => {
                                 e.dataTransfer.setData('text/plain', name)
@@ -1332,7 +1332,7 @@ export default function App() {
                                 <path d="M4 12h16" />
                                 <path d="M4 17h16" />
                               </svg>
-                            </div>
+                            </button>
                             {editingProviderName === name ? (
                               <input
                                 className="aoNameInput"

@@ -57,31 +57,6 @@ pub fn messages_to_responses_input(messages: &[Value]) -> Value {
     Value::Array(out)
 }
 
-pub fn messages_to_plain_text(messages: &[Value]) -> String {
-    let mut out = Vec::new();
-    for m in messages {
-        let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("user");
-        let content = m
-            .get("content")
-            .cloned()
-            .unwrap_or(Value::String(String::new()));
-        let text = match content {
-            Value::String(s) => s,
-            Value::Array(arr) => arr
-                .iter()
-                .filter_map(|c| c.get("text").and_then(|v| v.as_str()))
-                .collect::<Vec<_>>()
-                .join(" "),
-            _ => content.to_string(),
-        };
-        if text.trim().is_empty() {
-            continue;
-        }
-        out.push(format!("{role}: {text}"));
-    }
-    out.join("\n\n")
-}
-
 pub fn messages_to_simple_input_list(messages: &[Value]) -> Value {
     let mut out = Vec::new();
     for m in messages {

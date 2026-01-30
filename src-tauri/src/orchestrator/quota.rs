@@ -158,9 +158,26 @@ fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
         }
     }
 
-    let mut out = Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    let mut push_unique = |value: String| {
+        if value.is_empty() {
+            return;
+        }
+        if !out.iter().any(|v| v == &value) {
+            out.push(value);
+        }
+    };
+
+    let is_ppchat = is_ppchat_base(&provider.base_url);
+    let is_pumpkin = is_pumpkinai_base(&provider.base_url);
+
+    if is_ppchat || is_pumpkin {
+        // Prefer the shared history/usage endpoint for ppchat/pumpkinai.
+        push_unique("https://his.ppchat.vip".to_string());
+    }
+
     if let Some(origin) = derive_origin(&provider.base_url) {
-        out.push(origin.clone());
+        push_unique(origin.clone());
 
         // Heuristic: if upstream uses a "*-api." hostname, also try the non-api hostname.
         // This stays generic and does not encode any provider-specific domains.
@@ -169,7 +186,7 @@ fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
                 if host.contains("-api.") {
                     let alt = host.replacen("-api.", ".", 1);
                     if u.set_host(Some(&alt)).is_ok() {
-                        out.push(u.as_str().trim_end_matches('/').to_string());
+                        push_unique(u.as_str().trim_end_matches('/').to_string());
                     }
                 }
             }
@@ -177,21 +194,15 @@ fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
     }
 
     if is_packycode_base(&provider.base_url) {
-        out.push("https://www.packycode.com".to_string());
-        out.push("https://packycode.com".to_string());
+        push_unique("https://www.packycode.com".to_string());
+        push_unique("https://packycode.com".to_string());
     }
 
-    if is_ppchat_base(&provider.base_url) {
-        out.push("https://his.ppchat.vip".to_string());
+    if is_ppchat || is_pumpkin {
+        push_unique("https://code.ppchat.vip".to_string());
+        push_unique("https://code.pumpkinai.vip".to_string());
     }
 
-    if is_ppchat_base(&provider.base_url) || is_pumpkinai_base(&provider.base_url) {
-        out.push("https://code.ppchat.vip".to_string());
-        out.push("https://code.pumpkinai.vip".to_string());
-    }
-
-    out.sort();
-    out.dedup();
     out
 }
 
@@ -220,17 +231,17 @@ async fn reorder_bases_for_speed(
     bases: Vec<String>,
     api_key: Option<&str>,
 ) -> Vec<String> {
-    let mut normalized: Vec<String> = bases
-        .into_iter()
-        .map(|b| b.trim_end_matches('/').to_string())
-        .collect();
-    normalized.sort();
-    normalized.dedup();
+    let mut normalized: Vec<String> = Vec::new();
+    for base in bases {
+        let trimmed = base.trim_end_matches('/').to_string();
+        if trimmed.is_empty() || normalized.iter().any(|b| b == &trimmed) {
+            continue;
+        }
+        normalized.push(trimmed);
+    }
 
     let has_ppchat = normalized.iter().any(|b| b == "https://code.ppchat.vip");
-    let has_pumpkin = normalized
-        .iter()
-        .any(|b| b == "https://code.pumpkinai.vip");
+    let has_pumpkin = normalized.iter().any(|b| b == "https://code.pumpkinai.vip");
     if !has_ppchat || !has_pumpkin {
         return normalized;
     }
@@ -244,7 +255,8 @@ async fn reorder_bases_for_speed(
     bases_key.dedup();
 
     if let Some(entry) = st.usage_base_speed_cache.read().get(provider_name) {
-        if entry.bases_key == bases_key && now.saturating_sub(entry.updated_at_unix_ms) < 5 * 60 * 1000
+        if entry.bases_key == bases_key
+            && now.saturating_sub(entry.updated_at_unix_ms) < 5 * 60 * 1000
         {
             return entry.ordered_bases.clone();
         }
@@ -271,14 +283,16 @@ async fn reorder_bases_for_speed(
     }
 
     let mut ordered = Vec::new();
+    for base in normalized.iter() {
+        if base == "https://code.ppchat.vip" || base == "https://code.pumpkinai.vip" {
+            continue;
+        }
+        ordered.push(base.clone());
+    }
+    // Insert the speed-ordered ppchat/pumpkin bases at the end to avoid overriding preferred bases.
     for base in ordered_pair {
         if normalized.contains(&base) {
             ordered.push(base);
-        }
-    }
-    for base in normalized.iter() {
-        if base != "https://code.ppchat.vip" && base != "https://code.pumpkinai.vip" {
-            ordered.push(base.clone());
         }
     }
 
@@ -461,10 +475,7 @@ async fn refresh_quota_for_provider_cached(
     snap
 }
 
-async fn usage_key_for_provider(
-    st: &GatewayState,
-    provider_name: &str,
-) -> Option<UsageRequestKey> {
+async fn usage_key_for_provider(st: &GatewayState, provider_name: &str) -> Option<UsageRequestKey> {
     let cfg = st.cfg.read().clone();
     let p = cfg.providers.get(provider_name)?;
     let provider_key = st.secrets.get_provider_key(provider_name);
@@ -822,8 +833,8 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
 
                 out.daily_spent_usd = as_f64(root.get("daily_spent_usd"));
                 out.daily_budget_usd = as_f64(root.get("daily_budget_usd"));
-                out.weekly_spent_usd =
-                    as_f64(root.get("weekly_spent_usd")).or_else(|| as_f64(root.get("weekly_spent")));
+                out.weekly_spent_usd = as_f64(root.get("weekly_spent_usd"))
+                    .or_else(|| as_f64(root.get("weekly_spent")));
                 out.weekly_budget_usd = as_f64(root.get("weekly_budget_usd"))
                     .or_else(|| as_f64(root.get("weekly_budget")));
                 out.monthly_spent_usd = as_f64(root.get("monthly_spent_usd"));

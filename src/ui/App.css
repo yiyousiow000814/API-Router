@@ -561,10 +561,6 @@
   padding-top: 15px;
 }
 
-.aoProviderConfigCollapsed .aoProviderRight {
-  cursor: pointer;
-}
-
 .aoProviderRight::before {
   content: "";
   position: absolute;
