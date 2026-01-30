@@ -64,6 +64,36 @@ fn prefers_simple_input_list(base_url: &str) -> bool {
         || host.ends_with("packycode.com")
 }
 
+fn input_contains_tools(input: &Value) -> bool {
+    let Value::Array(items) = input else {
+        return false;
+    };
+    for item in items {
+        if item_contains_tool(item) {
+            return true;
+        }
+    }
+    false
+}
+
+fn item_contains_tool(item: &Value) -> bool {
+    if let Some(t) = item.get("type").and_then(|v| v.as_str()) {
+        if t.contains("tool") {
+            return true;
+        }
+    }
+    if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
+        for c in content {
+            if let Some(t) = c.get("type").and_then(|v| v.as_str()) {
+                if t.contains("tool") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {
     let cfg = state.cfg.read().clone();
     let addr: SocketAddr = format!("{}:{}", cfg.listen.host, cfg.listen.port).parse()?;
@@ -193,6 +223,7 @@ async fn responses(
         messages.extend(load_history_as_messages(&st, &prev));
     }
     let input = body.get("input").cloned().unwrap_or(Value::Null);
+    let input_has_tools = input_contains_tools(&input);
     messages.extend(input_to_messages(&input));
 
     // Try providers in order: chosen, then fallbacks.
@@ -214,7 +245,9 @@ async fn responses(
         body.as_object_mut()
             .map(|m| m.remove("previous_response_id"));
         body.as_object_mut().map(|m| {
-            let input = if prefers_simple_input_list(&p.base_url) {
+            let input = if input_has_tools {
+                input.clone()
+            } else if prefers_simple_input_list(&p.base_url) {
                 messages_to_simple_input_list(&messages)
             } else {
                 messages_to_responses_input(&messages)
