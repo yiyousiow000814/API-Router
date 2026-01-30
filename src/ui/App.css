@@ -617,6 +617,7 @@
   gap: 4px;
   height: 100%;
   align-content: center;
+  min-height: 100%;
 }
 
 .aoUsageHeaderRow {
@@ -632,6 +633,7 @@
   justify-content: space-between;
   gap: 10px;
   height: 100%;
+  min-height: 100%;
 }
 
 .aoUsageText {
@@ -831,11 +833,9 @@
 }
 
 .aoActionBtn:hover {
-  border-color: rgba(var(--ao-accent-rgb), 0.92);
+  border-color: rgba(13, 18, 32, 0.4);
   background: rgba(var(--ao-accent-rgb), 0.06);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 0 0 1px rgba(13, 18, 32, 0.04);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
 }
 
 .aoActionBtn:active {
@@ -888,14 +888,13 @@
 }
 
 .aoIconBtn:hover {
-  border-color: rgba(var(--ao-accent-rgb), 0.35);
+  border-color: rgba(13, 18, 32, 0.4);
   background: rgba(255, 255, 255, 0.96);
-  transform: translateY(-1px);
   color: rgba(var(--ao-accent-rgb), 0.9);
 }
 
 .aoIconBtn:active {
-  transform: translateY(0px);
+  transform: none;
 }
 
 .aoIconBtn svg {
@@ -999,10 +998,13 @@
 }
 
 .aoUsageCell {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
   padding-right: 16px;
+  vertical-align: middle;
+}
+
+.aoUsageCellInner {
+  display: flex;
+  align-items: center;
   height: 100%;
 }
 

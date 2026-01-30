@@ -1071,7 +1071,9 @@ export default function App() {
                           <td>{cooldownActive ? fmtWhen(h.cooldown_until_unix_ms) : '-'}</td>
                           <td>{fmtWhen(h.last_ok_at_unix_ms)}</td>
                           <td className="aoCellWrap">{h.last_error ? h.last_error : '-'}</td>
-                          <td className="aoUsageCell">{usageNode}</td>
+                          <td className="aoUsageCell">
+                            <div className="aoUsageCellInner">{usageNode}</div>
+                          </td>
                         </tr>
                       )
                     })}
@@ -1270,6 +1272,7 @@ export default function App() {
                     }}
                     onDragOver={(e) => {
                       e.preventDefault()
+                      e.dataTransfer.dropEffect = 'move'
                       if (dragOverProvider !== name) {
                         setDragOverProvider(name)
                       }

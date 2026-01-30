@@ -16,8 +16,8 @@ use serde_json::{json, Value};
 
 use super::config::AppConfig;
 use super::openai::{
-    extract_text_from_responses, input_to_messages, messages_to_responses_input,
-    sse_events_for_text,
+    extract_text_from_responses, input_to_messages, messages_to_plain_text,
+    messages_to_responses_input, messages_to_simple_input_list, sse_events_for_text,
 };
 use super::router::RouterState;
 use super::secrets::SecretStore;
@@ -52,6 +52,16 @@ pub fn build_router(state: GatewayState) -> Router {
         .route("/v1/responses", post(responses))
         .route("/responses", post(responses))
         .with_state(state)
+}
+
+fn prefers_simple_input_list(base_url: &str) -> bool {
+    let host = reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+    host.ends_with("ppchat.vip")
+        || host.ends_with("pumpkinai.vip")
+        || host.ends_with("packycode.com")
 }
 
 pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {
@@ -201,11 +211,17 @@ async fn responses(
         };
 
         // Avoid upstream rejecting our server-side continuity ids.
-        // Avoid upstream rejecting our server-side continuity ids.
         body.as_object_mut()
             .map(|m| m.remove("previous_response_id"));
         body.as_object_mut()
-            .map(|m| m.insert("input".to_string(), messages_to_responses_input(&messages)));
+            .map(|m| {
+                let input = if prefers_simple_input_list(&p.base_url) {
+                    messages_to_simple_input_list(&messages)
+                } else {
+                    messages_to_responses_input(&messages)
+                };
+                m.insert("input".to_string(), input)
+            });
 
         let timeout = cfg.routing.request_timeout_seconds;
 
