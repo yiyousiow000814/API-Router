@@ -284,6 +284,21 @@ export default function App() {
   const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
   const [draggingProvider, setDraggingProvider] = useState<string | null>(null)
   const [dragOverProvider, setDragOverProvider] = useState<string | null>(null)
+  const [dragOffsetY, setDragOffsetY] = useState<number>(0)
+  const [dragPreviewOrder, setDragPreviewOrder] = useState<string[] | null>(null)
+  const dragHandleProviderRef = useRef<string | null>(null)
+  const dragStartOrderRef = useRef<string[]>([])
+  const dragOrderRef = useRef<string[]>([])
+  const dragMoveRef = useRef<((e: PointerEvent) => void) | null>(null)
+  const dragUpRef = useRef<((e: PointerEvent) => void) | null>(null)
+  const providerCardRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const dragStartYRef = useRef<number>(0)
+  const dragPointerOffsetRef = useRef<number>(0)
+  const dragStartTopRef = useRef<number>(0)
+  const dragListTopRef = useRef<number>(0)
+  const dragCardHeightRef = useRef<number>(0)
+  const dragLastYRef = useRef<number>(0)
+  const providerListRef = useRef<HTMLDivElement | null>(null)
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
   const instructionBackdropMouseDownRef = useRef<boolean>(false)
   const configBackdropMouseDownRef = useRef<boolean>(false)
@@ -314,7 +329,23 @@ export default function App() {
     }
   }, [providerPanelsOpen])
 
-  const providers = useMemo(() => Object.keys(status?.providers ?? {}), [status])
+  const providers = useMemo(() => {
+    const statusProviders = Object.keys(status?.providers ?? {})
+    if (!config) return statusProviders
+    const order = config.provider_order ?? []
+    const seen = new Set<string>()
+    const ordered: string[] = []
+    for (const name of order) {
+      if (statusProviders.includes(name) && !seen.has(name)) {
+        ordered.push(name)
+        seen.add(name)
+      }
+    }
+    for (const name of statusProviders) {
+      if (!seen.has(name)) ordered.push(name)
+    }
+    return ordered
+  }, [status, config])
   const orderedConfigProviders = useMemo(() => {
     if (!config) return []
     const names = Object.keys(config.providers ?? {})
@@ -648,7 +679,104 @@ export default function App() {
       }
       return next
     })
-  }, [orderedConfigProviders])
+  }, [config, orderedConfigProviders])
+
+  const allProviderPanelsOpen = useMemo(
+    () => orderedConfigProviders.every((name) => providerPanelsOpen[name] ?? true),
+    [orderedConfigProviders, providerPanelsOpen],
+  )
+
+  const onProviderDragMove = useCallback((e: PointerEvent) => {
+    const dragging = dragHandleProviderRef.current
+    if (!dragging) return
+    const movingDown = e.clientY >= dragLastYRef.current
+    dragLastYRef.current = e.clientY
+    const targetTop = e.clientY - dragPointerOffsetRef.current
+    setDragOffsetY(targetTop - dragStartTopRef.current)
+    const current = dragPreviewOrder ?? (dragOrderRef.current.length ? dragOrderRef.current : orderedConfigProviders)
+    const rest = current.filter((name) => name !== dragging)
+    if (!rest.length) return
+    const dragTop = e.clientY - dragPointerOffsetRef.current
+    const dragHeight = dragCardHeightRef.current || 0
+    // Directional hysteresis: move down needs deeper overlap than move up.
+    const dragCenter = dragTop + dragHeight * (movingDown ? 0.75 : 0.25)
+    let insertIdx = rest.length
+    for (let i = 0; i < rest.length; i += 1) {
+      const name = rest[i]
+      const node = providerCardRefs.current[name]
+      if (!node) continue
+      const rect = node.getBoundingClientRect()
+      const midpoint = rect.top + rect.height / 2
+      if (dragCenter < midpoint) {
+        insertIdx = i
+        break
+      }
+    }
+    const next = [...rest]
+    next.splice(insertIdx, 0, dragging)
+    if (next.join('|') === current.join('|')) return
+    dragOrderRef.current = next
+    setDragOverProvider(rest[insertIdx] ?? rest[rest.length - 1] ?? null)
+    const first = new Map<string, DOMRect>()
+    for (const name of current) {
+      if (name === dragging) continue
+      const node = providerCardRefs.current[name]
+      if (node) first.set(name, node.getBoundingClientRect())
+    }
+    setDragPreviewOrder(next)
+    requestAnimationFrame(() => {
+      for (const name of next) {
+        if (name === dragging) continue
+        const node = providerCardRefs.current[name]
+        const before = first.get(name)
+        if (!node || !before) continue
+        const after = node.getBoundingClientRect()
+        const dx = before.left - after.left
+        const dy = before.top - after.top
+        if (dx === 0 && dy === 0) continue
+        node.getAnimations().forEach((anim) => anim.cancel())
+        node.animate(
+          [
+            { transform: `translate(${dx}px, ${dy}px)` },
+            { transform: 'translate(0, 0)' },
+          ],
+          { duration: 200, easing: 'cubic-bezier(0.2, 0.6, 0.2, 1)' },
+        )
+      }
+    })
+  }, [dragPreviewOrder, orderedConfigProviders])
+
+  const onProviderDragUp = useCallback(() => {
+    const dragging = dragHandleProviderRef.current
+    dragHandleProviderRef.current = null
+    setDraggingProvider(null)
+    setDragOverProvider(null)
+    setDragOffsetY(0)
+    setDragPreviewOrder(null)
+    if (dragMoveRef.current) {
+      window.removeEventListener('pointermove', dragMoveRef.current as EventListener)
+    }
+    if (dragUpRef.current) {
+      window.removeEventListener('pointerup', dragUpRef.current as EventListener)
+    }
+    if (!dragging) return
+    const start = dragStartOrderRef.current
+    const finalOrder = dragOrderRef.current.length ? dragOrderRef.current : orderedConfigProviders
+    const changed =
+      start.length !== finalOrder.length ||
+      start.some((name, idx) => name !== finalOrder[idx])
+    dragStartOrderRef.current = []
+    dragOrderRef.current = []
+    if (changed) {
+      void applyProviderOrder(finalOrder)
+    }
+  }, [applyProviderOrder, orderedConfigProviders])
+
+  useEffect(() => {
+    dragMoveRef.current = onProviderDragMove
+    dragUpRef.current = onProviderDragUp
+  }, [onProviderDragMove, onProviderDragUp])
+
 
 
   const beginRenameProvider = useCallback((name: string) => {
@@ -681,6 +809,250 @@ export default function App() {
     [providerNameDrafts, refreshConfig, refreshStatus],
   )
 
+  const renderProviderCard = useCallback(
+    (name: string, overlay = false) => {
+      const p = config?.providers?.[name]
+      if (!p) return null
+      const isDragOver = dragOverProvider === name
+      const dragBaseTop = dragStartTopRef.current - dragListTopRef.current
+      const dragStyle = overlay
+        ? {
+            position: 'absolute' as const,
+            left: 0,
+            right: 0,
+            top: dragBaseTop,
+            transform: `translateY(${dragOffsetY}px)`,
+          }
+        : undefined
+      return (
+        <div
+          className={`aoProviderConfigCard${overlay ? ' aoProviderConfigDragging' : ''}${isDragOver && !overlay ? ' aoProviderConfigDragOver' : ''}${!isProviderOpen(name) ? ' aoProviderConfigCollapsed' : ''}`}
+          key={overlay ? `${name}-drag` : name}
+          data-provider={overlay ? undefined : name}
+          ref={
+            overlay
+              ? undefined
+              : (node) => {
+                  providerCardRefs.current[name] = node
+                }
+          }
+          style={dragStyle}
+        >
+          <div className="aoProviderConfigBody">
+            <div className="aoProviderField aoProviderLeft">
+              <div className="aoProviderHeadRow">
+                <div className="aoProviderNameRow">
+                  <button
+                    className="aoDragHandle"
+                    title="Drag to reorder"
+                    aria-label="Drag to reorder"
+                    type="button"
+                    draggable={false}
+                    onPointerDown={(e) => {
+                      e.preventDefault()
+                      dragHandleProviderRef.current = name
+                      dragStartOrderRef.current = orderedConfigProviders
+                      dragOrderRef.current = orderedConfigProviders
+                      const node = providerCardRefs.current[name]
+                      const rect = node?.getBoundingClientRect()
+                      dragStartYRef.current = e.clientY
+                      dragLastYRef.current = e.clientY
+                      dragPointerOffsetRef.current = rect ? e.clientY - rect.top : 0
+                      dragStartTopRef.current = rect?.top ?? 0
+                      dragCardHeightRef.current = rect?.height ?? 0
+                      const listRect = providerListRef.current?.getBoundingClientRect()
+                      dragListTopRef.current = listRect?.top ?? 0
+                      setDraggingProvider(name)
+                      setDragOffsetY(0)
+                      setDragPreviewOrder(orderedConfigProviders)
+                      const move = dragMoveRef.current ?? onProviderDragMove
+                      const up = dragUpRef.current ?? onProviderDragUp
+                      window.addEventListener('pointermove', move as EventListener)
+                      window.addEventListener('pointerup', up as EventListener)
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M4 7h16" />
+                      <path d="M4 12h16" />
+                      <path d="M4 17h16" />
+                    </svg>
+                  </button>
+                  {editingProviderName === name ? (
+                    <input
+                      className="aoNameInput"
+                      value={providerNameDrafts[name] ?? name}
+                      onChange={(e) =>
+                        setProviderNameDrafts((prev) => ({
+                          ...prev,
+                          [name]: e.target.value,
+                        }))
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          void commitRenameProvider(name)
+                        } else if (e.key === 'Escape') {
+                          setEditingProviderName(null)
+                          setProviderNameDrafts((prev) => ({ ...prev, [name]: name }))
+                        }
+                      }}
+                      onBlur={() => void commitRenameProvider(name)}
+                      autoFocus
+                    />
+                  ) : (
+                    <>
+                      <span className="aoProviderName">{name}</span>
+                      <button
+                        className="aoIconGhost"
+                        title="Rename"
+                        aria-label="Rename"
+                        onClick={() => beginRenameProvider(name)}
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                        </svg>
+                      </button>
+                    </>
+                  )}
+                </div>
+                <div className="aoProviderHeadActions">
+                  {p.base_url !== (baselineBaseUrls[name] ?? '') ? (
+                    <button className="aoActionBtn" title="Save" onClick={() => void saveProvider(name)}>
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+                        <path d="M17 21v-8H7v8" />
+                        <path d="M7 3v5h8" />
+                      </svg>
+                      <span>Save</span>
+                    </button>
+                  ) : null}
+                  <button className="aoActionBtn" title="Set key" onClick={() => void openKeyModal(name)}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <g transform="rotate(-28 12 12)">
+                        <circle cx="7.2" cy="12" r="3.2" />
+                        <circle cx="7.2" cy="12" r="1.15" />
+                        <path d="M10.8 12H21" />
+                        <path d="M17.2 12v2.4" />
+                        <path d="M19.2 12v3.4" />
+                      </g>
+                    </svg>
+                    <span>Key</span>
+                  </button>
+                  <button className="aoActionBtn" title="Clear key" onClick={() => void clearKey(name)}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m7 21-4-4a2 2 0 0 1 0-3l10-10a2 2 0 0 1 3 0l5 5a2 2 0 0 1 0 3l-8 8" />
+                      <path d="M6 18h8" />
+                    </svg>
+                    <span>Clear</span>
+                  </button>
+                  <button
+                    className="aoActionBtn aoActionBtnDanger"
+                    title="Delete provider"
+                    aria-label="Delete provider"
+                    onClick={() => void deleteProvider(name)}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M3 6h18" />
+                      <path d="M8 6V4h8v2" />
+                      <path d="M19 6 18 20H6L5 6" />
+                      <path d="M10 11v6" />
+                      <path d="M14 11v6" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              {isProviderOpen(name) ? (
+                <>
+                  <div className="aoMiniLabel">Base URL</div>
+                  <input
+                    className="aoInput aoUrlInput"
+                    value={p.base_url}
+                    onChange={(e) =>
+                      setConfig((c) =>
+                        c
+                          ? {
+                              ...c,
+                              providers: {
+                                ...c.providers,
+                                [name]: { ...c.providers[name], base_url: e.target.value },
+                              },
+                            }
+                          : c,
+                      )
+                    }
+                  />
+                  <div className="aoMiniLabel">Key</div>
+                  <div className="aoKeyValue">
+                    {p.has_key ? (p.key_preview ? p.key_preview : 'set') : 'empty'}
+                  </div>
+                </>
+              ) : null}
+            </div>
+            <div className="aoProviderField aoProviderRight">
+              <div className="aoUsageControlsHeader">
+                <div className="aoMiniLabel">Usage controls</div>
+                <button className="aoTinyBtn aoToggleBtn" onClick={() => toggleProviderOpen(name)}>
+                  {isProviderOpen(name) ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              {isProviderOpen(name) ? (
+                <>
+                  <div className="aoUsageBtns">
+                    <button
+                      className="aoTinyBtn"
+                      onClick={() => void openUsageBaseModal(name, p.usage_base_url)}
+                    >
+                      Usage Base
+                    </button>
+                    {p.usage_base_url ? (
+                      <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
+                        Clear
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="aoHint">
+                    Usage base sets the usage endpoint. If empty, we use the provider base URL.
+                  </div>
+                  <div className="aoHint">
+                    updated:{' '}
+                    {status?.quota?.[name]?.updated_at_unix_ms
+                      ? fmtWhen(status.quota[name].updated_at_unix_ms)
+                      : 'never'}
+                  </div>
+                  {status?.quota?.[name]?.last_error ? (
+                    <div className="aoUsageErr">{status.quota[name].last_error}</div>
+                  ) : null}
+                </>
+              ) : (
+                <div className="aoHint">Details hidden</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )
+    },
+    [
+      baselineBaseUrls,
+      beginRenameProvider,
+      clearKey,
+      clearUsageBaseUrl,
+      commitRenameProvider,
+      config,
+      deleteProvider,
+      dragOffsetY,
+      dragOverProvider,
+      isProviderOpen,
+      onProviderDragMove,
+      onProviderDragUp,
+      openKeyModal,
+      openUsageBaseModal,
+      orderedConfigProviders,
+      providerNameDrafts,
+      setConfig,
+      toggleProviderOpen,
+      status,
+    ],
+  )
   return (
     <div className="aoRoot" ref={containerRef}>
       <div className="aoScale">
@@ -1228,11 +1600,8 @@ export default function App() {
             <div className="aoModalHeader">
               <div className="aoModalTitle">Config</div>
               <div className="aoRow">
-                <button className="aoBtn" onClick={() => setAllProviderPanels(true)}>
-                  Show all
-                </button>
-                <button className="aoBtn" onClick={() => setAllProviderPanels(false)}>
-                  Hide all
+                <button className="aoBtn" onClick={() => setAllProviderPanels(!allProviderPanelsOpen)}>
+                  {allProviderPanelsOpen ? 'Hide all' : 'Show all'}
                 </button>
                 <button className="aoBtn" onClick={() => setConfigModalOpen(false)}>
                   Close
@@ -1266,233 +1635,20 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="aoProviderConfigList">
-                {orderedConfigProviders.map((name) => {
-                  const p = config.providers[name]
-                  if (!p) return null
-                  const isDragging = draggingProvider === name
-                  const isDragOver = dragOverProvider === name
-                  return (
-                  <div
-                    className={`aoProviderConfigCard${isDragging ? ' aoProviderConfigDragging' : ''}${isDragOver ? ' aoProviderConfigDragOver' : ''}${!isProviderOpen(name) ? ' aoProviderConfigCollapsed' : ''}`}
-                    key={name}
-                    onDragOver={(e) => {
-                      e.preventDefault()
-                      e.dataTransfer.dropEffect = 'move'
-                      if (dragOverProvider !== name) {
-                        setDragOverProvider(name)
-                      }
-                    }}
-                    onDragLeave={() => {
-                      if (dragOverProvider === name) {
-                        setDragOverProvider(null)
-                      }
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault()
-                      const src = e.dataTransfer.getData('text/plain')
-                      setDraggingProvider(null)
-                      setDragOverProvider(null)
-                      if (!src || src === name) return
-                      const next = orderedConfigProviders.filter((n) => n !== src)
-                      const idx = next.indexOf(name)
-                      if (idx === -1) {
-                        next.push(src)
-                      } else {
-                        next.splice(idx, 0, src)
-                      }
-                      void applyProviderOrder(next)
-                    }}
-                  >
-                    <div className="aoProviderConfigBody">
-                      <div className="aoProviderField aoProviderLeft">
-                        <div
-                          className="aoProviderHeadRow"
-                        >
-                          <div className="aoProviderNameRow">
-                            <button
-                              className="aoDragHandle"
-                              title="Drag to reorder"
-                              aria-label="Drag to reorder"
-                              type="button"
-                              draggable
-                              onDragStart={(e) => {
-                                e.dataTransfer.setData('text/plain', name)
-                                e.dataTransfer.effectAllowed = 'move'
-                                e.dataTransfer.dropEffect = 'move'
-                                setDraggingProvider(name)
-                              }}
-                              onDragEnd={() => {
-                                setDraggingProvider(null)
-                                setDragOverProvider(null)
-                              }}
-                            >
-                              <svg viewBox="0 0 24 24" aria-hidden="true">
-                                <path d="M4 7h16" />
-                                <path d="M4 12h16" />
-                                <path d="M4 17h16" />
-                              </svg>
-                            </button>
-                            {editingProviderName === name ? (
-                              <input
-                                className="aoNameInput"
-                                value={providerNameDrafts[name] ?? name}
-                                onChange={(e) =>
-                                  setProviderNameDrafts((prev) => ({
-                                    ...prev,
-                                    [name]: e.target.value,
-                                  }))
-                                }
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    void commitRenameProvider(name)
-                                  } else if (e.key === 'Escape') {
-                                    setEditingProviderName(null)
-                                    setProviderNameDrafts((prev) => ({ ...prev, [name]: name }))
-                                  }
-                                }}
-                                onBlur={() => void commitRenameProvider(name)}
-                                autoFocus
-                              />
-                            ) : (
-                              <>
-                                <span className="aoProviderName">{name}</span>
-                                <button
-                                  className="aoIconGhost"
-                                  title="Rename"
-                                  aria-label="Rename"
-                                  onClick={() => beginRenameProvider(name)}
-                                >
-                                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                                    <path d="M12 20h9" />
-                                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
-                                  </svg>
-                                </button>
-                              </>
-                            )}
-                          </div>
-                          <div className="aoProviderHeadActions">
-                            {p.base_url !== (baselineBaseUrls[name] ?? '') ? (
-                              <button className="aoActionBtn" title="Save" onClick={() => void saveProvider(name)}>
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
-                                  <path d="M17 21v-8H7v8" />
-                                  <path d="M7 3v5h8" />
-                                </svg>
-                                <span>Save</span>
-                              </button>
-                            ) : null}
-                            <button
-                              className="aoActionBtn"
-                              title="Set key"
-                              onClick={() => void openKeyModal(name)}
-                            >
-                              <svg viewBox="0 0 24 24" aria-hidden="true">
-                                <g transform="rotate(-28 12 12)">
-                                  <circle cx="7.2" cy="12" r="3.2" />
-                                  <circle cx="7.2" cy="12" r="1.15" />
-                                  <path d="M10.8 12H21" />
-                                  <path d="M17.2 12v2.4" />
-                                  <path d="M19.2 12v3.4" />
-                                </g>
-                              </svg>
-                              <span>Key</span>
-                            </button>
-                            <button className="aoActionBtn" title="Clear key" onClick={() => void clearKey(name)}>
-                              <svg viewBox="0 0 24 24" aria-hidden="true">
-                                <path d="m7 21-4-4a2 2 0 0 1 0-3l10-10a2 2 0 0 1 3 0l5 5a2 2 0 0 1 0 3l-8 8" />
-                                <path d="M6 18h8" />
-                              </svg>
-                              <span>Clear</span>
-                            </button>
-                            <button
-                              className="aoActionBtn aoActionBtnDanger"
-                              title="Delete provider"
-                              aria-label="Delete provider"
-                              onClick={() => void deleteProvider(name)}
-                            >
-                              <svg viewBox="0 0 24 24" aria-hidden="true">
-                                <path d="M3 6h18" />
-                                <path d="M8 6V4h8v2" />
-                                <path d="M19 6 18 20H6L5 6" />
-                                <path d="M10 11v6" />
-                                <path d="M14 11v6" />
-                              </svg>
-                            </button>
-                          </div>
-                        </div>
-                        {isProviderOpen(name) ? (
-                          <>
-                            <div className="aoMiniLabel">Base URL</div>
-                            <input
-                              className="aoInput aoUrlInput"
-                              value={p.base_url}
-                              onChange={(e) =>
-                                setConfig((c) =>
-                                  c
-                                    ? {
-                                        ...c,
-                                        providers: {
-                                          ...c.providers,
-                                          [name]: { ...c.providers[name], base_url: e.target.value },
-                                        },
-                                      }
-                                    : c,
-                                )
-                              }
-                            />
-                            <div className="aoMiniLabel">Key</div>
-                            <div className="aoKeyValue">
-                              {p.has_key ? (p.key_preview ? p.key_preview : 'set') : 'empty'}
-                            </div>
-                          </>
-                        ) : null}
-                      </div>
+              <div className="aoProviderConfigList" ref={providerListRef}>
+                {(dragPreviewOrder ?? orderedConfigProviders).map((name) => {
+                  if (draggingProvider === name) {
+                    return (
                       <div
-                        className="aoProviderField aoProviderRight"
-                      >
-                        <div className="aoUsageControlsHeader">
-                          <div className="aoMiniLabel">Usage controls</div>
-                          <button className="aoTinyBtn aoToggleBtn" onClick={() => toggleProviderOpen(name)}>
-                            {isProviderOpen(name) ? 'Hide' : 'Show'}
-                          </button>
-                        </div>
-                        {isProviderOpen(name) ? (
-                          <>
-                            <div className="aoUsageBtns">
-                              <button
-                                className="aoTinyBtn"
-                                onClick={() => void openUsageBaseModal(name, p.usage_base_url)}
-                              >
-                                Usage Base
-                              </button>
-                              {p.usage_base_url ? (
-                                <button className="aoTinyBtn" onClick={() => void clearUsageBaseUrl(name)}>
-                                  Clear
-                                </button>
-                              ) : null}
-                            </div>
-                            <div className="aoHint">
-                              Usage base sets the usage endpoint. If empty, we use the provider base URL.
-                            </div>
-                            <div className="aoHint">
-                              updated:{' '}
-                              {status?.quota?.[name]?.updated_at_unix_ms
-                                ? fmtWhen(status.quota[name].updated_at_unix_ms)
-                                : 'never'}
-                            </div>
-                            {status?.quota?.[name]?.last_error ? (
-                              <div className="aoUsageErr">{status.quota[name].last_error}</div>
-                            ) : null}
-                          </>
-                        ) : (
-                          <div className="aoHint">Details hidden</div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )
+                        className="aoProviderConfigPlaceholder"
+                        key={`${name}-placeholder`}
+                        style={{ height: dragCardHeightRef.current || 0 }}
+                      />
+                    )
+                  }
+                  return renderProviderCard(name)
                 })}
+                {draggingProvider ? renderProviderCard(draggingProvider, true) : null}
               </div>
             </div>
           </div>
