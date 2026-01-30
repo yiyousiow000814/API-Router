@@ -961,6 +961,7 @@ mod tests {
                     api_key: String::new(),
                 },
             )]),
+            provider_order: vec!["p1".to_string()],
         };
 
         // Keep the sled directory alive for the test duration.
@@ -975,6 +976,8 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_provider: Arc::new(RwLock::new(None)),
+            last_used_reason: Arc::new(RwLock::new(None)),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
