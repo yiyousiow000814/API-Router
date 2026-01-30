@@ -65,33 +65,27 @@ fn prefers_simple_input_list(base_url: &str) -> bool {
 }
 
 fn input_contains_tools(input: &Value) -> bool {
-    let Value::Array(items) = input else {
-        return false;
-    };
-    for item in items {
-        if item_contains_tool(item) {
-            return true;
-        }
-    }
-    false
+    contains_tool_value(input)
 }
 
-fn item_contains_tool(item: &Value) -> bool {
-    if let Some(t) = item.get("type").and_then(|v| v.as_str()) {
-        if t.contains("tool") {
-            return true;
-        }
-    }
-    if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
-        for c in content {
-            if let Some(t) = c.get("type").and_then(|v| v.as_str()) {
+fn contains_tool_value(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::String(t)) = map.get("type") {
                 if t.contains("tool") {
                     return true;
                 }
             }
+            for v in map.values() {
+                if contains_tool_value(v) {
+                    return true;
+                }
+            }
+            false
         }
+        Value::Array(items) => items.iter().any(contains_tool_value),
+        _ => false,
     }
-    false
 }
 
 pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {

@@ -133,11 +133,15 @@ mod tests {
         };
 
         let app = build_router(state);
-        let input = json!([{
-            "type": "tool_output",
-            "tool_call_id": "call_1",
-            "output": "C:\\\\Users\\\\yiyou\\\\Agent-Orchestrator"
-        }]);
+        let input = json!({
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "tool_output",
+                "tool_call_id": "call_1",
+                "output": "C:\\\\Users\\\\yiyou\\\\Agent-Orchestrator"
+            }]
+        });
         let body = json!({
             "model": "gpt-test",
             "input": input,
