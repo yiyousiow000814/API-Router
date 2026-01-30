@@ -68,6 +68,16 @@ fn input_contains_tools(input: &Value) -> bool {
     contains_tool_value(input)
 }
 
+fn summarize_input_for_debug(input: &Value) -> String {
+    let mut s = serde_json::to_string(input).unwrap_or_else(|_| "<unserializable>".to_string());
+    const LIMIT: usize = 400;
+    if s.len() > LIMIT {
+        s.truncate(LIMIT);
+        s.push('…');
+    }
+    s
+}
+
 fn contains_tool_value(value: &Value) -> bool {
     match value {
         Value::Object(map) => {
@@ -218,7 +228,19 @@ async fn responses(
     }
     let input = body.get("input").cloned().unwrap_or(Value::Null);
     let input_has_tools = input_contains_tools(&input);
+    let has_prev = previous_response_id.is_some();
     messages.extend(input_to_messages(&input));
+
+    if has_prev {
+        let summary = summarize_input_for_debug(&input);
+        st.store.add_event(
+            "gateway",
+            "debug",
+            &format!(
+                "previous_response_id present (tools={input_has_tools}); input={summary}"
+            ),
+        );
+    }
 
     // Try providers in order: chosen, then fallbacks.
     let mut tried = Vec::new();
@@ -235,15 +257,9 @@ async fn responses(
             None => break,
         };
 
-        // Avoid upstream rejecting our server-side continuity ids.
-        // If tool outputs are present, keep previous_response_id so upstream can
-        // continue the tool call chain correctly.
-        if !input_has_tools {
-            body.as_object_mut()
-                .map(|m| m.remove("previous_response_id"));
-        }
+        // Preserve previous_response_id for continuity (especially tool chains).
         body.as_object_mut().map(|m| {
-            let input = if input_has_tools {
+            let input = if has_prev || input_has_tools {
                 input.clone()
             } else if prefers_simple_input_list(&p.base_url) {
                 messages_to_simple_input_list(&messages)
