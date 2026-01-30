@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -8,7 +8,7 @@ use super::config::ProviderConfig;
 use super::gateway::GatewayState;
 use super::store::unix_ms;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UsageKind {
     None,
     TokenStats,
@@ -43,9 +43,20 @@ pub struct QuotaSnapshot {
     pub today_added: Option<f64>,
     pub daily_spent_usd: Option<f64>,
     pub daily_budget_usd: Option<f64>,
+    pub weekly_spent_usd: Option<f64>,
+    pub weekly_budget_usd: Option<f64>,
     pub monthly_spent_usd: Option<f64>,
     pub monthly_budget_usd: Option<f64>,
     pub last_error: String,
+    pub effective_usage_base: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct UsageRequestKey {
+    bases_key: String,
+    provider_key: Option<String>,
+    usage_token: Option<String>,
+    kind: UsageKind,
 }
 
 impl QuotaSnapshot {
@@ -58,9 +69,12 @@ impl QuotaSnapshot {
             today_added: None,
             daily_spent_usd: None,
             daily_budget_usd: None,
+            weekly_spent_usd: None,
+            weekly_budget_usd: None,
             monthly_spent_usd: None,
             monthly_budget_usd: None,
             last_error: String::new(),
+            effective_usage_base: None,
         }
     }
 
@@ -73,9 +87,12 @@ impl QuotaSnapshot {
             "today_added": self.today_added,
             "daily_spent_usd": self.daily_spent_usd,
             "daily_budget_usd": self.daily_budget_usd,
+            "weekly_spent_usd": self.weekly_spent_usd,
+            "weekly_budget_usd": self.weekly_budget_usd,
             "monthly_spent_usd": self.monthly_spent_usd,
             "monthly_budget_usd": self.monthly_budget_usd,
             "last_error": self.last_error,
+            "effective_usage_base": self.effective_usage_base,
         })
     }
 }
@@ -115,6 +132,23 @@ fn is_ppchat_base(base_url: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn is_pumpkinai_base(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .map(|host| host.ends_with("pumpkinai.vip"))
+        .unwrap_or(false)
+}
+
+fn build_models_url(base: &str) -> String {
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        format!("{trimmed}/models")
+    } else {
+        format!("{trimmed}/v1/models")
+    }
+}
+
 fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
     // User-provided usage_base_url always wins.
     if let Some(u) = provider.usage_base_url.as_deref() {
@@ -151,9 +185,191 @@ fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
         out.push("https://his.ppchat.vip".to_string());
     }
 
+    if is_ppchat_base(&provider.base_url) || is_pumpkinai_base(&provider.base_url) {
+        out.push("https://code.ppchat.vip".to_string());
+        out.push("https://code.pumpkinai.vip".to_string());
+    }
+
     out.sort();
     out.dedup();
     out
+}
+
+async fn probe_usage_base_speed(base: &str, api_key: &str) -> Option<Duration> {
+    let client = reqwest::Client::builder()
+        .user_agent("agent-orchestrator/0.1")
+        .build()
+        .ok()?;
+    let url = build_models_url(base);
+    let start = Instant::now();
+    let resp = client
+        .get(url)
+        .bearer_auth(api_key)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await;
+    match resp {
+        Ok(_) => Some(start.elapsed()),
+        Err(_) => None,
+    }
+}
+
+async fn reorder_bases_for_speed(
+    st: &GatewayState,
+    provider_name: &str,
+    bases: Vec<String>,
+    api_key: Option<&str>,
+) -> Vec<String> {
+    let mut normalized: Vec<String> = bases
+        .into_iter()
+        .map(|b| b.trim_end_matches('/').to_string())
+        .collect();
+    normalized.sort();
+    normalized.dedup();
+
+    let has_ppchat = normalized.iter().any(|b| b == "https://code.ppchat.vip");
+    let has_pumpkin = normalized
+        .iter()
+        .any(|b| b == "https://code.pumpkinai.vip");
+    if !has_ppchat || !has_pumpkin {
+        return normalized;
+    }
+    let Some(api_key) = api_key else {
+        return normalized;
+    };
+
+    let now = unix_ms();
+    let mut bases_key = normalized.clone();
+    bases_key.sort();
+    bases_key.dedup();
+
+    if let Some(entry) = st.usage_base_speed_cache.read().get(provider_name) {
+        if entry.bases_key == bases_key && now.saturating_sub(entry.updated_at_unix_ms) < 5 * 60 * 1000
+        {
+            return entry.ordered_bases.clone();
+        }
+    }
+
+    let ppchat = "https://code.ppchat.vip";
+    let pumpkin = "https://code.pumpkinai.vip";
+    let (ppchat_latency, pumpkin_latency) = tokio::join!(
+        probe_usage_base_speed(ppchat, api_key),
+        probe_usage_base_speed(pumpkin, api_key)
+    );
+
+    let mut ordered_pair = vec![ppchat.to_string(), pumpkin.to_string()];
+    match (ppchat_latency, pumpkin_latency) {
+        (Some(a), Some(b)) => {
+            if b < a {
+                ordered_pair.reverse();
+            }
+        }
+        (None, Some(_)) => {
+            ordered_pair.reverse();
+        }
+        _ => {}
+    }
+
+    let mut ordered = Vec::new();
+    for base in ordered_pair {
+        if normalized.contains(&base) {
+            ordered.push(base);
+        }
+    }
+    for base in normalized.iter() {
+        if base != "https://code.ppchat.vip" && base != "https://code.pumpkinai.vip" {
+            ordered.push(base.clone());
+        }
+    }
+
+    st.usage_base_speed_cache.write().insert(
+        provider_name.to_string(),
+        super::gateway::UsageBaseSpeedCacheEntry {
+            updated_at_unix_ms: now,
+            bases_key,
+            ordered_bases: ordered.clone(),
+        },
+    );
+
+    ordered
+}
+
+pub async fn effective_usage_base(st: &GatewayState, provider_name: &str) -> Option<String> {
+    let cfg = st.cfg.read().clone();
+    let p = cfg.providers.get(provider_name)?;
+    let api_key = st.secrets.get_provider_key(provider_name);
+    let bases = candidate_quota_bases(p);
+    if bases.is_empty() {
+        return None;
+    }
+    let ordered = reorder_bases_for_speed(st, provider_name, bases, api_key.as_deref()).await;
+    ordered.first().cloned()
+}
+
+fn usage_request_key(
+    bases: &[String],
+    provider_key: &Option<String>,
+    usage_token: &Option<String>,
+    kind: UsageKind,
+) -> UsageRequestKey {
+    let bases_key = bases.first().cloned().unwrap_or_else(|| "-".to_string());
+    UsageRequestKey {
+        bases_key,
+        provider_key: provider_key.clone(),
+        usage_token: usage_token.clone(),
+        kind,
+    }
+}
+
+async fn compute_quota_snapshot(
+    kind: UsageKind,
+    bases: &[String],
+    provider_key: Option<&str>,
+    usage_token: Option<&str>,
+) -> QuotaSnapshot {
+    match kind {
+        UsageKind::TokenStats => fetch_token_stats_any(bases, provider_key).await,
+        UsageKind::BudgetInfo => fetch_budget_info_any(bases, usage_token).await,
+        UsageKind::None => {
+            if provider_key.is_some() {
+                let s = fetch_token_stats_any(bases, provider_key).await;
+                if s.last_error.is_empty() {
+                    s
+                } else if usage_token.is_some() {
+                    fetch_budget_info_any(bases, usage_token).await
+                } else {
+                    s
+                }
+            } else if usage_token.is_some() {
+                fetch_budget_info_any(bases, usage_token).await
+            } else {
+                let mut out = QuotaSnapshot::empty(UsageKind::None);
+                out.last_error = "missing credentials for quota refresh".to_string();
+                out
+            }
+        }
+    }
+}
+
+fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
+    let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
+    if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
+        st.store.reset_ledger(provider_name);
+    }
+    let msg = if snap.last_error.is_empty() {
+        "usage refreshed"
+    } else {
+        "usage refresh failed"
+    };
+    st.store.add_event(
+        provider_name,
+        if snap.last_error.is_empty() {
+            "info"
+        } else {
+            "error"
+        },
+        msg,
+    );
 }
 
 pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) -> QuotaSnapshot {
@@ -175,60 +391,132 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
         out.last_error = "missing base_url".to_string();
         return out;
     }
+    let bases = reorder_bases_for_speed(st, provider_name, bases, provider_key.as_deref()).await;
+    let effective_base = bases.first().cloned();
 
     let kind = detect_usage_kind(p);
-    let snap = match kind {
-        UsageKind::TokenStats => fetch_token_stats_any(&bases, provider_key.as_deref()).await,
-        UsageKind::BudgetInfo => fetch_budget_info_any(&bases, usage_token.as_deref()).await,
-        UsageKind::None => {
-            // Auto mode: probe endpoints based on available credentials.
-            if provider_key.as_deref().is_some() {
-                let s = fetch_token_stats_any(&bases, provider_key.as_deref()).await;
-                if s.last_error.is_empty() {
-                    s
-                } else if usage_token.as_deref().is_some() {
-                    fetch_budget_info_any(&bases, usage_token.as_deref()).await
-                } else {
-                    s
+    let mut snap = compute_quota_snapshot(
+        kind,
+        &bases,
+        provider_key.as_deref(),
+        usage_token.as_deref(),
+    )
+    .await;
+    if snap.effective_usage_base.is_none() {
+        snap.effective_usage_base = effective_base;
+    }
+    store_quota_snapshot(st, provider_name, &snap);
+    snap
+}
+
+async fn refresh_quota_for_provider_cached(
+    st: &GatewayState,
+    provider_name: &str,
+    cache: &mut HashMap<UsageRequestKey, QuotaSnapshot>,
+) -> QuotaSnapshot {
+    let cfg = st.cfg.read().clone();
+    let Some(p) = cfg.providers.get(provider_name) else {
+        let mut out = QuotaSnapshot::empty(UsageKind::None);
+        out.last_error = format!("unknown provider: {provider_name}");
+        return out;
+    };
+
+    let provider_key = st.secrets.get_provider_key(provider_name);
+    let mut usage_token = st.secrets.get_usage_token(provider_name);
+    if usage_token.is_none() && is_packycode_base(&p.base_url) {
+        usage_token = provider_key.clone();
+    }
+    let bases = candidate_quota_bases(p);
+    if bases.is_empty() {
+        let mut out = QuotaSnapshot::empty(UsageKind::None);
+        out.last_error = "missing base_url".to_string();
+        return out;
+    }
+    let bases = reorder_bases_for_speed(st, provider_name, bases, provider_key.as_deref()).await;
+    let effective_base = bases.first().cloned();
+
+    let kind = detect_usage_kind(p);
+    let key = usage_request_key(&bases, &provider_key, &usage_token, kind);
+    let snap = if let Some(existing) = cache.get(&key) {
+        existing.clone()
+    } else {
+        let mut computed = compute_quota_snapshot(
+            kind,
+            &bases,
+            provider_key.as_deref(),
+            usage_token.as_deref(),
+        )
+        .await;
+        if computed.effective_usage_base.is_none() {
+            computed.effective_usage_base = effective_base.clone();
+        }
+        cache.insert(key, computed.clone());
+        computed
+    };
+    let mut snap = snap;
+    if snap.effective_usage_base.is_none() {
+        snap.effective_usage_base = effective_base;
+    }
+    store_quota_snapshot(st, provider_name, &snap);
+    snap
+}
+
+async fn usage_key_for_provider(
+    st: &GatewayState,
+    provider_name: &str,
+) -> Option<UsageRequestKey> {
+    let cfg = st.cfg.read().clone();
+    let p = cfg.providers.get(provider_name)?;
+    let provider_key = st.secrets.get_provider_key(provider_name);
+    let mut usage_token = st.secrets.get_usage_token(provider_name);
+    if usage_token.is_none() && is_packycode_base(&p.base_url) {
+        usage_token = provider_key.clone();
+    }
+    let bases = candidate_quota_bases(p);
+    if bases.is_empty() {
+        return None;
+    }
+    let bases = reorder_bases_for_speed(st, provider_name, bases, provider_key.as_deref()).await;
+    let kind = detect_usage_kind(p);
+    Some(usage_request_key(&bases, &provider_key, &usage_token, kind))
+}
+
+pub async fn refresh_quota_shared(
+    st: &GatewayState,
+    provider_name: &str,
+) -> Result<Vec<String>, String> {
+    let cfg = st.cfg.read().clone();
+    if !cfg.providers.contains_key(provider_name) {
+        return Err(format!("unknown provider: {provider_name}"));
+    }
+    let target_key = usage_key_for_provider(st, provider_name).await;
+    let mut cache: HashMap<UsageRequestKey, QuotaSnapshot> = HashMap::new();
+    let mut updated = Vec::new();
+
+    if let Some(target_key) = target_key {
+        for name in cfg.providers.keys() {
+            if let Some(key) = usage_key_for_provider(st, name).await {
+                if key == target_key {
+                    let _ = refresh_quota_for_provider_cached(st, name, &mut cache).await;
+                    updated.push(name.clone());
                 }
-            } else if usage_token.as_deref().is_some() {
-                fetch_budget_info_any(&bases, usage_token.as_deref()).await
-            } else {
-                let mut out = QuotaSnapshot::empty(UsageKind::None);
-                out.last_error = "missing credentials for quota refresh".to_string();
-                out
             }
         }
-    };
-    let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
-
-    // Reset local "since last refresh" ledger only when we successfully fetched provider usage.
-    if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
-        st.store.reset_ledger(provider_name);
     }
 
-    let msg = if snap.last_error.is_empty() {
-        "usage refreshed"
-    } else {
-        "usage refresh failed"
-    };
-    st.store.add_event(
-        provider_name,
-        if snap.last_error.is_empty() {
-            "info"
-        } else {
-            "error"
-        },
-        msg,
-    );
+    if updated.is_empty() {
+        let _ = refresh_quota_for_provider(st, provider_name).await;
+        updated.push(provider_name.to_string());
+    }
 
-    snap
+    Ok(updated)
 }
 
 pub async fn refresh_quota_all(st: &GatewayState) {
     let cfg = st.cfg.read().clone();
+    let mut cache: HashMap<UsageRequestKey, QuotaSnapshot> = HashMap::new();
     for name in cfg.providers.keys() {
-        let _ = refresh_quota_for_provider(st, name).await;
+        let _ = refresh_quota_for_provider_cached(st, name, &mut cache).await;
         // Manual/all refresh: keep a small delay so we don't look like a burst/DDOS.
         tokio::time::sleep(Duration::from_millis(120)).await;
     }
@@ -248,6 +536,7 @@ pub async fn run_quota_scheduler(st: GatewayState) {
         }
 
         let cfg = st.cfg.read().clone();
+        let mut cache: HashMap<UsageRequestKey, QuotaSnapshot> = HashMap::new();
         for (name, p) in cfg.providers.iter() {
             let _ = p;
             let has_any_credential = st.secrets.get_provider_key(name).is_some()
@@ -261,7 +550,7 @@ pub async fn run_quota_scheduler(st: GatewayState) {
                 continue;
             }
 
-            let snap = refresh_quota_for_provider(&st, name).await;
+            let snap = refresh_quota_for_provider_cached(&st, name, &mut cache).await;
             let jitter_ms = if snap.last_error.is_empty() {
                 // When actively used, refresh randomly every 1-5 minutes.
                 fastrand::u64(60_000..=300_000)
@@ -331,6 +620,7 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
                     out.remaining = remaining;
                     out.today_used = today_used;
                     out.today_added = today_added;
+                    out.effective_usage_base = Some(base.to_string());
                     out.updated_at_unix_ms = unix_ms();
                     out.last_error.clear();
                     return out;
@@ -342,6 +632,7 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
                     out.remaining = remaining;
                     out.today_used = today_used;
                     out.today_added = today_added;
+                    out.effective_usage_base = Some(base.to_string());
                     out.updated_at_unix_ms = unix_ms();
                     out.last_error.clear();
                     return out;
@@ -520,7 +811,10 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
                 // Some endpoints wrap the payload in { success, data }.
                 let root = j.get("data").unwrap_or(&j);
                 // Ensure this looks like a budget response to avoid mis-detecting.
-                if root.get("daily_spent_usd").is_none() && root.get("monthly_spent_usd").is_none()
+                if root.get("daily_spent_usd").is_none()
+                    && root.get("monthly_spent_usd").is_none()
+                    && root.get("weekly_spent_usd").is_none()
+                    && root.get("weekly_spent").is_none()
                 {
                     last_err = "unexpected response".to_string();
                     continue;
@@ -528,9 +822,14 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
 
                 out.daily_spent_usd = as_f64(root.get("daily_spent_usd"));
                 out.daily_budget_usd = as_f64(root.get("daily_budget_usd"));
+                out.weekly_spent_usd =
+                    as_f64(root.get("weekly_spent_usd")).or_else(|| as_f64(root.get("weekly_spent")));
+                out.weekly_budget_usd = as_f64(root.get("weekly_budget_usd"))
+                    .or_else(|| as_f64(root.get("weekly_budget")));
                 out.monthly_spent_usd = as_f64(root.get("monthly_spent_usd"));
                 out.monthly_budget_usd = as_f64(root.get("monthly_budget_usd"));
                 out.remaining = as_f64(root.get("remaining_quota"));
+                out.effective_usage_base = Some(base.to_string());
                 out.updated_at_unix_ms = unix_ms();
                 out.last_error.clear();
                 return out;
@@ -665,6 +964,7 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 

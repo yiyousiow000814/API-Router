@@ -14,9 +14,9 @@
       {
         "title": "Agent Orchestrator",
         "width": 1320,
-        "height": 920,
+        "height": 720,
         "minWidth": 1240,
-        "minHeight": 860,
+        "minHeight": 640,
         "decorations": true,
         "transparent": false,
         "resizable": true,

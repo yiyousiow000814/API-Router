@@ -49,6 +49,8 @@ pub struct AppConfig {
     pub listen: ListenConfig,
     pub routing: RoutingConfig,
     pub providers: std::collections::BTreeMap<String, ProviderConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_order: Vec<String>,
 }
 
 impl AppConfig {
@@ -92,6 +94,11 @@ impl AppConfig {
                 request_timeout_seconds: 60,
             },
             providers,
+            provider_order: vec![
+                "official".to_string(),
+                "provider_1".to_string(),
+                "provider_2".to_string(),
+            ],
         }
     }
 }

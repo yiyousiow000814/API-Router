@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -79,6 +80,8 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         }
     }
 
+    changed |= normalize_provider_order(&mut cfg);
+
     // Migration note: quota endpoints are intentionally not auto-detected to keep the app generic.
 
     // Migration: if a provider api_key is present in config.toml, move it into user-data/secrets.json
@@ -106,12 +109,38 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         upstream: UpstreamClient::new(),
         secrets: secrets.clone(),
         last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_provider: Arc::new(RwLock::new(None)),
+        last_used_reason: Arc::new(RwLock::new(None)),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
     };
     Ok(AppState {
         config_path,
         gateway,
         secrets,
     })
+}
+
+pub(crate) fn normalize_provider_order(cfg: &mut AppConfig) -> bool {
+    let mut next = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for name in cfg.provider_order.iter() {
+        if cfg.providers.contains_key(name) && seen.insert(name.clone()) {
+            next.push(name.clone());
+        }
+    }
+
+    for name in cfg.providers.keys() {
+        if seen.insert(name.clone()) {
+            next.push(name.clone());
+        }
+    }
+
+    if next != cfg.provider_order {
+        cfg.provider_order = next;
+        return true;
+    }
+    false
 }
 
 pub(crate) fn migrate_provider_name(cfg: &mut AppConfig, old: &str, new: &str) -> bool {

@@ -19,6 +19,7 @@
 
 .aoShell {
   width: min(1240px, 100%);
+  min-width: 1120px;
   margin: 0 auto;
   padding: 14px 14px 12px;
   border: 1px solid var(--ao-line);
@@ -51,6 +52,18 @@
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 0.9fr);
   gap: 12px;
   align-items: stretch;
+}
+
+.aoHeroStatus {
+  order: 1;
+}
+
+.aoHeroRouting {
+  order: 2;
+}
+
+.aoHeroCodex {
+  order: 3;
 }
 
 .aoHeroCard {
@@ -163,9 +176,32 @@
 
 .aoBrand {
   display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.aoBrandLeft {
+  display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 10px;
+}
+
+.aoBrandRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: center;
+}
+
+.aoInstructionCode {
+  margin: 0;
+  white-space: pre;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  color: rgba(13, 18, 32, 0.86);
 }
 
 .aoMark {
@@ -324,6 +360,10 @@
   gap: 4px;
 }
 
+.aoConfigSection {
+  margin-top: 12px;
+}
+
 .aoProviderName {
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
   font-size: 13px;
@@ -334,6 +374,39 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.aoDragHandle {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(13, 18, 32, 0.7);
+  cursor: grab;
+  user-select: none;
+}
+
+.aoDragHandle:hover {
+  color: rgba(var(--ao-accent-rgb), 0.9);
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoDragHandle:active {
+  cursor: grabbing;
+}
+
+.aoDragHandle svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.3;
+  stroke-linecap: round;
+  shape-rendering: geometricPrecision;
 }
 
 .aoIconGhost {
@@ -364,6 +437,12 @@
   stroke-width: 1.7;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.aoIconGhost img {
+  width: 14px;
+  height: 14px;
+  display: block;
 }
 
 .aoNameInput {
@@ -430,6 +509,18 @@
   background: rgba(255, 255, 255, 0.9);
   padding: 12px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  cursor: default;
+}
+
+.aoProviderConfigDragging {
+  opacity: 0.7;
+}
+
+.aoProviderConfigDragOver {
+  border-color: rgba(var(--ao-accent-rgb), 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    0 0 0 2px rgba(var(--ao-accent-rgb), 0.18);
 }
 
 .aoProviderConfigHeader {
@@ -470,6 +561,10 @@
   padding-top: 15px;
 }
 
+.aoProviderConfigCollapsed .aoProviderRight {
+  cursor: pointer;
+}
+
 .aoProviderRight::before {
   content: "";
   position: absolute;
@@ -478,6 +573,10 @@
   bottom: -22px;
   width: 1px;
   background: rgba(13, 18, 32, 0.08);
+}
+
+.aoProviderConfigCollapsed .aoProviderRight::before {
+  bottom: 0;
 }
 
 .aoProviderHeadRow {
@@ -516,6 +615,8 @@
 .aoUsageMini {
   display: grid;
   gap: 4px;
+  height: 100%;
+  align-content: center;
 }
 
 .aoUsageHeaderRow {
@@ -530,6 +631,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  height: 100%;
 }
 
 .aoUsageText {
@@ -565,14 +667,27 @@
   background: rgba(var(--ao-accent-rgb), 0.08);
 }
 
+.aoUsageRefreshBtnSpin svg {
+  animation: aoSpin 0.9s linear infinite;
+}
+
 .aoUsageRefreshBtn svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.7;
+  stroke-width: 2.2;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+@keyframes aoSpin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
 }
 
 .aoCellWrap {
@@ -767,6 +882,7 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  color: rgba(13, 18, 32, 0.5);
   transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
   outline: none;
 }
@@ -775,6 +891,7 @@
   border-color: rgba(var(--ao-accent-rgb), 0.35);
   background: rgba(255, 255, 255, 0.96);
   transform: translateY(-1px);
+  color: rgba(var(--ao-accent-rgb), 0.9);
 }
 
 .aoIconBtn:active {
@@ -784,7 +901,11 @@
 .aoIconBtn svg {
   width: 16px;
   height: 16px;
-  fill: rgba(13, 18, 32, 0.82);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
   shape-rendering: geometricPrecision;
 }
 
@@ -793,7 +914,7 @@
 }
 
 .aoIconBtnDanger svg {
-  fill: rgba(145, 12, 43, 0.9);
+  stroke: rgba(145, 12, 43, 0.9);
 }
 
 .aoActionsMenuWrap {
@@ -881,6 +1002,8 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  padding-right: 16px;
+  height: 100%;
 }
 
 .aoUsageTop {
@@ -928,6 +1051,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
+}
+
+.aoHealthSub {
+  margin-top: 4px;
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
 }
 
 .aoCheckbox {
@@ -1084,6 +1217,10 @@
   z-index: 9999;
 }
 
+.aoModalBackdropTop {
+  z-index: 10050;
+}
+
 .aoModal {
   width: min(520px, 100%);
   border-radius: 18px;
@@ -1121,4 +1258,42 @@
     border-left: none;
     padding-left: 0;
   }
+}
+.aoModalWide {
+  width: min(980px, 92vw);
+  max-height: min(80vh, 860px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.aoModalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.aoModalBody {
+  overflow: auto;
+  padding-right: 6px;
+  margin-top: 8px;
+}
+
+.aoModalBody::-webkit-scrollbar {
+  width: 8px;
+}
+
+.aoModalBody::-webkit-scrollbar-track {
+  background: rgba(13, 18, 32, 0.06);
+  border-radius: 999px;
+}
+
+.aoModalBody::-webkit-scrollbar-thumb {
+  background: rgba(13, 18, 32, 0.35);
+  border-radius: 999px;
+}
+
+.aoModalBody::-webkit-scrollbar-thumb:hover {
+  background: rgba(13, 18, 32, 0.5);
 }

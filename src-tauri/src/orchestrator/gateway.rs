@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,12 +26,22 @@ use super::upstream::UpstreamClient;
 
 #[derive(Clone)]
 pub struct GatewayState {
-    pub cfg: Arc<RwLock<AppConfig>>,
-    pub router: Arc<RouterState>,
-    pub store: Store,
-    pub upstream: UpstreamClient,
-    pub secrets: SecretStore,
-    pub last_activity_unix_ms: Arc<AtomicU64>,
+  pub cfg: Arc<RwLock<AppConfig>>,
+  pub router: Arc<RouterState>,
+  pub store: Store,
+  pub upstream: UpstreamClient,
+  pub secrets: SecretStore,
+  pub last_activity_unix_ms: Arc<AtomicU64>,
+  pub last_used_provider: Arc<RwLock<Option<String>>>,
+  pub last_used_reason: Arc<RwLock<Option<String>>>,
+  pub usage_base_speed_cache: Arc<RwLock<HashMap<String, UsageBaseSpeedCacheEntry>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct UsageBaseSpeedCacheEntry {
+  pub updated_at_unix_ms: u64,
+  pub bases_key: Vec<String>,
+  pub ordered_bases: Vec<String>,
 }
 
 pub fn build_router(state: GatewayState) -> Router {
@@ -39,6 +50,7 @@ pub fn build_router(state: GatewayState) -> Router {
         .route("/status", get(status))
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
+        .route("/responses", post(responses))
         .with_state(state)
 }
 
@@ -74,6 +86,17 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let quota = st.store.list_quota_snapshots();
     let ledgers = st.store.list_ledgers();
     let last_activity = st.last_activity_unix_ms.load(Ordering::Relaxed);
+    let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
+    let active_provider = if active_recent {
+        st.last_used_provider.read().clone()
+    } else {
+        None
+    };
+    let active_reason = if active_recent {
+        st.last_used_reason.read().clone()
+    } else {
+        None
+    };
 
     Json(json!({
         "listen": { "host": cfg.listen.host, "port": cfg.listen.port },
@@ -82,6 +105,8 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
         "providers": providers,
         "metrics": metrics,
         "recent_events": recent_events,
+        "active_provider": active_provider,
+        "active_reason": active_reason,
         "quota": quota,
         "ledgers": ledgers,
         "last_activity_unix_ms": last_activity
@@ -94,7 +119,7 @@ async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl Into
     }
     st.last_activity_unix_ms.store(unix_ms(), Ordering::Relaxed);
     let cfg = st.cfg.read().clone();
-    let (provider_name, _) = st.router.decide(&cfg);
+    let (provider_name, reason) = st.router.decide(&cfg);
     let p = match cfg.providers.get(&provider_name) {
         Some(p) => p.clone(),
         None => {
@@ -118,7 +143,11 @@ async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl Into
         .get_json(&p, "/v1/models", api_key.as_deref(), client_auth, timeout)
         .await
     {
-        Ok((code, j)) if (200..300).contains(&code) => (StatusCode::OK, Json(j)).into_response(),
+        Ok((code, j)) if (200..300).contains(&code) => {
+            *st.last_used_provider.write() = Some(provider_name);
+            *st.last_used_reason.write() = Some(reason.to_string());
+            (StatusCode::OK, Json(j)).into_response()
+        }
         _ => (StatusCode::OK, Json(json!({"object":"list","data":[]}))).into_response(),
     }
 }
@@ -199,6 +228,8 @@ async fn responses(
                 .await
             {
                 Ok(resp) if resp.status().is_success() => {
+                    *st.last_used_provider.write() = Some(provider_name.clone());
+                    *st.last_used_reason.write() = Some(reason.to_string());
                     st.router.mark_success(&provider_name, unix_ms());
                     st.store.add_event(
                         &provider_name,
@@ -253,6 +284,8 @@ async fn responses(
 
         match upstream_result {
             Ok((code, upstream_json)) if (200..300).contains(&code) => {
+                *st.last_used_provider.write() = Some(provider_name.clone());
+                *st.last_used_reason.write() = Some(reason.to_string());
                 st.router.mark_success(&provider_name, unix_ms());
 
                 // Keep the upstream response object (and id) so the client can continue the chain.

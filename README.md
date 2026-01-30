@@ -4,7 +4,7 @@
 
 # Agent Orchestrator
 
-Desktop app that runs a local **OpenAI-compatible gateway** on a stable `base_url` (default: `http://127.0.0.1:4000`) and routes requests across multiple upstream providers.
+Desktop app that runs a local **OpenAI-compatible gateway** on a stable `base_url` (default: `http://127.0.0.1:4000/v1`) and routes requests across multiple upstream providers.
 
 Key features (MVP):
 - `wire_api = "responses"` gateway endpoint: `POST /v1/responses` (supports SSE streaming by simulating events).
@@ -22,7 +22,7 @@ model_provider = "orchestrator"
 
 [model_providers.orchestrator]
 name = "Agent Orchestrator"
-base_url = "http://127.0.0.1:4000"
+base_url = "http://127.0.0.1:4000/v1"
 wire_api = "responses"
 ```
 

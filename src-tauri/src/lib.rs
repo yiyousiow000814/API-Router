@@ -30,7 +30,8 @@ pub fn run() {
                 )?;
             }
 
-            // Keep all local state next to the EXE so it's easy to find, backup, and move between machines.
+            // Prefer a stable per-user app data directory so rebuilds don't force re-login.
+            // If a local ./user-data already exists next to the EXE, keep using it for portability.
             // Layout:
             // - user-data/config.toml
             // - user-data/secrets.json
@@ -38,7 +39,11 @@ pub fn run() {
             let user_data_dir = (|| -> Option<std::path::PathBuf> {
                 let exe = std::env::current_exe().ok()?;
                 let dir = exe.parent()?.to_path_buf();
-                Some(dir.join("user-data"))
+                let local = dir.join("user-data");
+                if local.exists() {
+                    return Some(local);
+                }
+                None
             })()
             .unwrap_or(app.path().app_data_dir()?);
 
@@ -129,14 +134,18 @@ pub fn run() {
             upsert_provider,
             delete_provider,
             rename_provider,
+            get_provider_key,
             set_provider_key,
             clear_provider_key,
             refresh_quota,
+            refresh_quota_shared,
             refresh_quota_all,
             set_usage_token,
             clear_usage_token,
             set_usage_base_url,
             clear_usage_base_url,
+            get_effective_usage_base,
+            set_provider_order,
             probe_provider,
             codex_account_login,
             codex_account_logout,
@@ -158,6 +167,17 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
     let quota = state.gateway.store.list_quota_snapshots();
     let ledgers = state.gateway.store.list_ledgers();
     let last_activity = state.gateway.last_activity_unix_ms.load(Ordering::Relaxed);
+    let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
+    let active_provider = if active_recent {
+        state.gateway.last_used_provider.read().clone()
+    } else {
+        None
+    };
+    let active_reason = if active_recent {
+        state.gateway.last_used_reason.read().clone()
+    } else {
+        None
+    };
     let codex_account = state
         .gateway
         .store
@@ -171,6 +191,8 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
       "providers": providers,
       "metrics": metrics,
       "recent_events": recent_events,
+      "active_provider": active_provider,
+      "active_reason": active_reason,
       "quota": quota,
       "ledgers": ledgers,
       "last_activity_unix_ms": last_activity,
@@ -227,7 +249,8 @@ fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
     serde_json::json!({
       "listen": cfg.listen,
       "routing": cfg.routing,
-      "providers": providers
+      "providers": providers,
+      "provider_order": cfg.provider_order
     })
 }
 
@@ -279,6 +302,7 @@ fn upsert_provider(
     }
     {
         let mut cfg = state.gateway.cfg.write();
+        let is_new = !cfg.providers.contains_key(&name);
         cfg.providers.insert(
             name.clone(),
             crate::orchestrator::config::ProviderConfig {
@@ -289,6 +313,10 @@ fn upsert_provider(
                 api_key: String::new(),
             },
         );
+        if is_new {
+            cfg.provider_order.push(name.clone());
+        }
+        app_state::normalize_provider_order(&mut cfg);
     }
     persist_config(&state).map_err(|e| e.to_string())?;
     state
@@ -307,6 +335,8 @@ fn delete_provider(
     {
         let mut cfg = state.gateway.cfg.write();
         cfg.providers.remove(&name);
+        cfg.provider_order.retain(|p| p != &name);
+        app_state::normalize_provider_order(&mut cfg);
 
         if cfg.providers.is_empty() {
             return Err("cannot delete the last provider".to_string());
@@ -375,6 +405,12 @@ fn rename_provider(
         if cfg.routing.preferred_provider == old {
             cfg.routing.preferred_provider = new.to_string();
         }
+        for entry in cfg.provider_order.iter_mut() {
+            if entry == old {
+                *entry = new.to_string();
+            }
+        }
+        app_state::normalize_provider_order(&mut cfg);
     }
 
     {
@@ -417,6 +453,35 @@ fn set_provider_key(
 }
 
 #[tauri::command]
+fn set_provider_order(
+    state: tauri::State<'_, app_state::AppState>,
+    order: Vec<String>,
+) -> Result<(), String> {
+    {
+        let mut cfg = state.gateway.cfg.write();
+        cfg.provider_order = order;
+        app_state::normalize_provider_order(&mut cfg);
+    }
+    persist_config(&state).map_err(|e| e.to_string())?;
+    state
+        .gateway
+        .store
+        .add_event("-", "info", "provider order updated");
+    Ok(())
+}
+
+#[tauri::command]
+fn get_provider_key(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+) -> Result<Option<String>, String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    Ok(state.secrets.get_provider_key(&provider))
+}
+
+#[tauri::command]
 fn clear_provider_key(
     state: tauri::State<'_, app_state::AppState>,
     provider: String,
@@ -442,6 +507,15 @@ async fn refresh_quota(
         return Err(format!("unknown provider: {provider}"));
     }
     let _ = crate::orchestrator::quota::refresh_quota_for_provider(&state.gateway, &provider).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn refresh_quota_shared(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+) -> Result<(), String> {
+    crate::orchestrator::quota::refresh_quota_shared(&state.gateway, &provider).await?;
     Ok(())
 }
 
@@ -536,6 +610,21 @@ fn clear_usage_base_url(
         .store
         .add_event(&provider, "info", "usage base url cleared");
     Ok(())
+}
+
+#[tauri::command]
+async fn get_effective_usage_base(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+) -> Result<Option<String>, String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    Ok(crate::orchestrator::quota::effective_usage_base(
+        &state.gateway,
+        &provider,
+    )
+    .await)
 }
 
 #[tauri::command]

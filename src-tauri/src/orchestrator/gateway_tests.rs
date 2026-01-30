@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
 
@@ -30,6 +31,9 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_provider: Arc::new(RwLock::new(None)),
+            last_used_reason: Arc::new(RwLock::new(None)),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let app = build_router(state);

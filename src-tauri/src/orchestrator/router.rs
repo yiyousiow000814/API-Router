@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use reqwest::Url;
 use std::time::Duration;
 
 use parking_lot::RwLock;
@@ -159,16 +160,41 @@ impl RouterState {
     }
 
     fn fallback(&self, cfg: &AppConfig) -> String {
+        let preferred = cfg.routing.preferred_provider.clone();
+        let preferred_group = provider_group(cfg, &preferred);
+
         for name in cfg.providers.keys() {
-            if name == &cfg.routing.preferred_provider {
+            if name == &preferred {
+                continue;
+            }
+            if preferred_group.is_some() && provider_group(cfg, name) == preferred_group {
                 continue;
             }
             if self.is_routable(name) {
                 return name.clone();
             }
         }
-        cfg.routing.preferred_provider.clone()
+
+        for name in cfg.providers.keys() {
+            if name == &preferred {
+                continue;
+            }
+            if self.is_routable(name) {
+                return name.clone();
+            }
+        }
+
+        preferred
     }
+}
+
+fn provider_group(cfg: &AppConfig, name: &str) -> Option<String> {
+    let p = cfg.providers.get(name)?;
+    let host = Url::parse(&p.base_url).ok().and_then(|u| u.host_str().map(|s| s.to_string()))?;
+    if host.ends_with("ppchat.vip") || host.ends_with("pumpkinai.vip") {
+        return Some("ppchat_pumpkin".to_string());
+    }
+    None
 }
 
 fn unix_ms() -> u64 {
