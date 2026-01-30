@@ -242,8 +242,12 @@ async fn responses(
         };
 
         // Avoid upstream rejecting our server-side continuity ids.
-        body.as_object_mut()
-            .map(|m| m.remove("previous_response_id"));
+        // If tool outputs are present, keep previous_response_id so upstream can
+        // continue the tool call chain correctly.
+        if !input_has_tools {
+            body.as_object_mut()
+                .map(|m| m.remove("previous_response_id"));
+        }
         body.as_object_mut().map(|m| {
             let input = if input_has_tools {
                 input.clone()
