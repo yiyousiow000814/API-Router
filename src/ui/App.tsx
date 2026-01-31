@@ -407,6 +407,7 @@ export default function App() {
   }
 
   async function refreshQuotaAll() {
+    if (isDevPreview) return
     try {
       await invoke('refresh_quota_all')
       await refreshStatus()
