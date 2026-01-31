@@ -183,7 +183,7 @@ export default function App() {
   const instructionBackdropMouseDownRef = useRef<boolean>(false)
   const configBackdropMouseDownRef = useRef<boolean>(false)
   const usageRefreshTimerRef = useRef<number | null>(null)
-  const activeUsageIntervalRef = useRef<number | null>(null)
+  const activeUsageTimerRef = useRef<number | null>(null)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -578,22 +578,29 @@ export default function App() {
     // While actively used, refresh usage every 5 minutes.
     const lastActivity = status?.last_activity_unix_ms ?? 0
     const isActive = lastActivity > 0 && Date.now() - lastActivity <= 5 * 60 * 1000
-    if (!isActive) {
-      if (activeUsageIntervalRef.current) {
-        window.clearInterval(activeUsageIntervalRef.current)
-        activeUsageIntervalRef.current = null
+    const clearActiveTimer = () => {
+      if (activeUsageTimerRef.current) {
+        window.clearTimeout(activeUsageTimerRef.current)
+        activeUsageTimerRef.current = null
       }
+    }
+    if (!isActive) {
+      clearActiveTimer()
       return
     }
-    if (activeUsageIntervalRef.current) return
-    activeUsageIntervalRef.current = window.setInterval(() => {
-      void refreshQuotaAll()
-    }, 5 * 60 * 1000)
-    return () => {
-      if (activeUsageIntervalRef.current) {
-        window.clearInterval(activeUsageIntervalRef.current)
-        activeUsageIntervalRef.current = null
+    if (!activeUsageTimerRef.current) {
+      const schedule = () => {
+        const jitterMs = (Math.random() * 2 - 1) * 60 * 1000
+        activeUsageTimerRef.current = window.setTimeout(() => {
+          void refreshQuotaAll().finally(() => {
+            schedule()
+          })
+        }, 5 * 60 * 1000 + jitterMs)
       }
+      schedule()
+    }
+    return () => {
+      clearActiveTimer()
     }
   }, [isDevPreview, status?.last_activity_unix_ms])
 
