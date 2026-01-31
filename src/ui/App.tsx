@@ -184,6 +184,7 @@ export default function App() {
   const configBackdropMouseDownRef = useRef<boolean>(false)
   const usageRefreshTimerRef = useRef<number | null>(null)
   const idleUsageSchedulerRef = useRef<(() => void) | null>(null)
+  const usageActiveRef = useRef<boolean>(false)
   const activeUsageTimerRef = useRef<number | null>(null)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -533,6 +534,7 @@ export default function App() {
     // Fetch usage once when opening the app, then refresh on a half-hour cadence (00/30 ±5 min) while idle.
     const once = window.setTimeout(() => void refreshQuotaAll(), 850)
     const scheduleUsageRefresh = () => {
+      if (usageActiveRef.current) return
       if (usageRefreshTimerRef.current) {
         window.clearTimeout(usageRefreshTimerRef.current)
       }
@@ -552,8 +554,15 @@ export default function App() {
         target += 30 * 60 * 1000
       }
       usageRefreshTimerRef.current = window.setTimeout(() => {
+        if (usageActiveRef.current) {
+          if (usageRefreshTimerRef.current) {
+            window.clearTimeout(usageRefreshTimerRef.current)
+            usageRefreshTimerRef.current = null
+          }
+          return
+        }
         void refreshQuotaAll().finally(() => {
-          scheduleUsageRefresh()
+          if (!usageActiveRef.current) scheduleUsageRefresh()
         })
       }, target - nowMs)
     }
@@ -581,6 +590,7 @@ export default function App() {
     // While actively used, refresh usage every 5 minutes.
     const lastActivity = status?.last_activity_unix_ms ?? 0
     const isActive = lastActivity > 0 && Date.now() - lastActivity <= 5 * 60 * 1000
+    usageActiveRef.current = isActive
     if (isActive && usageRefreshTimerRef.current) {
       window.clearTimeout(usageRefreshTimerRef.current)
       usageRefreshTimerRef.current = null
@@ -593,9 +603,7 @@ export default function App() {
     }
     if (!isActive) {
       clearActiveTimer()
-      if (!usageRefreshTimerRef.current && idleUsageSchedulerRef.current) {
-        idleUsageSchedulerRef.current()
-      }
+      if (!usageRefreshTimerRef.current && idleUsageSchedulerRef.current) idleUsageSchedulerRef.current()
       return
     }
     if (!activeUsageTimerRef.current) {
