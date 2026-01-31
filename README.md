@@ -4,18 +4,47 @@
 
 # API Router
 
-Desktop app that runs a local **OpenAI-compatible gateway** on a stable `base_url` (default: `http://127.0.0.1:4000/v1`) and routes requests across multiple upstream providers.
+API Router is a desktop app that runs a local OpenAI-compatible gateway on a stable base URL
+(default: `http://127.0.0.1:4000/v1`). You point Codex at the gateway once, then switch providers
+inside the app without editing your Codex config again.
 
-Key features (MVP):
-- `wire_api = "responses"` gateway endpoint: `POST /v1/responses` (supports SSE streaming by simulating events).
-- Automatic failover on upstream errors (timeouts / 5xx / 429), with cooldown.
-- Conversation continuity across provider switches via local history store.
-- Desktop UI (React) to view status/events and lock routing to a provider.
-- Runs “in the background” (window starts hidden; tray menu can show/quit).
+## What it does
 
-## One-time `codex` config
+- Routes **Responses API** requests (`POST /v1/responses`) to your chosen providers.
+- Automatic failover on upstream errors (timeouts / 5xx / 429) with cooldown.
+- Provider management in UI: add, rename, reorder, set keys, set usage base URL.
+- Usage display is best-effort (depends on each provider’s usage endpoint).
+- Runs in the background (tray icon with Show/Quit).
 
-Point `codex` to the local gateway once:
+## Quick start (Windows)
+
+1) Install dependencies:
+
+```powershell
+npm install
+```
+
+2) Run the app:
+
+```powershell
+npm run tauri dev
+```
+
+3) In the app, add providers and set their API keys.
+
+4) Set the gateway token in `.codex/auth.json`:
+
+```json
+{
+  "OPENAI_API_KEY": "ao_xxx..."
+}
+```
+
+Notes:
+- The file must be UTF-8 **without BOM** (BOM breaks JSON parsing).
+- The gateway token is stored locally at `./user-data/secrets.json` (gitignored).
+
+5) Point Codex to API Router (one-time):
 
 ```toml
 model_provider = "api_router"
@@ -24,46 +53,42 @@ model_provider = "api_router"
 name = "API Router"
 base_url = "http://127.0.0.1:4000/v1"
 wire_api = "responses"
+requires_openai_auth = true
 ```
 
-After that, you switch providers inside API Router — no more editing `codex` config.
+After this, you switch providers inside the app.
 
-## Run (Windows)
+## How to use
+
+- **Preferred provider**: choose a default target.
+- **Auto mode**: the router picks a healthy provider and fails over if needed.
+- **Usage base URL**: set this if the usage endpoint is on a different host.
+  When empty, the usage base defaults to the provider `base_url`.
+
+## Not supported
+
+- Chat Completions API (this app focuses on Responses).
+- Reusing official OAuth credentials for upstream providers.
+- Non-Windows platforms are untested.
+
+## Troubleshooting
+
+- **"expected value at line 1 column 1"** in `.codex/auth.json`  
+  Ensure the file is UTF-8 **without BOM**.
+- **Usage shows empty or error**  
+  The provider may not expose a compatible usage endpoint. Try setting a Usage base URL.
+- **"localhost refused to connect"**  
+  Make sure the app is running and the gateway port matches your config.
+
+## Config & data locations
+
+- Config: `./user-data/config.toml`
+- Secrets: `./user-data/secrets.json` (gitignored)
+
+## Build EXE (local)
 
 ```powershell
-npm install
-npm run tauri dev
-```
-
-The app creates its config at:
-- `./user-data/config.toml` next to the executable (gitignored)
-
-## Run (Release EXE locally)
-
-```powershell
-npm install
 npm run build:root-exe
 ```
 
-Then launch `API Router.exe` at repo root.
-
-Note: `tauri build --debug` produces a debug build that can still try to load the dev server URL and may show "localhost refused to connect" if no dev server is running.
-
-## Gateway endpoints
-
-- `GET /health`
-- `GET /status`
-- `POST /v1/responses`
-- `GET /v1/models` (best-effort proxy)
-
-## Official OAuth
-
-The local gateway requires its own token (stored in `./user-data/secrets.json`) so the localhost base_url is not exposed to other processes.
-Because clients authenticate to the gateway using this token, the gateway cannot automatically reuse the client's OAuth credentials for the upstream.
-
-Official upstream support currently requires an API key configured in the app, or a future built-in OAuth flow.
-
-## Usage / quota display
-
-Usage display is best-effort and depends on the upstream exposing a compatible usage endpoint.
-If an upstream's usage API lives on a different host than the OpenAI-compatible `base_url`, set a per-provider "Usage base URL" in the UI.
+The EXE will be written to the repo root as `API Router.exe`.
