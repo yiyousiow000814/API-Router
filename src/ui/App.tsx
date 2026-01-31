@@ -1,135 +1,15 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
-
-type ProviderHealth = {
-  status: 'unknown' | 'healthy' | 'unhealthy' | 'cooldown'
-  consecutive_failures: number
-  cooldown_until_unix_ms: number
-  last_error: string
-  last_ok_at_unix_ms: number
-  last_fail_at_unix_ms: number
-}
-
-type Status = {
-  listen: { host: string; port: number }
-  preferred_provider: string
-  manual_override: string | null
-  providers: Record<string, ProviderHealth>
-  metrics: Record<string, { ok_requests: number; error_requests: number; total_tokens: number }>
-  recent_events: Array<{ provider: string; level: string; unix_ms: number; message: string }>
-  active_provider?: string | null
-  active_reason?: string | null
-  quota: Record<
-    string,
-    {
-      kind: 'none' | 'token_stats' | 'budget_info'
-      updated_at_unix_ms: number
-      remaining: number | null
-      today_used: number | null
-      today_added: number | null
-      daily_spent_usd: number | null
-      daily_budget_usd: number | null
-      weekly_spent_usd?: number | null
-      weekly_budget_usd?: number | null
-      monthly_spent_usd: number | null
-      monthly_budget_usd: number | null
-      last_error: string
-      effective_usage_base?: string | null
-    }
-  >
-  ledgers: Record<
-    string,
-    {
-      since_last_quota_refresh_total_tokens: number
-      last_reset_unix_ms: number
-    }
-  >
-  last_activity_unix_ms: number
-  codex_account: {
-    ok: boolean
-    checked_at_unix_ms?: number
-    signed_in?: boolean
-    remaining?: string | null
-    limit_5h_remaining?: string | null
-    limit_weekly_remaining?: string | null
-    code_review_remaining?: string | null
-    unlimited?: boolean | null
-    error?: string
-  }
-}
-
-type Config = {
-  listen: { host: string; port: number }
-  routing: {
-    preferred_provider: string
-    auto_return_to_preferred: boolean
-    preferred_stable_seconds: number
-    failure_threshold: number
-    cooldown_seconds: number
-    request_timeout_seconds: number
-  }
-  providers: Record<
-    string,
-    {
-      display_name: string
-      base_url: string
-      usage_adapter?: string
-      usage_base_url?: string | null
-      has_key: boolean
-      key_preview?: string | null
-      has_usage_token?: boolean
-    }
-  >
-  provider_order?: string[]
-}
-
-function fmtWhen(unixMs: number): string {
-  if (!unixMs) return '-'
-  const d = new Date(unixMs)
-  // day-month-year, per repo conventions.
-  const dd = String(d.getDate()).padStart(2, '0')
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const yyyy = d.getFullYear()
-  const hh = String(d.getHours()).padStart(2, '0')
-  const min = String(d.getMinutes()).padStart(2, '0')
-  const ss = String(d.getSeconds()).padStart(2, '0')
-  return `${dd}-${mm}-${yyyy} ${hh}:${min}:${ss}`
-}
-
-function pctOf(part?: number | null, total?: number | null): number | null {
-  if (part == null || total == null) return null
-  if (!Number.isFinite(part) || !Number.isFinite(total) || total <= 0) return null
-  const pct = (part / total) * 100
-  if (!Number.isFinite(pct)) return null
-  return Math.max(0, Math.min(100, pct))
-}
-
-function fmtPct(pct: number | null): string {
-  if (pct == null) return '-'
-  const v = pct < 1 ? 0 : Math.floor(pct)
-  return `${v}%`
-}
-
-function fmtAmount(value?: number | null): string {
-  if (value == null || !Number.isFinite(value)) return '-'
-  return Math.round(value).toLocaleString()
-}
-
-function fmtUsd(value?: number | null): string {
-  if (value == null || !Number.isFinite(value)) return '-'
-  const trimmed = Math.round(value * 1000) / 1000
-  return trimmed.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 3 })
-}
-
-function parsePct(value?: string | null): string | null {
-  if (!value) return null
-  const match = String(value).match(/(\d+(?:\.\d+)?)\s*%/)
-  if (!match) return null
-  const num = Math.max(0, Math.min(100, Number(match[1])))
-  if (!Number.isFinite(num)) return null
-  return `${Math.floor(num)}%`
-}
+import type { Config, Status } from './types'
+import { fmtWhen } from './utils/format'
+import { ProvidersTable } from './components/ProvidersTable'
+import { KeyModal } from './components/KeyModal'
+import { UsageBaseModal } from './components/UsageBaseModal'
+import { InstructionModal } from './components/InstructionModal'
+import { GatewayTokenModal } from './components/GatewayTokenModal'
+import { ConfigModal } from './components/ConfigModal'
+import { HeroCodexCard, HeroRoutingCard, HeroStatusCard } from './components/HeroCards'
 
 const devStatus: Status = {
   listen: { host: '127.0.0.1', port: 4000 },
@@ -1084,209 +964,62 @@ export default function App() {
           ) : (
             <>
               <div className="aoHero">
-                <div className="aoCard aoHeroCard aoHeroStatus">
-                  <div className="aoCardHeader">
-                    <div className="aoCardTitle">Status</div>
-                    <span className="aoPill aoPulse">
-                      <span className="aoDot" />
-                      <span className="aoPillText">running</span>
-                    </span>
-                  </div>
-                  <div className="aoStatGrid">
-                    <div className="aoStatLabel">Gateway</div>
-                    <div className="aoStatValue">
-                      {status.listen.host}:{status.listen.port}
-                    </div>
-                    <div className="aoStatLabel">Preferred</div>
-                    <div className="aoStatValue">{status.preferred_provider}</div>
-                    <div className="aoStatLabel">Override</div>
-                    <div className="aoStatValue">{status.manual_override ?? '(auto)'}</div>
-                  </div>
-                  <div className="aoDivider" />
-                  <div className="aoRow aoRowWrap">
-                    <div className="aoHint" style={{ minWidth: 120 }}>
-                      Gateway token
-                    </div>
-                    <div className="aoVal aoValSmall">{gatewayTokenPreview}</div>
-                    <button
-                      className="aoIconBtn"
-                      title="Copy gateway token"
-                      aria-label="Copy gateway token"
-                      onClick={async () => {
-                        try {
-                          const tok = await invoke<string>('get_gateway_token')
-                          await navigator.clipboard.writeText(tok)
-                          flashToast('Gateway token copied')
-                        } catch (e) {
-                          flashToast(String(e), 'error')
+                <HeroStatusCard
+                  status={status}
+                  gatewayTokenPreview={gatewayTokenPreview}
+                  onCopyToken={() => {
+                    void (async () => {
+                      try {
+                        const tok = await invoke<string>('get_gateway_token')
+                        await navigator.clipboard.writeText(tok)
+                        flashToast('Gateway token copied')
+                      } catch (e) {
+                        flashToast(String(e), 'error')
+                      }
+                    })()
+                  }}
+                  onShowRotate={() => {
+                    setGatewayModalOpen(true)
+                    setGatewayTokenReveal('')
+                  }}
+                />
+                <HeroCodexCard
+                  status={status}
+                  onLoginLogout={() => {
+                    void (async () => {
+                      try {
+                        if (status.codex_account?.signed_in) {
+                          await invoke('codex_account_logout')
+                          flashToast('Codex logged out')
+                        } else {
+                          await invoke('codex_account_login')
+                          flashToast('Codex login opened in browser')
                         }
-                      }}
-                    >
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M9 9h9a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z" />
-                        <path d="M15 9V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
-                      </svg>
-                    </button>
-                    <button
-                      className="aoBtn"
-                      onClick={() => {
-                        setGatewayModalOpen(true)
-                        setGatewayTokenReveal('')
-                      }}
-                    >
-                      Show / Rotate
-                    </button>
-                  </div>
-                  <div className="aoHint">
-                    Put this into{' '}
-                    <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>
-                      .codex/auth.json
-                    </span>{' '}
-                    as
-                    <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>
-                      {' '}
-                      OPENAI_API_KEY
-                    </span>
-                    .
-                  </div>
-                </div>
-
-                <div className="aoCard aoHeroCard aoHeroCodex">
-                  <div className="aoCardHeader">
-                    <div className="aoCardTitle">Codex (Auth)</div>
-                    <span className={`aoPill ${status.codex_account?.signed_in ? 'aoPulse' : ''}`.trim()}>
-                      <span className={status.codex_account?.signed_in ? 'aoDot' : 'aoDot aoDotBad'} />
-                      <span className="aoPillText">
-                        {status.codex_account?.signed_in ? 'signed in' : 'signed out'}
-                      </span>
-                    </span>
-                  </div>
-                  <div className="aoKvp">
-                    <div className="aoKey">Checked</div>
-                    <div className="aoVal">
-                      {status.codex_account?.checked_at_unix_ms
-                        ? fmtWhen(status.codex_account.checked_at_unix_ms)
-                        : '-'}
-                    </div>
-                  </div>
-                  <div className="aoDivider" />
-                  <div className="aoLimitGrid">
-                    <div className="aoLimitCard">
-                      <div className="aoMiniLabel">5-hour limit</div>
-                      <div className="aoLimitValue">
-                        {status.codex_account?.limit_5h_remaining ??
-                          (parsePct(status.codex_account?.remaining) ?? '-')}
-                      </div>
-                    </div>
-                    <div className="aoLimitCard">
-                      <div className="aoMiniLabel">Weekly limit</div>
-                      <div className="aoLimitValue">
-                        {status.codex_account?.limit_weekly_remaining ??
-                          (parsePct(status.codex_account?.remaining) ?? '-')}
-                      </div>
-                    </div>
-                    <div className="aoLimitCard">
-                      <div className="aoMiniLabel">Code review</div>
-                      <div className="aoLimitValue">
-                        {status.codex_account?.code_review_remaining ??
-                          status.codex_account?.limit_5h_remaining ??
-                          '-'}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="aoHeroActions" style={{ marginTop: 15 }}>
-                    <button
-                      className={`aoBtn ${status.codex_account?.signed_in ? 'aoBtnDanger' : ''}`.trim()}
-                      onClick={async () => {
-                        try {
-                          if (status.codex_account?.signed_in) {
-                            await invoke('codex_account_logout')
-                            flashToast('Codex logged out')
-                          } else {
-                            await invoke('codex_account_login')
-                            flashToast('Codex login opened in browser')
-                          }
-                        } catch (e) {
-                          flashToast(String(e), 'error')
-                        }
-                      }}
-                    >
-                      {status.codex_account?.signed_in ? 'Log out' : 'Log in'}
-                    </button>
-                    <button
-                      className="aoBtn aoBtnPrimary"
-                      onClick={() => {
-                        flashToast('Checking…')
-                        invoke('codex_account_refresh')
-                          .then(() => refreshStatus())
-                          .catch((e) => {
-                            flashToast(String(e), 'error')
-                          })
-                      }}
-                    >
-                      Refresh
-                    </button>
-                  </div>
-                  {status.codex_account?.error ? (
-                    <div className="aoHint" style={{ marginTop: 8, color: 'rgba(145, 12, 43, 0.92)' }}>
-                      {status.codex_account.error}
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className="aoCard aoHeroCard aoHeroRouting">
-                  <div className="aoCardHeader">
-                    <div className="aoCardTitle">Routing</div>
-                    <span className={`aoPill ${override === '' ? 'aoPulse' : ''}`.trim()}>
-                      <span className={override === '' ? 'aoDot' : 'aoDot aoDotBad'} />
-                      <span className="aoPillText">{override === '' ? 'auto' : 'locked'}</span>
-                    </span>
-                  </div>
-                  {config ? (
-                    <div className="aoRoutingGrid">
-                      <label className="aoRoutingRow">
-                        <span className="aoMiniLabel">Mode</span>
-                        <select
-                          className="aoSelect"
-                          value={override}
-                          onChange={(e) => {
-                            setOverride(e.target.value)
-                            overrideDirtyRef.current = true
-                            void applyOverride(e.target.value)
-                          }}
-                        >
-                          <option value="">Auto</option>
-                          {providers.map((p) => (
-                            <option key={p} value={p}>
-                              {p}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="aoRoutingRow">
-                        <span className="aoMiniLabel">Preferred</span>
-                        <select
-                          className="aoSelect"
-                          value={config.routing.preferred_provider}
-                          onChange={(e) => void setPreferred(e.target.value)}
-                        >
-                          {Object.keys(config.providers).map((p) => (
-                            <option key={p} value={p}>
-                              {p}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-                  ) : (
-                    <div className="aoHint" style={{ marginTop: 8 }}>
-                      Loading…
-                    </div>
-                  )}
-                  <div className="aoHint" style={{ marginTop: 8 }}>
-                    Tip: closing the window hides to tray. Use tray menu to show/quit.
-                  </div>
-                </div>
+                      } catch (e) {
+                        flashToast(String(e), 'error')
+                      }
+                    })()
+                  }}
+                  onRefresh={() => {
+                    flashToast('Checking…')
+                    invoke('codex_account_refresh')
+                      .then(() => refreshStatus())
+                      .catch((e) => {
+                        flashToast(String(e), 'error')
+                      })
+                  }}
+                />
+                <HeroRoutingCard
+                  config={config}
+                  providers={providers}
+                  override={override}
+                  onOverrideChange={(next) => {
+                    setOverride(next)
+                    overrideDirtyRef.current = true
+                    void applyOverride(next)
+                  }}
+                  onPreferredChange={(next) => void setPreferred(next)}
+                />
               </div>
 
               <div className="aoSection">
@@ -1306,154 +1039,7 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                <table className="aoTable aoTableFixed">
-                  <thead>
-                    <tr>
-                      <th style={{ width: 140 }}>Name</th>
-                      <th style={{ width: 120 }}>Healthy</th>
-                      <th style={{ width: 90 }}>Failures</th>
-                      <th style={{ width: 170 }}>Cooldown</th>
-                      <th style={{ width: 170 }}>Last OK</th>
-                      <th>Last Error</th>
-                      <th style={{ width: 240 }}>Usage</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {providers.map((p) => {
-                      const h = status.providers[p]
-                      const q = status?.quota?.[p]
-                      const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
-                      const cooldownActive = h.cooldown_until_unix_ms > Date.now()
-                      const isActive = (status.active_provider ?? null) === p
-                      const healthLabel =
-                        isActive
-                          ? 'effective'
-                          : h.status === 'healthy'
-                            ? 'yes'
-                            : h.status === 'unhealthy'
-                              ? 'no'
-                              : h.status === 'cooldown'
-                                ? 'cooldown'
-                                : 'unknown'
-                      const dotClass =
-                        isActive
-                          ? 'aoDot'
-                          : h.status === 'healthy'
-                            ? 'aoDot'
-                            : h.status === 'cooldown'
-                              ? 'aoDot'
-                              : h.status === 'unhealthy'
-                                ? 'aoDot aoDotBad'
-                                : 'aoDot aoDotBad'
-                      const usageNode =
-                        kind === 'token_stats' ? (
-                          (() => {
-                            const total = q?.today_added ?? null
-                            const remaining = q?.remaining ?? null
-                            const used = q?.today_used ?? (total != null && remaining != null ? total - remaining : null)
-                            const usedPct = pctOf(used ?? null, total)
-                            const remainingPct = pctOf(remaining ?? null, total)
-                            return (
-                              <div className="aoUsageMini">
-                                <div className="aoUsageSplit">
-                                  <div className="aoUsageText">
-                                    <div className="aoUsageLine">remaining: {fmtPct(remainingPct)}</div>
-                                    <div className="aoUsageLine">
-                                      today: {fmtAmount(used)} / {fmtAmount(total)} ({fmtPct(usedPct)})
-                                    </div>
-                                  </div>
-                                  <button
-                                    className={`aoUsageRefreshBtn${refreshingProviders[p] ? ' aoUsageRefreshBtnSpin' : ''}`}
-                                    title="Refresh usage"
-                                    aria-label="Refresh usage"
-                                    onClick={() => void refreshQuota(p)}
-                                  >
-                                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                                      <path d="M23 4v6h-6" />
-                                      <path d="M1 20v-6h6" />
-                                      <path d="M3.5 9a9 9 0 0 1 14.1-3.4L23 10" />
-                                      <path d="M1 14l5.3 5.3A9 9 0 0 0 20.5 15" />
-                                    </svg>
-                                  </button>
-                                </div>
-                              </div>
-                            )
-                          })()
-                        ) : kind === 'budget_info' ? (
-                          <div className="aoUsageMini">
-                            <div className="aoUsageSplit">
-                              <div className="aoUsageText">
-                                <div className="aoUsageLine">
-                                  daily: ${fmtUsd(q?.daily_spent_usd)} / ${fmtUsd(q?.daily_budget_usd)}
-                                </div>
-                                {q?.weekly_spent_usd != null || q?.weekly_budget_usd != null ? (
-                                  <div className="aoUsageLine">
-                                    weekly: ${fmtUsd(q?.weekly_spent_usd)} / ${fmtUsd(q?.weekly_budget_usd)}
-                                  </div>
-                                ) : (
-                                  <div className="aoUsageLine">
-                                    monthly: ${fmtUsd(q?.monthly_spent_usd)} / ${fmtUsd(q?.monthly_budget_usd)}
-                                  </div>
-                                )}
-                              </div>
-                              <button
-                                className={`aoUsageRefreshBtn${refreshingProviders[p] ? ' aoUsageRefreshBtnSpin' : ''}`}
-                                title="Refresh usage"
-                                aria-label="Refresh usage"
-                                onClick={() => void refreshQuota(p)}
-                              >
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                  <path d="M23 4v6h-6" />
-                                  <path d="M1 20v-6h6" />
-                                  <path d="M3.5 9a9 9 0 0 1 14.1-3.4L23 10" />
-                                  <path d="M1 14l5.3 5.3A9 9 0 0 0 20.5 15" />
-                                </svg>
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="aoUsageMini">
-                            <div className="aoUsageSplit">
-                              <div className="aoUsageText">
-                                <span className="aoHint">-</span>
-                              </div>
-                              <button
-                                className={`aoUsageRefreshBtn${refreshingProviders[p] ? ' aoUsageRefreshBtnSpin' : ''}`}
-                                title="Refresh usage"
-                                aria-label="Refresh usage"
-                                onClick={() => void refreshQuota(p)}
-                              >
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                  <path d="M23 4v6h-6" />
-                                  <path d="M1 20v-6h6" />
-                                  <path d="M3.5 9a9 9 0 0 1 14.1-3.4L23 10" />
-                                  <path d="M1 14l5.3 5.3A9 9 0 0 0 20.5 15" />
-                                </svg>
-                              </button>
-                            </div>
-                          </div>
-                        )
-                      return (
-                        <tr key={p}>
-                          <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{p}</td>
-                          <td>
-                            <span className="aoPill">
-                              <span className={dotClass} />
-                              <span className="aoPillText">{healthLabel}</span>
-                            </span>
-                          </td>
-                          <td>{h.consecutive_failures}</td>
-                          <td>{cooldownActive ? fmtWhen(h.cooldown_until_unix_ms) : '-'}</td>
-                          <td>{fmtWhen(h.last_ok_at_unix_ms)}</td>
-                          <td className="aoCellWrap">{h.last_error ? h.last_error : '-'}</td>
-                          <td className="aoUsageCell">
-                            <div className="aoUsageCellInner">{usageNode}</div>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+                <ProvidersTable providers={providers} status={status} refreshingProviders={refreshingProviders} onRefreshQuota={(name) => void refreshQuota(name)} />
               </div>
 
             </>
@@ -1461,252 +1047,110 @@ export default function App() {
         </div>
       </div>
 
-      {keyModal.open ? (
-        <div className="aoModalBackdrop aoModalBackdropTop" role="dialog" aria-modal="true">
-          <div className="aoModal">
-            <div className="aoModalTitle">Set API key</div>
-            <div className="aoModalSub">
-              Provider:{' '}
-              <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>
-                {keyModal.provider}
-              </span>
-              <br />
-              Stored in ./user-data/secrets.json (gitignored).
-            </div>
-            <input
-              className="aoInput"
-              style={{ width: '100%', height: 36, borderRadius: 12 }}
-              placeholder="Paste API key..."
-              value={keyModal.value}
-              onChange={(e) => setKeyModal((m) => ({ ...m, value: e.target.value }))}
-            />
-            <div className="aoModalActions">
-              <button className="aoBtn" onClick={() => setKeyModal({ open: false, provider: '', value: '' })}>
-                Cancel
-              </button>
-              <button className="aoBtn aoBtnPrimary" onClick={() => void saveKey()} disabled={!keyModal.value}>
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <KeyModal
+        open={keyModal.open}
+        provider={keyModal.provider}
+        value={keyModal.value}
+        onChange={(value) => setKeyModal((m) => ({ ...m, value }))}
+        onCancel={() => setKeyModal({ open: false, provider: '', value: '' })}
+        onSave={() => void saveKey()}
+      />
 
-      {usageBaseModal.open ? (
-        <div className="aoModalBackdrop aoModalBackdropTop" role="dialog" aria-modal="true">
-          <div className="aoModal">
-            <div className="aoModalTitle">Usage base URL</div>
-            <div className="aoModalSub">
-              Provider:{' '}
-              <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>
-                {usageBaseModal.provider}
-              </span>
-              <br />
-              Usage source URL used for quota/usage fetch.
-            </div>
-            <input
-              className="aoInput"
-              style={{ width: '100%', height: 36, borderRadius: 12 }}
-              placeholder="https://..."
-              value={usageBaseModal.value}
-              onChange={(e) =>
-                setUsageBaseModal((m) => ({
-                  ...m,
-                  value: e.target.value,
-                  auto: false,
-                  explicitValue: e.target.value,
-                }))
-              }
-            />
-            <div className="aoModalActions">
-              <button
-                className="aoBtn"
-                onClick={() =>
-                  setUsageBaseModal({
-                    open: false,
-                    provider: '',
-                    value: '',
-                    auto: false,
-                    explicitValue: '',
-                    effectiveValue: '',
-                  })
-                }
-              >
-                Cancel
-              </button>
-              <button
-                className="aoBtn"
-                onClick={() => void clearUsageBaseUrl(usageBaseModal.provider)}
-                disabled={!usageBaseModal.explicitValue}
-              >
-                Clear
-              </button>
-              <button className="aoBtn aoBtnPrimary" onClick={() => void saveUsageBaseUrl()} disabled={!usageBaseModal.value.trim()}>
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <UsageBaseModal
+        open={usageBaseModal.open}
+        provider={usageBaseModal.provider}
+        value={usageBaseModal.value}
+        explicitValue={usageBaseModal.explicitValue}
+        onChange={(value) =>
+          setUsageBaseModal((m) => ({
+            ...m,
+            value,
+            auto: false,
+            explicitValue: value,
+          }))
+        }
+        onCancel={() =>
+          setUsageBaseModal({
+            open: false,
+            provider: '',
+            value: '',
+            auto: false,
+            explicitValue: '',
+            effectiveValue: '',
+          })
+        }
+        onClear={() => void clearUsageBaseUrl(usageBaseModal.provider)}
+        onSave={() => void saveUsageBaseUrl()}
+      />
 
-      {instructionModalOpen ? (
-        <div
-          className="aoModalBackdrop"
-          role="dialog"
-          aria-modal="true"
-          onMouseDown={(e) => {
-            instructionBackdropMouseDownRef.current = e.target === e.currentTarget
-          }}
-          onMouseUp={(e) => {
-            const shouldClose =
-              instructionBackdropMouseDownRef.current && e.target === e.currentTarget
-            instructionBackdropMouseDownRef.current = false
-            if (shouldClose) setInstructionModalOpen(false)
-          }}
-        >
-          <div className="aoModal" onClick={(e) => e.stopPropagation()}>
-            <div className="aoModalHeader">
-              <div className="aoModalTitle">Codex config</div>
-              <button className="aoBtn" onClick={() => setInstructionModalOpen(false)}>
-                Close
-              </button>
-            </div>
-            <div className="aoModalBody">
-              <div className="aoModalSub">Open .codex/config.toml and add:</div>
-              <pre className="aoInstructionCode">
-                {'model_provider = "api_router"\n\n[model_providers.api_router]\nname = "API Router"\nbase_url = "http://127.0.0.1:4000/v1"\nwire_api = "responses"\nrequires_openai_auth = true'}
-              </pre>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <InstructionModal
+        open={instructionModalOpen}
+        onClose={() => setInstructionModalOpen(false)}
+        onBackdropMouseDown={(e) => {
+          instructionBackdropMouseDownRef.current = e.target === e.currentTarget
+        }}
+        onBackdropMouseUp={(e) => {
+          const shouldClose = instructionBackdropMouseDownRef.current && e.target === e.currentTarget
+          instructionBackdropMouseDownRef.current = false
+          if (shouldClose) setInstructionModalOpen(false)
+        }}
+        codeText={`model_provider = "api_router"
 
-      {configModalOpen && config ? (
-        <div
-          className="aoModalBackdrop"
-          role="dialog"
-          aria-modal="true"
-          onMouseDown={(e) => {
-            configBackdropMouseDownRef.current = e.target === e.currentTarget
-          }}
-          onMouseUp={(e) => {
-            const shouldClose =
-              configBackdropMouseDownRef.current && e.target === e.currentTarget
-            configBackdropMouseDownRef.current = false
-            if (shouldClose) setConfigModalOpen(false)
-          }}
-        >
-          <div className="aoModal aoModalWide" onClick={(e) => e.stopPropagation()}>
-            <div className="aoModalHeader">
-              <div className="aoModalTitle">Config</div>
-              <div className="aoRow">
-                <button className="aoBtn" onClick={() => setAllProviderPanels(!allProviderPanelsOpen)}>
-                  {allProviderPanelsOpen ? 'Hide all' : 'Show all'}
-                </button>
-                <button className="aoBtn" onClick={() => setConfigModalOpen(false)}>
-                  Close
-                </button>
-              </div>
-            </div>
-            <div className="aoModalBody">
-              <div className="aoModalSub">keys are stored in ./user-data/secrets.json (gitignored)</div>
-              <div className="aoCard aoConfigCard">
-                <div className="aoConfigDeck">
-                  <div className="aoConfigPanel">
-                    <div className="aoMiniTitle">Add provider</div>
-                    <div className="aoAddProviderRow">
-                      <input
-                        className="aoInput"
-                        placeholder={nextProviderPlaceholder}
-                        value={newProviderName}
-                        onChange={(e) => setNewProviderName(e.target.value)}
-                      />
-                      <input
-                        className="aoInput"
-                        placeholder="Base URL (e.g. http://127.0.0.1:4001)"
-                        value={newProviderBaseUrl}
-                        onChange={(e) => setNewProviderBaseUrl(e.target.value)}
-                      />
-                      <button className="aoBtn aoBtnPrimary" onClick={() => void addProvider()}>
-                        Add
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
+[model_providers.api_router]
+name = "API Router"
+base_url = "http://127.0.0.1:4000/v1"
+wire_api = "responses"
+requires_openai_auth = true`}
+      />
 
-              <div className="aoProviderConfigList" ref={providerListRef}>
-                {(dragPreviewOrder ?? orderedConfigProviders).map((name) => {
-                  if (draggingProvider === name) {
-                    return (
-                      <div
-                        className="aoProviderConfigPlaceholder"
-                        key={`${name}-placeholder`}
-                        style={{ height: dragCardHeightRef.current || 0 }}
-                      />
-                    )
-                  }
-                  return renderProviderCard(name)
-                })}
-                {draggingProvider ? renderProviderCard(draggingProvider, true) : null}
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ConfigModal
+        open={configModalOpen}
+        config={config}
+        allProviderPanelsOpen={allProviderPanelsOpen}
+        setAllProviderPanels={setAllProviderPanels}
+        newProviderName={newProviderName}
+        newProviderBaseUrl={newProviderBaseUrl}
+        nextProviderPlaceholder={nextProviderPlaceholder}
+        setNewProviderName={setNewProviderName}
+        setNewProviderBaseUrl={setNewProviderBaseUrl}
+        onAddProvider={() => void addProvider()}
+        onClose={() => setConfigModalOpen(false)}
+        providerListRef={providerListRef}
+        orderedConfigProviders={orderedConfigProviders}
+        dragPreviewOrder={dragPreviewOrder}
+        draggingProvider={draggingProvider}
+        dragCardHeight={dragCardHeightRef.current || 0}
+        renderProviderCard={renderProviderCard}
+        onBackdropMouseDown={(e) => {
+          configBackdropMouseDownRef.current = e.target === e.currentTarget
+        }}
+        onBackdropMouseUp={(e) => {
+          const shouldClose = configBackdropMouseDownRef.current && e.target === e.currentTarget
+          configBackdropMouseDownRef.current = false
+          if (shouldClose) setConfigModalOpen(false)
+        }}
+      />
 
-      {gatewayModalOpen ? (
-        <div className="aoModalBackdrop" role="dialog" aria-modal="true">
-          <div className="aoModal">
-            <div className="aoModalTitle">Codex gateway token</div>
-            <div className="aoModalSub">
-              Set <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>OPENAI_API_KEY</span> in{' '}
-              <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>.codex/auth.json</span> to this value.
-              <br />
-              Stored in <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>./user-data/secrets.json</span>.
-            </div>
-            <input
-              className="aoInput"
-              style={{ width: '100%', height: 36, borderRadius: 12 }}
-              readOnly
-              value={gatewayTokenReveal || gatewayTokenPreview}
-              onFocus={(e) => e.currentTarget.select()}
-            />
-            <div className="aoModalActions">
-              <button
-                className="aoBtn"
-                onClick={() => {
-                  setGatewayModalOpen(false)
-                  setGatewayTokenReveal('')
-                }}
-              >
-                Close
-              </button>
-              <button
-                className="aoBtn"
-                onClick={async () => {
-                  const t = await invoke<string>('get_gateway_token')
-                  setGatewayTokenReveal(t)
-                }}
-              >
-                Reveal
-              </button>
-              <button
-                className="aoBtn aoBtnDanger"
-                onClick={async () => {
-                  const t = await invoke<string>('rotate_gateway_token')
-                  setGatewayTokenReveal(t)
-                  const p = await invoke<string>('get_gateway_token_preview')
-                  setGatewayTokenPreview(p)
-                  flashToast('Gateway token rotated')
-                }}
-              >
-                Rotate
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <GatewayTokenModal
+        open={gatewayModalOpen}
+        tokenPreview={gatewayTokenPreview}
+        tokenReveal={gatewayTokenReveal}
+        onClose={() => {
+          setGatewayModalOpen(false)
+          setGatewayTokenReveal('')
+        }}
+        onReveal={async () => {
+          const t = await invoke<string>('get_gateway_token')
+          setGatewayTokenReveal(t)
+        }}
+        onRotate={async () => {
+          const t = await invoke<string>('rotate_gateway_token')
+          setGatewayTokenReveal(t)
+          const p = await invoke<string>('get_gateway_token_preview')
+          setGatewayTokenPreview(p)
+          flashToast('Gateway token rotated')
+        }}
+      />
     </div>
   )
 }

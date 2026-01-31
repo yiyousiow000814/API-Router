@@ -3,7 +3,9 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
+
     use std::sync::Mutex as StdMutex;
+    use std::sync::MutexGuard as StdMutexGuard;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -22,6 +24,56 @@ mod tests {
     use serde_json::json;
 
     static CODEX_ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
+    struct CodexSessionGuard<'a> {
+        _lock: StdMutexGuard<'a, ()>,
+        prev_env: Option<String>,
+    }
+
+    impl<'a> CodexSessionGuard<'a> {
+        fn new(lock: StdMutexGuard<'a, ()>) -> Self {
+            let prev_env = std::env::var("CODEX_HOME").ok();
+            Self {
+                _lock: lock,
+                prev_env,
+            }
+        }
+    }
+
+    impl Drop for CodexSessionGuard<'_> {
+        fn drop(&mut self) {
+            if let Some(prev_env) = self.prev_env.take() {
+                std::env::set_var("CODEX_HOME", prev_env);
+            } else {
+                std::env::remove_var("CODEX_HOME");
+            }
+        }
+    }
+
+    fn setup_codex_session(
+        tmp: &tempfile::TempDir,
+        session_id: &str,
+        lines: &[serde_json::Value],
+    ) -> CodexSessionGuard<'static> {
+        let guard = CodexSessionGuard::new(CODEX_ENV_LOCK.lock().unwrap());
+        std::env::set_var("CODEX_HOME", tmp.path());
+        let sessions_dir = tmp
+            .path()
+            .join("sessions")
+            .join("2026")
+            .join("01")
+            .join("31");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let session_file =
+            sessions_dir.join(format!("rollout-2026-01-31T00-00-00-{session_id}.jsonl"));
+        let mut body_txt = String::new();
+        for line in lines {
+            body_txt.push_str(&line.to_string());
+            body_txt.push('\n');
+        }
+        std::fs::write(&session_file, body_txt).unwrap();
+        guard
+    }
 
     #[tokio::test]
     async fn health_and_status_work_without_upstream() {
@@ -453,17 +505,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = open_store_dir(tmp.path().join("data")).expect("store");
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
-        let _guard = CODEX_ENV_LOCK.lock().unwrap();
-        let prev_env = std::env::var("CODEX_HOME").ok();
-        std::env::set_var("CODEX_HOME", tmp.path());
-        let sessions_dir = tmp
-            .path()
-            .join("sessions")
-            .join("2026")
-            .join("01")
-            .join("31");
-        std::fs::create_dir_all(&sessions_dir).unwrap();
-        let session_file = sessions_dir.join("rollout-2026-01-31T00-00-00-session-switch.jsonl");
+        let session_id = "session-switch";
         let lines = [
             json!({
                 "type": "response_item",
@@ -482,12 +524,7 @@ mod tests {
                 }
             }),
         ];
-        let mut body_txt = String::new();
-        for line in lines {
-            body_txt.push_str(&line.to_string());
-            body_txt.push('\n');
-        }
-        std::fs::write(&session_file, body_txt).unwrap();
+        let _guard = setup_codex_session(&tmp, session_id, &lines);
         let router = Arc::new(RouterState::new(&cfg, unix_ms()));
         let state = GatewayState {
             cfg: Arc::new(RwLock::new(cfg)),
@@ -521,7 +558,7 @@ mod tests {
                     .uri("/v1/responses")
                     .method("POST")
                     .header("content-type", "application/json")
-                    .header("session_id", "session-switch")
+                    .header("session_id", session_id)
                     .body(Body::from(body.to_string()))
                     .unwrap(),
             )
@@ -549,12 +586,6 @@ mod tests {
             }
         ]);
         assert_eq!(captured.get("input").unwrap(), &expected_input);
-
-        if let Some(prev_env) = prev_env {
-            std::env::set_var("CODEX_HOME", prev_env);
-        } else {
-            std::env::remove_var("CODEX_HOME");
-        }
     }
 
     #[tokio::test]
@@ -623,20 +654,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = open_store_dir(tmp.path().join("data")).expect("store");
 
-        let _guard = CODEX_ENV_LOCK.lock().unwrap();
-        let prev_env = std::env::var("CODEX_HOME").ok();
-        std::env::set_var("CODEX_HOME", tmp.path());
-
         let session_id = "session-xyz";
-        let sessions_dir = tmp
-            .path()
-            .join("sessions")
-            .join("2026")
-            .join("01")
-            .join("31");
-        std::fs::create_dir_all(&sessions_dir).unwrap();
-        let session_file =
-            sessions_dir.join(format!("rollout-2026-01-31T00-00-00-{session_id}.jsonl"));
         let lines = [
             json!({
                 "type": "response_item",
@@ -655,12 +673,7 @@ mod tests {
                 }
             }),
         ];
-        let mut body_txt = String::new();
-        for line in lines {
-            body_txt.push_str(&line.to_string());
-            body_txt.push('\n');
-        }
-        std::fs::write(&session_file, body_txt).unwrap();
+        let _guard = setup_codex_session(&tmp, session_id, &lines);
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         let router = Arc::new(RouterState::new(&cfg, unix_ms()));
         let state = GatewayState {
@@ -722,12 +735,6 @@ mod tests {
             }
         ]);
         assert_eq!(captured.get("input").unwrap(), &expected_input);
-
-        if let Some(prev_env) = prev_env {
-            std::env::set_var("CODEX_HOME", prev_env);
-        } else {
-            std::env::remove_var("CODEX_HOME");
-        }
     }
 
     #[tokio::test]
