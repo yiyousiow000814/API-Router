@@ -65,7 +65,7 @@ After this, you switch providers inside the app.
 - **Usage base URL**: set this if the usage endpoint is on a different host.
   When empty, the usage base defaults to the provider `base_url`.
 
-## Not supported (yet)
+## Not supported
 
 - Chat Completions API (this app focuses on Responses).
 - Reusing official OAuth credentials for upstream providers.
