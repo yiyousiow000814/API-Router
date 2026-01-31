@@ -3,6 +3,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
+    use std::sync::Mutex as StdMutex;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -19,6 +20,8 @@ mod tests {
     use axum::{Json, Router};
     use parking_lot::Mutex;
     use serde_json::json;
+
+    static CODEX_ENV_LOCK: StdMutex<()> = StdMutex::new(());
 
     #[tokio::test]
     async fn health_and_status_work_without_upstream() {
@@ -450,6 +453,41 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = open_store_dir(tmp.path().join("data")).expect("store");
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let _guard = CODEX_ENV_LOCK.lock().unwrap();
+        let prev_env = std::env::var("CODEX_HOME").ok();
+        std::env::set_var("CODEX_HOME", tmp.path());
+        let sessions_dir = tmp
+            .path()
+            .join("sessions")
+            .join("2026")
+            .join("01")
+            .join("31");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let session_file = sessions_dir.join("rollout-2026-01-31T00-00-00-session-switch.jsonl");
+        let lines = [
+            json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "first"}]
+                }
+            }),
+            json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "reply"}]
+                }
+            }),
+        ];
+        let mut body_txt = String::new();
+        for line in lines {
+            body_txt.push_str(&line.to_string());
+            body_txt.push('\n');
+        }
+        std::fs::write(&session_file, body_txt).unwrap();
         let router = Arc::new(RouterState::new(&cfg, unix_ms()));
         let state = GatewayState {
             cfg: Arc::new(RwLock::new(cfg)),
@@ -463,19 +501,6 @@ mod tests {
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
         };
-
-        let prev_input = json!([{
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": "first"}]
-        }]);
-        let prev_resp = json!({
-            "id": "resp_prev",
-            "output": [{"content": [{"type": "output_text", "text": "reply"}]}]
-        });
-        store
-            .put_exchange("resp_prev", None, &json!({"input": prev_input}), &prev_resp)
-            .unwrap();
 
         let app = build_router(state);
         let cur_input = json!([{
@@ -496,6 +521,7 @@ mod tests {
                     .uri("/v1/responses")
                     .method("POST")
                     .header("content-type", "application/json")
+                    .header("session_id", "session-switch")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
             )
@@ -523,202 +549,12 @@ mod tests {
             }
         ]);
         assert_eq!(captured.get("input").unwrap(), &expected_input);
-    }
 
-    #[tokio::test]
-    async fn restores_previous_response_id_from_session_header() {
-        let captured = Arc::new(Mutex::new(None));
-        let captured2 = captured.clone();
-        let app = Router::new().route(
-            "/v1/responses",
-            post(move |Json(body): Json<serde_json::Value>| {
-                *captured2.lock() = Some(body);
-                async move {
-                    Json(json!({
-                        "id": "resp_test",
-                        "output": [{"content": [{"type": "output_text", "text": "ok"}]}]
-                    }))
-                }
-            }),
-        );
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        });
-
-        let cfg = AppConfig {
-            listen: ListenConfig {
-                host: "127.0.0.1".to_string(),
-                port: 0,
-            },
-            routing: RoutingConfig {
-                preferred_provider: "p1".to_string(),
-                auto_return_to_preferred: true,
-                preferred_stable_seconds: 1,
-                failure_threshold: 1,
-                cooldown_seconds: 1,
-                request_timeout_seconds: 5,
-            },
-            providers: std::collections::BTreeMap::from([(
-                "p1".to_string(),
-                ProviderConfig {
-                    display_name: "P1".to_string(),
-                    base_url,
-                    usage_adapter: String::new(),
-                    usage_base_url: None,
-                    api_key: String::new(),
-                },
-            )]),
-            provider_order: vec!["p1".to_string()],
-        };
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let store = open_store_dir(tmp.path().join("data")).expect("store");
-        store.set_session_last("session-1", "resp_prev").unwrap();
-        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
-        let router = Arc::new(RouterState::new(&cfg, unix_ms()));
-        let state = GatewayState {
-            cfg: Arc::new(RwLock::new(cfg)),
-            router,
-            store,
-            upstream: UpstreamClient::new(),
-            secrets,
-            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(None)),
-            last_used_reason: Arc::new(RwLock::new(None)),
-            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
-            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
-        };
-
-        let app = build_router(state);
-        let input = json!([{
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": "pwd"}]
-        }]);
-        let body = json!({
-            "model": "gpt-test",
-            "input": input,
-            "stream": false
-        });
-
-        let resp = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/responses")
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .header("session_id", "session-1")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let captured = captured.lock().clone().expect("captured body");
-        assert_eq!(captured.get("previous_response_id").unwrap(), "resp_prev");
-    }
-
-    #[tokio::test]
-    async fn does_not_restore_previous_response_id_for_other_session() {
-        let captured = Arc::new(Mutex::new(None));
-        let captured2 = captured.clone();
-        let app = Router::new().route(
-            "/v1/responses",
-            post(move |Json(body): Json<serde_json::Value>| {
-                *captured2.lock() = Some(body);
-                async move {
-                    Json(json!({
-                        "id": "resp_test",
-                        "output": [{"content": [{"type": "output_text", "text": "ok"}]}]
-                    }))
-                }
-            }),
-        );
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        });
-
-        let cfg = AppConfig {
-            listen: ListenConfig {
-                host: "127.0.0.1".to_string(),
-                port: 0,
-            },
-            routing: RoutingConfig {
-                preferred_provider: "p1".to_string(),
-                auto_return_to_preferred: true,
-                preferred_stable_seconds: 1,
-                failure_threshold: 1,
-                cooldown_seconds: 1,
-                request_timeout_seconds: 5,
-            },
-            providers: std::collections::BTreeMap::from([(
-                "p1".to_string(),
-                ProviderConfig {
-                    display_name: "P1".to_string(),
-                    base_url,
-                    usage_adapter: String::new(),
-                    usage_base_url: None,
-                    api_key: String::new(),
-                },
-            )]),
-            provider_order: vec!["p1".to_string()],
-        };
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let store = open_store_dir(tmp.path().join("data")).expect("store");
-        store.set_session_last("session-a", "resp_prev").unwrap();
-        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
-        let router = Arc::new(RouterState::new(&cfg, unix_ms()));
-        let state = GatewayState {
-            cfg: Arc::new(RwLock::new(cfg)),
-            router,
-            store,
-            upstream: UpstreamClient::new(),
-            secrets,
-            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(None)),
-            last_used_reason: Arc::new(RwLock::new(None)),
-            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
-            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
-        };
-
-        let app = build_router(state);
-        let input = json!([{
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": "pwd"}]
-        }]);
-        let body = json!({
-            "model": "gpt-test",
-            "input": input,
-            "stream": false
-        });
-
-        let resp = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/responses")
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .header("session_id", "session-b")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let captured = captured.lock().clone().expect("captured body");
-        assert!(captured.get("previous_response_id").is_none());
+        if let Some(prev_env) = prev_env {
+            std::env::set_var("CODEX_HOME", prev_env);
+        } else {
+            std::env::remove_var("CODEX_HOME");
+        }
     }
 
     #[tokio::test]
@@ -786,23 +622,45 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = open_store_dir(tmp.path().join("data")).expect("store");
-        store
-            .put_exchange(
-                "resp_prev",
-                None,
-                &json!({
-                    "input": [{
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": "first"}]
-                    }]
-                }),
-                &json!({
-                    "id": "resp_prev",
-                    "output": [{"content": [{"type": "output_text", "text": "reply"}]}]
-                }),
-            )
-            .unwrap();
+
+        let _guard = CODEX_ENV_LOCK.lock().unwrap();
+        let prev_env = std::env::var("CODEX_HOME").ok();
+        std::env::set_var("CODEX_HOME", tmp.path());
+
+        let session_id = "session-xyz";
+        let sessions_dir = tmp
+            .path()
+            .join("sessions")
+            .join("2026")
+            .join("01")
+            .join("31");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let session_file =
+            sessions_dir.join(format!("rollout-2026-01-31T00-00-00-{session_id}.jsonl"));
+        let lines = [
+            json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "first"}]
+                }
+            }),
+            json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "reply"}]
+                }
+            }),
+        ];
+        let mut body_txt = String::new();
+        for line in lines {
+            body_txt.push_str(&line.to_string());
+            body_txt.push('\n');
+        }
+        std::fs::write(&session_file, body_txt).unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         let router = Arc::new(RouterState::new(&cfg, unix_ms()));
         let state = GatewayState {
@@ -836,6 +694,7 @@ mod tests {
                     .uri("/v1/responses")
                     .method("POST")
                     .header("content-type", "application/json")
+                    .header("session_id", session_id)
                     .body(Body::from(body.to_string()))
                     .unwrap(),
             )
@@ -863,10 +722,114 @@ mod tests {
             }
         ]);
         assert_eq!(captured.get("input").unwrap(), &expected_input);
+
+        if let Some(prev_env) = prev_env {
+            std::env::set_var("CODEX_HOME", prev_env);
+        } else {
+            std::env::remove_var("CODEX_HOME");
+        }
     }
 
     #[tokio::test]
-    async fn rejects_missing_session_id_and_previous_response_id() {
+    async fn allows_request_without_prev_id_even_if_session_history_missing() {
+        let captured = Arc::new(Mutex::new(None));
+        let captured2 = captured.clone();
+        let app = Router::new().route(
+            "/v1/responses",
+            post(move |Json(body): Json<serde_json::Value>| {
+                *captured2.lock() = Some(body);
+                async move {
+                    Json(json!({
+                        "id": "resp_ok",
+                        "output": [{"content": [{"type": "output_text", "text": "ok"}]}]
+                    }))
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            },
+            routing: RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 1,
+                failure_threshold: 1,
+                cooldown_seconds: 1,
+                request_timeout_seconds: 5,
+            },
+            providers: std::collections::BTreeMap::from([(
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            )]),
+            provider_order: vec!["p1".to_string()],
+        };
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg)),
+            router,
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_provider: Arc::new(RwLock::new(None)),
+            last_used_reason: Arc::new(RwLock::new(None)),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+        let app = build_router(state);
+        let input = json!([{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hi"}]
+        }]);
+        let body = json!({
+            "model": "gpt-test",
+            "input": input,
+            "stream": false
+        });
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/responses")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("session_id", "session-missing")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let captured = captured.lock().clone().expect("captured body");
+        assert_eq!(captured.get("input").unwrap(), &input);
+        assert!(captured.get("previous_response_id").is_none());
+    }
+
+    #[tokio::test]
+    async fn allows_request_without_session_id_when_no_prev() {
         let app = Router::new().route(
             "/v1/responses",
             post(move |Json(_body): Json<serde_json::Value>| async move {
@@ -950,6 +913,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

@@ -54,8 +54,7 @@ pub struct QuotaSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct UsageRequestKey {
     bases_key: String,
-    provider_key: Option<String>,
-    usage_token: Option<String>,
+    auth_key: Option<String>,
     kind: UsageKind,
 }
 
@@ -327,10 +326,10 @@ fn usage_request_key(
     kind: UsageKind,
 ) -> UsageRequestKey {
     let bases_key = bases.first().cloned().unwrap_or_else(|| "-".to_string());
+    let auth_key = usage_token.clone().or_else(|| provider_key.clone());
     UsageRequestKey {
         bases_key,
-        provider_key: provider_key.clone(),
-        usage_token: usage_token.clone(),
+        auth_key,
         kind,
     }
 }

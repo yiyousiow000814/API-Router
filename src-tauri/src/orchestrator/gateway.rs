@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -99,14 +101,6 @@ fn contains_tool_value(value: &Value) -> bool {
     }
 }
 
-fn assistant_text_to_message(text: &str) -> Value {
-    json!({
-        "type": "message",
-        "role": "assistant",
-        "content": [{"type": "output_text", "text": text}]
-    })
-}
-
 fn session_key_from_request(headers: &HeaderMap, body: &Value) -> Option<String> {
     let v = headers.get("session_id")?.to_str().ok()?;
     let v = v.trim();
@@ -122,6 +116,91 @@ fn is_prev_id_unsupported_error(message: &str) -> bool {
     lower.contains("unsupported parameter: previous_response_id")
         || lower.contains("unsupported parameter: previous_response_id\"")
         || lower.contains("unsupported parameter: previous_response_id\\")
+}
+
+fn codex_home_dir() -> Option<PathBuf> {
+    if let Ok(v) = std::env::var("CODEX_HOME") {
+        if !v.trim().is_empty() {
+            return Some(PathBuf::from(v));
+        }
+    }
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()?;
+    if home.trim().is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(home).join(".codex"))
+}
+
+fn find_codex_session_file_in(base: &Path, session_id: &str) -> Option<PathBuf> {
+    let sessions_dir = base.join("sessions");
+    if !sessions_dir.exists() {
+        return None;
+    }
+    let mut stack = vec![sessions_dir];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.contains(session_id) && name.ends_with(".jsonl") {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn load_codex_session_messages_from_file(path: &PathBuf) -> Vec<Value> {
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let reader = BufReader::new(file);
+    let mut out = Vec::new();
+    for line in reader.lines().map_while(Result::ok) {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("response_item") {
+            continue;
+        }
+        let Some(payload) = v.get("payload") else {
+            continue;
+        };
+        if payload.get("type").and_then(|t| t.as_str()) != Some("message") {
+            continue;
+        }
+        out.push(payload.clone());
+    }
+    out
+}
+
+fn load_codex_session_messages(session_id: &str) -> Option<Vec<Value>> {
+    let base = codex_home_dir()?;
+    let path = find_codex_session_file_in(&base, session_id)?;
+    let items = load_codex_session_messages_from_file(&path);
+    if items.is_empty() {
+        return None;
+    }
+    Some(items)
+}
+
+fn ends_with_items(haystack: &[Value], needle: &[Value]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    let start = haystack.len() - needle.len();
+    haystack[start..] == *needle
 }
 
 pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {
@@ -225,7 +304,7 @@ async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl Into
 async fn responses(
     State(st): State<GatewayState>,
     headers: HeaderMap,
-    Json(mut body): Json<Value>,
+    Json(body): Json<Value>,
 ) -> Response {
     if let Some(resp) = require_gateway_auth(&st, &headers) {
         return resp;
@@ -244,53 +323,20 @@ async fn responses(
 
     let session_key = session_key_from_request(&headers, &body);
 
-    let mut previous_response_id = body
+    let previous_response_id = body
         .get("previous_response_id")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    if previous_response_id.is_none() && session_key.is_none() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": {
-                    "message": "missing session_id header",
-                    "type": "invalid_request_error"
-                }
-            })),
-        )
-            .into_response();
-    }
-
-    if previous_response_id.is_none() {
-        if let Some(session_key) = session_key.as_deref() {
-            if let Some(prev) = st.store.get_session_last(session_key) {
-                body.as_object_mut().map(|m| {
-                    m.insert(
-                        "previous_response_id".to_string(),
-                        Value::String(prev.clone()),
-                    )
-                });
-                previous_response_id = Some(prev);
-                st.store.add_event(
-                    "gateway",
-                    "info",
-                    &format!("restored previous_response_id from session {session_key}"),
-                );
-            }
-        }
-    }
 
     let base_body = body.clone();
 
-    // Build server-side message history for continuity across upstreams.
+    // Build messages from the current input only; Codex maintains session history.
     let mut messages: Vec<Value> = Vec::new();
-    if let Some(prev) = previous_response_id.clone() {
-        messages.extend(load_history_as_messages(&st, &prev));
-    }
     let input = body.get("input").cloned().unwrap_or(Value::Null);
     let input_has_tools = input_contains_tools(&input);
     let has_prev = previous_response_id.is_some();
     messages.extend(input_to_messages(&input));
+    let current_items = input_to_items_preserve_tools(&input);
 
     if has_prev {
         let summary = summarize_input_for_debug(&input);
@@ -305,6 +351,7 @@ async fn responses(
     let mut tried = Vec::new();
     let mut last_err = String::new();
 
+    let mut session_messages: Option<Vec<Value>> = None;
     for _ in 0..cfg.providers.len().max(1) {
         let is_first_attempt = tried.is_empty();
         let (provider_name, reason) = st.router.decide(&cfg);
@@ -336,23 +383,53 @@ async fn responses(
                     .as_object_mut()
                     .map(|m| m.remove("previous_response_id"));
             }
-            body_for_provider.as_object_mut().map(|m| {
-                let input = if switching_provider || !use_prev_id {
-                    let mut items = Vec::new();
-                    if let Some(prev) = previous_response_id.clone() {
-                        items.extend(load_history_as_input_items(&st, &prev));
-                    }
-                    items.extend(input_to_items_preserve_tools(&input));
-                    Value::Array(items)
-                } else if has_prev || input_has_tools {
-                    input.clone()
-                } else if prefers_simple_input_list(&p.base_url) {
-                    messages_to_simple_input_list(&messages)
+            let input_value = if switching_provider || !use_prev_id {
+                if !has_prev {
+                    // No previous response id to reconstruct; pass only the current input.
+                    Value::Array(current_items.clone())
                 } else {
-                    messages_to_responses_input(&messages)
-                };
-                m.insert("input".to_string(), input)
-            });
+                    let Some(session_id) = session_key.as_deref() else {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "error": {
+                                    "message": "missing session_id header for codex session history",
+                                    "type": "invalid_request_error"
+                                }
+                            })),
+                        )
+                            .into_response();
+                    };
+                    if session_messages.is_none() {
+                        session_messages = load_codex_session_messages(session_id);
+                    }
+                    let Some(mut items) = session_messages.clone() else {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({
+                                "error": {
+                                    "message": "missing codex session history for session_id",
+                                    "type": "invalid_request_error"
+                                }
+                            })),
+                        )
+                            .into_response();
+                    };
+                    if !ends_with_items(&items, &current_items) {
+                        items.extend(current_items.clone());
+                    }
+                    Value::Array(items)
+                }
+            } else if has_prev || input_has_tools {
+                input.clone()
+            } else if prefers_simple_input_list(&p.base_url) {
+                messages_to_simple_input_list(&messages)
+            } else {
+                messages_to_responses_input(&messages)
+            };
+            body_for_provider
+                .as_object_mut()
+                .map(|m| m.insert("input".to_string(), input_value));
 
             // Stream mode (best-effort): if upstream supports Responses streaming, we pass it through
             // and tap the stream to persist the final response for continuity.
@@ -460,15 +537,6 @@ async fn responses(
                     let response_obj = upstream_json;
 
                     // Persist the exchange so we can keep continuity if provider changes later.
-                    let _ = st.store.put_exchange(
-                        &response_id,
-                        previous_response_id.as_deref(),
-                        &body_for_provider,
-                        &response_obj,
-                    );
-                    if let Some(session_key) = session_key.as_deref() {
-                        let _ = st.store.set_session_last(session_key, &response_id);
-                    }
                     st.store.record_success(&provider_name, &response_obj);
 
                     st.store.add_event(
@@ -617,9 +685,9 @@ fn passthrough_sse_and_persist(
     upstream_resp: reqwest::Response,
     st: GatewayState,
     provider_name: String,
-    parent_id: Option<String>,
-    request_json: Value,
-    session_key: Option<String>,
+    _parent_id: Option<String>,
+    _request_json: Value,
+    _session_key: Option<String>,
 ) -> Response {
     use futures_util::StreamExt;
 
@@ -651,10 +719,6 @@ fn passthrough_sse_and_persist(
             yield item;
         }
         if let Some((rid, resp_obj)) = tap3.lock().take_completed() {
-            let _ = st2.store.put_exchange(&rid, parent_id.as_deref(), &request_json, &resp_obj);
-            if let Some(session_key) = session_key.as_deref() {
-                let _ = st2.store.set_session_last(session_key, &rid);
-            }
             st2.store.record_success(&provider2, &resp_obj);
             st2.store.add_event(&provider2, "info", &format!("persisted streamed response {rid}"));
         }
@@ -735,77 +799,4 @@ impl SseTap {
     fn take_completed(&mut self) -> Option<(String, Value)> {
         self.completed.take()
     }
-}
-
-fn load_history_as_messages(st: &GatewayState, last_response_id: &str) -> Vec<Value> {
-    let mut out = Vec::new();
-    let mut cur = Some(last_response_id.to_string());
-    let mut safety = 0;
-
-    // Build chronological chain by collecting then reversing.
-    let mut chain = Vec::new();
-    while let Some(id) = cur {
-        safety += 1;
-        if safety > 200 {
-            break;
-        }
-        if let Some(ex) = st.store.get_exchange(&id) {
-            chain.push(ex);
-            cur = st.store.get_parent(&id);
-        } else {
-            break;
-        }
-    }
-    chain.reverse();
-
-    for ex in chain {
-        let req = ex.get("request").cloned().unwrap_or(Value::Null);
-        let resp = ex.get("response").cloned().unwrap_or(Value::Null);
-
-        if let Some(input) = req.get("input") {
-            out.extend(input_to_messages(input));
-        }
-        let assistant = extract_text_from_responses(&resp);
-        if !assistant.is_empty() {
-            out.push(json!({"role":"assistant","content": assistant}));
-        }
-    }
-
-    out
-}
-
-fn load_history_as_input_items(st: &GatewayState, last_response_id: &str) -> Vec<Value> {
-    let mut out = Vec::new();
-    let mut cur = Some(last_response_id.to_string());
-    let mut safety = 0;
-
-    let mut chain = Vec::new();
-    while let Some(id) = cur {
-        safety += 1;
-        if safety > 200 {
-            break;
-        }
-        if let Some(ex) = st.store.get_exchange(&id) {
-            chain.push(ex);
-            cur = st.store.get_parent(&id);
-        } else {
-            break;
-        }
-    }
-    chain.reverse();
-
-    for ex in chain {
-        let req = ex.get("request").cloned().unwrap_or(Value::Null);
-        let resp = ex.get("response").cloned().unwrap_or(Value::Null);
-
-        if let Some(input) = req.get("input") {
-            out.extend(input_to_items_preserve_tools(input));
-        }
-        let assistant = extract_text_from_responses(&resp);
-        if !assistant.is_empty() {
-            out.push(assistant_text_to_message(&assistant));
-        }
-    }
-
-    out
 }

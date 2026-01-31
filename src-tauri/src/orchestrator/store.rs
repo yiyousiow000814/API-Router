@@ -13,39 +13,6 @@ impl Store {
         Ok(Self { db })
     }
 
-    pub fn put_exchange(
-        &self,
-        response_id: &str,
-        parent_id: Option<&str>,
-        request: &Value,
-        response: &Value,
-    ) -> Result<(), sled::Error> {
-        let key = format!("resp:{response_id}");
-        let mut obj = serde_json::Map::new();
-        obj.insert(
-            "parent_id".to_string(),
-            parent_id
-                .map(|s| Value::String(s.to_string()))
-                .unwrap_or(Value::Null),
-        );
-        obj.insert("request".to_string(), request.clone());
-        obj.insert("response".to_string(), response.clone());
-        let bytes = serde_json::to_vec(&Value::Object(obj)).unwrap_or_default();
-        self.db.insert(key.as_bytes(), bytes)?;
-        Ok(())
-    }
-
-    pub fn get_exchange(&self, response_id: &str) -> Option<Value> {
-        let key = format!("resp:{response_id}");
-        let v = self.db.get(key.as_bytes()).ok()??;
-        serde_json::from_slice(&v).ok()
-    }
-
-    pub fn get_parent(&self, response_id: &str) -> Option<String> {
-        let ex = self.get_exchange(response_id)?;
-        ex.get("parent_id")?.as_str().map(|s| s.to_string())
-    }
-
     pub fn add_event(&self, provider: &str, level: &str, message: &str) {
         let ts = unix_ms();
         let id = uuid::Uuid::new_v4().to_string();
@@ -258,27 +225,6 @@ impl Store {
             serde_json::to_vec(snapshot).unwrap_or_default(),
         );
         let _ = self.db.flush();
-    }
-
-    pub fn get_session_last(&self, session_key: &str) -> Option<String> {
-        if session_key.is_empty() {
-            return None;
-        }
-        let key = format!("session_last:{session_key}");
-        self.db
-            .get(key.as_bytes())
-            .ok()
-            .flatten()
-            .and_then(|v| String::from_utf8(v.to_vec()).ok())
-    }
-
-    pub fn set_session_last(&self, session_key: &str, response_id: &str) -> anyhow::Result<()> {
-        if session_key.is_empty() || response_id.is_empty() {
-            return Ok(());
-        }
-        let key = format!("session_last:{session_key}");
-        self.db.insert(key.as_bytes(), response_id.as_bytes())?;
-        Ok(())
     }
 
     pub fn get_codex_account_snapshot(&self) -> Option<Value> {
