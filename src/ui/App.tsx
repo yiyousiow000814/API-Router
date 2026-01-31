@@ -407,12 +407,14 @@ export default function App() {
     }
   }
 
-  async function refreshQuotaAll() {
+  async function refreshQuotaAll(opts?: { silent?: boolean }) {
     if (isDevPreview) return
     try {
       await invoke('refresh_quota_all')
       await refreshStatus()
-      flashToast('Usage refreshed')
+      if (!opts?.silent) {
+        flashToast('Usage refreshed')
+      }
     } catch (e) {
       flashToast(String(e), 'error')
     }
@@ -534,7 +536,7 @@ export default function App() {
     void refreshStatus()
     void refreshConfig()
     // Fetch usage once when opening the app, then refresh on a half-hour cadence (00/30 +/- 5 min) while idle.
-    const once = window.setTimeout(() => void refreshQuotaAll(), 850)
+    const once = window.setTimeout(() => void refreshQuotaAll({ silent: true }), 850)
     const scheduleUsageRefresh = () => {
       if (usageActiveRef.current) return
       if (usageRefreshTimerRef.current) {
@@ -551,7 +553,7 @@ export default function App() {
           }
           return
         }
-        void refreshQuotaAll().finally(() => {
+        void refreshQuotaAll({ silent: true }).finally(() => {
           if (!usageActiveRef.current) scheduleUsageRefresh()
         })
       }, delayMs)
@@ -605,7 +607,7 @@ export default function App() {
             if (idleUsageSchedulerRef.current) idleUsageSchedulerRef.current()
             return
           }
-          void refreshQuotaAll().finally(() => {
+          void refreshQuotaAll({ silent: true }).finally(() => {
             if (usageActiveRef.current) schedule()
           })
         }, delayMs)

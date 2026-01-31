@@ -1023,8 +1023,18 @@ mod tests {
             "https://code.pumpkinai.vip/".to_string(),
             "https://code.ppchat.vip/".to_string(),
         ];
-        let key_a = usage_request_key(&bases_a, &Some("sk-test".to_string()), &None, UsageKind::TokenStats);
-        let key_b = usage_request_key(&bases_b, &Some("sk-test".to_string()), &None, UsageKind::TokenStats);
+        let key_a = usage_request_key(
+            &bases_a,
+            &Some("sk-test".to_string()),
+            &None,
+            UsageKind::TokenStats,
+        );
+        let key_b = usage_request_key(
+            &bases_b,
+            &Some("sk-test".to_string()),
+            &None,
+            UsageKind::TokenStats,
+        );
         assert_eq!(key_a, key_b);
     }
 
