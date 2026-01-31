@@ -183,6 +183,7 @@ export default function App() {
   const instructionBackdropMouseDownRef = useRef<boolean>(false)
   const configBackdropMouseDownRef = useRef<boolean>(false)
   const usageRefreshTimerRef = useRef<number | null>(null)
+  const idleUsageSchedulerRef = useRef<(() => void) | null>(null)
   const activeUsageTimerRef = useRef<number | null>(null)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -556,6 +557,7 @@ export default function App() {
         })
       }, target - nowMs)
     }
+    idleUsageSchedulerRef.current = scheduleUsageRefresh
     scheduleUsageRefresh()
     const t = setInterval(() => void refreshStatus(), 1500)
     const codexRefresh = window.setInterval(() => {
@@ -570,6 +572,7 @@ export default function App() {
       if (usageRefreshTimerRef.current) {
         window.clearTimeout(usageRefreshTimerRef.current)
       }
+      idleUsageSchedulerRef.current = null
     }
   }, [])
 
@@ -578,6 +581,10 @@ export default function App() {
     // While actively used, refresh usage every 5 minutes.
     const lastActivity = status?.last_activity_unix_ms ?? 0
     const isActive = lastActivity > 0 && Date.now() - lastActivity <= 5 * 60 * 1000
+    if (isActive && usageRefreshTimerRef.current) {
+      window.clearTimeout(usageRefreshTimerRef.current)
+      usageRefreshTimerRef.current = null
+    }
     const clearActiveTimer = () => {
       if (activeUsageTimerRef.current) {
         window.clearTimeout(activeUsageTimerRef.current)
@@ -586,6 +593,9 @@ export default function App() {
     }
     if (!isActive) {
       clearActiveTimer()
+      if (!usageRefreshTimerRef.current && idleUsageSchedulerRef.current) {
+        idleUsageSchedulerRef.current()
+      }
       return
     }
     if (!activeUsageTimerRef.current) {
