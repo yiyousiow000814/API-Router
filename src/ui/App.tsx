@@ -182,6 +182,7 @@ export default function App() {
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
   const instructionBackdropMouseDownRef = useRef<boolean>(false)
   const configBackdropMouseDownRef = useRef<boolean>(false)
+  const usageRefreshTimerRef = useRef<number | null>(null)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -529,6 +530,32 @@ export default function App() {
     void refreshConfig()
     // Fetch usage once when opening the app (then only refresh during active gateway usage, or manually).
     const once = window.setTimeout(() => void refreshQuotaAll(), 850)
+    const scheduleUsageRefresh = () => {
+      if (usageRefreshTimerRef.current) {
+        window.clearTimeout(usageRefreshTimerRef.current)
+      }
+      const now = new Date()
+      const next = new Date(now)
+      next.setSeconds(0, 0)
+      if (now.getMinutes() < 30) {
+        next.setMinutes(30)
+      } else {
+        next.setMinutes(60)
+      }
+      const jitterMs = (Math.random() * 10 - 5) * 60 * 1000
+      let target = next.getTime() + jitterMs
+      const nowMs = now.getTime()
+      const minLeadMs = 60 * 1000
+      while (target <= nowMs + minLeadMs) {
+        target += 30 * 60 * 1000
+      }
+      usageRefreshTimerRef.current = window.setTimeout(() => {
+        void refreshQuotaAll().finally(() => {
+          scheduleUsageRefresh()
+        })
+      }, target - nowMs)
+    }
+    scheduleUsageRefresh()
     const t = setInterval(() => void refreshStatus(), 1500)
     const codexRefresh = window.setInterval(() => {
       invoke('codex_account_refresh').catch((e) => {
@@ -539,6 +566,9 @@ export default function App() {
       clearInterval(t)
       window.clearInterval(codexRefresh)
       window.clearTimeout(once)
+      if (usageRefreshTimerRef.current) {
+        window.clearTimeout(usageRefreshTimerRef.current)
+      }
     }
   }, [])
 

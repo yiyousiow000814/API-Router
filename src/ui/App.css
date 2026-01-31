@@ -770,6 +770,11 @@
   box-shadow: 0 0 0 3px rgba(255, 61, 102, 0.16);
 }
 
+.aoDotMuted {
+  background: rgba(13, 18, 32, 0.38);
+  box-shadow: 0 0 0 3px rgba(13, 18, 32, 0.08);
+}
+
 .aoPillText {
   position: relative;
   top: -0.5px; /* optical centering for Segoe UI on Windows */
