@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import type { Config, Status } from './types'
 import { fmtWhen } from './utils/format'
+import { computeActiveRefreshDelayMs, computeIdleRefreshDelayMs } from './utils/usageRefresh'
 import { ProvidersTable } from './components/ProvidersTable'
 import { KeyModal } from './components/KeyModal'
 import { UsageBaseModal } from './components/UsageBaseModal'
@@ -182,6 +183,10 @@ export default function App() {
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
   const instructionBackdropMouseDownRef = useRef<boolean>(false)
   const configBackdropMouseDownRef = useRef<boolean>(false)
+  const usageRefreshTimerRef = useRef<number | null>(null)
+  const idleUsageSchedulerRef = useRef<(() => void) | null>(null)
+  const usageActiveRef = useRef<boolean>(false)
+  const activeUsageTimerRef = useRef<number | null>(null)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -402,11 +407,14 @@ export default function App() {
     }
   }
 
-  async function refreshQuotaAll() {
+  async function refreshQuotaAll(opts?: { silent?: boolean }) {
+    if (isDevPreview) return
     try {
       await invoke('refresh_quota_all')
       await refreshStatus()
-      flashToast('Usage refreshed')
+      if (!opts?.silent) {
+        flashToast('Usage refreshed')
+      }
     } catch (e) {
       flashToast(String(e), 'error')
     }
@@ -527,8 +535,31 @@ export default function App() {
     }
     void refreshStatus()
     void refreshConfig()
-    // Fetch usage once when opening the app (then only refresh during active gateway usage, or manually).
-    const once = window.setTimeout(() => void refreshQuotaAll(), 850)
+    // Fetch usage once when opening the app, then refresh on a half-hour cadence (00/30 +/- 5 min) while idle.
+    const once = window.setTimeout(() => void refreshQuotaAll({ silent: true }), 850)
+    const scheduleUsageRefresh = () => {
+      if (usageActiveRef.current) return
+      if (usageRefreshTimerRef.current) {
+        window.clearTimeout(usageRefreshTimerRef.current)
+      }
+      const nowMs = Date.now()
+      const jitterMs = (Math.random() * 10 - 5) * 60 * 1000
+      const delayMs = computeIdleRefreshDelayMs(nowMs, jitterMs)
+      usageRefreshTimerRef.current = window.setTimeout(() => {
+        if (usageActiveRef.current) {
+          if (usageRefreshTimerRef.current) {
+            window.clearTimeout(usageRefreshTimerRef.current)
+            usageRefreshTimerRef.current = null
+          }
+          return
+        }
+        void refreshQuotaAll({ silent: true }).finally(() => {
+          if (!usageActiveRef.current) scheduleUsageRefresh()
+        })
+      }, delayMs)
+    }
+    idleUsageSchedulerRef.current = scheduleUsageRefresh
+    scheduleUsageRefresh()
     const t = setInterval(() => void refreshStatus(), 1500)
     const codexRefresh = window.setInterval(() => {
       invoke('codex_account_refresh').catch((e) => {
@@ -539,8 +570,54 @@ export default function App() {
       clearInterval(t)
       window.clearInterval(codexRefresh)
       window.clearTimeout(once)
+      if (usageRefreshTimerRef.current) {
+        window.clearTimeout(usageRefreshTimerRef.current)
+      }
+      idleUsageSchedulerRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    if (isDevPreview) return
+    // While actively used, refresh usage every 5 minutes.
+    const lastActivity = status?.last_activity_unix_ms ?? 0
+    const isActive = lastActivity > 0 && Date.now() - lastActivity <= 5 * 60 * 1000
+    usageActiveRef.current = isActive
+    if (isActive && usageRefreshTimerRef.current) {
+      window.clearTimeout(usageRefreshTimerRef.current)
+      usageRefreshTimerRef.current = null
+    }
+    const clearActiveTimer = () => {
+      if (activeUsageTimerRef.current) {
+        window.clearTimeout(activeUsageTimerRef.current)
+        activeUsageTimerRef.current = null
+      }
+    }
+    if (!isActive) {
+      clearActiveTimer()
+      if (!usageRefreshTimerRef.current && idleUsageSchedulerRef.current) idleUsageSchedulerRef.current()
+      return
+    }
+    if (!activeUsageTimerRef.current) {
+      const schedule = () => {
+        const jitterMs = (Math.random() * 2 - 1) * 60 * 1000
+        const delayMs = computeActiveRefreshDelayMs(jitterMs)
+        activeUsageTimerRef.current = window.setTimeout(() => {
+          if (!usageActiveRef.current) {
+            if (idleUsageSchedulerRef.current) idleUsageSchedulerRef.current()
+            return
+          }
+          void refreshQuotaAll({ silent: true }).finally(() => {
+            if (usageActiveRef.current) schedule()
+          })
+        }, delayMs)
+      }
+      schedule()
+    }
+    return () => {
+      clearActiveTimer()
+    }
+  }, [isDevPreview, status?.last_activity_unix_ms])
 
   const isProviderOpen = useCallback(
     (name: string) => providerPanelsOpen[name] ?? true,

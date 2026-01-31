@@ -76,7 +76,7 @@ export function HeroCodexCard({ status, onLoginLogout, onRefresh }: HeroCodexPro
     <div className="aoCard aoHeroCard aoHeroCodex">
       <div className="aoCardHeader">
         <div className="aoCardTitle">Codex (Auth)</div>
-        <span className={`aoPill ${status.codex_account?.signed_in ? 'aoPulse' : ''}`.trim()}>
+        <span className="aoPill">
           <span className={status.codex_account?.signed_in ? 'aoDot' : 'aoDot aoDotBad'} />
           <span className="aoPillText">{status.codex_account?.signed_in ? 'signed in' : 'signed out'}</span>
         </span>
@@ -147,7 +147,7 @@ export function HeroRoutingCard({
     <div className="aoCard aoHeroCard aoHeroRouting">
       <div className="aoCardHeader">
         <div className="aoCardTitle">Routing</div>
-        <span className={`aoPill ${override === '' ? 'aoPulse' : ''}`.trim()}>
+        <span className="aoPill">
           <span className={override === '' ? 'aoDot' : 'aoDot aoDotBad'} />
           <span className="aoPillText">{override === '' ? 'auto' : 'locked'}</span>
         </span>

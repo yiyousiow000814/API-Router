@@ -50,7 +50,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                   ? 'aoDot'
                   : h.status === 'unhealthy'
                     ? 'aoDot aoDotBad'
-                    : 'aoDot aoDotBad'
+                    : 'aoDot aoDotMuted'
 
           const usageNode =
             kind === 'token_stats' ? (
@@ -145,7 +145,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
             <tr key={p}>
               <td style={{ fontFamily: mono }}>{p}</td>
               <td>
-                <span className="aoPill">
+                <span className={`aoPill ${isActive ? 'aoPulse' : ''}`.trim()}>
                   <span className={dotClass} />
                   <span className="aoPillText">{healthLabel}</span>
                 </span>

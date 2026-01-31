@@ -325,7 +325,18 @@ fn usage_request_key(
     usage_token: &Option<String>,
     kind: UsageKind,
 ) -> UsageRequestKey {
-    let bases_key = bases.first().cloned().unwrap_or_else(|| "-".to_string());
+    let mut normalized: Vec<String> = bases
+        .iter()
+        .map(|b| b.trim_end_matches('/').to_string())
+        .filter(|b| !b.is_empty())
+        .collect();
+    normalized.sort();
+    normalized.dedup();
+    let bases_key = if normalized.is_empty() {
+        "-".to_string()
+    } else {
+        normalized.join("|")
+    };
     let auth_key = usage_token.clone().or_else(|| provider_key.clone());
     UsageRequestKey {
         bases_key,
@@ -1000,6 +1011,31 @@ mod tests {
         let bases = candidate_quota_bases(&p);
         assert!(bases.contains(&"http://codex-api.example.com".to_string()));
         assert!(bases.contains(&"http://codex.example.com".to_string()));
+    }
+
+    #[test]
+    fn usage_request_key_normalizes_bases_order() {
+        let bases_a = vec![
+            "https://code.ppchat.vip".to_string(),
+            "https://code.pumpkinai.vip".to_string(),
+        ];
+        let bases_b = vec![
+            "https://code.pumpkinai.vip/".to_string(),
+            "https://code.ppchat.vip/".to_string(),
+        ];
+        let key_a = usage_request_key(
+            &bases_a,
+            &Some("sk-test".to_string()),
+            &None,
+            UsageKind::TokenStats,
+        );
+        let key_b = usage_request_key(
+            &bases_b,
+            &Some("sk-test".to_string()),
+            &None,
+            UsageKind::TokenStats,
+        );
+        assert_eq!(key_a, key_b);
     }
 
     #[tokio::test]
