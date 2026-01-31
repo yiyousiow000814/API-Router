@@ -15,6 +15,11 @@ on:
         required: false
         type: string
         default: "main"
+      dry_run:
+        description: "Validate only (do not update version or move tag)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -24,14 +29,167 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-windows:
-    name: Build installers (Windows)
-    runs-on: windows-latest
+  prepare:
+    name: Prepare tag + version
+    if: github.repository == 'yiyousiow000814/API-Router' && (github.event_name != 'push' || github.actor != 'github-actions[bot]')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.sync.outputs.tag }}
+      version: ${{ steps.sync.outputs.version }}
+      needs_update: ${{ steps.sync.outputs.needs_update }}
+      dry_run: ${{ steps.sync.outputs.dry_run }}
+      base_sha: ${{ steps.base.outputs.base_sha }}
+      resolved_sha: ${{ steps.finalize.outputs.resolved_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Capture base SHA
+        id: base
+        run: |
+          echo "base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check version files match tag
+        id: sync
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+        run: |
+          node - <<'NODE'
+          const fs = require("fs");
+
+          const tag = String(process.env.INPUT_TAG || process.env.REF_NAME || "").trim();
+          if (!tag) {
+            console.error("Missing tag name.");
+            process.exit(1);
+          }
+
+          const dryRun = String(process.env.DRY_RUN || "false").trim().toLowerCase() === "true";
+          const version = tag.startsWith("v") ? tag.slice(1) : tag;
+          if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+            console.error(`Unsupported tag format: ${tag}`);
+            process.exit(1);
+          }
+
+          const tauriPath = "src-tauri/tauri.conf.json";
+          const cargoPath = "src-tauri/Cargo.toml";
+          const pkgPath = "package.json";
+
+          const tauri = JSON.parse(fs.readFileSync(tauriPath, "utf8"));
+          const tauriVer = String(tauri.version || "").trim();
+
+          const cargoText = fs.readFileSync(cargoPath, "utf8");
+          const cargoMatch = cargoText.match(/^version\s*=\s*\"([^\"]+)\"/m);
+          const cargoVer = cargoMatch ? cargoMatch[1] : "";
+
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+          const pkgVer = String(pkg.version || "").trim();
+
+          const needsUpdate = tauriVer !== version || cargoVer !== version || pkgVer !== version;
+
+          const outPath = process.env.GITHUB_OUTPUT;
+          fs.appendFileSync(outPath, `tag=${tag}\n`);
+          fs.appendFileSync(outPath, `version=${version}\n`);
+          fs.appendFileSync(outPath, `needs_update=${needsUpdate ? "true" : "false"}\n`);
+          fs.appendFileSync(outPath, `dry_run=${dryRun ? "true" : "false"}\n`);
+
+          console.log(`tag=${tag}`);
+          console.log(`version=${version}`);
+          console.log(`tauri_version=${tauriVer}`);
+          console.log(`cargo_version=${cargoVer}`);
+          console.log(`package_version=${pkgVer}`);
+          console.log(`needs_update=${needsUpdate}`);
+          console.log(`dry_run=${dryRun}`);
+          NODE
+
+      - name: Update version files, move tag, push main (if needed)
+        if: steps.sync.outputs.needs_update == 'true' && steps.sync.outputs.dry_run != 'true'
+        env:
+          TAG: ${{ steps.sync.outputs.tag }}
+          VERSION: ${{ steps.sync.outputs.version }}
+          BASE_SHA: ${{ steps.base.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+
+          git fetch origin main --prune
+          main_sha="$(git rev-parse "origin/main")"
+          if [ "${main_sha}" != "${BASE_SHA}" ]; then
+            echo "Refusing to update main automatically because origin/main != tag commit."
+            echo "origin/main=${main_sha}"
+            echo "tag_commit=${BASE_SHA}"
+            echo "Push the tag from the latest main commit, then re-run."
+            exit 1
+          fi
+
+          git checkout --detach "${BASE_SHA}"
+
+          node - <<'NODE'
+          const fs = require("fs");
+          const version = process.env.VERSION;
+          if (!version) {
+            console.error("Missing VERSION");
+            process.exit(1);
+          }
+          const tauriPath = "src-tauri/tauri.conf.json";
+          const cargoPath = "src-tauri/Cargo.toml";
+          const pkgPath = "package.json";
+
+          const tauri = JSON.parse(fs.readFileSync(tauriPath, "utf8"));
+          tauri.version = version;
+          fs.writeFileSync(tauriPath, JSON.stringify(tauri, null, 2) + "\n");
+
+          const cargoText = fs.readFileSync(cargoPath, "utf8");
+          const nextCargo = cargoText.replace(/^version\s*=\s*\"([^\"]+)\"/m, `version = "${version}"`);
+          fs.writeFileSync(cargoPath, nextCargo);
+
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+          pkg.version = version;
+          fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+          NODE
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          tag_type="$(git cat-file -t "${TAG}" 2>/dev/null || echo "commit")"
+          tag_message_file="$(mktemp)"
+          if [ "${tag_type}" = "tag" ]; then
+            git for-each-ref "refs/tags/${TAG}" --format='%(contents)' > "${tag_message_file}" || true
+          fi
+
+          git switch -C main "${BASE_SHA}"
+          git add src-tauri/tauri.conf.json src-tauri/Cargo.toml package.json
+          git commit -m "chore: release ${TAG}"
+          git push origin HEAD:main
+
+          if [ "${tag_type}" = "tag" ]; then
+            git tag -a -f "${TAG}" -F "${tag_message_file}"
+          else
+            git tag -f "${TAG}"
+          fi
+          git push origin "refs/tags/${TAG}" --force
+
+      - name: Finalize resolved SHA
+        id: finalize
+        run: |
+          echo "resolved_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build-windows:
+    name: Build installers (Windows)
+    needs: prepare
+    if: github.repository == 'yiyousiow000814/API-Router' && needs.prepare.outputs.dry_run != 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.resolved_sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -69,6 +227,7 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: build-windows
+    if: github.repository == 'yiyousiow000814/API-Router' && needs.prepare.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download installer artifacts
@@ -80,8 +239,8 @@ jobs:
       - name: Create GitHub Release (installers only)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.version }}
           generate_release_notes: true
           files: artifacts/**
           fail_on_unmatched_files: true
