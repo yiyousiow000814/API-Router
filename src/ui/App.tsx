@@ -531,7 +531,7 @@ export default function App() {
     }
     void refreshStatus()
     void refreshConfig()
-    // Fetch usage once when opening the app, then refresh on a half-hour cadence (00/30 ±5 min) while idle.
+    // Fetch usage once when opening the app, then refresh on a half-hour cadence (00/30 +/- 5 min) while idle.
     const once = window.setTimeout(() => void refreshQuotaAll(), 850)
     const scheduleUsageRefresh = () => {
       if (usageActiveRef.current) return
@@ -610,8 +610,12 @@ export default function App() {
       const schedule = () => {
         const jitterMs = (Math.random() * 2 - 1) * 60 * 1000
         activeUsageTimerRef.current = window.setTimeout(() => {
+          if (!usageActiveRef.current) {
+            if (idleUsageSchedulerRef.current) idleUsageSchedulerRef.current()
+            return
+          }
           void refreshQuotaAll().finally(() => {
-            schedule()
+            if (usageActiveRef.current) schedule()
           })
         }, 5 * 60 * 1000 + jitterMs)
       }
