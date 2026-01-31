@@ -11,6 +11,8 @@
 - **PR-first**: Ship changes through a pull request (default to draft).
 - **No PR comments** unless explicitly requested.
 - **Titles**: PR and issue titles stay in English. Descriptions and regular comments default to Simplified Chinese (unless `[EN]`).
+- **PR title length**: Keep PR titles at 8 words or fewer. Avoid symbols like `+` in titles.
+- **PR summary scope**: Titles and bodies must describe the overall changes relative to `main`, not just the latest commit.
 - **Format before commit**: Ensure formatting checks pass before committing.
 
 ## Safety & Data Handling
