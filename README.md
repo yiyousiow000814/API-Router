@@ -9,9 +9,10 @@ Desktop app that runs a local **OpenAI-compatible gateway** on a stable `base_ur
 Key features (MVP):
 - `wire_api = "responses"` gateway endpoint: `POST /v1/responses` (supports SSE streaming by simulating events).
 - Automatic failover on upstream errors (timeouts / 5xx / 429), with cooldown.
-- Conversation continuity across provider switches via local history store.
+- Conversation continuity across provider switches by replaying Codex session history when an upstream rejects `previous_response_id` (reads `.codex/sessions/*.jsonl`).
 - Desktop UI (React) to view status/events and lock routing to a provider.
 - Runs “in the background” (window starts hidden; tray menu can show/quit).
+- Provider management: rename, reorder, usage refresh, per-provider usage base URL.
 
 ## One-time `codex` config
 
@@ -24,9 +25,24 @@ model_provider = "api_router"
 name = "API Router"
 base_url = "http://127.0.0.1:4000/v1"
 wire_api = "responses"
+requires_openai_auth = true
 ```
 
 After that, you switch providers inside API Router — no more editing `codex` config.
+
+## Gateway token (required)
+
+Set the gateway token in `.codex/auth.json` so Codex can call the local gateway:
+
+```json
+{
+  "OPENAI_API_KEY": "ao_xxx..."
+}
+```
+
+Notes:
+- The file must be UTF-8 without BOM (BOM will break JSON parsing).
+- The gateway token is stored locally at `./user-data/secrets.json` (gitignored).
 
 ## Run (Windows)
 
@@ -67,3 +83,4 @@ Official upstream support currently requires an API key configured in the app, o
 
 Usage display is best-effort and depends on the upstream exposing a compatible usage endpoint.
 If an upstream's usage API lives on a different host than the OpenAI-compatible `base_url`, set a per-provider "Usage base URL" in the UI.
+When empty, the usage base defaults to the provider `base_url`.
