@@ -183,6 +183,7 @@ export default function App() {
   const instructionBackdropMouseDownRef = useRef<boolean>(false)
   const configBackdropMouseDownRef = useRef<boolean>(false)
   const usageRefreshTimerRef = useRef<number | null>(null)
+  const activeUsageIntervalRef = useRef<number | null>(null)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -528,7 +529,7 @@ export default function App() {
     }
     void refreshStatus()
     void refreshConfig()
-    // Fetch usage once when opening the app, then refresh on a half-hour cadence (00/30 ±5 min) even if idle.
+    // Fetch usage once when opening the app, then refresh on a half-hour cadence (00/30 ±5 min) while idle.
     const once = window.setTimeout(() => void refreshQuotaAll(), 850)
     const scheduleUsageRefresh = () => {
       if (usageRefreshTimerRef.current) {
@@ -571,6 +572,30 @@ export default function App() {
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (isDevPreview) return
+    // While actively used, refresh usage every 5 minutes.
+    const lastActivity = status?.last_activity_unix_ms ?? 0
+    const isActive = lastActivity > 0 && Date.now() - lastActivity <= 5 * 60 * 1000
+    if (!isActive) {
+      if (activeUsageIntervalRef.current) {
+        window.clearInterval(activeUsageIntervalRef.current)
+        activeUsageIntervalRef.current = null
+      }
+      return
+    }
+    if (activeUsageIntervalRef.current) return
+    activeUsageIntervalRef.current = window.setInterval(() => {
+      void refreshQuotaAll()
+    }, 5 * 60 * 1000)
+    return () => {
+      if (activeUsageIntervalRef.current) {
+        window.clearInterval(activeUsageIntervalRef.current)
+        activeUsageIntervalRef.current = null
+      }
+    }
+  }, [isDevPreview, status?.last_activity_unix_ms])
 
   const isProviderOpen = useCallback(
     (name: string) => providerPanelsOpen[name] ?? true,
