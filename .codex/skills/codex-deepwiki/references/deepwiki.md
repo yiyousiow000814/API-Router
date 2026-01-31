@@ -5,7 +5,7 @@ precise summaries with citations in answers. Add new links here as needed.
 
 ## Source repos (direct reference)
 
-When DeepWiki is insufficient or you need implementation details, consult these repos:
+When the question is related to these projects, you can consult the repos for implementation details:
 
 - https://github.com/94mashiro/packycode-cost
 - https://github.com/openai/codex
