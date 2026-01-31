@@ -16,8 +16,8 @@ use serde_json::{json, Value};
 
 use super::config::AppConfig;
 use super::openai::{
-    extract_text_from_responses, input_to_messages, messages_to_responses_input,
-    messages_to_simple_input_list, sse_events_for_text,
+    extract_text_from_responses, input_to_items_preserve_tools, input_to_messages,
+    messages_to_responses_input, messages_to_simple_input_list, sse_events_for_text,
 };
 use super::router::RouterState;
 use super::secrets::SecretStore;
@@ -96,6 +96,14 @@ fn contains_tool_value(value: &Value) -> bool {
         Value::Array(items) => items.iter().any(contains_tool_value),
         _ => false,
     }
+}
+
+fn assistant_text_to_message(text: &str) -> Value {
+    json!({
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": text}]
+    })
 }
 
 pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {
@@ -247,6 +255,7 @@ async fn responses(
     let mut last_err = String::new();
 
     for _ in 0..cfg.providers.len().max(1) {
+        let is_first_attempt = tried.is_empty();
         let (provider_name, reason) = st.router.decide(&cfg);
         if tried.contains(&provider_name) {
             break;
@@ -257,9 +266,20 @@ async fn responses(
             None => break,
         };
 
-        // Preserve previous_response_id for continuity (especially tool chains).
+        let switching_provider = has_prev && !is_first_attempt;
+        if switching_provider {
+            body.as_object_mut()
+                .map(|m| m.remove("previous_response_id"));
+        }
         body.as_object_mut().map(|m| {
-            let input = if has_prev || input_has_tools {
+            let input = if switching_provider {
+                let mut items = Vec::new();
+                if let Some(prev) = previous_response_id.clone() {
+                    items.extend(load_history_as_input_items(&st, &prev));
+                }
+                items.extend(input_to_items_preserve_tools(&input));
+                Value::Array(items)
+            } else if has_prev || input_has_tools {
                 input.clone()
             } else if prefers_simple_input_list(&p.base_url) {
                 messages_to_simple_input_list(&messages)
@@ -647,6 +667,42 @@ fn load_history_as_messages(st: &GatewayState, last_response_id: &str) -> Vec<Va
         let assistant = extract_text_from_responses(&resp);
         if !assistant.is_empty() {
             out.push(json!({"role":"assistant","content": assistant}));
+        }
+    }
+
+    out
+}
+
+fn load_history_as_input_items(st: &GatewayState, last_response_id: &str) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut cur = Some(last_response_id.to_string());
+    let mut safety = 0;
+
+    let mut chain = Vec::new();
+    while let Some(id) = cur {
+        safety += 1;
+        if safety > 200 {
+            break;
+        }
+        if let Some(ex) = st.store.get_exchange(&id) {
+            chain.push(ex);
+            cur = st.store.get_parent(&id);
+        } else {
+            break;
+        }
+    }
+    chain.reverse();
+
+    for ex in chain {
+        let req = ex.get("request").cloned().unwrap_or(Value::Null);
+        let resp = ex.get("response").cloned().unwrap_or(Value::Null);
+
+        if let Some(input) = req.get("input") {
+            out.extend(input_to_items_preserve_tools(input));
+        }
+        let assistant = extract_text_from_responses(&resp);
+        if !assistant.is_empty() {
+            out.push(assistant_text_to_message(&assistant));
         }
     }
 

@@ -31,6 +31,24 @@ pub fn input_to_messages(input: &Value) -> Vec<Value> {
     }
 }
 
+pub fn input_to_items_preserve_tools(input: &Value) -> Vec<Value> {
+    match input {
+        Value::Null => vec![],
+        Value::Array(items) => items.clone(),
+        Value::Object(_) => vec![input.clone()],
+        Value::String(s) => vec![json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": s}]
+        })],
+        _ => vec![json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": input.to_string()}]
+        })],
+    }
+}
+
 pub fn messages_to_responses_input(messages: &[Value]) -> Value {
     let mut out = Vec::new();
     for m in messages {
