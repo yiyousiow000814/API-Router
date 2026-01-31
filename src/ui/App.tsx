@@ -528,7 +528,7 @@ export default function App() {
     }
     void refreshStatus()
     void refreshConfig()
-    // Fetch usage once when opening the app (then only refresh during active gateway usage, or manually).
+    // Fetch usage once when opening the app, then refresh on a half-hour cadence (00/30 ±5 min) even if idle.
     const once = window.setTimeout(() => void refreshQuotaAll(), 850)
     const scheduleUsageRefresh = () => {
       if (usageRefreshTimerRef.current) {
