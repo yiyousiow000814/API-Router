@@ -221,7 +221,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: build-windows
+    needs: [prepare, build-windows]
     if: github.repository == 'yiyousiow000814/API-Router' && needs.prepare.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
     steps:
