@@ -181,7 +181,7 @@ jobs:
           echo "resolved_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build-windows:
-    name: Build installers (Windows)
+    name: Build release EXE (Windows)
     needs: prepare
     if: github.repository == 'yiyousiow000814/API-Router' && needs.prepare.outputs.dry_run != 'true'
     runs-on: windows-latest
@@ -205,24 +205,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build installers
+      - name: Build release EXE
         shell: pwsh
         run: |
           npm run build:root-exe
-          if (-not (Test-Path "src-tauri/target/release/bundle/msi")) {
-            throw "MSI bundle not found after build."
-          }
-          if (-not (Test-Path "src-tauri/target/release/bundle/nsis")) {
-            throw "NSIS bundle not found after build."
+          if (-not (Test-Path "API Router.exe")) {
+            throw "API Router.exe not found after build."
           }
 
-      - name: Upload installer artifacts
+      - name: Upload release EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: installers-windows
-          path: |
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/nsis/*-setup.exe
+          name: api-router-exe
+          path: API Router.exe
 
   release:
     name: Publish GitHub Release
@@ -230,17 +225,17 @@ jobs:
     if: github.repository == 'yiyousiow000814/API-Router' && needs.prepare.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Download installer artifacts
+      - name: Download release EXE artifact
         uses: actions/download-artifact@v4
         with:
-          name: installers-windows
+          name: api-router-exe
           path: artifacts
 
-      - name: Create GitHub Release (installers only)
+      - name: Create GitHub Release (EXE only)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: ${{ needs.prepare.outputs.version }}
           generate_release_notes: true
-          files: artifacts/**
+          files: artifacts/API Router.exe
           fail_on_unmatched_files: true
