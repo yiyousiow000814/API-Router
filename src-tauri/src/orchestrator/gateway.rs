@@ -35,6 +35,7 @@ pub struct GatewayState {
     pub last_used_provider: Arc<RwLock<Option<String>>>,
     pub last_used_reason: Arc<RwLock<Option<String>>>,
     pub usage_base_speed_cache: Arc<RwLock<HashMap<String, UsageBaseSpeedCacheEntry>>>,
+    pub prev_id_support_cache: Arc<RwLock<HashMap<String, bool>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +115,13 @@ fn session_key_from_request(headers: &HeaderMap, body: &Value) -> Option<String>
     }
     let _ = body;
     Some(v.to_string())
+}
+
+fn is_prev_id_unsupported_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("unsupported parameter: previous_response_id")
+        || lower.contains("unsupported parameter: previous_response_id\"")
+        || lower.contains("unsupported parameter: previous_response_id\\")
 }
 
 pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {
@@ -272,6 +280,8 @@ async fn responses(
         }
     }
 
+    let base_body = body.clone();
+
     // Build server-side message history for continuity across upstreams.
     let mut messages: Vec<Value> = Vec::new();
     if let Some(prev) = previous_response_id.clone() {
@@ -306,161 +316,203 @@ async fn responses(
             Some(p) => p.clone(),
             None => break,
         };
-
-        let switching_provider = has_prev && !is_first_attempt;
-        if switching_provider {
-            body.as_object_mut()
-                .map(|m| m.remove("previous_response_id"));
-        }
-        body.as_object_mut().map(|m| {
-            let input = if switching_provider {
-                let mut items = Vec::new();
-                if let Some(prev) = previous_response_id.clone() {
-                    items.extend(load_history_as_input_items(&st, &prev));
-                }
-                items.extend(input_to_items_preserve_tools(&input));
-                Value::Array(items)
-            } else if has_prev || input_has_tools {
-                input.clone()
-            } else if prefers_simple_input_list(&p.base_url) {
-                messages_to_simple_input_list(&messages)
-            } else {
-                messages_to_responses_input(&messages)
-            };
-            m.insert("input".to_string(), input)
-        });
-
+        let mut provider_supports_prev = st
+            .prev_id_support_cache
+            .read()
+            .get(&provider_name)
+            .cloned()
+            .unwrap_or(true);
+        let mut retried_without_prev = false;
         let timeout = cfg.routing.request_timeout_seconds;
 
-        // Stream mode (best-effort): if upstream supports Responses streaming, we pass it through
-        // and tap the stream to persist the final response for continuity.
-        if want_stream {
-            body.as_object_mut()
-                .map(|m| m.insert("stream".to_string(), Value::Bool(true)));
+        for _ in 0..2 {
+            let switching_provider = has_prev && !is_first_attempt;
+            let use_prev_id =
+                has_prev && provider_supports_prev && !switching_provider && !retried_without_prev;
+
+            let mut body_for_provider = base_body.clone();
+            if !use_prev_id {
+                body_for_provider
+                    .as_object_mut()
+                    .map(|m| m.remove("previous_response_id"));
+            }
+            body_for_provider.as_object_mut().map(|m| {
+                let input = if switching_provider || !use_prev_id {
+                    let mut items = Vec::new();
+                    if let Some(prev) = previous_response_id.clone() {
+                        items.extend(load_history_as_input_items(&st, &prev));
+                    }
+                    items.extend(input_to_items_preserve_tools(&input));
+                    Value::Array(items)
+                } else if has_prev || input_has_tools {
+                    input.clone()
+                } else if prefers_simple_input_list(&p.base_url) {
+                    messages_to_simple_input_list(&messages)
+                } else {
+                    messages_to_responses_input(&messages)
+                };
+                m.insert("input".to_string(), input)
+            });
+
+            // Stream mode (best-effort): if upstream supports Responses streaming, we pass it through
+            // and tap the stream to persist the final response for continuity.
+            if want_stream {
+                body_for_provider
+                    .as_object_mut()
+                    .map(|m| m.insert("stream".to_string(), Value::Bool(true)));
+                let api_key = st.secrets.get_provider_key(&provider_name);
+                match st
+                    .upstream
+                    .post_sse(
+                        &p,
+                        "/v1/responses",
+                        &body_for_provider,
+                        api_key.as_deref(),
+                        client_auth,
+                        timeout,
+                    )
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        *st.last_used_provider.write() = Some(provider_name.clone());
+                        *st.last_used_reason.write() = Some(reason.to_string());
+                        st.router.mark_success(&provider_name, unix_ms());
+                        st.store.add_event(
+                            &provider_name,
+                            "info",
+                            &format!("stream via {provider_name} ({reason})"),
+                        );
+                        return passthrough_sse_and_persist(
+                            resp,
+                            st.clone(),
+                            provider_name,
+                            previous_response_id.clone(),
+                            body_for_provider.clone(),
+                            session_key.clone(),
+                        );
+                    }
+                    Ok(resp) => {
+                        let code = resp.status().as_u16();
+                        let txt = resp.text().await.unwrap_or_default();
+                        if use_prev_id && is_prev_id_unsupported_error(&txt) {
+                            provider_supports_prev = false;
+                            st.prev_id_support_cache
+                                .write()
+                                .insert(provider_name.clone(), false);
+                            st.store.add_event(
+                                &provider_name,
+                                "info",
+                                "retrying without previous_response_id",
+                            );
+                            retried_without_prev = true;
+                            continue;
+                        }
+                        last_err = format!(
+                            "upstream {provider_name} returned {code} (responses stream): {txt}"
+                        );
+                        st.router
+                            .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
+                        st.store.add_event(&provider_name, "error", &last_err);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err =
+                            format!("upstream {provider_name} error (responses stream): {e}");
+                        st.router
+                            .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
+                        st.store.add_event(&provider_name, "error", &last_err);
+                        break;
+                    }
+                }
+            }
+
+            // Non-stream mode: call upstream without streaming.
+            body_for_provider
+                .as_object_mut()
+                .map(|m| m.insert("stream".to_string(), Value::Bool(false)));
+
             let api_key = st.secrets.get_provider_key(&provider_name);
-            match st
+            let upstream_result = st
                 .upstream
-                .post_sse(
+                .post_json(
                     &p,
                     "/v1/responses",
-                    &body,
+                    &body_for_provider,
                     api_key.as_deref(),
                     client_auth,
                     timeout,
                 )
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
+                .await;
+
+            match upstream_result {
+                Ok((code, upstream_json)) if (200..300).contains(&code) => {
                     *st.last_used_provider.write() = Some(provider_name.clone());
                     *st.last_used_reason.write() = Some(reason.to_string());
                     st.router.mark_success(&provider_name, unix_ms());
+
+                    // Keep the upstream response object (and id) so the client can continue the chain.
+                    let response_id = upstream_json
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("resp_unknown")
+                        .to_string();
+                    let text = extract_text_from_responses(&upstream_json);
+                    let response_obj = upstream_json;
+
+                    // Persist the exchange so we can keep continuity if provider changes later.
+                    let _ = st.store.put_exchange(
+                        &response_id,
+                        previous_response_id.as_deref(),
+                        &body_for_provider,
+                        &response_obj,
+                    );
+                    if let Some(session_key) = session_key.as_deref() {
+                        let _ = st.store.set_session_last(session_key, &response_id);
+                    }
+                    st.store.record_success(&provider_name, &response_obj);
+
                     st.store.add_event(
                         &provider_name,
                         "info",
-                        &format!("stream via {provider_name} ({reason})"),
+                        &format!("ok via {provider_name} ({reason})"),
                     );
-                    return passthrough_sse_and_persist(
-                        resp,
-                        st.clone(),
-                        provider_name,
-                        previous_response_id.clone(),
-                        body.clone(),
-                        session_key.clone(),
-                    );
+
+                    if want_stream {
+                        // If the client asked for stream but upstream call was non-streaming, simulate SSE.
+                        return sse_response(&response_id, &response_obj, &text);
+                    }
+                    return (StatusCode::OK, Json(response_obj)).into_response();
                 }
-                Ok(resp) => {
-                    let code = resp.status().as_u16();
-                    let txt = resp.text().await.unwrap_or_default();
-                    last_err = format!(
-                        "upstream {provider_name} returned {code} (responses stream): {txt}"
-                    );
+                Ok((code, upstream_json)) => {
+                    let msg = upstream_json.to_string();
+                    if use_prev_id && is_prev_id_unsupported_error(&msg) {
+                        provider_supports_prev = false;
+                        st.prev_id_support_cache
+                            .write()
+                            .insert(provider_name.clone(), false);
+                        st.store.add_event(
+                            &provider_name,
+                            "info",
+                            "retrying without previous_response_id",
+                        );
+                        retried_without_prev = true;
+                        continue;
+                    }
+                    last_err = format!("upstream {provider_name} returned {code}: {msg}");
                     st.router
                         .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
+                    st.store.record_failure(&provider_name);
                     st.store.add_event(&provider_name, "error", &last_err);
-                    continue;
+                    break;
                 }
                 Err(e) => {
-                    last_err = format!("upstream {provider_name} error (responses stream): {e}");
+                    last_err = format!("upstream {provider_name} error: {e}");
                     st.router
                         .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
+                    st.store.record_failure(&provider_name);
                     st.store.add_event(&provider_name, "error", &last_err);
-                    continue;
+                    break;
                 }
-            }
-        }
-
-        // Non-stream mode: call upstream without streaming.
-        body.as_object_mut()
-            .map(|m| m.insert("stream".to_string(), Value::Bool(false)));
-
-        let api_key = st.secrets.get_provider_key(&provider_name);
-        let upstream_result = st
-            .upstream
-            .post_json(
-                &p,
-                "/v1/responses",
-                &body,
-                api_key.as_deref(),
-                client_auth,
-                timeout,
-            )
-            .await;
-
-        match upstream_result {
-            Ok((code, upstream_json)) if (200..300).contains(&code) => {
-                *st.last_used_provider.write() = Some(provider_name.clone());
-                *st.last_used_reason.write() = Some(reason.to_string());
-                st.router.mark_success(&provider_name, unix_ms());
-
-                // Keep the upstream response object (and id) so the client can continue the chain.
-                let response_id = upstream_json
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("resp_unknown")
-                    .to_string();
-                let text = extract_text_from_responses(&upstream_json);
-                let response_obj = upstream_json;
-
-                // Persist the exchange so we can keep continuity if provider changes later.
-                let _ = st.store.put_exchange(
-                    &response_id,
-                    previous_response_id.as_deref(),
-                    &body,
-                    &response_obj,
-                );
-                if let Some(session_key) = session_key.as_deref() {
-                    let _ = st.store.set_session_last(session_key, &response_id);
-                }
-                st.store.record_success(&provider_name, &response_obj);
-
-                st.store.add_event(
-                    &provider_name,
-                    "info",
-                    &format!("ok via {provider_name} ({reason})"),
-                );
-
-                if want_stream {
-                    // If the client asked for stream but upstream call was non-streaming, simulate SSE.
-                    return sse_response(&response_id, &response_obj, &text);
-                }
-                return (StatusCode::OK, Json(response_obj)).into_response();
-            }
-            Ok((code, upstream_json)) => {
-                last_err = format!(
-                    "upstream {provider_name} returned {code}: {}",
-                    upstream_json
-                );
-                st.router
-                    .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
-                st.store.record_failure(&provider_name);
-                st.store.add_event(&provider_name, "error", &last_err);
-            }
-            Err(e) => {
-                last_err = format!("upstream {provider_name} error: {e}");
-                st.router
-                    .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
-                st.store.record_failure(&provider_name);
-                st.store.add_event(&provider_name, "error", &last_err);
             }
         }
     }
