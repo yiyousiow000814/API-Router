@@ -260,6 +260,27 @@ impl Store {
         let _ = self.db.flush();
     }
 
+    pub fn get_session_last(&self, session_key: &str) -> Option<String> {
+        if session_key.is_empty() {
+            return None;
+        }
+        let key = format!("session_last:{session_key}");
+        self.db
+            .get(key.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|v| String::from_utf8(v.to_vec()).ok())
+    }
+
+    pub fn set_session_last(&self, session_key: &str, response_id: &str) -> anyhow::Result<()> {
+        if session_key.is_empty() || response_id.is_empty() {
+            return Ok(());
+        }
+        let key = format!("session_last:{session_key}");
+        self.db.insert(key.as_bytes(), response_id.as_bytes())?;
+        Ok(())
+    }
+
     pub fn get_codex_account_snapshot(&self) -> Option<Value> {
         if let Ok(Some(v)) = self.db.get(b"codex_account:snapshot") {
             return serde_json::from_slice(&v).ok();

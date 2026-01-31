@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "agent_orchestrator_mcp"
+name = "api_router_mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",

@@ -1,4 +1,4 @@
-# Agent Orchestrator — Agents Documentation
+# API Router — Agents Documentation
 
 ## Agent Defaults (Repository-Wide)
 - **Document language**: Write instructions in English. Examples may include other languages when clarity improves.
@@ -11,6 +11,7 @@
 - **PR-first**: Ship changes through a pull request (default to draft).
 - **No PR comments** unless explicitly requested.
 - **Titles**: PR and issue titles stay in English. Descriptions and regular comments default to Simplified Chinese (unless `[EN]`).
+- **Format before commit**: Ensure formatting checks pass before committing.
 
 ## Safety & Data Handling
 - **Never commit secrets**: API keys, OAuth tokens, cookies, browser profiles, or raw conversation logs.

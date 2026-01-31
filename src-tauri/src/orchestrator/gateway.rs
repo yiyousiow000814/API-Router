@@ -106,6 +106,16 @@ fn assistant_text_to_message(text: &str) -> Value {
     })
 }
 
+fn session_key_from_request(headers: &HeaderMap, body: &Value) -> Option<String> {
+    let v = headers.get("session_id")?.to_str().ok()?;
+    let v = v.trim();
+    if v.is_empty() {
+        return None;
+    }
+    let _ = body;
+    Some(v.to_string())
+}
+
 pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {
     let cfg = state.cfg.read().clone();
     let addr: SocketAddr = format!("{}:{}", cfg.listen.host, cfg.listen.port).parse()?;
@@ -224,10 +234,43 @@ async fn responses(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let previous_response_id = body
+    let session_key = session_key_from_request(&headers, &body);
+
+    let mut previous_response_id = body
         .get("previous_response_id")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    if previous_response_id.is_none() && session_key.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": "missing session_id header",
+                    "type": "invalid_request_error"
+                }
+            })),
+        )
+            .into_response();
+    }
+
+    if previous_response_id.is_none() {
+        if let Some(session_key) = session_key.as_deref() {
+            if let Some(prev) = st.store.get_session_last(session_key) {
+                body.as_object_mut().map(|m| {
+                    m.insert(
+                        "previous_response_id".to_string(),
+                        Value::String(prev.clone()),
+                    )
+                });
+                previous_response_id = Some(prev);
+                st.store.add_event(
+                    "gateway",
+                    "info",
+                    &format!("restored previous_response_id from session {session_key}"),
+                );
+            }
+        }
+    }
 
     // Build server-side message history for continuity across upstreams.
     let mut messages: Vec<Value> = Vec::new();
@@ -244,9 +287,7 @@ async fn responses(
         st.store.add_event(
             "gateway",
             "debug",
-            &format!(
-                "previous_response_id present (tools={input_has_tools}); input={summary}"
-            ),
+            &format!("previous_response_id present (tools={input_has_tools}); input={summary}"),
         );
     }
 
@@ -324,6 +365,7 @@ async fn responses(
                         provider_name,
                         previous_response_id.clone(),
                         body.clone(),
+                        session_key.clone(),
                     );
                 }
                 Ok(resp) => {
@@ -386,6 +428,9 @@ async fn responses(
                     &body,
                     &response_obj,
                 );
+                if let Some(session_key) = session_key.as_deref() {
+                    let _ = st.store.set_session_last(session_key, &response_id);
+                }
                 st.store.record_success(&provider_name, &response_obj);
 
                 st.store.add_event(
@@ -522,6 +567,7 @@ fn passthrough_sse_and_persist(
     provider_name: String,
     parent_id: Option<String>,
     request_json: Value,
+    session_key: Option<String>,
 ) -> Response {
     use futures_util::StreamExt;
 
@@ -554,6 +600,9 @@ fn passthrough_sse_and_persist(
         }
         if let Some((rid, resp_obj)) = tap3.lock().take_completed() {
             let _ = st2.store.put_exchange(&rid, parent_id.as_deref(), &request_json, &resp_obj);
+            if let Some(session_key) = session_key.as_deref() {
+                let _ = st2.store.set_session_last(session_key, &rid);
+            }
             st2.store.record_success(&provider2, &resp_obj);
             st2.store.add_event(&provider2, "info", &format!("persisted streamed response {rid}"));
         }

@@ -1,6 +1,6 @@
-# Agent Orchestrator MCP (minimal)
+# API Router MCP (minimal)
 
-This is a minimal MCP server (stdio) for Agent Orchestrator.
+This is a minimal MCP server (stdio) for API Router.
 
 It provides a small set of tools to:
 - check gateway `/health` and `/status`

@@ -21,7 +21,7 @@ fn build_upstream_url(base_url: &str, path: &str) -> String {
 impl UpstreamClient {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
-            .user_agent("agent-orchestrator/0.1")
+            .user_agent("api-router/0.1")
             .build()
             .expect("reqwest client");
         Self { client }

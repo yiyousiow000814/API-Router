@@ -127,7 +127,7 @@ fn write_config(v: &toml::Value) -> anyhow::Result<()> {
 
 async fn http_get_json(url: &str) -> anyhow::Result<serde_json::Value> {
     let client = reqwest::Client::builder()
-        .user_agent("agent-orchestrator-mcp/0.1")
+        .user_agent("api-router-mcp/0.1")
         .build()?;
     let j = client.get(url).send().await?.json::<serde_json::Value>().await?;
     Ok(j)
@@ -360,7 +360,7 @@ async fn main() -> anyhow::Result<()> {
         let result = match msg.method.as_str() {
             "initialize" => Ok(json!({
               "protocolVersion": "2024-11-05",
-              "serverInfo": { "name": "agent-orchestrator-mcp", "version": "0.1.0" },
+              "serverInfo": { "name": "api-router-mcp", "version": "0.1.0" },
               "capabilities": { "tools": {} }
             })),
             "tools/list" => Ok(tool_list()),

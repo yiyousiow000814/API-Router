@@ -1064,9 +1064,9 @@ export default function App() {
           ) : null}
           <div className="aoBrand">
             <div className="aoBrandLeft">
-              <img className="aoMark" src="/ao-icon.png" alt="Agent Orchestrator icon" />
+              <img className="aoMark" src="/ao-icon.png" alt="API Router icon" />
               <div>
-                <div className="aoTitle">Agent Orchestrator</div>
+                <div className="aoTitle">API Router</div>
                 <div className="aoSubtitle">Local gateway + smart failover for Codex</div>
               </div>
             </div>
@@ -1574,7 +1574,7 @@ export default function App() {
             <div className="aoModalBody">
               <div className="aoModalSub">Open .codex/config.toml and add:</div>
               <pre className="aoInstructionCode">
-                {'model_provider = "orchestrator"\n\n[model_providers.orchestrator]\nname = "Agent Orchestrator"\nbase_url = "http://127.0.0.1:4000/v1"\nwire_api = "responses"\nrequires_openai_auth = true'}
+                {'model_provider = "orchestrator"\n\n[model_providers.orchestrator]\nname = "API Router"\nbase_url = "http://127.0.0.1:4000/v1"\nwire_api = "responses"\nrequires_openai_auth = true'}
               </pre>
             </div>
           </div>

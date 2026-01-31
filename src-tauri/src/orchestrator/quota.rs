@@ -208,7 +208,7 @@ fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
 
 async fn probe_usage_base_speed(base: &str, api_key: &str) -> Option<Duration> {
     let client = reqwest::Client::builder()
-        .user_agent("agent-orchestrator/0.1")
+        .user_agent("api-router/0.1")
         .build()
         .ok()?;
     let url = build_models_url(base);
@@ -589,7 +589,7 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
     }
 
     let client = match reqwest::Client::builder()
-        .user_agent("agent-orchestrator/0.1")
+        .user_agent("api-router/0.1")
         .build()
     {
         Ok(c) => c,
@@ -783,7 +783,7 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
     }
 
     let client = match reqwest::Client::builder()
-        .user_agent("agent-orchestrator/0.1")
+        .user_agent("api-router/0.1")
         .build()
     {
         Ok(c) => c,

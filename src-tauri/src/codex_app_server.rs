@@ -85,7 +85,7 @@ impl AppServer {
             "method": "initialize",
             "params": {
                 "clientInfo": {
-                    "name": "Agent Orchestrator",
+                    "name": "API Router",
                     "version": env!("CARGO_PKG_VERSION")
                 }
             }

@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="src-tauri/icons/128x128.png" width="96" alt="Agent Orchestrator logo" />
+  <img src="src-tauri/icons/128x128.png" width="96" alt="API Router logo" />
 </p>
 
-# Agent Orchestrator
+# API Router
 
 Desktop app that runs a local **OpenAI-compatible gateway** on a stable `base_url` (default: `http://127.0.0.1:4000/v1`) and routes requests across multiple upstream providers.
 
@@ -21,12 +21,12 @@ Point `codex` to the local gateway once:
 model_provider = "orchestrator"
 
 [model_providers.orchestrator]
-name = "Agent Orchestrator"
+name = "API Router"
 base_url = "http://127.0.0.1:4000/v1"
 wire_api = "responses"
 ```
 
-After that, you switch providers inside Agent Orchestrator — no more editing `codex` config.
+After that, you switch providers inside API Router — no more editing `codex` config.
 
 ## Run (Windows)
 
@@ -45,7 +45,7 @@ npm install
 npm run build:root-exe
 ```
 
-Then launch `Agent Orchestrator.exe` at repo root.
+Then launch `API Router.exe` at repo root.
 
 Note: `tauri build --debug` produces a debug build that can still try to load the dev server URL and may show "localhost refused to connect" if no dev server is running.
 
