@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import type { Config, Status } from './types'
 import { fmtWhen } from './utils/format'
+import { computeActiveRefreshDelayMs, computeIdleRefreshDelayMs } from './utils/usageRefresh'
 import { ProvidersTable } from './components/ProvidersTable'
 import { KeyModal } from './components/KeyModal'
 import { UsageBaseModal } from './components/UsageBaseModal'
@@ -539,21 +540,9 @@ export default function App() {
       if (usageRefreshTimerRef.current) {
         window.clearTimeout(usageRefreshTimerRef.current)
       }
-      const now = new Date()
-      const next = new Date(now)
-      next.setSeconds(0, 0)
-      if (now.getMinutes() < 30) {
-        next.setMinutes(30)
-      } else {
-        next.setMinutes(60)
-      }
+      const nowMs = Date.now()
       const jitterMs = (Math.random() * 10 - 5) * 60 * 1000
-      let target = next.getTime() + jitterMs
-      const nowMs = now.getTime()
-      const minLeadMs = 60 * 1000
-      while (target <= nowMs + minLeadMs) {
-        target += 30 * 60 * 1000
-      }
+      const delayMs = computeIdleRefreshDelayMs(nowMs, jitterMs)
       usageRefreshTimerRef.current = window.setTimeout(() => {
         if (usageActiveRef.current) {
           if (usageRefreshTimerRef.current) {
@@ -565,7 +554,7 @@ export default function App() {
         void refreshQuotaAll().finally(() => {
           if (!usageActiveRef.current) scheduleUsageRefresh()
         })
-      }, target - nowMs)
+      }, delayMs)
     }
     idleUsageSchedulerRef.current = scheduleUsageRefresh
     scheduleUsageRefresh()
@@ -610,6 +599,7 @@ export default function App() {
     if (!activeUsageTimerRef.current) {
       const schedule = () => {
         const jitterMs = (Math.random() * 2 - 1) * 60 * 1000
+        const delayMs = computeActiveRefreshDelayMs(jitterMs)
         activeUsageTimerRef.current = window.setTimeout(() => {
           if (!usageActiveRef.current) {
             if (idleUsageSchedulerRef.current) idleUsageSchedulerRef.current()
@@ -618,7 +608,7 @@ export default function App() {
           void refreshQuotaAll().finally(() => {
             if (usageActiveRef.current) schedule()
           })
-        }, 5 * 60 * 1000 + jitterMs)
+        }, delayMs)
       }
       schedule()
     }
