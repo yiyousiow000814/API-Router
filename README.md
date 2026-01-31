@@ -18,9 +18,9 @@ Key features (MVP):
 Point `codex` to the local gateway once:
 
 ```toml
-model_provider = "orchestrator"
+model_provider = "api_router"
 
-[model_providers.orchestrator]
+[model_providers.api_router]
 name = "API Router"
 base_url = "http://127.0.0.1:4000/v1"
 wire_api = "responses"

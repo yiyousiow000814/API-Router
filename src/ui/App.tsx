@@ -1574,7 +1574,7 @@ export default function App() {
             <div className="aoModalBody">
               <div className="aoModalSub">Open .codex/config.toml and add:</div>
               <pre className="aoInstructionCode">
-                {'model_provider = "orchestrator"\n\n[model_providers.orchestrator]\nname = "API Router"\nbase_url = "http://127.0.0.1:4000/v1"\nwire_api = "responses"\nrequires_openai_auth = true'}
+                {'model_provider = "api_router"\n\n[model_providers.api_router]\nname = "API Router"\nbase_url = "http://127.0.0.1:4000/v1"\nwire_api = "responses"\nrequires_openai_auth = true'}
               </pre>
             </div>
           </div>
