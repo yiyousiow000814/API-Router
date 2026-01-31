@@ -3,6 +3,14 @@
 Use these pages when you need authoritative details about project behavior. Prefer direct quotes or
 precise summaries with citations in answers. Add new links here as needed.
 
+## Source repos (direct reference)
+
+When the question is related to these projects, you can consult the repos for implementation details:
+
+- https://github.com/94mashiro/packycode-cost
+- https://github.com/openai/codex
+- https://github.com/steipete/CodexBar
+
 ## Codex (example)
 
 - Authentication System (API key vs ChatGPT OAuth, token storage, refresh):  
