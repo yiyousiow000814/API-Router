@@ -1,3 +1,4 @@
+use reqwest::Url;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -7,7 +8,7 @@ use super::config::AppConfig;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProviderHealthSnapshot {
-    pub is_healthy: bool,
+    pub status: String,
     pub consecutive_failures: u32,
     pub cooldown_until_unix_ms: u64,
     pub last_error: String,
@@ -17,6 +18,7 @@ pub struct ProviderHealthSnapshot {
 
 #[derive(Debug, Clone)]
 struct ProviderHealth {
+    state: HealthState,
     consecutive_failures: u32,
     cooldown_until_unix_ms: u64,
     last_error: String,
@@ -24,13 +26,21 @@ struct ProviderHealth {
     last_fail_at_unix_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum HealthState {
+    Unknown,
+    Healthy,
+    Unhealthy,
+}
+
 impl ProviderHealth {
-    fn new(now_ms: u64) -> Self {
+    fn new(_now_ms: u64) -> Self {
         Self {
+            state: HealthState::Unknown,
             consecutive_failures: 0,
             cooldown_until_unix_ms: 0,
             last_error: String::new(),
-            last_ok_at_unix_ms: now_ms,
+            last_ok_at_unix_ms: 0,
             last_fail_at_unix_ms: 0,
         }
     }
@@ -61,6 +71,16 @@ impl RouterState {
         *self.manual_override.write() = provider;
     }
 
+    pub fn sync_with_config(&self, cfg: &AppConfig, now_ms: u64) {
+        let mut health = self.health.write();
+        for name in cfg.providers.keys() {
+            health
+                .entry(name.clone())
+                .or_insert_with(|| ProviderHealth::new(now_ms));
+        }
+        health.retain(|name, _| cfg.providers.contains_key(name));
+    }
+
     pub fn decide(&self, cfg: &AppConfig) -> (String, &'static str) {
         if let Some(p) = self.manual_override.read().clone() {
             if self.is_routable(&p) {
@@ -79,6 +99,7 @@ impl RouterState {
     pub fn mark_success(&self, provider: &str, now_ms: u64) {
         let mut health = self.health.write();
         if let Some(h) = health.get_mut(provider) {
+            h.state = HealthState::Healthy;
             h.consecutive_failures = 0;
             h.cooldown_until_unix_ms = 0;
             h.last_error.clear();
@@ -89,6 +110,7 @@ impl RouterState {
     pub fn mark_failure(&self, provider: &str, cfg: &AppConfig, err: &str, now_ms: u64) {
         let mut health = self.health.write();
         if let Some(h) = health.get_mut(provider) {
+            h.state = HealthState::Unhealthy;
             h.consecutive_failures = h.consecutive_failures.saturating_add(1);
             h.last_error = err.chars().take(500).collect();
             h.last_fail_at_unix_ms = now_ms;
@@ -104,12 +126,20 @@ impl RouterState {
         health
             .iter()
             .map(|(k, v)| {
+                let status = if v.in_cooldown() {
+                    "cooldown"
+                } else {
+                    match v.state {
+                        HealthState::Unknown => "unknown",
+                        HealthState::Healthy => "healthy",
+                        HealthState::Unhealthy => "unhealthy",
+                    }
+                }
+                .to_string();
                 (
                     k.clone(),
                     ProviderHealthSnapshot {
-                        // "Healthy" here means "currently routable". We treat a provider as
-                        // available again once its cooldown expires (half-open circuit).
-                        is_healthy: !v.in_cooldown(),
+                        status,
                         consecutive_failures: v.consecutive_failures,
                         cooldown_until_unix_ms: v.cooldown_until_unix_ms,
                         last_error: v.last_error.clone(),
@@ -123,21 +153,50 @@ impl RouterState {
 
     fn is_routable(&self, provider: &str) -> bool {
         let health = self.health.read();
-        let Some(h) = health.get(provider) else { return false };
+        let Some(h) = health.get(provider) else {
+            return false;
+        };
         !h.in_cooldown()
     }
 
     fn fallback(&self, cfg: &AppConfig) -> String {
+        let preferred = cfg.routing.preferred_provider.clone();
+        let preferred_group = provider_group(cfg, &preferred);
+
         for name in cfg.providers.keys() {
-            if name == &cfg.routing.preferred_provider {
+            if name == &preferred {
+                continue;
+            }
+            if preferred_group.is_some() && provider_group(cfg, name) == preferred_group {
                 continue;
             }
             if self.is_routable(name) {
                 return name.clone();
             }
         }
-        cfg.routing.preferred_provider.clone()
+
+        for name in cfg.providers.keys() {
+            if name == &preferred {
+                continue;
+            }
+            if self.is_routable(name) {
+                return name.clone();
+            }
+        }
+
+        preferred
     }
+}
+
+fn provider_group(cfg: &AppConfig, name: &str) -> Option<String> {
+    let p = cfg.providers.get(name)?;
+    let host = Url::parse(&p.base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))?;
+    if host.ends_with("ppchat.vip") || host.ends_with("pumpkinai.vip") {
+        return Some("ppchat_pumpkin".to_string());
+    }
+    None
 }
 
 fn unix_ms() -> u64 {

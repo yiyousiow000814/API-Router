@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Agent Orchestrator",
+  "productName": "API Router",
   "version": "0.1.0",
-  "identifier": "com.yiyou.agent-orchestrator",
+  "identifier": "com.yiyou.api-router",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -12,9 +12,13 @@
   "app": {
     "windows": [
       {
-        "title": "Agent Orchestrator",
-        "width": 800,
-        "height": 600,
+        "title": "API Router",
+        "width": 1320,
+        "height": 720,
+        "minWidth": 1240,
+        "minHeight": 640,
+        "decorations": true,
+        "transparent": false,
         "resizable": true,
         "fullscreen": false
       }

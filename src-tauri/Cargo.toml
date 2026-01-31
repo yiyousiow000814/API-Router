@@ -1,5 +1,5 @@
 [package]
-name = "agent_orchestrator"
+name = "api_router"
 version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
@@ -23,10 +23,11 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.9.5", features = ["tray-icon"] }
 tauri-plugin-log = "2"
+tauri-plugin-single-instance = "2"
 axum = "0.7"
 http = "1"
 hyper = { version = "1", features = ["http1", "server"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "time"] }
 tower = "0.5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "gzip", "brotli", "deflate"] }
 uuid = { version = "1", features = ["v4"] }
@@ -38,8 +39,10 @@ anyhow = "1"
 futures-util = "0.3"
 async-stream = "0.3"
 bytes = "1"
-keyring = { version = "3", features = ["windows-native"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+urlencoding = "2"
+fastrand = "2"
+open = "5"
 
 [dev-dependencies]
 tempfile = "3"

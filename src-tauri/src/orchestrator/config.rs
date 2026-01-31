@@ -14,10 +14,28 @@ pub struct RoutingConfig {
 pub struct ProviderConfig {
     pub display_name: String,
     pub base_url: String,
+    /// Optional usage/quota source type for this provider.
+    ///
+    /// Empty disables usage fetching; otherwise the orchestrator may use it as a hint.
+    #[serde(
+        default,
+        skip_serializing_if = "String::is_empty",
+        alias = "quota_kind"
+    )]
+    pub usage_adapter: String,
+    /// Optional base URL for usage/quota API (often different from the OpenAI-compatible base_url).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "quota_base_url"
+    )]
+    pub usage_base_url: Option<String>,
     /// If empty, the gateway tries to passthrough the client's Authorization header (OAuth).
+    ///
+    /// This is only used for one-time migration into `user-data/secrets.json`.
+    /// The UI/API never exposes it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub api_key: String,
-    pub supports_responses: bool,
-    pub supports_chat_completions: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +49,8 @@ pub struct AppConfig {
     pub listen: ListenConfig,
     pub routing: RoutingConfig,
     pub providers: std::collections::BTreeMap<String, ProviderConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_order: Vec<String>,
 }
 
 impl AppConfig {
@@ -41,31 +61,24 @@ impl AppConfig {
             ProviderConfig {
                 display_name: "Official (OAuth passthrough)".to_string(),
                 base_url: "https://api.openai.com".to_string(),
+                usage_adapter: String::new(),
+                usage_base_url: None,
                 api_key: "".to_string(),
-                supports_responses: true,
-                supports_chat_completions: true,
             },
         );
-        providers.insert(
-            "provider_a".to_string(),
-            ProviderConfig {
-                display_name: "Provider A".to_string(),
-                base_url: "https://example-a.com".to_string(),
-                api_key: "REPLACE_ME".to_string(),
-                supports_responses: false,
-                supports_chat_completions: true,
-            },
-        );
-        providers.insert(
-            "provider_b".to_string(),
-            ProviderConfig {
-                display_name: "Provider B".to_string(),
-                base_url: "https://example-b.com".to_string(),
-                api_key: "REPLACE_ME".to_string(),
-                supports_responses: true,
-                supports_chat_completions: true,
-            },
-        );
+        for i in 1..=2 {
+            let name = format!("provider_{i}");
+            providers.insert(
+                name.clone(),
+                ProviderConfig {
+                    display_name: format!("Provider {i}"),
+                    base_url: String::new(),
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            );
+        }
 
         Self {
             listen: ListenConfig {
@@ -81,7 +94,11 @@ impl AppConfig {
                 request_timeout_seconds: 60,
             },
             providers,
+            provider_order: vec![
+                "official".to_string(),
+                "provider_1".to_string(),
+                "provider_2".to_string(),
+            ],
         }
     }
 }
-

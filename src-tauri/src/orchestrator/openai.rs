@@ -1,11 +1,4 @@
 use serde_json::{json, Value};
-use uuid::Uuid;
-
-use super::store::unix_ms;
-
-pub fn new_id(prefix: &str) -> String {
-    format!("{prefix}_{}", Uuid::new_v4().simple())
-}
 
 pub fn input_to_messages(input: &Value) -> Vec<Value> {
     match input {
@@ -38,11 +31,32 @@ pub fn input_to_messages(input: &Value) -> Vec<Value> {
     }
 }
 
+pub fn input_to_items_preserve_tools(input: &Value) -> Vec<Value> {
+    match input {
+        Value::Null => vec![],
+        Value::Array(items) => items.clone(),
+        Value::Object(_) => vec![input.clone()],
+        Value::String(s) => vec![json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": s}]
+        })],
+        _ => vec![json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": input.to_string()}]
+        })],
+    }
+}
+
 pub fn messages_to_responses_input(messages: &[Value]) -> Value {
     let mut out = Vec::new();
     for m in messages {
         let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("user");
-        let content = m.get("content").cloned().unwrap_or(Value::String(String::new()));
+        let content = m
+            .get("content")
+            .cloned()
+            .unwrap_or(Value::String(String::new()));
         let text = match content {
             Value::String(s) => s,
             Value::Array(arr) => arr
@@ -61,11 +75,44 @@ pub fn messages_to_responses_input(messages: &[Value]) -> Value {
     Value::Array(out)
 }
 
+pub fn messages_to_simple_input_list(messages: &[Value]) -> Value {
+    let mut out = Vec::new();
+    for m in messages {
+        let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("user");
+        let content = m
+            .get("content")
+            .cloned()
+            .unwrap_or(Value::String(String::new()));
+        let text = match content {
+            Value::String(s) => s,
+            Value::Array(arr) => arr
+                .iter()
+                .filter_map(|c| c.get("text").and_then(|v| v.as_str()))
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => content.to_string(),
+        };
+        out.push(json!({
+            "role": role,
+            "content": text
+        }));
+    }
+    Value::Array(out)
+}
+
 pub fn extract_text_from_responses(resp: &Value) -> String {
     let mut out = String::new();
-    let output = resp.get("output").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let output = resp
+        .get("output")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     for item in output {
-        let content = item.get("content").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let content = item
+            .get("content")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         for c in content {
             let ty = c.get("type").and_then(|v| v.as_str()).unwrap_or("");
             if ty == "output_text" {
@@ -76,31 +123,6 @@ pub fn extract_text_from_responses(resp: &Value) -> String {
         }
     }
     out
-}
-
-pub fn extract_text_from_chat_completions(resp: &Value) -> String {
-    resp.pointer("/choices/0/message/content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string()
-}
-
-pub fn build_response_object(model: &str, response_id: &str, text: &str) -> Value {
-    json!({
-        "id": response_id,
-        "object": "response",
-        "created": (unix_ms() / 1000),
-        "model": model,
-        "output": [{
-            "id": new_id("msg"),
-            "type": "message",
-            "role": "assistant",
-            "content": [{
-                "type": "output_text",
-                "text": text
-            }]
-        }]
-    })
 }
 
 pub fn sse_events_for_text(response_id: &str, full_response: &Value, text: &str) -> Vec<String> {
@@ -150,4 +172,3 @@ fn sse_data(v: &Value) -> String {
     let s = serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string());
     format!("data: {s}\n\n")
 }
-

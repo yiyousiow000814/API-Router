@@ -4,7 +4,23 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Agent Orchestrator</title>
+    <title>API Router</title>
+    <!-- Prevent initial "white flash" before JS/CSS hydrate. -->
+    <style>
+      html,
+      body,
+      #app {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        background:
+          radial-gradient(1100px 680px at 16% -8%, rgba(40, 199, 217, 0.22), transparent 58%),
+          radial-gradient(1100px 680px at 94% 0%, rgba(242, 193, 77, 0.22), transparent 60%),
+          radial-gradient(900px 620px at 55% 118%, rgba(40, 199, 217, 0.14), transparent 62%),
+          linear-gradient(180deg, #ffffff, #f6f8fb);
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>
