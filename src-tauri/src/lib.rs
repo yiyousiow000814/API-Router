@@ -797,7 +797,9 @@ async fn refresh_codex_account_snapshot(
     let mut unlimited: Option<bool> = None;
     let mut limit_5h_remaining: Option<String> = None;
     let mut limit_weekly_remaining: Option<String> = None;
+    let mut limit_weekly_reset_at: Option<String> = None;
     let mut code_review_remaining: Option<String> = None;
+    let mut code_review_reset_at: Option<String> = None;
     let mut error = String::new();
 
     let auth = codex_app_server::request("getAuthStatus", Value::Null).await?;
@@ -817,6 +819,7 @@ async fn refresh_codex_account_snapshot(
                 .and_then(get_used_percent);
 
             if let Some(rate_limits) = rate_limits {
+                let mut weekly_best: Option<(String, Option<String>, i32)> = None;
                 for (key, target) in [
                     ("primary", "primary"),
                     ("Primary", "primary"),
@@ -828,13 +831,28 @@ async fn refresh_codex_account_snapshot(
                             let window_mins = get_window_minutes(node);
                             if window_mins == Some(300) {
                                 limit_5h_remaining = Some(format_percent(100.0 - used));
-                            } else if window_mins == Some(10080)
-                                || (target == "secondary" && limit_weekly_remaining.is_none())
-                            {
-                                limit_weekly_remaining = Some(format_percent(100.0 - used));
+                            } else if window_mins == Some(10080) || target == "secondary" {
+                                // Keep weekly remaining/reset paired from the same node.
+                                // Prefer the explicit weekly window; otherwise fall back to the first "secondary".
+                                let priority = if window_mins == Some(10080) { 2 } else { 1 };
+                                let should_update = weekly_best
+                                    .as_ref()
+                                    .map(|(_, _, p)| priority > *p)
+                                    .unwrap_or(true);
+                                if should_update {
+                                    weekly_best = Some((
+                                        format_percent(100.0 - used),
+                                        get_reset_time_str(node),
+                                        priority,
+                                    ));
+                                }
                             }
                         }
                     }
+                }
+                if let Some((rem, reset, _)) = weekly_best {
+                    limit_weekly_remaining = Some(rem);
+                    limit_weekly_reset_at = reset;
                 }
 
                 if code_review_remaining.is_none() {
@@ -849,6 +867,7 @@ async fn refresh_codex_account_snapshot(
                         if let Some(node) = rate_limits.get(key) {
                             if let Some(rem) = get_remaining_percent(node) {
                                 code_review_remaining = Some(rem);
+                                code_review_reset_at = get_reset_time_str(node);
                                 break;
                             }
                         }
@@ -892,7 +911,9 @@ async fn refresh_codex_account_snapshot(
       "remaining": remaining,
       "limit_5h_remaining": limit_5h_remaining,
       "limit_weekly_remaining": limit_weekly_remaining,
+      "limit_weekly_reset_at": limit_weekly_reset_at,
       "code_review_remaining": code_review_remaining,
+      "code_review_reset_at": code_review_reset_at,
       "unlimited": unlimited,
       "error": error
     });
@@ -945,6 +966,106 @@ fn get_remaining_percent(obj: &Value) -> Option<String> {
     obj.get("remaining")
         .and_then(parse_number)
         .map(format_percent)
+}
+
+fn get_reset_time_str(obj: &Value) -> Option<String> {
+    use std::collections::VecDeque;
+
+    fn read_time_value(v: &Value) -> Option<String> {
+        if let Some(s) = v.as_str().map(|s| s.trim().to_string()) {
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+        if let Some(n) = v
+            .as_u64()
+            .or_else(|| v.as_i64().and_then(|x| u64::try_from(x).ok()))
+        {
+            // Heuristic: seconds vs milliseconds.
+            let ms = if n < 1_000_000_000_000 {
+                n.saturating_mul(1000)
+            } else {
+                n
+            };
+            return Some(ms.to_string());
+        }
+        None
+    }
+
+    // Try direct keys first, then a small BFS for nested shapes.
+    let keys = [
+        "resetAt",
+        "reset_at",
+        "resetsAt",
+        "resets_at",
+        "nextResetAt",
+        "next_reset_at",
+        "resetTime",
+        "reset_time",
+        "resetAtUnixMs",
+        "reset_at_unix_ms",
+        "resetUnixMs",
+        "reset_unix_ms",
+        "resetAtMs",
+        "reset_at_ms",
+        "resetMs",
+        "reset_ms",
+        // Some APIs report window end times instead of reset times.
+        "windowEnd",
+        "window_end",
+        "windowEndsAt",
+        "window_ends_at",
+        "endsAt",
+        "ends_at",
+        "endAt",
+        "end_at",
+        "expiresAt",
+        "expires_at",
+    ];
+
+    if let Some(map) = obj.as_object() {
+        for k in &keys {
+            if let Some(v) = map.get(*k) {
+                if let Some(out) = read_time_value(v) {
+                    return Some(out);
+                }
+            }
+        }
+    }
+
+    // BFS through nested objects/arrays, looking for any key that resembles a reset timestamp.
+    let mut q = VecDeque::new();
+    q.push_back((obj, 0usize));
+    while let Some((cur, depth)) = q.pop_front() {
+        if depth >= 4 {
+            continue;
+        }
+        match cur {
+            Value::Object(map) => {
+                for (k, v) in map.iter() {
+                    let kl = k.to_ascii_lowercase();
+                    if kl.contains("reset") || kl.contains("expire") || kl.contains("windowend") {
+                        if let Some(out) = read_time_value(v) {
+                            return Some(out);
+                        }
+                    }
+                    if v.is_object() || v.is_array() {
+                        q.push_back((v, depth + 1));
+                    }
+                }
+            }
+            Value::Array(arr) => {
+                for v in arr {
+                    if v.is_object() || v.is_array() {
+                        q.push_back((v, depth + 1));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn parse_number(v: &Value) -> Option<f64> {

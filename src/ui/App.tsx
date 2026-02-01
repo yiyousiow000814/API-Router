@@ -83,7 +83,9 @@ const devStatus: Status = {
     remaining: '13%',
     limit_5h_remaining: '87%',
     limit_weekly_remaining: '13%',
+    limit_weekly_reset_at: String(Date.now() + 3 * 24 * 60 * 60 * 1000),
     code_review_remaining: '92%',
+    code_review_reset_at: String(Date.now() + 24 * 60 * 60 * 1000),
     unlimited: false,
   },
 }
