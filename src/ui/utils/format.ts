@@ -11,35 +11,20 @@ export function fmtWhen(unixMs: number): string {
   return `${dd}-${mm}-${yyyy} ${hh}:${min}:${ss}`
 }
 
-export function fmtWhenAny(value?: string | number | null): string {
-  if (value == null) return '-'
-  if (typeof value === 'number') return fmtWhen(value)
-
-  const s = String(value).trim()
-  if (!s) return '-'
-
-  // Numeric timestamps: accept seconds/ms.
-  if (/^\d+$/.test(s)) {
-    const n = Number(s)
-    if (!Number.isFinite(n)) return '-'
-    const ms = n < 2_000_000_000 ? n * 1000 : n
-    return fmtWhen(ms)
-  }
-
-  const ms = Date.parse(s)
-  if (!Number.isFinite(ms)) return '-'
-  return fmtWhen(ms)
-}
+const EPOCH_MS_THRESHOLD = 1_000_000_000_000
 
 export function parseWhenAnyToMs(value?: string | number | null): number | null {
   if (value == null) return null
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return null
+    return value < EPOCH_MS_THRESHOLD ? value * 1000 : value
+  }
   const s = String(value).trim()
   if (!s) return null
   if (/^\d+$/.test(s)) {
     const n = Number(s)
     if (!Number.isFinite(n)) return null
-    return n < 2_000_000_000 ? n * 1000 : n
+    return n < EPOCH_MS_THRESHOLD ? n * 1000 : n
   }
   const ms = Date.parse(s)
   return Number.isFinite(ms) ? ms : null

@@ -819,6 +819,7 @@ async fn refresh_codex_account_snapshot(
                 .and_then(get_used_percent);
 
             if let Some(rate_limits) = rate_limits {
+                let mut weekly_best: Option<(String, Option<String>, i32)> = None;
                 for (key, target) in [
                     ("primary", "primary"),
                     ("Primary", "primary"),
@@ -830,16 +831,26 @@ async fn refresh_codex_account_snapshot(
                             let window_mins = get_window_minutes(node);
                             if window_mins == Some(300) {
                                 limit_5h_remaining = Some(format_percent(100.0 - used));
-                            } else if window_mins == Some(10080)
-                                || (target == "secondary" && limit_weekly_remaining.is_none())
-                            {
-                                limit_weekly_remaining = Some(format_percent(100.0 - used));
-                                if limit_weekly_reset_at.is_none() {
-                                    limit_weekly_reset_at = get_reset_time_str(node);
+                            } else if window_mins == Some(10080) || target == "secondary" {
+                                // Keep weekly remaining/reset paired from the same node.
+                                // Prefer the explicit weekly window; otherwise fall back to the first "secondary".
+                                let priority = if window_mins == Some(10080) { 2 } else { 1 };
+                                let should_update =
+                                    weekly_best.as_ref().map(|(_, _, p)| priority > *p).unwrap_or(true);
+                                if should_update {
+                                    weekly_best = Some((
+                                        format_percent(100.0 - used),
+                                        get_reset_time_str(node),
+                                        priority,
+                                    ));
                                 }
                             }
                         }
                     }
+                }
+                if let Some((rem, reset, _)) = weekly_best {
+                    limit_weekly_remaining = Some(rem);
+                    limit_weekly_reset_at = reset;
                 }
 
                 if code_review_remaining.is_none() {
@@ -969,7 +980,7 @@ fn get_reset_time_str(obj: &Value) -> Option<String> {
             .or_else(|| v.as_i64().and_then(|x| u64::try_from(x).ok()))
         {
             // Heuristic: seconds vs milliseconds.
-            let ms = if n < 2_000_000_000 {
+            let ms = if n < 1_000_000_000_000 {
                 n.saturating_mul(1000)
             } else {
                 n
