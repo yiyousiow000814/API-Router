@@ -25,7 +25,7 @@ use super::router::RouterState;
 use super::secrets::SecretStore;
 use super::store::{unix_ms, Store};
 use super::upstream::UpstreamClient;
-use super::wt_session;
+use crate::platform::windows_terminal;
 
 #[derive(Clone)]
 pub struct GatewayState {
@@ -413,7 +413,7 @@ async fn models(
     let api_key = st.secrets.get_provider_key(&provider_name);
     let client_auth = upstream_auth(&st, client_auth);
 
-    if let Some(inferred) = wt_session::infer_wt_session(peer, cfg.listen.port) {
+    if let Some(inferred) = windows_terminal::infer_wt_session(peer, cfg.listen.port) {
         let mut map = st.client_sessions.write();
         map.insert(
             inferred.wt_session.clone(),
@@ -463,7 +463,7 @@ async fn responses(
 
     let codex_session_key = session_key_from_request(&headers, &body);
     let codex_session_display = codex_session_id_for_display(&headers, &body);
-    let client_session = wt_session::infer_wt_session(peer, cfg.listen.port);
+    let client_session = windows_terminal::infer_wt_session(peer, cfg.listen.port);
     if let Some(inferred) = client_session.as_ref() {
         let mut map = st.client_sessions.write();
         let entry = map

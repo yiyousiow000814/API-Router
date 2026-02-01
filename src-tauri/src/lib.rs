@@ -1,6 +1,7 @@
 mod app_state;
 mod codex_app_server;
 mod orchestrator;
+mod platform;
 
 use tauri::Manager;
 
@@ -212,7 +213,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         // We keep the persisted preference mapping in config; only the runtime list is pruned.
         {
             let mut map = state.gateway.client_sessions.write();
-            map.retain(|_, v| crate::orchestrator::wt_session::is_pid_alive(v.pid));
+            map.retain(|_, v| crate::platform::windows_terminal::is_pid_alive(v.pid));
         }
 
         let map = state.gateway.client_sessions.read().clone();

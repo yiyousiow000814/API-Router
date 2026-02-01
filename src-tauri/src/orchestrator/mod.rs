@@ -6,7 +6,6 @@ pub mod router;
 pub mod secrets;
 pub mod store;
 pub mod upstream;
-pub mod wt_session;
 
 #[cfg(test)]
 mod gateway_tests;

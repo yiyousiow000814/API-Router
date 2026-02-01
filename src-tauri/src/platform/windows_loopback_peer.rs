@@ -1,19 +1,13 @@
+//! Windows-only helpers to map a loopback TCP connection to the owning PID and to read env vars
+//! from that process.
+//!
+//! This is a low-level building block used for features like Windows Terminal WT_SESSION detection.
+
 use std::net::SocketAddr;
 
 #[cfg(not(windows))]
-pub fn infer_wt_session(_peer: SocketAddr, _server_port: u16) -> Option<InferredWtSession> {
+pub fn infer_loopback_peer_pid(_peer: SocketAddr, _server_port: u16) -> Option<u32> {
     None
-}
-
-#[cfg(windows)]
-pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWtSession> {
-    windows_impl::infer_wt_session(peer, server_port)
-}
-
-#[derive(Clone, Debug)]
-pub struct InferredWtSession {
-    pub wt_session: String,
-    pub pid: u32,
 }
 
 #[cfg(not(windows))]
@@ -21,22 +15,18 @@ pub fn is_pid_alive(_pid: u32) -> bool {
     false
 }
 
-#[cfg(windows)]
-pub fn is_pid_alive(pid: u32) -> bool {
-    windows_impl::is_pid_alive(pid)
+#[cfg(not(windows))]
+pub fn read_process_env_var(_pid: u32, _key: &str) -> Option<String> {
+    None
 }
 
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
-    use crate::orchestrator::store::unix_ms;
-    use parking_lot::Mutex;
-    use std::collections::HashMap;
     use std::ffi::OsString;
     use std::mem::{size_of, MaybeUninit};
     use std::os::windows::ffi::OsStringExt;
     use std::ptr::null_mut;
-    use std::sync::OnceLock;
 
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::NetworkManagement::IpHelper::{
@@ -49,7 +39,7 @@ mod windows_impl {
     };
 
     // NtQueryInformationProcess is not officially documented in the Win32 API, but it is stable and widely used.
-    // We only use it to locate the PEB so we can read the child's environment block and extract WT_SESSION.
+    // We only use it to locate the PEB so we can read the child's environment block.
     #[link(name = "ntdll")]
     extern "system" {
         fn NtQueryInformationProcess(
@@ -61,28 +51,14 @@ mod windows_impl {
         ) -> i32;
     }
 
-    // Simple cache: PID -> WT_SESSION for a short TTL, to avoid scanning TCP tables/reading PEB per request.
-    static PID_CACHE: OnceLock<Mutex<HashMap<u32, (String, u64)>>> = OnceLock::new();
-    const PID_CACHE_TTL_MS: u64 = 10_000;
-
-    pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWtSession> {
-        let now = unix_ms();
-
-        // Only meaningful for loopback requests. External clients won't have WT_SESSION.
+    pub fn infer_loopback_peer_pid(peer: SocketAddr, server_port: u16) -> Option<u32> {
         if !peer.ip().is_loopback() {
             return None;
         }
-
-        // Fast path: if we can map the connection to a PID and we recently resolved it, reuse.
-        if let Some(pid) = tcp_owner_pid(peer, server_port) {
-            if let Some(v) = cached_pid(pid, now) {
-                return Some(InferredWtSession { wt_session: v, pid });
-            }
-            let v = read_process_env_var(pid, "WT_SESSION")?;
-            remember_pid(pid, v.clone(), now);
-            return Some(InferredWtSession { wt_session: v, pid });
+        match peer {
+            SocketAddr::V4(v4) => tcp_owner_pid_v4(v4.port(), server_port),
+            SocketAddr::V6(v6) => tcp_owner_pid_v6(v6.port(), server_port),
         }
-        None
     }
 
     pub fn is_pid_alive(pid: u32) -> bool {
@@ -98,31 +74,15 @@ mod windows_impl {
         }
     }
 
-    fn cached_pid(pid: u32, now: u64) -> Option<String> {
-        let cache = PID_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        let cache = cache.lock();
-        let (v, at) = cache.get(&pid)?;
-        if now.saturating_sub(*at) <= PID_CACHE_TTL_MS {
-            Some(v.clone())
-        } else {
-            None
-        }
-    }
-
-    fn remember_pid(pid: u32, v: String, now: u64) {
-        let cache = PID_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut cache = cache.lock();
-        // Bound memory usage.
-        if cache.len() > 512 {
-            cache.retain(|_, (_, at)| now.saturating_sub(*at) <= PID_CACHE_TTL_MS);
-        }
-        cache.insert(pid, (v, now));
-    }
-
-    fn tcp_owner_pid(peer: SocketAddr, server_port: u16) -> Option<u32> {
-        match peer {
-            SocketAddr::V4(v4) => tcp_owner_pid_v4(v4.port(), server_port),
-            SocketAddr::V6(v6) => tcp_owner_pid_v6(v6.port(), server_port),
+    pub fn read_process_env_var(pid: u32, key: &str) -> Option<String> {
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
+            if h == 0 {
+                return None;
+            }
+            let out = read_process_env_var_handle(h, key);
+            let _ = CloseHandle(h);
+            out
         }
     }
 
@@ -157,7 +117,6 @@ mod windows_impl {
             return None;
         }
 
-        // Layout for TCP_TABLE_OWNER_PID_ALL (AF_INET).
         #[repr(C)]
         #[derive(Copy, Clone)]
         struct MibTcpRowOwnerPid {
@@ -181,8 +140,10 @@ mod windows_impl {
 
         for i in 0..count {
             let row = unsafe { *first.add(i) };
+            // Ports are stored in network byte order in the low 16 bits.
             let lp = u16::from_be(row.local_port as u16);
             let rp = u16::from_be(row.remote_port as u16);
+            // For incoming requests: client's ephemeral port is local_port, our server port is remote_port.
             if lp == peer_port && rp == server_port {
                 return Some(row.owning_pid);
             }
@@ -221,7 +182,6 @@ mod windows_impl {
             return None;
         }
 
-        // Layout for TCP_TABLE_OWNER_PID_ALL (AF_INET6).
         #[repr(C)]
         #[derive(Copy, Clone)]
         struct MibTcp6RowOwnerPid {
@@ -256,18 +216,6 @@ mod windows_impl {
         None
     }
 
-    fn read_process_env_var(pid: u32, key: &str) -> Option<String> {
-        unsafe {
-            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
-            if h == 0 {
-                return None;
-            }
-            let out = read_process_env_var_handle(h, key);
-            let _ = CloseHandle(h);
-            out
-        }
-    }
-
     fn read_process_env_var_handle(h: HANDLE, key: &str) -> Option<String> {
         unsafe {
             // PROCESS_BASIC_INFORMATION (class 0) includes the PEB base address.
@@ -298,7 +246,6 @@ mod windows_impl {
                 return None;
             }
 
-            // Minimal PEB for reading ProcessParameters pointer (works for x64).
             #[repr(C)]
             #[derive(Copy, Clone)]
             struct Peb {
@@ -326,7 +273,6 @@ mod windows_impl {
                 handle: usize,
             }
 
-            // Minimal RTL_USER_PROCESS_PARAMETERS up to Environment pointer.
             #[repr(C)]
             #[derive(Copy, Clone)]
             struct RtlUserProcessParameters {
@@ -377,7 +323,7 @@ mod windows_impl {
     }
 
     fn read_utf16_env_block(h: HANDLE, addr: usize) -> Option<Vec<u16>> {
-        // Read up to 256KB (UTF-16 units) and stop at double-null.
+        // Read up to 256KB and stop at double-null.
         const MAX_U16: usize = 131_072; // 256KB
         const CHUNK_U16: usize = 8192; // 16KB
 
@@ -404,7 +350,6 @@ mod windows_impl {
             out.extend_from_slice(&chunk);
 
             if out.windows(2).any(|w| w == [0, 0]) {
-                // Trim after the first double-null.
                 if let Some(pos) = out.windows(2).position(|w| w == [0, 0]) {
                     out.truncate(pos + 2);
                 }
@@ -419,13 +364,11 @@ mod windows_impl {
     fn find_env_var(env: &[u16], key: &str) -> Option<String> {
         let mut start = 0usize;
         while start < env.len() {
-            // Find NUL terminator.
             let mut end = start;
             while end < env.len() && env[end] != 0 {
                 end += 1;
             }
             if end == start {
-                // Double NUL => end.
                 break;
             }
             let line = OsString::from_wide(&env[start..end])
@@ -441,3 +384,6 @@ mod windows_impl {
         None
     }
 }
+
+#[cfg(windows)]
+pub use windows_impl::{infer_loopback_peer_pid, is_pid_alive, read_process_env_var};
