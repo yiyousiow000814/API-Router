@@ -390,3 +390,23 @@ mod windows_impl {
 
 #[cfg(windows)]
 pub use windows_impl::{infer_loopback_peer_pid, is_pid_alive, read_process_env_var};
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn can_read_child_process_env_var() {
+        // Regression test: session pre-discovery relies on cross-process env reads.
+        // Spawn a short-lived child with a known var and verify we can read it by PID.
+        let mut cmd = std::process::Command::new("cmd.exe");
+        cmd.args(["/C", "ping", "127.0.0.1", "-n", "3", ">", "NUL"]);
+        cmd.env("CODEX_ENV_TEST", "hello");
+        let mut child = cmd.spawn().expect("spawn cmd");
+        let pid = child.id();
+        let got = read_process_env_var(pid, "CODEX_ENV_TEST");
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(got.as_deref(), Some("hello"));
+    }
+}

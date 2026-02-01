@@ -108,6 +108,57 @@ fn discover_sessions_using_router_uncached(server_port: u16) -> Vec<InferredWtSe
         (v.contains("127.0.0.1") || v.contains("localhost")) && v.contains(&port_s)
     }
 
+    fn codex_config_uses_router_port(codex_home: Option<&str>, port: u16) -> bool {
+        // Codex config supports `model_providers.<id>.base_url` entries.
+        // If any provider points at our listen port, treat it as "configured".
+        //
+        // We check:
+        // - $CODEX_HOME/config.toml (if present in the Codex process)
+        // - %USERPROFILE%/.codex/config.toml as a default fallback
+        fn read_config(path: &std::path::Path) -> Option<toml::Value> {
+            let s = std::fs::read_to_string(path).ok()?;
+            toml::from_str::<toml::Value>(&s).ok()
+        }
+
+        fn any_provider_matches(cfg: &toml::Value, port: u16) -> bool {
+            let tbl = match cfg.as_table() {
+                Some(t) => t,
+                None => return false,
+            };
+            let providers = match tbl.get("model_providers").and_then(|v| v.as_table()) {
+                Some(p) => p,
+                None => return false,
+            };
+            providers.values().any(|p| {
+                p.as_table()
+                    .and_then(|t| t.get("base_url"))
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|u| looks_like_router_base(u, port))
+            })
+        }
+
+        let mut paths: Vec<std::path::PathBuf> = Vec::new();
+        if let Some(home) = codex_home {
+            if !home.trim().is_empty() {
+                paths.push(std::path::PathBuf::from(home).join("config.toml"));
+            }
+        }
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            if !profile.trim().is_empty() {
+                paths.push(std::path::PathBuf::from(profile).join(".codex").join("config.toml"));
+            }
+        }
+
+        for p in paths {
+            if let Some(cfg) = read_config(&p) {
+                if any_provider_matches(&cfg, port) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     let mut out: Vec<InferredWtSession> = Vec::new();
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
@@ -120,6 +171,10 @@ fn discover_sessions_using_router_uncached(server_port: u16) -> Vec<InferredWtSe
     // up without the `.exe` suffix on some setups. Accept both forms to avoid false negatives.
     // Add more names only if we have strong evidence Codex runs under them.
     let candidates = ["codex.exe", "codex", "node.exe", "node"];
+
+    // If Codex is configured via config.toml (instead of env vars), we still want to pre-discover
+    // sessions before the first request. Cache the default (no CODEX_HOME) check once per scan.
+    let default_codex_configured = codex_config_uses_router_port(None, server_port);
 
     let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
@@ -134,6 +189,8 @@ fn discover_sessions_using_router_uncached(server_port: u16) -> Vec<InferredWtSe
             let wt =
                 crate::platform::windows_loopback_peer::read_process_env_var(pid, "WT_SESSION");
             if let Some(wt) = wt {
+                // Prefer process-local env vars (fast), but fall back to Codex config.toml
+                // for setups where the base URL is configured via config rather than env.
                 let keys = [
                     "OPENAI_BASE_URL",
                     "OPENAI_API_BASE",
@@ -150,6 +207,14 @@ fn discover_sessions_using_router_uncached(server_port: u16) -> Vec<InferredWtSe
                             break;
                         }
                     }
+                }
+                if !matched && (exe_lc == "codex" || exe_lc == "codex.exe") {
+                    let codex_home =
+                        crate::platform::windows_loopback_peer::read_process_env_var(pid, "CODEX_HOME");
+                    matched = codex_home
+                        .as_deref()
+                        .map(|h| codex_config_uses_router_port(Some(h), server_port))
+                        .unwrap_or(default_codex_configured);
                 }
                 if matched {
                     out.push(InferredWtSession {

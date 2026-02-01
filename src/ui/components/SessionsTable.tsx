@@ -19,7 +19,7 @@ type Props = {
 
 export function SessionsTable({ sessions, providers, globalPreferred, updating, onSetPreferred }: Props) {
   return (
-    <table className="aoTable aoTableFixed aoTableAuto">
+    <table className="aoTable aoTableFixed">
       <thead>
         <tr>
           <th style={{ width: 220 }}>Codex session</th>
