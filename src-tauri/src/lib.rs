@@ -956,7 +956,31 @@ fn get_remaining_percent(obj: &Value) -> Option<String> {
 }
 
 fn get_reset_time_str(obj: &Value) -> Option<String> {
-    for key in [
+    use std::collections::VecDeque;
+
+    fn read_time_value(v: &Value) -> Option<String> {
+        if let Some(s) = v.as_str().map(|s| s.trim().to_string()) {
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+        if let Some(n) = v
+            .as_u64()
+            .or_else(|| v.as_i64().and_then(|x| u64::try_from(x).ok()))
+        {
+            // Heuristic: seconds vs milliseconds.
+            let ms = if n < 2_000_000_000 {
+                n.saturating_mul(1000)
+            } else {
+                n
+            };
+            return Some(ms.to_string());
+        }
+        None
+    }
+
+    // Try direct keys first, then a small BFS for nested shapes.
+    let keys = [
         "resetAt",
         "reset_at",
         "resetsAt",
@@ -973,27 +997,61 @@ fn get_reset_time_str(obj: &Value) -> Option<String> {
         "reset_at_ms",
         "resetMs",
         "reset_ms",
-    ] {
-        if let Some(v) = obj.get(key) {
-            if let Some(s) = v.as_str().map(|s| s.trim().to_string()) {
-                if !s.is_empty() {
-                    return Some(s);
+        // Some APIs report window end times instead of reset times.
+        "windowEnd",
+        "window_end",
+        "windowEndsAt",
+        "window_ends_at",
+        "endsAt",
+        "ends_at",
+        "endAt",
+        "end_at",
+        "expiresAt",
+        "expires_at",
+    ];
+
+    if let Some(map) = obj.as_object() {
+        for k in &keys {
+            if let Some(v) = map.get(*k) {
+                if let Some(out) = read_time_value(v) {
+                    return Some(out);
                 }
-            }
-            if let Some(n) = v
-                .as_u64()
-                .or_else(|| v.as_i64().and_then(|x| u64::try_from(x).ok()))
-            {
-                // Heuristic: seconds vs milliseconds.
-                let ms = if n < 2_000_000_000 {
-                    n.saturating_mul(1000)
-                } else {
-                    n
-                };
-                return Some(ms.to_string());
             }
         }
     }
+
+    // BFS through nested objects/arrays, looking for any key that resembles a reset timestamp.
+    let mut q = VecDeque::new();
+    q.push_back((obj, 0usize));
+    while let Some((cur, depth)) = q.pop_front() {
+        if depth >= 4 {
+            continue;
+        }
+        match cur {
+            Value::Object(map) => {
+                for (k, v) in map.iter() {
+                    let kl = k.to_ascii_lowercase();
+                    if kl.contains("reset") || kl.contains("expire") || kl.contains("windowend") {
+                        if let Some(out) = read_time_value(v) {
+                            return Some(out);
+                        }
+                    }
+                    if v.is_object() || v.is_array() {
+                        q.push_back((v, depth + 1));
+                    }
+                }
+            }
+            Value::Array(arr) => {
+                for v in arr {
+                    if v.is_object() || v.is_array() {
+                        q.push_back((v, depth + 1));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     None
 }
 

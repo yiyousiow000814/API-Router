@@ -100,18 +100,22 @@ export function HeroCodexCard({ status, onLoginLogout, onRefresh }: HeroCodexPro
           <div className="aoLimitValue">
             {status.codex_account?.limit_weekly_remaining ?? (parsePct(status.codex_account?.remaining) ?? '-')}
           </div>
-          <div className="aoHint" style={{ marginTop: 6 }}>
-            Reset {fmtWhenAny(status.codex_account?.limit_weekly_reset_at)}
-          </div>
+          {status.codex_account?.limit_weekly_reset_at ? (
+            <div className="aoHint" style={{ marginTop: 6 }}>
+              Reset {fmtWhenAny(status.codex_account.limit_weekly_reset_at)}
+            </div>
+          ) : null}
         </div>
         <div className="aoLimitCard">
           <div className="aoMiniLabel">Code review</div>
           <div className="aoLimitValue">
             {status.codex_account?.code_review_remaining ?? status.codex_account?.limit_5h_remaining ?? '-'}
           </div>
-          <div className="aoHint" style={{ marginTop: 6 }}>
-            Reset {fmtWhenAny(status.codex_account?.code_review_reset_at)}
-          </div>
+          {status.codex_account?.code_review_reset_at ? (
+            <div className="aoHint" style={{ marginTop: 6 }}>
+              Reset {fmtWhenAny(status.codex_account.code_review_reset_at)}
+            </div>
+          ) : null}
         </div>
       </div>
       <div className="aoHeroActions" style={{ marginTop: 15 }}>
