@@ -1081,6 +1081,12 @@
   table-layout: fixed;
 }
 
+.aoTableAuto {
+  /* For narrow tables (like Sessions) avoid stretching columns across the full card width. */
+  width: auto;
+  max-width: 100%;
+}
+
 .aoUrlInput {
   width: 100%;
   max-width: 100%;

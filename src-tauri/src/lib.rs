@@ -209,6 +209,27 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         .unwrap_or(serde_json::json!({"ok": false}));
 
     let client_sessions = {
+        // Best-effort: discover running Codex processes configured to use this router, even before
+        // the first request is sent (Windows Terminal only).
+        {
+            let discovered =
+                crate::platform::windows_terminal::discover_sessions_using_router(cfg.listen.port);
+            if !discovered.is_empty() {
+                let mut map = state.gateway.client_sessions.write();
+                for s in discovered {
+                    let entry = map.entry(s.wt_session.clone()).or_insert_with(|| {
+                        crate::orchestrator::gateway::ClientSessionRuntime {
+                            pid: s.pid,
+                            last_seen_unix_ms: now,
+                            last_codex_session_id: None,
+                        }
+                    });
+                    entry.pid = s.pid;
+                    entry.last_seen_unix_ms = now;
+                }
+            }
+        }
+
         // Drop dead sessions aggressively (e.g. user Ctrl+C'd Codex).
         // We keep the persisted preference mapping in config; only the runtime list is pruned.
         {

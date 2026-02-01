@@ -19,11 +19,13 @@ type Props = {
 
 export function SessionsTable({ sessions, providers, globalPreferred, updating, onSetPreferred }: Props) {
   return (
-    <table className="aoTable aoTableFixed">
+    <table className="aoTable aoTableFixed aoTableAuto">
       <thead>
         <tr>
           <th style={{ width: 220 }}>Codex session</th>
-          <th style={{ width: 110 }}>State</th>
+          <th className="aoCellCenter" style={{ width: 110 }}>
+            State
+          </th>
           <th style={{ width: 170 }}>Last seen</th>
           <th>Effective provider</th>
           <th style={{ width: 260 }}>Preferred provider</th>
@@ -44,11 +46,13 @@ export function SessionsTable({ sessions, providers, globalPreferred, updating, 
                     <div title={`WT_SESSION: ${wt}`}>-</div>
                   )}
                 </td>
-                <td>
-                  <span className="aoPill">
-                    <span className={s.active ? 'aoDot' : 'aoDot aoDotMuted'} />
-                    <span className="aoPillText">{s.active ? 'active' : 'idle'}</span>
-                  </span>
+                <td className="aoCellCenter">
+                  <div className="aoCellCenterInner">
+                    <span className="aoPill">
+                      <span className={s.active ? 'aoDot' : 'aoDot aoDotMuted'} />
+                      <span className="aoPillText">{s.active ? 'active' : 'idle'}</span>
+                    </span>
+                  </div>
                 </td>
                 <td>{fmtWhen(s.last_seen_unix_ms)}</td>
                 <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{effective}</td>
@@ -76,7 +80,8 @@ export function SessionsTable({ sessions, providers, globalPreferred, updating, 
         ) : (
           <tr>
             <td colSpan={5} className="aoHint">
-              No sessions yet. Start Codex from Windows Terminal and send a request through API Router.
+              No sessions yet. Start Codex from Windows Terminal. If Codex is configured to use API Router, it should
+              appear here even before the first request.
             </td>
           </tr>
         )}

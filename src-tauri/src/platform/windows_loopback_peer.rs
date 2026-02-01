@@ -6,16 +6,19 @@
 use std::net::SocketAddr;
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn infer_loopback_peer_pid(_peer: SocketAddr, _server_port: u16) -> Option<u32> {
     None
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn is_pid_alive(_pid: u32) -> bool {
     false
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn read_process_env_var(_pid: u32, _key: &str) -> Option<String> {
     None
 }
