@@ -66,11 +66,7 @@ export function SessionsTable({ sessions, providers, globalPreferred, updating, 
         ) : (
           <tr>
             <td colSpan={5} className="aoHint">
-              No sessions yet. Start Codex with a tagged token like{' '}
-              <span style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>
-                token|wt_session=...
-              </span>
-              .
+              No sessions yet. Start Codex from Windows Terminal and send a request through API Router.
             </td>
           </tr>
         )}

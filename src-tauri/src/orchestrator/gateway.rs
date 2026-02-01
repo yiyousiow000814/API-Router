@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Json, State};
+use axum::extract::{ConnectInfo, Json, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -25,6 +25,7 @@ use super::router::RouterState;
 use super::secrets::SecretStore;
 use super::store::{unix_ms, Store};
 use super::upstream::UpstreamClient;
+use super::wt_session;
 
 #[derive(Clone)]
 pub struct GatewayState {
@@ -110,47 +111,6 @@ fn session_key_from_request(headers: &HeaderMap, body: &Value) -> Option<String>
     }
     let _ = body;
     Some(v.to_string())
-}
-
-fn client_session_from_headers(headers: &HeaderMap) -> Option<String> {
-    // Prefer an explicit header if the client can set it.
-    if let Some(v) = headers.get("x-wt-session").and_then(|v| v.to_str().ok()) {
-        let v = v.trim();
-        if !v.is_empty() {
-            return Some(v.to_string());
-        }
-    }
-
-    // Fallback: allow tagging the gateway token as `token|wt_session=<id>` (or `|session=<id>`).
-    let auth = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())?;
-    let tok = bearer_token(auth)?;
-    let (_base, session) = split_gateway_token(tok);
-    session
-}
-
-fn split_gateway_token(tok: &str) -> (&str, Option<String>) {
-    let mut it = tok.split('|');
-    let base = it.next().unwrap_or(tok).trim();
-    let mut session: Option<String> = None;
-    for seg in it {
-        let seg = seg.trim();
-        if seg.is_empty() {
-            continue;
-        }
-        let Some((k, v)) = seg.split_once('=') else {
-            continue;
-        };
-        let k = k.trim().to_ascii_lowercase();
-        if k == "wt_session" || k == "wt" || k == "session" {
-            let v = v.trim();
-            if !v.is_empty() {
-                session = Some(v.to_string());
-            }
-        }
-    }
-    (base, session)
 }
 
 fn is_prev_id_unsupported_error(message: &str) -> bool {
@@ -251,7 +211,11 @@ pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -380,16 +344,16 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     }))
 }
 
-async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl IntoResponse {
-    let session_from_auth = match require_gateway_auth(&st, &headers) {
-        Ok(v) => v,
-        Err(resp) => return *resp,
-    };
+async fn models(
+    State(st): State<GatewayState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Some(resp) = require_gateway_auth(&st, &headers) {
+        return resp;
+    }
     st.last_activity_unix_ms.store(unix_ms(), Ordering::Relaxed);
     let cfg = st.cfg.read().clone();
-    if let Some(id) = client_session_from_headers(&headers).or(session_from_auth) {
-        st.client_sessions.write().insert(id, unix_ms());
-    }
     let (provider_name, reason) = st.router.decide(&cfg);
     let p = match cfg.providers.get(&provider_name) {
         Some(p) => p.clone(),
@@ -408,6 +372,10 @@ async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl Into
     let api_key = st.secrets.get_provider_key(&provider_name);
     let client_auth = upstream_auth(&st, client_auth);
 
+    if let Some(id) = wt_session::infer_wt_session(peer, cfg.listen.port) {
+        st.client_sessions.write().insert(id, unix_ms());
+    }
+
     let timeout = cfg.routing.request_timeout_seconds;
     match st
         .upstream
@@ -425,13 +393,13 @@ async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl Into
 
 async fn responses(
     State(st): State<GatewayState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    let session_from_auth = match require_gateway_auth(&st, &headers) {
-        Ok(v) => v,
-        Err(resp) => return *resp,
-    };
+    if let Some(resp) = require_gateway_auth(&st, &headers) {
+        return resp;
+    }
     st.last_activity_unix_ms.store(unix_ms(), Ordering::Relaxed);
     let cfg = st.cfg.read().clone();
     let client_auth = headers
@@ -445,7 +413,7 @@ async fn responses(
         .unwrap_or(false);
 
     let codex_session_key = session_key_from_request(&headers, &body);
-    let client_session_key = client_session_from_headers(&headers).or(session_from_auth);
+    let client_session_key = wt_session::infer_wt_session(peer, cfg.listen.port);
     if let Some(id) = client_session_key.as_deref() {
         st.client_sessions.write().insert(id.to_string(), unix_ms());
     }
@@ -767,58 +735,53 @@ fn bearer_token(auth: &str) -> Option<&str> {
     None
 }
 
-fn require_gateway_auth(
-    st: &GatewayState,
-    headers: &HeaderMap,
-) -> Result<Option<String>, Box<Response>> {
+fn require_gateway_auth(st: &GatewayState, headers: &HeaderMap) -> Option<Response> {
     let Some(expected) = st.secrets.get_gateway_token() else {
         // No token configured: allow for local dev.
-        return Ok(None);
+        return None;
     };
     let expected = expected.trim();
     if expected.is_empty() {
-        return Ok(None);
+        return None;
     }
     let Some(auth) = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
     else {
-        return Err(Box::new(
+        return Some(
             (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error": {"message":"missing Authorization (set OPENAI_API_KEY in .codex/auth.json to the gateway token)","type":"unauthorized"}})),
             )
                 .into_response(),
-        ));
+        );
     };
     let Some(tok) = bearer_token(auth) else {
-        return Err(Box::new(
+        return Some(
             (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error":{"message":"invalid Authorization format","type":"unauthorized"}})),
             )
                 .into_response(),
-        ));
+        );
     };
-    let (base, session) = split_gateway_token(tok);
-    if base != expected {
-        return Err(Box::new(
+    if tok != expected {
+        return Some(
             (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error": {"message":"invalid gateway token","type":"unauthorized"}})),
             )
                 .into_response(),
-        ));
+        );
     }
-    Ok(session)
+    None
 }
 
 fn upstream_auth<'a>(st: &GatewayState, client_auth: Option<&'a str>) -> Option<&'a str> {
     let auth = client_auth?;
     // Never forward the local gateway token upstream.
     if let (Some(tok), Some(b)) = (st.secrets.get_gateway_token(), bearer_token(auth)) {
-        let (base, _session) = split_gateway_token(b);
-        if !tok.trim().is_empty() && base == tok.trim() {
+        if !tok.trim().is_empty() && b == tok.trim() {
             return None;
         }
     }
