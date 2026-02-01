@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Json, State};
+use axum::extract::{FromRequestParts, Json, State};
+use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -26,6 +27,29 @@ use super::secrets::SecretStore;
 use super::store::{unix_ms, Store};
 use super::upstream::UpstreamClient;
 use crate::platform::windows_terminal;
+
+#[derive(Clone, Copy, Debug)]
+struct PeerAddr(SocketAddr);
+
+#[axum::async_trait]
+impl<S> FromRequestParts<S> for PeerAddr
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        // In production the server is created with `into_make_service_with_connect_info` so this
+        // extension is present. In unit tests (Router::oneshot), it isn't.
+        if let Some(ci) = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        {
+            return Ok(PeerAddr(ci.0));
+        }
+        Ok(PeerAddr(SocketAddr::from(([127, 0, 0, 1], 0))))
+    }
+}
 
 #[derive(Clone)]
 pub struct GatewayState {
@@ -386,8 +410,8 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
 }
 
 async fn models(
+    PeerAddr(peer): PeerAddr,
     State(st): State<GatewayState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if let Some(resp) = require_gateway_auth(&st, &headers) {
@@ -441,8 +465,8 @@ async fn models(
 }
 
 async fn responses(
+    PeerAddr(peer): PeerAddr,
     State(st): State<GatewayState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
