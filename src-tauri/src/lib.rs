@@ -835,8 +835,10 @@ async fn refresh_codex_account_snapshot(
                                 // Keep weekly remaining/reset paired from the same node.
                                 // Prefer the explicit weekly window; otherwise fall back to the first "secondary".
                                 let priority = if window_mins == Some(10080) { 2 } else { 1 };
-                                let should_update =
-                                    weekly_best.as_ref().map(|(_, _, p)| priority > *p).unwrap_or(true);
+                                let should_update = weekly_best
+                                    .as_ref()
+                                    .map(|(_, _, p)| priority > *p)
+                                    .unwrap_or(true);
                                 if should_update {
                                     weekly_best = Some((
                                         format_percent(100.0 - used),
