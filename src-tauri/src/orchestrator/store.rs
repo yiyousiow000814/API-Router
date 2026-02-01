@@ -208,15 +208,19 @@ impl Store {
     }
 
     pub fn list_events(&self, limit: usize) -> Vec<Value> {
-        let mut out = Vec::new();
-        for (_, v) in self.db.scan_prefix(b"event:").flatten() {
-            if let Ok(j) = serde_json::from_slice::<Value>(&v) {
-                out.push(j);
-            }
-        }
-        // Keep most-recent-last semantics by sorting on unix_ms then slicing.
-        out.sort_by_key(|v| v.get("unix_ms").and_then(|x| x.as_u64()).unwrap_or(0));
-        out.into_iter().rev().take(limit).collect()
+        // Hot path: UI polls status frequently (e.g. every ~1.5s). Do not scan + sort the full
+        // event log each time; it becomes O(n log n) as the DB grows and causes visible stutter.
+        //
+        // Keys are `event:{unix_ms}:{uuid}`. `unix_ms` is 13 digits (until year 2286), so sled's
+        // lexicographic key order matches chronological order. We can iterate from the end and
+        // only deserialize up to `limit` items.
+        self.db
+            .scan_prefix(b"event:")
+            .rev()
+            .take(limit)
+            .filter_map(|res| res.ok())
+            .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
+            .collect()
     }
 
     pub fn put_codex_account_snapshot(&self, snapshot: &Value) {
@@ -242,4 +246,37 @@ pub fn unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_events_reads_latest_without_full_scan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        // Insert out-of-order timestamps; iteration should return newest-first by key order.
+        let mk = |ts: u64, id: &str| format!("event:{ts}:{id}");
+        let v = |ts: u64| serde_json::json!({"unix_ms": ts});
+
+        let _ = store.db.insert(
+            mk(1000, "a").as_bytes(),
+            serde_json::to_vec(&v(1000)).unwrap(),
+        );
+        let _ = store.db.insert(
+            mk(3000, "c").as_bytes(),
+            serde_json::to_vec(&v(3000)).unwrap(),
+        );
+        let _ = store.db.insert(
+            mk(2000, "b").as_bytes(),
+            serde_json::to_vec(&v(2000)).unwrap(),
+        );
+
+        let out = store.list_events(2);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].get("unix_ms").and_then(|v| v.as_u64()), Some(3000));
+        assert_eq!(out[1].get("unix_ms").and_then(|v| v.as_u64()), Some(2000));
+    }
 }
