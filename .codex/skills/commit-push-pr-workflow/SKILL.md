@@ -9,7 +9,7 @@ Applies to this repo's conventions:
 - Do not commit directly to `main`; use a feature branch and a PR.
 - PR/issue titles: English. PR bodies/comments: Simplified Chinese by default (unless the request starts with `[EN]`).
 - PR titles must start with one of: `feat:`, `fix:`, `docs:`, `chore:`.
-- PR bodies must include the sections: `## What`, `## Why`, `## Changes`, `## Verify`.
+- PR bodies must include `## What`, `## Why`, `## Changes`, `## Verify`. Add `## TL;DR` only when the PR is long.
 - Avoid GitHub CLI `--body` with escaped newlines; prefer `--body-file` or stdin to prevent literal `\\n`.
 - PowerShell gotcha: backtick (`` ` ``) is an escape character. Avoid putting Markdown inline code (backticks) inside PowerShell double-quoted strings passed to `gh` (it can be swallowed/rewritten). Prefer single quotes, or use `--body-file -` with a here-string.
 

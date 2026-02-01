@@ -13,7 +13,7 @@
 - **Titles**: PR and issue titles stay in English. Descriptions and regular comments default to Simplified Chinese (unless `[EN]`).
 - **PR title prefix**: PR titles must start with one of `feat:`, `fix:`, `docs:`, `chore:`.
 - **PR title length**: Keep PR titles at 8 words or fewer. Avoid symbols like `+` in titles.
-- **PR body format**: PR bodies must include the sections `## What`, `## Why`, `## Changes`, `## Verify` (keep each section concise if the change is small).
+- **PR body format**: PR bodies must include `## What`, `## Why`, `## Changes`, `## Verify`. Add `## TL;DR` only when the PR is long.
 - **PR summary scope**: Titles and bodies must describe the overall changes relative to `main`, not just the latest commit.
 - **Format before commit**: Ensure formatting checks pass before committing.
 - **PowerShell gotcha**: When using `gh pr create` / `gh pr edit` in PowerShell, avoid Markdown inline code using backticks (PowerShell uses backtick as an escape). Prefer plain text, single-quoted strings, or a here-string (`@' ... '@`).
