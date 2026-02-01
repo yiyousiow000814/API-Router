@@ -738,11 +738,11 @@
   text-align: center;
 }
 
-/* Center inline-flex pills (and plain text) reliably inside table cells. */
-.aoTable td.aoCellCenter {
+.aoCellCenterInner {
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 100%;
 }
 
 .aoTable {

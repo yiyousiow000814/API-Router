@@ -151,10 +151,12 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
             <tr key={p}>
               <td style={{ fontFamily: mono }}>{p}</td>
               <td className="aoCellCenter">
-                <span className={`aoPill ${isActive ? 'aoPulse' : ''}`.trim()}>
-                  <span className={dotClass} />
-                  <span className="aoPillText">{healthLabel}</span>
-                </span>
+                <div className="aoCellCenterInner">
+                  <span className={`aoPill ${isActive ? 'aoPulse' : ''}`.trim()}>
+                    <span className={dotClass} />
+                    <span className="aoPillText">{healthLabel}</span>
+                  </span>
+                </div>
               </td>
               <td className="aoCellCenter">{h.consecutive_failures}</td>
               <td className="aoCellCenter">{cooldownActive ? fmtWhen(h.cooldown_until_unix_ms) : '-'}</td>
