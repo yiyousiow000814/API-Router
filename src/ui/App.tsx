@@ -247,6 +247,7 @@ export default function App() {
   const providerDrag = useReorderDrag<string>({
     items: orderedConfigProviders,
     onReorder: (next) => void applyProviderOrder(next),
+    enabled: configModalOpen,
   })
   const providerListRef = providerDrag.listRef
   const registerProviderCardRef = providerDrag.registerItemRef

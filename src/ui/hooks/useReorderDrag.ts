@@ -4,6 +4,7 @@ import type { PointerEvent as ReactPointerEvent, RefObject } from 'react'
 type ReorderDragParams<T extends string> = {
   items: T[]
   onReorder: (next: T[]) => void
+  enabled?: boolean
 }
 
 type ReorderDragResult<T extends string> = {
@@ -22,7 +23,11 @@ type ReorderDragResult<T extends string> = {
 }
 
 // Drag-to-reorder logic extracted from App.tsx so it can be maintained independently.
-export function useReorderDrag<T extends string>({ items, onReorder }: ReorderDragParams<T>): ReorderDragResult<T> {
+export function useReorderDrag<T extends string>({
+  items,
+  onReorder,
+  enabled = true,
+}: ReorderDragParams<T>): ReorderDragResult<T> {
   const itemsRef = useRef<T[]>(items)
   const listRef = useRef<HTMLDivElement | null>(null)
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({})
@@ -385,8 +390,38 @@ export function useReorderDrag<T extends string>({ items, onReorder }: ReorderDr
     if (changed) onReorder(finalOrder)
   }, [onDragMove, onReorder, stopAutoScroll])
 
+  const cancelDrag = useCallback(() => {
+    // Same cleanup as pointerup, but without committing a reorder.
+    dragHandleIdRef.current = null
+    stopAutoScroll()
+
+    setDraggingId(null)
+    setDragOverId(null)
+    setDragOffsetY(0)
+    setDragPreviewOrder(null)
+    setDragBaseTop(0)
+    setDragCardHeight(0)
+    dragCardHeightRef.current = 0
+    dragStartTopInListRef.current = 0
+    autoScrollVelRef.current = 0
+    autoScrollLastTsRef.current = 0
+    dragStartOrderRef.current = []
+    dragOrderRef.current = []
+
+    const sp = scrollParentRef.current
+    if (sp && onScrollDuringDragRef.current) {
+      sp.removeEventListener('scroll', onScrollDuringDragRef.current as EventListener)
+    }
+    onScrollDuringDragRef.current = null
+    scrollParentRef.current = null
+
+    window.removeEventListener('pointermove', onDragMove as EventListener)
+    window.removeEventListener('pointerup', onDragUp as EventListener)
+  }, [onDragMove, onDragUp, stopAutoScroll])
+
   const onHandlePointerDown = useCallback(
     (id: T, e: ReactPointerEvent) => {
+      if (!enabled) return
       e.preventDefault()
 
       dragHandleIdRef.current = id
@@ -440,7 +475,7 @@ export function useReorderDrag<T extends string>({ items, onReorder }: ReorderDr
       window.addEventListener('pointermove', onDragMove as EventListener)
       window.addEventListener('pointerup', onDragUp as EventListener)
     },
-    [onDragMove, onDragUp, recomputeFromClientY, stopAutoScroll],
+    [enabled, onDragMove, onDragUp, recomputeFromClientY, stopAutoScroll],
   )
 
   // Ensure the item ref map doesn't grow unbounded if items are removed/renamed.
@@ -451,6 +486,13 @@ export function useReorderDrag<T extends string>({ items, onReorder }: ReorderDr
       if (!alive.has(k as T)) delete itemRefs.current[k]
     }
   }, [items])
+
+  // If the list UI is disabled/hidden (e.g. config modal closed) while dragging, clean up listeners and timers.
+  useEffect(() => {
+    if (enabled) return
+    if (!dragHandleIdRef.current) return
+    cancelDrag()
+  }, [enabled, cancelDrag])
 
   return {
     listRef,
