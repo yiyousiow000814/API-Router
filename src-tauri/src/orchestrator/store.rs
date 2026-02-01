@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::path::Path;
 
 #[derive(Clone)]
 pub struct Store {
@@ -8,9 +9,76 @@ pub struct Store {
 const LEDGER_DEFAULT: &str = r#"{"since_last_quota_refresh_input_tokens":0,"since_last_quota_refresh_output_tokens":0,"since_last_quota_refresh_total_tokens":0,"last_reset_unix_ms":0}"#;
 
 impl Store {
+    const MAX_EVENTS: usize = 200;
+    const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
+
+    fn allowed_key_prefixes() -> [&'static [u8]; 4] {
+        [b"event:", b"metrics:", b"quota:", b"ledger:"]
+    }
+
+    fn allowed_exact_keys() -> [&'static [u8]; 2] {
+        [b"codex_account:snapshot", b"official_web:snapshot"]
+    }
+
     pub fn open(path: &std::path::Path) -> Result<Self, sled::Error> {
         let db = sled::open(path)?;
         Ok(Self { db })
+    }
+
+    fn prune_events(&self) {
+        // Keep only the newest MAX_EVENTS event keys.
+        // Keys are `event:{unix_ms}:{uuid}` and are lexicographically ordered by time.
+        let boundary = self.db.scan_prefix(b"event:").rev().nth(Self::MAX_EVENTS);
+
+        let Some(Ok((end_key, _))) = boundary else {
+            return;
+        };
+
+        let start = b"event:".to_vec();
+        let end = end_key.to_vec();
+
+        // Delete in chunks to avoid building a huge Vec if the DB grew large.
+        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
+        for res in self.db.range(start..=end) {
+            let Ok((k, _)) = res else {
+                continue;
+            };
+            batch.push(k);
+            if batch.len() >= 1024 {
+                for key in batch.drain(..) {
+                    let _ = self.db.remove(key);
+                }
+            }
+        }
+        for key in batch.drain(..) {
+            let _ = self.db.remove(key);
+        }
+    }
+
+    fn prune_events_db(db: &sled::Db) {
+        let boundary = db.scan_prefix(b"event:").rev().nth(Self::MAX_EVENTS);
+        let Some(Ok((end_key, _))) = boundary else {
+            return;
+        };
+
+        let start = b"event:".to_vec();
+        let end = end_key.to_vec();
+
+        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
+        for res in db.range(start..=end) {
+            let Ok((k, _)) = res else {
+                continue;
+            };
+            batch.push(k);
+            if batch.len() >= 1024 {
+                for key in batch.drain(..) {
+                    let _ = db.remove(key);
+                }
+            }
+        }
+        for key in batch.drain(..) {
+            let _ = db.remove(key);
+        }
     }
 
     pub fn add_event(&self, provider: &str, level: &str, message: &str) {
@@ -26,6 +94,7 @@ impl Store {
         let _ = self
             .db
             .insert(key.as_bytes(), serde_json::to_vec(&v).unwrap_or_default());
+        self.prune_events();
         let _ = self.db.flush();
     }
 
@@ -208,15 +277,19 @@ impl Store {
     }
 
     pub fn list_events(&self, limit: usize) -> Vec<Value> {
-        let mut out = Vec::new();
-        for (_, v) in self.db.scan_prefix(b"event:").flatten() {
-            if let Ok(j) = serde_json::from_slice::<Value>(&v) {
-                out.push(j);
-            }
-        }
-        // Keep most-recent-last semantics by sorting on unix_ms then slicing.
-        out.sort_by_key(|v| v.get("unix_ms").and_then(|x| x.as_u64()).unwrap_or(0));
-        out.into_iter().rev().take(limit).collect()
+        // Hot path: UI polls status frequently (e.g. every ~1.5s). Do not scan + sort the full
+        // event log each time; it becomes O(n log n) as the DB grows and causes visible stutter.
+        //
+        // Keys are `event:{unix_ms}:{uuid}`. `unix_ms` is 13 digits (until year 2286), so sled's
+        // lexicographic key order matches chronological order. We can iterate from the end and
+        // only deserialize up to `limit` items.
+        self.db
+            .scan_prefix(b"event:")
+            .rev()
+            .take(limit)
+            .filter_map(|res| res.ok())
+            .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
+            .collect()
     }
 
     pub fn put_codex_account_snapshot(&self, snapshot: &Value) {
@@ -242,4 +315,182 @@ pub fn unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn dir_size_bytes(path: &Path) -> u64 {
+    fn walk(p: &Path, sum: &mut u64) {
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                walk(&entry.path(), sum);
+            } else {
+                *sum = sum.saturating_add(meta.len());
+            }
+        }
+    }
+
+    let mut sum = 0u64;
+    walk(path, &mut sum);
+    sum
+}
+
+fn is_allowed_key(key: &[u8]) -> bool {
+    Store::allowed_key_prefixes()
+        .iter()
+        .any(|p| key.starts_with(p))
+        || Store::allowed_exact_keys().contains(&key)
+}
+
+/// Best-effort maintenance to keep the on-disk DB bounded:
+/// - remove unexpected keys (e.g. large cached payloads) from this store
+/// - prune events to MAX_EVENTS
+/// - if the directory is still huge, rebuild a compacted DB with only allowed keys
+pub fn maintain_store_dir(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    // If there's no DB yet, nothing to do.
+    if !path.join("db").exists() {
+        return Ok(());
+    }
+
+    // 1) Remove unexpected keys + prune events.
+    {
+        let db = sled::open(path)?;
+
+        let mut batch: Vec<sled::IVec> = Vec::with_capacity(2048);
+        for res in db.iter() {
+            let (k, _v) = res?;
+            if !is_allowed_key(&k) {
+                batch.push(k);
+                if batch.len() >= 2048 {
+                    for key in batch.drain(..) {
+                        let _ = db.remove(key);
+                    }
+                }
+            }
+        }
+        for key in batch.drain(..) {
+            let _ = db.remove(key);
+        }
+
+        Store::prune_events_db(&db);
+        db.flush()?;
+    } // drop DB handle (important for Windows rename)
+
+    // 2) If still too large, rebuild in a new directory and swap.
+    let size = dir_size_bytes(path);
+    if size <= Store::MAX_DB_BYTES {
+        return Ok(());
+    }
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let tmp_dir = parent.join("sled.compact.tmp");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir)?;
+
+    {
+        let src = sled::open(path)?;
+        let dst = sled::open(&tmp_dir)?;
+        for res in src.iter() {
+            let (k, v) = res?;
+            if is_allowed_key(&k) {
+                let _ = dst.insert(k, v);
+            }
+        }
+        dst.flush()?;
+        src.flush()?;
+    }
+
+    // Swap directories. If installing the compacted DB fails, attempt to restore from backup.
+    let backup = parent.join(format!("sled.bak.{}", unix_ms()));
+    if backup.exists() {
+        let _ = std::fs::remove_dir_all(&backup);
+    }
+    if let Err(e) = std::fs::rename(path, &backup) {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(e.into());
+    }
+    if let Err(e2) = std::fs::rename(&tmp_dir, path) {
+        // Best-effort rollback: restore the original DB directory if possible.
+        let rollback = std::fs::rename(&backup, path);
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        match rollback {
+            Ok(_) => {
+                return Err(anyhow::anyhow!(
+                    "failed to install compacted store: {e2} (restored from backup)"
+                ));
+            }
+            Err(e3) => {
+                return Err(anyhow::anyhow!(
+                    "failed to install compacted store: {e2}; rollback failed: {e3} (backup at {})",
+                    backup.display()
+                ));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&backup);
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_events_reads_latest_without_full_scan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        // Insert out-of-order timestamps; iteration should return newest-first by key order.
+        let mk = |ts: u64, id: &str| format!("event:{ts}:{id}");
+        let v = |ts: u64| serde_json::json!({"unix_ms": ts});
+
+        let _ = store.db.insert(
+            mk(1000, "a").as_bytes(),
+            serde_json::to_vec(&v(1000)).unwrap(),
+        );
+        let _ = store.db.insert(
+            mk(3000, "c").as_bytes(),
+            serde_json::to_vec(&v(3000)).unwrap(),
+        );
+        let _ = store.db.insert(
+            mk(2000, "b").as_bytes(),
+            serde_json::to_vec(&v(2000)).unwrap(),
+        );
+
+        let out = store.list_events(2);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].get("unix_ms").and_then(|v| v.as_u64()), Some(3000));
+        assert_eq!(out[1].get("unix_ms").and_then(|v| v.as_u64()), Some(2000));
+    }
+
+    #[test]
+    fn maintain_store_dir_removes_unexpected_prefixes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+
+        // Create a DB with both expected and unexpected keys.
+        {
+            let db = sled::open(&dir).unwrap();
+            let _ = db.insert(b"event:1:a", b"{\"unix_ms\":1}");
+            let _ = db.insert(b"metrics:p1", b"{\"ok_requests\":1}");
+            let _ = db.insert(b"resp:resp_test", b"big payload");
+            db.flush().unwrap();
+        }
+
+        maintain_store_dir(&dir).unwrap();
+
+        let db = sled::open(&dir).unwrap();
+        assert!(db.get(b"event:1:a").unwrap().is_some());
+        assert!(db.get(b"metrics:p1").unwrap().is_some());
+        assert!(db.get(b"resp:resp_test").unwrap().is_none());
+    }
 }
