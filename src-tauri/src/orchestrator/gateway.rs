@@ -219,7 +219,9 @@ pub fn open_store_dir(base: PathBuf) -> anyhow::Result<Store> {
     std::fs::create_dir_all(&path)?;
     // Best-effort maintenance: remove unexpected keys and optionally compact to prevent unbounded growth.
     // Runs before opening the DB to avoid Windows file locking issues.
-    let _ = super::store::maintain_store_dir(&path);
+    if let Err(e) = super::store::maintain_store_dir(&path) {
+        log::warn!("store maintenance skipped: {e}");
+    }
     Ok(Store::open(&path)?)
 }
 

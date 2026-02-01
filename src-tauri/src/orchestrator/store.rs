@@ -12,15 +12,12 @@ impl Store {
     const MAX_EVENTS: usize = 200;
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
 
-    fn allowed_prefixes() -> [&'static [u8]; 6] {
-        [
-            b"event:",
-            b"metrics:",
-            b"quota:",
-            b"ledger:",
-            b"codex_account:snapshot",
-            b"official_web:snapshot",
-        ]
+    fn allowed_key_prefixes() -> [&'static [u8]; 4] {
+        [b"event:", b"metrics:", b"quota:", b"ledger:"]
+    }
+
+    fn allowed_exact_keys() -> [&'static [u8]; 2] {
+        [b"codex_account:snapshot", b"official_web:snapshot"]
     }
 
     pub fn open(path: &std::path::Path) -> Result<Self, sled::Error> {
@@ -56,8 +53,6 @@ impl Store {
         for key in batch.drain(..) {
             let _ = self.db.remove(key);
         }
-
-        let _ = self.db.flush();
     }
 
     fn prune_events_db(db: &sled::Db) {
@@ -84,7 +79,6 @@ impl Store {
         for key in batch.drain(..) {
             let _ = db.remove(key);
         }
-        let _ = db.flush();
     }
 
     pub fn add_event(&self, provider: &str, level: &str, message: &str) {
@@ -346,7 +340,10 @@ fn dir_size_bytes(path: &Path) -> u64 {
 }
 
 fn is_allowed_key(key: &[u8]) -> bool {
-    Store::allowed_prefixes().iter().any(|p| key.starts_with(p))
+    Store::allowed_key_prefixes()
+        .iter()
+        .any(|p| key.starts_with(p))
+        || Store::allowed_exact_keys().contains(&key)
 }
 
 /// Best-effort maintenance to keep the on-disk DB bounded:
@@ -411,13 +408,33 @@ pub fn maintain_store_dir(path: &Path) -> anyhow::Result<()> {
         src.flush()?;
     }
 
-    // Swap directories.
+    // Swap directories. If installing the compacted DB fails, attempt to restore from backup.
     let backup = parent.join(format!("sled.bak.{}", unix_ms()));
     if backup.exists() {
         let _ = std::fs::remove_dir_all(&backup);
     }
-    std::fs::rename(path, &backup)?;
-    std::fs::rename(&tmp_dir, path)?;
+    if let Err(e) = std::fs::rename(path, &backup) {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(e.into());
+    }
+    if let Err(e2) = std::fs::rename(&tmp_dir, path) {
+        // Best-effort rollback: restore the original DB directory if possible.
+        let rollback = std::fs::rename(&backup, path);
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        match rollback {
+            Ok(_) => {
+                return Err(anyhow::anyhow!(
+                    "failed to install compacted store: {e2} (restored from backup)"
+                ));
+            }
+            Err(e3) => {
+                return Err(anyhow::anyhow!(
+                    "failed to install compacted store: {e2}; rollback failed: {e3} (backup at {})",
+                    backup.display()
+                ));
+            }
+        }
+    }
     let _ = std::fs::remove_dir_all(&backup);
 
     Ok(())
