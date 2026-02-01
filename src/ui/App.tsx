@@ -1014,9 +1014,9 @@ export default function App() {
                       </svg>
                     </button>
                   </div>
-                  {clientSessions.length ? (
-                    <div className="aoSessionsPanel" aria-label="Client sessions">
-                      {clientSessions.map((s) => {
+                  <div className="aoSessionsPanel" aria-label="Client sessions">
+                    {clientSessions.length ? (
+                      clientSessions.map((s) => {
                         const effective = s.preferred_provider ?? status.preferred_provider
                         const dotCls = s.active ? 'aoDot' : 'aoDot aoDotMuted'
                         const shortId = s.id.length > 14 ? `${s.id.slice(0, 8)}…${s.id.slice(-4)}` : s.id
@@ -1045,9 +1045,17 @@ export default function App() {
                             </select>
                           </div>
                         )
-                      })}
-                    </div>
-                  ) : null}
+                      })
+                    ) : (
+                      <div className="aoHint">
+                        No sessions yet. Start Codex with a tagged token like{' '}
+                        <span style={{ fontFamily: 'ui-monospace, \"Cascadia Mono\", \"Consolas\", monospace' }}>
+                          token|wt_session=...
+                        </span>
+                        .
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <ProvidersTable providers={providers} status={status} refreshingProviders={refreshingProviders} onRefreshQuota={(name) => void refreshQuota(name)} />
               </div>
