@@ -22,9 +22,9 @@ export function SessionsTable({ sessions, providers, globalPreferred, updating, 
         <tr>
           <th style={{ width: 160 }}>Session</th>
           <th style={{ width: 110 }}>State</th>
-          <th style={{ width: 260 }}>Preferred provider</th>
           <th style={{ width: 170 }}>Last seen</th>
-          <th>Effective</th>
+          <th>Effective provider</th>
+          <th style={{ width: 260 }}>Preferred provider</th>
         </tr>
       </thead>
       <tbody>
@@ -40,6 +40,8 @@ export function SessionsTable({ sessions, providers, globalPreferred, updating, 
                     <span className="aoPillText">{s.active ? 'active' : 'inactive'}</span>
                   </span>
                 </td>
+                <td>{fmtWhen(s.last_seen_unix_ms)}</td>
+                <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{effective}</td>
                 <td>
                   <select
                     className="aoSelect"
@@ -58,8 +60,6 @@ export function SessionsTable({ sessions, providers, globalPreferred, updating, 
                     ))}
                   </select>
                 </td>
-                <td>{fmtWhen(s.last_seen_unix_ms)}</td>
-                <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{effective}</td>
               </tr>
             )
           })
@@ -78,4 +78,3 @@ export function SessionsTable({ sessions, providers, globalPreferred, updating, 
     </table>
   )
 }
-
