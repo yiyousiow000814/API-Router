@@ -34,20 +34,25 @@ export function HeroStatusCard({
         <div className="aoStatValue">{status.manual_override ?? '(auto)'}</div>
       </div>
       <div className="aoDivider" />
-      <div className="aoRow aoRowWrap">
-        <div className="aoHint" style={{ minWidth: 120 }}>
-          Gateway token
+      <div className="aoTokenRow">
+        <div className="aoStatLabel">Gateway token</div>
+        <div className="aoTokenRowRight">
+          <div className="aoVal aoValSmall">{gatewayTokenPreview}</div>
+          <button
+            className="aoIconBtn"
+            title="Copy gateway token"
+            aria-label="Copy gateway token"
+            onClick={onCopyToken}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9 9h9a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z" />
+              <path d="M15 9V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+            </svg>
+          </button>
+          <button className="aoBtn" onClick={onShowRotate}>
+            Show / Rotate
+          </button>
         </div>
-        <div className="aoVal aoValSmall">{gatewayTokenPreview}</div>
-        <button className="aoIconBtn" title="Copy gateway token" aria-label="Copy gateway token" onClick={onCopyToken}>
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M9 9h9a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z" />
-            <path d="M15 9V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
-          </svg>
-        </button>
-        <button className="aoBtn" onClick={onShowRotate}>
-          Show / Rotate
-        </button>
       </div>
       <div className="aoHint">
         Put this into{' '}
@@ -102,7 +107,7 @@ export function HeroCodexCard({ status, onLoginLogout, onRefresh }: HeroCodexPro
           </div>
           {status.codex_account?.limit_weekly_remaining !== '100%' &&
           status.codex_account?.limit_weekly_reset_at ? (
-            <div className="aoHint" style={{ marginTop: 6 }}>
+            <div className="aoHint aoResetHint" style={{ marginTop: 6 }}>
               {fmtResetIn(status.codex_account.limit_weekly_reset_at) ?? 'Reset soon'}
             </div>
           ) : null}
@@ -114,7 +119,7 @@ export function HeroCodexCard({ status, onLoginLogout, onRefresh }: HeroCodexPro
           </div>
           {status.codex_account?.code_review_remaining !== '100%' &&
           status.codex_account?.code_review_reset_at ? (
-            <div className="aoHint" style={{ marginTop: 6 }}>
+            <div className="aoHint aoResetHint" style={{ marginTop: 6 }}>
               {fmtResetIn(status.codex_account.code_review_reset_at) ?? 'Reset soon'}
             </div>
           ) : null}

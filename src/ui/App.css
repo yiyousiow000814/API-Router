@@ -49,7 +49,8 @@
 
 .aoHero {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 0.9fr);
+  /* Make Routing a bit narrower, and Codex a bit wider so "Reset in ..." fits on one line. */
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.85fr) minmax(0, 1.05fr);
   gap: 12px;
   align-items: stretch;
 }
@@ -86,6 +87,24 @@
   row-gap: 8px;
   column-gap: 10px;
   font-size: 13px;
+}
+
+.aoTokenRow {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: center;
+}
+
+.aoTokenRowRight {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.aoResetHint {
+  white-space: nowrap;
 }
 
 .aoStatStack {
