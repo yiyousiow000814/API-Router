@@ -235,13 +235,21 @@ pub fn open_store_dir(base: PathBuf) -> anyhow::Result<Store> {
             Ok(Ok(store)) => Ok(store),
             Ok(Err(e)) => {
                 log::warn!("store open failed, recreating DB: {e}");
-                recover_store_dir(path)?;
-                Ok(Store::open(path)?)
+                let recovered = recover_store_dir(path);
+                if let Err(e2) = recovered {
+                    log::warn!("store recovery failed: {e2}");
+                    return Err(e2);
+                }
+                reopen_after_recovery(path)
             }
             Err(_) => {
                 log::warn!("store open panicked, recreating DB");
-                recover_store_dir(path)?;
-                Ok(Store::open(path)?)
+                let recovered = recover_store_dir(path);
+                if let Err(e2) = recovered {
+                    log::warn!("store recovery failed: {e2}");
+                    return Err(e2);
+                }
+                reopen_after_recovery(path)
             }
         }
     }
@@ -261,11 +269,28 @@ pub fn open_store_dir(base: PathBuf) -> anyhow::Result<Store> {
                     "failed to move corrupted store to {}: {e}",
                     backup.display()
                 );
-                let _ = std::fs::remove_dir_all(path);
+                if let Err(e2) = std::fs::remove_dir_all(path) {
+                    return Err(anyhow::anyhow!(
+                        "failed to remove corrupted store dir: {e2}"
+                    ));
+                }
             }
         }
         std::fs::create_dir_all(path)?;
         Ok(())
+    }
+
+    fn reopen_after_recovery(path: &Path) -> anyhow::Result<Store> {
+        // On Windows, file locks can make recovery partially fail in practice.
+        // Be defensive and avoid crashing if sled panics again.
+        let attempt = std::panic::catch_unwind(|| Store::open(path));
+        match attempt {
+            Ok(Ok(store)) => Ok(store),
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => Err(anyhow::anyhow!(
+                "sled panicked when opening recovered store"
+            )),
+        }
     }
 
     open_or_recover(&path)
