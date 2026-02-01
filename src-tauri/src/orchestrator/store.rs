@@ -18,12 +18,7 @@ impl Store {
     fn prune_events(&self) {
         // Keep only the newest MAX_EVENTS event keys.
         // Keys are `event:{unix_ms}:{uuid}` and are lexicographically ordered by time.
-        let boundary = self
-            .db
-            .scan_prefix(b"event:")
-            .rev()
-            .skip(Self::MAX_EVENTS)
-            .next();
+        let boundary = self.db.scan_prefix(b"event:").rev().nth(Self::MAX_EVENTS);
 
         let Some(Ok((end_key, _))) = boundary else {
             return;
