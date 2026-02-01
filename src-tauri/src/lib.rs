@@ -152,6 +152,8 @@ pub fn run() {
             get_gateway_token,
             rotate_gateway_token,
             set_preferred_provider,
+            set_session_preferred_provider,
+            clear_session_preferred_provider,
             upsert_provider,
             delete_provider,
             rename_provider,
@@ -205,6 +207,31 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         .get_codex_account_snapshot()
         .unwrap_or(serde_json::json!({"ok": false}));
 
+    let client_sessions = {
+        let map = state.gateway.client_sessions.read().clone();
+        let mut items: Vec<_> = map.into_iter().collect();
+        items.sort_by_key(|(_k, v)| std::cmp::Reverse(*v));
+        items.truncate(20);
+        items
+            .into_iter()
+            .map(|(id, last_seen)| {
+                let active = now.saturating_sub(last_seen) < 60_000;
+                let pref = cfg
+                    .routing
+                    .session_preferred_providers
+                    .get(&id)
+                    .cloned()
+                    .filter(|p| cfg.providers.contains_key(p));
+                serde_json::json!({
+                    "id": id,
+                    "last_seen_unix_ms": last_seen,
+                    "active": active,
+                    "preferred_provider": pref
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+
     serde_json::json!({
       "listen": { "host": cfg.listen.host, "port": cfg.listen.port },
       "preferred_provider": cfg.routing.preferred_provider,
@@ -217,7 +244,8 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
       "quota": quota,
       "ledgers": ledgers,
       "last_activity_unix_ms": last_activity,
-      "codex_account": codex_account
+      "codex_account": codex_account,
+      "client_sessions": client_sessions
     })
 }
 
@@ -308,6 +336,56 @@ fn set_preferred_provider(
         .gateway
         .store
         .add_event(&provider, "info", "preferred_provider updated");
+    Ok(())
+}
+
+#[tauri::command]
+fn set_session_preferred_provider(
+    state: tauri::State<'_, app_state::AppState>,
+    session_id: String,
+    provider: String,
+) -> Result<(), String> {
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("session_id is required".to_string());
+    }
+    {
+        let mut cfg = state.gateway.cfg.write();
+        if !cfg.providers.contains_key(&provider) {
+            return Err(format!("unknown provider: {provider}"));
+        }
+        cfg.routing
+            .session_preferred_providers
+            .insert(session_id.clone(), provider.clone());
+    }
+    persist_config(&state).map_err(|e| e.to_string())?;
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        &format!("session preferred_provider updated ({session_id})"),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_session_preferred_provider(
+    state: tauri::State<'_, app_state::AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("session_id is required".to_string());
+    }
+    {
+        let mut cfg = state.gateway.cfg.write();
+        cfg.routing.session_preferred_providers.remove(&session_id);
+    }
+    persist_config(&state).map_err(|e| e.to_string())?;
+    state.gateway.store.add_event(
+        "gateway",
+        "info",
+        &format!("session preferred_provider cleared ({session_id})"),
+    );
     Ok(())
 }
 

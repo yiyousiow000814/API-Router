@@ -167,6 +167,7 @@ export default function App() {
   const [editingProviderName, setEditingProviderName] = useState<string | null>(null)
   const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
+  const [updatingSessionPref, setUpdatingSessionPref] = useState<Record<string, boolean>>({})
   const instructionBackdropMouseDownRef = useRef<boolean>(false)
   const configBackdropMouseDownRef = useRef<boolean>(false)
   const usageRefreshTimerRef = useRef<number | null>(null)
@@ -217,6 +218,25 @@ export default function App() {
     }
     return ordered
   }, [status, config])
+
+  const clientSessions = useMemo(() => {
+    const sessions = status?.client_sessions ?? []
+    return [...sessions].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.last_seen_unix_ms - a.last_seen_unix_ms)
+  }, [status])
+
+  async function setSessionPreferred(sessionId: string, provider: string | null) {
+    setUpdatingSessionPref((m) => ({ ...m, [sessionId]: true }))
+    try {
+      if (provider) {
+        await invoke('set_session_preferred_provider', { sessionId, provider })
+      } else {
+        await invoke('clear_session_preferred_provider', { sessionId })
+      }
+      await refreshStatus()
+    } finally {
+      setUpdatingSessionPref((m) => ({ ...m, [sessionId]: false }))
+    }
+  }
   const orderedConfigProviders = useMemo(() => {
     if (!config) return []
     const names = Object.keys(config.providers ?? {})
@@ -994,6 +1014,40 @@ export default function App() {
                       </svg>
                     </button>
                   </div>
+                  {clientSessions.length ? (
+                    <div className="aoSessionsPanel" aria-label="Client sessions">
+                      {clientSessions.map((s) => {
+                        const effective = s.preferred_provider ?? status.preferred_provider
+                        const dotCls = s.active ? 'aoDot' : 'aoDot aoDotMuted'
+                        const shortId = s.id.length > 14 ? `${s.id.slice(0, 8)}…${s.id.slice(-4)}` : s.id
+                        return (
+                          <div key={s.id} className="aoSessionChip">
+                            <span className={dotCls} title={s.active ? 'active' : 'inactive'} />
+                            <span className="aoSessionId" title={s.id}>
+                              {shortId}
+                            </span>
+                            <select
+                              className="aoSessionSelect"
+                              value={s.preferred_provider ?? ''}
+                              disabled={!!updatingSessionPref[s.id]}
+                              onChange={(e) => {
+                                const v = e.target.value
+                                void setSessionPreferred(s.id, v ? v : null)
+                              }}
+                              title={`Preferred provider (effective: ${effective})`}
+                            >
+                              <option value="">{`(follow global: ${status.preferred_provider})`}</option>
+                              {providers.map((p) => (
+                                <option key={p} value={p}>
+                                  {p}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : null}
                 </div>
                 <ProvidersTable providers={providers} status={status} refreshingProviders={refreshingProviders} onRefreshQuota={(name) => void refreshQuota(name)} />
               </div>

@@ -38,6 +38,7 @@ pub struct GatewayState {
     pub last_used_reason: Arc<RwLock<Option<String>>>,
     pub usage_base_speed_cache: Arc<RwLock<HashMap<String, UsageBaseSpeedCacheEntry>>>,
     pub prev_id_support_cache: Arc<RwLock<HashMap<String, bool>>>,
+    pub client_sessions: Arc<RwLock<HashMap<String, u64>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -109,6 +110,47 @@ fn session_key_from_request(headers: &HeaderMap, body: &Value) -> Option<String>
     }
     let _ = body;
     Some(v.to_string())
+}
+
+fn client_session_from_headers(headers: &HeaderMap) -> Option<String> {
+    // Prefer an explicit header if the client can set it.
+    if let Some(v) = headers.get("x-wt-session").and_then(|v| v.to_str().ok()) {
+        let v = v.trim();
+        if !v.is_empty() {
+            return Some(v.to_string());
+        }
+    }
+
+    // Fallback: allow tagging the gateway token as `token|wt_session=<id>` (or `|session=<id>`).
+    let auth = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())?;
+    let tok = bearer_token(auth)?;
+    let (_base, session) = split_gateway_token(tok);
+    session
+}
+
+fn split_gateway_token(tok: &str) -> (&str, Option<String>) {
+    let mut it = tok.split('|');
+    let base = it.next().unwrap_or(tok).trim();
+    let mut session: Option<String> = None;
+    for seg in it {
+        let seg = seg.trim();
+        if seg.is_empty() {
+            continue;
+        }
+        let Some((k, v)) = seg.split_once('=') else {
+            continue;
+        };
+        let k = k.trim().to_ascii_lowercase();
+        if k == "wt_session" || k == "wt" || k == "session" {
+            let v = v.trim();
+            if !v.is_empty() {
+                session = Some(v.to_string());
+            }
+        }
+    }
+    (base, session)
 }
 
 fn is_prev_id_unsupported_error(message: &str) -> bool {
@@ -339,11 +381,15 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
 }
 
 async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl IntoResponse {
-    if let Some(resp) = require_gateway_auth(&st, &headers) {
-        return resp;
-    }
+    let session_from_auth = match require_gateway_auth(&st, &headers) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
     st.last_activity_unix_ms.store(unix_ms(), Ordering::Relaxed);
     let cfg = st.cfg.read().clone();
+    if let Some(id) = client_session_from_headers(&headers).or(session_from_auth) {
+        st.client_sessions.write().insert(id, unix_ms());
+    }
     let (provider_name, reason) = st.router.decide(&cfg);
     let p = match cfg.providers.get(&provider_name) {
         Some(p) => p.clone(),
@@ -382,9 +428,10 @@ async fn responses(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    if let Some(resp) = require_gateway_auth(&st, &headers) {
-        return resp;
-    }
+    let session_from_auth = match require_gateway_auth(&st, &headers) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
+    };
     st.last_activity_unix_ms.store(unix_ms(), Ordering::Relaxed);
     let cfg = st.cfg.read().clone();
     let client_auth = headers
@@ -397,7 +444,11 @@ async fn responses(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let session_key = session_key_from_request(&headers, &body);
+    let codex_session_key = session_key_from_request(&headers, &body);
+    let client_session_key = client_session_from_headers(&headers).or(session_from_auth);
+    if let Some(id) = client_session_key.as_deref() {
+        st.client_sessions.write().insert(id.to_string(), unix_ms());
+    }
 
     let previous_response_id = body
         .get("previous_response_id")
@@ -430,7 +481,13 @@ async fn responses(
     let mut session_messages: Option<Vec<Value>> = None;
     for _ in 0..cfg.providers.len().max(1) {
         let is_first_attempt = tried.is_empty();
-        let (provider_name, reason) = st.router.decide(&cfg);
+        let preferred = client_session_key
+            .as_deref()
+            .and_then(|id| cfg.routing.session_preferred_providers.get(id))
+            .filter(|p| cfg.providers.contains_key(*p))
+            .map(|s| s.as_str())
+            .unwrap_or(cfg.routing.preferred_provider.as_str());
+        let (provider_name, reason) = st.router.decide_with_preferred(&cfg, preferred);
         if tried.contains(&provider_name) {
             break;
         }
@@ -464,7 +521,7 @@ async fn responses(
                     // No previous response id to reconstruct; pass only the current input.
                     Value::Array(current_items.clone())
                 } else {
-                    let Some(session_id) = session_key.as_deref() else {
+                    let Some(session_id) = codex_session_key.as_deref() else {
                         return (
                             StatusCode::BAD_REQUEST,
                             Json(json!({
@@ -541,7 +598,7 @@ async fn responses(
                             provider_name,
                             previous_response_id.clone(),
                             body_for_provider.clone(),
-                            session_key.clone(),
+                            codex_session_key.clone(),
                         );
                     }
                     Ok(resp) => {
@@ -710,47 +767,58 @@ fn bearer_token(auth: &str) -> Option<&str> {
     None
 }
 
-fn require_gateway_auth(st: &GatewayState, headers: &HeaderMap) -> Option<Response> {
+fn require_gateway_auth(
+    st: &GatewayState,
+    headers: &HeaderMap,
+) -> Result<Option<String>, Box<Response>> {
     let Some(expected) = st.secrets.get_gateway_token() else {
         // No token configured: allow for local dev.
-        return None;
+        return Ok(None);
     };
     let expected = expected.trim();
     if expected.is_empty() {
-        return None;
+        return Ok(None);
     }
     let Some(auth) = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
     else {
-        return Some(
+        return Err(Box::new(
             (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error": {"message":"missing Authorization (set OPENAI_API_KEY in .codex/auth.json to the gateway token)","type":"unauthorized"}})),
             )
                 .into_response(),
-        );
+        ));
     };
     let Some(tok) = bearer_token(auth) else {
-        return Some((StatusCode::UNAUTHORIZED, Json(json!({"error":{"message":"invalid Authorization format","type":"unauthorized"}}))).into_response());
+        return Err(Box::new(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":{"message":"invalid Authorization format","type":"unauthorized"}})),
+            )
+                .into_response(),
+        ));
     };
-    if tok != expected {
-        return Some(
+    let (base, session) = split_gateway_token(tok);
+    if base != expected {
+        return Err(Box::new(
             (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error": {"message":"invalid gateway token","type":"unauthorized"}})),
             )
                 .into_response(),
-        );
+        ));
     }
-    None
+    Ok(session)
 }
 
 fn upstream_auth<'a>(st: &GatewayState, client_auth: Option<&'a str>) -> Option<&'a str> {
     let auth = client_auth?;
     // Never forward the local gateway token upstream.
     if let (Some(tok), Some(b)) = (st.secrets.get_gateway_token(), bearer_token(auth)) {
-        if !tok.trim().is_empty() && b == tok.trim() {
+        let (base, _session) = split_gateway_token(b);
+        if !tok.trim().is_empty() && base == tok.trim() {
             return None;
         }
     }

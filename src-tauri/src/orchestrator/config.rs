@@ -3,6 +3,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingConfig {
     pub preferred_provider: String,
+    /// Per-client-session preferred provider overrides (e.g. WT_SESSION on Windows Terminal).
+    ///
+    /// When a request is tagged with a client session id, the router can use this mapping
+    /// instead of the global `preferred_provider`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub session_preferred_providers: std::collections::BTreeMap<String, String>,
     pub auto_return_to_preferred: bool,
     pub preferred_stable_seconds: u64,
     pub failure_threshold: u32,
@@ -87,6 +93,7 @@ impl AppConfig {
             },
             routing: RoutingConfig {
                 preferred_provider: "official".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
                 auto_return_to_preferred: true,
                 preferred_stable_seconds: 30,
                 failure_threshold: 2,
