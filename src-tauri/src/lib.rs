@@ -226,6 +226,9 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                     });
                     entry.pid = s.pid;
                     entry.last_seen_unix_ms = now;
+                    if let Some(cid) = s.codex_session_id.as_deref() {
+                        entry.last_codex_session_id = Some(cid.to_string());
+                    }
                 }
             }
         }

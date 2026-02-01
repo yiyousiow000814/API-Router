@@ -23,6 +23,18 @@ pub fn read_process_env_var(_pid: u32, _key: &str) -> Option<String> {
     None
 }
 
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn read_process_command_line(_pid: u32) -> Option<String> {
+    None
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn read_process_cwd(_pid: u32) -> Option<std::path::PathBuf> {
+    None
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
@@ -40,6 +52,48 @@ mod windows_impl {
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
     };
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct Peb {
+        _reserved1: [u8; 0x20],
+        process_parameters: usize,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct UnicodeString {
+        length: u16,         // bytes (not including NUL)
+        maximum_length: u16, // bytes
+        buffer: usize,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct CurDir {
+        dos_path: UnicodeString,
+        handle: usize,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct RtlUserProcessParameters {
+        maximum_length: u32,
+        length: u32,
+        flags: u32,
+        debug_flags: u32,
+        console_handle: usize,
+        console_flags: u32,
+        _pad0: u32,
+        standard_input: usize,
+        standard_output: usize,
+        standard_error: usize,
+        current_directory: CurDir,
+        dll_path: UnicodeString,
+        image_path_name: UnicodeString,
+        command_line: UnicodeString,
+        environment: usize,
+    }
 
     // NtQueryInformationProcess is not officially documented in the Win32 API, but it is stable and widely used.
     // We only use it to locate the PEB so we can read the child's environment block.
@@ -84,6 +138,30 @@ mod windows_impl {
                 return None;
             }
             let out = read_process_env_var_handle(h, key);
+            let _ = CloseHandle(h);
+            out
+        }
+    }
+
+    pub fn read_process_command_line(pid: u32) -> Option<String> {
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
+            if h == 0 {
+                return None;
+            }
+            let out = read_process_command_line_handle(h);
+            let _ = CloseHandle(h);
+            out
+        }
+    }
+
+    pub fn read_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
+            if h == 0 {
+                return None;
+            }
+            let out = read_process_cwd_handle(h);
             let _ = CloseHandle(h);
             out
         }
@@ -219,9 +297,9 @@ mod windows_impl {
         None
     }
 
-    fn read_process_env_var_handle(h: HANDLE, key: &str) -> Option<String> {
+    // PROCESS_BASIC_INFORMATION (class 0) includes the PEB base address.
+    fn peb_base_address(h: HANDLE) -> Option<usize> {
         unsafe {
-            // PROCESS_BASIC_INFORMATION (class 0) includes the PEB base address.
             #[repr(C)]
             struct ProcessBasicInformation {
                 reserved1: *mut core::ffi::c_void,
@@ -245,65 +323,56 @@ mod windows_impl {
             }
             let pbi = pbi.assume_init();
             let peb_addr = pbi.peb_base_address as usize;
-            if peb_addr == 0 {
-                return None;
-            }
+            if peb_addr == 0 { None } else { Some(peb_addr) }
+        }
+    }
 
-            #[repr(C)]
-            #[derive(Copy, Clone)]
-            struct Peb {
-                _reserved1: [u8; 0x20],
-                process_parameters: usize,
-            }
+    fn read_process_env_var_handle(h: HANDLE, key: &str) -> Option<String> {
+        let peb_addr = peb_base_address(h)?;
+        let peb: Peb = read_struct::<Peb>(h, peb_addr)?;
+        if peb.process_parameters == 0 {
+            return None;
+        }
 
-            let peb: Peb = read_struct::<Peb>(h, peb_addr)?;
-            if peb.process_parameters == 0 {
-                return None;
-            }
+        let params: RtlUserProcessParameters =
+            read_struct::<RtlUserProcessParameters>(h, peb.process_parameters)?;
+        if params.environment == 0 {
+            return None;
+        }
 
-            #[repr(C)]
-            #[derive(Copy, Clone)]
-            struct UnicodeString {
-                length: u16,
-                maximum_length: u16,
-                buffer: usize,
-            }
+        let env_u16 = read_utf16_env_block(h, params.environment)?;
+        find_env_var(&env_u16, key)
+    }
 
-            #[repr(C)]
-            #[derive(Copy, Clone)]
-            struct CurDir {
-                dos_path: UnicodeString,
-                handle: usize,
-            }
+    fn read_process_command_line_handle(h: HANDLE) -> Option<String> {
+        let peb_addr = peb_base_address(h)?;
 
-            #[repr(C)]
-            #[derive(Copy, Clone)]
-            struct RtlUserProcessParameters {
-                maximum_length: u32,
-                length: u32,
-                flags: u32,
-                debug_flags: u32,
-                console_handle: usize,
-                console_flags: u32,
-                _pad0: u32,
-                standard_input: usize,
-                standard_output: usize,
-                standard_error: usize,
-                current_directory: CurDir,
-                dll_path: UnicodeString,
-                image_path_name: UnicodeString,
-                command_line: UnicodeString,
-                environment: usize,
-            }
+        let peb: Peb = read_struct::<Peb>(h, peb_addr)?;
+        if peb.process_parameters == 0 {
+            return None;
+        }
 
-            let params: RtlUserProcessParameters =
-                read_struct::<RtlUserProcessParameters>(h, peb.process_parameters)?;
-            if params.environment == 0 {
-                return None;
-            }
+        let params: RtlUserProcessParameters =
+            read_struct::<RtlUserProcessParameters>(h, peb.process_parameters)?;
+        read_unicode_string(h, params.command_line)
+    }
 
-            let env_u16 = read_utf16_env_block(h, params.environment)?;
-            find_env_var(&env_u16, key)
+    fn read_process_cwd_handle(h: HANDLE) -> Option<std::path::PathBuf> {
+        let peb_addr = peb_base_address(h)?;
+
+        let peb: Peb = read_struct::<Peb>(h, peb_addr)?;
+        if peb.process_parameters == 0 {
+            return None;
+        }
+
+        let params: RtlUserProcessParameters =
+            read_struct::<RtlUserProcessParameters>(h, peb.process_parameters)?;
+        let s = read_unicode_string(h, params.current_directory.dos_path)?;
+        let s = s.trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(s))
         }
     }
 
@@ -364,6 +433,32 @@ mod windows_impl {
         Some(out)
     }
 
+    fn read_unicode_string(h: HANDLE, s: UnicodeString) -> Option<String> {
+        if s.buffer == 0 || s.length == 0 {
+            return None;
+        }
+        let bytes = s.length as usize;
+        if bytes % 2 != 0 {
+            return None;
+        }
+        let len_u16 = bytes / 2;
+        let mut buf = vec![0u16; len_u16];
+        let mut read: usize = 0;
+        let ok = unsafe {
+            ReadProcessMemory(
+                h,
+                s.buffer as *const _,
+                buf.as_mut_ptr() as *mut _,
+                bytes,
+                &mut read as *mut usize,
+            )
+        };
+        if ok == 0 || read != bytes {
+            return None;
+        }
+        Some(OsString::from_wide(&buf).to_string_lossy().to_string())
+    }
+
     fn find_env_var(env: &[u16], key: &str) -> Option<String> {
         let mut start = 0usize;
         while start < env.len() {
@@ -389,7 +484,10 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
-pub use windows_impl::{infer_loopback_peer_pid, is_pid_alive, read_process_env_var};
+pub use windows_impl::{
+    infer_loopback_peer_pid, is_pid_alive, read_process_command_line, read_process_cwd,
+    read_process_env_var,
+};
 
 #[cfg(all(test, windows))]
 mod tests {
@@ -408,5 +506,21 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(got.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn can_read_child_process_command_line() {
+        // Ensure our PEB reading logic can fetch the command line of another process.
+        let mut cmd = std::process::Command::new("cmd.exe");
+        cmd.args(["/C", "ping", "127.0.0.1", "-n", "3", ">", "NUL"]);
+        let mut child = cmd.spawn().expect("spawn cmd");
+        let pid = child.id();
+        let got = read_process_command_line(pid).unwrap_or_default();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            got.to_ascii_lowercase().contains("cmd.exe"),
+            "command line missing cmd.exe: {got}"
+        );
     }
 }
