@@ -733,6 +733,10 @@
   word-break: break-word;
 }
 
+.aoCellCenter {
+  text-align: center;
+}
+
 .aoTable {
   width: 100%;
   border-collapse: separate;

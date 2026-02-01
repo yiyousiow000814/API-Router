@@ -16,9 +16,15 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
       <thead>
         <tr>
           <th style={{ width: 140 }}>Name</th>
-          <th style={{ width: 120 }}>Healthy</th>
-          <th style={{ width: 90 }}>Failures</th>
-          <th style={{ width: 170 }}>Cooldown</th>
+          <th className="aoCellCenter" style={{ width: 120 }}>
+            Healthy
+          </th>
+          <th className="aoCellCenter" style={{ width: 90 }}>
+            Failures
+          </th>
+          <th className="aoCellCenter" style={{ width: 170 }}>
+            Cooldown
+          </th>
           <th style={{ width: 170 }}>Last OK</th>
           <th>Last Error</th>
           <th style={{ width: 240 }}>Usage</th>
@@ -144,14 +150,14 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
           return (
             <tr key={p}>
               <td style={{ fontFamily: mono }}>{p}</td>
-              <td>
+              <td className="aoCellCenter">
                 <span className={`aoPill ${isActive ? 'aoPulse' : ''}`.trim()}>
                   <span className={dotClass} />
                   <span className="aoPillText">{healthLabel}</span>
                 </span>
               </td>
-              <td>{h.consecutive_failures}</td>
-              <td>{cooldownActive ? fmtWhen(h.cooldown_until_unix_ms) : '-'}</td>
+              <td className="aoCellCenter">{h.consecutive_failures}</td>
+              <td className="aoCellCenter">{cooldownActive ? fmtWhen(h.cooldown_until_unix_ms) : '-'}</td>
               <td>{fmtWhen(h.last_ok_at_unix_ms)}</td>
               <td className="aoCellWrap">{h.last_error ? h.last_error : '-'}</td>
               <td className="aoUsageCell">
