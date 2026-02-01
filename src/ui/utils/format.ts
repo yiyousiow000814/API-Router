@@ -31,6 +31,44 @@ export function fmtWhenAny(value?: string | number | null): string {
   return fmtWhen(ms)
 }
 
+export function parseWhenAnyToMs(value?: string | number | null): number | null {
+  if (value == null) return null
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  const s = String(value).trim()
+  if (!s) return null
+  if (/^\d+$/.test(s)) {
+    const n = Number(s)
+    if (!Number.isFinite(n)) return null
+    return n < 2_000_000_000 ? n * 1000 : n
+  }
+  const ms = Date.parse(s)
+  return Number.isFinite(ms) ? ms : null
+}
+
+export function fmtResetIn(resetAt?: string | number | null, nowMs: number = Date.now()): string | null {
+  const ms = parseWhenAnyToMs(resetAt)
+  if (ms == null) return null
+  let diff = ms - nowMs
+  if (!Number.isFinite(diff)) return null
+  if (diff <= 0) return 'Reset soon'
+
+  const dayMs = 24 * 60 * 60 * 1000
+  const hourMs = 60 * 60 * 1000
+  const minMs = 60 * 1000
+
+  const d = Math.floor(diff / dayMs)
+  diff -= d * dayMs
+  const h = Math.floor(diff / hourMs)
+  diff -= h * hourMs
+  const m = Math.floor(diff / minMs)
+
+  const parts: string[] = []
+  if (d > 0) parts.push(`${d}d`)
+  if (h > 0 || d > 0) parts.push(`${h}h`)
+  parts.push(`${m}m`)
+  return `Reset in ${parts.join(' ')}`
+}
+
 export function pctOf(part?: number | null, total?: number | null): number | null {
   if (part == null || total == null) return null
   if (!Number.isFinite(part) || !Number.isFinite(total) || total <= 0) return null
