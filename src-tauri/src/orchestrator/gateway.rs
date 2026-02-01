@@ -39,7 +39,14 @@ pub struct GatewayState {
     pub last_used_reason: Arc<RwLock<Option<String>>>,
     pub usage_base_speed_cache: Arc<RwLock<HashMap<String, UsageBaseSpeedCacheEntry>>>,
     pub prev_id_support_cache: Arc<RwLock<HashMap<String, bool>>>,
-    pub client_sessions: Arc<RwLock<HashMap<String, u64>>>,
+    pub client_sessions: Arc<RwLock<HashMap<String, ClientSessionRuntime>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClientSessionRuntime {
+    pub pid: u32,
+    pub last_seen_unix_ms: u64,
+    pub last_codex_session_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -111,6 +118,40 @@ fn session_key_from_request(headers: &HeaderMap, body: &Value) -> Option<String>
     }
     let _ = body;
     Some(v.to_string())
+}
+
+fn codex_session_id_for_display(headers: &HeaderMap, body: &Value) -> Option<String> {
+    for k in [
+        "session_id",
+        "x-session-id",
+        "x-codex-session",
+        "x-codex-session-id",
+        "codex-session",
+        "codex_session",
+    ] {
+        if let Some(v) = headers.get(k).and_then(|v| v.to_str().ok()) {
+            let v = v.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    for k in [
+        "session_id",
+        "session",
+        "codex_session_id",
+        "codexSessionId",
+    ] {
+        if let Some(v) = body.get(k) {
+            if let Some(s) = v.as_str() {
+                let s = s.trim();
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn is_prev_id_unsupported_error(message: &str) -> bool {
@@ -372,8 +413,16 @@ async fn models(
     let api_key = st.secrets.get_provider_key(&provider_name);
     let client_auth = upstream_auth(&st, client_auth);
 
-    if let Some(id) = wt_session::infer_wt_session(peer, cfg.listen.port) {
-        st.client_sessions.write().insert(id, unix_ms());
+    if let Some(inferred) = wt_session::infer_wt_session(peer, cfg.listen.port) {
+        let mut map = st.client_sessions.write();
+        map.insert(
+            inferred.wt_session.clone(),
+            ClientSessionRuntime {
+                pid: inferred.pid,
+                last_seen_unix_ms: unix_ms(),
+                last_codex_session_id: None,
+            },
+        );
     }
 
     let timeout = cfg.routing.request_timeout_seconds;
@@ -413,9 +462,25 @@ async fn responses(
         .unwrap_or(false);
 
     let codex_session_key = session_key_from_request(&headers, &body);
-    let client_session_key = wt_session::infer_wt_session(peer, cfg.listen.port);
-    if let Some(id) = client_session_key.as_deref() {
-        st.client_sessions.write().insert(id.to_string(), unix_ms());
+    let codex_session_display = codex_session_id_for_display(&headers, &body);
+    let client_session = wt_session::infer_wt_session(peer, cfg.listen.port);
+    if let Some(inferred) = client_session.as_ref() {
+        let mut map = st.client_sessions.write();
+        let entry = map
+            .entry(inferred.wt_session.clone())
+            .or_insert(ClientSessionRuntime {
+                pid: inferred.pid,
+                last_seen_unix_ms: 0,
+                last_codex_session_id: None,
+            });
+        entry.pid = inferred.pid;
+        entry.last_seen_unix_ms = unix_ms();
+        if let Some(cid) = codex_session_display
+            .as_deref()
+            .or(codex_session_key.as_deref())
+        {
+            entry.last_codex_session_id = Some(cid.to_string());
+        }
     }
 
     let previous_response_id = body
@@ -449,8 +514,9 @@ async fn responses(
     let mut session_messages: Option<Vec<Value>> = None;
     for _ in 0..cfg.providers.len().max(1) {
         let is_first_attempt = tried.is_empty();
-        let preferred = client_session_key
-            .as_deref()
+        let preferred = client_session
+            .as_ref()
+            .map(|s| s.wt_session.as_str())
             .and_then(|id| cfg.routing.session_preferred_providers.get(id))
             .filter(|p| cfg.providers.contains_key(*p))
             .map(|s| s.as_str())

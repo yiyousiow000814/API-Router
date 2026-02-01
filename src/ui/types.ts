@@ -16,6 +16,8 @@ export type Status = {
   recent_events: Array<{ provider: string; level: string; unix_ms: number; message: string }>
   client_sessions?: Array<{
     id: string
+    wt_session?: string
+    codex_session_id?: string | null
     last_seen_unix_ms: number
     active: boolean
     preferred_provider?: string | null

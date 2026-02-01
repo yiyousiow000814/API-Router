@@ -1,13 +1,29 @@
 use std::net::SocketAddr;
 
 #[cfg(not(windows))]
-pub fn infer_wt_session(_peer: SocketAddr, _server_port: u16) -> Option<String> {
+pub fn infer_wt_session(_peer: SocketAddr, _server_port: u16) -> Option<InferredWtSession> {
     None
 }
 
 #[cfg(windows)]
-pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<String> {
+pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWtSession> {
     windows_impl::infer_wt_session(peer, server_port)
+}
+
+#[derive(Clone, Debug)]
+pub struct InferredWtSession {
+    pub wt_session: String,
+    pub pid: u32,
+}
+
+#[cfg(not(windows))]
+pub fn is_pid_alive(_pid: u32) -> bool {
+    false
+}
+
+#[cfg(windows)]
+pub fn is_pid_alive(pid: u32) -> bool {
+    windows_impl::is_pid_alive(pid)
 }
 
 #[cfg(windows)]
@@ -29,7 +45,7 @@ mod windows_impl {
     use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
     use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
     };
 
     // NtQueryInformationProcess is not officially documented in the Win32 API, but it is stable and widely used.
@@ -49,7 +65,7 @@ mod windows_impl {
     static PID_CACHE: OnceLock<Mutex<HashMap<u32, (String, u64)>>> = OnceLock::new();
     const PID_CACHE_TTL_MS: u64 = 10_000;
 
-    pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<String> {
+    pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWtSession> {
         let now = unix_ms();
 
         // Only meaningful for loopback requests. External clients won't have WT_SESSION.
@@ -60,13 +76,26 @@ mod windows_impl {
         // Fast path: if we can map the connection to a PID and we recently resolved it, reuse.
         if let Some(pid) = tcp_owner_pid(peer, server_port) {
             if let Some(v) = cached_pid(pid, now) {
-                return Some(v);
+                return Some(InferredWtSession { wt_session: v, pid });
             }
             let v = read_process_env_var(pid, "WT_SESSION")?;
             remember_pid(pid, v.clone(), now);
-            return Some(v);
+            return Some(InferredWtSession { wt_session: v, pid });
         }
         None
+    }
+
+    pub fn is_pid_alive(pid: u32) -> bool {
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if h == 0 {
+                return false;
+            }
+            let mut code: u32 = 0;
+            let ok = GetExitCodeProcess(h, &mut code as *mut u32);
+            let _ = CloseHandle(h);
+            ok != 0 && code == 259 // STILL_ACTIVE
+        }
     }
 
     fn cached_pid(pid: u32, now: u64) -> Option<String> {

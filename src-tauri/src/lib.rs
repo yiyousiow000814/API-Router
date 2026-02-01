@@ -208,23 +208,32 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         .unwrap_or(serde_json::json!({"ok": false}));
 
     let client_sessions = {
+        // Drop dead sessions aggressively (e.g. user Ctrl+C'd Codex).
+        // We keep the persisted preference mapping in config; only the runtime list is pruned.
+        {
+            let mut map = state.gateway.client_sessions.write();
+            map.retain(|_, v| crate::orchestrator::wt_session::is_pid_alive(v.pid));
+        }
+
         let map = state.gateway.client_sessions.read().clone();
         let mut items: Vec<_> = map.into_iter().collect();
-        items.sort_by_key(|(_k, v)| std::cmp::Reverse(*v));
+        items.sort_by_key(|(_k, v)| std::cmp::Reverse(v.last_seen_unix_ms));
         items.truncate(20);
         items
             .into_iter()
-            .map(|(id, last_seen)| {
-                let active = now.saturating_sub(last_seen) < 60_000;
+            .map(|(wt_session, v)| {
+                let active = now.saturating_sub(v.last_seen_unix_ms) < 60_000;
                 let pref = cfg
                     .routing
                     .session_preferred_providers
-                    .get(&id)
+                    .get(&wt_session)
                     .cloned()
                     .filter(|p| cfg.providers.contains_key(p));
                 serde_json::json!({
-                    "id": id,
-                    "last_seen_unix_ms": last_seen,
+                    "id": wt_session,
+                    "wt_session": wt_session,
+                    "codex_session_id": v.last_codex_session_id,
+                    "last_seen_unix_ms": v.last_seen_unix_ms,
                     "active": active,
                     "preferred_provider": pref
                 })

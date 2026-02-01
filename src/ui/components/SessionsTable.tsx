@@ -2,6 +2,8 @@ import { fmtWhen } from '../utils/format'
 
 type SessionRow = {
   id: string
+  wt_session?: string | null
+  codex_session_id?: string | null
   last_seen_unix_ms: number
   active: boolean
   preferred_provider?: string | null
@@ -20,7 +22,7 @@ export function SessionsTable({ sessions, providers, globalPreferred, updating, 
     <table className="aoTable aoTableFixed">
       <thead>
         <tr>
-          <th style={{ width: 160 }}>Session</th>
+          <th style={{ width: 220 }}>Codex session</th>
           <th style={{ width: 110 }}>State</th>
           <th style={{ width: 170 }}>Last seen</th>
           <th>Effective provider</th>
@@ -31,13 +33,21 @@ export function SessionsTable({ sessions, providers, globalPreferred, updating, 
         {sessions.length ? (
           sessions.map((s) => {
             const effective = s.preferred_provider ?? globalPreferred
+            const codexSession = s.codex_session_id ?? null
+            const wt = s.wt_session ?? s.id
             return (
               <tr key={s.id}>
-                <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{s.id}</td>
+                <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>
+                  {codexSession ? (
+                    <div title={`WT_SESSION: ${wt}`}>{codexSession}</div>
+                  ) : (
+                    <div title={`WT_SESSION: ${wt}`}>-</div>
+                  )}
+                </td>
                 <td>
                   <span className="aoPill">
                     <span className={s.active ? 'aoDot' : 'aoDot aoDotMuted'} />
-                    <span className="aoPillText">{s.active ? 'active' : 'inactive'}</span>
+                    <span className="aoPillText">{s.active ? 'active' : 'idle'}</span>
                   </span>
                 </td>
                 <td>{fmtWhen(s.last_seen_unix_ms)}</td>
