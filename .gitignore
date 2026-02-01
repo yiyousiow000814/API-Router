@@ -20,6 +20,7 @@ user-data/
 
 # Local convenience launcher (built binary, never commit)
 Agent Orchestrator.exe
+API Router.exe
 
 # Local research / temporary clones (never commit)
 packycode-cost/
