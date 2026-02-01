@@ -503,6 +503,9 @@
   gap: 16px;
   margin-top: 12px;
   position: relative;
+  overflow-anchor: none;
+  /* Prevent the drag overlay shadow from being clipped by the modal body. */
+  padding-bottom: 48px;
 }
 
 .aoProviderConfigCard {
@@ -518,11 +521,15 @@
 .aoProviderConfigDragging {
   position: relative;
   z-index: 6;
-  opacity: 0.98;
+  /* Keep the drag overlay fully opaque to avoid blending/double-dark borders when it overlaps other cards. */
+  opacity: 1;
+  background: #fff;
   pointer-events: none;
+  /* Avoid drop-shadows during drag: they darken underlying card borders (especially when clipped). */
+  border-color: rgba(var(--ao-accent-rgb), 0.55);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.75),
-    0 12px 28px rgba(13, 18, 32, 0.18);
+    0 0 0 3px rgba(var(--ao-accent-rgb), 0.12);
 }
 
 .aoProviderConfigPlaceholder {
@@ -1296,6 +1303,9 @@
   overflow: auto;
   padding-right: 6px;
   margin-top: 8px;
+  /* Disable scroll anchoring: during drag-reorder we move placeholders above the viewport,
+     and Chromium's anchor compensation can snap the scroll position upward. */
+  overflow-anchor: none;
 }
 
 .aoModalBody::-webkit-scrollbar {

@@ -11,6 +11,7 @@ import { InstructionModal } from './components/InstructionModal'
 import { GatewayTokenModal } from './components/GatewayTokenModal'
 import { ConfigModal } from './components/ConfigModal'
 import { HeroCodexCard, HeroRoutingCard, HeroStatusCard } from './components/HeroCards'
+import { useReorderDrag } from './hooks/useReorderDrag'
 
 const devStatus: Status = {
   listen: { host: '127.0.0.1', port: 4000 },
@@ -163,23 +164,6 @@ export default function App() {
   const [instructionModalOpen, setInstructionModalOpen] = useState<boolean>(false)
   const [editingProviderName, setEditingProviderName] = useState<string | null>(null)
   const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
-  const [draggingProvider, setDraggingProvider] = useState<string | null>(null)
-  const [dragOverProvider, setDragOverProvider] = useState<string | null>(null)
-  const [dragOffsetY, setDragOffsetY] = useState<number>(0)
-  const [dragPreviewOrder, setDragPreviewOrder] = useState<string[] | null>(null)
-  const dragHandleProviderRef = useRef<string | null>(null)
-  const dragStartOrderRef = useRef<string[]>([])
-  const dragOrderRef = useRef<string[]>([])
-  const dragMoveRef = useRef<((e: PointerEvent) => void) | null>(null)
-  const dragUpRef = useRef<((e: PointerEvent) => void) | null>(null)
-  const providerCardRefs = useRef<Record<string, HTMLDivElement | null>>({})
-  const dragStartYRef = useRef<number>(0)
-  const dragPointerOffsetRef = useRef<number>(0)
-  const dragStartTopRef = useRef<number>(0)
-  const dragListTopRef = useRef<number>(0)
-  const dragCardHeightRef = useRef<number>(0)
-  const dragLastYRef = useRef<number>(0)
-  const providerListRef = useRef<HTMLDivElement | null>(null)
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
   const instructionBackdropMouseDownRef = useRef<boolean>(false)
   const configBackdropMouseDownRef = useRef<boolean>(false)
@@ -259,6 +243,20 @@ export default function App() {
     }
     return `provider_${maxN > 0 ? maxN + 1 : 1}`
   }, [config])
+
+  const providerDrag = useReorderDrag<string>({
+    items: orderedConfigProviders,
+    onReorder: (next) => void applyProviderOrder(next),
+  })
+  const providerListRef = providerDrag.listRef
+  const registerProviderCardRef = providerDrag.registerItemRef
+  const onProviderHandlePointerDown = providerDrag.onHandlePointerDown
+  const draggingProvider = providerDrag.draggingId
+  const dragOverProvider = providerDrag.dragOverId
+  const dragPreviewOrder = providerDrag.dragPreviewOrder
+  const dragOffsetY = providerDrag.dragOffsetY
+  const dragBaseTop = providerDrag.dragBaseTop
+  const dragCardHeight = providerDrag.dragCardHeight
 
   function flashToast(msg: string, kind: 'info' | 'error' = 'info') {
     setToast(msg)
@@ -642,100 +640,6 @@ export default function App() {
     () => orderedConfigProviders.every((name) => providerPanelsOpen[name] ?? true),
     [orderedConfigProviders, providerPanelsOpen],
   )
-
-  const onProviderDragMove = useCallback((e: PointerEvent) => {
-    const dragging = dragHandleProviderRef.current
-    if (!dragging) return
-    const movingDown = e.clientY >= dragLastYRef.current
-    dragLastYRef.current = e.clientY
-    const targetTop = e.clientY - dragPointerOffsetRef.current
-    setDragOffsetY(targetTop - dragStartTopRef.current)
-    const current = dragPreviewOrder ?? (dragOrderRef.current.length ? dragOrderRef.current : orderedConfigProviders)
-    const rest = current.filter((name) => name !== dragging)
-    if (!rest.length) return
-    const dragTop = e.clientY - dragPointerOffsetRef.current
-    const dragHeight = dragCardHeightRef.current || 0
-    // Directional hysteresis: move down needs deeper overlap than move up.
-    const dragCenter = dragTop + dragHeight * (movingDown ? 0.75 : 0.25)
-    let insertIdx = rest.length
-    for (let i = 0; i < rest.length; i += 1) {
-      const name = rest[i]
-      const node = providerCardRefs.current[name]
-      if (!node) continue
-      const rect = node.getBoundingClientRect()
-      const midpoint = rect.top + rect.height / 2
-      if (dragCenter < midpoint) {
-        insertIdx = i
-        break
-      }
-    }
-    const next = [...rest]
-    next.splice(insertIdx, 0, dragging)
-    if (next.join('|') === current.join('|')) return
-    dragOrderRef.current = next
-    setDragOverProvider(rest[insertIdx] ?? rest[rest.length - 1] ?? null)
-    const first = new Map<string, DOMRect>()
-    for (const name of current) {
-      if (name === dragging) continue
-      const node = providerCardRefs.current[name]
-      if (node) first.set(name, node.getBoundingClientRect())
-    }
-    setDragPreviewOrder(next)
-    requestAnimationFrame(() => {
-      for (const name of next) {
-        if (name === dragging) continue
-        const node = providerCardRefs.current[name]
-        const before = first.get(name)
-        if (!node || !before) continue
-        const after = node.getBoundingClientRect()
-        const dx = before.left - after.left
-        const dy = before.top - after.top
-        if (dx === 0 && dy === 0) continue
-        node.getAnimations().forEach((anim) => anim.cancel())
-        node.animate(
-          [
-            { transform: `translate(${dx}px, ${dy}px)` },
-            { transform: 'translate(0, 0)' },
-          ],
-          { duration: 200, easing: 'cubic-bezier(0.2, 0.6, 0.2, 1)' },
-        )
-      }
-    })
-  }, [dragPreviewOrder, orderedConfigProviders])
-
-  const onProviderDragUp = useCallback(() => {
-    const dragging = dragHandleProviderRef.current
-    dragHandleProviderRef.current = null
-    setDraggingProvider(null)
-    setDragOverProvider(null)
-    setDragOffsetY(0)
-    setDragPreviewOrder(null)
-    if (dragMoveRef.current) {
-      window.removeEventListener('pointermove', dragMoveRef.current as EventListener)
-    }
-    if (dragUpRef.current) {
-      window.removeEventListener('pointerup', dragUpRef.current as EventListener)
-    }
-    if (!dragging) return
-    const start = dragStartOrderRef.current
-    const finalOrder = dragOrderRef.current.length ? dragOrderRef.current : orderedConfigProviders
-    const changed =
-      start.length !== finalOrder.length ||
-      start.some((name, idx) => name !== finalOrder[idx])
-    dragStartOrderRef.current = []
-    dragOrderRef.current = []
-    if (changed) {
-      void applyProviderOrder(finalOrder)
-    }
-  }, [applyProviderOrder, orderedConfigProviders])
-
-  useEffect(() => {
-    dragMoveRef.current = onProviderDragMove
-    dragUpRef.current = onProviderDragUp
-  }, [onProviderDragMove, onProviderDragUp])
-
-
-
   const beginRenameProvider = useCallback((name: string) => {
     setEditingProviderName(name)
     setProviderNameDrafts((prev) => ({ ...prev, [name]: prev[name] ?? name }))
@@ -771,7 +675,6 @@ export default function App() {
       const p = config?.providers?.[name]
       if (!p) return null
       const isDragOver = dragOverProvider === name
-      const dragBaseTop = dragStartTopRef.current - dragListTopRef.current
       const dragStyle = overlay
         ? {
             position: 'absolute' as const,
@@ -786,13 +689,7 @@ export default function App() {
           className={`aoProviderConfigCard${overlay ? ' aoProviderConfigDragging' : ''}${isDragOver && !overlay ? ' aoProviderConfigDragOver' : ''}${!isProviderOpen(name) ? ' aoProviderConfigCollapsed' : ''}`}
           key={overlay ? `${name}-drag` : name}
           data-provider={overlay ? undefined : name}
-          ref={
-            overlay
-              ? undefined
-              : (node) => {
-                  providerCardRefs.current[name] = node
-                }
-          }
+          ref={overlay ? undefined : registerProviderCardRef(name)}
           style={dragStyle}
         >
           <div className="aoProviderConfigBody">
@@ -805,28 +702,7 @@ export default function App() {
                     aria-label="Drag to reorder"
                     type="button"
                     draggable={false}
-                    onPointerDown={(e) => {
-                      e.preventDefault()
-                      dragHandleProviderRef.current = name
-                      dragStartOrderRef.current = orderedConfigProviders
-                      dragOrderRef.current = orderedConfigProviders
-                      const node = providerCardRefs.current[name]
-                      const rect = node?.getBoundingClientRect()
-                      dragStartYRef.current = e.clientY
-                      dragLastYRef.current = e.clientY
-                      dragPointerOffsetRef.current = rect ? e.clientY - rect.top : 0
-                      dragStartTopRef.current = rect?.top ?? 0
-                      dragCardHeightRef.current = rect?.height ?? 0
-                      const listRect = providerListRef.current?.getBoundingClientRect()
-                      dragListTopRef.current = listRect?.top ?? 0
-                      setDraggingProvider(name)
-                      setDragOffsetY(0)
-                      setDragPreviewOrder(orderedConfigProviders)
-                      const move = dragMoveRef.current ?? onProviderDragMove
-                      const up = dragUpRef.current ?? onProviderDragUp
-                      window.addEventListener('pointermove', move as EventListener)
-                      window.addEventListener('pointerup', up as EventListener)
-                    }}
+                    onPointerDown={(e) => onProviderHandlePointerDown(name, e)}
                   >
                     <svg viewBox="0 0 24 24" aria-hidden="true">
                       <path d="M4 7h16" />
@@ -996,14 +872,14 @@ export default function App() {
       commitRenameProvider,
       config,
       deleteProvider,
+      dragBaseTop,
       dragOffsetY,
       dragOverProvider,
       isProviderOpen,
-      onProviderDragMove,
-      onProviderDragUp,
+      onProviderHandlePointerDown,
       openKeyModal,
       openUsageBaseModal,
-      orderedConfigProviders,
+      registerProviderCardRef,
       providerNameDrafts,
       setConfig,
       toggleProviderOpen,
@@ -1196,7 +1072,7 @@ requires_openai_auth = true`}
         orderedConfigProviders={orderedConfigProviders}
         dragPreviewOrder={dragPreviewOrder}
         draggingProvider={draggingProvider}
-        dragCardHeight={dragCardHeightRef.current || 0}
+        dragCardHeight={dragCardHeight}
         renderProviderCard={renderProviderCard}
         onBackdropMouseDown={(e) => {
           configBackdropMouseDownRef.current = e.target === e.currentTarget

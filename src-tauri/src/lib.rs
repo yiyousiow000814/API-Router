@@ -22,6 +22,21 @@ pub fn run() {
             }
         }))
         .setup(|app| {
+            // UI automation should not steal focus or visibly pop up windows.
+            // The WebView still needs a real window on Windows/WebView2, so we move it far off-screen
+            // and hide it from the taskbar (best-effort).
+            if std::env::var("UI_TAURI").ok().as_deref() == Some("1") {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.set_skip_taskbar(true);
+                    let _ = w.set_focusable(false);
+                    let _ = w.minimize();
+                    let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+                        x: 100_000,
+                        y: 100_000,
+                    }));
+                }
+            }
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
