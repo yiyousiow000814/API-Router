@@ -58,6 +58,19 @@ struct UsageRequestKey {
     kind: UsageKind,
 }
 
+// Used for syncing quota results across providers that share the same quota source,
+// even if their usage adapter differs.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct UsageSharedKey {
+    // Shared "usage base" (normalized), not the whole candidate list.
+    //
+    // The candidate list may include provider-specific origins / fallbacks that differ even when
+    // the *actual* usage endpoint is shared (e.g. ppchat/pumpkinai). Using only the shared base
+    // makes "same base + same key => same quota snapshot" deterministic.
+    base_key: String,
+    auth_key: Option<String>,
+}
+
 impl QuotaSnapshot {
     pub fn empty(kind: UsageKind) -> Self {
         Self {
@@ -345,6 +358,16 @@ fn usage_request_key(
     }
 }
 
+fn usage_shared_key(
+    base: &str,
+    provider_key: &Option<String>,
+    usage_token: &Option<String>,
+) -> UsageSharedKey {
+    let base_key = base.trim().trim_end_matches('/').to_string();
+    let auth_key = usage_token.clone().or_else(|| provider_key.clone());
+    UsageSharedKey { base_key, auth_key }
+}
+
 async fn compute_quota_snapshot(
     kind: UsageKind,
     bases: &[String],
@@ -396,6 +419,55 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
     );
 }
 
+fn store_quota_snapshot_silent(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
+    let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
+    // Propagation writes should not affect per-provider ledgers; only a real refresh should reset.
+}
+
+async fn propagate_quota_snapshot_shared(
+    st: &GatewayState,
+    source_provider: &str,
+    source_shared_key: &UsageSharedKey,
+    snap: &QuotaSnapshot,
+) {
+    if !snap.last_error.is_empty() || snap.updated_at_unix_ms == 0 {
+        return;
+    }
+
+    let cfg = st.cfg.read().clone();
+    for (name, p) in cfg.providers.iter() {
+        if name == source_provider {
+            continue;
+        }
+
+        let provider_key = st.secrets.get_provider_key(name);
+        let mut usage_token = st.secrets.get_usage_token(name);
+        if usage_token.is_none() && is_packycode_base(&p.base_url) {
+            usage_token = provider_key.clone();
+        }
+
+        let bases = candidate_quota_bases(p);
+        let Some(shared_base) = bases.first().map(|s| s.as_str()) else {
+            continue;
+        };
+        let shared = usage_shared_key(shared_base, &provider_key, &usage_token);
+        if &shared != source_shared_key {
+            continue;
+        }
+
+        // If the target provider explicitly pins a usage adapter, only propagate matching snapshots.
+        // (Auto-detected providers use `UsageKind::None` and can accept either kind.)
+        let other_kind = detect_usage_kind(p);
+        if other_kind != UsageKind::None && other_kind != snap.kind {
+            continue;
+        }
+
+        let mut copied = snap.clone();
+        copied.effective_usage_base = Some(shared_base.to_string());
+        store_quota_snapshot_silent(st, name, &copied);
+    }
+}
+
 pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) -> QuotaSnapshot {
     let cfg = st.cfg.read().clone();
     let Some(p) = cfg.providers.get(provider_name) else {
@@ -409,16 +481,18 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     if usage_token.is_none() && is_packycode_base(&p.base_url) {
         usage_token = provider_key.clone();
     }
-    let bases = candidate_quota_bases(p);
-    if bases.is_empty() {
+    let bases_raw = candidate_quota_bases(p);
+    let Some(shared_base) = bases_raw.first().cloned() else {
         let mut out = QuotaSnapshot::empty(UsageKind::None);
         out.last_error = "missing base_url".to_string();
         return out;
-    }
-    let bases = reorder_bases_for_speed(st, provider_name, bases, provider_key.as_deref()).await;
+    };
+    let bases =
+        reorder_bases_for_speed(st, provider_name, bases_raw, provider_key.as_deref()).await;
     let effective_base = bases.first().cloned();
 
     let kind = detect_usage_kind(p);
+    let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token);
     let mut snap = compute_quota_snapshot(
         kind,
         &bases,
@@ -430,6 +504,7 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
         snap.effective_usage_base = effective_base;
     }
     store_quota_snapshot(st, provider_name, &snap);
+    propagate_quota_snapshot_shared(st, provider_name, &shared_key, &snap).await;
     snap
 }
 
@@ -450,17 +525,19 @@ async fn refresh_quota_for_provider_cached(
     if usage_token.is_none() && is_packycode_base(&p.base_url) {
         usage_token = provider_key.clone();
     }
-    let bases = candidate_quota_bases(p);
-    if bases.is_empty() {
+    let bases_raw = candidate_quota_bases(p);
+    let Some(shared_base) = bases_raw.first().cloned() else {
         let mut out = QuotaSnapshot::empty(UsageKind::None);
         out.last_error = "missing base_url".to_string();
         return out;
-    }
-    let bases = reorder_bases_for_speed(st, provider_name, bases, provider_key.as_deref()).await;
+    };
+    let bases =
+        reorder_bases_for_speed(st, provider_name, bases_raw, provider_key.as_deref()).await;
     let effective_base = bases.first().cloned();
 
     let kind = detect_usage_kind(p);
     let key = usage_request_key(&bases, &provider_key, &usage_token, kind);
+    let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token);
     let snap = if let Some(existing) = cache.get(&key) {
         existing.clone()
     } else {
@@ -482,10 +559,11 @@ async fn refresh_quota_for_provider_cached(
         snap.effective_usage_base = effective_base;
     }
     store_quota_snapshot(st, provider_name, &snap);
+    propagate_quota_snapshot_shared(st, provider_name, &shared_key, &snap).await;
     snap
 }
 
-async fn usage_key_for_provider(st: &GatewayState, provider_name: &str) -> Option<UsageRequestKey> {
+fn usage_shared_key_for_provider(st: &GatewayState, provider_name: &str) -> Option<UsageSharedKey> {
     let cfg = st.cfg.read().clone();
     let p = cfg.providers.get(provider_name)?;
     let provider_key = st.secrets.get_provider_key(provider_name);
@@ -494,12 +572,8 @@ async fn usage_key_for_provider(st: &GatewayState, provider_name: &str) -> Optio
         usage_token = provider_key.clone();
     }
     let bases = candidate_quota_bases(p);
-    if bases.is_empty() {
-        return None;
-    }
-    let bases = reorder_bases_for_speed(st, provider_name, bases, provider_key.as_deref()).await;
-    let kind = detect_usage_kind(p);
-    Some(usage_request_key(&bases, &provider_key, &usage_token, kind))
+    let shared_base = bases.first()?.as_str();
+    Some(usage_shared_key(shared_base, &provider_key, &usage_token))
 }
 
 pub async fn refresh_quota_shared(
@@ -510,27 +584,34 @@ pub async fn refresh_quota_shared(
     if !cfg.providers.contains_key(provider_name) {
         return Err(format!("unknown provider: {provider_name}"));
     }
-    let target_key = usage_key_for_provider(st, provider_name).await;
+    let target_key = usage_shared_key_for_provider(st, provider_name);
     let mut cache: HashMap<UsageRequestKey, QuotaSnapshot> = HashMap::new();
-    let mut updated = Vec::new();
+    let mut group = Vec::new();
 
     if let Some(target_key) = target_key {
         for name in cfg.providers.keys() {
-            if let Some(key) = usage_key_for_provider(st, name).await {
+            if let Some(key) = usage_shared_key_for_provider(st, name) {
                 if key == target_key {
-                    let _ = refresh_quota_for_provider_cached(st, name, &mut cache).await;
-                    updated.push(name.clone());
+                    group.push(name.clone());
                 }
             }
         }
     }
 
-    if updated.is_empty() {
-        let _ = refresh_quota_for_provider(st, provider_name).await;
-        updated.push(provider_name.to_string());
+    // Fetch once for the requested provider; the "shared base+key" propagation will update peers.
+    let snap = refresh_quota_for_provider_cached(st, provider_name, &mut cache).await;
+    if !snap.last_error.is_empty() || snap.updated_at_unix_ms == 0 {
+        return Err(if snap.last_error.is_empty() {
+            "usage refresh failed".to_string()
+        } else {
+            snap.last_error
+        });
     }
 
-    Ok(updated)
+    if group.is_empty() {
+        group.push(provider_name.to_string());
+    }
+    Ok(group)
 }
 
 pub async fn refresh_quota_all(st: &GatewayState) {
@@ -1036,6 +1117,39 @@ mod tests {
             UsageKind::TokenStats,
         );
         assert_eq!(key_a, key_b);
+    }
+
+    #[test]
+    fn shared_key_groups_by_primary_usage_base_only() {
+        // ppchat/pumpkinai have different origins, but share the same history/usage base.
+        let pp = ProviderConfig {
+            display_name: "PP".to_string(),
+            base_url: "https://code.ppchat.vip/v1".to_string(),
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        };
+        let pumpkin = ProviderConfig {
+            display_name: "Pumpkin".to_string(),
+            base_url: "https://code.pumpkinai.vip/v1".to_string(),
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        };
+
+        let bases_pp = candidate_quota_bases(&pp);
+        let bases_pumpkin = candidate_quota_bases(&pumpkin);
+        assert_ne!(bases_pp, bases_pumpkin);
+        assert_eq!(bases_pp.first().unwrap(), "https://his.ppchat.vip");
+        assert_eq!(bases_pumpkin.first().unwrap(), "https://his.ppchat.vip");
+
+        let k1 = usage_shared_key(bases_pp.first().unwrap(), &Some("k".to_string()), &None);
+        let k2 = usage_shared_key(
+            bases_pumpkin.first().unwrap(),
+            &Some("k".to_string()),
+            &None,
+        );
+        assert_eq!(k1, k2);
     }
 
     #[tokio::test]
