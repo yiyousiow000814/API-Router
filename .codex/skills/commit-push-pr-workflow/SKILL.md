@@ -125,10 +125,19 @@ $payload = @{
   head  = '<branch>'
   base  = 'main'
   body  = @"
-Summary:
+## TL;DR
+(Only for long PRs; short PRs can omit this section.)
+
+## What
 - ...
 
-Verification:
+## Why
+- ...
+
+## Changes
+- ...
+
+## Verify
 - ...
 "@
   draft = $true
@@ -160,7 +169,22 @@ $payloadObj = @{
   title = 'docs: ...'
   head  = '<branch>'
   base  = 'main'
-  body  = "Summary:`n- ...`n"
+  body  = @"
+## TL;DR
+(Only for long PRs; short PRs can omit this section.)
+
+## What
+- ...
+
+## Why
+- ...
+
+## Changes
+- ...
+
+## Verify
+- ...
+"@
   draft = $true
 }
 
