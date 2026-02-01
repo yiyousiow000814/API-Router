@@ -115,8 +115,11 @@ fn discover_sessions_using_router_uncached(server_port: u16) -> Vec<InferredWtSe
     }
 
     // Keep this conservative: scanning + env reads are not free.
+    //
+    // Note: Toolhelp32's `szExeFile` is documented as the executable name, but we've seen it show
+    // up without the `.exe` suffix on some setups. Accept both forms to avoid false negatives.
     // Add more names only if we have strong evidence Codex runs under them.
-    let candidates = ["codex.exe", "node.exe"];
+    let candidates = ["codex.exe", "codex", "node.exe", "node"];
 
     let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
