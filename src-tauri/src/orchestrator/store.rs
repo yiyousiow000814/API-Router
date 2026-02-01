@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::path::Path;
 
 #[derive(Clone)]
 pub struct Store {
@@ -9,6 +10,18 @@ const LEDGER_DEFAULT: &str = r#"{"since_last_quota_refresh_input_tokens":0,"sinc
 
 impl Store {
     const MAX_EVENTS: usize = 200;
+    const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
+
+    fn allowed_prefixes() -> [&'static [u8]; 6] {
+        [
+            b"event:",
+            b"metrics:",
+            b"quota:",
+            b"ledger:",
+            b"codex_account:snapshot",
+            b"official_web:snapshot",
+        ]
+    }
 
     pub fn open(path: &std::path::Path) -> Result<Self, sled::Error> {
         let db = sled::open(path)?;
@@ -45,6 +58,33 @@ impl Store {
         }
 
         let _ = self.db.flush();
+    }
+
+    fn prune_events_db(db: &sled::Db) {
+        let boundary = db.scan_prefix(b"event:").rev().nth(Self::MAX_EVENTS);
+        let Some(Ok((end_key, _))) = boundary else {
+            return;
+        };
+
+        let start = b"event:".to_vec();
+        let end = end_key.to_vec();
+
+        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
+        for res in db.range(start..=end) {
+            let Ok((k, _)) = res else {
+                continue;
+            };
+            batch.push(k);
+            if batch.len() >= 1024 {
+                for key in batch.drain(..) {
+                    let _ = db.remove(key);
+                }
+            }
+        }
+        for key in batch.drain(..) {
+            let _ = db.remove(key);
+        }
+        let _ = db.flush();
     }
 
     pub fn add_event(&self, provider: &str, level: &str, message: &str) {
@@ -283,6 +323,106 @@ pub fn unix_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn dir_size_bytes(path: &Path) -> u64 {
+    fn walk(p: &Path, sum: &mut u64) {
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                walk(&entry.path(), sum);
+            } else {
+                *sum = sum.saturating_add(meta.len());
+            }
+        }
+    }
+
+    let mut sum = 0u64;
+    walk(path, &mut sum);
+    sum
+}
+
+fn is_allowed_key(key: &[u8]) -> bool {
+    Store::allowed_prefixes().iter().any(|p| key.starts_with(p))
+}
+
+/// Best-effort maintenance to keep the on-disk DB bounded:
+/// - remove unexpected keys (e.g. large cached payloads) from this store
+/// - prune events to MAX_EVENTS
+/// - if the directory is still huge, rebuild a compacted DB with only allowed keys
+pub fn maintain_store_dir(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    // If there's no DB yet, nothing to do.
+    if !path.join("db").exists() {
+        return Ok(());
+    }
+
+    // 1) Remove unexpected keys + prune events.
+    {
+        let db = sled::open(path)?;
+
+        let mut batch: Vec<sled::IVec> = Vec::with_capacity(2048);
+        for res in db.iter() {
+            let (k, _v) = res?;
+            if !is_allowed_key(&k) {
+                batch.push(k);
+                if batch.len() >= 2048 {
+                    for key in batch.drain(..) {
+                        let _ = db.remove(key);
+                    }
+                }
+            }
+        }
+        for key in batch.drain(..) {
+            let _ = db.remove(key);
+        }
+
+        Store::prune_events_db(&db);
+        db.flush()?;
+    } // drop DB handle (important for Windows rename)
+
+    // 2) If still too large, rebuild in a new directory and swap.
+    let size = dir_size_bytes(path);
+    if size <= Store::MAX_DB_BYTES {
+        return Ok(());
+    }
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let tmp_dir = parent.join("sled.compact.tmp");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir)?;
+
+    {
+        let src = sled::open(path)?;
+        let dst = sled::open(&tmp_dir)?;
+        for res in src.iter() {
+            let (k, v) = res?;
+            if is_allowed_key(&k) {
+                let _ = dst.insert(k, v);
+            }
+        }
+        dst.flush()?;
+        src.flush()?;
+    }
+
+    // Swap directories.
+    let backup = parent.join(format!("sled.bak.{}", unix_ms()));
+    if backup.exists() {
+        let _ = std::fs::remove_dir_all(&backup);
+    }
+    std::fs::rename(path, &backup)?;
+    std::fs::rename(&tmp_dir, path)?;
+    let _ = std::fs::remove_dir_all(&backup);
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +453,27 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].get("unix_ms").and_then(|v| v.as_u64()), Some(3000));
         assert_eq!(out[1].get("unix_ms").and_then(|v| v.as_u64()), Some(2000));
+    }
+
+    #[test]
+    fn maintain_store_dir_removes_unexpected_prefixes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+
+        // Create a DB with both expected and unexpected keys.
+        {
+            let db = sled::open(&dir).unwrap();
+            let _ = db.insert(b"event:1:a", b"{\"unix_ms\":1}");
+            let _ = db.insert(b"metrics:p1", b"{\"ok_requests\":1}");
+            let _ = db.insert(b"resp:resp_test", b"big payload");
+            db.flush().unwrap();
+        }
+
+        maintain_store_dir(&dir).unwrap();
+
+        let db = sled::open(&dir).unwrap();
+        assert!(db.get(b"event:1:a").unwrap().is_some());
+        assert!(db.get(b"metrics:p1").unwrap().is_some());
+        assert!(db.get(b"resp:resp_test").unwrap().is_none());
     }
 }

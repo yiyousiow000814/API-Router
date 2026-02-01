@@ -217,6 +217,9 @@ pub fn open_store_dir(base: PathBuf) -> anyhow::Result<Store> {
     std::fs::create_dir_all(&base)?;
     let path = base.join("sled");
     std::fs::create_dir_all(&path)?;
+    // Best-effort maintenance: remove unexpected keys and optionally compact to prevent unbounded growth.
+    // Runs before opening the DB to avoid Windows file locking issues.
+    let _ = super::store::maintain_store_dir(&path);
     Ok(Store::open(&path)?)
 }
 
