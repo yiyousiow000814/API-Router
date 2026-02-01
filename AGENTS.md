@@ -15,6 +15,7 @@
 - **PR title length**: Keep PR titles at 8 words or fewer. Avoid symbols like `+` in titles.
 - **PR summary scope**: Titles and bodies must describe the overall changes relative to `main`, not just the latest commit.
 - **Format before commit**: Ensure formatting checks pass before committing.
+- **PowerShell gotcha**: When using `gh pr create` / `gh pr edit` in PowerShell, avoid Markdown inline code using backticks (PowerShell uses backtick as an escape). Prefer plain text, single-quoted strings, or a here-string (`@' ... '@`).
 
 ## Safety & Data Handling
 - **Never commit secrets**: API keys, OAuth tokens, cookies, browser profiles, or raw conversation logs.
