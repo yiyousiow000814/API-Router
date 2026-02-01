@@ -421,9 +421,7 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
 
 fn store_quota_snapshot_silent(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
     let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
-    if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
-        st.store.reset_ledger(provider_name);
-    }
+    // Propagation writes should not affect per-provider ledgers; only a real refresh should reset.
 }
 
 async fn propagate_quota_snapshot_shared(
@@ -454,6 +452,13 @@ async fn propagate_quota_snapshot_shared(
         };
         let shared = usage_shared_key(shared_base, &provider_key, &usage_token);
         if &shared != source_shared_key {
+            continue;
+        }
+
+        // If the target provider explicitly pins a usage adapter, only propagate matching snapshots.
+        // (Auto-detected providers use `UsageKind::None` and can accept either kind.)
+        let other_kind = detect_usage_kind(p);
+        if other_kind != UsageKind::None && other_kind != snap.kind {
             continue;
         }
 
@@ -581,25 +586,32 @@ pub async fn refresh_quota_shared(
     }
     let target_key = usage_shared_key_for_provider(st, provider_name);
     let mut cache: HashMap<UsageRequestKey, QuotaSnapshot> = HashMap::new();
-    let mut updated = Vec::new();
+    let mut group = Vec::new();
 
     if let Some(target_key) = target_key {
         for name in cfg.providers.keys() {
             if let Some(key) = usage_shared_key_for_provider(st, name) {
                 if key == target_key {
-                    updated.push(name.clone());
+                    group.push(name.clone());
                 }
             }
         }
     }
 
     // Fetch once for the requested provider; the "shared base+key" propagation will update peers.
-    let _ = refresh_quota_for_provider_cached(st, provider_name, &mut cache).await;
-    if updated.is_empty() {
-        updated.push(provider_name.to_string());
+    let snap = refresh_quota_for_provider_cached(st, provider_name, &mut cache).await;
+    if !snap.last_error.is_empty() || snap.updated_at_unix_ms == 0 {
+        return Err(if snap.last_error.is_empty() {
+            "usage refresh failed".to_string()
+        } else {
+            snap.last_error
+        });
     }
 
-    Ok(updated)
+    if group.is_empty() {
+        group.push(provider_name.to_string());
+    }
+    Ok(group)
 }
 
 pub async fn refresh_quota_all(st: &GatewayState) {
