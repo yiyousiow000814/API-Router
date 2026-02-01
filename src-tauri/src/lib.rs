@@ -797,7 +797,9 @@ async fn refresh_codex_account_snapshot(
     let mut unlimited: Option<bool> = None;
     let mut limit_5h_remaining: Option<String> = None;
     let mut limit_weekly_remaining: Option<String> = None;
+    let mut limit_weekly_reset_at: Option<String> = None;
     let mut code_review_remaining: Option<String> = None;
+    let mut code_review_reset_at: Option<String> = None;
     let mut error = String::new();
 
     let auth = codex_app_server::request("getAuthStatus", Value::Null).await?;
@@ -832,6 +834,9 @@ async fn refresh_codex_account_snapshot(
                                 || (target == "secondary" && limit_weekly_remaining.is_none())
                             {
                                 limit_weekly_remaining = Some(format_percent(100.0 - used));
+                                if limit_weekly_reset_at.is_none() {
+                                    limit_weekly_reset_at = get_reset_time_str(node);
+                                }
                             }
                         }
                     }
@@ -849,6 +854,7 @@ async fn refresh_codex_account_snapshot(
                         if let Some(node) = rate_limits.get(key) {
                             if let Some(rem) = get_remaining_percent(node) {
                                 code_review_remaining = Some(rem);
+                                code_review_reset_at = get_reset_time_str(node);
                                 break;
                             }
                         }
@@ -892,7 +898,9 @@ async fn refresh_codex_account_snapshot(
       "remaining": remaining,
       "limit_5h_remaining": limit_5h_remaining,
       "limit_weekly_remaining": limit_weekly_remaining,
+      "limit_weekly_reset_at": limit_weekly_reset_at,
       "code_review_remaining": code_review_remaining,
+      "code_review_reset_at": code_review_reset_at,
       "unlimited": unlimited,
       "error": error
     });
@@ -945,6 +953,48 @@ fn get_remaining_percent(obj: &Value) -> Option<String> {
     obj.get("remaining")
         .and_then(parse_number)
         .map(format_percent)
+}
+
+fn get_reset_time_str(obj: &Value) -> Option<String> {
+    for key in [
+        "resetAt",
+        "reset_at",
+        "resetsAt",
+        "resets_at",
+        "nextResetAt",
+        "next_reset_at",
+        "resetTime",
+        "reset_time",
+        "resetAtUnixMs",
+        "reset_at_unix_ms",
+        "resetUnixMs",
+        "reset_unix_ms",
+        "resetAtMs",
+        "reset_at_ms",
+        "resetMs",
+        "reset_ms",
+    ] {
+        if let Some(v) = obj.get(key) {
+            if let Some(s) = v.as_str().map(|s| s.trim().to_string()) {
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+            if let Some(n) = v
+                .as_u64()
+                .or_else(|| v.as_i64().and_then(|x| u64::try_from(x).ok()))
+            {
+                // Heuristic: seconds vs milliseconds.
+                let ms = if n < 2_000_000_000 {
+                    n.saturating_mul(1000)
+                } else {
+                    n
+                };
+                return Some(ms.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn parse_number(v: &Value) -> Option<f64> {

@@ -11,6 +11,26 @@ export function fmtWhen(unixMs: number): string {
   return `${dd}-${mm}-${yyyy} ${hh}:${min}:${ss}`
 }
 
+export function fmtWhenAny(value?: string | number | null): string {
+  if (value == null) return '-'
+  if (typeof value === 'number') return fmtWhen(value)
+
+  const s = String(value).trim()
+  if (!s) return '-'
+
+  // Numeric timestamps: accept seconds/ms.
+  if (/^\d+$/.test(s)) {
+    const n = Number(s)
+    if (!Number.isFinite(n)) return '-'
+    const ms = n < 2_000_000_000 ? n * 1000 : n
+    return fmtWhen(ms)
+  }
+
+  const ms = Date.parse(s)
+  if (!Number.isFinite(ms)) return '-'
+  return fmtWhen(ms)
+}
+
 export function pctOf(part?: number | null, total?: number | null): number | null {
   if (part == null || total == null) return null
   if (!Number.isFinite(part) || !Number.isFinite(total) || total <= 0) return null
