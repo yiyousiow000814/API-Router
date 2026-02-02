@@ -113,6 +113,7 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         last_used_reason: Arc::new(RwLock::new(None)),
         usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
         prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
     };
     Ok(AppState {
         config_path,

@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Json, State};
+use axum::extract::{FromRequestParts, Json, State};
+use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -25,6 +26,30 @@ use super::router::RouterState;
 use super::secrets::SecretStore;
 use super::store::{unix_ms, Store};
 use super::upstream::UpstreamClient;
+use crate::platform::windows_terminal;
+
+#[derive(Clone, Copy, Debug)]
+struct PeerAddr(SocketAddr);
+
+#[axum::async_trait]
+impl<S> FromRequestParts<S> for PeerAddr
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        // In production the server is created with `into_make_service_with_connect_info` so this
+        // extension is present. In unit tests (Router::oneshot), it isn't.
+        if let Some(ci) = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        {
+            return Ok(PeerAddr(ci.0));
+        }
+        Ok(PeerAddr(SocketAddr::from(([127, 0, 0, 1], 0))))
+    }
+}
 
 #[derive(Clone)]
 pub struct GatewayState {
@@ -38,6 +63,23 @@ pub struct GatewayState {
     pub last_used_reason: Arc<RwLock<Option<String>>>,
     pub usage_base_speed_cache: Arc<RwLock<HashMap<String, UsageBaseSpeedCacheEntry>>>,
     pub prev_id_support_cache: Arc<RwLock<HashMap<String, bool>>>,
+    pub client_sessions: Arc<RwLock<HashMap<String, ClientSessionRuntime>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClientSessionRuntime {
+    pub pid: u32,
+    // Timestamp of last request observed from this session (not just "discovered").
+    pub last_request_unix_ms: u64,
+    // Timestamp of last time we saw the process in a discovery scan.
+    pub last_discovered_unix_ms: u64,
+    pub last_codex_session_id: Option<String>,
+    pub last_reported_model_provider: Option<String>,
+    pub last_reported_base_url: Option<String>,
+    // Sticky "this session uses our gateway" marker. This prevents sessions from disappearing if
+    // the user edits Codex config files while Codex is running (the process keeps the old config
+    // in memory, but we may no longer be able to prove it from disk).
+    pub confirmed_router: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -109,6 +151,40 @@ fn session_key_from_request(headers: &HeaderMap, body: &Value) -> Option<String>
     }
     let _ = body;
     Some(v.to_string())
+}
+
+fn codex_session_id_for_display(headers: &HeaderMap, body: &Value) -> Option<String> {
+    for k in [
+        "session_id",
+        "x-session-id",
+        "x-codex-session",
+        "x-codex-session-id",
+        "codex-session",
+        "codex_session",
+    ] {
+        if let Some(v) = headers.get(k).and_then(|v| v.to_str().ok()) {
+            let v = v.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    for k in [
+        "session_id",
+        "session",
+        "codex_session_id",
+        "codexSessionId",
+    ] {
+        if let Some(v) = body.get(k) {
+            if let Some(s) = v.as_str() {
+                let s = s.trim();
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn is_prev_id_unsupported_error(message: &str) -> bool {
@@ -209,7 +285,11 @@ pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -338,13 +418,29 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     }))
 }
 
-async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl IntoResponse {
+async fn models(
+    PeerAddr(peer): PeerAddr,
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
     if let Some(resp) = require_gateway_auth(&st, &headers) {
         return resp;
     }
     st.last_activity_unix_ms.store(unix_ms(), Ordering::Relaxed);
     let cfg = st.cfg.read().clone();
-    let (provider_name, reason) = st.router.decide(&cfg);
+
+    // Respect per-session preferred providers (when we can infer WT_SESSION). Fall back to the
+    // global preferred provider.
+    let client_session = windows_terminal::infer_wt_session(peer, cfg.listen.port);
+    let preferred = client_session
+        .as_ref()
+        .map(|s| s.wt_session.as_str())
+        .and_then(|id| cfg.routing.session_preferred_providers.get(id))
+        .filter(|p| cfg.providers.contains_key(*p))
+        .map(|s| s.as_str())
+        .unwrap_or(cfg.routing.preferred_provider.as_str());
+
+    let (provider_name, reason) = st.router.decide_with_preferred(&cfg, preferred);
     let p = match cfg.providers.get(&provider_name) {
         Some(p) => p.clone(),
         None => {
@@ -362,6 +458,24 @@ async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl Into
     let api_key = st.secrets.get_provider_key(&provider_name);
     let client_auth = upstream_auth(&st, client_auth);
 
+    if let Some(inferred) = client_session.as_ref() {
+        let mut map = st.client_sessions.write();
+        let entry = map
+            .entry(inferred.wt_session.clone())
+            .or_insert(ClientSessionRuntime {
+                pid: inferred.pid,
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 0,
+                last_codex_session_id: None,
+                last_reported_model_provider: None,
+                last_reported_base_url: None,
+                confirmed_router: true,
+            });
+        entry.pid = inferred.pid;
+        entry.last_request_unix_ms = unix_ms();
+        entry.confirmed_router = true;
+    }
+
     let timeout = cfg.routing.request_timeout_seconds;
     match st
         .upstream
@@ -378,6 +492,7 @@ async fn models(State(st): State<GatewayState>, headers: HeaderMap) -> impl Into
 }
 
 async fn responses(
+    PeerAddr(peer): PeerAddr,
     State(st): State<GatewayState>,
     headers: HeaderMap,
     Json(body): Json<Value>,
@@ -397,7 +512,32 @@ async fn responses(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let session_key = session_key_from_request(&headers, &body);
+    let codex_session_key = session_key_from_request(&headers, &body);
+    let codex_session_display = codex_session_id_for_display(&headers, &body);
+    let client_session = windows_terminal::infer_wt_session(peer, cfg.listen.port);
+    if let Some(inferred) = client_session.as_ref() {
+        let mut map = st.client_sessions.write();
+        let entry = map
+            .entry(inferred.wt_session.clone())
+            .or_insert(ClientSessionRuntime {
+                pid: inferred.pid,
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 0,
+                last_codex_session_id: None,
+                last_reported_model_provider: None,
+                last_reported_base_url: None,
+                confirmed_router: true,
+            });
+        entry.pid = inferred.pid;
+        entry.last_request_unix_ms = unix_ms();
+        entry.confirmed_router = true;
+        if let Some(cid) = codex_session_display
+            .as_deref()
+            .or(codex_session_key.as_deref())
+        {
+            entry.last_codex_session_id = Some(cid.to_string());
+        }
+    }
 
     let previous_response_id = body
         .get("previous_response_id")
@@ -430,7 +570,14 @@ async fn responses(
     let mut session_messages: Option<Vec<Value>> = None;
     for _ in 0..cfg.providers.len().max(1) {
         let is_first_attempt = tried.is_empty();
-        let (provider_name, reason) = st.router.decide(&cfg);
+        let preferred = client_session
+            .as_ref()
+            .map(|s| s.wt_session.as_str())
+            .and_then(|id| cfg.routing.session_preferred_providers.get(id))
+            .filter(|p| cfg.providers.contains_key(*p))
+            .map(|s| s.as_str())
+            .unwrap_or(cfg.routing.preferred_provider.as_str());
+        let (provider_name, reason) = st.router.decide_with_preferred(&cfg, preferred);
         if tried.contains(&provider_name) {
             break;
         }
@@ -464,7 +611,7 @@ async fn responses(
                     // No previous response id to reconstruct; pass only the current input.
                     Value::Array(current_items.clone())
                 } else {
-                    let Some(session_id) = session_key.as_deref() else {
+                    let Some(session_id) = codex_session_key.as_deref() else {
                         return (
                             StatusCode::BAD_REQUEST,
                             Json(json!({
@@ -541,7 +688,7 @@ async fn responses(
                             provider_name,
                             previous_response_id.clone(),
                             body_for_provider.clone(),
-                            session_key.clone(),
+                            codex_session_key.clone(),
                         );
                     }
                     Ok(resp) => {
@@ -732,7 +879,13 @@ fn require_gateway_auth(st: &GatewayState, headers: &HeaderMap) -> Option<Respon
         );
     };
     let Some(tok) = bearer_token(auth) else {
-        return Some((StatusCode::UNAUTHORIZED, Json(json!({"error":{"message":"invalid Authorization format","type":"unauthorized"}}))).into_response());
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":{"message":"invalid Authorization format","type":"unauthorized"}})),
+            )
+                .into_response(),
+        );
     };
     if tok != expected {
         return Some(

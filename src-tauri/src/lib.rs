@@ -1,6 +1,7 @@
 mod app_state;
 mod codex_app_server;
 mod orchestrator;
+mod platform;
 
 use tauri::Manager;
 
@@ -152,6 +153,8 @@ pub fn run() {
             get_gateway_token,
             rotate_gateway_token,
             set_preferred_provider,
+            set_session_preferred_provider,
+            clear_session_preferred_provider,
             upsert_provider,
             delete_provider,
             rename_provider,
@@ -205,6 +208,107 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         .get_codex_account_snapshot()
         .unwrap_or(serde_json::json!({"ok": false}));
 
+    let client_sessions = {
+        // Best-effort: discover running Codex processes configured to use this router, even before
+        // the first request is sent (Windows Terminal only).
+        let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
+        let expected = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
+        let discovered = crate::platform::windows_terminal::discover_sessions_using_router(
+            cfg.listen.port,
+            expected,
+        );
+
+        // Track all discovered sessions, but only allow provider preference changes once we have
+        // strong evidence that the session is using this gateway.
+        {
+            let mut map = state.gateway.client_sessions.write();
+            for s in discovered {
+                let entry = map.entry(s.wt_session.clone()).or_insert_with(|| {
+                    crate::orchestrator::gateway::ClientSessionRuntime {
+                        pid: s.pid,
+                        last_request_unix_ms: 0,
+                        last_discovered_unix_ms: 0,
+                        last_codex_session_id: None,
+                        last_reported_model_provider: None,
+                        last_reported_base_url: None,
+                        confirmed_router: s.router_confirmed,
+                    }
+                });
+                entry.pid = s.pid;
+                entry.last_discovered_unix_ms = now;
+                if s.router_confirmed {
+                    entry.confirmed_router = true;
+                }
+                if let Some(cid) = s.codex_session_id.as_deref() {
+                    entry.last_codex_session_id = Some(cid.to_string());
+                }
+                if let Some(mp) = s.reported_model_provider.as_deref() {
+                    entry.last_reported_model_provider = Some(mp.to_string());
+                }
+                if let Some(bu) = s.reported_base_url.as_deref() {
+                    entry.last_reported_base_url = Some(bu.to_string());
+                }
+            }
+        }
+
+        // Drop dead sessions aggressively (e.g. user Ctrl+C'd Codex).
+        // We keep the persisted preference mapping in config; only the runtime list is pruned.
+        {
+            let mut map = state.gateway.client_sessions.write();
+            // Also drop "discovery-only" sessions that we haven't rediscovered recently.
+            // This prevents stale/incorrect rows from sticking around if a running Codex changes config
+            // and no longer matches the discovery filter.
+            const DISCOVERY_STALE_MS: u64 = 10_000;
+            map.retain(|_, v| {
+                if !crate::platform::windows_terminal::is_pid_alive(v.pid) {
+                    return false;
+                }
+                if v.last_request_unix_ms == 0
+                    && v.last_discovered_unix_ms > 0
+                    && now.saturating_sub(v.last_discovered_unix_ms) > DISCOVERY_STALE_MS
+                {
+                    return false;
+                }
+                true
+            });
+        }
+
+        let map = state.gateway.client_sessions.read().clone();
+        let mut items: Vec<_> = map.into_iter().collect();
+        items.sort_by_key(|(_k, v)| {
+            std::cmp::Reverse(v.last_request_unix_ms.max(v.last_discovered_unix_ms))
+        });
+        items.truncate(20);
+        let sessions = items
+            .into_iter()
+            .map(|(wt_session, v)| {
+                // Consider a session "active" only if it has recently made requests through the router.
+                // Discovery scans run frequently and should not keep sessions pinned as active forever.
+                let active = v.last_request_unix_ms > 0
+                    && now.saturating_sub(v.last_request_unix_ms) < 60_000;
+                let pref = cfg
+                    .routing
+                    .session_preferred_providers
+                    .get(&wt_session)
+                    .cloned()
+                    .filter(|p| cfg.providers.contains_key(p));
+                let last_seen_unix_ms = v.last_request_unix_ms.max(v.last_discovered_unix_ms);
+                serde_json::json!({
+                    "id": wt_session,
+                    "wt_session": wt_session,
+                    "codex_session_id": v.last_codex_session_id,
+                    "reported_model_provider": v.last_reported_model_provider,
+                    "reported_base_url": v.last_reported_base_url,
+                    "last_seen_unix_ms": last_seen_unix_ms,
+                    "active": active,
+                    "preferred_provider": pref,
+                    "verified": v.confirmed_router
+                })
+            })
+            .collect::<Vec<_>>();
+        sessions
+    };
+
     serde_json::json!({
       "listen": { "host": cfg.listen.host, "port": cfg.listen.port },
       "preferred_provider": cfg.routing.preferred_provider,
@@ -217,7 +321,8 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
       "quota": quota,
       "ledgers": ledgers,
       "last_activity_unix_ms": last_activity,
-      "codex_account": codex_account
+      "codex_account": codex_account,
+      "client_sessions": client_sessions
     })
 }
 
@@ -312,6 +417,56 @@ fn set_preferred_provider(
 }
 
 #[tauri::command]
+fn set_session_preferred_provider(
+    state: tauri::State<'_, app_state::AppState>,
+    session_id: String,
+    provider: String,
+) -> Result<(), String> {
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("session_id is required".to_string());
+    }
+    {
+        let mut cfg = state.gateway.cfg.write();
+        if !cfg.providers.contains_key(&provider) {
+            return Err(format!("unknown provider: {provider}"));
+        }
+        cfg.routing
+            .session_preferred_providers
+            .insert(session_id.clone(), provider.clone());
+    }
+    persist_config(&state).map_err(|e| e.to_string())?;
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        &format!("session preferred_provider updated ({session_id})"),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_session_preferred_provider(
+    state: tauri::State<'_, app_state::AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    let session_id = session_id.trim().to_string();
+    if session_id.is_empty() {
+        return Err("session_id is required".to_string());
+    }
+    {
+        let mut cfg = state.gateway.cfg.write();
+        cfg.routing.session_preferred_providers.remove(&session_id);
+    }
+    persist_config(&state).map_err(|e| e.to_string())?;
+    state.gateway.store.add_event(
+        "gateway",
+        "info",
+        &format!("session preferred_provider cleared ({session_id})"),
+    );
+    Ok(())
+}
+
+#[tauri::command]
 fn upsert_provider(
     state: tauri::State<'_, app_state::AppState>,
     name: String,
@@ -357,6 +512,9 @@ fn delete_provider(
         let mut cfg = state.gateway.cfg.write();
         cfg.providers.remove(&name);
         cfg.provider_order.retain(|p| p != &name);
+        cfg.routing
+            .session_preferred_providers
+            .retain(|_, pref| pref != &name);
         app_state::normalize_provider_order(&mut cfg);
 
         if cfg.providers.is_empty() {
@@ -425,6 +583,11 @@ fn rename_provider(
         }
         if cfg.routing.preferred_provider == old {
             cfg.routing.preferred_provider = new.to_string();
+        }
+        for (_session, pref) in cfg.routing.session_preferred_providers.iter_mut() {
+            if pref == old {
+                *pref = new.to_string();
+            }
         }
         for entry in cfg.provider_order.iter_mut() {
             if entry == old {

@@ -5,6 +5,7 @@ import type { Config, Status } from './types'
 import { fmtWhen } from './utils/format'
 import { computeActiveRefreshDelayMs, computeIdleRefreshDelayMs } from './utils/usageRefresh'
 import { ProvidersTable } from './components/ProvidersTable'
+import { SessionsTable } from './components/SessionsTable'
 import { KeyModal } from './components/KeyModal'
 import { UsageBaseModal } from './components/UsageBaseModal'
 import { InstructionModal } from './components/InstructionModal'
@@ -167,6 +168,7 @@ export default function App() {
   const [editingProviderName, setEditingProviderName] = useState<string | null>(null)
   const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
+  const [updatingSessionPref, setUpdatingSessionPref] = useState<Record<string, boolean>>({})
   const instructionBackdropMouseDownRef = useRef<boolean>(false)
   const configBackdropMouseDownRef = useRef<boolean>(false)
   const usageRefreshTimerRef = useRef<number | null>(null)
@@ -217,6 +219,25 @@ export default function App() {
     }
     return ordered
   }, [status, config])
+
+  const clientSessions = useMemo(() => {
+    const sessions = status?.client_sessions ?? []
+    return [...sessions].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.last_seen_unix_ms - a.last_seen_unix_ms)
+  }, [status])
+
+  async function setSessionPreferred(sessionId: string, provider: string | null) {
+    setUpdatingSessionPref((m) => ({ ...m, [sessionId]: true }))
+    try {
+      if (provider) {
+        await invoke('set_session_preferred_provider', { sessionId, provider })
+      } else {
+        await invoke('clear_session_preferred_provider', { sessionId })
+      }
+      await refreshStatus()
+    } finally {
+      setUpdatingSessionPref((m) => ({ ...m, [sessionId]: false }))
+    }
+  }
   const orderedConfigProviders = useMemo(() => {
     if (!config) return []
     const names = Object.keys(config.providers ?? {})
@@ -996,6 +1017,21 @@ export default function App() {
                   </div>
                 </div>
                 <ProvidersTable providers={providers} status={status} refreshingProviders={refreshingProviders} onRefreshQuota={(name) => void refreshQuota(name)} />
+              </div>
+
+              <div className="aoSection">
+                <div className="aoSectionHeader">
+                  <div className="aoRow">
+                    <h3 className="aoH3">Sessions</h3>
+                  </div>
+                </div>
+                <SessionsTable
+                  sessions={clientSessions ?? []}
+                  providers={providers}
+                  globalPreferred={status.preferred_provider}
+                  updating={updatingSessionPref}
+                  onSetPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
+                />
               </div>
 
             </>

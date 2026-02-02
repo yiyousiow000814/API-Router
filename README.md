@@ -64,12 +64,17 @@ After this, you switch providers inside the app.
 - **Auto mode**: the router picks a healthy provider and fails over if needed.
 - **Usage base URL**: set this if the usage endpoint is on a different host.
   When empty, the usage base defaults to the provider `base_url`.
+- **Sessions (Windows Terminal only)**: when you run Codex inside Windows Terminal, API Router can
+  auto-detect the tab identity (`WT_SESSION`) and let you set a per-session preferred provider.
+  Sessions may appear as verified or unverified (best-effort pre-discovery before the first request).
+  Closed Codex sessions disappear automatically. See `docs/windows-terminal-sessions.md`.
 
 ## Not supported
 
 - Chat Completions API (this app focuses on Responses).
 - Reusing official OAuth credentials for upstream providers.
 - Non-Windows platforms are untested.
+- Windows Terminal session detection in WSL2 (Codex running in WSL2 is not mapped to Windows Terminal tabs yet).
 
 ## Troubleshooting
 

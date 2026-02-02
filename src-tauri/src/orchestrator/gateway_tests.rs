@@ -94,6 +94,7 @@ mod tests {
             last_used_reason: Arc::new(RwLock::new(None)),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let app = build_router(state);
@@ -153,6 +154,7 @@ mod tests {
             },
             routing: RoutingConfig {
                 preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
                 auto_return_to_preferred: true,
                 preferred_stable_seconds: 1,
                 failure_threshold: 1,
@@ -187,6 +189,7 @@ mod tests {
             last_used_reason: Arc::new(RwLock::new(None)),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let app = build_router(state);
@@ -196,7 +199,7 @@ mod tests {
             "content": [{
                 "type": "tool_output",
                 "tool_call_id": "call_1",
-                "output": "C:\\\\Users\\\\yiyou\\\\API-Router"
+                "output": "C:\\\\work\\\\example-project"
             }]
         });
         let body = json!({
@@ -255,6 +258,7 @@ mod tests {
             },
             routing: RoutingConfig {
                 preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
                 auto_return_to_preferred: true,
                 preferred_stable_seconds: 1,
                 failure_threshold: 1,
@@ -289,6 +293,7 @@ mod tests {
             last_used_reason: Arc::new(RwLock::new(None)),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let app = build_router(state);
@@ -298,7 +303,7 @@ mod tests {
             "content": [{
                 "type": "tool_output",
                 "tool_call_id": "call_1",
-                "output": "C:\\\\Users\\\\yiyou\\\\API-Router"
+                "output": "C:\\\\work\\\\example-project"
             }]
         }]);
         let body = json!({
@@ -357,6 +362,7 @@ mod tests {
             },
             routing: RoutingConfig {
                 preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
                 auto_return_to_preferred: true,
                 preferred_stable_seconds: 1,
                 failure_threshold: 1,
@@ -391,6 +397,7 @@ mod tests {
             last_used_reason: Arc::new(RwLock::new(None)),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let app = build_router(state);
@@ -471,6 +478,7 @@ mod tests {
             },
             routing: RoutingConfig {
                 preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
                 auto_return_to_preferred: false,
                 preferred_stable_seconds: 1,
                 failure_threshold: 1,
@@ -537,6 +545,7 @@ mod tests {
             last_used_reason: Arc::new(RwLock::new(None)),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let app = build_router(state);
@@ -632,6 +641,7 @@ mod tests {
             },
             routing: RoutingConfig {
                 preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
                 auto_return_to_preferred: true,
                 preferred_stable_seconds: 1,
                 failure_threshold: 1,
@@ -687,6 +697,7 @@ mod tests {
             last_used_reason: Arc::new(RwLock::new(None)),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let app = build_router(state);
@@ -768,6 +779,7 @@ mod tests {
             },
             routing: RoutingConfig {
                 preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
                 auto_return_to_preferred: true,
                 preferred_stable_seconds: 1,
                 failure_threshold: 1,
@@ -802,6 +814,7 @@ mod tests {
             last_used_reason: Arc::new(RwLock::new(None)),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let app = build_router(state);
@@ -861,6 +874,7 @@ mod tests {
             },
             routing: RoutingConfig {
                 preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
                 auto_return_to_preferred: true,
                 preferred_stable_seconds: 1,
                 failure_threshold: 1,
@@ -895,6 +909,7 @@ mod tests {
             last_used_reason: Arc::new(RwLock::new(None)),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
 
         let app = build_router(state);

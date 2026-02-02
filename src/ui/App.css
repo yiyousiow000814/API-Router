@@ -379,6 +379,43 @@
   gap: 4px;
 }
 
+.aoSessionsPanel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.aoSessionChip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.aoSessionId {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.8);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aoSessionSelect {
+  height: 28px;
+  border-radius: 10px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .aoConfigSection {
   margin-top: 12px;
 }
@@ -1042,6 +1079,12 @@
 
 .aoTableFixed {
   table-layout: fixed;
+}
+
+.aoTableAuto {
+  /* For narrow tables (like Sessions) avoid stretching columns across the full card width. */
+  width: auto;
+  max-width: 100%;
 }
 
 .aoUrlInput {

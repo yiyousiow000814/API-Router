@@ -14,6 +14,17 @@ export type Status = {
   providers: Record<string, ProviderHealth>
   metrics: Record<string, { ok_requests: number; error_requests: number; total_tokens: number }>
   recent_events: Array<{ provider: string; level: string; unix_ms: number; message: string }>
+  client_sessions?: Array<{
+    id: string
+    wt_session?: string
+    codex_session_id?: string | null
+    reported_model_provider?: string | null
+    reported_base_url?: string | null
+    last_seen_unix_ms: number
+    active: boolean
+    preferred_provider?: string | null
+    verified?: boolean
+  }>
   active_provider?: string | null
   active_reason?: string | null
   quota: Record<
@@ -61,6 +72,7 @@ export type Config = {
   listen: { host: string; port: number }
   routing: {
     preferred_provider: string
+    session_preferred_providers?: Record<string, string>
     auto_return_to_preferred: boolean
     preferred_stable_seconds: number
     failure_threshold: number
