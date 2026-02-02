@@ -66,6 +66,7 @@ After this, you switch providers inside the app.
   When empty, the usage base defaults to the provider `base_url`.
 - **Sessions (Windows Terminal only)**: when you run Codex inside Windows Terminal, API Router can
   auto-detect the tab identity (`WT_SESSION`) and let you set a per-session preferred provider.
+  Sessions may appear as verified or unverified (best-effort pre-discovery before the first request).
   Closed Codex sessions disappear automatically. See `docs/windows-terminal-sessions.md`.
 
 ## Not supported
