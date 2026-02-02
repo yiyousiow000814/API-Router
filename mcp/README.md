@@ -28,5 +28,6 @@ $env:AO_USER_DATA_DIR = "C:\path\to\user-data"
 - `ao.config.get`
 - `ao.config.setProviderBaseUrl`
 - `ao.config.setUsageBaseUrl`
+- `ao.config.setSessionPreferredProvider`
+- `ao.config.clearSessionPreferredProvider`
 - `ao.dev.run` (`npm_build`, `cargo_test`, `cargo_clippy`)
-
