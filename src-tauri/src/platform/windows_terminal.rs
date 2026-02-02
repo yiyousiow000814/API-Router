@@ -154,6 +154,21 @@ fn discover_sessions_using_router_uncached(
             .map(|s| s.to_string())
     }
 
+    fn find_project_codex_config(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+        // Walk up from cwd looking for `.codex/config.toml`.
+        // Keep it bounded to avoid pathological traversals on deep paths.
+        let mut cur = Some(cwd);
+        for _ in 0..32 {
+            let dir = cur?;
+            let p = dir.join(".codex").join("config.toml");
+            if p.exists() {
+                return Some(p);
+            }
+            cur = dir.parent();
+        }
+        None
+    }
+
     fn get_model_provider_id(cfg: &toml::Value) -> Option<String> {
         let t = cfg.as_table()?;
         t.get("model_provider")
@@ -214,6 +229,20 @@ fn discover_sessions_using_router_uncached(
         read_auth_token(&codex_home.join("auth.json"))
     }
 
+    fn read_effective_codex_config(pid: u32) -> Option<toml::Value> {
+        // Match Codex precedence: project `.codex/config.toml` (closest to cwd) overrides CODEX_HOME config.
+        let cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid);
+        if let Some(cwd) = cwd.as_deref() {
+            if let Some(p) = find_project_codex_config(cwd) {
+                if let Some(cfg) = read_config(&p) {
+                    return Some(cfg);
+                }
+            }
+        }
+        let codex_home = process_codex_home(pid)?;
+        read_config(&codex_home.join("config.toml"))
+    }
+
     fn codex_effective_base_url_uses_router(pid: u32, port: u16) -> bool {
         // 1) Fast path: process env vars.
         let keys = ["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_BASE", "OPENAI_API_HOST"];
@@ -226,8 +255,7 @@ fn discover_sessions_using_router_uncached(
         }
 
         // 2) Config path: determine the selected model_provider, then resolve its base_url.
-        let cfg_path = process_codex_home(pid).map(|h| h.join("config.toml"));
-        let cfg = cfg_path.as_deref().and_then(read_config);
+        let cfg = read_effective_codex_config(pid);
 
         let provider_id = cfg.as_ref().and_then(get_model_provider_id);
         let Some(provider_id) = provider_id else {
@@ -333,10 +361,13 @@ fn discover_sessions_using_router_uncached(
         None
     }
 
-    fn is_session_api_router(codex_home: &std::path::Path, session_id: &str) -> bool {
-        // Look for a rollout file whose name ends with `-{session_id}.jsonl` and verify its meta.
+    fn latest_rollout_for_session(
+        codex_home: &std::path::Path,
+        session_id: &str,
+    ) -> Option<std::path::PathBuf> {
+        // Look for rollout files whose name ends with `-{session_id}.jsonl`; pick the newest.
         let sessions_dir = codex_home.join("sessions");
-        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+        let mut candidates: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
         if let Ok(rd) = std::fs::read_dir(&sessions_dir) {
             let mut stack: Vec<std::path::PathBuf> = rd.flatten().map(|e| e.path()).collect();
             while let Some(p) = stack.pop() {
@@ -356,38 +387,33 @@ fn discover_sessions_using_router_uncached(
                                     && n.ends_with(&format!("-{}.jsonl", session_id.to_ascii_lowercase()))
                             })
                         {
-                            candidates.push(p);
+                            if let Ok(mtime) = md.modified() {
+                                candidates.push((p, mtime));
+                            }
                         }
                     }
-                }
-                if candidates.len() > 8 {
-                    break;
                 }
             }
         }
 
-        for p in candidates {
-            let file = std::fs::File::open(&p).ok();
-            let Some(file) = file else { continue; };
-            let mut r = std::io::BufReader::new(file);
-            let mut first = String::new();
-            if r.read_line(&mut first).ok().unwrap_or(0) == 0 {
-                continue;
-            }
-            let meta: serde_json::Value = match serde_json::from_str(first.trim()) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let payload = meta.get("payload");
-            let mp = payload
-                .and_then(|p| p.get("model_provider_id").or_else(|| p.get("model_provider")))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if mp.eq_ignore_ascii_case("api_router") {
-                return true;
-            }
+        candidates.sort_by_key(|(_p, t)| std::cmp::Reverse(*t));
+        candidates.into_iter().map(|(p, _t)| p).next()
+    }
+
+    fn session_model_provider_id(codex_home: &std::path::Path, session_id: &str) -> Option<String> {
+        let p = latest_rollout_for_session(codex_home, session_id)?;
+        let file = std::fs::File::open(&p).ok()?;
+        let mut r = std::io::BufReader::new(file);
+        let mut first = String::new();
+        if r.read_line(&mut first).ok().unwrap_or(0) == 0 {
+            return None;
         }
-        false
+        let meta: serde_json::Value = serde_json::from_str(first.trim()).ok()?;
+        let payload = meta.get("payload");
+        payload
+            .and_then(|p| p.get("model_provider_id").or_else(|| p.get("model_provider")))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     }
 
     let mut out: Vec<InferredWtSession> = Vec::new();
@@ -441,13 +467,17 @@ fn discover_sessions_using_router_uncached(
                     continue;
                 }
 
-                // Prefer config/env matching, but if the process already has an api_router session rollout,
-                // treat it as configured even if the config has since changed on disk.
+                // The rollout meta reflects what the process actually launched/resumed with.
+                // Use it as the strongest signal when available (handles config changes after launch).
                 let codex_home = process_codex_home(pid);
-                let rollout_says_api_router = codex_home
+                let rollout_provider = codex_home
                     .as_deref()
-                    .is_some_and(|h| is_session_api_router(h, &codex_session_id));
-                let matched = codex_effective_base_url_uses_router(pid, server_port) || rollout_says_api_router;
+                    .and_then(|h| session_model_provider_id(h, &codex_session_id));
+                let matched = if let Some(p) = rollout_provider.as_deref() {
+                    p.eq_ignore_ascii_case("api_router")
+                } else {
+                    codex_effective_base_url_uses_router(pid, server_port)
+                };
                 if !matched {
                     ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
                     continue;
