@@ -1025,43 +1025,13 @@ export default function App() {
                     <h3 className="aoH3">Sessions</h3>
                   </div>
                 </div>
-                {(() => {
-                  const verified = (clientSessions ?? []).filter((s) => s.verified !== false)
-                  const unverified = (clientSessions ?? []).filter((s) => s.verified === false)
-                  return (
-                    <>
-                      <SessionsTable
-                        sessions={verified}
-                        providers={providers}
-                        globalPreferred={status.preferred_provider}
-                        updating={updatingSessionPref}
-                        onSetPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
-                      />
-
-                      {!!unverified.length && (
-                        <details style={{ marginTop: 10 }}>
-                          <summary className="aoHint" style={{ cursor: 'pointer' }}>
-                            Unverified Codex sessions (no request yet)
-                          </summary>
-                          <div className="aoHint" style={{ marginTop: 6 }}>
-                            These sessions were discovered in Windows Terminal, but API Router can’t confirm their base_url yet.
-                            They’ll become verified after the first request goes through the gateway.
-                          </div>
-                          <div style={{ marginTop: 8 }}>
-                            <SessionsTable
-                              sessions={unverified}
-                              providers={providers}
-                              globalPreferred={status.preferred_provider}
-                              updating={updatingSessionPref}
-                              onSetPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
-                              allowPreferredChanges={false}
-                            />
-                          </div>
-                        </details>
-                      )}
-                    </>
-                  )
-                })()}
+                <SessionsTable
+                  sessions={clientSessions ?? []}
+                  providers={providers}
+                  globalPreferred={status.preferred_provider}
+                  updating={updatingSessionPref}
+                  onSetPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
+                />
               </div>
 
             </>
