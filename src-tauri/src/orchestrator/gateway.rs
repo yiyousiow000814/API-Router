@@ -69,7 +69,10 @@ pub struct GatewayState {
 #[derive(Clone, Debug)]
 pub struct ClientSessionRuntime {
     pub pid: u32,
-    pub last_seen_unix_ms: u64,
+    // Timestamp of last request observed from this session (not just "discovered").
+    pub last_request_unix_ms: u64,
+    // Timestamp of last time we saw the process in a discovery scan.
+    pub last_discovered_unix_ms: u64,
     pub last_codex_session_id: Option<String>,
 }
 
@@ -443,7 +446,8 @@ async fn models(
             inferred.wt_session.clone(),
             ClientSessionRuntime {
                 pid: inferred.pid,
-                last_seen_unix_ms: unix_ms(),
+                last_request_unix_ms: unix_ms(),
+                last_discovered_unix_ms: 0,
                 last_codex_session_id: None,
             },
         );
@@ -494,11 +498,12 @@ async fn responses(
             .entry(inferred.wt_session.clone())
             .or_insert(ClientSessionRuntime {
                 pid: inferred.pid,
-                last_seen_unix_ms: 0,
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 0,
                 last_codex_session_id: None,
             });
         entry.pid = inferred.pid;
-        entry.last_seen_unix_ms = unix_ms();
+        entry.last_request_unix_ms = unix_ms();
         if let Some(cid) = codex_session_display
             .as_deref()
             .or(codex_session_key.as_deref())

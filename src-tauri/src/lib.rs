@@ -220,12 +220,13 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                     let entry = map.entry(s.wt_session.clone()).or_insert_with(|| {
                         crate::orchestrator::gateway::ClientSessionRuntime {
                             pid: s.pid,
-                            last_seen_unix_ms: now,
+                            last_request_unix_ms: 0,
+                            last_discovered_unix_ms: 0,
                             last_codex_session_id: None,
                         }
                     });
                     entry.pid = s.pid;
-                    entry.last_seen_unix_ms = now;
+                    entry.last_discovered_unix_ms = now;
                     if let Some(cid) = s.codex_session_id.as_deref() {
                         entry.last_codex_session_id = Some(cid.to_string());
                     }
@@ -242,23 +243,29 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
 
         let map = state.gateway.client_sessions.read().clone();
         let mut items: Vec<_> = map.into_iter().collect();
-        items.sort_by_key(|(_k, v)| std::cmp::Reverse(v.last_seen_unix_ms));
+        items.sort_by_key(|(_k, v)| {
+            std::cmp::Reverse(v.last_request_unix_ms.max(v.last_discovered_unix_ms))
+        });
         items.truncate(20);
         items
             .into_iter()
             .map(|(wt_session, v)| {
-                let active = now.saturating_sub(v.last_seen_unix_ms) < 60_000;
+                // Consider a session "active" only if it has recently made requests through the router.
+                // Discovery scans run frequently and should not keep sessions pinned as active forever.
+                let active = v.last_request_unix_ms > 0
+                    && now.saturating_sub(v.last_request_unix_ms) < 60_000;
                 let pref = cfg
                     .routing
                     .session_preferred_providers
                     .get(&wt_session)
                     .cloned()
                     .filter(|p| cfg.providers.contains_key(p));
+                let last_seen_unix_ms = v.last_request_unix_ms.max(v.last_discovered_unix_ms);
                 serde_json::json!({
                     "id": wt_session,
                     "wt_session": wt_session,
                     "codex_session_id": v.last_codex_session_id,
-                    "last_seen_unix_ms": v.last_seen_unix_ms,
+                    "last_seen_unix_ms": last_seen_unix_ms,
                     "active": active,
                     "preferred_provider": pref
                 })
