@@ -305,8 +305,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                     "verified": v.confirmed_router
                 })
             })
-            .collect::<Vec<_>>()
-            ;
+            .collect::<Vec<_>>();
         sessions
     };
 

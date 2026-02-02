@@ -3,9 +3,9 @@
 //! Currently this module supports inferring `WT_SESSION` for a request by mapping the loopback TCP
 //! connection to the owning process PID, then reading the process environment.
 
-use std::net::SocketAddr;
 #[cfg(windows)]
 use std::io::BufRead;
+use std::net::SocketAddr;
 
 #[cfg(windows)]
 use std::sync::{Mutex, OnceLock};
@@ -99,7 +99,7 @@ fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
 }
 
 #[cfg(windows)]
-    fn rollout_base_url_matches_router(meta: &RolloutSessionMeta, router_port: u16) -> Option<bool> {
+fn rollout_base_url_matches_router(meta: &RolloutSessionMeta, router_port: u16) -> Option<bool> {
     // We treat base_url as the source of truth. The provider name/id can be user-edited and is not
     // sufficient to prove the process is actually using this gateway.
     let u = meta.base_url.as_deref()?;
@@ -130,17 +130,16 @@ fn infer_codex_session_id_from_rollouts_dir(
                             stack.push(e.path());
                         }
                     }
-                } else if md.is_file() {
-                    if p.extension()
+                } else if md.is_file()
+                    && p.extension()
                         .and_then(|s| s.to_str())
                         .is_some_and(|s| s.eq_ignore_ascii_case("jsonl"))
-                        && p.file_name()
-                            .and_then(|s| s.to_str())
-                            .is_some_and(|n| n.to_ascii_lowercase().starts_with("rollout-"))
-                    {
-                        if let Ok(mtime) = md.modified() {
-                            entries.push((p, mtime));
-                        }
+                    && p.file_name()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|n| n.to_ascii_lowercase().starts_with("rollout-"))
+                {
+                    if let Ok(mtime) = md.modified() {
+                        entries.push((p, mtime));
                     }
                 }
             }
@@ -166,7 +165,9 @@ fn infer_codex_session_id_from_rollouts_dir(
 
     for (p, mtime) in entries {
         let file = std::fs::File::open(&p).ok();
-        let Some(file) = file else { continue; };
+        let Some(file) = file else {
+            continue;
+        };
         let mut r = std::io::BufReader::new(file);
         let mut first = String::new();
         if r.read_line(&mut first).ok().unwrap_or(0) == 0 {
@@ -220,8 +221,8 @@ fn infer_codex_session_id_from_rollouts_dir(
     // 1) If any candidate recorded a base_url matching this router, prefer those.
     let router_matches: Vec<Candidate> = candidates
         .iter()
+        .filter(|&c| c.base_url_matches_router == Some(true))
         .cloned()
-        .filter(|c| c.base_url_matches_router == Some(true))
         .collect();
     if !router_matches.is_empty() {
         if let Some(start) = process_start {
@@ -266,9 +267,10 @@ pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWt
         if wt.trim().is_empty() {
             return None;
         }
-        let codex_session_id = crate::platform::windows_loopback_peer::read_process_command_line(pid)
-            .as_deref()
-            .and_then(parse_codex_session_id_from_cmdline);
+        let codex_session_id =
+            crate::platform::windows_loopback_peer::read_process_command_line(pid)
+                .as_deref()
+                .and_then(parse_codex_session_id_from_cmdline);
         Some(InferredWtSession {
             wt_session: wt,
             pid,
@@ -460,10 +462,10 @@ fn discover_sessions_using_router_uncached(
     }
 
     fn process_create_time(pid: u32) -> Option<SystemTime> {
+        use windows_sys::Win32::Foundation::FILETIME;
         use windows_sys::Win32::System::Threading::{
             GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         };
-        use windows_sys::Win32::Foundation::FILETIME;
 
         let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if h == 0 {
@@ -554,7 +556,12 @@ fn discover_sessions_using_router_uncached(
 
     fn codex_base_url_evidence(pid: u32, port: u16) -> (BaseUrlEvidenceKind, bool) {
         // 1) Fast path: process env vars (strong signal).
-        let keys = ["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_BASE", "OPENAI_API_HOST"];
+        let keys = [
+            "OPENAI_BASE_URL",
+            "OPENAI_API_BASE",
+            "OPENAI_BASE",
+            "OPENAI_API_HOST",
+        ];
         for k in keys {
             if let Some(v) = crate::platform::windows_loopback_peer::read_process_env_var(pid, k) {
                 let v = v.trim();
@@ -662,18 +669,18 @@ fn discover_sessions_using_router_uncached(
                                 stack.push(e.path());
                             }
                         }
-                    } else if md.is_file() {
-                        if p.file_name()
-                            .and_then(|s| s.to_str())
-                            .is_some_and(|n| {
-                                let n = n.to_ascii_lowercase();
-                                n.starts_with("rollout-")
-                                    && n.ends_with(&format!("-{}.jsonl", session_id.to_ascii_lowercase()))
-                            })
-                        {
-                            if let Ok(mtime) = md.modified() {
-                                candidates.push((p, mtime));
-                            }
+                    } else if md.is_file()
+                        && p.file_name().and_then(|s| s.to_str()).is_some_and(|n| {
+                            let n = n.to_ascii_lowercase();
+                            n.starts_with("rollout-")
+                                && n.ends_with(&format!(
+                                    "-{}.jsonl",
+                                    session_id.to_ascii_lowercase()
+                                ))
+                        })
+                    {
+                        if let Ok(mtime) = md.modified() {
+                            candidates.push((p, mtime));
                         }
                     }
                 }
@@ -708,14 +715,18 @@ fn discover_sessions_using_router_uncached(
             let pid = entry.th32ProcessID;
 
             // Must be inside Windows Terminal so we can map to a stable tab identity.
-            let wt = crate::platform::windows_loopback_peer::read_process_env_var(pid, "WT_SESSION");
+            let wt =
+                crate::platform::windows_loopback_peer::read_process_env_var(pid, "WT_SESSION");
             if let Some(wt) = wt {
                 let cmd = crate::platform::windows_loopback_peer::read_process_command_line(pid);
                 let _cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid)
                     .map(|p| p.to_string_lossy().to_string());
 
                 // Ignore Codex background helpers that are not user sessions.
-                if cmd.as_deref().is_some_and(|s| s.to_ascii_lowercase().contains("app-server")) {
+                if cmd
+                    .as_deref()
+                    .is_some_and(|s| s.to_ascii_lowercase().contains("app-server"))
+                {
                     ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
                     continue;
                 }
@@ -773,7 +784,9 @@ fn discover_sessions_using_router_uncached(
                     wt_session: wt,
                     pid,
                     codex_session_id: Some(codex_session_id),
-                    reported_model_provider: rollout_meta.as_ref().and_then(|m| m.model_provider.clone()),
+                    reported_model_provider: rollout_meta
+                        .as_ref()
+                        .and_then(|m| m.model_provider.clone()),
                     reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
                     router_confirmed: matched,
                 });
@@ -837,7 +850,11 @@ mod tests {
     fn infer_session_id_skips_unparseable_newest_rollout() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let codex_home = tmp.path().join(".codex");
-        let sessions_dir = codex_home.join("sessions").join("2026").join("02").join("02");
+        let sessions_dir = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("02")
+            .join("02");
         std::fs::create_dir_all(&sessions_dir).expect("mkdir");
 
         // Create a valid rollout first (older).
@@ -863,5 +880,4 @@ mod tests {
         let got = infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, 4000, None);
         assert_eq!(got.as_deref(), Some(good_id));
     }
-
 }

@@ -323,7 +323,11 @@ mod windows_impl {
             }
             let pbi = pbi.assume_init();
             let peb_addr = pbi.peb_base_address as usize;
-            if peb_addr == 0 { None } else { Some(peb_addr) }
+            if peb_addr == 0 {
+                None
+            } else {
+                Some(peb_addr)
+            }
         }
     }
 
