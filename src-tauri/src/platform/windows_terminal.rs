@@ -63,6 +63,7 @@ fn norm_cwd_for_match(s: &str) -> String {
 struct RolloutSessionMeta {
     id: String,
     cwd: String,
+    model_provider: Option<String>,
     base_url: Option<String>,
 }
 
@@ -77,6 +78,11 @@ fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
+    let model_provider = payload
+        .get("model_provider_id")
+        .or_else(|| payload.get("model_provider"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let base_url = payload
         .get("base_url")
         .or_else(|| payload.get("model_provider_base_url"))
@@ -85,12 +91,13 @@ fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
     Some(RolloutSessionMeta {
         id,
         cwd,
+        model_provider,
         base_url,
     })
 }
 
 #[cfg(windows)]
-fn rollout_base_url_matches_router(meta: &RolloutSessionMeta, router_port: u16) -> Option<bool> {
+    fn rollout_base_url_matches_router(meta: &RolloutSessionMeta, router_port: u16) -> Option<bool> {
     // We treat base_url as the source of truth. The provider name/id can be user-edited and is not
     // sufficient to prove the process is actually using this gateway.
     let u = meta.base_url.as_deref()?;
@@ -514,43 +521,60 @@ fn discover_sessions_using_router_uncached(
         read_config_with_mtime(&codex_home.join("config.toml"))
     }
 
-    fn codex_effective_base_url_uses_router(pid: u32, port: u16) -> bool {
-        // 1) Fast path: process env vars.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum BaseUrlEvidenceKind {
+        Env,
+        ConfigTrusted,
+        ConfigUntrusted,
+        None,
+    }
+
+    fn codex_base_url_evidence(pid: u32, port: u16) -> (BaseUrlEvidenceKind, bool) {
+        // 1) Fast path: process env vars (strong signal).
         let keys = ["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_BASE", "OPENAI_API_HOST"];
         for k in keys {
             if let Some(v) = crate::platform::windows_loopback_peer::read_process_env_var(pid, k) {
-                if looks_like_router_base(&v, port) {
-                    return true;
+                let v = v.trim();
+                if v.is_empty() {
+                    continue;
                 }
+                return (BaseUrlEvidenceKind::Env, looks_like_router_base(v, port));
             }
         }
 
         // 2) Config path: determine the selected model_provider, then resolve its base_url.
-        // Only trust the on-disk config if it wasn't modified after the process started; users
-        // often edit configs while Codex is already running, and the running process keeps the
-        // old configuration in memory.
         let start = process_create_time(pid);
         let cfg = read_effective_codex_config_with_mtime(pid);
-        if let (Some(start), Some((_cfg, mtime))) = (start, cfg.as_ref()) {
-            // Small slack for clock resolution / filesystem timestamp granularity.
-            if mtime > &(start + Duration::from_secs(2)) {
-                return false;
-            }
-        }
-
-        let provider_id = cfg.as_ref().and_then(|(cfg, _t)| get_model_provider_id(cfg));
-        let Some(provider_id) = provider_id else {
-            // Be conservative: if we can't find the selected provider, don't claim it's using us.
-            return false;
+        let Some((cfg, cfg_mtime)) = cfg else {
+            return (BaseUrlEvidenceKind::None, false);
         };
 
-        let base_url = cfg
-            .as_ref()
-            .and_then(|(cfg, _t)| get_provider_base_url(cfg, &provider_id));
+        let provider_id = get_model_provider_id(&cfg);
+        let Some(provider_id) = provider_id else {
+            return (BaseUrlEvidenceKind::None, false);
+        };
+        let base_url = get_provider_base_url(&cfg, &provider_id);
+        let Some(base_url) = base_url else {
+            return (BaseUrlEvidenceKind::None, false);
+        };
 
-        base_url
-            .as_deref()
-            .is_some_and(|u| looks_like_router_base(u, port))
+        let matches = looks_like_router_base(&base_url, port);
+
+        // If config was modified after the process started, it's an untrusted hint (the running
+        // process keeps the old config in memory). Still useful as a fallback when combined with
+        // rollout metadata to reduce false positives.
+        let trusted = match start {
+            Some(start) => cfg_mtime <= start + Duration::from_secs(2),
+            None => true,
+        };
+        (
+            if trusted {
+                BaseUrlEvidenceKind::ConfigTrusted
+            } else {
+                BaseUrlEvidenceKind::ConfigUntrusted
+            },
+            matches,
+        )
     }
     fn infer_codex_session_id_from_rollouts(pid: u32, router_port: u16) -> Option<String> {
         let cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid)?;
@@ -671,7 +695,22 @@ fn discover_sessions_using_router_uncached(
                     .and_then(|m| rollout_base_url_matches_router(m, server_port))
                 {
                     Some(v) => v,
-                    None => codex_effective_base_url_uses_router(pid, server_port),
+                    None => {
+                        let (kind, matches) = codex_base_url_evidence(pid, server_port);
+                        match kind {
+                            BaseUrlEvidenceKind::Env | BaseUrlEvidenceKind::ConfigTrusted => matches,
+                            BaseUrlEvidenceKind::ConfigUntrusted => {
+                                // If disk config changed after the process started, only accept it
+                                // as proof when the session itself was created with api_router.
+                                matches
+                                    && rollout_meta
+                                        .as_ref()
+                                        .and_then(|m| m.model_provider.as_deref())
+                                        .is_some_and(|p| p.eq_ignore_ascii_case("api_router"))
+                            }
+                            BaseUrlEvidenceKind::None => false,
+                        }
+                    }
                 };
                 out.push(InferredWtSession {
                     wt_session: wt,
@@ -704,6 +743,7 @@ mod tests {
         let m = parse_rollout_session_meta(line).expect("parse");
         assert_eq!(m.id, "00000000-0000-0000-0000-000000000000");
         assert_eq!(m.cwd, "C:\\work\\example-project");
+        assert_eq!(m.model_provider.as_deref(), Some("api_router"));
         assert!(m.base_url.is_none());
     }
 
