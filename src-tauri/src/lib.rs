@@ -213,30 +213,45 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         // the first request is sent (Windows Terminal only).
         let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
         let expected = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
-        let discovered =
-            crate::platform::windows_terminal::discover_sessions_using_router(
-                cfg.listen.port,
-                expected,
-            );
+        let discovered = crate::platform::windows_terminal::discover_sessions_using_router(
+            cfg.listen.port,
+            expected,
+        );
 
-            if !discovered.is_empty() {
-                let mut map = state.gateway.client_sessions.write();
-                for s in discovered {
+        // "Sticky confirmed" behavior:
+        // - If we can currently prove the process uses this gateway, mark it confirmed and show it.
+        // - If we previously confirmed it, keep showing it even if the user edits Codex config files
+        //   while Codex is running (the process keeps the old config in memory).
+        {
+            let mut map = state.gateway.client_sessions.write();
+            for s in discovered {
+                if s.router_confirmed {
                     let entry = map.entry(s.wt_session.clone()).or_insert_with(|| {
                         crate::orchestrator::gateway::ClientSessionRuntime {
                             pid: s.pid,
                             last_request_unix_ms: 0,
                             last_discovered_unix_ms: 0,
                             last_codex_session_id: None,
+                            confirmed_router: true,
                         }
                     });
                     entry.pid = s.pid;
                     entry.last_discovered_unix_ms = now;
+                    entry.confirmed_router = true;
                     if let Some(cid) = s.codex_session_id.as_deref() {
                         entry.last_codex_session_id = Some(cid.to_string());
                     }
+                } else if let Some(entry) = map.get_mut(&s.wt_session) {
+                    if entry.confirmed_router {
+                        entry.pid = s.pid;
+                        entry.last_discovered_unix_ms = now;
+                        if let Some(cid) = s.codex_session_id.as_deref() {
+                            entry.last_codex_session_id = Some(cid.to_string());
+                        }
+                    }
                 }
             }
+        }
 
         // Drop dead sessions aggressively (e.g. user Ctrl+C'd Codex).
         // We keep the persisted preference mapping in config; only the runtime list is pruned.

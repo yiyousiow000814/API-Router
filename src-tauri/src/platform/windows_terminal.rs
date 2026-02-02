@@ -17,6 +17,7 @@ pub struct InferredWtSession {
     pub wt_session: String,
     pub pid: u32,
     pub codex_session_id: Option<String>,
+    pub router_confirmed: bool,
 }
 
 #[cfg(windows)]
@@ -263,6 +264,7 @@ pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWt
             wt_session: wt,
             pid,
             codex_session_id,
+            router_confirmed: true,
         })
     }
 }
@@ -671,15 +673,11 @@ fn discover_sessions_using_router_uncached(
                     Some(v) => v,
                     None => codex_effective_base_url_uses_router(pid, server_port),
                 };
-                if !matched {
-                    ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
-                    continue;
-                }
-
                 out.push(InferredWtSession {
                     wt_session: wt,
                     pid,
                     codex_session_id: Some(codex_session_id),
+                    router_confirmed: matched,
                 });
             }
         }

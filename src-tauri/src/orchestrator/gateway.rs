@@ -74,6 +74,10 @@ pub struct ClientSessionRuntime {
     // Timestamp of last time we saw the process in a discovery scan.
     pub last_discovered_unix_ms: u64,
     pub last_codex_session_id: Option<String>,
+    // Sticky "this session uses our gateway" marker. This prevents sessions from disappearing if
+    // the user edits Codex config files while Codex is running (the process keeps the old config
+    // in memory, but we may no longer be able to prove it from disk).
+    pub confirmed_router: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -449,6 +453,7 @@ async fn models(
                 last_request_unix_ms: unix_ms(),
                 last_discovered_unix_ms: 0,
                 last_codex_session_id: None,
+                confirmed_router: true,
             },
         );
     }
@@ -501,9 +506,11 @@ async fn responses(
                 last_request_unix_ms: 0,
                 last_discovered_unix_ms: 0,
                 last_codex_session_id: None,
+                confirmed_router: true,
             });
         entry.pid = inferred.pid;
         entry.last_request_unix_ms = unix_ms();
+        entry.confirmed_router = true;
         if let Some(cid) = codex_session_display
             .as_deref()
             .or(codex_session_key.as_deref())
