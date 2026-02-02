@@ -218,37 +218,27 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
             expected,
         );
 
-        // "Sticky confirmed" behavior:
-        // - If we can currently prove the process uses this gateway, mark it confirmed and show it.
-        // - If we previously confirmed it, keep showing it even if the user edits Codex config files
-        //   while Codex is running (the process keeps the old config in memory).
+        // Track all discovered sessions, but only allow provider preference changes once we have
+        // strong evidence that the session is using this gateway.
         {
             let mut map = state.gateway.client_sessions.write();
             for s in discovered {
+                let entry = map.entry(s.wt_session.clone()).or_insert_with(|| {
+                    crate::orchestrator::gateway::ClientSessionRuntime {
+                        pid: s.pid,
+                        last_request_unix_ms: 0,
+                        last_discovered_unix_ms: 0,
+                        last_codex_session_id: None,
+                        confirmed_router: s.router_confirmed,
+                    }
+                });
+                entry.pid = s.pid;
+                entry.last_discovered_unix_ms = now;
                 if s.router_confirmed {
-                    let entry = map.entry(s.wt_session.clone()).or_insert_with(|| {
-                        crate::orchestrator::gateway::ClientSessionRuntime {
-                            pid: s.pid,
-                            last_request_unix_ms: 0,
-                            last_discovered_unix_ms: 0,
-                            last_codex_session_id: None,
-                            confirmed_router: true,
-                        }
-                    });
-                    entry.pid = s.pid;
-                    entry.last_discovered_unix_ms = now;
                     entry.confirmed_router = true;
-                    if let Some(cid) = s.codex_session_id.as_deref() {
-                        entry.last_codex_session_id = Some(cid.to_string());
-                    }
-                } else if let Some(entry) = map.get_mut(&s.wt_session) {
-                    if entry.confirmed_router {
-                        entry.pid = s.pid;
-                        entry.last_discovered_unix_ms = now;
-                        if let Some(cid) = s.codex_session_id.as_deref() {
-                            entry.last_codex_session_id = Some(cid.to_string());
-                        }
-                    }
+                }
+                if let Some(cid) = s.codex_session_id.as_deref() {
+                    entry.last_codex_session_id = Some(cid.to_string());
                 }
             }
         }
@@ -301,7 +291,8 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                     "codex_session_id": v.last_codex_session_id,
                     "last_seen_unix_ms": last_seen_unix_ms,
                     "active": active,
-                    "preferred_provider": pref
+                    "preferred_provider": pref,
+                    "verified": v.confirmed_router
                 })
             })
             .collect::<Vec<_>>()

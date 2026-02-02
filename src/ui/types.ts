@@ -21,6 +21,7 @@ export type Status = {
     last_seen_unix_ms: number
     active: boolean
     preferred_provider?: string | null
+    verified?: boolean
   }>
   active_provider?: string | null
   active_reason?: string | null

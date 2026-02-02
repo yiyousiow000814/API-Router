@@ -7,6 +7,7 @@ type SessionRow = {
   last_seen_unix_ms: number
   active: boolean
   preferred_provider?: string | null
+  verified?: boolean
 }
 
 type Props = {
@@ -15,9 +16,17 @@ type Props = {
   globalPreferred: string
   updating: Record<string, boolean>
   onSetPreferred: (sessionId: string, provider: string | null) => void
+  allowPreferredChanges?: boolean
 }
 
-export function SessionsTable({ sessions, providers, globalPreferred, updating, onSetPreferred }: Props) {
+export function SessionsTable({
+  sessions,
+  providers,
+  globalPreferred,
+  updating,
+  onSetPreferred,
+  allowPreferredChanges = true,
+}: Props) {
   return (
     <table className="aoTable aoTableFixed">
       <thead>
@@ -34,6 +43,7 @@ export function SessionsTable({ sessions, providers, globalPreferred, updating, 
       <tbody>
         {sessions.length ? (
           sessions.map((s) => {
+            const verified = s.verified !== false
             const effective = s.preferred_provider ?? globalPreferred
             const codexSession = s.codex_session_id ?? null
             const wt = s.wt_session ?? s.id
@@ -49,8 +59,8 @@ export function SessionsTable({ sessions, providers, globalPreferred, updating, 
                 <td className="aoCellCenter">
                   <div className="aoCellCenterInner">
                     <span className="aoPill">
-                      <span className={s.active ? 'aoDot' : 'aoDot aoDotMuted'} />
-                      <span className="aoPillText">{s.active ? 'active' : 'idle'}</span>
+                      <span className={verified && s.active ? 'aoDot' : 'aoDot aoDotMuted'} />
+                      <span className="aoPillText">{verified ? (s.active ? 'active' : 'idle') : 'unverified'}</span>
                     </span>
                   </div>
                 </td>
@@ -60,7 +70,7 @@ export function SessionsTable({ sessions, providers, globalPreferred, updating, 
                   <select
                     className="aoSelect"
                     value={s.preferred_provider ?? ''}
-                    disabled={!!updating[s.id]}
+                    disabled={!!updating[s.id] || !allowPreferredChanges || !verified}
                     onChange={(e) => {
                       const v = e.target.value
                       onSetPreferred(s.id, v ? v : null)
