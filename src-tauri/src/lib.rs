@@ -512,6 +512,9 @@ fn delete_provider(
         let mut cfg = state.gateway.cfg.write();
         cfg.providers.remove(&name);
         cfg.provider_order.retain(|p| p != &name);
+        cfg.routing
+            .session_preferred_providers
+            .retain(|_, pref| pref != &name);
         app_state::normalize_provider_order(&mut cfg);
 
         if cfg.providers.is_empty() {
