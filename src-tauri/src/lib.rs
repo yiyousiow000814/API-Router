@@ -208,21 +208,22 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         .get_codex_account_snapshot()
         .unwrap_or(serde_json::json!({"ok": false}));
 
-            let client_sessions = {
-                // Best-effort: discover running Codex processes configured to use this router, even before
-                // the first request is sent (Windows Terminal only).
-                {
-                    let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
-                    let expected = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
-                    let discovered = crate::platform::windows_terminal::discover_sessions_using_router(
-                        cfg.listen.port,
-                        expected,
-                    );
-                    if !discovered.is_empty() {
-                        let mut map = state.gateway.client_sessions.write();
-                        for s in discovered {
-                            let entry = map.entry(s.wt_session.clone()).or_insert_with(|| {
-                                crate::orchestrator::gateway::ClientSessionRuntime {
+    let client_sessions = {
+        // Best-effort: discover running Codex processes configured to use this router, even before
+        // the first request is sent (Windows Terminal only).
+        let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
+        let expected = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
+        let discovered =
+            crate::platform::windows_terminal::discover_sessions_using_router(
+                cfg.listen.port,
+                expected,
+            );
+
+            if !discovered.is_empty() {
+                let mut map = state.gateway.client_sessions.write();
+                for s in discovered {
+                    let entry = map.entry(s.wt_session.clone()).or_insert_with(|| {
+                        crate::orchestrator::gateway::ClientSessionRuntime {
                             pid: s.pid,
                             last_request_unix_ms: 0,
                             last_discovered_unix_ms: 0,
@@ -236,13 +237,27 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                     }
                 }
             }
-        }
 
         // Drop dead sessions aggressively (e.g. user Ctrl+C'd Codex).
         // We keep the persisted preference mapping in config; only the runtime list is pruned.
         {
             let mut map = state.gateway.client_sessions.write();
-            map.retain(|_, v| crate::platform::windows_terminal::is_pid_alive(v.pid));
+            // Also drop "discovery-only" sessions that we haven't rediscovered recently.
+            // This prevents stale/incorrect rows from sticking around if a running Codex changes config
+            // and no longer matches the discovery filter.
+            const DISCOVERY_STALE_MS: u64 = 10_000;
+            map.retain(|_, v| {
+                if !crate::platform::windows_terminal::is_pid_alive(v.pid) {
+                    return false;
+                }
+                if v.last_request_unix_ms == 0
+                    && v.last_discovered_unix_ms > 0
+                    && now.saturating_sub(v.last_discovered_unix_ms) > DISCOVERY_STALE_MS
+                {
+                    return false;
+                }
+                true
+            });
         }
 
         let map = state.gateway.client_sessions.read().clone();
@@ -251,7 +266,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
             std::cmp::Reverse(v.last_request_unix_ms.max(v.last_discovered_unix_ms))
         });
         items.truncate(20);
-        items
+        let sessions = items
             .into_iter()
             .map(|(wt_session, v)| {
                 // Consider a session "active" only if it has recently made requests through the router.
@@ -275,6 +290,8 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                 })
             })
             .collect::<Vec<_>>()
+            ;
+        sessions
     };
 
     serde_json::json!({

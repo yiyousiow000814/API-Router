@@ -199,7 +199,7 @@ mod tests {
             "content": [{
                 "type": "tool_output",
                 "tool_call_id": "call_1",
-                "output": "C:\\\\Users\\\\yiyou\\\\API-Router"
+                "output": "C:\\\\work\\\\example-project"
             }]
         });
         let body = json!({
@@ -303,7 +303,7 @@ mod tests {
             "content": [{
                 "type": "tool_output",
                 "tool_call_id": "call_1",
-                "output": "C:\\\\Users\\\\yiyou\\\\API-Router"
+                "output": "C:\\\\work\\\\example-project"
             }]
         }]);
         let body = json!({
