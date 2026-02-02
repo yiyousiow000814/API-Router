@@ -581,6 +581,11 @@ fn rename_provider(
         if cfg.routing.preferred_provider == old {
             cfg.routing.preferred_provider = new.to_string();
         }
+        for (_session, pref) in cfg.routing.session_preferred_providers.iter_mut() {
+            if pref == old {
+                *pref = new.to_string();
+            }
+        }
         for entry in cfg.provider_order.iter_mut() {
             if entry == old {
                 *entry = new.to_string();

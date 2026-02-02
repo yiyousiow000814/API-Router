@@ -428,7 +428,19 @@ async fn models(
     }
     st.last_activity_unix_ms.store(unix_ms(), Ordering::Relaxed);
     let cfg = st.cfg.read().clone();
-    let (provider_name, reason) = st.router.decide(&cfg);
+
+    // Respect per-session preferred providers (when we can infer WT_SESSION). Fall back to the
+    // global preferred provider.
+    let client_session = windows_terminal::infer_wt_session(peer, cfg.listen.port);
+    let preferred = client_session
+        .as_ref()
+        .map(|s| s.wt_session.as_str())
+        .and_then(|id| cfg.routing.session_preferred_providers.get(id))
+        .filter(|p| cfg.providers.contains_key(*p))
+        .map(|s| s.as_str())
+        .unwrap_or(cfg.routing.preferred_provider.as_str());
+
+    let (provider_name, reason) = st.router.decide_with_preferred(&cfg, preferred);
     let p = match cfg.providers.get(&provider_name) {
         Some(p) => p.clone(),
         None => {
@@ -446,20 +458,22 @@ async fn models(
     let api_key = st.secrets.get_provider_key(&provider_name);
     let client_auth = upstream_auth(&st, client_auth);
 
-    if let Some(inferred) = windows_terminal::infer_wt_session(peer, cfg.listen.port) {
+    if let Some(inferred) = client_session.as_ref() {
         let mut map = st.client_sessions.write();
-        map.insert(
-            inferred.wt_session.clone(),
-            ClientSessionRuntime {
+        let entry = map
+            .entry(inferred.wt_session.clone())
+            .or_insert(ClientSessionRuntime {
                 pid: inferred.pid,
-                last_request_unix_ms: unix_ms(),
+                last_request_unix_ms: 0,
                 last_discovered_unix_ms: 0,
                 last_codex_session_id: None,
                 last_reported_model_provider: None,
                 last_reported_base_url: None,
                 confirmed_router: true,
-            },
-        );
+            });
+        entry.pid = inferred.pid;
+        entry.last_request_unix_ms = unix_ms();
+        entry.confirmed_router = true;
     }
 
     let timeout = cfg.routing.request_timeout_seconds;

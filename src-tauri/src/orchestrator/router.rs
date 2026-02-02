@@ -81,10 +81,6 @@ impl RouterState {
         health.retain(|name, _| cfg.providers.contains_key(name));
     }
 
-    pub fn decide(&self, cfg: &AppConfig) -> (String, &'static str) {
-        self.decide_with_preferred(cfg, &cfg.routing.preferred_provider)
-    }
-
     pub fn decide_with_preferred(
         &self,
         cfg: &AppConfig,

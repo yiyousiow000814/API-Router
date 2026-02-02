@@ -203,11 +203,13 @@ fn infer_codex_session_id_from_rollouts_dir(
         const MAX_WINDOW: Duration = Duration::from_secs(120);
         let mut best: Option<(&Candidate, Duration)> = None;
         for c in cands {
-            let dt = if c.mtime >= start {
+            let Some(dt) = (if c.mtime >= start {
                 c.mtime.duration_since(start).ok()
             } else {
                 start.duration_since(c.mtime).ok()
-            }?;
+            }) else {
+                continue;
+            };
             if dt > MAX_WINDOW {
                 continue;
             }
