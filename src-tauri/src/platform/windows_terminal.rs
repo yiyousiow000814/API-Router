@@ -339,24 +339,31 @@ fn discover_sessions_using_router_uncached(
             let mp = payload
                 .and_then(|p| p.get("model_provider_id").or_else(|| p.get("model_provider")))
                 .and_then(|v| v.as_str());
+            let base_url = payload
+                .and_then(|p| p.get("base_url").or_else(|| p.get("model_provider_base_url")))
+                .and_then(|v| v.as_str());
 
             let Some(id) = id else { continue; };
             let Some(wd) = wd else { continue; };
-            let Some(mp) = mp else { continue; };
-
-            if !mp.eq_ignore_ascii_case("api_router") {
-                continue;
-            }
+            let mp = mp.unwrap_or("");
             let wd_norm = wd.replace('\\', "/").to_ascii_lowercase();
             if wd_norm != cwd_norm {
                 continue;
             }
 
-            // Optional: if Codex is configured via env vars or config to point to this router port,
-            // confirm that as well. If we can't confirm, still return the session id; token check
-            // will filter later.
-            let _ = router_port;
-            return Some(id.to_string());
+            // Prefer matching by base_url (strong signal).
+            if let Some(base_url) = base_url {
+                if looks_like_router_base(base_url, router_port) {
+                    return Some(id.to_string());
+                }
+                continue;
+            }
+
+            // Fallback: if rollout didn't record base_url, only infer if the name suggests api_router
+            // and our current effective config/env points at this router port.
+            if mp.eq_ignore_ascii_case("api_router") && codex_effective_base_url_uses_router(pid, router_port) {
+                return Some(id.to_string());
+            }
         }
         None
     }
@@ -400,7 +407,7 @@ fn discover_sessions_using_router_uncached(
         candidates.into_iter().map(|(p, _t)| p).next()
     }
 
-    fn session_model_provider_id(codex_home: &std::path::Path, session_id: &str) -> Option<String> {
+    fn session_base_url(codex_home: &std::path::Path, session_id: &str) -> Option<String> {
         let p = latest_rollout_for_session(codex_home, session_id)?;
         let file = std::fs::File::open(&p).ok()?;
         let mut r = std::io::BufReader::new(file);
@@ -411,7 +418,7 @@ fn discover_sessions_using_router_uncached(
         let meta: serde_json::Value = serde_json::from_str(first.trim()).ok()?;
         let payload = meta.get("payload");
         payload
-            .and_then(|p| p.get("model_provider_id").or_else(|| p.get("model_provider")))
+            .and_then(|p| p.get("base_url").or_else(|| p.get("model_provider_base_url")))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     }
@@ -468,13 +475,13 @@ fn discover_sessions_using_router_uncached(
                 }
 
                 // The rollout meta reflects what the process actually launched/resumed with.
-                // Use it as the strongest signal when available (handles config changes after launch).
+                // Prefer base_url from rollout as the strongest signal when available (handles config changes after launch).
                 let codex_home = process_codex_home(pid);
-                let rollout_provider = codex_home
+                let rollout_base = codex_home
                     .as_deref()
-                    .and_then(|h| session_model_provider_id(h, &codex_session_id));
-                let matched = if let Some(p) = rollout_provider.as_deref() {
-                    p.eq_ignore_ascii_case("api_router")
+                    .and_then(|h| session_base_url(h, &codex_session_id));
+                let matched = if let Some(u) = rollout_base.as_deref() {
+                    looks_like_router_base(u, server_port)
                 } else {
                     codex_effective_base_url_uses_router(pid, server_port)
                 };
