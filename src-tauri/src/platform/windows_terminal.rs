@@ -146,6 +146,14 @@ fn discover_sessions_using_router_uncached(
         toml::from_str::<toml::Value>(&s).ok()
     }
 
+    fn read_auth_token(path: &std::path::Path) -> Option<String> {
+        let s = std::fs::read_to_string(path).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&s).ok()?;
+        v.get("OPENAI_API_KEY")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
     fn get_model_provider_id(cfg: &toml::Value) -> Option<String> {
         let t = cfg.as_table()?;
         t.get("model_provider")
@@ -165,6 +173,47 @@ fn discover_sessions_using_router_uncached(
             .map(|s| s.to_string())
     }
 
+    fn process_codex_home(pid: u32) -> Option<std::path::PathBuf> {
+        crate::platform::windows_loopback_peer::read_process_env_var(pid, "CODEX_HOME")
+            .filter(|s| !s.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var("USERPROFILE")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|p| std::path::PathBuf::from(p).join(".codex"))
+            })
+    }
+
+    fn find_project_auth_json(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+        // Walk up from cwd looking for `.codex/auth.json`.
+        // Keep it bounded to avoid pathological traversals on deep paths.
+        let mut cur = Some(cwd);
+        for _ in 0..32 {
+            let dir = cur?;
+            let p = dir.join(".codex").join("auth.json");
+            if p.exists() {
+                return Some(p);
+            }
+            cur = dir.parent();
+        }
+        None
+    }
+
+    fn read_effective_codex_gateway_token(pid: u32) -> Option<String> {
+        // Prefer per-project `.codex/auth.json` if present; otherwise fall back to CODEX_HOME/auth.json.
+        let cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid);
+        if let Some(cwd) = cwd.as_deref() {
+            if let Some(p) = find_project_auth_json(cwd) {
+                if let Some(tok) = read_auth_token(&p) {
+                    return Some(tok);
+                }
+            }
+        }
+        let codex_home = process_codex_home(pid)?;
+        read_auth_token(&codex_home.join("auth.json"))
+    }
+
     fn codex_effective_base_url_uses_router(pid: u32, port: u16) -> bool {
         // 1) Fast path: process env vars.
         let keys = ["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_BASE", "OPENAI_API_HOST"];
@@ -177,17 +226,7 @@ fn discover_sessions_using_router_uncached(
         }
 
         // 2) Config path: determine the selected model_provider, then resolve its base_url.
-        let codex_home = crate::platform::windows_loopback_peer::read_process_env_var(pid, "CODEX_HOME");
-        let cfg_path = codex_home
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .map(|p| std::path::PathBuf::from(p).join("config.toml"))
-            .or_else(|| {
-                std::env::var("USERPROFILE")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
-                    .map(|p| std::path::PathBuf::from(p).join(".codex").join("config.toml"))
-            });
+        let cfg_path = process_codex_home(pid).map(|h| h.join("config.toml"));
         let cfg = cfg_path.as_deref().and_then(read_config);
 
         let provider_id = cfg.as_ref().and_then(get_model_provider_id);
@@ -203,63 +242,10 @@ fn discover_sessions_using_router_uncached(
             .is_some_and(|u| looks_like_router_base(u, port))
     }
 
-    fn codex_uses_expected_gateway_token(pid: u32, port: u16, expected: &str) -> bool {
-        // Check env first (fast).
-        if let Some(v) = crate::platform::windows_loopback_peer::read_process_env_var(pid, "OPENAI_API_KEY") {
-            if v == expected {
-                return true;
-            }
-        }
-
-        // Otherwise, consult CODEX_HOME/config.toml to determine the provider's env_key or direct token.
-        let codex_home = crate::platform::windows_loopback_peer::read_process_env_var(pid, "CODEX_HOME")
-            .filter(|s| !s.trim().is_empty())
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var("USERPROFILE")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
-                    .map(|p| std::path::PathBuf::from(p).join(".codex"))
-            });
-        let Some(codex_home) = codex_home else { return false; };
-        let cfg = read_config(&codex_home.join("config.toml"));
-        let Some(cfg) = cfg else { return false; };
-        let provider_id = get_model_provider_id(&cfg);
-        let Some(provider_id) = provider_id else { return false; };
-        let base_url = get_provider_base_url(&cfg, &provider_id);
-        let Some(base_url) = base_url else { return false; };
-        if !looks_like_router_base(&base_url, port) {
-            return false;
-        }
-
-        // If provider defines `env_key`, read that env var from the process and compare to expected.
-        let env_key = cfg
-            .as_table()
-            .and_then(|t| t.get("model_providers"))
-            .and_then(|v| v.as_table())
-            .and_then(|tbl| tbl.get(&provider_id))
-            .and_then(|v| v.as_table())
-            .and_then(|tbl| tbl.get("env_key"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        if let Some(env_key) = env_key.as_deref() {
-            if let Some(v) = crate::platform::windows_loopback_peer::read_process_env_var(pid, env_key) {
-                if v == expected {
-                    return true;
-                }
-            }
-        }
-
-        // Some setups may embed a direct bearer token in config.
-        let direct = cfg
-            .as_table()
-            .and_then(|t| t.get("model_providers"))
-            .and_then(|v| v.as_table())
-            .and_then(|tbl| tbl.get(&provider_id))
-            .and_then(|v| v.as_table())
-            .and_then(|tbl| tbl.get("experimental_bearer_token"))
-            .and_then(|v| v.as_str());
-        direct.is_some_and(|v| v == expected)
+    fn codex_uses_expected_gateway_token(pid: u32, expected: &str) -> bool {
+        read_effective_codex_gateway_token(pid)
+            .as_deref()
+            .is_some_and(|tok| tok == expected)
     }
 
     fn infer_codex_session_id_from_rollouts(
@@ -269,35 +255,38 @@ fn discover_sessions_using_router_uncached(
         let cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid)?;
         let cwd_norm = cwd.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
 
-        // Read CODEX_HOME/config.toml to get the selected provider and ensure it points at us.
-        let codex_home = crate::platform::windows_loopback_peer::read_process_env_var(pid, "CODEX_HOME")
-            .filter(|s| !s.trim().is_empty())
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var("USERPROFILE")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
-                    .map(|p| std::path::PathBuf::from(p).join(".codex"))
-            })?;
-
-        let cfg = read_config(&codex_home.join("config.toml"))?;
-        let provider_id = get_model_provider_id(&cfg)?;
-        let base_url = get_provider_base_url(&cfg, &provider_id)?;
-        if !looks_like_router_base(&base_url, router_port) {
-            return None;
-        }
-
+        // Scan recent rollouts for a matching cwd + provider.
+        let codex_home = process_codex_home(pid)?;
         let sessions_dir = codex_home.join("sessions");
         let mut entries: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
         if let Ok(rd) = std::fs::read_dir(&sessions_dir) {
-            for e in rd.flatten() {
-                let p = e.path();
-                if p.extension().and_then(|s| s.to_str()).is_some_and(|s| s.eq_ignore_ascii_case("jsonl")) {
-                    if let Ok(md) = e.metadata() {
-                        if let Ok(mtime) = md.modified() {
-                            entries.push((p, mtime));
+            // Layout is typically sessions/YYYY/MM/DD/*.jsonl; recurse to collect rollouts.
+            let mut stack: Vec<std::path::PathBuf> = rd.flatten().map(|e| e.path()).collect();
+            while let Some(p) = stack.pop() {
+                if let Ok(md) = std::fs::metadata(&p) {
+                    if md.is_dir() {
+                        if let Ok(rd2) = std::fs::read_dir(&p) {
+                            for e in rd2.flatten() {
+                                stack.push(e.path());
+                            }
+                        }
+                    } else if md.is_file() {
+                        if p.extension()
+                            .and_then(|s| s.to_str())
+                            .is_some_and(|s| s.eq_ignore_ascii_case("jsonl"))
+                            && p.file_name()
+                                .and_then(|s| s.to_str())
+                                .is_some_and(|n| n.to_ascii_lowercase().starts_with("rollout-"))
+                        {
+                            if let Ok(mtime) = md.modified() {
+                                entries.push((p, mtime));
+                            }
                         }
                     }
+                }
+                // Cap traversal to avoid pathological scans.
+                if entries.len() > 800 {
+                    break;
                 }
             }
         }
@@ -314,27 +303,91 @@ fn discover_sessions_using_router_uncached(
                 continue;
             }
             let meta: serde_json::Value = serde_json::from_str(first.trim()).ok()?;
-            let id = meta.get("id").and_then(|v| v.as_str());
-            let wd = meta.get("working_directory").and_then(|v| v.as_str());
-            let mp = meta
-                .get("model_provider_id")
-                .or_else(|| meta.get("model_provider"))
+            let payload = meta.get("payload");
+            let id = payload.and_then(|p| p.get("id")).and_then(|v| v.as_str());
+            let wd = payload
+                .and_then(|p| p.get("cwd").or_else(|| p.get("working_directory")))
+                .and_then(|v| v.as_str());
+            let mp = payload
+                .and_then(|p| p.get("model_provider_id").or_else(|| p.get("model_provider")))
                 .and_then(|v| v.as_str());
 
             let Some(id) = id else { continue; };
             let Some(wd) = wd else { continue; };
             let Some(mp) = mp else { continue; };
 
-            if !mp.eq_ignore_ascii_case(&provider_id) {
+            if !mp.eq_ignore_ascii_case("api_router") {
                 continue;
             }
             let wd_norm = wd.replace('\\', "/").to_ascii_lowercase();
             if wd_norm != cwd_norm {
                 continue;
             }
+
+            // Optional: if Codex is configured via env vars or config to point to this router port,
+            // confirm that as well. If we can't confirm, still return the session id; token check
+            // will filter later.
+            let _ = router_port;
             return Some(id.to_string());
         }
         None
+    }
+
+    fn is_session_api_router(codex_home: &std::path::Path, session_id: &str) -> bool {
+        // Look for a rollout file whose name ends with `-{session_id}.jsonl` and verify its meta.
+        let sessions_dir = codex_home.join("sessions");
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&sessions_dir) {
+            let mut stack: Vec<std::path::PathBuf> = rd.flatten().map(|e| e.path()).collect();
+            while let Some(p) = stack.pop() {
+                if let Ok(md) = std::fs::metadata(&p) {
+                    if md.is_dir() {
+                        if let Ok(rd2) = std::fs::read_dir(&p) {
+                            for e in rd2.flatten() {
+                                stack.push(e.path());
+                            }
+                        }
+                    } else if md.is_file() {
+                        if p.file_name()
+                            .and_then(|s| s.to_str())
+                            .is_some_and(|n| {
+                                let n = n.to_ascii_lowercase();
+                                n.starts_with("rollout-")
+                                    && n.ends_with(&format!("-{}.jsonl", session_id.to_ascii_lowercase()))
+                            })
+                        {
+                            candidates.push(p);
+                        }
+                    }
+                }
+                if candidates.len() > 8 {
+                    break;
+                }
+            }
+        }
+
+        for p in candidates {
+            let file = std::fs::File::open(&p).ok();
+            let Some(file) = file else { continue; };
+            let mut r = std::io::BufReader::new(file);
+            let mut first = String::new();
+            if r.read_line(&mut first).ok().unwrap_or(0) == 0 {
+                continue;
+            }
+            let meta: serde_json::Value = match serde_json::from_str(first.trim()) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let payload = meta.get("payload");
+            let mp = payload
+                .and_then(|p| p.get("model_provider_id").or_else(|| p.get("model_provider")))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if mp.eq_ignore_ascii_case("api_router") {
+                return true;
+            }
+        }
+        false
     }
 
     let mut out: Vec<InferredWtSession> = Vec::new();
@@ -363,35 +416,48 @@ fn discover_sessions_using_router_uncached(
             let wt =
                 crate::platform::windows_loopback_peer::read_process_env_var(pid, "WT_SESSION");
             if let Some(wt) = wt {
-                // Only show sessions that are actually configured to use this router.
-                // This avoids listing unrelated Codex sessions that happen to be running.
-                let matched = codex_effective_base_url_uses_router(pid, server_port)
-                    && expected_gateway_token
-                        .map(|t| codex_uses_expected_gateway_token(pid, server_port, t))
-                        .unwrap_or(true);
-
-                if matched {
-                    let cmd = crate::platform::windows_loopback_peer::read_process_command_line(pid);
-                    // Ignore Codex background helpers that are not user sessions.
-                    if cmd.as_deref().is_some_and(|s| s.to_ascii_lowercase().contains("app-server")) {
-                        ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
-                        continue;
-                    }
-                    let codex_session_id = cmd
-                        .as_deref()
-                        .and_then(parse_codex_session_id_from_cmdline)
-                        .or_else(|| infer_codex_session_id_from_rollouts(pid, server_port));
-                    // If we cannot infer a session id at all, don't show a row.
-                    if codex_session_id.is_none() {
-                        ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
-                        continue;
-                    }
-                    out.push(InferredWtSession {
-                        wt_session: wt,
-                        pid,
-                        codex_session_id,
-                    });
+                let cmd = crate::platform::windows_loopback_peer::read_process_command_line(pid);
+                // Ignore Codex background helpers that are not user sessions.
+                if cmd.as_deref().is_some_and(|s| s.to_ascii_lowercase().contains("app-server")) {
+                    ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+                    continue;
                 }
+
+                // Infer session id early; we can use it as a stronger signal than the current on-disk config.
+                let codex_session_id = cmd
+                    .as_deref()
+                    .and_then(parse_codex_session_id_from_cmdline)
+                    .or_else(|| infer_codex_session_id_from_rollouts(pid, server_port));
+                let Some(codex_session_id) = codex_session_id else {
+                    ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+                    continue;
+                };
+
+                let token_ok = expected_gateway_token
+                    .map(|t| codex_uses_expected_gateway_token(pid, t))
+                    .unwrap_or(true);
+                if !token_ok {
+                    ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+                    continue;
+                }
+
+                // Prefer config/env matching, but if the process already has an api_router session rollout,
+                // treat it as configured even if the config has since changed on disk.
+                let codex_home = process_codex_home(pid);
+                let rollout_says_api_router = codex_home
+                    .as_deref()
+                    .is_some_and(|h| is_session_api_router(h, &codex_session_id));
+                let matched = codex_effective_base_url_uses_router(pid, server_port) || rollout_says_api_router;
+                if !matched {
+                    ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+                    continue;
+                }
+
+                out.push(InferredWtSession {
+                    wt_session: wt,
+                    pid,
+                    codex_session_id: Some(codex_session_id),
+                });
             }
         }
 
