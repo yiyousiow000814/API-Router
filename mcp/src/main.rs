@@ -78,7 +78,9 @@ async fn read_framed(stdin: &mut tokio::io::Stdin) -> anyhow::Result<Option<Vec<
         if line.is_empty() {
             continue;
         }
-        let Some((k, v)) = line.split_once(':') else { continue };
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
         if k.eq_ignore_ascii_case("content-length") {
             let n = v.trim().parse::<usize>()?;
             content_len = Some(n);
@@ -112,7 +114,8 @@ fn config_path() -> PathBuf {
 
 fn read_config() -> anyhow::Result<toml::Value> {
     let p = config_path();
-    let txt = std::fs::read_to_string(&p).with_context(|| format!("read config: {}", p.display()))?;
+    let txt =
+        std::fs::read_to_string(&p).with_context(|| format!("read config: {}", p.display()))?;
     Ok(toml::from_str(&txt)?)
 }
 
@@ -129,7 +132,12 @@ async fn http_get_json(url: &str) -> anyhow::Result<serde_json::Value> {
     let client = reqwest::Client::builder()
         .user_agent("api-router-mcp/0.1")
         .build()?;
-    let j = client.get(url).send().await?.json::<serde_json::Value>().await?;
+    let j = client
+        .get(url)
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
     Ok(j)
 }
 
@@ -183,6 +191,29 @@ fn tool_list() -> serde_json::Value {
           }
         },
         {
+          "name": "ao.config.setSessionPreferredProvider",
+          "description": "Set routing.session_preferred_providers.<sessionId> to a provider name in user-data/config.toml.",
+          "inputSchema": {
+            "type": "object",
+            "required": ["sessionId", "provider"],
+            "properties": {
+              "sessionId": { "type": "string" },
+              "provider": { "type": "string" }
+            }
+          }
+        },
+        {
+          "name": "ao.config.clearSessionPreferredProvider",
+          "description": "Remove routing.session_preferred_providers.<sessionId> from user-data/config.toml.",
+          "inputSchema": {
+            "type": "object",
+            "required": ["sessionId"],
+            "properties": {
+              "sessionId": { "type": "string" }
+            }
+          }
+        },
+        {
           "name": "ao.dev.run",
           "description": "Run a safe, predefined command (npm_build | cargo_test | cargo_clippy).",
           "inputSchema": {
@@ -202,7 +233,12 @@ async fn run_cmd(kind: &str) -> anyhow::Result<serde_json::Value> {
         "npm_build" => ("npm", vec!["run", "build"], std::env::current_dir()?),
         "cargo_test" => (
             "cargo",
-            vec!["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked"],
+            vec![
+                "test",
+                "--manifest-path",
+                "src-tauri/Cargo.toml",
+                "--locked",
+            ],
             std::env::current_dir()?,
         ),
         "cargo_clippy" => (
@@ -236,7 +272,11 @@ async fn run_cmd(kind: &str) -> anyhow::Result<serde_json::Value> {
     }))
 }
 
-fn toml_set_provider_base_url(mut cfg: toml::Value, provider: &str, base_url: &str) -> anyhow::Result<toml::Value> {
+fn toml_set_provider_base_url(
+    mut cfg: toml::Value,
+    provider: &str,
+    base_url: &str,
+) -> anyhow::Result<toml::Value> {
     let providers = cfg
         .get_mut("providers")
         .and_then(|v| v.as_table_mut())
@@ -247,7 +287,10 @@ fn toml_set_provider_base_url(mut cfg: toml::Value, provider: &str, base_url: &s
         .and_then(|v| v.as_table_mut())
         .ok_or_else(|| anyhow!("unknown provider: {provider}"))?;
 
-    p.insert("base_url".to_string(), toml::Value::String(base_url.to_string()));
+    p.insert(
+        "base_url".to_string(),
+        toml::Value::String(base_url.to_string()),
+    );
     Ok(cfg)
 }
 
@@ -273,7 +316,62 @@ fn toml_set_provider_usage_base_url(
     Ok(cfg)
 }
 
-async fn handle_tool_call(name: &str, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+fn ensure_provider_exists(cfg: &toml::Value, provider: &str) -> anyhow::Result<()> {
+    let providers = cfg
+        .get("providers")
+        .and_then(|v| v.as_table())
+        .ok_or_else(|| anyhow!("missing providers table"))?;
+    if !providers.contains_key(provider) {
+        return Err(anyhow!("unknown provider: {provider}"));
+    }
+    Ok(())
+}
+
+fn toml_set_session_preferred_provider(
+    mut cfg: toml::Value,
+    session_id: &str,
+    provider: &str,
+) -> anyhow::Result<toml::Value> {
+    ensure_provider_exists(&cfg, provider)?;
+
+    let routing = cfg
+        .get_mut("routing")
+        .and_then(|v| v.as_table_mut())
+        .ok_or_else(|| anyhow!("missing routing table"))?;
+    let spp = routing
+        .entry("session_preferred_providers")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let tbl = spp
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("routing.session_preferred_providers must be a table"))?;
+    tbl.insert(
+        session_id.to_string(),
+        toml::Value::String(provider.to_string()),
+    );
+    Ok(cfg)
+}
+
+fn toml_clear_session_preferred_provider(
+    mut cfg: toml::Value,
+    session_id: &str,
+) -> anyhow::Result<toml::Value> {
+    let routing = cfg
+        .get_mut("routing")
+        .and_then(|v| v.as_table_mut())
+        .ok_or_else(|| anyhow!("missing routing table"))?;
+    if let Some(spp) = routing
+        .get_mut("session_preferred_providers")
+        .and_then(|v| v.as_table_mut())
+    {
+        spp.remove(session_id);
+    }
+    Ok(cfg)
+}
+
+async fn handle_tool_call(
+    name: &str,
+    args: serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
     match name {
         "ao.health" => {
             let base = args
@@ -320,6 +418,30 @@ async fn handle_tool_call(name: &str, args: serde_json::Value) -> anyhow::Result
                 .ok_or_else(|| anyhow!("missing usageBaseUrl"))?;
             let cfg = read_config()?;
             let next = toml_set_provider_usage_base_url(cfg, provider, usage_base_url)?;
+            write_config(&next)?;
+            Ok(json!({"ok": true}))
+        }
+        "ao.config.setSessionPreferredProvider" => {
+            let session_id = args
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("missing sessionId"))?;
+            let provider = args
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("missing provider"))?;
+            let cfg = read_config()?;
+            let next = toml_set_session_preferred_provider(cfg, session_id, provider)?;
+            write_config(&next)?;
+            Ok(json!({"ok": true}))
+        }
+        "ao.config.clearSessionPreferredProvider" => {
+            let session_id = args
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("missing sessionId"))?;
+            let cfg = read_config()?;
+            let next = toml_clear_session_preferred_provider(cfg, session_id)?;
             write_config(&next)?;
             Ok(json!({"ok": true}))
         }
