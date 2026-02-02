@@ -63,7 +63,6 @@ fn norm_cwd_for_match(s: &str) -> String {
 struct RolloutSessionMeta {
     id: String,
     cwd: String,
-    model_provider: Option<String>,
     base_url: Option<String>,
 }
 
@@ -78,11 +77,6 @@ fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    let model_provider = payload
-        .get("model_provider_id")
-        .or_else(|| payload.get("model_provider"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
     let base_url = payload
         .get("base_url")
         .or_else(|| payload.get("model_provider_base_url"))
@@ -91,7 +85,6 @@ fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
     Some(RolloutSessionMeta {
         id,
         cwd,
-        model_provider,
         base_url,
     })
 }
@@ -696,20 +689,11 @@ fn discover_sessions_using_router_uncached(
                 {
                     Some(v) => v,
                     None => {
+                        // Only accept env vars or a config file that we consider "trusted" for this
+                        // specific process lifetime. If the config has been edited after the
+                        // process started, it is not evidence of the *running* base_url.
                         let (kind, matches) = codex_base_url_evidence(pid, server_port);
-                        match kind {
-                            BaseUrlEvidenceKind::Env | BaseUrlEvidenceKind::ConfigTrusted => matches,
-                            BaseUrlEvidenceKind::ConfigUntrusted => {
-                                // If disk config changed after the process started, only accept it
-                                // as proof when the session itself was created with api_router.
-                                matches
-                                    && rollout_meta
-                                        .as_ref()
-                                        .and_then(|m| m.model_provider.as_deref())
-                                        .is_some_and(|p| p.eq_ignore_ascii_case("api_router"))
-                            }
-                            BaseUrlEvidenceKind::None => false,
-                        }
+                        matches && matches!(kind, BaseUrlEvidenceKind::Env | BaseUrlEvidenceKind::ConfigTrusted)
                     }
                 };
                 out.push(InferredWtSession {
@@ -743,7 +727,6 @@ mod tests {
         let m = parse_rollout_session_meta(line).expect("parse");
         assert_eq!(m.id, "00000000-0000-0000-0000-000000000000");
         assert_eq!(m.cwd, "C:\\work\\example-project");
-        assert_eq!(m.model_provider.as_deref(), Some("api_router"));
         assert!(m.base_url.is_none());
     }
 
