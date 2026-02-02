@@ -4,6 +4,8 @@ type SessionRow = {
   id: string
   wt_session?: string | null
   codex_session_id?: string | null
+  reported_model_provider?: string | null
+  reported_base_url?: string | null
   last_seen_unix_ms: number
   active: boolean
   preferred_provider?: string | null
@@ -36,7 +38,8 @@ export function SessionsTable({
             State
           </th>
           <th style={{ width: 170 }}>Last seen</th>
-          <th>Effective provider</th>
+          <th style={{ width: 160 }}>Codex provider</th>
+          <th>Routing provider</th>
           <th style={{ width: 260 }}>Preferred provider</th>
         </tr>
       </thead>
@@ -44,9 +47,10 @@ export function SessionsTable({
         {sessions.length ? (
           sessions.map((s) => {
             const verified = s.verified !== false
-            const effective = s.preferred_provider ?? globalPreferred
+            const routingTarget = s.preferred_provider ?? globalPreferred
             const codexSession = s.codex_session_id ?? null
             const wt = s.wt_session ?? s.id
+            const codexProvider = s.reported_model_provider ?? '-'
             return (
               <tr key={s.id}>
                 <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>
@@ -65,7 +69,8 @@ export function SessionsTable({
                   </div>
                 </td>
                 <td>{fmtWhen(s.last_seen_unix_ms)}</td>
-                <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{effective}</td>
+                <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{codexProvider}</td>
+                <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{routingTarget}</td>
                 <td>
                   <select
                     className="aoSelect"

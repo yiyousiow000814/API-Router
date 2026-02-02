@@ -229,6 +229,8 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                         last_request_unix_ms: 0,
                         last_discovered_unix_ms: 0,
                         last_codex_session_id: None,
+                        last_reported_model_provider: None,
+                        last_reported_base_url: None,
                         confirmed_router: s.router_confirmed,
                     }
                 });
@@ -239,6 +241,12 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                 }
                 if let Some(cid) = s.codex_session_id.as_deref() {
                     entry.last_codex_session_id = Some(cid.to_string());
+                }
+                if let Some(mp) = s.reported_model_provider.as_deref() {
+                    entry.last_reported_model_provider = Some(mp.to_string());
+                }
+                if let Some(bu) = s.reported_base_url.as_deref() {
+                    entry.last_reported_base_url = Some(bu.to_string());
                 }
             }
         }
@@ -289,6 +297,8 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                     "id": wt_session,
                     "wt_session": wt_session,
                     "codex_session_id": v.last_codex_session_id,
+                    "reported_model_provider": v.last_reported_model_provider,
+                    "reported_base_url": v.last_reported_base_url,
                     "last_seen_unix_ms": last_seen_unix_ms,
                     "active": active,
                     "preferred_provider": pref,

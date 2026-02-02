@@ -17,6 +17,8 @@ pub struct InferredWtSession {
     pub wt_session: String,
     pub pid: u32,
     pub codex_session_id: Option<String>,
+    pub reported_model_provider: Option<String>,
+    pub reported_base_url: Option<String>,
     pub router_confirmed: bool,
 }
 
@@ -63,6 +65,7 @@ fn norm_cwd_for_match(s: &str) -> String {
 struct RolloutSessionMeta {
     id: String,
     cwd: String,
+    model_provider: Option<String>,
     base_url: Option<String>,
 }
 
@@ -77,6 +80,11 @@ fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
+    let model_provider = payload
+        .get("model_provider")
+        .or_else(|| payload.get("modelProvider"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let base_url = payload
         .get("base_url")
         .or_else(|| payload.get("model_provider_base_url"))
@@ -85,6 +93,7 @@ fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
     Some(RolloutSessionMeta {
         id,
         cwd,
+        model_provider,
         base_url,
     })
 }
@@ -264,6 +273,8 @@ pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWt
             wt_session: wt,
             pid,
             codex_session_id,
+            reported_model_provider: None,
+            reported_base_url: None,
             router_confirmed: true,
         })
     }
@@ -762,6 +773,8 @@ fn discover_sessions_using_router_uncached(
                     wt_session: wt,
                     pid,
                     codex_session_id: Some(codex_session_id),
+                    reported_model_provider: rollout_meta.as_ref().and_then(|m| m.model_provider.clone()),
+                    reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
                     router_confirmed: matched,
                 });
             }
@@ -789,6 +802,7 @@ mod tests {
         let m = parse_rollout_session_meta(line).expect("parse");
         assert_eq!(m.id, "00000000-0000-0000-0000-000000000000");
         assert_eq!(m.cwd, "C:\\work\\example-project");
+        assert_eq!(m.model_provider.as_deref(), Some("api_router"));
         assert!(m.base_url.is_none());
     }
 

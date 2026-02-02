@@ -18,6 +18,8 @@ export type Status = {
     id: string
     wt_session?: string
     codex_session_id?: string | null
+    reported_model_provider?: string | null
+    reported_base_url?: string | null
     last_seen_unix_ms: number
     active: boolean
     preferred_provider?: string | null
