@@ -9,6 +9,8 @@ use std::io::BufRead;
 
 #[cfg(windows)]
 use std::sync::{Mutex, OnceLock};
+#[cfg(windows)]
+use std::time::{Duration, SystemTime};
 
 #[derive(Clone, Debug)]
 pub struct InferredWtSession {
@@ -99,6 +101,7 @@ fn infer_codex_session_id_from_rollouts_dir(
     codex_home: &std::path::Path,
     cwd: &std::path::Path,
     router_port: u16,
+    process_start: Option<SystemTime>,
 ) -> Option<String> {
     let cwd_norm = norm_cwd_for_match(&cwd.to_string_lossy());
 
@@ -142,7 +145,16 @@ fn infer_codex_session_id_from_rollouts_dir(
     entries.sort_by_key(|(_p, t)| std::cmp::Reverse(*t));
     entries.truncate(60);
 
-    for (p, _t) in entries {
+    #[derive(Clone)]
+    struct Candidate {
+        id: String,
+        mtime: SystemTime,
+        base_url_matches_router: Option<bool>,
+    }
+
+    let mut candidates: Vec<Candidate> = Vec::new();
+
+    for (p, mtime) in entries {
         let file = std::fs::File::open(&p).ok();
         let Some(file) = file else { continue; };
         let mut r = std::io::BufReader::new(file);
@@ -154,31 +166,70 @@ fn infer_codex_session_id_from_rollouts_dir(
             // Some rollouts may not start with a session_meta line; keep scanning.
             continue;
         };
-        let id = m.id;
-        let wd = m.cwd;
-        let base_url = m.base_url;
-        if wd.is_empty() {
+        if m.cwd.is_empty() {
             continue;
         }
-        let wd_norm = norm_cwd_for_match(&wd);
-        if wd_norm != cwd_norm {
+        if norm_cwd_for_match(&m.cwd) != cwd_norm {
             continue;
         }
 
-        // Prefer matching by base_url (strong signal). If present and pointing to this router,
-        // return immediately; otherwise keep scanning for another cwd match.
-        if base_url
-            .as_deref()
-            .is_some_and(|u| looks_like_router_base(u, router_port))
-        {
-            return Some(id);
-        }
-
-        // base_url missing: newest cwd match.
-        return Some(id);
+        let base_url_matches_router = rollout_base_url_matches_router(&m, router_port);
+        candidates.push(Candidate {
+            id: m.id,
+            mtime,
+            base_url_matches_router,
+        });
     }
 
-    None
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Pick the candidate whose rollout time is closest to the process start time (helps avoid
+    // misattributing multiple running Codex processes in the same CWD to the newest session).
+    // If we don't have a start time, keep the newest (already sorted by mtime desc).
+    let pick_closest = |cands: &[Candidate], start: SystemTime| -> Option<String> {
+        const MAX_WINDOW: Duration = Duration::from_secs(120);
+        let mut best: Option<(&Candidate, Duration)> = None;
+        for c in cands {
+            let dt = if c.mtime >= start {
+                c.mtime.duration_since(start).ok()
+            } else {
+                start.duration_since(c.mtime).ok()
+            }?;
+            if dt > MAX_WINDOW {
+                continue;
+            }
+            if best.map(|(_, bdt)| dt < bdt).unwrap_or(true) {
+                best = Some((c, dt));
+            }
+        }
+        best.map(|(c, _dt)| c.id.clone())
+    };
+
+    // 1) If any candidate recorded a base_url matching this router, prefer those.
+    let router_matches: Vec<Candidate> = candidates
+        .iter()
+        .cloned()
+        .filter(|c| c.base_url_matches_router == Some(true))
+        .collect();
+    if !router_matches.is_empty() {
+        if let Some(start) = process_start {
+            if let Some(id) = pick_closest(&router_matches, start) {
+                return Some(id);
+            }
+        }
+        // Fall back to newest router match.
+        return Some(router_matches[0].id.clone());
+    }
+
+    // 2) Otherwise fall back to the closest-by-time cwd match, else newest.
+    if let Some(start) = process_start {
+        if let Some(id) = pick_closest(&candidates, start) {
+            return Some(id);
+        }
+    }
+    Some(candidates[0].id.clone())
 }
 
 #[cfg(windows)]
@@ -293,6 +344,12 @@ fn discover_sessions_using_router_uncached(
         toml::from_str::<toml::Value>(&s).ok()
     }
 
+    fn read_config_with_mtime(path: &std::path::Path) -> Option<(toml::Value, SystemTime)> {
+        let cfg = read_config(path)?;
+        let mtime = std::fs::metadata(path).ok()?.modified().ok()?;
+        Some((cfg, mtime))
+    }
+
     fn read_auth_token(path: &std::path::Path) -> Option<String> {
         let s = std::fs::read_to_string(path).ok()?;
         let v: serde_json::Value = serde_json::from_str(&s).ok()?;
@@ -375,6 +432,54 @@ fn discover_sessions_using_router_uncached(
         None
     }
 
+    fn filetime_to_systemtime(ft: windows_sys::Win32::Foundation::FILETIME) -> Option<SystemTime> {
+        // FILETIME is 100ns ticks since 1601-01-01 UTC.
+        let ticks = ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64);
+        if ticks == 0 {
+            return None;
+        }
+        let secs = ticks / 10_000_000;
+        let nanos = (ticks % 10_000_000) * 100;
+        // Seconds between 1601-01-01 and 1970-01-01.
+        const EPOCH_DIFF_SECS: u64 = 11_644_473_600;
+        let unix_secs = secs.checked_sub(EPOCH_DIFF_SECS)?;
+        Some(SystemTime::UNIX_EPOCH + Duration::new(unix_secs, nanos as u32))
+    }
+
+    fn process_create_time(pid: u32) -> Option<SystemTime> {
+        use windows_sys::Win32::System::Threading::{
+            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        use windows_sys::Win32::Foundation::FILETIME;
+
+        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if h == 0 {
+            return None;
+        }
+        let mut creation = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut exit = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut kernel = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut user = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let ok = unsafe { GetProcessTimes(h, &mut creation, &mut exit, &mut kernel, &mut user) };
+        let _ = unsafe { CloseHandle(h) };
+        if ok == 0 {
+            return None;
+        }
+        filetime_to_systemtime(creation)
+    }
+
     fn read_effective_codex_gateway_token_info(pid: u32) -> (Option<String>, Option<String>) {
         // (token, source)
         let cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid);
@@ -393,18 +498,18 @@ fn discover_sessions_using_router_uncached(
         (None, None)
     }
 
-    fn read_effective_codex_config(pid: u32) -> Option<toml::Value> {
+    fn read_effective_codex_config_with_mtime(pid: u32) -> Option<(toml::Value, SystemTime)> {
         // Match Codex precedence: project `.codex/config.toml` (closest to cwd) overrides CODEX_HOME config.
         let cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid);
         if let Some(cwd) = cwd.as_deref() {
             if let Some(p) = find_project_codex_config(cwd) {
-                if let Some(cfg) = read_config(&p) {
+                if let Some(cfg) = read_config_with_mtime(&p) {
                     return Some(cfg);
                 }
             }
         }
         let codex_home = process_codex_home(pid)?;
-        read_config(&codex_home.join("config.toml"))
+        read_config_with_mtime(&codex_home.join("config.toml"))
     }
 
     fn codex_effective_base_url_uses_router(pid: u32, port: u16) -> bool {
@@ -419,15 +524,27 @@ fn discover_sessions_using_router_uncached(
         }
 
         // 2) Config path: determine the selected model_provider, then resolve its base_url.
-        let cfg = read_effective_codex_config(pid);
+        // Only trust the on-disk config if it wasn't modified after the process started; users
+        // often edit configs while Codex is already running, and the running process keeps the
+        // old configuration in memory.
+        let start = process_create_time(pid);
+        let cfg = read_effective_codex_config_with_mtime(pid);
+        if let (Some(start), Some((_cfg, mtime))) = (start, cfg.as_ref()) {
+            // Small slack for clock resolution / filesystem timestamp granularity.
+            if mtime > &(start + Duration::from_secs(2)) {
+                return false;
+            }
+        }
 
-        let provider_id = cfg.as_ref().and_then(get_model_provider_id);
+        let provider_id = cfg.as_ref().and_then(|(cfg, _t)| get_model_provider_id(cfg));
         let Some(provider_id) = provider_id else {
             // Be conservative: if we can't find the selected provider, don't claim it's using us.
             return false;
         };
 
-        let base_url = cfg.as_ref().and_then(|cfg| get_provider_base_url(cfg, &provider_id));
+        let base_url = cfg
+            .as_ref()
+            .and_then(|(cfg, _t)| get_provider_base_url(cfg, &provider_id));
 
         base_url
             .as_deref()
@@ -436,7 +553,8 @@ fn discover_sessions_using_router_uncached(
     fn infer_codex_session_id_from_rollouts(pid: u32, router_port: u16) -> Option<String> {
         let cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid)?;
         let codex_home = process_codex_home(pid)?;
-        infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, router_port)
+        let start = process_create_time(pid);
+        infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, router_port, start)
     }
 
     fn latest_rollout_for_session(
@@ -645,7 +763,8 @@ mod tests {
         }
 
         let cwd = std::path::PathBuf::from("C:\\work\\proj");
-        let got = infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, 4000);
+        let got = infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, 4000, None);
         assert_eq!(got.as_deref(), Some(good_id));
     }
+
 }
