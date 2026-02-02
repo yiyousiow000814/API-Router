@@ -522,6 +522,25 @@ fn discover_sessions_using_router_uncached(
         None,
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    struct PidKey {
+        pid: u32,
+        // Helps avoid PID reuse bugs when the user keeps the app open for a long time.
+        created_at_unix_ms: u64,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct FrozenBaseUrlEvidence {
+        kind: BaseUrlEvidenceKind,
+        matches_router: bool,
+    }
+
+    fn systemtime_to_unix_ms(t: SystemTime) -> Option<u64> {
+        t.duration_since(SystemTime::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_millis() as u64)
+    }
+
     fn codex_base_url_evidence(pid: u32, port: u16) -> (BaseUrlEvidenceKind, bool) {
         // 1) Fast path: process env vars (strong signal).
         let keys = ["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_BASE", "OPENAI_API_HOST"];
@@ -568,6 +587,45 @@ fn discover_sessions_using_router_uncached(
             },
             matches,
         )
+    }
+
+    fn frozen_codex_base_url_evidence(pid: u32, port: u16) -> FrozenBaseUrlEvidence {
+        // Codex effectively "freezes" its config at process start. If the user edits config.toml
+        // later, the running process keeps using the old values. To avoid sessions appearing to
+        // change/disappear due to on-disk edits while the app is open, we freeze our base_url
+        // evidence per (pid, create_time) at first discovery too.
+        static FROZEN: OnceLock<Mutex<std::collections::HashMap<PidKey, FrozenBaseUrlEvidence>>> =
+            OnceLock::new();
+        let frozen = FROZEN.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+
+        let created_at = process_create_time(pid).and_then(systemtime_to_unix_ms);
+        let key = PidKey {
+            pid,
+            created_at_unix_ms: created_at.unwrap_or(0),
+        };
+
+        if let Ok(mut guard) = frozen.lock() {
+            // Prune dead PIDs opportunistically to keep the map bounded.
+            guard.retain(|k, _| crate::platform::windows_loopback_peer::is_pid_alive(k.pid));
+            if let Some(v) = guard.get(&key) {
+                return *v;
+            }
+
+            let (kind, matches_router) = codex_base_url_evidence(pid, port);
+            let v = FrozenBaseUrlEvidence {
+                kind,
+                matches_router,
+            };
+            guard.insert(key, v);
+            return v;
+        }
+
+        // If locking fails, fall back to a non-frozen read.
+        let (kind, matches_router) = codex_base_url_evidence(pid, port);
+        FrozenBaseUrlEvidence {
+            kind,
+            matches_router,
+        }
     }
     fn infer_codex_session_id_from_rollouts(pid: u32, router_port: u16) -> Option<String> {
         let cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid)?;
@@ -692,8 +750,12 @@ fn discover_sessions_using_router_uncached(
                         // Only accept env vars or a config file that we consider "trusted" for this
                         // specific process lifetime. If the config has been edited after the
                         // process started, it is not evidence of the *running* base_url.
-                        let (kind, matches) = codex_base_url_evidence(pid, server_port);
-                        matches && matches!(kind, BaseUrlEvidenceKind::Env | BaseUrlEvidenceKind::ConfigTrusted)
+                        let ev = frozen_codex_base_url_evidence(pid, server_port);
+                        ev.matches_router
+                            && matches!(
+                                ev.kind,
+                                BaseUrlEvidenceKind::Env | BaseUrlEvidenceKind::ConfigTrusted
+                            )
                     }
                 };
                 out.push(InferredWtSession {
