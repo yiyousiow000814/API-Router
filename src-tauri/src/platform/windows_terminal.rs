@@ -72,10 +72,10 @@ pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWt
     }
 }
 
-pub fn discover_sessions_using_router(server_port: u16) -> Vec<InferredWtSession> {
+pub fn discover_sessions_using_router(server_port: u16, expected_gateway_token: Option<&str>) -> Vec<InferredWtSession> {
     #[cfg(not(windows))]
     {
-        let _ = server_port;
+        let _ = (server_port, expected_gateway_token);
         Vec::new()
     }
 
@@ -116,7 +116,7 @@ pub fn discover_sessions_using_router(server_port: u16) -> Vec<InferredWtSession
             }
         }
 
-        let items = discover_sessions_using_router_uncached(server_port);
+        let items = discover_sessions_using_router_uncached(server_port, expected_gateway_token);
         if let Ok(mut guard) = cache.lock() {
             guard.updated_at_unix_ms = now;
             guard.items = items.clone();
@@ -126,7 +126,10 @@ pub fn discover_sessions_using_router(server_port: u16) -> Vec<InferredWtSession
 }
 
 #[cfg(windows)]
-fn discover_sessions_using_router_uncached(server_port: u16) -> Vec<InferredWtSession> {
+fn discover_sessions_using_router_uncached(
+    server_port: u16,
+    expected_gateway_token: Option<&str>,
+) -> Vec<InferredWtSession> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -198,6 +201,65 @@ fn discover_sessions_using_router_uncached(server_port: u16) -> Vec<InferredWtSe
         base_url
             .as_deref()
             .is_some_and(|u| looks_like_router_base(u, port))
+    }
+
+    fn codex_uses_expected_gateway_token(pid: u32, port: u16, expected: &str) -> bool {
+        // Check env first (fast).
+        if let Some(v) = crate::platform::windows_loopback_peer::read_process_env_var(pid, "OPENAI_API_KEY") {
+            if v == expected {
+                return true;
+            }
+        }
+
+        // Otherwise, consult CODEX_HOME/config.toml to determine the provider's env_key or direct token.
+        let codex_home = crate::platform::windows_loopback_peer::read_process_env_var(pid, "CODEX_HOME")
+            .filter(|s| !s.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var("USERPROFILE")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|p| std::path::PathBuf::from(p).join(".codex"))
+            });
+        let Some(codex_home) = codex_home else { return false; };
+        let cfg = read_config(&codex_home.join("config.toml"));
+        let Some(cfg) = cfg else { return false; };
+        let provider_id = get_model_provider_id(&cfg);
+        let Some(provider_id) = provider_id else { return false; };
+        let base_url = get_provider_base_url(&cfg, &provider_id);
+        let Some(base_url) = base_url else { return false; };
+        if !looks_like_router_base(&base_url, port) {
+            return false;
+        }
+
+        // If provider defines `env_key`, read that env var from the process and compare to expected.
+        let env_key = cfg
+            .as_table()
+            .and_then(|t| t.get("model_providers"))
+            .and_then(|v| v.as_table())
+            .and_then(|tbl| tbl.get(&provider_id))
+            .and_then(|v| v.as_table())
+            .and_then(|tbl| tbl.get("env_key"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        if let Some(env_key) = env_key.as_deref() {
+            if let Some(v) = crate::platform::windows_loopback_peer::read_process_env_var(pid, env_key) {
+                if v == expected {
+                    return true;
+                }
+            }
+        }
+
+        // Some setups may embed a direct bearer token in config.
+        let direct = cfg
+            .as_table()
+            .and_then(|t| t.get("model_providers"))
+            .and_then(|v| v.as_table())
+            .and_then(|tbl| tbl.get(&provider_id))
+            .and_then(|v| v.as_table())
+            .and_then(|tbl| tbl.get("experimental_bearer_token"))
+            .and_then(|v| v.as_str());
+        direct.is_some_and(|v| v == expected)
     }
 
     fn infer_codex_session_id_from_rollouts(
@@ -303,7 +365,10 @@ fn discover_sessions_using_router_uncached(server_port: u16) -> Vec<InferredWtSe
             if let Some(wt) = wt {
                 // Only show sessions that are actually configured to use this router.
                 // This avoids listing unrelated Codex sessions that happen to be running.
-                let matched = codex_effective_base_url_uses_router(pid, server_port);
+                let matched = codex_effective_base_url_uses_router(pid, server_port)
+                    && expected_gateway_token
+                        .map(|t| codex_uses_expected_gateway_token(pid, server_port, t))
+                        .unwrap_or(true);
 
                 if matched {
                     let cmd = crate::platform::windows_loopback_peer::read_process_command_line(pid);

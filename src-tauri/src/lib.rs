@@ -208,17 +208,21 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         .get_codex_account_snapshot()
         .unwrap_or(serde_json::json!({"ok": false}));
 
-    let client_sessions = {
-        // Best-effort: discover running Codex processes configured to use this router, even before
-        // the first request is sent (Windows Terminal only).
-        {
-            let discovered =
-                crate::platform::windows_terminal::discover_sessions_using_router(cfg.listen.port);
-            if !discovered.is_empty() {
-                let mut map = state.gateway.client_sessions.write();
-                for s in discovered {
-                    let entry = map.entry(s.wt_session.clone()).or_insert_with(|| {
-                        crate::orchestrator::gateway::ClientSessionRuntime {
+            let client_sessions = {
+                // Best-effort: discover running Codex processes configured to use this router, even before
+                // the first request is sent (Windows Terminal only).
+                {
+                    let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
+                    let expected = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
+                    let discovered = crate::platform::windows_terminal::discover_sessions_using_router(
+                        cfg.listen.port,
+                        expected,
+                    );
+                    if !discovered.is_empty() {
+                        let mut map = state.gateway.client_sessions.write();
+                        for s in discovered {
+                            let entry = map.entry(s.wt_session.clone()).or_insert_with(|| {
+                                crate::orchestrator::gateway::ClientSessionRuntime {
                             pid: s.pid,
                             last_request_unix_ms: 0,
                             last_discovered_unix_ms: 0,
