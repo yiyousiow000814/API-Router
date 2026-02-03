@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::{FromRequestParts, Json, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
@@ -90,12 +91,16 @@ pub struct UsageBaseSpeedCacheEntry {
 }
 
 pub fn build_router(state: GatewayState) -> Router {
+    // Codex can send large request bodies (context/tool outputs). Axum's default JSON body limit
+    // is small and returns 413 before handlers run. We allow up to 512 MiB.
+    const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
     Router::new()
         .route("/health", get(health))
         .route("/status", get(status))
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
         .route("/responses", post(responses))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
 

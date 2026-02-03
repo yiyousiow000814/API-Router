@@ -124,6 +124,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepts_large_json_body_over_default_limit() {
+        // Axum's default JSON body limit is small (~2 MiB). Our gateway should accept larger
+        // Codex requests without returning 413 before the handler runs.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+        let cfg = AppConfig::default_config();
+        let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg)),
+            router,
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_provider: Arc::new(RwLock::new(None)),
+            last_used_reason: Arc::new(RwLock::new(None)),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+        let app = build_router(state);
+
+        // 3 MiB string payload -> should not trip the default limit.
+        let big = "a".repeat(3 * 1024 * 1024);
+        let body = serde_json::json!({
+            "input": big,
+            "stream": false
+        })
+        .to_string();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
     async fn preserves_tool_input_and_previous_response_id() {
         let captured = Arc::new(Mutex::new(None));
         let captured2 = captured.clone();
