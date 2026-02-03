@@ -698,15 +698,13 @@ async fn refresh_quota(
             .store
             .add_event(&provider, "info", "usage refresh ok");
     } else {
+        // Avoid double-logging: quota.rs already records an error event when refresh fails.
         let err = if snap.last_error.is_empty() {
             "usage refresh failed".to_string()
         } else {
             snap.last_error.chars().take(300).collect::<String>()
         };
-        state
-            .gateway
-            .store
-            .add_event(&provider, "error", &format!("usage refresh failed: {err}"));
+        return Err(err);
     }
     Ok(())
 }
