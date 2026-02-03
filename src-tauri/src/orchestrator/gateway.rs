@@ -1028,10 +1028,12 @@ fn passthrough_sse_and_persist(
     let provider2 = provider_name.clone();
     let tap3 = tap.clone();
     let stream = async_stream::stream! {
+        let mut forwarded_bytes: u64 = 0;
         while let Some(item) = bytes_stream.next().await {
             match item {
                 Ok(b) => {
                     tap.lock().feed(&b);
+                    forwarded_bytes = forwarded_bytes.saturating_add(b.len() as u64);
                     yield Ok::<Bytes, std::convert::Infallible>(b);
                 }
                 Err(e) => {
@@ -1053,7 +1055,7 @@ fn passthrough_sse_and_persist(
                         &provider_err,
                         "error",
                         &format!(
-                            "stream read error; upstream_status={upstream_status}; url={}; content_type={ct}; content_encoding={enc}; transfer_encoding={transfer}; {err}",
+                            "stream read error (stream ended early; downstream output may be incomplete); forwarded_bytes={forwarded_bytes}; upstream_status={upstream_status}; url={}; content_type={ct}; content_encoding={enc}; transfer_encoding={transfer}; {err}",
                             redact_url_for_logs(&upstream_url)
                         ),
                     );
