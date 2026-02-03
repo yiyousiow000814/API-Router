@@ -696,7 +696,7 @@ async fn refresh_quota(
         state
             .gateway
             .store
-            .add_event(&provider, "info", "usage refresh ok");
+            .add_event(&provider, "info", "Usage refresh succeeded");
     } else {
         // Avoid double-logging: quota.rs already records an error event when refresh fails.
         let err = if snap.last_error.is_empty() {
@@ -720,7 +720,7 @@ async fn refresh_quota_shared(
     state.gateway.store.add_event(
         "gateway",
         "info",
-        &format!("usage refresh ok (shared): {n} provider(s) updated"),
+        &format!("Usage refresh succeeded (shared): {n} providers updated"),
     );
     Ok(())
 }
@@ -733,7 +733,7 @@ async fn refresh_quota_all(state: tauri::State<'_, app_state::AppState>) -> Resu
         state.gateway.store.add_event(
             "gateway",
             "info",
-            &format!("usage refresh ok: {ok} provider(s)"),
+            &format!("Usage refresh succeeded: {ok} providers"),
         );
     } else {
         let shown = failed
