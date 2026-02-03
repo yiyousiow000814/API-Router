@@ -407,8 +407,11 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
     // user-initiated success summaries are logged by the tauri command layer.
     if !snap.last_error.is_empty() {
         let err = snap.last_error.chars().take(300).collect::<String>();
-        st.store
-            .add_event(provider_name, "error", &format!("usage refresh failed: {err}"));
+        st.store.add_event(
+            provider_name,
+            "error",
+            &format!("usage refresh failed: {err}"),
+        );
     }
 }
 
@@ -607,9 +610,7 @@ pub async fn refresh_quota_shared(
     Ok(group)
 }
 
-pub async fn refresh_quota_all_with_summary(
-    st: &GatewayState,
-) -> (usize, usize, Vec<String>) {
+pub async fn refresh_quota_all_with_summary(st: &GatewayState) -> (usize, usize, Vec<String>) {
     let cfg = st.cfg.read().clone();
     let mut cache: HashMap<UsageRequestKey, QuotaSnapshot> = HashMap::new();
     let mut ok = 0usize;

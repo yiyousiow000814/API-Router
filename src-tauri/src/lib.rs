@@ -690,7 +690,8 @@ async fn refresh_quota(
     if !state.gateway.cfg.read().providers.contains_key(&provider) {
         return Err(format!("unknown provider: {provider}"));
     }
-    let snap = crate::orchestrator::quota::refresh_quota_for_provider(&state.gateway, &provider).await;
+    let snap =
+        crate::orchestrator::quota::refresh_quota_for_provider(&state.gateway, &provider).await;
     if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
         state
             .gateway
@@ -731,12 +732,18 @@ async fn refresh_quota_all(state: tauri::State<'_, app_state::AppState>) -> Resu
     let (ok, err, failed) =
         crate::orchestrator::quota::refresh_quota_all_with_summary(&state.gateway).await;
     if err == 0 {
-        state
-            .gateway
-            .store
-            .add_event("gateway", "info", &format!("usage refresh ok: {ok} provider(s)"));
+        state.gateway.store.add_event(
+            "gateway",
+            "info",
+            &format!("usage refresh ok: {ok} provider(s)"),
+        );
     } else {
-        let shown = failed.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+        let shown = failed
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         let suffix = if failed.len() > 3 { ", ..." } else { "" };
         state.gateway.store.add_event(
             "gateway",
