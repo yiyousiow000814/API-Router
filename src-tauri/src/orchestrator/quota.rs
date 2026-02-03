@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::error::Error;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -7,6 +8,52 @@ use serde_json::Value;
 use super::config::ProviderConfig;
 use super::gateway::GatewayState;
 use super::store::unix_ms;
+
+fn redact_url_for_logs(url: &reqwest::Url) -> String {
+    // Avoid logging secrets in query strings (e.g. token_key=...).
+    // Keep only scheme://host[:port]/path so logs are still actionable.
+    let scheme = url.scheme();
+    let host = url.host_str().unwrap_or("<unknown>");
+    let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
+    format!("{scheme}://{host}{port}{}", url.path())
+}
+
+fn format_reqwest_error_for_logs(e: &reqwest::Error) -> String {
+    // reqwest::Error's Display often includes the full URL, including query params.
+    // Build our own short classification + redacted URL + root causes.
+    let kind = if e.is_timeout() {
+        "timeout"
+    } else if e.is_connect() {
+        "connect"
+    } else {
+        "request"
+    };
+
+    let mut parts: Vec<String> = vec![format!("request error ({kind})")];
+    if let Some(url) = e.url() {
+        parts.push(format!("url={}", redact_url_for_logs(url)));
+    }
+
+    // Surface a little bit more context from the source chain (often includes OS error codes).
+    let mut src: Option<&(dyn Error + 'static)> = e.source();
+    let mut causes: Vec<String> = Vec::new();
+    while let Some(err) = src {
+        let s = err.to_string();
+        if !s.is_empty() && !causes.contains(&s) {
+            causes.push(s);
+        }
+        // Keep it short (Events table is meant to be scannable).
+        if causes.len() >= 2 {
+            break;
+        }
+        src = err.source();
+    }
+    if !causes.is_empty() {
+        parts.push(format!("cause={}", causes.join(" | ")));
+    }
+
+    parts.join("; ")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UsageKind {
@@ -752,7 +799,7 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
                 continue;
             }
             Err(e) => {
-                last_err = format!("request error: {e}");
+                last_err = format_reqwest_error_for_logs(&e);
                 continue;
             }
         }
@@ -945,7 +992,7 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
                 return out;
             }
             Err(e) => {
-                last_err = format!("request error: {e}");
+                last_err = format_reqwest_error_for_logs(&e);
                 continue;
             }
         }
