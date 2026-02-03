@@ -403,20 +403,13 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
     if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
         st.store.reset_ledger(provider_name);
     }
-    let msg = if snap.last_error.is_empty() {
-        "usage refreshed"
-    } else {
-        "usage refresh failed"
-    };
-    st.store.add_event(
-        provider_name,
-        if snap.last_error.is_empty() {
-            "info"
-        } else {
-            "error"
-        },
-        msg,
-    );
+    // Avoid spamming the event log on routine/background refreshes. Only surface failures here;
+    // user-initiated success summaries are logged by the tauri command layer.
+    if !snap.last_error.is_empty() {
+        let err = snap.last_error.chars().take(300).collect::<String>();
+        st.store
+            .add_event(provider_name, "error", &format!("usage refresh failed: {err}"));
+    }
 }
 
 fn store_quota_snapshot_silent(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
@@ -614,14 +607,28 @@ pub async fn refresh_quota_shared(
     Ok(group)
 }
 
-pub async fn refresh_quota_all(st: &GatewayState) {
+pub async fn refresh_quota_all_with_summary(
+    st: &GatewayState,
+) -> (usize, usize, Vec<String>) {
     let cfg = st.cfg.read().clone();
     let mut cache: HashMap<UsageRequestKey, QuotaSnapshot> = HashMap::new();
+    let mut ok = 0usize;
+    let mut err = 0usize;
+    let mut failed = Vec::new();
+
     for name in cfg.providers.keys() {
-        let _ = refresh_quota_for_provider_cached(st, name, &mut cache).await;
+        let snap = refresh_quota_for_provider_cached(st, name, &mut cache).await;
+        if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
+            ok += 1;
+        } else {
+            err += 1;
+            failed.push(name.clone());
+        }
         // Manual/all refresh: keep a small delay so we don't look like a burst/DDOS.
         tokio::time::sleep(Duration::from_millis(120)).await;
     }
+
+    (ok, err, failed)
 }
 
 pub async fn run_quota_scheduler(st: GatewayState) {

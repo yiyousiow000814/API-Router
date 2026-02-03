@@ -430,7 +430,7 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let providers = st.router.snapshot(now);
     let manual_override = st.router.manual_override.read().clone();
 
-    let recent_events = st.store.list_events(50);
+    let recent_events = st.store.list_events(10);
     let metrics = st.store.get_metrics();
     let quota = st.store.list_quota_snapshots();
     let ledgers = st.store.list_ledgers();

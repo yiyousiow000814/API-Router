@@ -690,7 +690,23 @@ async fn refresh_quota(
     if !state.gateway.cfg.read().providers.contains_key(&provider) {
         return Err(format!("unknown provider: {provider}"));
     }
-    let _ = crate::orchestrator::quota::refresh_quota_for_provider(&state.gateway, &provider).await;
+    let snap = crate::orchestrator::quota::refresh_quota_for_provider(&state.gateway, &provider).await;
+    if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
+        state
+            .gateway
+            .store
+            .add_event(&provider, "info", "usage refresh ok");
+    } else {
+        let err = if snap.last_error.is_empty() {
+            "usage refresh failed".to_string()
+        } else {
+            snap.last_error.chars().take(300).collect::<String>()
+        };
+        state
+            .gateway
+            .store
+            .add_event(&provider, "error", &format!("usage refresh failed: {err}"));
+    }
     Ok(())
 }
 
@@ -699,13 +715,35 @@ async fn refresh_quota_shared(
     state: tauri::State<'_, app_state::AppState>,
     provider: String,
 ) -> Result<(), String> {
-    crate::orchestrator::quota::refresh_quota_shared(&state.gateway, &provider).await?;
+    let group = crate::orchestrator::quota::refresh_quota_shared(&state.gateway, &provider).await?;
+    let n = group.len();
+    // Keep the message short (events list is meant to be scannable).
+    state.gateway.store.add_event(
+        "gateway",
+        "info",
+        &format!("usage refresh ok (shared): {n} provider(s) updated"),
+    );
     Ok(())
 }
 
 #[tauri::command]
 async fn refresh_quota_all(state: tauri::State<'_, app_state::AppState>) -> Result<(), String> {
-    crate::orchestrator::quota::refresh_quota_all(&state.gateway).await;
+    let (ok, err, failed) =
+        crate::orchestrator::quota::refresh_quota_all_with_summary(&state.gateway).await;
+    if err == 0 {
+        state
+            .gateway
+            .store
+            .add_event("gateway", "info", &format!("usage refresh ok: {ok} provider(s)"));
+    } else {
+        let shown = failed.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+        let suffix = if failed.len() > 3 { ", ..." } else { "" };
+        state.gateway.store.add_event(
+            "gateway",
+            "error",
+            &format!("usage refresh partial: ok={ok} err={err} (failed: {shown}{suffix})"),
+        );
+    }
     Ok(())
 }
 
