@@ -186,7 +186,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
     state.gateway.router.sync_with_config(&cfg, now);
     let providers = state.gateway.router.snapshot(now);
     let manual_override = state.gateway.router.manual_override.read().clone();
-    let recent_events = state.gateway.store.list_events(50);
+    let recent_events = state.gateway.store.list_events(10);
     let metrics = state.gateway.store.get_metrics();
     let quota = state.gateway.store.list_quota_snapshots();
     let ledgers = state.gateway.store.list_ledgers();
