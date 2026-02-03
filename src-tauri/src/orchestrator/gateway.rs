@@ -1050,12 +1050,18 @@ fn passthrough_sse_and_persist(
                         .get(header::CONTENT_TYPE)
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("-");
+                    let completed = tap.lock().is_completed();
+                    let note = if completed {
+                        "after completion"
+                    } else {
+                        "before completion; downstream output may be incomplete"
+                    };
                     let err = format_reqwest_error_for_logs(&e);
                     st_err.store.add_event(
                         &provider_err,
                         "error",
                         &format!(
-                            "stream read error (stream ended early; downstream output may be incomplete); forwarded_bytes={forwarded_bytes}; upstream_status={upstream_status}; url={}; content_type={ct}; content_encoding={enc}; transfer_encoding={transfer}; {err}",
+                            "stream read error ({note}); completed={completed}; forwarded_bytes={forwarded_bytes}; upstream_status={upstream_status}; url={}; content_type={ct}; content_encoding={enc}; transfer_encoding={transfer}; {err}",
                             redact_url_for_logs(&upstream_url)
                         ),
                     );
@@ -1142,5 +1148,9 @@ impl SseTap {
 
     fn take_completed(&mut self) -> Option<(String, Value)> {
         self.completed.take()
+    }
+
+    fn is_completed(&self) -> bool {
+        self.completed.is_some()
     }
 }
