@@ -721,11 +721,15 @@ async fn responses(
                         *st.last_used_provider.write() = Some(provider_name.clone());
                         *st.last_used_reason.write() = Some(reason.to_string());
                         st.router.mark_success(&provider_name, unix_ms());
-                        st.store.add_event(
-                            &provider_name,
-                            "info",
-                            &format!("stream via {provider_name} ({reason})"),
-                        );
+                        // Avoid spamming the event log for routine successful requests; only
+                        // surface interesting routing outcomes (failover / non-preferred).
+                        if !is_first_attempt || reason != "preferred_healthy" {
+                            st.store.add_event(
+                                &provider_name,
+                                "info",
+                                &format!("stream via {provider_name} ({reason})"),
+                            );
+                        }
                         return passthrough_sse_and_persist(
                             resp,
                             st.clone(),
@@ -806,11 +810,15 @@ async fn responses(
                     // Persist the exchange so we can keep continuity if provider changes later.
                     st.store.record_success(&provider_name, &response_obj);
 
-                    st.store.add_event(
-                        &provider_name,
-                        "info",
-                        &format!("ok via {provider_name} ({reason})"),
-                    );
+                    // Avoid spamming the event log for routine successful requests; only surface
+                    // interesting routing outcomes (failover / non-preferred).
+                    if !is_first_attempt || reason != "preferred_healthy" {
+                        st.store.add_event(
+                            &provider_name,
+                            "info",
+                            &format!("ok via {provider_name} ({reason})"),
+                        );
+                    }
 
                     if want_stream {
                         // If the client asked for stream but upstream call was non-streaming, simulate SSE.
@@ -991,9 +999,8 @@ fn passthrough_sse_and_persist(
         while let Some(item) = bytes_stream.next().await {
             yield item;
         }
-        if let Some((rid, resp_obj)) = tap3.lock().take_completed() {
+        if let Some((_rid, resp_obj)) = tap3.lock().take_completed() {
             st2.store.record_success(&provider2, &resp_obj);
-            st2.store.add_event(&provider2, "info", &format!("persisted streamed response {rid}"));
         }
     };
 
