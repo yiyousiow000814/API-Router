@@ -20,6 +20,7 @@
 .aoShell {
   width: min(1240px, 100%);
   min-width: 1120px;
+  min-height: 820px;
   margin: 0 auto;
   padding: 14px 14px 12px;
   border: 1px solid var(--ao-line);
@@ -200,6 +201,17 @@
   flex-wrap: wrap;
   gap: 16px;
   margin-bottom: 10px;
+  /* Keep the brand header visible while scrolling inside .aoRoot. */
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  /* Extend to the shell edges so the sticky background looks natural. */
+  margin: -14px -14px 10px;
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid var(--ao-line);
+  border-top-left-radius: 18px;
+  border-top-right-radius: 18px;
+  background: linear-gradient(180deg, var(--ao-card2), var(--ao-card));
 }
 
 .aoBrandLeft {
