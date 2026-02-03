@@ -13,7 +13,7 @@ inside the app without editing your Codex config again.
 - Routes **Responses API** requests (`POST /v1/responses`) to your chosen providers.
 - Automatic failover on upstream errors (timeouts / 5xx / 429) with cooldown.
 - Provider management in UI: add, rename, reorder, set keys, set usage base URL.
-- Usage display is best-effort (depends on each provider’s usage endpoint).
+- Usage display is best-effort (depends on each provider's usage endpoint).
 - Runs in the background (tray icon with Show/Quit).
 
 ## Quick start (Windows)

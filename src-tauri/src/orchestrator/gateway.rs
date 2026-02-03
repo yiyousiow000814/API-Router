@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::DefaultBodyLimit;
-use axum::extract::{FromRequestParts, Json, State};
+use axum::extract::{FromRequest, FromRequestParts, Json, State};
 use axum::http::request::Parts;
+use axum::http::Request;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -90,18 +91,56 @@ pub struct UsageBaseSpeedCacheEntry {
     pub ordered_bases: Vec<String>,
 }
 
-pub fn build_router(state: GatewayState) -> Router {
-    // Codex can send large request bodies (context/tool outputs). Axum's default JSON body limit
-    // is small and returns 413 before handlers run. We allow up to 512 MiB.
-    const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
+pub struct LoggedJson<T>(pub T);
+
+#[axum::async_trait]
+impl<T> FromRequest<GatewayState> for LoggedJson<T>
+where
+    T: serde::de::DeserializeOwned + Send,
+{
+    type Rejection = Response;
+
+    async fn from_request(
+        req: Request<Body>,
+        state: &GatewayState,
+    ) -> Result<Self, Self::Rejection> {
+        let method = req.method().to_string();
+        let path = req.uri().path().to_string();
+
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(v)) => Ok(Self(v)),
+            Err(rej) => {
+                let msg = rej.to_string();
+                let msg = msg.chars().take(500).collect::<String>();
+                let resp = rej.into_response();
+                let code = resp.status().as_u16();
+                state.store.add_event(
+                    "gateway",
+                    "error",
+                    &format!("{code} {method} {path}: {msg}"),
+                );
+                Err(resp)
+            }
+        }
+    }
+}
+
+pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: usize) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/status", get(status))
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
         .route("/responses", post(responses))
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)
+}
+
+pub fn build_router(state: GatewayState) -> Router {
+    // Codex can send large request bodies (context/tool outputs). Axum's default JSON body limit
+    // is small and returns 413 before handlers run. We allow up to 512 MiB.
+    const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
+    build_router_with_body_limit(state, MAX_BODY_BYTES)
 }
 
 fn prefers_simple_input_list(base_url: &str) -> bool {
@@ -123,7 +162,7 @@ fn summarize_input_for_debug(input: &Value) -> String {
     const LIMIT: usize = 400;
     if s.len() > LIMIT {
         s.truncate(LIMIT);
-        s.push('…');
+        s.push_str("...");
     }
     s
 }
@@ -391,7 +430,7 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let providers = st.router.snapshot(now);
     let manual_override = st.router.manual_override.read().clone();
 
-    let recent_events = st.store.list_events(50);
+    let recent_events = st.store.list_events(10);
     let metrics = st.store.get_metrics();
     let quota = st.store.list_quota_snapshots();
     let ledgers = st.store.list_ledgers();
@@ -500,7 +539,7 @@ async fn responses(
     PeerAddr(peer): PeerAddr,
     State(st): State<GatewayState>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    LoggedJson(body): LoggedJson<Value>,
 ) -> Response {
     if let Some(resp) = require_gateway_auth(&st, &headers) {
         return resp;
@@ -682,11 +721,15 @@ async fn responses(
                         *st.last_used_provider.write() = Some(provider_name.clone());
                         *st.last_used_reason.write() = Some(reason.to_string());
                         st.router.mark_success(&provider_name, unix_ms());
-                        st.store.add_event(
-                            &provider_name,
-                            "info",
-                            &format!("stream via {provider_name} ({reason})"),
-                        );
+                        // Avoid spamming the event log for routine successful requests; only
+                        // surface interesting routing outcomes (failover / non-preferred).
+                        if !is_first_attempt || reason != "preferred_healthy" {
+                            st.store.add_event(
+                                &provider_name,
+                                "info",
+                                &format!("Streaming via {provider_name} ({reason})"),
+                            );
+                        }
                         return passthrough_sse_and_persist(
                             resp,
                             st.clone(),
@@ -767,11 +810,15 @@ async fn responses(
                     // Persist the exchange so we can keep continuity if provider changes later.
                     st.store.record_success(&provider_name, &response_obj);
 
-                    st.store.add_event(
-                        &provider_name,
-                        "info",
-                        &format!("ok via {provider_name} ({reason})"),
-                    );
+                    // Avoid spamming the event log for routine successful requests; only surface
+                    // interesting routing outcomes (failover / non-preferred).
+                    if !is_first_attempt || reason != "preferred_healthy" {
+                        st.store.add_event(
+                            &provider_name,
+                            "info",
+                            &format!("Routed via {provider_name} ({reason})"),
+                        );
+                    }
 
                     if want_stream {
                         // If the client asked for stream but upstream call was non-streaming, simulate SSE.
@@ -952,9 +999,8 @@ fn passthrough_sse_and_persist(
         while let Some(item) = bytes_stream.next().await {
             yield item;
         }
-        if let Some((rid, resp_obj)) = tap3.lock().take_completed() {
+        if let Some((_rid, resp_obj)) = tap3.lock().take_completed() {
             st2.store.record_success(&provider2, &resp_obj);
-            st2.store.add_event(&provider2, "info", &format!("persisted streamed response {rid}"));
         }
     };
 

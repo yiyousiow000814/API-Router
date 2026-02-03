@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::error::Error;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -7,6 +8,52 @@ use serde_json::Value;
 use super::config::ProviderConfig;
 use super::gateway::GatewayState;
 use super::store::unix_ms;
+
+fn redact_url_for_logs(url: &reqwest::Url) -> String {
+    // Avoid logging secrets in query strings (e.g. token_key=...).
+    // Keep only scheme://host[:port]/path so logs are still actionable.
+    let scheme = url.scheme();
+    let host = url.host_str().unwrap_or("<unknown>");
+    let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
+    format!("{scheme}://{host}{port}{}", url.path())
+}
+
+fn format_reqwest_error_for_logs(e: &reqwest::Error) -> String {
+    // reqwest::Error's Display often includes the full URL, including query params.
+    // Build our own short classification + redacted URL + root causes.
+    let kind = if e.is_timeout() {
+        "timeout"
+    } else if e.is_connect() {
+        "connect"
+    } else {
+        "request"
+    };
+
+    let mut parts: Vec<String> = vec![format!("request error ({kind})")];
+    if let Some(url) = e.url() {
+        parts.push(format!("url={}", redact_url_for_logs(url)));
+    }
+
+    // Surface a little bit more context from the source chain (often includes OS error codes).
+    let mut src: Option<&(dyn Error + 'static)> = e.source();
+    let mut causes: Vec<String> = Vec::new();
+    while let Some(err) = src {
+        let s = err.to_string();
+        if !s.is_empty() && !causes.contains(&s) {
+            causes.push(s);
+        }
+        // Keep it short (Events table is meant to be scannable).
+        if causes.len() >= 2 {
+            break;
+        }
+        src = err.source();
+    }
+    if !causes.is_empty() {
+        parts.push(format!("cause={}", causes.join(" | ")));
+    }
+
+    parts.join("; ")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UsageKind {
@@ -403,20 +450,16 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
     if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
         st.store.reset_ledger(provider_name);
     }
-    let msg = if snap.last_error.is_empty() {
-        "usage refreshed"
-    } else {
-        "usage refresh failed"
-    };
-    st.store.add_event(
-        provider_name,
-        if snap.last_error.is_empty() {
-            "info"
-        } else {
-            "error"
-        },
-        msg,
-    );
+    // Avoid spamming the event log on routine/background refreshes. Only surface failures here;
+    // user-initiated success summaries are logged by the tauri command layer.
+    if !snap.last_error.is_empty() {
+        let err = snap.last_error.chars().take(300).collect::<String>();
+        st.store.add_event(
+            provider_name,
+            "error",
+            &format!("usage refresh failed: {err}"),
+        );
+    }
 }
 
 fn store_quota_snapshot_silent(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
@@ -614,14 +657,26 @@ pub async fn refresh_quota_shared(
     Ok(group)
 }
 
-pub async fn refresh_quota_all(st: &GatewayState) {
+pub async fn refresh_quota_all_with_summary(st: &GatewayState) -> (usize, usize, Vec<String>) {
     let cfg = st.cfg.read().clone();
     let mut cache: HashMap<UsageRequestKey, QuotaSnapshot> = HashMap::new();
+    let mut ok = 0usize;
+    let mut err = 0usize;
+    let mut failed = Vec::new();
+
     for name in cfg.providers.keys() {
-        let _ = refresh_quota_for_provider_cached(st, name, &mut cache).await;
+        let snap = refresh_quota_for_provider_cached(st, name, &mut cache).await;
+        if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
+            ok += 1;
+        } else {
+            err += 1;
+            failed.push(name.clone());
+        }
         // Manual/all refresh: keep a small delay so we don't look like a burst/DDOS.
         tokio::time::sleep(Duration::from_millis(120)).await;
     }
+
+    (ok, err, failed)
 }
 
 pub async fn run_quota_scheduler(st: GatewayState) {
@@ -744,7 +799,7 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
                 continue;
             }
             Err(e) => {
-                last_err = format!("request error: {e}");
+                last_err = format_reqwest_error_for_logs(&e);
                 continue;
             }
         }
@@ -937,7 +992,7 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
                 return out;
             }
             Err(e) => {
-                last_err = format!("request error: {e}");
+                last_err = format_reqwest_error_for_logs(&e);
                 continue;
             }
         }

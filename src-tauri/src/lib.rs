@@ -186,7 +186,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
     state.gateway.router.sync_with_config(&cfg, now);
     let providers = state.gateway.router.snapshot(now);
     let manual_override = state.gateway.router.manual_override.read().clone();
-    let recent_events = state.gateway.store.list_events(50);
+    let recent_events = state.gateway.store.list_events(10);
     let metrics = state.gateway.store.get_metrics();
     let quota = state.gateway.store.list_quota_snapshots();
     let ledgers = state.gateway.store.list_ledgers();
@@ -690,7 +690,22 @@ async fn refresh_quota(
     if !state.gateway.cfg.read().providers.contains_key(&provider) {
         return Err(format!("unknown provider: {provider}"));
     }
-    let _ = crate::orchestrator::quota::refresh_quota_for_provider(&state.gateway, &provider).await;
+    let snap =
+        crate::orchestrator::quota::refresh_quota_for_provider(&state.gateway, &provider).await;
+    if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
+        state
+            .gateway
+            .store
+            .add_event(&provider, "info", "Usage refresh succeeded");
+    } else {
+        // Avoid double-logging: quota.rs already records an error event when refresh fails.
+        let err = if snap.last_error.is_empty() {
+            "usage refresh failed".to_string()
+        } else {
+            snap.last_error.chars().take(300).collect::<String>()
+        };
+        return Err(err);
+    }
     Ok(())
 }
 
@@ -699,13 +714,41 @@ async fn refresh_quota_shared(
     state: tauri::State<'_, app_state::AppState>,
     provider: String,
 ) -> Result<(), String> {
-    crate::orchestrator::quota::refresh_quota_shared(&state.gateway, &provider).await?;
+    let group = crate::orchestrator::quota::refresh_quota_shared(&state.gateway, &provider).await?;
+    let n = group.len();
+    // Keep the message short (events list is meant to be scannable).
+    state.gateway.store.add_event(
+        "gateway",
+        "info",
+        &format!("Usage refresh succeeded (shared): {n} providers updated"),
+    );
     Ok(())
 }
 
 #[tauri::command]
 async fn refresh_quota_all(state: tauri::State<'_, app_state::AppState>) -> Result<(), String> {
-    crate::orchestrator::quota::refresh_quota_all(&state.gateway).await;
+    let (ok, err, failed) =
+        crate::orchestrator::quota::refresh_quota_all_with_summary(&state.gateway).await;
+    if err == 0 {
+        state.gateway.store.add_event(
+            "gateway",
+            "info",
+            &format!("Usage refresh succeeded: {ok} providers"),
+        );
+    } else {
+        let shown = failed
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let suffix = if failed.len() > 3 { ", ..." } else { "" };
+        state.gateway.store.add_event(
+            "gateway",
+            "error",
+            &format!("usage refresh partial: ok={ok} err={err} (failed: {shown}{suffix})"),
+        );
+    }
     Ok(())
 }
 
