@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import type { Config, Status } from './types'
@@ -6,6 +6,7 @@ import { fmtWhen } from './utils/format'
 import { computeActiveRefreshDelayMs, computeIdleRefreshDelayMs } from './utils/usageRefresh'
 import { ProvidersTable } from './components/ProvidersTable'
 import { SessionsTable } from './components/SessionsTable'
+import { EventsTable } from './components/EventsTable'
 import { KeyModal } from './components/KeyModal'
 import { UsageBaseModal } from './components/UsageBaseModal'
 import { InstructionModal } from './components/InstructionModal'
@@ -684,7 +685,7 @@ export default function App() {
           const { [name]: value, ...rest } = prev
           return { ...rest, [next]: value }
         })
-        flashToast(`Renamed: ${name} → ${next}`)
+        flashToast(`Renamed: ${name} -> ${next}`)
       } catch (e) {
         flashToast(String(e), 'error')
       }
@@ -937,7 +938,7 @@ export default function App() {
           {/* Surface errors via toast to avoid layout shifts. */}
 
           {!status ? (
-            <div className="aoHint">Loading…</div>
+            <div className="aoHint">Loading...</div>
           ) : (
             <>
               <div className="aoHero">
@@ -978,7 +979,7 @@ export default function App() {
                     })()
                   }}
                   onRefresh={() => {
-                    flashToast('Checking…')
+                    flashToast('Checking...')
                     invoke('codex_account_refresh')
                       .then(() => refreshStatus())
                       .catch((e) => {
@@ -1032,6 +1033,15 @@ export default function App() {
                   updating={updatingSessionPref}
                   onSetPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
                 />
+              </div>
+
+              <div className="aoSection">
+                <div className="aoSectionHeader">
+                  <div className="aoRow">
+                    <h3 className="aoH3">Events</h3>
+                  </div>
+                </div>
+                <EventsTable events={status.recent_events ?? []} />
               </div>
 
             </>

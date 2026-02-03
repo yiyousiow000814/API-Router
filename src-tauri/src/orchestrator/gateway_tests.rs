@@ -13,7 +13,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
-    use crate::orchestrator::gateway::{build_router, open_store_dir, GatewayState};
+    use crate::orchestrator::gateway::{
+        build_router, build_router_with_body_limit, open_store_dir, GatewayState,
+    };
     use crate::orchestrator::router::RouterState;
     use crate::orchestrator::secrets::SecretStore;
     use crate::orchestrator::store::unix_ms;
@@ -170,6 +172,69 @@ mod tests {
             .unwrap();
 
         assert_ne!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn logs_pre_handler_json_rejections() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+        let cfg = AppConfig::default_config();
+        let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg)),
+            router,
+            store: store.clone(),
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_provider: Arc::new(RwLock::new(None)),
+            last_used_reason: Arc::new(RwLock::new(None)),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+        // Make the limit tiny so we can trigger 413 reliably in a unit test.
+        let app = build_router_with_body_limit(state, 1024);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{not json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/responses")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!("\"{}\"", "a".repeat(2048))))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let events = store.list_events(10);
+        assert!(!events.is_empty());
+        let joined = events
+            .iter()
+            .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("/v1/responses"));
+        assert!(joined.contains("413") || joined.contains("400"));
     }
 
     #[tokio::test]

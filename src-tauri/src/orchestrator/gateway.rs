@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::DefaultBodyLimit;
-use axum::extract::{FromRequestParts, Json, State};
+use axum::extract::{FromRequest, FromRequestParts, Json, State};
 use axum::http::request::Parts;
+use axum::http::Request;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -90,18 +91,56 @@ pub struct UsageBaseSpeedCacheEntry {
     pub ordered_bases: Vec<String>,
 }
 
-pub fn build_router(state: GatewayState) -> Router {
-    // Codex can send large request bodies (context/tool outputs). Axum's default JSON body limit
-    // is small and returns 413 before handlers run. We allow up to 512 MiB.
-    const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
+pub struct LoggedJson<T>(pub T);
+
+#[axum::async_trait]
+impl<T> FromRequest<GatewayState> for LoggedJson<T>
+where
+    T: serde::de::DeserializeOwned + Send,
+{
+    type Rejection = Response;
+
+    async fn from_request(
+        req: Request<Body>,
+        state: &GatewayState,
+    ) -> Result<Self, Self::Rejection> {
+        let method = req.method().to_string();
+        let path = req.uri().path().to_string();
+
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(v)) => Ok(Self(v)),
+            Err(rej) => {
+                let msg = rej.to_string();
+                let msg = msg.chars().take(500).collect::<String>();
+                let resp = rej.into_response();
+                let code = resp.status().as_u16();
+                state.store.add_event(
+                    "gateway",
+                    "error",
+                    &format!("{code} {method} {path}: {msg}"),
+                );
+                Err(resp)
+            }
+        }
+    }
+}
+
+pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: usize) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/status", get(status))
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
         .route("/responses", post(responses))
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)
+}
+
+pub fn build_router(state: GatewayState) -> Router {
+    // Codex can send large request bodies (context/tool outputs). Axum's default JSON body limit
+    // is small and returns 413 before handlers run. We allow up to 512 MiB.
+    const MAX_BODY_BYTES: usize = 512 * 1024 * 1024;
+    build_router_with_body_limit(state, MAX_BODY_BYTES)
 }
 
 fn prefers_simple_input_list(base_url: &str) -> bool {
@@ -123,7 +162,7 @@ fn summarize_input_for_debug(input: &Value) -> String {
     const LIMIT: usize = 400;
     if s.len() > LIMIT {
         s.truncate(LIMIT);
-        s.push('…');
+        s.push_str("...");
     }
     s
 }
@@ -500,7 +539,7 @@ async fn responses(
     PeerAddr(peer): PeerAddr,
     State(st): State<GatewayState>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    LoggedJson(body): LoggedJson<Value>,
 ) -> Response {
     if let Some(resp) = require_gateway_auth(&st, &headers) {
         return resp;
