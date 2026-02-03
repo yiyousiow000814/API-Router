@@ -727,7 +727,7 @@ async fn responses(
                             st.store.add_event(
                                 &provider_name,
                                 "info",
-                                &format!("stream via {provider_name} ({reason})"),
+                                &format!("Streaming via {provider_name} ({reason})"),
                             );
                         }
                         return passthrough_sse_and_persist(
@@ -816,7 +816,7 @@ async fn responses(
                         st.store.add_event(
                             &provider_name,
                             "info",
-                            &format!("ok via {provider_name} ({reason})"),
+                            &format!("Routed via {provider_name} ({reason})"),
                         );
                     }
 
