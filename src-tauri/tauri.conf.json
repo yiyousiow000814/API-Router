@@ -14,9 +14,9 @@
       {
         "title": "API Router",
         "width": 1320,
-        "height": 720,
+        "height": 820,
         "minWidth": 1320,
-        "minHeight": 720,
+        "minHeight": 820,
         "decorations": true,
         "transparent": false,
         "resizable": true,
