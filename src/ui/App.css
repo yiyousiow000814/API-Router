@@ -254,11 +254,21 @@
 }
 
 .aoEventRowError td {
+  /* Avoid making the whole row bright red; use subtle emphasis + a left accent. */
+  background: rgba(255, 94, 125, 0.035);
+}
+
+.aoEventRowError td:first-child {
+  box-shadow: inset 3px 0 0 rgba(255, 94, 125, 0.8);
+}
+
+.aoEventRowError td:nth-child(3) {
   color: var(--ao-danger);
+  font-weight: 650;
 }
 
 .aoEventRowError td .aoHint {
-  color: var(--ao-danger);
+  color: rgba(119, 11, 33, 0.78);
 }
 
 .aoEventsSection td {
