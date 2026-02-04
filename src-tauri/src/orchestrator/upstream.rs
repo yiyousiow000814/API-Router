@@ -22,6 +22,8 @@ impl UpstreamClient {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .user_agent("api-router/0.1")
+            // Avoid hanging forever on broken upstream TCP handshakes.
+            .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("reqwest client");
         Self { client }
@@ -86,10 +88,12 @@ impl UpstreamClient {
             }
         }
 
+        let _ = timeout_seconds;
+        // Do NOT set a total request timeout for streaming; it would abort long-running streams
+        // even when data is flowing. The gateway applies an idle timeout while relaying chunks.
         self.client
             .post(url)
             .headers(headers)
-            .timeout(std::time::Duration::from_secs(timeout_seconds))
             .json(payload)
             .send()
             .await

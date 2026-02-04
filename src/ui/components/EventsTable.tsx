@@ -12,6 +12,26 @@ export function EventsTable({ events }: Props) {
     return <div className="aoHint">-</div>
   }
 
+  const errors = events.filter((e) => e.level === 'error').slice(0, 5)
+  const infos = events.filter((e) => e.level !== 'error').slice(0, 5)
+
+  const renderRow = (e: Status['recent_events'][number], key: string, isError: boolean) => (
+    <tr key={key} className={isError ? 'aoEventRowError' : undefined}>
+      <td>{fmtWhen(e.unix_ms)}</td>
+      <td style={{ fontFamily: mono }}>{e.provider}</td>
+      <td>
+        <span className={`aoLevelBadge ${isError ? 'aoLevelBadgeError' : 'aoLevelBadgeInfo'}`}>
+          {e.level}
+        </span>
+      </td>
+      <td className="aoCellWrap">
+        <span className="aoEventMessage" title={e.message}>
+          {e.message}
+        </span>
+      </td>
+    </tr>
+  )
+
   return (
     <table className="aoTable aoTableFixed">
       <thead>
@@ -23,14 +43,35 @@ export function EventsTable({ events }: Props) {
         </tr>
       </thead>
       <tbody>
-        {events.map((e, idx) => (
-          <tr key={`${e.unix_ms}-${idx}`}>
-            <td>{fmtWhen(e.unix_ms)}</td>
-            <td style={{ fontFamily: mono }}>{e.provider}</td>
-            <td>{e.level}</td>
-            <td className="aoCellWrap">{e.message}</td>
+        <tr className="aoEventsSection">
+          <td colSpan={4}>
+            <span>Info</span> <span className="aoHint">({infos.length})</span>
+          </td>
+        </tr>
+        {infos.length ? (
+          infos.map((e, idx) => renderRow(e, `${e.unix_ms}-info-${idx}`, false))
+        ) : (
+          <tr>
+            <td colSpan={4} className="aoHint">
+              -
+            </td>
           </tr>
-        ))}
+        )}
+
+        <tr className="aoEventsSection">
+          <td colSpan={4}>
+            <span>Errors</span> <span className="aoHint">({errors.length})</span>
+          </td>
+        </tr>
+        {errors.length ? (
+          errors.map((e, idx) => renderRow(e, `${e.unix_ms}-err-${idx}`, true))
+        ) : (
+          <tr>
+            <td colSpan={4} className="aoHint">
+              -
+            </td>
+          </tr>
+        )}
       </tbody>
     </table>
   )

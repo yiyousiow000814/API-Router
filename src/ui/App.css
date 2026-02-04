@@ -253,6 +253,62 @@
   margin-top: 2px;
 }
 
+.aoEventRowError td {
+  /* Keep the row mostly neutral; the level pill + left accent carry the emphasis. */
+  background: rgba(255, 94, 125, 0.02);
+}
+
+.aoEventRowError td:first-child {
+  box-shadow: inset 3px 0 0 rgba(255, 94, 125, 0.75);
+}
+
+.aoEventRowError td .aoHint {
+  color: rgba(119, 11, 33, 0.78);
+}
+
+.aoLevelBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(13, 18, 32, 0.035);
+  color: rgba(13, 18, 32, 0.78);
+}
+
+.aoLevelBadgeInfo {
+  border-color: rgba(40, 199, 217, 0.26);
+  background: rgba(40, 199, 217, 0.07);
+  color: rgba(0, 110, 124, 0.9);
+}
+
+.aoLevelBadgeError {
+  border-color: rgba(255, 94, 125, 0.3);
+  background: rgba(255, 94, 125, 0.1);
+  color: rgba(170, 0, 38, 0.95);
+}
+
+.aoEventMessage {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.aoEventsSection td {
+  padding: 10px 12px 6px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.74);
+  background: rgba(13, 18, 32, 0.02);
+}
+
 .aoCard {
   border: 1px solid var(--ao-line);
   border-radius: 16px;

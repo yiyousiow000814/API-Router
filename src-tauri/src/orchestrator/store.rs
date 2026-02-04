@@ -276,6 +276,7 @@ impl Store {
         let _ = self.db.flush();
     }
 
+    #[allow(dead_code)]
     pub fn list_events(&self, limit: usize) -> Vec<Value> {
         // Hot path: UI polls status frequently (e.g. every ~1.5s). Do not scan + sort the full
         // event log each time; it becomes O(n log n) as the DB grows and causes visible stutter.
@@ -290,6 +291,43 @@ impl Store {
             .filter_map(|res| res.ok())
             .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
             .collect()
+    }
+
+    pub fn list_events_split(&self, max_error: usize, max_other: usize) -> Vec<Value> {
+        // UI wants errors to stay visible even when info is noisy. Return up to
+        // `max_error` error events and `max_other` non-error events, newest-first.
+        let mut out: Vec<Value> = Vec::with_capacity(max_error + max_other);
+        let mut seen_error = 0usize;
+        let mut seen_other = 0usize;
+
+        for res in self.db.scan_prefix(b"event:").rev() {
+            let Ok((_, v)) = res else {
+                continue;
+            };
+            let Ok(j) = serde_json::from_slice::<Value>(&v) else {
+                continue;
+            };
+            let level = j.get("level").and_then(|v| v.as_str()).unwrap_or("info");
+            if level == "error" {
+                if seen_error >= max_error {
+                    continue;
+                }
+                seen_error += 1;
+                out.push(j);
+            } else {
+                if seen_other >= max_other {
+                    continue;
+                }
+                seen_other += 1;
+                out.push(j);
+            }
+
+            if seen_error >= max_error && seen_other >= max_other {
+                break;
+            }
+        }
+
+        out
     }
 
     pub fn put_codex_account_snapshot(&self, snapshot: &Value) {
