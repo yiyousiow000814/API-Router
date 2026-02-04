@@ -99,15 +99,50 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                     <div className="aoUsageLine">
                       daily: ${fmtUsd(q?.daily_spent_usd)} / ${fmtUsd(q?.daily_budget_usd)}
                     </div>
-                    {q?.weekly_spent_usd != null || q?.weekly_budget_usd != null ? (
-                      <div className="aoUsageLine">
-                        weekly: ${fmtUsd(q?.weekly_spent_usd)} / ${fmtUsd(q?.weekly_budget_usd)}
-                      </div>
-                    ) : (
-                      <div className="aoUsageLine">
-                        monthly: ${fmtUsd(q?.monthly_spent_usd)} / ${fmtUsd(q?.monthly_budget_usd)}
-                      </div>
-                    )}
+                    {(() => {
+                      const hasWeeklySpent = q?.weekly_spent_usd != null
+                      const hasWeeklyBudget = q?.weekly_budget_usd != null
+                      const hasMonthly = q?.monthly_spent_usd != null || q?.monthly_budget_usd != null
+
+                      // Prefer weekly only when upstream actually reports weekly (spent + budget).
+                      // Some providers keep the weekly budget field but stop reporting weekly spent
+                      // when weekly is deprecated; in that case we show monthly instead.
+                      const shouldShowWeekly = hasWeeklySpent && hasWeeklyBudget
+
+                      if (!shouldShowWeekly && hasMonthly) {
+                        return (
+                          <div className="aoUsageLine">
+                            monthly: ${fmtUsd(q?.monthly_spent_usd)} / ${fmtUsd(q?.monthly_budget_usd)}
+                          </div>
+                        )
+                      }
+
+                      if (shouldShowWeekly) {
+                        const weeklySpent = `$${fmtUsd(q?.weekly_spent_usd)}`
+                        return (
+                          <div className="aoUsageLine">
+                            weekly: {weeklySpent} / ${fmtUsd(q?.weekly_budget_usd)}
+                          </div>
+                        )
+                      }
+
+                      // Last resort: show whatever we have without rendering confusing "-".
+                      if (hasMonthly) {
+                        return (
+                          <div className="aoUsageLine">
+                            monthly: ${fmtUsd(q?.monthly_spent_usd)} / ${fmtUsd(q?.monthly_budget_usd)}
+                          </div>
+                        )
+                      }
+                      if (hasWeeklyBudget) {
+                        return (
+                          <div className="aoUsageLine">
+                            weekly: n/a / ${fmtUsd(q?.weekly_budget_usd)}
+                          </div>
+                        )
+                      }
+                      return null
+                    })()}
                   </div>
                   <button
                     className={`aoUsageRefreshBtn${refreshingProviders[p] ? ' aoUsageRefreshBtnSpin' : ''}`}

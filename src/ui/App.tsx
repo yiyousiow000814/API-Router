@@ -136,6 +136,7 @@ export default function App() {
   const [config, setConfig] = useState<Config | null>(null)
   const [baselineBaseUrls, setBaselineBaseUrls] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<string>('')
+  const [clearErrorsBeforeMs, setClearErrorsBeforeMs] = useState<number>(0)
   const [override, setOverride] = useState<string>('') // '' => auto
   const [newProviderName, setNewProviderName] = useState<string>('')
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
@@ -197,11 +198,36 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return
     try {
+      const saved = window.localStorage.getItem('ao.clearErrorsBeforeMs')
+      if (!saved) return
+      const n = Number(saved)
+      if (Number.isFinite(n) && n > 0) setClearErrorsBeforeMs(n)
+    } catch (e) {
+      console.warn('Failed to load UI prefs', e)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
       window.localStorage.setItem('ao.providerPanelsOpen', JSON.stringify(providerPanelsOpen))
     } catch (e) {
       console.warn('Failed to save provider panels', e)
     }
   }, [providerPanelsOpen])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      if (!clearErrorsBeforeMs) {
+        window.localStorage.removeItem('ao.clearErrorsBeforeMs')
+        return
+      }
+      window.localStorage.setItem('ao.clearErrorsBeforeMs', String(clearErrorsBeforeMs))
+    } catch (e) {
+      console.warn('Failed to save UI prefs', e)
+    }
+  }, [clearErrorsBeforeMs])
 
   const providers = useMemo(() => {
     const statusProviders = Object.keys(status?.providers ?? {})
@@ -220,6 +246,26 @@ export default function App() {
     }
     return ordered
   }, [status, config])
+
+  const visibleEvents = useMemo(() => {
+    const events = status?.recent_events ?? []
+    if (!clearErrorsBeforeMs) return events
+    // UI-only clear: hide errors at or before the last cleared timestamp.
+    return events.filter((e) => e.level !== 'error' || e.unix_ms > clearErrorsBeforeMs)
+  }, [status, clearErrorsBeforeMs])
+
+  const canClearErrors = useMemo(() => visibleEvents.some((e) => e.level === 'error'), [visibleEvents])
+
+  const clearErrors = useCallback(() => {
+    const events = status?.recent_events ?? []
+    let maxErrorUnixMs = 0
+    for (const e of events) {
+      if (e.level !== 'error') continue
+      if (e.unix_ms > maxErrorUnixMs) maxErrorUnixMs = e.unix_ms
+    }
+    if (!maxErrorUnixMs) return
+    setClearErrorsBeforeMs((prev) => Math.max(prev, maxErrorUnixMs))
+  }, [status])
 
   const clientSessions = useMemo(() => {
     const sessions = status?.client_sessions ?? []
@@ -1041,7 +1087,7 @@ export default function App() {
                     <h3 className="aoH3">Events</h3>
                   </div>
                 </div>
-                <EventsTable events={status.recent_events ?? []} />
+                <EventsTable events={visibleEvents} canClearErrors={canClearErrors} onClearErrors={clearErrors} />
               </div>
 
             </>
