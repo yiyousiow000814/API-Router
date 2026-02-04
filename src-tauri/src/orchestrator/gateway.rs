@@ -738,6 +738,7 @@ async fn responses(
                             previous_response_id.clone(),
                             body_for_provider.clone(),
                             codex_session_key.clone(),
+                            timeout,
                         );
                     }
                     Ok(resp) => {
@@ -1011,6 +1012,7 @@ fn passthrough_sse_and_persist(
     _parent_id: Option<String>,
     _request_json: Value,
     _session_key: Option<String>,
+    idle_timeout_seconds: u64,
 ) -> Response {
     use futures_util::StreamExt;
 
@@ -1029,7 +1031,37 @@ fn passthrough_sse_and_persist(
     let tap3 = tap.clone();
     let stream = async_stream::stream! {
         let mut forwarded_bytes: u64 = 0;
-        while let Some(item) = bytes_stream.next().await {
+        loop {
+            let item = match tokio::time::timeout(
+                std::time::Duration::from_secs(idle_timeout_seconds),
+                bytes_stream.next(),
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(_) => {
+                    let completed = tap.lock().is_completed();
+                    let note = if completed {
+                        "after completion"
+                    } else {
+                        "before completion; downstream output may be incomplete"
+                    };
+                    st_err.store.add_event(
+                        &provider_err,
+                        "error",
+                        &format!(
+                            "stream idle timeout ({note}); completed={completed}; forwarded_bytes={forwarded_bytes}; upstream_status={upstream_status}; url={}",
+                            redact_url_for_logs(&upstream_url)
+                        ),
+                    );
+                    break;
+                }
+            };
+
+            let Some(item) = item else {
+                break;
+            };
+
             match item {
                 Ok(b) => {
                     tap.lock().feed(&b);
