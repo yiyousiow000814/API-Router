@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
@@ -909,6 +910,47 @@ fn bearer_token(auth: &str) -> Option<&str> {
     None
 }
 
+fn redact_url_for_logs(url: &reqwest::Url) -> String {
+    // Avoid logging secrets in query strings. Keep only scheme://host[:port]/path.
+    let scheme = url.scheme();
+    let host = url.host_str().unwrap_or("<unknown>");
+    let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
+    format!("{scheme}://{host}{port}{}", url.path())
+}
+
+fn format_reqwest_error_for_logs(e: &reqwest::Error) -> String {
+    let kind = if e.is_timeout() {
+        "timeout"
+    } else if e.is_connect() {
+        "connect"
+    } else {
+        "request"
+    };
+
+    let mut parts: Vec<String> = vec![format!("request error ({kind})")];
+    if let Some(url) = e.url() {
+        parts.push(format!("url={}", redact_url_for_logs(url)));
+    }
+
+    // Try to include a couple root causes (often includes OS error codes / EOF / reset).
+    let mut src: Option<&(dyn Error + 'static)> = e.source();
+    let mut causes: Vec<String> = Vec::new();
+    while let Some(err) = src {
+        let s = err.to_string();
+        if !s.is_empty() && !causes.contains(&s) {
+            causes.push(s);
+        }
+        if causes.len() >= 2 {
+            break;
+        }
+        src = err.source();
+    }
+    if !causes.is_empty() {
+        parts.push(format!("cause={}", causes.join(" | ")));
+    }
+    parts.join("; ")
+}
+
 fn require_gateway_auth(st: &GatewayState, headers: &HeaderMap) -> Option<Response> {
     let Some(expected) = st.secrets.get_gateway_token() else {
         // No token configured: allow for local dev.
@@ -973,31 +1015,59 @@ fn passthrough_sse_and_persist(
     use futures_util::StreamExt;
 
     let tap = std::sync::Arc::new(parking_lot::Mutex::new(SseTap::new()));
-    let tap2 = tap.clone();
     let st_err = st.clone();
     let provider_err = provider_name.clone();
 
-    let bytes_stream = upstream_resp.bytes_stream().map(move |item| match item {
-        Ok(b) => {
-            tap2.lock().feed(&b);
-            Ok::<Bytes, std::convert::Infallible>(b)
-        }
-        Err(e) => {
-            st_err
-                .store
-                .add_event(&provider_err, "error", &format!("stream read error: {e}"));
-            Ok::<Bytes, std::convert::Infallible>(Bytes::new())
-        }
-    });
+    let upstream_status = upstream_resp.status().as_u16();
+    let upstream_url = upstream_resp.url().clone();
+    let upstream_headers = upstream_resp.headers().clone();
+    let mut bytes_stream = upstream_resp.bytes_stream();
 
-    // Persist on drop isn't guaranteed; do it after stream completes by wrapping with async-stream.
+    // Persist on drop isn't guaranteed; do it after stream completes.
     let st2 = st.clone();
     let provider2 = provider_name.clone();
     let tap3 = tap.clone();
     let stream = async_stream::stream! {
-        futures_util::pin_mut!(bytes_stream);
+        let mut forwarded_bytes: u64 = 0;
         while let Some(item) = bytes_stream.next().await {
-            yield item;
+            match item {
+                Ok(b) => {
+                    tap.lock().feed(&b);
+                    forwarded_bytes = forwarded_bytes.saturating_add(b.len() as u64);
+                    yield Ok::<Bytes, std::convert::Infallible>(b);
+                }
+                Err(e) => {
+                    // Only log once and stop the stream to avoid spamming identical errors.
+                    let enc = upstream_headers
+                        .get(header::CONTENT_ENCODING)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("-");
+                    let transfer = upstream_headers
+                        .get(header::TRANSFER_ENCODING)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("-");
+                    let ct = upstream_headers
+                        .get(header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("-");
+                    let completed = tap.lock().is_completed();
+                    let note = if completed {
+                        "after completion"
+                    } else {
+                        "before completion; downstream output may be incomplete"
+                    };
+                    let err = format_reqwest_error_for_logs(&e);
+                    st_err.store.add_event(
+                        &provider_err,
+                        "error",
+                        &format!(
+                            "stream read error ({note}); completed={completed}; forwarded_bytes={forwarded_bytes}; upstream_status={upstream_status}; url={}; content_type={ct}; content_encoding={enc}; transfer_encoding={transfer}; {err}",
+                            redact_url_for_logs(&upstream_url)
+                        ),
+                    );
+                    break;
+                }
+            }
         }
         if let Some((_rid, resp_obj)) = tap3.lock().take_completed() {
             st2.store.record_success(&provider2, &resp_obj);
@@ -1078,5 +1148,9 @@ impl SseTap {
 
     fn take_completed(&mut self) -> Option<(String, Value)> {
         self.completed.take()
+    }
+
+    fn is_completed(&self) -> bool {
+        self.completed.is_some()
     }
 }
