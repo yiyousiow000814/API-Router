@@ -1035,7 +1035,7 @@ export default function App() {
                 />
               </div>
 
-              <div className="aoSection">
+              <div className="aoSection aoSectionFramed">
                 <div className="aoSectionHeader">
                   <div className="aoRow">
                     <h3 className="aoH3">Events</h3>

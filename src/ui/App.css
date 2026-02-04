@@ -254,8 +254,8 @@
 }
 
 .aoEventRowError td {
-  /* Keep the row mostly neutral; the level pill + left accent carry the emphasis. */
-  background: rgba(255, 94, 125, 0.02);
+  /* Avoid pink-tinted row backgrounds; keep emphasis via left accent + level pill. */
+  background: inherit;
 }
 
 .aoEventRowError td:first-child {
@@ -421,6 +421,18 @@
 
 .aoSection {
   margin-top: 12px;
+}
+
+.aoSectionFramed {
+  padding: 12px 12px 10px;
+  border-radius: 18px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgba(255, 255, 255, 0.65);
+  box-shadow: 0 16px 38px rgba(13, 18, 32, 0.06);
+}
+
+.aoSectionFramed .aoSectionHeader {
+  margin: 0 0 8px;
 }
 
 .aoSectionHeader {
