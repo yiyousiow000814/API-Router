@@ -55,12 +55,12 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
         ) : (
           <tr>
             <td colSpan={4} className="aoHint">
-              -
+              No info events
             </td>
           </tr>
         )}
 
-        {infos.length && errors.length ? (
+        {infos.length ? (
           <tr className="aoEventsGap" aria-hidden="true">
             <td colSpan={4} />
           </tr>
@@ -90,7 +90,7 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
         ) : (
           <tr>
             <td colSpan={4} className="aoHint">
-              -
+              No errors
             </td>
           </tr>
         )}
