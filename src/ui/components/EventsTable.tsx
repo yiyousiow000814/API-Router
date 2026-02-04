@@ -79,7 +79,7 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
                   disabled={!canClearErrors}
                   title="Clear visible errors (UI only)"
                 >
-                  Clear errors
+                  Clear
                 </button>
               ) : null}
             </div>
