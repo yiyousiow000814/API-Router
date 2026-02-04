@@ -136,6 +136,7 @@ export default function App() {
   const [config, setConfig] = useState<Config | null>(null)
   const [baselineBaseUrls, setBaselineBaseUrls] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<string>('')
+  const [clearErrorsBeforeMs, setClearErrorsBeforeMs] = useState<number>(0)
   const [override, setOverride] = useState<string>('') // '' => auto
   const [newProviderName, setNewProviderName] = useState<string>('')
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
@@ -220,6 +221,26 @@ export default function App() {
     }
     return ordered
   }, [status, config])
+
+  const visibleEvents = useMemo(() => {
+    const events = status?.recent_events ?? []
+    if (!clearErrorsBeforeMs) return events
+    // UI-only clear: hide errors at or before the last cleared timestamp.
+    return events.filter((e) => e.level !== 'error' || e.unix_ms > clearErrorsBeforeMs)
+  }, [status, clearErrorsBeforeMs])
+
+  const canClearErrors = useMemo(() => visibleEvents.some((e) => e.level === 'error'), [visibleEvents])
+
+  const clearErrors = useCallback(() => {
+    const events = status?.recent_events ?? []
+    let maxErrorUnixMs = 0
+    for (const e of events) {
+      if (e.level !== 'error') continue
+      if (e.unix_ms > maxErrorUnixMs) maxErrorUnixMs = e.unix_ms
+    }
+    if (!maxErrorUnixMs) return
+    setClearErrorsBeforeMs((prev) => Math.max(prev, maxErrorUnixMs))
+  }, [status])
 
   const clientSessions = useMemo(() => {
     const sessions = status?.client_sessions ?? []
@@ -1040,8 +1061,13 @@ export default function App() {
                   <div className="aoRow">
                     <h3 className="aoH3">Events</h3>
                   </div>
+                  <div className="aoActions">
+                    <button className="aoActionBtnDanger" onClick={clearErrors} disabled={!canClearErrors} title="Clear visible errors (UI only)">
+                      Clear errors
+                    </button>
+                  </div>
                 </div>
-                <EventsTable events={status.recent_events ?? []} />
+                <EventsTable events={visibleEvents} />
               </div>
 
             </>
