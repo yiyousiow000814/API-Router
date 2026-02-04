@@ -58,6 +58,12 @@ export function EventsTable({ events }: Props) {
           </tr>
         )}
 
+        {infos.length && errors.length ? (
+          <tr className="aoEventsGap" aria-hidden="true">
+            <td colSpan={4} />
+          </tr>
+        ) : null}
+
         <tr className="aoEventsSection">
           <td colSpan={4}>
             <span>Errors</span> <span className="aoHint">({errors.length})</span>

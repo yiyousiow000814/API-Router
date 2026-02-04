@@ -309,6 +309,13 @@
   background: rgba(13, 18, 32, 0.02);
 }
 
+.aoEventsGap td {
+  height: 10px;
+  padding: 0;
+  background: transparent;
+  border-top: 1px solid rgba(13, 18, 32, 0.06);
+}
+
 .aoCard {
   border: 1px solid var(--ao-line);
   border-radius: 16px;
