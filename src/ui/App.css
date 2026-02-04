@@ -310,10 +310,27 @@
 }
 
 .aoEventsGap td {
-  height: 10px;
+  height: 14px;
   padding: 0;
   background: transparent;
-  border-top: 1px solid rgba(13, 18, 32, 0.06);
+  border: none;
+  position: relative;
+}
+
+.aoEventsGap td::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 50%;
+  height: 1px;
+  transform: translateY(-0.5px);
+  background: linear-gradient(
+    90deg,
+    rgba(13, 18, 32, 0),
+    rgba(13, 18, 32, 0.10),
+    rgba(13, 18, 32, 0)
+  );
 }
 
 .aoCard {
