@@ -253,6 +253,32 @@
   margin-top: 2px;
 }
 
+.aoEventsSplit {
+  display: grid;
+  gap: 10px;
+}
+
+.aoEventsBlockTitle {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 2px 2px 8px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.74);
+}
+
+.aoEventRowError td {
+  color: var(--ao-danger);
+}
+
+.aoEventRowError td .aoHint {
+  color: var(--ao-danger);
+}
+
 .aoCard {
   border: 1px solid var(--ao-line);
   border-radius: 16px;

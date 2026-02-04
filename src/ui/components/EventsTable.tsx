@@ -12,7 +12,10 @@ export function EventsTable({ events }: Props) {
     return <div className="aoHint">-</div>
   }
 
-  return (
+  const errors = events.filter((e) => e.level === 'error').slice(0, 5)
+  const infos = events.filter((e) => e.level !== 'error').slice(0, 5)
+
+  const renderTable = (rows: Status['recent_events']) => (
     <table className="aoTable aoTableFixed">
       <thead>
         <tr>
@@ -23,8 +26,8 @@ export function EventsTable({ events }: Props) {
         </tr>
       </thead>
       <tbody>
-        {events.map((e, idx) => (
-          <tr key={`${e.unix_ms}-${idx}`}>
+        {rows.map((e, idx) => (
+          <tr key={`${e.unix_ms}-${idx}`} className={e.level === 'error' ? 'aoEventRowError' : ''}>
             <td>{fmtWhen(e.unix_ms)}</td>
             <td style={{ fontFamily: mono }}>{e.provider}</td>
             <td>{e.level}</td>
@@ -33,6 +36,26 @@ export function EventsTable({ events }: Props) {
         ))}
       </tbody>
     </table>
+  )
+
+  return (
+    <div className="aoEventsSplit">
+      <div className="aoEventsBlock">
+        <div className="aoEventsBlockTitle">
+          <span>Errors</span>
+          <span className="aoHint">({errors.length})</span>
+        </div>
+        {errors.length ? renderTable(errors) : <div className="aoHint">-</div>}
+      </div>
+
+      <div className="aoEventsBlock">
+        <div className="aoEventsBlockTitle">
+          <span>Info</span>
+          <span className="aoHint">({infos.length})</span>
+        </div>
+        {infos.length ? renderTable(infos) : <div className="aoHint">-</div>}
+      </div>
+    </div>
   )
 }
 
