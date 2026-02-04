@@ -198,11 +198,36 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return
     try {
+      const saved = window.localStorage.getItem('ao.clearErrorsBeforeMs')
+      if (!saved) return
+      const n = Number(saved)
+      if (Number.isFinite(n) && n > 0) setClearErrorsBeforeMs(n)
+    } catch (e) {
+      console.warn('Failed to load UI prefs', e)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
       window.localStorage.setItem('ao.providerPanelsOpen', JSON.stringify(providerPanelsOpen))
     } catch (e) {
       console.warn('Failed to save provider panels', e)
     }
   }, [providerPanelsOpen])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      if (!clearErrorsBeforeMs) {
+        window.localStorage.removeItem('ao.clearErrorsBeforeMs')
+        return
+      }
+      window.localStorage.setItem('ao.clearErrorsBeforeMs', String(clearErrorsBeforeMs))
+    } catch (e) {
+      console.warn('Failed to save UI prefs', e)
+    }
+  }, [clearErrorsBeforeMs])
 
   const providers = useMemo(() => {
     const statusProviders = Object.keys(status?.providers ?? {})
