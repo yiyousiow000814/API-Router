@@ -27,7 +27,7 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
         </span>
       </td>
       <td className="aoCellWrap">
-        <span className="aoEventMessage" title={e.message}>
+        <span className="aoEventMessage" title={e.code ? `${e.code}: ${e.message}` : e.message}>
           {e.message}
         </span>
       </td>

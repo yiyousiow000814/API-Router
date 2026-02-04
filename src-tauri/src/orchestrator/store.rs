@@ -81,15 +81,22 @@ impl Store {
         }
     }
 
-    pub fn add_event(&self, provider: &str, level: &str, message: &str) {
+    pub fn add_event(&self, provider: &str, level: &str, code: &str, message: &str, fields: Value) {
         let ts = unix_ms();
         let id = uuid::Uuid::new_v4().to_string();
         let key = format!("event:{ts}:{id}");
+        let fields = match fields {
+            Value::Object(_) => fields,
+            Value::Null => Value::Null,
+            other => serde_json::json!({ "value": other }),
+        };
         let v = serde_json::json!({
             "provider": provider,
             "level": level,
             "unix_ms": ts,
-            "message": message
+            "code": code,
+            "message": message,
+            "fields": fields,
         });
         let _ = self
             .db

@@ -118,7 +118,9 @@ where
                 state.store.add_event(
                     "gateway",
                     "error",
+                    "gateway.request_parse_error",
                     &format!("{code} {method} {path}: {msg}"),
+                    json!({ "http_status": code, "method": method, "path": path }),
                 );
                 Err(resp)
             }
@@ -425,6 +427,40 @@ async fn health() -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
+pub(crate) fn decide_provider(
+    st: &GatewayState,
+    cfg: &AppConfig,
+    preferred: &str,
+) -> (String, &'static str) {
+    // Manual override always wins (and is handled by RouterState).
+    if st.router.manual_override.read().is_some() {
+        return st.router.decide_with_preferred(cfg, preferred);
+    }
+
+    if cfg.routing.auto_return_to_preferred {
+        let last_provider = st.last_used_provider.read().clone();
+        let last_reason = st.last_used_reason.read().clone();
+
+        // If we recently failed over away from preferred, keep using the last successful
+        // fallback for a short stabilization window to avoid flapping.
+        if last_reason.as_deref() == Some("preferred_unhealthy")
+            && last_provider.as_deref().is_some_and(|p| p != preferred)
+            && st
+                .router
+                .should_suppress_preferred(preferred, cfg, unix_ms())
+        {
+            if let Some(p) = last_provider {
+                if st.router.is_provider_routable(&p) {
+                    return (p, "preferred_stabilizing");
+                }
+            }
+            return (st.router.fallback(cfg, preferred), "preferred_stabilizing");
+        }
+    }
+
+    st.router.decide_with_preferred(cfg, preferred)
+}
+
 async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let cfg = st.cfg.read().clone();
     let now = unix_ms();
@@ -485,7 +521,7 @@ async fn models(
         .map(|s| s.as_str())
         .unwrap_or(cfg.routing.preferred_provider.as_str());
 
-    let (provider_name, reason) = st.router.decide_with_preferred(&cfg, preferred);
+    let (provider_name, reason) = decide_provider(&st, &cfg, preferred);
     let p = match cfg.providers.get(&provider_name) {
         Some(p) => p.clone(),
         None => {
@@ -604,7 +640,9 @@ async fn responses(
         st.store.add_event(
             "gateway",
             "debug",
+            "gateway.previous_response_id_present",
             &format!("previous_response_id present (tools={input_has_tools}); input={summary}"),
+            json!({ "tools": input_has_tools }),
         );
     }
 
@@ -622,7 +660,7 @@ async fn responses(
             .filter(|p| cfg.providers.contains_key(*p))
             .map(|s| s.as_str())
             .unwrap_or(cfg.routing.preferred_provider.as_str());
-        let (provider_name, reason) = st.router.decide_with_preferred(&cfg, preferred);
+        let (provider_name, reason) = decide_provider(&st, &cfg, preferred);
         if tried.contains(&provider_name) {
             break;
         }
@@ -730,7 +768,9 @@ async fn responses(
                             st.store.add_event(
                                 &provider_name,
                                 "info",
+                                "routing.stream",
                                 &format!("Streaming via {provider_name} ({reason})"),
+                                json!({ "provider": provider_name, "reason": reason }),
                             );
                         } else if prev_provider.as_deref().is_some_and(|p| p != provider_name)
                             || prev_reason
@@ -742,7 +782,9 @@ async fn responses(
                             st.store.add_event(
                                 &provider_name,
                                 "info",
+                                "routing.back_to_preferred",
                                 &format!("Back to preferred: {provider_name}"),
+                                json!({ "provider": provider_name }),
                             );
                         }
                         return passthrough_sse_and_persist(
@@ -766,7 +808,9 @@ async fn responses(
                             st.store.add_event(
                                 &provider_name,
                                 "info",
+                                "gateway.retry_without_prev_id",
                                 "retrying without previous_response_id",
+                                Value::Null,
                             );
                             retried_without_prev = true;
                             continue;
@@ -776,7 +820,17 @@ async fn responses(
                         );
                         st.router
                             .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
-                        st.store.add_event(&provider_name, "error", &last_err);
+                        st.store.add_event(
+                            &provider_name,
+                            "error",
+                            "upstream.http_error",
+                            &last_err,
+                            json!({
+                                "http_status": code,
+                                "endpoint": "/v1/responses",
+                                "stream": true
+                            }),
+                        );
                         break;
                     }
                     Err(e) => {
@@ -784,7 +838,13 @@ async fn responses(
                             format!("upstream {provider_name} error (responses stream): {e}");
                         st.router
                             .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
-                        st.store.add_event(&provider_name, "error", &last_err);
+                        st.store.add_event(
+                            &provider_name,
+                            "error",
+                            "upstream.request_error",
+                            &last_err,
+                            json!({ "endpoint": "/v1/responses", "stream": true }),
+                        );
                         break;
                     }
                 }
@@ -834,7 +894,9 @@ async fn responses(
                         st.store.add_event(
                             &provider_name,
                             "info",
+                            "routing.route",
                             &format!("Routed via {provider_name} ({reason})"),
+                            json!({ "provider": provider_name, "reason": reason }),
                         );
                     } else if prev_provider.as_deref().is_some_and(|p| p != provider_name)
                         || prev_reason
@@ -844,7 +906,9 @@ async fn responses(
                         st.store.add_event(
                             &provider_name,
                             "info",
+                            "routing.back_to_preferred",
                             &format!("Back to preferred: {provider_name}"),
+                            json!({ "provider": provider_name }),
                         );
                     }
 
@@ -864,7 +928,9 @@ async fn responses(
                         st.store.add_event(
                             &provider_name,
                             "info",
+                            "gateway.retry_without_prev_id",
                             "retrying without previous_response_id",
+                            Value::Null,
                         );
                         retried_without_prev = true;
                         continue;
@@ -873,7 +939,13 @@ async fn responses(
                     st.router
                         .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                     st.store.record_failure(&provider_name);
-                    st.store.add_event(&provider_name, "error", &last_err);
+                    st.store.add_event(
+                        &provider_name,
+                        "error",
+                        "upstream.http_error",
+                        &last_err,
+                        json!({ "http_status": code, "endpoint": "/v1/responses", "stream": false }),
+                    );
                     break;
                 }
                 Err(e) => {
@@ -881,7 +953,13 @@ async fn responses(
                     st.router
                         .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                     st.store.record_failure(&provider_name);
-                    st.store.add_event(&provider_name, "error", &last_err);
+                    st.store.add_event(
+                        &provider_name,
+                        "error",
+                        "upstream.request_error",
+                        &last_err,
+                        json!({ "endpoint": "/v1/responses", "stream": false }),
+                    );
                     break;
                 }
             }
@@ -1075,10 +1153,17 @@ fn passthrough_sse_and_persist(
                     st_err.store.add_event(
                         &provider_err,
                         "error",
+                        "stream.idle_timeout",
                         &format!(
                             "stream idle timeout ({note}); completed={completed}; forwarded_bytes={forwarded_bytes}; upstream_status={upstream_status}; url={}",
                             redact_url_for_logs(&upstream_url)
                         ),
+                        json!({
+                            "completed": completed,
+                            "forwarded_bytes": forwarded_bytes,
+                            "upstream_status": upstream_status,
+                            "url": redact_url_for_logs(&upstream_url),
+                        }),
                     );
                     break;
                 }
@@ -1118,10 +1203,21 @@ fn passthrough_sse_and_persist(
                     st_err.store.add_event(
                         &provider_err,
                         "error",
+                        "stream.read_error",
                         &format!(
                             "stream read error ({note}); completed={completed}; forwarded_bytes={forwarded_bytes}; upstream_status={upstream_status}; url={}; content_type={ct}; content_encoding={enc}; transfer_encoding={transfer}; {err}",
                             redact_url_for_logs(&upstream_url)
                         ),
+                        json!({
+                            "completed": completed,
+                            "forwarded_bytes": forwarded_bytes,
+                            "upstream_status": upstream_status,
+                            "url": redact_url_for_logs(&upstream_url),
+                            "content_type": ct,
+                            "content_encoding": enc,
+                            "transfer_encoding": transfer,
+                            "error": err,
+                        }),
                     );
                     break;
                 }

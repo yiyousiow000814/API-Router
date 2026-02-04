@@ -340,7 +340,9 @@ fn set_manual_override(
     state.gateway.store.add_event(
         provider.as_deref().unwrap_or("-"),
         "info",
+        "routing.manual_override_changed",
         "manual override changed",
+        serde_json::Value::Null,
     );
     Ok(())
 }
@@ -409,10 +411,13 @@ fn set_preferred_provider(
         cfg.routing.preferred_provider = provider.clone();
     }
     persist_config(&state).map_err(|e| e.to_string())?;
-    state
-        .gateway
-        .store
-        .add_event(&provider, "info", "preferred_provider updated");
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        "config.preferred_provider_updated",
+        "preferred_provider updated",
+        serde_json::Value::Null,
+    );
     Ok(())
 }
 
@@ -439,7 +444,9 @@ fn set_session_preferred_provider(
     state.gateway.store.add_event(
         &provider,
         "info",
+        "config.session_preferred_provider_updated",
         &format!("session preferred_provider updated ({session_id})"),
+        serde_json::json!({ "session_id": session_id }),
     );
     Ok(())
 }
@@ -461,7 +468,9 @@ fn clear_session_preferred_provider(
     state.gateway.store.add_event(
         "gateway",
         "info",
+        "config.session_preferred_provider_cleared",
         &format!("session preferred_provider cleared ({session_id})"),
+        serde_json::json!({ "session_id": session_id }),
     );
     Ok(())
 }
@@ -495,10 +504,13 @@ fn upsert_provider(
         app_state::normalize_provider_order(&mut cfg);
     }
     persist_config(&state).map_err(|e| e.to_string())?;
-    state
-        .gateway
-        .store
-        .add_event(&name, "info", "provider upserted");
+    state.gateway.store.add_event(
+        &name,
+        "info",
+        "config.provider_upserted",
+        "provider upserted",
+        serde_json::Value::Null,
+    );
     Ok(())
 }
 
@@ -538,15 +550,20 @@ fn delete_provider(
     }
     let _ = state.secrets.clear_provider_key(&name);
     persist_config(&state).map_err(|e| e.to_string())?;
-    state
-        .gateway
-        .store
-        .add_event(&name, "info", "provider deleted");
+    state.gateway.store.add_event(
+        &name,
+        "info",
+        "config.provider_deleted",
+        "provider deleted",
+        serde_json::Value::Null,
+    );
     if let Some(p) = next_preferred {
         state.gateway.store.add_event(
             &p,
             "info",
+            "config.preferred_provider_updated",
             "preferred_provider updated (deleted old preferred)",
+            serde_json::Value::Null,
         );
     }
     Ok(())
@@ -611,10 +628,13 @@ fn rename_provider(
         .gateway
         .router
         .sync_with_config(&state.gateway.cfg.read(), unix_ms());
-    state
-        .gateway
-        .store
-        .add_event(new, "info", "provider renamed");
+    state.gateway.store.add_event(
+        new,
+        "info",
+        "config.provider_renamed",
+        "provider renamed",
+        serde_json::Value::Null,
+    );
     Ok(())
 }
 
@@ -631,7 +651,9 @@ fn set_provider_key(
     state.gateway.store.add_event(
         &provider,
         "info",
+        "config.provider_key_updated",
         "provider key updated (stored in user-data/secrets.json)",
+        serde_json::Value::Null,
     );
     Ok(())
 }
@@ -647,10 +669,13 @@ fn set_provider_order(
         app_state::normalize_provider_order(&mut cfg);
     }
     persist_config(&state).map_err(|e| e.to_string())?;
-    state
-        .gateway
-        .store
-        .add_event("-", "info", "provider order updated");
+    state.gateway.store.add_event(
+        "-",
+        "info",
+        "config.provider_order_updated",
+        "provider order updated",
+        serde_json::Value::Null,
+    );
     Ok(())
 }
 
@@ -677,7 +702,9 @@ fn clear_provider_key(
     state.gateway.store.add_event(
         &provider,
         "info",
+        "config.provider_key_cleared",
         "provider key cleared (user-data/secrets.json)",
+        serde_json::Value::Null,
     );
     Ok(())
 }
@@ -693,10 +720,13 @@ async fn refresh_quota(
     let snap =
         crate::orchestrator::quota::refresh_quota_for_provider(&state.gateway, &provider).await;
     if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
-        state
-            .gateway
-            .store
-            .add_event(&provider, "info", "Usage refresh succeeded");
+        state.gateway.store.add_event(
+            &provider,
+            "info",
+            "usage.refresh_succeeded",
+            "Usage refresh succeeded",
+            serde_json::Value::Null,
+        );
     } else {
         // Avoid double-logging: quota.rs already records an error event when refresh fails.
         let err = if snap.last_error.is_empty() {
@@ -720,7 +750,9 @@ async fn refresh_quota_shared(
     state.gateway.store.add_event(
         "gateway",
         "info",
+        "usage.refresh_succeeded",
         &format!("Usage refresh succeeded (shared): {n} providers updated"),
+        serde_json::json!({ "providers": n }),
     );
     Ok(())
 }
@@ -733,7 +765,9 @@ async fn refresh_quota_all(state: tauri::State<'_, app_state::AppState>) -> Resu
         state.gateway.store.add_event(
             "gateway",
             "info",
+            "usage.refresh_succeeded",
             &format!("Usage refresh succeeded: {ok} providers"),
+            serde_json::json!({ "providers": ok }),
         );
     } else {
         let shown = failed
@@ -746,7 +780,9 @@ async fn refresh_quota_all(state: tauri::State<'_, app_state::AppState>) -> Resu
         state.gateway.store.add_event(
             "gateway",
             "error",
+            "usage.refresh_partial",
             &format!("usage refresh partial: ok={ok} err={err} (failed: {shown}{suffix})"),
+            serde_json::json!({ "ok": ok, "err": err, "failed": failed }),
         );
     }
     Ok(())
@@ -765,7 +801,9 @@ fn set_usage_token(
     state.gateway.store.add_event(
         &provider,
         "info",
+        "config.usage_token_updated",
         "usage token updated (user-data/secrets.json)",
+        serde_json::Value::Null,
     );
     Ok(())
 }
@@ -782,7 +820,9 @@ fn clear_usage_token(
     state.gateway.store.add_event(
         &provider,
         "info",
+        "config.usage_token_cleared",
         "usage token cleared (user-data/secrets.json)",
+        serde_json::Value::Null,
     );
     Ok(())
 }
@@ -810,10 +850,13 @@ fn set_usage_base_url(
         }
     }
     persist_config(&state).map_err(|e| e.to_string())?;
-    state
-        .gateway
-        .store
-        .add_event(&provider, "info", "usage base url updated");
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        "config.usage_base_url_updated",
+        "usage base url updated",
+        serde_json::Value::Null,
+    );
     Ok(())
 }
 
@@ -832,10 +875,13 @@ fn clear_usage_base_url(
         }
     }
     persist_config(&state).map_err(|e| e.to_string())?;
-    state
-        .gateway
-        .store
-        .add_event(&provider, "info", "usage base url cleared");
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        "config.usage_base_url_cleared",
+        "usage base url cleared",
+        serde_json::Value::Null,
+    );
     Ok(())
 }
 
@@ -882,17 +928,22 @@ async fn probe_provider(
             state.gateway.store.add_event(
                 &provider,
                 "error",
+                "health.probe_failed",
                 "health probe failed (request error)",
+                serde_json::Value::Null,
             );
             format!("request error: {e}")
         })?;
 
     if (200..300).contains(&status) {
         state.gateway.router.mark_success(&provider, now);
-        state
-            .gateway
-            .store
-            .add_event(&provider, "info", "health probe ok");
+        state.gateway.store.add_event(
+            &provider,
+            "info",
+            "health.probe_ok",
+            "health probe ok",
+            serde_json::Value::Null,
+        );
         return Ok(());
     }
 
@@ -901,10 +952,13 @@ async fn probe_provider(
         .gateway
         .router
         .mark_failure(&provider, &cfg, &err, now);
-    state
-        .gateway
-        .store
-        .add_event(&provider, "error", "health probe failed");
+    state.gateway.store.add_event(
+        &provider,
+        "error",
+        "health.probe_failed",
+        "health probe failed",
+        serde_json::Value::Null,
+    );
     Err(err)
 }
 

@@ -90,13 +90,13 @@ impl RouterState {
             if self.is_routable(&p) {
                 return (p, "manual_override");
             }
-            return (self.fallback(cfg), "manual_override_unhealthy");
+            return (self.fallback(cfg, preferred), "manual_override_unhealthy");
         }
 
         if self.is_routable(preferred) {
             return (preferred.to_string(), "preferred_healthy");
         }
-        (self.fallback(cfg), "preferred_unhealthy")
+        (self.fallback(cfg, preferred), "preferred_unhealthy")
     }
 
     pub fn mark_success(&self, provider: &str, now_ms: u64) {
@@ -162,12 +162,35 @@ impl RouterState {
         !h.in_cooldown()
     }
 
-    fn fallback(&self, cfg: &AppConfig) -> String {
-        let preferred = cfg.routing.preferred_provider.clone();
-        let preferred_group = provider_group(cfg, &preferred);
+    pub fn is_provider_routable(&self, provider: &str) -> bool {
+        self.is_routable(provider)
+    }
+
+    pub fn should_suppress_preferred(&self, preferred: &str, cfg: &AppConfig, now_ms: u64) -> bool {
+        if !cfg.routing.auto_return_to_preferred {
+            return false;
+        }
+        let stable_seconds = cfg.routing.preferred_stable_seconds;
+        if stable_seconds == 0 {
+            return false;
+        }
+
+        let health = self.health.read();
+        let Some(h) = health.get(preferred) else {
+            return false;
+        };
+        if h.last_fail_at_unix_ms == 0 {
+            return false;
+        }
+        let stable_ms = stable_seconds.saturating_mul(1000);
+        now_ms < h.last_fail_at_unix_ms.saturating_add(stable_ms)
+    }
+
+    pub fn fallback(&self, cfg: &AppConfig, preferred: &str) -> String {
+        let preferred_group = provider_group(cfg, preferred);
 
         for name in cfg.providers.keys() {
-            if name == &preferred {
+            if name == preferred {
                 continue;
             }
             if preferred_group.is_some() && provider_group(cfg, name) == preferred_group {
@@ -179,7 +202,7 @@ impl RouterState {
         }
 
         for name in cfg.providers.keys() {
-            if name == &preferred {
+            if name == preferred {
                 continue;
             }
             if self.is_routable(name) {
@@ -187,7 +210,7 @@ impl RouterState {
             }
         }
 
-        preferred
+        preferred.to_string()
     }
 }
 
