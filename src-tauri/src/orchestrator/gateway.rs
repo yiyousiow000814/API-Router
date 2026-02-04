@@ -719,6 +719,8 @@ async fn responses(
                     .await
                 {
                     Ok(resp) if resp.status().is_success() => {
+                        let prev_provider = st.last_used_provider.read().clone();
+                        let prev_reason = st.last_used_reason.read().clone();
                         *st.last_used_provider.write() = Some(provider_name.clone());
                         *st.last_used_reason.write() = Some(reason.to_string());
                         st.router.mark_success(&provider_name, unix_ms());
@@ -729,6 +731,18 @@ async fn responses(
                                 &provider_name,
                                 "info",
                                 &format!("Streaming via {provider_name} ({reason})"),
+                            );
+                        } else if prev_provider.as_deref().is_some_and(|p| p != provider_name)
+                            || prev_reason
+                                .as_deref()
+                                .is_some_and(|r| r != "preferred_healthy")
+                        {
+                            // Only log "back to preferred" when we were previously using a
+                            // different provider or coming from a non-preferred route.
+                            st.store.add_event(
+                                &provider_name,
+                                "info",
+                                &format!("Back to preferred: {provider_name}"),
                             );
                         }
                         return passthrough_sse_and_persist(
@@ -796,6 +810,8 @@ async fn responses(
 
             match upstream_result {
                 Ok((code, upstream_json)) if (200..300).contains(&code) => {
+                    let prev_provider = st.last_used_provider.read().clone();
+                    let prev_reason = st.last_used_reason.read().clone();
                     *st.last_used_provider.write() = Some(provider_name.clone());
                     *st.last_used_reason.write() = Some(reason.to_string());
                     st.router.mark_success(&provider_name, unix_ms());
@@ -819,6 +835,16 @@ async fn responses(
                             &provider_name,
                             "info",
                             &format!("Routed via {provider_name} ({reason})"),
+                        );
+                    } else if prev_provider.as_deref().is_some_and(|p| p != provider_name)
+                        || prev_reason
+                            .as_deref()
+                            .is_some_and(|r| r != "preferred_healthy")
+                    {
+                        st.store.add_event(
+                            &provider_name,
+                            "info",
+                            &format!("Back to preferred: {provider_name}"),
                         );
                     }
 

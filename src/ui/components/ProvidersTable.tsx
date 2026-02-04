@@ -99,15 +99,36 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                     <div className="aoUsageLine">
                       daily: ${fmtUsd(q?.daily_spent_usd)} / ${fmtUsd(q?.daily_budget_usd)}
                     </div>
-                    {q?.weekly_spent_usd != null || q?.weekly_budget_usd != null ? (
-                      <div className="aoUsageLine">
-                        weekly: ${fmtUsd(q?.weekly_spent_usd)} / ${fmtUsd(q?.weekly_budget_usd)}
-                      </div>
-                    ) : (
-                      <div className="aoUsageLine">
-                        monthly: ${fmtUsd(q?.monthly_spent_usd)} / ${fmtUsd(q?.monthly_budget_usd)}
-                      </div>
-                    )}
+                    {(() => {
+                      const hasWeeklySpent = q?.weekly_spent_usd != null
+                      const hasWeeklyBudget = q?.weekly_budget_usd != null
+                      const hasMonthly = q?.monthly_spent_usd != null || q?.monthly_budget_usd != null
+
+                      // If weekly spend is missing but monthly exists, prefer showing monthly to avoid
+                      // a confusing "-" value.
+                      if (!hasWeeklySpent && hasMonthly) {
+                        return (
+                          <div className="aoUsageLine">
+                            monthly: ${fmtUsd(q?.monthly_spent_usd)} / ${fmtUsd(q?.monthly_budget_usd)}
+                          </div>
+                        )
+                      }
+
+                      if (hasWeeklySpent || hasWeeklyBudget) {
+                        const weeklySpent = hasWeeklySpent ? `$${fmtUsd(q?.weekly_spent_usd)}` : 'n/a'
+                        return (
+                          <div className="aoUsageLine">
+                            weekly: {weeklySpent} / ${fmtUsd(q?.weekly_budget_usd)}
+                          </div>
+                        )
+                      }
+
+                      return (
+                        <div className="aoUsageLine">
+                          monthly: ${fmtUsd(q?.monthly_spent_usd)} / ${fmtUsd(q?.monthly_budget_usd)}
+                        </div>
+                      )
+                    })()}
                   </div>
                   <button
                     className={`aoUsageRefreshBtn${refreshingProviders[p] ? ' aoUsageRefreshBtnSpin' : ''}`}
