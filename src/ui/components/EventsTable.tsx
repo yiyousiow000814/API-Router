@@ -28,12 +28,12 @@ export function EventsTable({ events }: Props) {
       <tbody>
         <tr className="aoEventsSection">
           <td colSpan={4}>
-            <span>Errors</span> <span className="aoHint">({errors.length})</span>
+            <span>Info</span> <span className="aoHint">({infos.length})</span>
           </td>
         </tr>
-        {errors.length ? (
-          errors.map((e, idx) => (
-            <tr key={`${e.unix_ms}-err-${idx}`} className="aoEventRowError">
+        {infos.length ? (
+          infos.map((e, idx) => (
+            <tr key={`${e.unix_ms}-info-${idx}`}>
               <td>{fmtWhen(e.unix_ms)}</td>
               <td style={{ fontFamily: mono }}>{e.provider}</td>
               <td>{e.level}</td>
@@ -50,12 +50,12 @@ export function EventsTable({ events }: Props) {
 
         <tr className="aoEventsSection">
           <td colSpan={4}>
-            <span>Info</span> <span className="aoHint">({infos.length})</span>
+            <span>Errors</span> <span className="aoHint">({errors.length})</span>
           </td>
         </tr>
-        {infos.length ? (
-          infos.map((e, idx) => (
-            <tr key={`${e.unix_ms}-info-${idx}`}>
+        {errors.length ? (
+          errors.map((e, idx) => (
+            <tr key={`${e.unix_ms}-err-${idx}`} className="aoEventRowError">
               <td>{fmtWhen(e.unix_ms)}</td>
               <td style={{ fontFamily: mono }}>{e.provider}</td>
               <td>{e.level}</td>
