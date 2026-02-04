@@ -47,7 +47,7 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
       <tbody>
         <tr className="aoEventsSection">
           <td colSpan={4}>
-            <span>Info</span> <span className="aoHint">({infos.length})</span>
+            <span>Info</span>
           </td>
         </tr>
         {infos.length ? (
@@ -70,7 +70,7 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
           <td colSpan={4}>
             <div className="aoEventsSectionRow">
               <div>
-                <span>Errors</span> <span className="aoHint">({errors.length})</span>
+                <span>Errors</span>
               </div>
               {errors.length && onClearErrors ? (
                 <button
