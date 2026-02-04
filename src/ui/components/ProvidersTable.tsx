@@ -104,9 +104,12 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                       const hasWeeklyBudget = q?.weekly_budget_usd != null
                       const hasMonthly = q?.monthly_spent_usd != null || q?.monthly_budget_usd != null
 
-                      // If weekly spend is missing but monthly exists, prefer showing monthly to avoid
-                      // a confusing "-" value.
-                      if (!hasWeeklySpent && hasMonthly) {
+                      // Prefer weekly only when upstream actually reports weekly (spent + budget).
+                      // Some providers keep the weekly budget field but stop reporting weekly spent
+                      // when weekly is deprecated; in that case we show monthly instead.
+                      const shouldShowWeekly = hasWeeklySpent && hasWeeklyBudget
+
+                      if (!shouldShowWeekly && hasMonthly) {
                         return (
                           <div className="aoUsageLine">
                             monthly: ${fmtUsd(q?.monthly_spent_usd)} / ${fmtUsd(q?.monthly_budget_usd)}
@@ -114,8 +117,8 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                         )
                       }
 
-                      if (hasWeeklySpent || hasWeeklyBudget) {
-                        const weeklySpent = hasWeeklySpent ? `$${fmtUsd(q?.weekly_spent_usd)}` : 'n/a'
+                      if (shouldShowWeekly) {
+                        const weeklySpent = `$${fmtUsd(q?.weekly_spent_usd)}`
                         return (
                           <div className="aoUsageLine">
                             weekly: {weeklySpent} / ${fmtUsd(q?.weekly_budget_usd)}
@@ -123,11 +126,22 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                         )
                       }
 
-                      return (
-                        <div className="aoUsageLine">
-                          monthly: ${fmtUsd(q?.monthly_spent_usd)} / ${fmtUsd(q?.monthly_budget_usd)}
-                        </div>
-                      )
+                      // Last resort: show whatever we have without rendering confusing "-".
+                      if (hasMonthly) {
+                        return (
+                          <div className="aoUsageLine">
+                            monthly: ${fmtUsd(q?.monthly_spent_usd)} / ${fmtUsd(q?.monthly_budget_usd)}
+                          </div>
+                        )
+                      }
+                      if (hasWeeklyBudget) {
+                        return (
+                          <div className="aoUsageLine">
+                            weekly: n/a / ${fmtUsd(q?.weekly_budget_usd)}
+                          </div>
+                        )
+                      }
+                      return null
                     })()}
                   </div>
                   <button
