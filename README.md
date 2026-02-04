@@ -11,7 +11,7 @@ inside the app without editing your Codex config again.
 ## What it does
 
 - Routes **Responses API** requests (`POST /v1/responses`) to your chosen providers.
-- Automatic failover on upstream errors (timeouts / 5xx / 429) with cooldown.
+- Automatic failover on upstream errors (timeouts / 5xx / 429) with cooldown and a short stabilization window.
 - Provider management in UI: add, rename, reorder, set keys, set usage base URL.
 - Usage display is best-effort (depends on each provider's usage endpoint).
 - Runs in the background (tray icon with Show/Quit).
@@ -62,6 +62,7 @@ After this, you switch providers inside the app.
 
 - **Preferred provider**: choose a default target.
 - **Auto mode**: the router picks a healthy provider and fails over if needed.
+- For routing tuning (cooldown / stabilization window), edit `./user-data/config.toml`.
 - **Usage base URL**: set this if the usage endpoint is on a different host.
   When empty, the usage base defaults to the provider `base_url`.
 - **Sessions (Windows Terminal only)**: when you run Codex inside Windows Terminal, API Router can
