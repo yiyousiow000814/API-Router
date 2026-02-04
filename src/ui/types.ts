@@ -13,7 +13,14 @@ export type Status = {
   manual_override: string | null
   providers: Record<string, ProviderHealth>
   metrics: Record<string, { ok_requests: number; error_requests: number; total_tokens: number }>
-  recent_events: Array<{ provider: string; level: string; unix_ms: number; message: string }>
+  recent_events: Array<{
+    provider: string
+    level: string
+    unix_ms: number
+    code?: string
+    message: string
+    fields?: Record<string, unknown> | null
+  }>
   client_sessions?: Array<{
     id: string
     wt_session?: string

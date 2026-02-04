@@ -457,7 +457,9 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
         st.store.add_event(
             provider_name,
             "error",
+            "usage.refresh_failed",
             &format!("usage refresh failed: {err}"),
+            Value::Null,
         );
     }
 }
