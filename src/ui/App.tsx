@@ -1061,13 +1061,8 @@ export default function App() {
                   <div className="aoRow">
                     <h3 className="aoH3">Events</h3>
                   </div>
-                  <div className="aoActions">
-                    <button className="aoActionBtnDanger" onClick={clearErrors} disabled={!canClearErrors} title="Clear visible errors (UI only)">
-                      Clear errors
-                    </button>
-                  </div>
                 </div>
-                <EventsTable events={visibleEvents} />
+                <EventsTable events={visibleEvents} canClearErrors={canClearErrors} onClearErrors={clearErrors} />
               </div>
 
             </>

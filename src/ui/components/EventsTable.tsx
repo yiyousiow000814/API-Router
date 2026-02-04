@@ -5,9 +5,11 @@ const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
 
 type Props = {
   events: Status['recent_events']
+  canClearErrors?: boolean
+  onClearErrors?: () => void
 }
 
-export function EventsTable({ events }: Props) {
+export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
   if (!events?.length) {
     return <div className="aoHint">-</div>
   }
@@ -66,7 +68,21 @@ export function EventsTable({ events }: Props) {
 
         <tr className="aoEventsSection">
           <td colSpan={4}>
-            <span>Errors</span> <span className="aoHint">({errors.length})</span>
+            <div className="aoEventsSectionRow">
+              <div>
+                <span>Errors</span> <span className="aoHint">({errors.length})</span>
+              </div>
+              {errors.length && onClearErrors ? (
+                <button
+                  className="aoEventsClearBtn"
+                  onClick={onClearErrors}
+                  disabled={!canClearErrors}
+                  title="Clear visible errors (UI only)"
+                >
+                  Clear errors
+                </button>
+              ) : null}
+            </div>
           </td>
         </tr>
         {errors.length ? (
