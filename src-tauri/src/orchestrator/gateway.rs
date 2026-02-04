@@ -439,12 +439,10 @@ pub(crate) fn decide_provider(
 
     if cfg.routing.auto_return_to_preferred {
         let last_provider = st.last_used_provider.read().clone();
-        let last_reason = st.last_used_reason.read().clone();
 
         // If we recently failed over away from preferred, keep using the last successful
         // fallback for a short stabilization window to avoid flapping.
-        if last_reason.as_deref() == Some("preferred_unhealthy")
-            && last_provider.as_deref().is_some_and(|p| p != preferred)
+        if last_provider.as_deref().is_some_and(|p| p != preferred)
             && st
                 .router
                 .should_suppress_preferred(preferred, cfg, unix_ms())
