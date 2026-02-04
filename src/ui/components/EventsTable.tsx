@@ -1,5 +1,5 @@
 import type { Status } from '../types'
-import { fmtWhen } from '../utils/format'
+import { fmtAgo, fmtWhen } from '../utils/format'
 
 const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
 
@@ -17,7 +17,7 @@ export function EventsTable({ events }: Props) {
 
   const renderRow = (e: Status['recent_events'][number], key: string, isError: boolean) => (
     <tr key={key} className={isError ? 'aoEventRowError' : undefined}>
-      <td>{fmtWhen(e.unix_ms)}</td>
+      <td title={fmtWhen(e.unix_ms)}>{fmtAgo(e.unix_ms)}</td>
       <td style={{ fontFamily: mono }}>{e.provider}</td>
       <td>
         <span className={`aoLevelBadge ${isError ? 'aoLevelBadgeError' : 'aoLevelBadgeInfo'}`}>
