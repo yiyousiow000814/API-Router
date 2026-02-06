@@ -275,12 +275,21 @@ export default function App() {
   async function setSessionPreferred(sessionId: string, provider: string | null) {
     setUpdatingSessionPref((m) => ({ ...m, [sessionId]: true }))
     try {
+      // Session preferences are keyed by Codex session id (not WT_SESSION).
+      const row = (status?.client_sessions ?? []).find((s) => s.id === sessionId)
+      const codexSessionId = row?.codex_session_id ?? null
+      if (!codexSessionId) {
+        throw new Error('This session has no Codex session id yet. Send one request through the gateway first.')
+      }
       if (provider) {
-        await invoke('set_session_preferred_provider', { sessionId, provider })
+        await invoke('set_session_preferred_provider', { sessionId: codexSessionId, provider })
       } else {
-        await invoke('clear_session_preferred_provider', { sessionId })
+        await invoke('clear_session_preferred_provider', { sessionId: codexSessionId })
       }
       await refreshStatus()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to set session preference'
+      flashToast(msg, 'error')
     } finally {
       setUpdatingSessionPref((m) => ({ ...m, [sessionId]: false }))
     }

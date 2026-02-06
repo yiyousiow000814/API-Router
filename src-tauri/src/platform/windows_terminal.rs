@@ -25,7 +25,7 @@ pub struct InferredWtSession {
 #[cfg(windows)]
 fn parse_codex_session_id_from_cmdline(cmd: &str) -> Option<String> {
     // `codex` commonly launches as: `codex.exe resume <uuid>`.
-    // If we see `resume`, take the next UUID token. Otherwise take the first UUID token.
+    // If we see `resume`, take the next UUID token.
     let toks: Vec<&str> = cmd.split_whitespace().collect();
     for i in 0..toks.len() {
         if toks[i].eq_ignore_ascii_case("resume") {
@@ -34,11 +34,6 @@ fn parse_codex_session_id_from_cmdline(cmd: &str) -> Option<String> {
                     return Some((*next).to_string());
                 }
             }
-        }
-    }
-    for t in toks {
-        if uuid::Uuid::parse_str(t).is_ok() {
-            return Some(t.to_string());
         }
     }
     None
@@ -654,6 +649,38 @@ fn discover_sessions_using_router_uncached(
         infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, router_port, start)
     }
 
+    fn frozen_codex_session_id(pid: u32, cmd: Option<&str>, router_port: u16) -> Option<String> {
+        // Session id inference from rollouts can "flip" when multiple Codex processes share the
+        // same CWD and new rollouts are written. Freeze the inferred session id per PID for
+        // stability during the process lifetime.
+        static FROZEN: OnceLock<Mutex<std::collections::HashMap<PidKey, String>>> = OnceLock::new();
+        let frozen = FROZEN.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+
+        let created_at = process_create_time(pid).and_then(systemtime_to_unix_ms);
+        let key = PidKey {
+            pid,
+            created_at_unix_ms: created_at.unwrap_or(0),
+        };
+
+        if let Ok(mut guard) = frozen.lock() {
+            guard.retain(|k, _| crate::platform::windows_loopback_peer::is_pid_alive(k.pid));
+            if let Some(v) = guard.get(&key) {
+                return Some(v.clone());
+            }
+            let inferred = cmd
+                .and_then(parse_codex_session_id_from_cmdline)
+                .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port));
+            if let Some(id) = inferred.as_ref() {
+                guard.insert(key, id.clone());
+            }
+            return inferred;
+        }
+
+        // If locking fails, fall back to a non-frozen inference.
+        cmd.and_then(parse_codex_session_id_from_cmdline)
+            .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port))
+    }
+
     fn latest_rollout_for_session(
         codex_home: &std::path::Path,
         session_id: &str,
@@ -734,10 +761,7 @@ fn discover_sessions_using_router_uncached(
                 }
 
                 // Infer session id early; we can use it as a stronger signal than the current on-disk config.
-                let codex_session_id = cmd
-                    .as_deref()
-                    .and_then(parse_codex_session_id_from_cmdline)
-                    .or_else(|| infer_codex_session_id_from_rollouts(pid, server_port));
+                let codex_session_id = frozen_codex_session_id(pid, cmd.as_deref(), server_port);
                 let Some(codex_session_id) = codex_session_id else {
                     ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
                     continue;
@@ -785,11 +809,11 @@ fn discover_sessions_using_router_uncached(
                 out.push(InferredWtSession {
                     wt_session: wt,
                     pid,
-                    codex_session_id: Some(codex_session_id),
                     reported_model_provider: rollout_meta
                         .as_ref()
                         .and_then(|m| m.model_provider.clone()),
                     reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
+                    codex_session_id: Some(codex_session_id),
                     router_confirmed: matched,
                 });
             }

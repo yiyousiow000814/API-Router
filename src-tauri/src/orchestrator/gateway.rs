@@ -62,21 +62,32 @@ pub struct GatewayState {
     pub upstream: UpstreamClient,
     pub secrets: SecretStore,
     pub last_activity_unix_ms: Arc<AtomicU64>,
-    pub last_used_provider: Arc<RwLock<Option<String>>>,
-    pub last_used_reason: Arc<RwLock<Option<String>>>,
+    pub last_used_by_session: Arc<RwLock<HashMap<String, LastUsedRoute>>>,
     pub usage_base_speed_cache: Arc<RwLock<HashMap<String, UsageBaseSpeedCacheEntry>>>,
     pub prev_id_support_cache: Arc<RwLock<HashMap<String, bool>>>,
     pub client_sessions: Arc<RwLock<HashMap<String, ClientSessionRuntime>>>,
 }
 
 #[derive(Clone, Debug)]
+pub struct LastUsedRoute {
+    pub provider: String,
+    pub reason: String,
+    pub preferred: String,
+    pub unix_ms: u64,
+}
+
+#[derive(Clone, Debug)]
 pub struct ClientSessionRuntime {
+    // The stable Codex session id. This is the canonical session identity.
+    pub codex_session_id: String,
+    // Last observed PID owning the Codex process (best-effort; may be a helper process).
     pub pid: u32,
+    // Last observed WT_SESSION for the Codex process (best-effort; discovery-only).
+    pub wt_session: Option<String>,
     // Timestamp of last request observed from this session (not just "discovered").
     pub last_request_unix_ms: u64,
     // Timestamp of last time we saw the process in a discovery scan.
     pub last_discovered_unix_ms: u64,
-    pub last_codex_session_id: Option<String>,
     pub last_reported_model_provider: Option<String>,
     pub last_reported_base_url: Option<String>,
     // Sticky "this session uses our gateway" marker. This prevents sessions from disappearing if
@@ -431,6 +442,7 @@ pub(crate) fn decide_provider(
     st: &GatewayState,
     cfg: &AppConfig,
     preferred: &str,
+    session_key: &str,
 ) -> (String, &'static str) {
     // Manual override always wins (and is handled by RouterState).
     if st.router.manual_override.read().is_some() {
@@ -438,7 +450,11 @@ pub(crate) fn decide_provider(
     }
 
     if cfg.routing.auto_return_to_preferred {
-        let last_provider = st.last_used_provider.read().clone();
+        let last_provider = st
+            .last_used_by_session
+            .read()
+            .get(session_key)
+            .map(|v| v.provider.clone());
 
         // If we recently failed over away from preferred, keep using the last successful
         // fallback for a short stabilization window to avoid flapping.
@@ -471,15 +487,19 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let ledgers = st.store.list_ledgers();
     let last_activity = st.last_activity_unix_ms.load(Ordering::Relaxed);
     let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
-    let active_provider = if active_recent {
-        st.last_used_provider.read().clone()
+    let (active_provider, active_reason) = if active_recent {
+        let last = st
+            .last_used_by_session
+            .read()
+            .values()
+            .max_by_key(|v| v.unix_ms)
+            .cloned();
+        (
+            last.as_ref().map(|v| v.provider.clone()),
+            last.map(|v| v.reason),
+        )
     } else {
-        None
-    };
-    let active_reason = if active_recent {
-        st.last_used_reason.read().clone()
-    } else {
-        None
+        (None, None)
     };
 
     Json(json!({
@@ -508,18 +528,21 @@ async fn models(
     st.last_activity_unix_ms.store(unix_ms(), Ordering::Relaxed);
     let cfg = st.cfg.read().clone();
 
-    // Respect per-session preferred providers (when we can infer WT_SESSION). Fall back to the
-    // global preferred provider.
-    let client_session = windows_terminal::infer_wt_session(peer, cfg.listen.port);
-    let preferred = client_session
-        .as_ref()
-        .map(|s| s.wt_session.as_str())
-        .and_then(|id| cfg.routing.session_preferred_providers.get(id))
+    // Respect per-session preferred providers (keyed by Codex session id). Fall back to the global
+    // preferred provider.
+    let session_key = session_key_from_request(&headers, &Value::Null)
+        .or_else(|| codex_session_id_for_display(&headers, &Value::Null))
+        .unwrap_or_else(|| format!("peer:{peer}"));
+
+    let preferred = cfg
+        .routing
+        .session_preferred_providers
+        .get(&session_key)
         .filter(|p| cfg.providers.contains_key(*p))
         .map(|s| s.as_str())
         .unwrap_or(cfg.routing.preferred_provider.as_str());
 
-    let (provider_name, reason) = decide_provider(&st, &cfg, preferred);
+    let (provider_name, _reason) = decide_provider(&st, &cfg, preferred, &session_key);
     let p = match cfg.providers.get(&provider_name) {
         Some(p) => p.clone(),
         None => {
@@ -537,23 +560,8 @@ async fn models(
     let api_key = st.secrets.get_provider_key(&provider_name);
     let client_auth = upstream_auth(&st, client_auth);
 
-    if let Some(inferred) = client_session.as_ref() {
-        let mut map = st.client_sessions.write();
-        let entry = map
-            .entry(inferred.wt_session.clone())
-            .or_insert(ClientSessionRuntime {
-                pid: inferred.pid,
-                last_request_unix_ms: 0,
-                last_discovered_unix_ms: 0,
-                last_codex_session_id: None,
-                last_reported_model_provider: None,
-                last_reported_base_url: None,
-                confirmed_router: true,
-            });
-        entry.pid = inferred.pid;
-        entry.last_request_unix_ms = unix_ms();
-        entry.confirmed_router = true;
-    }
+    // Do not update `client_sessions` for `/v1/models`.
+    // Codex may call it opportunistically, and it may not carry a stable Codex session id.
 
     let timeout = cfg.routing.request_timeout_seconds;
     match st
@@ -562,8 +570,10 @@ async fn models(
         .await
     {
         Ok((code, j)) if (200..300).contains(&code) => {
-            *st.last_used_provider.write() = Some(provider_name);
-            *st.last_used_reason.write() = Some(reason.to_string());
+            // Do not update `last_used_by_session` for `/v1/models` since Codex may call it
+            // opportunistically. We only want to track actual routing decisions for user
+            // requests (/v1/responses) to keep "back to preferred" semantics stable.
+            st.router.mark_success(&provider_name, unix_ms());
             (StatusCode::OK, Json(j)).into_response()
         }
         _ => (StatusCode::OK, Json(json!({"object":"list","data":[]}))).into_response(),
@@ -593,42 +603,46 @@ async fn responses(
 
     let codex_session_key = session_key_from_request(&headers, &body);
     let codex_session_display = codex_session_id_for_display(&headers, &body);
+    let session_key = codex_session_display
+        .as_deref()
+        .or(codex_session_key.as_deref())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("peer:{peer}"));
     let client_session = windows_terminal::infer_wt_session(peer, cfg.listen.port);
     let routing_session_fields = {
         let wt = client_session.as_ref().map(|s| s.wt_session.clone());
         let pid = client_session.as_ref().map(|s| s.pid);
-        let codex = codex_session_display
-            .as_deref()
-            .or(codex_session_key.as_deref())
-            .map(|s| s.to_string());
+        // Prefer the human-facing codex session id if present; fall back to session key.
+        let codex = (!session_key.starts_with("peer:")).then_some(session_key.clone());
         json!({
             "wt_session": wt,
             "pid": pid,
             "codex_session_id": codex,
         })
     };
-    if let Some(inferred) = client_session.as_ref() {
+    // Record requests against the canonical Codex session identity (from headers/body), not WT_SESSION.
+    // WT_SESSION is window-scoped and can be shared across tabs; additionally, some network calls may
+    // be owned by helper processes.
+    if !session_key.starts_with("peer:") {
         let mut map = st.client_sessions.write();
         let entry = map
-            .entry(inferred.wt_session.clone())
-            .or_insert(ClientSessionRuntime {
-                pid: inferred.pid,
+            .entry(session_key.clone())
+            .or_insert_with(|| ClientSessionRuntime {
+                codex_session_id: session_key.clone(),
+                pid: client_session.as_ref().map(|s| s.pid).unwrap_or(0),
+                wt_session: client_session.as_ref().map(|s| s.wt_session.clone()),
                 last_request_unix_ms: 0,
                 last_discovered_unix_ms: 0,
-                last_codex_session_id: None,
                 last_reported_model_provider: None,
                 last_reported_base_url: None,
                 confirmed_router: true,
             });
-        entry.pid = inferred.pid;
+        if let Some(inferred) = client_session.as_ref() {
+            entry.pid = inferred.pid;
+            entry.wt_session = Some(inferred.wt_session.clone());
+        }
         entry.last_request_unix_ms = unix_ms();
         entry.confirmed_router = true;
-        if let Some(cid) = codex_session_display
-            .as_deref()
-            .or(codex_session_key.as_deref())
-        {
-            entry.last_codex_session_id = Some(cid.to_string());
-        }
     }
 
     let previous_response_id = body
@@ -664,14 +678,14 @@ async fn responses(
     let mut session_messages: Option<Vec<Value>> = None;
     for _ in 0..cfg.providers.len().max(1) {
         let is_first_attempt = tried.is_empty();
-        let preferred = client_session
-            .as_ref()
-            .map(|s| s.wt_session.as_str())
-            .and_then(|id| cfg.routing.session_preferred_providers.get(id))
+        let preferred = cfg
+            .routing
+            .session_preferred_providers
+            .get(&session_key)
             .filter(|p| cfg.providers.contains_key(*p))
             .map(|s| s.as_str())
             .unwrap_or(cfg.routing.preferred_provider.as_str());
-        let (provider_name, reason) = decide_provider(&st, &cfg, preferred);
+        let (provider_name, reason) = decide_provider(&st, &cfg, preferred, &session_key);
         if tried.contains(&provider_name) {
             break;
         }
@@ -768,10 +782,16 @@ async fn responses(
                     .await
                 {
                     Ok(resp) if resp.status().is_success() => {
-                        let prev_provider = st.last_used_provider.read().clone();
-                        let prev_reason = st.last_used_reason.read().clone();
-                        *st.last_used_provider.write() = Some(provider_name.clone());
-                        *st.last_used_reason.write() = Some(reason.to_string());
+                        let prev = st.last_used_by_session.read().get(&session_key).cloned();
+                        st.last_used_by_session.write().insert(
+                            session_key.clone(),
+                            LastUsedRoute {
+                                provider: provider_name.clone(),
+                                reason: reason.to_string(),
+                                preferred: preferred.to_string(),
+                                unix_ms: unix_ms(),
+                            },
+                        );
                         st.router.mark_success(&provider_name, unix_ms());
                         // Avoid spamming the event log for routine successful requests; only
                         // surface interesting routing outcomes (failover / non-preferred).
@@ -789,20 +809,29 @@ async fn responses(
                                     "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
                                 }),
                             );
-                        } else if prev_provider.as_deref().is_some_and(|p| p != provider_name)
-                            || prev_reason
-                                .as_deref()
-                                .is_some_and(|r| r != "preferred_healthy")
-                        {
+                        } else if prev.as_ref().is_some_and(|p| {
+                            p.provider.as_str() != provider_name
+                                && p.preferred.as_str() == provider_name
+                                && preferred == provider_name
+                        }) {
                             // Only log "back to preferred" when we were previously using a
-                            // different provider or coming from a non-preferred route.
+                            // different provider.
                             st.store.add_event(
                                 &provider_name,
                                 "info",
                                 "routing.back_to_preferred",
-                                &format!("Back to preferred: {provider_name}"),
+                                &format!(
+                                    "Back to preferred: {provider_name} (from {})",
+                                    prev.as_ref()
+                                        .map(|p| p.provider.as_str())
+                                        .unwrap_or("unknown")
+                                ),
                                 json!({
                                     "provider": provider_name,
+                                    "from_provider": prev.as_ref().map(|p| p.provider.clone()),
+                                    "from_reason": prev.as_ref().map(|p| p.reason.clone()),
+                                    "from_preferred": prev.as_ref().map(|p| p.preferred.clone()),
+                                    "preferred": preferred,
                                     "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                     "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                     "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
@@ -892,10 +921,16 @@ async fn responses(
 
             match upstream_result {
                 Ok((code, upstream_json)) if (200..300).contains(&code) => {
-                    let prev_provider = st.last_used_provider.read().clone();
-                    let prev_reason = st.last_used_reason.read().clone();
-                    *st.last_used_provider.write() = Some(provider_name.clone());
-                    *st.last_used_reason.write() = Some(reason.to_string());
+                    let prev = st.last_used_by_session.read().get(&session_key).cloned();
+                    st.last_used_by_session.write().insert(
+                        session_key.clone(),
+                        LastUsedRoute {
+                            provider: provider_name.clone(),
+                            reason: reason.to_string(),
+                            preferred: preferred.to_string(),
+                            unix_ms: unix_ms(),
+                        },
+                    );
                     st.router.mark_success(&provider_name, unix_ms());
 
                     // Keep the upstream response object (and id) so the client can continue the chain.
@@ -926,18 +961,27 @@ async fn responses(
                                 "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
                             }),
                         );
-                    } else if prev_provider.as_deref().is_some_and(|p| p != provider_name)
-                        || prev_reason
-                            .as_deref()
-                            .is_some_and(|r| r != "preferred_healthy")
-                    {
+                    } else if prev.as_ref().is_some_and(|p| {
+                        p.provider.as_str() != provider_name
+                            && p.preferred.as_str() == provider_name
+                            && preferred == provider_name
+                    }) {
                         st.store.add_event(
                             &provider_name,
                             "info",
                             "routing.back_to_preferred",
-                            &format!("Back to preferred: {provider_name}"),
+                            &format!(
+                                "Back to preferred: {provider_name} (from {})",
+                                prev.as_ref()
+                                    .map(|p| p.provider.as_str())
+                                    .unwrap_or("unknown")
+                            ),
                             json!({
                                 "provider": provider_name,
+                                "from_provider": prev.as_ref().map(|p| p.provider.clone()),
+                                "from_reason": prev.as_ref().map(|p| p.reason.clone()),
+                                "from_preferred": prev.as_ref().map(|p| p.preferred.clone()),
+                                "preferred": preferred,
                                 "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                 "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                 "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),

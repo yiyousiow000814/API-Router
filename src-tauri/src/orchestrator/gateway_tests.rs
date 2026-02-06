@@ -15,6 +15,7 @@ mod tests {
     use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
     use crate::orchestrator::gateway::{
         build_router, build_router_with_body_limit, decide_provider, open_store_dir, GatewayState,
+        LastUsedRoute,
     };
     use crate::orchestrator::router::RouterState;
     use crate::orchestrator::secrets::SecretStore;
@@ -92,8 +93,7 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(None)),
-            last_used_reason: Arc::new(RwLock::new(None)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -182,14 +182,21 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(Some("p2".to_string()))),
-            last_used_reason: Arc::new(RwLock::new(Some("preferred_unhealthy".to_string()))),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::from([(
+                "s1".to_string(),
+                LastUsedRoute {
+                    provider: "p2".to_string(),
+                    reason: "preferred_unhealthy".to_string(),
+                    preferred: "p1".to_string(),
+                    unix_ms: unix_ms(),
+                },
+            )]))),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
 
-        let (picked, reason) = decide_provider(&state, &cfg, "p1");
+        let (picked, reason) = decide_provider(&state, &cfg, "p1", "s1");
         assert_eq!(picked, "p2");
         assert_eq!(reason, "preferred_stabilizing");
     }
@@ -250,14 +257,21 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(Some("p2".to_string()))),
-            last_used_reason: Arc::new(RwLock::new(Some("preferred_stabilizing".to_string()))),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::from([(
+                "s1".to_string(),
+                LastUsedRoute {
+                    provider: "p2".to_string(),
+                    reason: "preferred_stabilizing".to_string(),
+                    preferred: "p1".to_string(),
+                    unix_ms: unix_ms(),
+                },
+            )]))),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
 
-        let (picked, reason) = decide_provider(&state, &cfg, "p1");
+        let (picked, reason) = decide_provider(&state, &cfg, "p1", "s1");
         assert_eq!(picked, "p2");
         assert_eq!(reason, "preferred_stabilizing");
     }
@@ -279,8 +293,7 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(None)),
-            last_used_reason: Arc::new(RwLock::new(None)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -326,8 +339,7 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(None)),
-            last_used_reason: Arc::new(RwLock::new(None)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -436,8 +448,7 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(None)),
-            last_used_reason: Arc::new(RwLock::new(None)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -540,8 +551,7 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(None)),
-            last_used_reason: Arc::new(RwLock::new(None)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -644,8 +654,7 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(None)),
-            last_used_reason: Arc::new(RwLock::new(None)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -792,8 +801,7 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(None)),
-            last_used_reason: Arc::new(RwLock::new(None)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -944,8 +952,7 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(None)),
-            last_used_reason: Arc::new(RwLock::new(None)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -1061,8 +1068,7 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(None)),
-            last_used_reason: Arc::new(RwLock::new(None)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -1156,8 +1162,7 @@ mod tests {
             upstream: UpstreamClient::new(),
             secrets,
             last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
-            last_used_provider: Arc::new(RwLock::new(None)),
-            last_used_reason: Arc::new(RwLock::new(None)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),

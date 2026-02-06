@@ -192,7 +192,7 @@ fn tool_list() -> serde_json::Value {
         },
         {
           "name": "ao.config.setSessionPreferredProvider",
-          "description": "Set routing.session_preferred_providers.<sessionId> to a provider name in user-data/config.toml.",
+          "description": "Set routing.session_preferred_providers.<codexSessionId> to a provider name in user-data/config.toml.",
           "inputSchema": {
             "type": "object",
             "required": ["sessionId", "provider"],
@@ -204,7 +204,7 @@ fn tool_list() -> serde_json::Value {
         },
         {
           "name": "ao.config.clearSessionPreferredProvider",
-          "description": "Remove routing.session_preferred_providers.<sessionId> from user-data/config.toml.",
+          "description": "Remove routing.session_preferred_providers.<codexSessionId> from user-data/config.toml.",
           "inputSchema": {
             "type": "object",
             "required": ["sessionId"],

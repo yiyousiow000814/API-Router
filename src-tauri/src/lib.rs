@@ -192,15 +192,20 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
     let ledgers = state.gateway.store.list_ledgers();
     let last_activity = state.gateway.last_activity_unix_ms.load(Ordering::Relaxed);
     let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
-    let active_provider = if active_recent {
-        state.gateway.last_used_provider.read().clone()
+    let (active_provider, active_reason) = if active_recent {
+        let last = state
+            .gateway
+            .last_used_by_session
+            .read()
+            .values()
+            .max_by_key(|v| v.unix_ms)
+            .cloned();
+        (
+            last.as_ref().map(|v| v.provider.clone()),
+            last.map(|v| v.reason),
+        )
     } else {
-        None
-    };
-    let active_reason = if active_recent {
-        state.gateway.last_used_reason.read().clone()
-    } else {
-        None
+        (None, None)
     };
     let codex_account = state
         .gateway
@@ -223,24 +228,26 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         {
             let mut map = state.gateway.client_sessions.write();
             for s in discovered {
-                let entry = map.entry(s.wt_session.clone()).or_insert_with(|| {
+                let Some(codex_session_id) = s.codex_session_id.as_deref() else {
+                    continue;
+                };
+                let entry = map.entry(codex_session_id.to_string()).or_insert_with(|| {
                     crate::orchestrator::gateway::ClientSessionRuntime {
+                        codex_session_id: codex_session_id.to_string(),
                         pid: s.pid,
+                        wt_session: Some(s.wt_session.clone()),
                         last_request_unix_ms: 0,
                         last_discovered_unix_ms: 0,
-                        last_codex_session_id: None,
                         last_reported_model_provider: None,
                         last_reported_base_url: None,
                         confirmed_router: s.router_confirmed,
                     }
                 });
                 entry.pid = s.pid;
+                entry.wt_session = Some(s.wt_session.clone());
                 entry.last_discovered_unix_ms = now;
                 if s.router_confirmed {
                     entry.confirmed_router = true;
-                }
-                if let Some(cid) = s.codex_session_id.as_deref() {
-                    entry.last_codex_session_id = Some(cid.to_string());
                 }
                 if let Some(mp) = s.reported_model_provider.as_deref() {
                     entry.last_reported_model_provider = Some(mp.to_string());
@@ -260,7 +267,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
             // and no longer matches the discovery filter.
             const DISCOVERY_STALE_MS: u64 = 10_000;
             map.retain(|_, v| {
-                if !crate::platform::windows_terminal::is_pid_alive(v.pid) {
+                if v.pid != 0 && !crate::platform::windows_terminal::is_pid_alive(v.pid) {
                     return false;
                 }
                 if v.last_request_unix_ms == 0
@@ -281,22 +288,24 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         items.truncate(20);
         let sessions = items
             .into_iter()
-            .map(|(wt_session, v)| {
+            .map(|(_codex_session_id, v)| {
                 // Consider a session "active" only if it has recently made requests through the router.
                 // Discovery scans run frequently and should not keep sessions pinned as active forever.
                 let active = v.last_request_unix_ms > 0
                     && now.saturating_sub(v.last_request_unix_ms) < 60_000;
+
+                let codex_id = v.codex_session_id.clone();
                 let pref = cfg
                     .routing
                     .session_preferred_providers
-                    .get(&wt_session)
+                    .get(&codex_id)
                     .cloned()
                     .filter(|p| cfg.providers.contains_key(p));
                 let last_seen_unix_ms = v.last_request_unix_ms.max(v.last_discovered_unix_ms);
                 serde_json::json!({
-                    "id": wt_session,
-                    "wt_session": wt_session,
-                    "codex_session_id": v.last_codex_session_id,
+                    "id": codex_id,
+                    "wt_session": v.wt_session,
+                    "codex_session_id": v.codex_session_id,
                     "reported_model_provider": v.last_reported_model_provider,
                     "reported_base_url": v.last_reported_base_url,
                     "last_seen_unix_ms": last_seen_unix_ms,
@@ -427,39 +436,44 @@ fn set_session_preferred_provider(
     session_id: String,
     provider: String,
 ) -> Result<(), String> {
-    let session_id = session_id.trim().to_string();
-    if session_id.is_empty() {
-        return Err("session_id is required".to_string());
+    // Canonical session identity: Codex session id (from request headers), not WT_SESSION.
+    let codex_session_id = session_id.trim().to_string();
+    if codex_session_id.is_empty() {
+        return Err("codex_session_id is required".to_string());
     }
-    let wt_session = session_id.clone();
-    let (codex_session_id, pid) = {
-        let map = state.gateway.client_sessions.read();
-        match map.get(&session_id) {
-            Some(v) => (v.last_codex_session_id.clone(), Some(v.pid)),
-            None => (None, None),
-        }
-    };
-    {
+    let prev_provider: Option<String> = {
         let mut cfg = state.gateway.cfg.write();
         if !cfg.providers.contains_key(&provider) {
             return Err(format!("unknown provider: {provider}"));
         }
+        let prev = cfg
+            .routing
+            .session_preferred_providers
+            .get(&codex_session_id)
+            .cloned();
+        // No-op: avoid emitting confusing events when the user selects the same provider again.
+        if prev.as_deref() == Some(provider.as_str()) {
+            return Ok(());
+        }
         cfg.routing
             .session_preferred_providers
-            .insert(session_id.clone(), provider.clone());
-    }
+            .insert(codex_session_id.clone(), provider.clone());
+        prev
+    };
     persist_config(&state).map_err(|e| e.to_string())?;
+    let msg = match prev_provider.as_deref() {
+        Some(prev) => format!("session preferred_provider updated: {prev} -> {provider}"),
+        None => format!("session preferred_provider set: {provider}"),
+    };
     state.gateway.store.add_event(
         &provider,
         "info",
         "config.session_preferred_provider_updated",
-        &format!("session preferred_provider updated ({session_id})"),
+        &msg,
         serde_json::json!({
-            "session_id": session_id,
-            "wt_session": wt_session,
             "codex_session_id": codex_session_id,
-            "pid": pid,
             "provider": provider,
+            "prev_provider": prev_provider,
         }),
     );
     Ok(())
@@ -470,33 +484,32 @@ fn clear_session_preferred_provider(
     state: tauri::State<'_, app_state::AppState>,
     session_id: String,
 ) -> Result<(), String> {
-    let session_id = session_id.trim().to_string();
-    if session_id.is_empty() {
-        return Err("session_id is required".to_string());
+    let codex_session_id = session_id.trim().to_string();
+    if codex_session_id.is_empty() {
+        return Err("codex_session_id is required".to_string());
     }
-    let wt_session = session_id.clone();
-    let (codex_session_id, pid) = {
-        let map = state.gateway.client_sessions.read();
-        match map.get(&session_id) {
-            Some(v) => (v.last_codex_session_id.clone(), Some(v.pid)),
-            None => (None, None),
-        }
-    };
-    {
+    let prev_provider: Option<String> = {
         let mut cfg = state.gateway.cfg.write();
-        cfg.routing.session_preferred_providers.remove(&session_id);
+        cfg.routing
+            .session_preferred_providers
+            .remove(&codex_session_id)
+    };
+    // No-op: don't write config or emit events if nothing was set.
+    if prev_provider.is_none() {
+        return Ok(());
     }
     persist_config(&state).map_err(|e| e.to_string())?;
     state.gateway.store.add_event(
         "gateway",
         "info",
         "config.session_preferred_provider_cleared",
-        &format!("session preferred_provider cleared ({session_id})"),
+        &format!(
+            "session preferred_provider cleared (was {})",
+            prev_provider.as_deref().unwrap_or("unknown")
+        ),
         serde_json::json!({
-            "session_id": session_id,
-            "wt_session": wt_session,
             "codex_session_id": codex_session_id,
-            "pid": pid,
+            "prev_provider": prev_provider,
         }),
     );
     Ok(())
