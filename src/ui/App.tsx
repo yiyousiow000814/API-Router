@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import type { Config, Status } from './types'
+import type { CodexSwapStatus } from './types'
 import { fmtWhen } from './utils/format'
 import { computeActiveRefreshDelayMs, computeIdleRefreshDelayMs } from './utils/usageRefresh'
 import { ProvidersTable } from './components/ProvidersTable'
@@ -12,6 +13,7 @@ import { UsageBaseModal } from './components/UsageBaseModal'
 import { InstructionModal } from './components/InstructionModal'
 import { GatewayTokenModal } from './components/GatewayTokenModal'
 import { ConfigModal } from './components/ConfigModal'
+import { CodexSwapModal } from './components/CodexSwapModal'
 import { HeroCodexCard, HeroRoutingCard, HeroStatusCard } from './components/HeroCards'
 import { useReorderDrag } from './hooks/useReorderDrag'
 
@@ -167,16 +169,23 @@ export default function App() {
   const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
   const [configModalOpen, setConfigModalOpen] = useState<boolean>(false)
   const [instructionModalOpen, setInstructionModalOpen] = useState<boolean>(false)
+  const [codexSwapModalOpen, setCodexSwapModalOpen] = useState<boolean>(false)
+  const [codexSwapDir1, setCodexSwapDir1] = useState<string>('')
+  const [codexSwapDir2, setCodexSwapDir2] = useState<string>('')
+  const [codexSwapApplyBoth, setCodexSwapApplyBoth] = useState<boolean>(false)
+  const [codexSwapStatus, setCodexSwapStatus] = useState<CodexSwapStatus | null>(null)
   const [editingProviderName, setEditingProviderName] = useState<string | null>(null)
   const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
+  const [codexRefreshing, setCodexRefreshing] = useState<boolean>(false)
   const [updatingSessionPref, setUpdatingSessionPref] = useState<Record<string, boolean>>({})
-  const instructionBackdropMouseDownRef = useRef<boolean>(false)
-  const configBackdropMouseDownRef = useRef<boolean>(false)
   const usageRefreshTimerRef = useRef<number | null>(null)
   const idleUsageSchedulerRef = useRef<(() => void) | null>(null)
   const usageActiveRef = useRef<boolean>(false)
   const activeUsageTimerRef = useRef<number | null>(null)
+  const codexSwapDir1Ref = useRef<string>('')
+  const codexSwapDir2Ref = useRef<string>('')
+  const codexSwapApplyBothRef = useRef<boolean>(false)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -194,6 +203,36 @@ export default function App() {
       console.warn('Failed to load UI prefs', e)
     }
   }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const d1 = window.localStorage.getItem('ao.codexSwap.dir1') ?? ''
+      const d2 = window.localStorage.getItem('ao.codexSwap.dir2') ?? ''
+      const both = (window.localStorage.getItem('ao.codexSwap.applyBoth') ?? '') === '1'
+      setCodexSwapDir1(d1)
+      setCodexSwapDir2(d2)
+      setCodexSwapApplyBoth(both)
+      if (!d1.trim()) {
+        invoke<string>('codex_cli_default_home')
+          .then((p) => setCodexSwapDir1((prev) => (prev.trim() ? prev : p)))
+          .catch(() => {})
+      }
+    } catch (e) {
+      console.warn('Failed to load Codex swap prefs', e)
+    }
+  }, [])
+
+  // Keep refs in sync so background refresh (interval) never uses stale closures.
+  useEffect(() => {
+    codexSwapDir1Ref.current = codexSwapDir1
+  }, [codexSwapDir1])
+  useEffect(() => {
+    codexSwapDir2Ref.current = codexSwapDir2
+  }, [codexSwapDir2])
+  useEffect(() => {
+    codexSwapApplyBothRef.current = codexSwapApplyBoth
+  }, [codexSwapApplyBoth])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -336,6 +375,29 @@ export default function App() {
     return `provider_${maxN > 0 ? maxN + 1 : 1}`
   }, [config])
 
+  const codexSwapBadge = useMemo(() => {
+    if (!codexSwapStatus) {
+      return { badgeText: '', badgeTitle: 'Codex CLI swap status: loading' }
+    }
+    const overall = codexSwapStatus.overall
+    const badgeText =
+      overall === 'swapped'
+        ? 'Auth'
+        : overall === 'original'
+          ? 'API'
+          : overall === 'mixed'
+            ? 'Mixed'
+            : 'Error'
+    const parts =
+      codexSwapStatus?.dirs?.length
+        ? codexSwapStatus.dirs.map((d) => `${d.cli_home}: ${d.state}`)
+        : []
+    const badgeTitle = parts.length
+      ? `Codex CLI swap status: ${badgeText}. ${parts.join(' | ')}`
+      : `Codex CLI swap status: ${badgeText}`
+    return { badgeText, badgeTitle }
+  }, [codexSwapStatus])
+
   const providerDrag = useReorderDrag<string>({
     items: orderedConfigProviders,
     onReorder: (next) => void applyProviderOrder(next),
@@ -358,6 +420,31 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
   }
 
+  async function toggleCodexSwap(cliHomes: string[]) {
+    const homes = cliHomes.map((s) => s.trim()).filter(Boolean)
+    const res = await invoke<{ ok: boolean; mode: 'swapped' | 'restored'; cli_homes: string[] }>(
+      'codex_cli_toggle_auth_config_swap',
+      { cli_homes: homes },
+    )
+    flashToast(res.mode === 'swapped' ? 'Swapped Codex auth/config' : 'Restored Codex auth/config')
+    await refreshStatus()
+    await refreshCodexSwapStatus()
+  }
+
+  async function refreshCodexSwapStatus() {
+    if (isDevPreview) return
+    try {
+      const homes = [codexSwapDir1Ref.current]
+      if (codexSwapApplyBothRef.current && codexSwapDir2Ref.current.trim()) homes.push(codexSwapDir2Ref.current)
+      const res = await invoke<CodexSwapStatus>('codex_cli_swap_status', {
+        cli_homes: homes.map((s) => s.trim()).filter(Boolean),
+      })
+      setCodexSwapStatus(res)
+    } catch {
+      setCodexSwapStatus({ ok: true, overall: 'error', dirs: [] })
+    }
+  }
+
   async function refreshStatus() {
     if (isDevPreview) {
       setStatus(devStatus)
@@ -367,6 +454,8 @@ export default function App() {
       const s = await invoke<Status>('get_status')
       setStatus(s)
       if (!overrideDirtyRef.current) setOverride(s.manual_override ?? '')
+      // Best-effort: keep swap badge fresh on the normal status poll cadence.
+      void refreshCodexSwapStatus()
     } catch (e) {
       console.error(e)
     }
@@ -727,7 +816,7 @@ export default function App() {
       }
       return next
     })
-  }, [config, orderedConfigProviders])
+  }, [orderedConfigProviders])
 
   const allProviderPanelsOpen = useMemo(
     () => orderedConfigProviders.every((name) => providerPanelsOpen[name] ?? true),
@@ -1047,13 +1136,34 @@ export default function App() {
                     })()
                   }}
                   onRefresh={() => {
-                    flashToast('Checking...')
-                    invoke('codex_account_refresh')
-                      .then(() => refreshStatus())
-                      .catch((e) => {
+                    void (async () => {
+                      flashToast('Checking...')
+                      setCodexRefreshing(true)
+                      try {
+                        await invoke('codex_account_refresh')
+                        await refreshStatus()
+                      } catch (e) {
                         flashToast(String(e), 'error')
-                      })
+                      } finally {
+                        setCodexRefreshing(false)
+                      }
+                    })()
                   }}
+                  refreshing={codexRefreshing}
+                  onSwapAuthConfig={() => {
+                    void (async () => {
+                      try {
+                        const homes = [codexSwapDir1]
+                        if (codexSwapApplyBoth && codexSwapDir2.trim()) homes.push(codexSwapDir2)
+                        await toggleCodexSwap(homes)
+                      } catch (e) {
+                        flashToast(String(e), 'error')
+                      }
+                    })()
+                  }}
+                  onSwapOptions={() => setCodexSwapModalOpen(true)}
+                  swapBadgeText={codexSwapBadge.badgeText}
+                  swapBadgeTitle={codexSwapBadge.badgeTitle}
                 />
                 <HeroRoutingCard
                   config={config}
@@ -1156,14 +1266,6 @@ export default function App() {
       <InstructionModal
         open={instructionModalOpen}
         onClose={() => setInstructionModalOpen(false)}
-        onBackdropMouseDown={(e) => {
-          instructionBackdropMouseDownRef.current = e.target === e.currentTarget
-        }}
-        onBackdropMouseUp={(e) => {
-          const shouldClose = instructionBackdropMouseDownRef.current && e.target === e.currentTarget
-          instructionBackdropMouseDownRef.current = false
-          if (shouldClose) setInstructionModalOpen(false)
-        }}
         codeText={`model_provider = "api_router"
 
 [model_providers.api_router]
@@ -1191,14 +1293,6 @@ requires_openai_auth = true`}
         draggingProvider={draggingProvider}
         dragCardHeight={dragCardHeight}
         renderProviderCard={renderProviderCard}
-        onBackdropMouseDown={(e) => {
-          configBackdropMouseDownRef.current = e.target === e.currentTarget
-        }}
-        onBackdropMouseUp={(e) => {
-          const shouldClose = configBackdropMouseDownRef.current && e.target === e.currentTarget
-          configBackdropMouseDownRef.current = false
-          if (shouldClose) setConfigModalOpen(false)
-        }}
       />
 
       <GatewayTokenModal
@@ -1219,6 +1313,41 @@ requires_openai_auth = true`}
           const p = await invoke<string>('get_gateway_token_preview')
           setGatewayTokenPreview(p)
           flashToast('Gateway token rotated')
+        }}
+      />
+
+      <CodexSwapModal
+        open={codexSwapModalOpen}
+        dir1={codexSwapDir1}
+        dir2={codexSwapDir2}
+        applyBoth={codexSwapApplyBoth}
+        onChangeDir1={(v) => setCodexSwapDir1(v)}
+        onChangeDir2={(v) => {
+          setCodexSwapDir2(v)
+          if (!v.trim()) setCodexSwapApplyBoth(false)
+        }}
+        onChangeApplyBoth={(v) => setCodexSwapApplyBoth(v)}
+        onCancel={() => setCodexSwapModalOpen(false)}
+        onApply={() => {
+          void (async () => {
+            try {
+              const dir1 = codexSwapDir1.trim()
+              const dir2 = codexSwapDir2.trim()
+              if (!dir1) throw new Error('Dir 1 is required')
+              if (codexSwapApplyBoth && !dir2) throw new Error('Dir 2 is empty')
+
+              window.localStorage.setItem('ao.codexSwap.dir1', dir1)
+              window.localStorage.setItem('ao.codexSwap.dir2', dir2)
+              window.localStorage.setItem('ao.codexSwap.applyBoth', codexSwapApplyBoth ? '1' : '0')
+
+              const homes = [dir1]
+              if (codexSwapApplyBoth) homes.push(dir2)
+              await toggleCodexSwap(homes)
+              setCodexSwapModalOpen(false)
+            } catch (e) {
+              flashToast(String(e), 'error')
+            }
+          })()
         }}
       />
     </div>

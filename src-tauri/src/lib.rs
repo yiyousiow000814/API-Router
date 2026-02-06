@@ -1,5 +1,6 @@
 mod app_state;
 mod codex_app_server;
+mod codex_cli_swap;
 mod orchestrator;
 mod platform;
 
@@ -171,6 +172,9 @@ pub fn run() {
             get_effective_usage_base,
             set_provider_order,
             probe_provider,
+            codex_cli_toggle_auth_config_swap,
+            codex_cli_default_home,
+            codex_cli_swap_status,
             codex_account_login,
             codex_account_logout,
             codex_account_refresh
@@ -1081,6 +1085,26 @@ async fn codex_account_refresh(state: tauri::State<'_, app_state::AppState>) -> 
     let gateway = state.gateway.clone();
     let _ = refresh_codex_account_snapshot(&gateway).await?;
     Ok(())
+}
+
+#[tauri::command]
+fn codex_cli_toggle_auth_config_swap(
+    state: tauri::State<'_, app_state::AppState>,
+    cli_homes: Option<Vec<String>>,
+) -> Result<serde_json::Value, String> {
+    crate::codex_cli_swap::toggle_cli_auth_config_swap(&state, cli_homes.unwrap_or_default())
+}
+
+#[tauri::command]
+fn codex_cli_default_home() -> Result<String, String> {
+    crate::codex_cli_swap::default_cli_codex_home()
+        .ok_or_else(|| "missing HOME/USERPROFILE".to_string())
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn codex_cli_swap_status(cli_homes: Option<Vec<String>>) -> Result<serde_json::Value, String> {
+    crate::codex_cli_swap::cli_auth_config_swap_status(cli_homes.unwrap_or_default())
 }
 
 fn mask_key_preview(key: &str) -> String {

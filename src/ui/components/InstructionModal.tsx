@@ -1,21 +1,15 @@
+import { ModalBackdrop } from './ModalBackdrop'
+
 type Props = {
   open: boolean
   onClose: () => void
-  onBackdropMouseDown: (e: React.MouseEvent<HTMLDivElement>) => void
-  onBackdropMouseUp: (e: React.MouseEvent<HTMLDivElement>) => void
   codeText: string
 }
 
-export function InstructionModal({ open, onClose, onBackdropMouseDown, onBackdropMouseUp, codeText }: Props) {
+export function InstructionModal({ open, onClose, codeText }: Props) {
   if (!open) return null
   return (
-    <div
-      className="aoModalBackdrop"
-      role="dialog"
-      aria-modal="true"
-      onMouseDown={onBackdropMouseDown}
-      onMouseUp={onBackdropMouseUp}
-    >
+    <ModalBackdrop onClose={onClose}>
       <div className="aoModal" onClick={(e) => e.stopPropagation()}>
         <div className="aoModalHeader">
           <div className="aoModalTitle">Codex config</div>
@@ -28,6 +22,6 @@ export function InstructionModal({ open, onClose, onBackdropMouseDown, onBackdro
           <pre className="aoInstructionCode">{codeText}</pre>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   )
 }

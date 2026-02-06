@@ -76,6 +76,15 @@ export type Status = {
   }
 }
 
+export type CodexSwapStatus = {
+  ok: boolean
+  overall: 'original' | 'swapped' | 'mixed' | 'error'
+  dirs: Array<{
+    cli_home: string
+    state: string
+  }>
+}
+
 export type Config = {
   listen: { host: string; port: number }
   routing: {
