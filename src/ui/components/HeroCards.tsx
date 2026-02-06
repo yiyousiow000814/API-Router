@@ -74,9 +74,10 @@ type HeroCodexProps = {
   status: Status
   onLoginLogout: () => void
   onRefresh: () => void
+  onSwapAuthConfig: () => void
 }
 
-export function HeroCodexCard({ status, onLoginLogout, onRefresh }: HeroCodexProps) {
+export function HeroCodexCard({ status, onLoginLogout, onRefresh, onSwapAuthConfig }: HeroCodexProps) {
   return (
     <div className="aoCard aoHeroCard aoHeroCodex">
       <div className="aoCardHeader">
@@ -133,6 +134,9 @@ export function HeroCodexCard({ status, onLoginLogout, onRefresh }: HeroCodexPro
           onClick={onLoginLogout}
         >
           {status.codex_account?.signed_in ? 'Log out' : 'Log in'}
+        </button>
+        <button className="aoBtn" onClick={onSwapAuthConfig}>
+          一键替换
         </button>
         <button className="aoBtn aoBtnPrimary" onClick={onRefresh}>
           Refresh

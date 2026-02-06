@@ -1054,6 +1054,19 @@ export default function App() {
                         flashToast(String(e), 'error')
                       })
                   }}
+                  onSwapAuthConfig={() => {
+                    void (async () => {
+                      try {
+                        const res = await invoke<{ ok: boolean; mode: 'swapped' | 'restored'; cli_home: string }>(
+                          'codex_cli_toggle_auth_config_swap'
+                        )
+                        flashToast(res.mode === 'swapped' ? 'Swapped Codex auth/config' : 'Restored Codex auth/config')
+                        await refreshStatus()
+                      } catch (e) {
+                        flashToast(String(e), 'error')
+                      }
+                    })()
+                  }}
                 />
                 <HeroRoutingCard
                   config={config}
