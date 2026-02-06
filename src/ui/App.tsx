@@ -177,6 +177,7 @@ export default function App() {
   const [editingProviderName, setEditingProviderName] = useState<string | null>(null)
   const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
+  const [codexRefreshing, setCodexRefreshing] = useState<boolean>(false)
   const [updatingSessionPref, setUpdatingSessionPref] = useState<Record<string, boolean>>({})
   const instructionBackdropMouseDownRef = useRef<boolean>(false)
   const configBackdropMouseDownRef = useRef<boolean>(false)
@@ -1120,13 +1121,20 @@ export default function App() {
                     })()
                   }}
                   onRefresh={() => {
-                    flashToast('Checking...')
-                    invoke('codex_account_refresh')
-                      .then(() => refreshStatus())
-                      .catch((e) => {
+                    void (async () => {
+                      flashToast('Checking...')
+                      setCodexRefreshing(true)
+                      try {
+                        await invoke('codex_account_refresh')
+                        await refreshStatus()
+                      } catch (e) {
                         flashToast(String(e), 'error')
-                      })
+                      } finally {
+                        setCodexRefreshing(false)
+                      }
+                    })()
                   }}
+                  refreshing={codexRefreshing}
                   onSwapAuthConfig={() => {
                     void (async () => {
                       try {

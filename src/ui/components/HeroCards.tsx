@@ -75,6 +75,7 @@ type HeroCodexProps = {
   status: Status
   onLoginLogout: () => void
   onRefresh: () => void
+  refreshing: boolean
   onSwapAuthConfig: () => void
   onSwapOptions: () => void
   swapBadgeText: string
@@ -85,6 +86,7 @@ export function HeroCodexCard({
   status,
   onLoginLogout,
   onRefresh,
+  refreshing,
   onSwapAuthConfig,
   onSwapOptions,
   swapBadgeText,
@@ -162,7 +164,7 @@ export function HeroCodexCard({
         >
           {status.codex_account?.signed_in ? 'Log out' : 'Log in'}
         </button>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <div className="aoActionsMenuWrap" ref={menuWrapRef} style={{ justifyContent: 'flex-start' }}>
             <div className="aoSplitBtn" title={swapBadgeTitle}>
               <button className="aoSplitBtnBtn" onClick={onSwapAuthConfig}>
@@ -217,8 +219,18 @@ export function HeroCodexCard({
               </div>
             ) : null}
           </div>
-          <button className="aoBtn aoBtnPrimary" onClick={onRefresh}>
-            Refresh
+          <button
+            className={`aoUsageRefreshBtn${refreshing ? ' aoUsageRefreshBtnSpin' : ''}`}
+            title="Refresh"
+            aria-label="Refresh"
+            onClick={onRefresh}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M23 4v6h-6" />
+              <path d="M1 20v-6h6" />
+              <path d="M3.5 9a9 9 0 0 1 14.1-3.4L23 10" />
+              <path d="M1 14l5.3 5.3A9 9 0 0 0 20.5 15" />
+            </svg>
           </button>
         </div>
       </div>
