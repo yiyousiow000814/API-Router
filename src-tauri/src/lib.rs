@@ -325,7 +325,12 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                     "id": codex_id,
                     "wt_session": v.wt_session,
                     "codex_session_id": v.codex_session_id,
-                    "reported_model_provider": v.last_reported_model_provider,
+                    "reported_model_provider": v.last_reported_model_provider.clone().or_else(|| {
+                        if v.pid == 0 {
+                            return None;
+                        }
+                        crate::platform::windows_terminal::best_effort_codex_model_provider_for_pid(v.pid)
+                    }),
                     "reported_base_url": v.last_reported_base_url,
                     "last_seen_unix_ms": last_seen_unix_ms,
                     "active": active,

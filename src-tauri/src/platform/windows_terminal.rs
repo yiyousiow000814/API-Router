@@ -47,19 +47,8 @@ fn looks_like_router_base(v: &str, port: u16) -> bool {
 }
 
 #[cfg(windows)]
-fn norm_cwd_for_match(s: &str) -> String {
-    // Codex rollouts and process CWD can differ only by trailing slashes or path separators.
-    s.trim()
-        .replace('\\', "/")
-        .trim_end_matches('/')
-        .to_ascii_lowercase()
-}
-
-#[cfg(windows)]
 #[derive(Clone, Debug)]
 struct RolloutSessionMeta {
-    id: String,
-    cwd: String,
     model_provider: Option<String>,
     base_url: Option<String>,
 }
@@ -68,13 +57,6 @@ struct RolloutSessionMeta {
 fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
     let meta: serde_json::Value = serde_json::from_str(first_line.trim()).ok()?;
     let payload = meta.get("payload")?;
-    let id = payload.get("id")?.as_str()?.to_string();
-    let cwd = payload
-        .get("cwd")
-        .or_else(|| payload.get("working_directory"))
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
     let model_provider = payload
         .get("model_provider")
         .or_else(|| payload.get("modelProvider"))
@@ -100,8 +82,6 @@ fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
             }
         });
     Some(RolloutSessionMeta {
-        id,
-        cwd,
         model_provider,
         base_url,
     })
@@ -113,150 +93,6 @@ fn rollout_base_url_matches_router(meta: &RolloutSessionMeta, router_port: u16) 
     // sufficient to prove the process is actually using this gateway.
     let u = meta.base_url.as_deref()?;
     Some(looks_like_router_base(u, router_port))
-}
-
-#[cfg(windows)]
-fn infer_codex_session_id_from_rollouts_dir(
-    codex_home: &std::path::Path,
-    cwd: &std::path::Path,
-    router_port: u16,
-    process_start: Option<SystemTime>,
-) -> Option<String> {
-    let cwd_norm = norm_cwd_for_match(&cwd.to_string_lossy());
-
-    // Scan recent rollouts for a matching cwd. Prefer a base_url match if present; otherwise fall
-    // back to newest cwd match.
-    let sessions_dir = codex_home.join("sessions");
-    let mut entries: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&sessions_dir) {
-        // Layout is typically sessions/YYYY/MM/DD/*.jsonl; recurse to collect rollouts.
-        let mut stack: Vec<std::path::PathBuf> = rd.flatten().map(|e| e.path()).collect();
-        while let Some(p) = stack.pop() {
-            if let Ok(md) = std::fs::metadata(&p) {
-                if md.is_dir() {
-                    if let Ok(rd2) = std::fs::read_dir(&p) {
-                        for e in rd2.flatten() {
-                            stack.push(e.path());
-                        }
-                    }
-                } else if md.is_file()
-                    && p.extension()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|s| s.eq_ignore_ascii_case("jsonl"))
-                    && p.file_name()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|n| n.to_ascii_lowercase().starts_with("rollout-"))
-                {
-                    if let Ok(mtime) = md.modified() {
-                        entries.push((p, mtime));
-                    }
-                }
-            }
-            // Cap traversal to avoid pathological scans.
-            if entries.len() > 800 {
-                break;
-            }
-        }
-    }
-
-    // Newest first; cap scan size to keep UI polling cheap.
-    entries.sort_by_key(|(_p, t)| std::cmp::Reverse(*t));
-    entries.truncate(60);
-
-    #[derive(Clone)]
-    struct Candidate {
-        id: String,
-        mtime: SystemTime,
-        base_url_matches_router: Option<bool>,
-    }
-
-    let mut candidates: Vec<Candidate> = Vec::new();
-
-    for (p, mtime) in entries {
-        let file = std::fs::File::open(&p).ok();
-        let Some(file) = file else {
-            continue;
-        };
-        let mut r = std::io::BufReader::new(file);
-        let mut first = String::new();
-        if r.read_line(&mut first).ok().unwrap_or(0) == 0 {
-            continue;
-        }
-        let Some(m) = parse_rollout_session_meta(&first) else {
-            // Some rollouts may not start with a session_meta line; keep scanning.
-            continue;
-        };
-        if m.cwd.is_empty() {
-            continue;
-        }
-        if norm_cwd_for_match(&m.cwd) != cwd_norm {
-            continue;
-        }
-
-        let base_url_matches_router = rollout_base_url_matches_router(&m, router_port);
-        candidates.push(Candidate {
-            id: m.id,
-            mtime,
-            base_url_matches_router,
-        });
-    }
-
-    if candidates.is_empty() {
-        return None;
-    }
-
-    // Pick the candidate whose rollout time is closest *after* the process start time (helps avoid
-    // misattributing multiple running Codex processes in the same CWD to the newest session).
-    //
-    // We strongly prefer rollouts created at/after process start (within a small tolerance),
-    // since older rollouts could belong to previous sessions in the same CWD.
-    let pick_closest = |cands: &[Candidate], start: SystemTime| -> Option<String> {
-        const MAX_WINDOW: Duration = Duration::from_secs(120);
-        const BEFORE_TOLERANCE: Duration = Duration::from_secs(5);
-        let mut best: Option<(&Candidate, Duration)> = None;
-        for c in cands {
-            if c.mtime + BEFORE_TOLERANCE < start {
-                continue;
-            }
-            let Some(dt) = c.mtime.duration_since(start).ok().or_else(|| {
-                // Allow slightly-before-start candidates within the tolerance.
-                start.duration_since(c.mtime).ok()
-            }) else {
-                continue;
-            };
-            if dt > MAX_WINDOW {
-                continue;
-            }
-            if best.map(|(_, bdt)| dt < bdt).unwrap_or(true) {
-                best = Some((c, dt));
-            }
-        }
-        best.map(|(c, _dt)| c.id.clone())
-    };
-
-    // 1) If any candidate recorded a base_url matching this router, prefer those.
-    let router_matches: Vec<Candidate> = candidates
-        .iter()
-        .filter(|&c| c.base_url_matches_router == Some(true))
-        .cloned()
-        .collect();
-    if !router_matches.is_empty() {
-        if let Some(start) = process_start {
-            if let Some(id) = pick_closest(&router_matches, start) {
-                return Some(id);
-            }
-        }
-        // Fall back to newest router match.
-        return Some(router_matches[0].id.clone());
-    }
-
-    // 2) Otherwise fall back to the closest-by-time cwd match, else newest.
-    if let Some(start) = process_start {
-        if let Some(id) = pick_closest(&candidates, start) {
-            return Some(id);
-        }
-    }
-    Some(candidates[0].id.clone())
 }
 
 #[cfg(windows)]
@@ -761,14 +597,8 @@ fn discover_sessions_using_router_uncached(
             matches_router,
         }
     }
-    fn infer_codex_session_id_from_rollouts(pid: u32, router_port: u16) -> Option<String> {
-        let cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid)?;
-        let codex_home = process_codex_home(pid)?;
-        let start = process_create_time(pid);
-        infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, router_port, start)
-    }
-
     fn frozen_codex_session_id(pid: u32, cmd: Option<&str>, router_port: u16) -> Option<String> {
+        let _ = router_port;
         // Session id inference from rollouts can "flip" when multiple Codex processes share the
         // same CWD and new rollouts are written. Freeze the inferred session id per PID for
         // stability during the process lifetime.
@@ -786,9 +616,11 @@ fn discover_sessions_using_router_uncached(
             if let Some(v) = guard.get(&key) {
                 return Some(v.clone());
             }
-            let inferred = cmd
-                .and_then(parse_codex_session_id_from_cmdline)
-                .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port));
+            // Only accept session ids that Codex explicitly exposes (e.g. `codex.exe resume <uuid>`).
+            //
+            // Inferring ids by scanning rollouts is ambiguous when multiple sessions share the same
+            // CWD, and can cause stale/closed session ids to "stick" to unrelated running processes.
+            let inferred = cmd.and_then(parse_codex_session_id_from_cmdline);
             if let Some(id) = inferred.as_ref() {
                 guard.insert(key, id.clone());
             }
@@ -797,7 +629,6 @@ fn discover_sessions_using_router_uncached(
 
         // If locking fails, fall back to a non-frozen inference.
         cmd.and_then(parse_codex_session_id_from_cmdline)
-            .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port))
     }
 
     fn latest_rollout_for_session(
@@ -1000,14 +831,11 @@ pub fn is_pid_alive(pid: u32) -> bool {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn parse_rollout_session_meta_extracts_fields() {
         let line = r#"{"timestamp":"2026-02-01T17:54:58.654Z","type":"session_meta","payload":{"id":"00000000-0000-0000-0000-000000000000","cwd":"C:\\work\\example-project","model_provider":"api_router"}}"#;
         let m = parse_rollout_session_meta(line).expect("parse");
-        assert_eq!(m.id, "00000000-0000-0000-0000-000000000000");
-        assert_eq!(m.cwd, "C:\\work\\example-project");
         assert_eq!(m.model_provider.as_deref(), Some("api_router"));
         assert!(m.base_url.is_none());
     }
@@ -1041,44 +869,6 @@ mod tests {
         assert_eq!(auth_status("t", None), "unknown");
     }
 
-    #[test]
-    fn norm_cwd_for_match_trims_trailing_slashes() {
-        assert_eq!(norm_cwd_for_match("C:\\Work\\Proj\\"), "c:/work/proj");
-        assert_eq!(norm_cwd_for_match("C:/Work/Proj"), "c:/work/proj");
-    }
-
-    #[test]
-    fn infer_session_id_skips_unparseable_newest_rollout() {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let codex_home = tmp.path().join(".codex");
-        let sessions_dir = codex_home
-            .join("sessions")
-            .join("2026")
-            .join("02")
-            .join("02");
-        std::fs::create_dir_all(&sessions_dir).expect("mkdir");
-
-        // Create a valid rollout first (older).
-        let good_id = "00000000-0000-0000-0000-000000000000";
-        let good = sessions_dir.join(format!("rollout-good-{good_id}.jsonl"));
-        {
-            let mut f = std::fs::File::create(&good).expect("create good");
-            writeln!(
-                f,
-                r#"{{"type":"session_meta","payload":{{"id":"{good_id}","cwd":"C:\\work\\proj\\","model_provider":"api_router"}}}}"#
-            )
-            .unwrap();
-        }
-
-        // Create a malformed rollout after (newer) that would previously abort inference.
-        let bad = sessions_dir.join("rollout-bad.jsonl");
-        {
-            let mut f = std::fs::File::create(&bad).expect("create bad");
-            writeln!(f, "not json").unwrap();
-        }
-
-        let cwd = std::path::PathBuf::from("C:\\work\\proj");
-        let got = infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, 4000, None);
-        assert_eq!(got.as_deref(), Some(good_id));
-    }
+    // NOTE: We intentionally do not infer Codex session ids by scanning rollouts; it is ambiguous
+    // when multiple sessions share the same CWD.
 }
