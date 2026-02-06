@@ -10,35 +10,64 @@ type Props = {
 }
 
 export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
-  if (!events?.length) {
-    return <div className="aoHint">-</div>
+  const allEvents = events ?? []
+
+  const errors = allEvents.filter((e) => e.level === 'error').slice(0, 5)
+  const infos = allEvents.filter((e) => e.level !== 'error').slice(0, 5)
+
+  const renderRow = (e: Status['recent_events'][number], key: string, isError: boolean) => {
+    const f: Record<string, unknown> = e.fields ?? {}
+    const isSessionPref =
+      e.code === 'config.session_preferred_provider_updated' || e.code === 'config.session_preferred_provider_cleared'
+
+    const wtSessionVal = f['wt_session']
+    const legacySessionIdVal = f['session_id']
+    const wt =
+      typeof wtSessionVal === 'string'
+        ? wtSessionVal
+        : typeof legacySessionIdVal === 'string'
+          ? legacySessionIdVal
+          : null
+
+    const codexSessionVal = f['codex_session_id']
+    const codex = typeof codexSessionVal === 'string' ? codexSessionVal : null
+
+    const pidVal = f['pid']
+    const pid = typeof pidVal === 'number' ? pidVal : null
+
+    const showSession = isSessionPref || !!codex || !!wt || pid !== null
+    const sessionCell = showSession ? codex ?? wt ?? '-' : '-'
+    const sessionTitle = showSession
+      ? [codex ? `Codex session: ${codex}` : null, wt ? `WT_SESSION: ${wt}` : null, pid ? `pid: ${pid}` : null]
+          .filter(Boolean)
+          .join('\n')
+      : ''
+
+    return (
+      <tr key={key} className={isError ? 'aoEventRowError' : undefined}>
+        <td title={fmtWhen(e.unix_ms)}>{fmtAgo(e.unix_ms)}</td>
+        <td style={{ fontFamily: mono }} title={sessionTitle}>
+          {sessionCell}
+        </td>
+        <td style={{ fontFamily: mono }}>{e.provider}</td>
+        <td>
+          <span className={`aoLevelBadge ${isError ? 'aoLevelBadgeError' : 'aoLevelBadgeInfo'}`}>{e.level}</span>
+        </td>
+        <td className="aoCellWrap">
+          <span className="aoEventMessage" title={e.code ? `${e.code}: ${e.message}` : e.message}>
+            {e.message}
+          </span>
+        </td>
+      </tr>
+    )
   }
-
-  const errors = events.filter((e) => e.level === 'error').slice(0, 5)
-  const infos = events.filter((e) => e.level !== 'error').slice(0, 5)
-
-  const renderRow = (e: Status['recent_events'][number], key: string, isError: boolean) => (
-    <tr key={key} className={isError ? 'aoEventRowError' : undefined}>
-      <td title={fmtWhen(e.unix_ms)}>{fmtAgo(e.unix_ms)}</td>
-      <td style={{ fontFamily: mono }}>{e.provider}</td>
-      <td>
-        <span className={`aoLevelBadge ${isError ? 'aoLevelBadgeError' : 'aoLevelBadgeInfo'}`}>
-          {e.level}
-        </span>
-      </td>
-      <td className="aoCellWrap">
-        <span className="aoEventMessage" title={e.code ? `${e.code}: ${e.message}` : e.message}>
-          {e.message}
-        </span>
-      </td>
-    </tr>
-  )
 
   return (
     <table className="aoTable aoTableFixed">
       <thead>
         <tr>
           <th style={{ width: 170 }}>When</th>
+          <th style={{ width: 240 }}>Session</th>
           <th style={{ width: 140 }}>Provider</th>
           <th style={{ width: 90 }}>Level</th>
           <th>Message</th>
@@ -46,7 +75,7 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
       </thead>
       <tbody>
         <tr className="aoEventsSection">
-          <td colSpan={4}>
+          <td colSpan={5}>
             <span>Info</span>
           </td>
         </tr>
@@ -54,7 +83,7 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
           infos.map((e, idx) => renderRow(e, `${e.unix_ms}-info-${idx}`, false))
         ) : (
           <tr>
-            <td colSpan={4} className="aoHint">
+            <td colSpan={5} className="aoHint">
               No info events
             </td>
           </tr>
@@ -62,12 +91,12 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
 
         {infos.length ? (
           <tr className="aoEventsGap" aria-hidden="true">
-            <td colSpan={4} />
+            <td colSpan={5} />
           </tr>
         ) : null}
 
         <tr className="aoEventsSection">
-          <td colSpan={4}>
+          <td colSpan={5}>
             <div className="aoEventsSectionRow">
               <div>
                 <span>Errors</span>
@@ -89,7 +118,7 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
           errors.map((e, idx) => renderRow(e, `${e.unix_ms}-err-${idx}`, true))
         ) : (
           <tr>
-            <td colSpan={4} className="aoHint">
+            <td colSpan={5} className="aoHint">
               No errors
             </td>
           </tr>

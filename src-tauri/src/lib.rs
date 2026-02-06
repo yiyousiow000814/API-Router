@@ -431,6 +431,14 @@ fn set_session_preferred_provider(
     if session_id.is_empty() {
         return Err("session_id is required".to_string());
     }
+    let wt_session = session_id.clone();
+    let (codex_session_id, pid) = {
+        let map = state.gateway.client_sessions.read();
+        match map.get(&session_id) {
+            Some(v) => (v.last_codex_session_id.clone(), Some(v.pid)),
+            None => (None, None),
+        }
+    };
     {
         let mut cfg = state.gateway.cfg.write();
         if !cfg.providers.contains_key(&provider) {
@@ -446,7 +454,13 @@ fn set_session_preferred_provider(
         "info",
         "config.session_preferred_provider_updated",
         &format!("session preferred_provider updated ({session_id})"),
-        serde_json::json!({ "session_id": session_id }),
+        serde_json::json!({
+            "session_id": session_id,
+            "wt_session": wt_session,
+            "codex_session_id": codex_session_id,
+            "pid": pid,
+            "provider": provider,
+        }),
     );
     Ok(())
 }
@@ -460,6 +474,14 @@ fn clear_session_preferred_provider(
     if session_id.is_empty() {
         return Err("session_id is required".to_string());
     }
+    let wt_session = session_id.clone();
+    let (codex_session_id, pid) = {
+        let map = state.gateway.client_sessions.read();
+        match map.get(&session_id) {
+            Some(v) => (v.last_codex_session_id.clone(), Some(v.pid)),
+            None => (None, None),
+        }
+    };
     {
         let mut cfg = state.gateway.cfg.write();
         cfg.routing.session_preferred_providers.remove(&session_id);
@@ -470,7 +492,12 @@ fn clear_session_preferred_provider(
         "info",
         "config.session_preferred_provider_cleared",
         &format!("session preferred_provider cleared ({session_id})"),
-        serde_json::json!({ "session_id": session_id }),
+        serde_json::json!({
+            "session_id": session_id,
+            "wt_session": wt_session,
+            "codex_session_id": codex_session_id,
+            "pid": pid,
+        }),
     );
     Ok(())
 }
