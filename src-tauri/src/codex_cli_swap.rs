@@ -96,7 +96,7 @@ fn strip_model_provider_line(cfg: &str) -> String {
         .filter(|line| {
             let t = line.trim_start();
             // Remove `model_provider = "..."` or `model_provider_id = "..."` (top-level).
-            // We also remove commented variants that only differ by leading whitespace.
+            // Note: we intentionally do NOT remove commented lines (e.g. `# model_provider = ...`).
             !(t.starts_with("model_provider ")
                 || t.starts_with("model_provider\t")
                 || t.starts_with("model_provider=")

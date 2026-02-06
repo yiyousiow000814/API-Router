@@ -816,7 +816,7 @@ export default function App() {
       }
       return next
     })
-  }, [config, orderedConfigProviders])
+  }, [orderedConfigProviders])
 
   const allProviderPanelsOpen = useMemo(
     () => orderedConfigProviders.every((name) => providerPanelsOpen[name] ?? true),
