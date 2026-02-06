@@ -281,19 +281,18 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         // We keep the persisted preference mapping in config; only the runtime list is pruned.
         {
             let mut map = state.gateway.client_sessions.write();
-            // Also drop "discovery-only" sessions that we haven't rediscovered recently.
-            // This prevents stale/incorrect rows from sticking around if a running Codex changes config
-            // and no longer matches the discovery filter.
-            const DISCOVERY_STALE_MS: u64 = 10_000;
+            // Some sessions (e.g. non-Windows or when PID inference fails) can have pid=0. Keep them
+            // around briefly for UI visibility, but prune if they go cold to avoid unbounded growth.
+            const STALE_NO_PID_MS: u64 = 5 * 60 * 1000;
             map.retain(|_, v| {
                 if v.pid != 0 && !crate::platform::windows_terminal::is_pid_alive(v.pid) {
                     return false;
                 }
-                if v.last_request_unix_ms == 0
-                    && v.last_discovered_unix_ms > 0
-                    && now.saturating_sub(v.last_discovered_unix_ms) > DISCOVERY_STALE_MS
-                {
-                    return false;
+                if v.pid == 0 {
+                    let last_seen = v.last_request_unix_ms.max(v.last_discovered_unix_ms);
+                    if last_seen > 0 && now.saturating_sub(last_seen) > STALE_NO_PID_MS {
+                        return false;
+                    }
                 }
                 true
             });

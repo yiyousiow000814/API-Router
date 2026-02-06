@@ -24,19 +24,64 @@ pub struct InferredWtSession {
 
 #[cfg(windows)]
 fn parse_codex_session_id_from_cmdline(cmd: &str) -> Option<String> {
-    // `codex` commonly launches as: `codex.exe resume <uuid>`.
-    // If we see `resume`, take the next UUID token.
+    // Codex sometimes launches as: `codex.exe resume <uuid>`.
+    //
+    // But we also see runs with no args, and different flags across versions.
+    // Keep this tolerant: prefer an id after a known keyword/flag; otherwise fall back
+    // to a single UUID token if unambiguous.
+
+    fn normalize_uuid_token(tok: &str) -> Option<String> {
+        let t =
+            tok.trim_matches(|c: char| c == '"' || c == '\'' || c == '(' || c == ')' || c == ',');
+        uuid::Uuid::parse_str(t).ok().map(|_| t.to_string())
+    }
+
     let toks: Vec<&str> = cmd.split_whitespace().collect();
+
+    // 1) Keyword form: `resume <uuid>` (or `--resume <uuid>`).
     for i in 0..toks.len() {
-        if toks[i].eq_ignore_ascii_case("resume") {
+        let t = toks[i];
+        if t.eq_ignore_ascii_case("resume") || t.eq_ignore_ascii_case("--resume") {
             if let Some(next) = toks.get(i + 1) {
-                if uuid::Uuid::parse_str(next).is_ok() {
-                    return Some((*next).to_string());
+                if let Some(id) = normalize_uuid_token(next) {
+                    return Some(id);
                 }
             }
         }
     }
-    None
+
+    // 2) Flag forms: `--session-id <uuid>` or `--session-id=<uuid>` (future-proof).
+    for i in 0..toks.len() {
+        let t = toks[i];
+        if t.eq_ignore_ascii_case("--session-id") || t.eq_ignore_ascii_case("--session") {
+            if let Some(next) = toks.get(i + 1) {
+                if let Some(id) = normalize_uuid_token(next) {
+                    return Some(id);
+                }
+            }
+        }
+        if let Some((k, v)) = t.split_once('=') {
+            if k.eq_ignore_ascii_case("--session-id") || k.eq_ignore_ascii_case("--session") {
+                if let Some(id) = normalize_uuid_token(v) {
+                    return Some(id);
+                }
+            }
+        }
+    }
+
+    // 3) Last resort: if there is exactly one UUID token anywhere, use it.
+    let mut unique: Option<String> = None;
+    for t in toks {
+        let Some(id) = normalize_uuid_token(t) else {
+            continue;
+        };
+        match unique.as_ref() {
+            None => unique = Some(id),
+            Some(prev) if prev == &id => {}
+            Some(_) => return None,
+        }
+    }
+    unique
 }
 
 #[cfg(windows)]
@@ -133,8 +178,12 @@ fn infer_codex_session_id_from_rollouts_dir(
                         .and_then(|s| s.to_str())
                         .is_some_and(|n| n.to_ascii_lowercase().starts_with("rollout-"))
                 {
-                    if let Ok(mtime) = md.modified() {
-                        entries.push((p, mtime));
+                    // Prefer create time: rollouts are appended to, which updates `modified()` and
+                    // breaks "closest to process start" inference. `created()` is stable for the
+                    // file lifetime on Windows.
+                    let t = md.created().or_else(|_| md.modified());
+                    if let Ok(t) = t {
+                        entries.push((p, t));
                     }
                 }
             }
@@ -152,13 +201,13 @@ fn infer_codex_session_id_from_rollouts_dir(
     #[derive(Clone)]
     struct Candidate {
         id: String,
-        mtime: SystemTime,
+        created: SystemTime,
         base_url_matches_router: Option<bool>,
     }
 
     let mut candidates: Vec<Candidate> = Vec::new();
 
-    for (p, mtime) in entries {
+    for (p, created) in entries {
         let file = std::fs::File::open(&p).ok();
         let Some(file) = file else {
             continue;
@@ -182,7 +231,7 @@ fn infer_codex_session_id_from_rollouts_dir(
         let base_url_matches_router = rollout_base_url_matches_router(&m, router_port);
         candidates.push(Candidate {
             id: m.id,
-            mtime,
+            created,
             base_url_matches_router,
         });
     }
@@ -198,10 +247,10 @@ fn infer_codex_session_id_from_rollouts_dir(
         const MAX_WINDOW: Duration = Duration::from_secs(120);
         let mut best: Option<(&Candidate, Duration)> = None;
         for c in cands {
-            let Some(dt) = (if c.mtime >= start {
-                c.mtime.duration_since(start).ok()
+            let Some(dt) = (if c.created >= start {
+                c.created.duration_since(start).ok()
             } else {
-                start.duration_since(c.mtime).ok()
+                start.duration_since(c.created).ok()
             }) else {
                 continue;
             };
@@ -233,9 +282,9 @@ fn infer_codex_session_id_from_rollouts_dir(
 
     // 2) Otherwise fall back to the closest-by-time cwd match, else newest.
     if let Some(start) = process_start {
-        if let Some(id) = pick_closest(&candidates, start) {
-            return Some(id);
-        }
+        // If we can't find a rollout close to process start, do not guess. Guessing causes
+        // "session id flips" and duplicate/merged rows when multiple Codex processes share a CWD.
+        return pick_closest(&candidates, start);
     }
     Some(candidates[0].id.clone())
 }
@@ -551,6 +600,26 @@ fn discover_sessions_using_router_uncached(
             .map(|d| d.as_millis() as u64)
     }
 
+    fn read_process_codex_session_id(pid: u32) -> Option<String> {
+        // New Codex sessions don't always include `resume <uuid>` in argv. Try env vars first.
+        // Keep this defensive: only accept valid UUIDs.
+        let keys = ["CODEX_SESSION_ID", "CODEX_SESSION", "CODEX_SESSIONID"];
+        for k in keys {
+            let Some(v) = crate::platform::windows_loopback_peer::read_process_env_var(pid, k)
+            else {
+                continue;
+            };
+            let v = v.trim();
+            if v.is_empty() {
+                continue;
+            }
+            if uuid::Uuid::parse_str(v).is_ok() {
+                return Some(v.to_string());
+            }
+        }
+        None
+    }
+
     fn codex_base_url_evidence(pid: u32, port: u16) -> (BaseUrlEvidenceKind, bool) {
         // 1) Fast path: process env vars (strong signal).
         let keys = [
@@ -669,6 +738,7 @@ fn discover_sessions_using_router_uncached(
             }
             let inferred = cmd
                 .and_then(parse_codex_session_id_from_cmdline)
+                .or_else(|| read_process_codex_session_id(pid))
                 .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port));
             if let Some(id) = inferred.as_ref() {
                 guard.insert(key, id.clone());
@@ -678,7 +748,39 @@ fn discover_sessions_using_router_uncached(
 
         // If locking fails, fall back to a non-frozen inference.
         cmd.and_then(parse_codex_session_id_from_cmdline)
+            .or_else(|| read_process_codex_session_id(pid))
             .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port))
+    }
+
+    fn frozen_codex_model_provider(pid: u32) -> Option<String> {
+        // Codex config is effectively frozen at process start; keep model_provider stable too.
+        static FROZEN: OnceLock<Mutex<std::collections::HashMap<PidKey, String>>> = OnceLock::new();
+        let frozen = FROZEN.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+
+        let created_at = process_create_time(pid).and_then(systemtime_to_unix_ms);
+        let key = PidKey {
+            pid,
+            created_at_unix_ms: created_at.unwrap_or(0),
+        };
+
+        if let Ok(mut guard) = frozen.lock() {
+            guard.retain(|k, _| crate::platform::windows_loopback_peer::is_pid_alive(k.pid));
+            if let Some(v) = guard.get(&key) {
+                return Some(v.clone());
+            }
+
+            let provider = read_effective_codex_config_with_mtime(pid)
+                .as_ref()
+                .and_then(|(cfg, _mtime)| get_model_provider_id(cfg));
+            if let Some(p) = provider.as_ref() {
+                guard.insert(key, p.clone());
+            }
+            return provider;
+        }
+
+        read_effective_codex_config_with_mtime(pid)
+            .as_ref()
+            .and_then(|(cfg, _mtime)| get_model_provider_id(cfg))
     }
 
     fn latest_rollout_for_session(
@@ -811,7 +913,8 @@ fn discover_sessions_using_router_uncached(
                     pid,
                     reported_model_provider: rollout_meta
                         .as_ref()
-                        .and_then(|m| m.model_provider.clone()),
+                        .and_then(|m| m.model_provider.clone())
+                        .or_else(|| frozen_codex_model_provider(pid)),
                     reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
                     codex_session_id: Some(codex_session_id),
                     router_confirmed: matched,
@@ -833,7 +936,10 @@ pub fn is_pid_alive(pid: u32) -> bool {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::io::Write;
+    use std::path::PathBuf;
+    use std::time::Duration;
 
     #[test]
     fn parse_rollout_session_meta_extracts_fields() {
@@ -905,5 +1011,119 @@ mod tests {
         let cwd = std::path::PathBuf::from("C:\\work\\proj");
         let got = infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, 4000, None);
         assert_eq!(got.as_deref(), Some(good_id));
+    }
+
+    #[test]
+    fn infer_session_id_does_not_guess_when_start_time_far() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let codex_home = tmp.path().join(".codex");
+        let sessions_dir = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("02")
+            .join("02");
+        std::fs::create_dir_all(&sessions_dir).expect("mkdir");
+
+        let id = "00000000-0000-0000-0000-000000000000";
+        let good = sessions_dir.join(format!("rollout-good-{id}.jsonl"));
+        {
+            let mut f = std::fs::File::create(&good).expect("create");
+            writeln!(
+                f,
+                r#"{{"type":"session_meta","payload":{{"id":"{id}","cwd":"C:\\work\\proj\\","model_provider":"api_router"}}}}"#
+            )
+            .unwrap();
+        }
+
+        let cwd = std::path::PathBuf::from("C:\\work\\proj");
+        let start = std::time::SystemTime::now() + Duration::from_secs(3600);
+        let got = infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, 4000, Some(start));
+        assert!(got.is_none());
+    }
+
+    #[test]
+    #[ignore]
+    fn manual_print_discovery() {
+        fn find_repo_root_from_cwd() -> Option<PathBuf> {
+            let mut cur = std::env::current_dir().ok()?;
+            for _ in 0..6 {
+                if cur.join("user-data").join("config.toml").exists() {
+                    return Some(cur);
+                }
+                cur = cur.parent()?.to_path_buf();
+            }
+            None
+        }
+
+        let Some(root) = find_repo_root_from_cwd() else {
+            eprintln!(
+                "manual_print_discovery: failed to locate repo root (user-data/config.toml)."
+            );
+            return;
+        };
+
+        let cfg_path = root.join("user-data").join("config.toml");
+        let cfg_txt = std::fs::read_to_string(&cfg_path).unwrap_or_default();
+        let cfg_val: toml::Value =
+            toml::from_str(&cfg_txt).unwrap_or(toml::Value::Table(Default::default()));
+        let port = cfg_val
+            .get("listen")
+            .and_then(|v| v.get("port"))
+            .and_then(|v| v.as_integer())
+            .unwrap_or(4000) as u16;
+
+        let secrets_path = root.join("user-data").join("secrets.json");
+        let secrets_txt = std::fs::read_to_string(&secrets_path).unwrap_or_default();
+        let secrets_json: serde_json::Value =
+            serde_json::from_str(&secrets_txt).unwrap_or(serde_json::Value::Null);
+        let token = secrets_json
+            .get("providers")
+            .and_then(|v| v.get("__gateway_token__"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        eprintln!("manual_print_discovery: router_port={port}");
+        eprintln!(
+            "manual_print_discovery: expected_gateway_token={}",
+            token.as_deref().unwrap_or("<none>")
+        );
+
+        let items = discover_sessions_using_router(port, token.as_deref());
+        eprintln!("manual_print_discovery: discovered_count={}", items.len());
+
+        let mut by_id: BTreeMap<String, usize> = BTreeMap::new();
+        for s in &items {
+            if let Some(id) = s.codex_session_id.as_deref() {
+                *by_id.entry(id.to_string()).or_default() += 1;
+            }
+        }
+
+        for s in items {
+            eprintln!("---");
+            eprintln!(
+                "codex_session_id={}",
+                s.codex_session_id.as_deref().unwrap_or("<none>")
+            );
+            eprintln!("wt_session={}", s.wt_session.trim());
+            eprintln!("pid={}", s.pid);
+            eprintln!("router_confirmed={}", s.router_confirmed);
+            eprintln!(
+                "reported_model_provider={}",
+                s.reported_model_provider.as_deref().unwrap_or("<none>")
+            );
+            eprintln!(
+                "reported_base_url={}",
+                s.reported_base_url.as_deref().unwrap_or("<none>")
+            );
+        }
+
+        let dups: Vec<(String, usize)> = by_id.into_iter().filter(|(_k, v)| *v > 1).collect();
+        if !dups.is_empty() {
+            eprintln!("---");
+            eprintln!("duplicate_codex_session_ids:");
+            for (k, v) in dups {
+                eprintln!("{k} x{v}");
+            }
+        }
     }
 }
