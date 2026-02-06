@@ -1266,28 +1266,30 @@
 
 .aoMenuCompact {
   top: 34px;
-  width: 124px;
-  border-radius: 10px;
-  padding: 2px;
+  /* Match the split button width so the option feels proportional. */
+  width: 100%;
+  min-width: 172px;
+  border-radius: 12px;
+  padding: 5px;
 }
 
 .aoMenuCompact .aoMenuItem {
-  height: 24px;
-  border-radius: 8px;
-  gap: 6px;
-  padding: 0 6px;
-  font-size: 10px;
-  letter-spacing: 0;
+  height: 32px;
+  border-radius: 12px;
+  gap: 9px;
+  padding: 0 10px;
+  font-size: 12px;
+  letter-spacing: 0.05px;
 }
 
 .aoMenuCompact .aoMenuIcon {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 
 .aoMenuCompact .aoMenuIcon svg {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 
 .aoMenuCompact .aoMenuItem:hover {
