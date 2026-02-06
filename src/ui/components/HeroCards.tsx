@@ -162,8 +162,8 @@ export function HeroCodexCard({
         >
           {status.codex_account?.signed_in ? 'Log out' : 'Log in'}
         </button>
-        <div className="aoActionsMenuWrap" ref={menuWrapRef}>
-          <div style={{ display: 'flex' }}>
+        <div className="aoActionsMenuWrap" ref={menuWrapRef} style={{ justifyContent: 'flex-start', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 0 }}>
             <button
               className="aoBtn"
               onClick={onSwapAuthConfig}
@@ -189,13 +189,10 @@ export function HeroCodexCard({
             </button>
           </div>
           {swapBadgeText ? (
-            <div style={{ position: 'absolute', right: 0, top: -22 }} title={swapBadgeTitle}>
-              <span className="aoPill" style={{ padding: '2px 8px', height: 22 }}>
-                <span className="aoPillText" style={{ fontSize: 12 }}>
-                  {swapBadgeText}
-                </span>
-              </span>
-            </div>
+            <span className="aoPill" title={swapBadgeTitle} style={{ height: 32, gap: 8 }}>
+              <span className={swapBadgeText.toLowerCase().includes('error') ? 'aoDot aoDotBad' : swapBadgeText.toLowerCase().includes('app') ? 'aoDot' : 'aoDot aoDotMuted'} />
+              <span className="aoPillText">{swapBadgeText}</span>
+            </span>
           ) : null}
           {menuOpen ? (
             <div className="aoMenu" role="menu" aria-label="Swap options menu">

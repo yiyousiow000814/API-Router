@@ -364,12 +364,21 @@ export default function App() {
 
   const codexSwapBadge = useMemo(() => {
     const overall = codexSwapStatus?.overall ?? 'error'
-    const badgeText = `CLI: ${overall}`
+    const badgeText =
+      overall === 'swapped'
+        ? 'App'
+        : overall === 'original'
+          ? 'User'
+          : overall === 'mixed'
+            ? 'Mixed'
+            : 'Error'
     const parts =
       codexSwapStatus?.dirs?.length
         ? codexSwapStatus.dirs.map((d) => `${d.cli_home}: ${d.state}`)
         : []
-    const badgeTitle = parts.length ? `Codex CLI swap status - ${badgeText}. ${parts.join(' | ')}` : `Codex CLI swap status - ${badgeText}`
+    const badgeTitle = parts.length
+      ? `Codex CLI swap status: ${badgeText}. ${parts.join(' | ')}`
+      : `Codex CLI swap status: ${badgeText}`
     return { badgeText, badgeTitle }
   }, [codexSwapStatus])
 
