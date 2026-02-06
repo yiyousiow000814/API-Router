@@ -34,6 +34,6 @@
 
 - **Single canonical path:** All changes MUST be implemented in the **primary codepath** as the **only** canonical implementation.
 - **Remove legacy:** Delete any **legacy / dead / duplicate** implementations. Do not keep parallel codepaths.
-- **No backward compatibility:** Do NOT add compatibility layers of any kind (no adapters, no dual schemas/shapes, no fallback parsers).
+- **No long-term compatibility:** Do NOT keep parallel implementations or long-lived compatibility layers. If external inputs vary, normalize them into one canonical internal shape and remove legacy handling as soon as possible.
 - **Breaking data changes are OK:** Destructive data changes are permitted. If the data model changes, **re-seed or migrate**; do NOT parse or support legacy formats.
-- **First-class integrations only:** Use direct, first-class integrations. Do NOT introduce shims/wrappers/glue/adapter layers to bridge old and new systems.
+- **First-class integrations preferred:** Use direct, first-class integrations where feasible. Avoid shims/wrappers/glue/adapter layers; if an adapter is unavoidable, keep it minimal and make the canonical internal interface explicit.
