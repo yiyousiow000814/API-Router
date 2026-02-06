@@ -902,6 +902,7 @@
   height: 100%;
   align-content: center;
   min-height: 100%;
+  width: 100%;
 }
 
 .aoUsageHeaderRow {
@@ -1372,6 +1373,7 @@
   display: flex;
   align-items: center;
   height: 100%;
+  width: 100%;
 }
 
 .aoUsageTop {
