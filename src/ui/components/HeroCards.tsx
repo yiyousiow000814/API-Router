@@ -196,7 +196,7 @@ export function HeroCodexCard({
             </button>
           </div>
           {menuOpen ? (
-            <div className="aoMenu" role="menu" aria-label="Swap options menu">
+            <div className="aoMenu aoMenuCompact" role="menu" aria-label="Swap options menu">
               <button
                 className="aoMenuItem"
                 role="menuitem"

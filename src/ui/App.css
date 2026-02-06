@@ -1222,6 +1222,31 @@
   padding: 6px;
 }
 
+.aoMenuCompact {
+  top: 34px;
+  width: 154px;
+  border-radius: 12px;
+  padding: 4px;
+}
+
+.aoMenuCompact .aoMenuItem {
+  height: 30px;
+  border-radius: 10px;
+  gap: 8px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.aoMenuCompact .aoMenuIcon {
+  width: 16px;
+  height: 16px;
+}
+
+.aoMenuCompact .aoMenuIcon svg {
+  width: 16px;
+  height: 16px;
+}
+
 .aoMenuItem {
   width: 100%;
   height: 34px;
