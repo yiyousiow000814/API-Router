@@ -36,8 +36,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
           const q = status.quota?.[p]
           const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
           const cooldownActive = h.cooldown_until_unix_ms > Date.now()
-          const activeCount = status.active_provider_counts?.[p] ?? 0
-          const isActive = activeCount > 0
+          const isActive = (status.active_provider_counts?.[p] ?? 0) > 0
           const healthLabel =
             isActive
               ? 'effective'
