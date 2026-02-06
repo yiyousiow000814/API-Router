@@ -690,7 +690,14 @@ fn discover_sessions_using_router_uncached(
             }
             let inferred = cmd
                 .and_then(parse_codex_session_id_from_cmdline)
-                .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port));
+                .or_else(|| {
+                    // If Codex doesn't expose the session id in its command line (i.e. no `resume <uuid>`),
+                    // trying to infer it by scanning rollouts is ambiguous when multiple sessions share
+                    // the same CWD. We only attempt rollout inference when the user explicitly sets
+                    // CODEX_HOME for that process (stronger signal / more likely single-session).
+                    crate::platform::windows_loopback_peer::read_process_env_var(pid, "CODEX_HOME")
+                        .and_then(|_| infer_codex_session_id_from_rollouts(pid, router_port))
+                });
             if let Some(id) = inferred.as_ref() {
                 guard.insert(key, id.clone());
             }
@@ -699,7 +706,10 @@ fn discover_sessions_using_router_uncached(
 
         // If locking fails, fall back to a non-frozen inference.
         cmd.and_then(parse_codex_session_id_from_cmdline)
-            .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port))
+            .or_else(|| {
+                crate::platform::windows_loopback_peer::read_process_env_var(pid, "CODEX_HOME")
+                    .and_then(|_| infer_codex_session_id_from_rollouts(pid, router_port))
+            })
     }
 
     fn latest_rollout_for_session(
