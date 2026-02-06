@@ -351,10 +351,10 @@ impl Store {
         self.db
             .scan_prefix(b"event:")
             .rev()
-            .take(limit)
             .filter_map(|res| res.ok())
             .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
             .filter(Self::is_valid_event)
+            .take(limit)
             .collect()
     }
 
