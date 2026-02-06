@@ -12,6 +12,7 @@ import { UsageBaseModal } from './components/UsageBaseModal'
 import { InstructionModal } from './components/InstructionModal'
 import { GatewayTokenModal } from './components/GatewayTokenModal'
 import { ConfigModal } from './components/ConfigModal'
+import { CodexSwapModal } from './components/CodexSwapModal'
 import { HeroCodexCard, HeroRoutingCard, HeroStatusCard } from './components/HeroCards'
 import { useReorderDrag } from './hooks/useReorderDrag'
 
@@ -167,6 +168,10 @@ export default function App() {
   const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
   const [configModalOpen, setConfigModalOpen] = useState<boolean>(false)
   const [instructionModalOpen, setInstructionModalOpen] = useState<boolean>(false)
+  const [codexSwapModalOpen, setCodexSwapModalOpen] = useState<boolean>(false)
+  const [codexSwapDir1, setCodexSwapDir1] = useState<string>('')
+  const [codexSwapDir2, setCodexSwapDir2] = useState<string>('')
+  const [codexSwapApplyBoth, setCodexSwapApplyBoth] = useState<boolean>(false)
   const [editingProviderName, setEditingProviderName] = useState<string | null>(null)
   const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
@@ -192,6 +197,25 @@ export default function App() {
       }
     } catch (e) {
       console.warn('Failed to load UI prefs', e)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const d1 = window.localStorage.getItem('ao.codexSwap.dir1') ?? ''
+      const d2 = window.localStorage.getItem('ao.codexSwap.dir2') ?? ''
+      const both = (window.localStorage.getItem('ao.codexSwap.applyBoth') ?? '') === '1'
+      setCodexSwapDir1(d1)
+      setCodexSwapDir2(d2)
+      setCodexSwapApplyBoth(both)
+      if (!d1.trim()) {
+        invoke<string>('codex_cli_default_home')
+          .then((p) => setCodexSwapDir1((prev) => (prev.trim() ? prev : p)))
+          .catch(() => {})
+      }
+    } catch (e) {
+      console.warn('Failed to load Codex swap prefs', e)
     }
   }, [])
 
@@ -356,6 +380,16 @@ export default function App() {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current)
     const ms = kind === 'error' ? 5200 : 2400
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
+  }
+
+  async function toggleCodexSwap(cliHomes: string[]) {
+    const homes = cliHomes.map((s) => s.trim()).filter(Boolean)
+    const res = await invoke<{ ok: boolean; mode: 'swapped' | 'restored'; cli_homes: string[] }>(
+      'codex_cli_toggle_auth_config_swap',
+      { cli_homes: homes },
+    )
+    flashToast(res.mode === 'swapped' ? 'Swapped Codex auth/config' : 'Restored Codex auth/config')
+    await refreshStatus()
   }
 
   async function refreshStatus() {
@@ -1057,16 +1091,15 @@ export default function App() {
                   onSwapAuthConfig={() => {
                     void (async () => {
                       try {
-                        const res = await invoke<{ ok: boolean; mode: 'swapped' | 'restored'; cli_home: string }>(
-                          'codex_cli_toggle_auth_config_swap'
-                        )
-                        flashToast(res.mode === 'swapped' ? 'Swapped Codex auth/config' : 'Restored Codex auth/config')
-                        await refreshStatus()
+                        const homes = [codexSwapDir1]
+                        if (codexSwapApplyBoth && codexSwapDir2.trim()) homes.push(codexSwapDir2)
+                        await toggleCodexSwap(homes)
                       } catch (e) {
                         flashToast(String(e), 'error')
                       }
                     })()
                   }}
+                  onSwapOptions={() => setCodexSwapModalOpen(true)}
                 />
                 <HeroRoutingCard
                   config={config}
@@ -1232,6 +1265,41 @@ requires_openai_auth = true`}
           const p = await invoke<string>('get_gateway_token_preview')
           setGatewayTokenPreview(p)
           flashToast('Gateway token rotated')
+        }}
+      />
+
+      <CodexSwapModal
+        open={codexSwapModalOpen}
+        dir1={codexSwapDir1}
+        dir2={codexSwapDir2}
+        applyBoth={codexSwapApplyBoth}
+        onChangeDir1={(v) => setCodexSwapDir1(v)}
+        onChangeDir2={(v) => {
+          setCodexSwapDir2(v)
+          if (!v.trim()) setCodexSwapApplyBoth(false)
+        }}
+        onChangeApplyBoth={(v) => setCodexSwapApplyBoth(v)}
+        onCancel={() => setCodexSwapModalOpen(false)}
+        onApply={() => {
+          void (async () => {
+            try {
+              const dir1 = codexSwapDir1.trim()
+              const dir2 = codexSwapDir2.trim()
+              if (!dir1) throw new Error('Dir 1 is required')
+              if (codexSwapApplyBoth && !dir2) throw new Error('Dir 2 is empty')
+
+              window.localStorage.setItem('ao.codexSwap.dir1', dir1)
+              window.localStorage.setItem('ao.codexSwap.dir2', dir2)
+              window.localStorage.setItem('ao.codexSwap.applyBoth', codexSwapApplyBoth ? '1' : '0')
+
+              const homes = [dir1]
+              if (codexSwapApplyBoth) homes.push(dir2)
+              await toggleCodexSwap(homes)
+              setCodexSwapModalOpen(false)
+            } catch (e) {
+              flashToast(String(e), 'error')
+            }
+          })()
         }}
       />
     </div>

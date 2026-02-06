@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import type { Config, Status } from '../types'
 import { fmtWhen, fmtResetIn, parsePct } from '../utils/format'
 
@@ -75,9 +76,25 @@ type HeroCodexProps = {
   onLoginLogout: () => void
   onRefresh: () => void
   onSwapAuthConfig: () => void
+  onSwapOptions: () => void
 }
 
-export function HeroCodexCard({ status, onLoginLogout, onRefresh, onSwapAuthConfig }: HeroCodexProps) {
+export function HeroCodexCard({ status, onLoginLogout, onRefresh, onSwapAuthConfig, onSwapOptions }: HeroCodexProps) {
+  const [menuOpen, setMenuOpen] = useState<boolean>(false)
+  const menuWrapRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    function onDocMouseDown(e: MouseEvent) {
+      const el = menuWrapRef.current
+      if (!el) return
+      if (e.target instanceof Node && el.contains(e.target)) return
+      setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [menuOpen])
+
   return (
     <div className="aoCard aoHeroCard aoHeroCodex">
       <div className="aoCardHeader">
@@ -135,9 +152,48 @@ export function HeroCodexCard({ status, onLoginLogout, onRefresh, onSwapAuthConf
         >
           {status.codex_account?.signed_in ? 'Log out' : 'Log in'}
         </button>
-        <button className="aoBtn" onClick={onSwapAuthConfig}>
-          一键替换
-        </button>
+        <div className="aoActionsMenuWrap" ref={menuWrapRef}>
+          <div style={{ display: 'flex' }}>
+            <button className="aoBtn" onClick={onSwapAuthConfig} style={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}>
+              一键替换
+            </button>
+            <button
+              className="aoBtn"
+              aria-label="Swap options"
+              title="Swap options"
+              onClick={() => setMenuOpen((v) => !v)}
+              style={{
+                width: 42,
+                paddingLeft: 0,
+                paddingRight: 0,
+                borderTopLeftRadius: 0,
+                borderBottomLeftRadius: 0,
+              }}
+            >
+              ▼
+            </button>
+          </div>
+          {menuOpen ? (
+            <div className="aoMenu" role="menu" aria-label="Swap options menu">
+              <button
+                className="aoMenuItem"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onSwapOptions()
+                }}
+              >
+                <span className="aoMenuIcon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                  </svg>
+                </span>
+                设置目录...
+              </button>
+            </div>
+          ) : null}
+        </div>
         <button className="aoBtn aoBtnPrimary" onClick={onRefresh}>
           Refresh
         </button>

@@ -17,7 +17,7 @@ fn user_profile_dir() -> Option<PathBuf> {
         })
 }
 
-fn default_cli_codex_home() -> Option<PathBuf> {
+pub fn default_cli_codex_home() -> Option<PathBuf> {
     // Intentionally *not* CODEX_HOME: the app sets CODEX_HOME to its own isolated directory.
     // This swap targets the user's default Codex CLI home (typically ~/.codex).
     user_profile_dir().map(|p| p.join(".codex"))
@@ -89,36 +89,114 @@ fn ensure_signed_in(app_auth_json: &serde_json::Value) -> Result<(), String> {
     Err("Codex is not signed in yet. Click Log in first.".to_string())
 }
 
-pub fn toggle_cli_auth_config_swap(
-    state: &tauri::State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    let cli_home =
-        default_cli_codex_home().ok_or_else(|| "missing HOME/USERPROFILE".to_string())?;
+fn ensure_cli_files_exist(cli_home: &Path) -> Result<(), String> {
+    if !cli_home.exists() {
+        return Err(format!("Codex dir does not exist: {}", cli_home.display()));
+    }
+    let auth = cli_home.join("auth.json");
+    let cfg = cli_home.join("config.toml");
+    if !auth.exists() {
+        return Err(format!("Missing auth.json in: {}", cli_home.display()));
+    }
+    if !cfg.exists() {
+        return Err(format!("Missing config.toml in: {}", cli_home.display()));
+    }
+    Ok(())
+}
 
-    let state_dir = swap_state_dir(&cli_home);
+fn swap_mode_for_dir(cli_home: &Path) -> Result<&'static str, String> {
+    let state_dir = swap_state_dir(cli_home);
+    if !state_dir.exists() {
+        return Ok("swap");
+    }
     let backup_auth = state_dir.join("auth.json.bak");
     let backup_cfg = state_dir.join("config.toml.bak");
+    if !backup_auth.exists() || !backup_cfg.exists() {
+        return Err(format!(
+            "Swap state is corrupted in: {}",
+            state_dir.display()
+        ));
+    }
+    Ok("restore")
+}
 
+fn restore_dir(cli_home: &Path) -> Result<(), String> {
+    ensure_cli_files_exist(cli_home)?;
+
+    let state_dir = swap_state_dir(cli_home);
+    let backup_auth = state_dir.join("auth.json.bak");
+    let backup_cfg = state_dir.join("config.toml.bak");
     let cli_auth = cli_home.join("auth.json");
     let cli_cfg = cli_home.join("config.toml");
 
-    // Toggle behavior:
-    // - If swap state exists, restore backups and remove state dir.
-    // - Otherwise, create backups, then write "signed-in auth" and "config without model_provider".
-    if state_dir.exists() {
-        if backup_auth.exists() {
-            let bak = read_json(&backup_auth)?;
-            write_json_pretty(&cli_auth, &bak)?;
+    let bak_auth = read_json(&backup_auth)?;
+    write_json_pretty(&cli_auth, &bak_auth)?;
+    let bak_cfg = std::fs::read_to_string(&backup_cfg).map_err(|e| e.to_string())?;
+    write_text(&cli_cfg, &bak_cfg)?;
+    let _ = std::fs::remove_dir_all(&state_dir);
+    Ok(())
+}
+
+fn swap_dir(cli_home: &Path, app_auth_json: &serde_json::Value) -> Result<(), String> {
+    ensure_cli_files_exist(cli_home)?;
+
+    let state_dir = swap_state_dir(cli_home);
+    let backup_auth = state_dir.join("auth.json.bak");
+    let backup_cfg = state_dir.join("config.toml.bak");
+    let cli_auth = cli_home.join("auth.json");
+    let cli_cfg = cli_home.join("config.toml");
+
+    std::fs::create_dir_all(&state_dir).map_err(|e| e.to_string())?;
+    write_json_pretty(&backup_auth, &read_json(&cli_auth)?)?;
+    let orig_cfg_txt = std::fs::read_to_string(&cli_cfg).map_err(|e| e.to_string())?;
+    write_text(&backup_cfg, &orig_cfg_txt)?;
+
+    write_json_pretty(&cli_auth, app_auth_json)?;
+    let next_cfg = strip_model_provider_line(&orig_cfg_txt);
+    write_text(&cli_cfg, &next_cfg)?;
+    Ok(())
+}
+
+pub fn toggle_cli_auth_config_swap(
+    state: &tauri::State<'_, AppState>,
+    cli_homes: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let mut homes: Vec<PathBuf> = cli_homes
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+
+    homes.sort();
+    homes.dedup();
+    if homes.is_empty() {
+        homes.push(default_cli_codex_home().ok_or_else(|| "missing HOME/USERPROFILE".to_string())?);
+    }
+    if homes.len() > 2 {
+        return Err("At most 2 Codex dirs are supported.".to_string());
+    }
+
+    // Enforce consistent mode across multiple dirs to avoid confusing partial swaps.
+    let mut mode: Option<&'static str> = None;
+    for h in &homes {
+        let m = swap_mode_for_dir(h)?;
+        if mode.is_none() {
+            mode = Some(m);
+        } else if mode != Some(m) {
+            return Err("Codex dirs are in different swap states. Restore first.".to_string());
         }
-        if backup_cfg.exists() {
-            let bak = std::fs::read_to_string(&backup_cfg).map_err(|e| e.to_string())?;
-            write_text(&cli_cfg, &bak)?;
+    }
+    let mode = mode.unwrap_or("swap");
+
+    if mode == "restore" {
+        for h in &homes {
+            restore_dir(h)?;
         }
-        let _ = std::fs::remove_dir_all(&state_dir);
         return Ok(json!({
           "ok": true,
           "mode": "restored",
-          "cli_home": cli_home.to_string_lossy(),
+          "cli_homes": homes.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
         }));
     }
 
@@ -129,18 +207,9 @@ pub fn toggle_cli_auth_config_swap(
         .map_err(|_| "Missing app Codex auth.json. Try logging in first.".to_string())?;
     ensure_signed_in(&app_auth_json)?;
 
-    // Backup current CLI auth/config (if present).
-    std::fs::create_dir_all(&state_dir).map_err(|e| e.to_string())?;
-    write_json_pretty(&backup_auth, &read_json(&cli_auth).unwrap_or(json!({})))?;
-    let orig_cfg_txt = std::fs::read_to_string(&cli_cfg).unwrap_or_default();
-    write_text(&backup_cfg, &orig_cfg_txt)?;
-
-    // Replace CLI auth with the app's signed-in auth.
-    write_json_pretty(&cli_auth, &app_auth_json)?;
-
-    // Replace CLI config with the current config with `model_provider = ...` removed.
-    let next_cfg = strip_model_provider_line(&orig_cfg_txt);
-    write_text(&cli_cfg, &next_cfg)?;
+    for h in &homes {
+        swap_dir(h, &app_auth_json)?;
+    }
 
     // Emit an event for auditability.
     state.gateway.store.add_event(
@@ -149,7 +218,7 @@ pub fn toggle_cli_auth_config_swap(
         "codex.cli_auth_config_swapped",
         "Codex CLI auth/config swapped",
         json!({
-          "cli_home": cli_home.to_string_lossy(),
+          "cli_homes": homes.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
           "swapped_at_unix_ms": unix_ms(),
         }),
     );
@@ -157,7 +226,7 @@ pub fn toggle_cli_auth_config_swap(
     Ok(json!({
       "ok": true,
       "mode": "swapped",
-      "cli_home": cli_home.to_string_lossy(),
+      "cli_homes": homes.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
     }))
 }
 
