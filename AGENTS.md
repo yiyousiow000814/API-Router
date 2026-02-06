@@ -1,4 +1,4 @@
-# API Router — Agents Documentation
+# API Router - Agents Documentation
 
 ## Agent Defaults (Repository-Wide)
 - **Document language**: Write instructions in English. Examples may include other languages when clarity improves.
@@ -28,3 +28,12 @@
 ## Engineering Constraints
 - **Cross-platform**: Keep the gateway and tooling compatible with Windows + Linux (WSL2) at minimum.
 - **Evidence requirement**: Back conclusions with reproducible commands or steps (state A → change → state B).
+
+
+## Canonical Implementation Policy (Breaking Changes Allowed)
+
+- **Single canonical path:** All changes MUST be implemented in the **primary codepath** as the **only** canonical implementation.
+- **Remove legacy:** Delete any **legacy / dead / duplicate** implementations. Do not keep parallel codepaths.
+- **No backward compatibility:** Do NOT add compatibility layers of any kind (no adapters, no dual schemas/shapes, no fallback parsers).
+- **Breaking data changes are OK:** Destructive data changes are permitted. If the data model changes, **re-seed or migrate**; do NOT parse or support legacy formats.
+- **First-class integrations only:** Use direct, first-class integrations. Do NOT introduce shims/wrappers/glue/adapter layers to bridge old and new systems.
