@@ -1,3 +1,5 @@
+import { ModalBackdrop } from './ModalBackdrop'
+
 type Props = {
   open: boolean
   dir1: string
@@ -26,7 +28,7 @@ export function CodexSwapModal({
   const canApplyBoth = dir2.trim().length > 0
 
   return (
-    <div className="aoModalBackdrop aoModalBackdropTop" role="dialog" aria-modal="true" onClick={onCancel}>
+    <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={onCancel}>
       <div className="aoModal" onClick={(e) => e.stopPropagation()}>
         <div className="aoModalTitle">Codex CLI dirs</div>
         <div className="aoModalSub">Defaults to %USERPROFILE%\\.codex. Supports up to 2 dirs.</div>
@@ -77,6 +79,6 @@ export function CodexSwapModal({
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   )
 }

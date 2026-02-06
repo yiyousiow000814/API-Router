@@ -1,3 +1,4 @@
+import { ModalBackdrop } from './ModalBackdrop'
 import type { Config } from '../types'
 
 type Props = {
@@ -18,8 +19,6 @@ type Props = {
   draggingProvider: string | null
   dragCardHeight: number
   renderProviderCard: (name: string, forceDrag?: boolean) => React.ReactNode
-  onBackdropMouseDown: (e: React.MouseEvent<HTMLDivElement>) => void
-  onBackdropMouseUp: (e: React.MouseEvent<HTMLDivElement>) => void
 }
 
 export function ConfigModal({
@@ -40,18 +39,10 @@ export function ConfigModal({
   draggingProvider,
   dragCardHeight,
   renderProviderCard,
-  onBackdropMouseDown,
-  onBackdropMouseUp,
 }: Props) {
   if (!open || !config) return null
   return (
-    <div
-      className="aoModalBackdrop"
-      role="dialog"
-      aria-modal="true"
-      onMouseDown={onBackdropMouseDown}
-      onMouseUp={onBackdropMouseUp}
-    >
+    <ModalBackdrop onClose={onClose}>
       <div className="aoModal aoModalWide" onClick={(e) => e.stopPropagation()}>
         <div className="aoModalHeader">
           <div className="aoModalTitle">Config</div>
@@ -108,6 +99,6 @@ export function ConfigModal({
           </div>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   )
 }

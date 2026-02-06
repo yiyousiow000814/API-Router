@@ -179,8 +179,6 @@ export default function App() {
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
   const [codexRefreshing, setCodexRefreshing] = useState<boolean>(false)
   const [updatingSessionPref, setUpdatingSessionPref] = useState<Record<string, boolean>>({})
-  const instructionBackdropMouseDownRef = useRef<boolean>(false)
-  const configBackdropMouseDownRef = useRef<boolean>(false)
   const usageRefreshTimerRef = useRef<number | null>(null)
   const idleUsageSchedulerRef = useRef<(() => void) | null>(null)
   const usageActiveRef = useRef<boolean>(false)
@@ -1254,14 +1252,6 @@ export default function App() {
       <InstructionModal
         open={instructionModalOpen}
         onClose={() => setInstructionModalOpen(false)}
-        onBackdropMouseDown={(e) => {
-          instructionBackdropMouseDownRef.current = e.target === e.currentTarget
-        }}
-        onBackdropMouseUp={(e) => {
-          const shouldClose = instructionBackdropMouseDownRef.current && e.target === e.currentTarget
-          instructionBackdropMouseDownRef.current = false
-          if (shouldClose) setInstructionModalOpen(false)
-        }}
         codeText={`model_provider = "api_router"
 
 [model_providers.api_router]
@@ -1289,14 +1279,6 @@ requires_openai_auth = true`}
         draggingProvider={draggingProvider}
         dragCardHeight={dragCardHeight}
         renderProviderCard={renderProviderCard}
-        onBackdropMouseDown={(e) => {
-          configBackdropMouseDownRef.current = e.target === e.currentTarget
-        }}
-        onBackdropMouseUp={(e) => {
-          const shouldClose = configBackdropMouseDownRef.current && e.target === e.currentTarget
-          configBackdropMouseDownRef.current = false
-          if (shouldClose) setConfigModalOpen(false)
-        }}
       />
 
       <GatewayTokenModal
