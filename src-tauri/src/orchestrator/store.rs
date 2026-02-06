@@ -12,17 +12,74 @@ impl Store {
     const MAX_EVENTS: usize = 200;
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
 
+    // Breaking-change friendly: bump this to invalidate old persisted event shapes.
+    const EVENTS_SCHEMA_VERSION: &'static [u8] = b"1";
+    const EVENTS_SCHEMA_KEY: &'static [u8] = b"events:schema_version";
+
     fn allowed_key_prefixes() -> [&'static [u8]; 4] {
         [b"event:", b"metrics:", b"quota:", b"ledger:"]
     }
 
-    fn allowed_exact_keys() -> [&'static [u8]; 2] {
-        [b"codex_account:snapshot", b"official_web:snapshot"]
+    fn allowed_exact_keys() -> [&'static [u8]; 3] {
+        [
+            b"codex_account:snapshot",
+            b"official_web:snapshot",
+            Self::EVENTS_SCHEMA_KEY,
+        ]
     }
 
     pub fn open(path: &std::path::Path) -> Result<Self, sled::Error> {
         let db = sled::open(path)?;
-        Ok(Self { db })
+        let store = Self { db };
+        store.ensure_events_schema();
+        Ok(store)
+    }
+
+    fn ensure_events_schema(&self) {
+        let cur = self
+            .db
+            .get(Self::EVENTS_SCHEMA_KEY)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if cur.as_ref() != Self::EVENTS_SCHEMA_VERSION {
+            // Do not parse or migrate legacy events; drop them.
+            self.clear_events();
+            let _ = self
+                .db
+                .insert(Self::EVENTS_SCHEMA_KEY, Self::EVENTS_SCHEMA_VERSION);
+            let _ = self.db.flush();
+        }
+    }
+
+    fn clear_events(&self) {
+        let mut batch: Vec<sled::IVec> = Vec::with_capacity(2048);
+        for res in self.db.scan_prefix(b"event:") {
+            let Ok((k, _)) = res else {
+                continue;
+            };
+            batch.push(k);
+            if batch.len() >= 2048 {
+                for key in batch.drain(..) {
+                    let _ = self.db.remove(key);
+                }
+            }
+        }
+        for key in batch.drain(..) {
+            let _ = self.db.remove(key);
+        }
+        let _ = self.db.flush();
+    }
+
+    fn is_valid_event(j: &Value) -> bool {
+        j.get("provider").and_then(|v| v.as_str()).is_some()
+            && j.get("level").and_then(|v| v.as_str()).is_some()
+            && j.get("unix_ms").and_then(|v| v.as_u64()).is_some()
+            && j.get("code").and_then(|v| v.as_str()).is_some()
+            && j.get("message").and_then(|v| v.as_str()).is_some()
+            && j.get("fields")
+                .map(|v| matches!(v, Value::Object(_) | Value::Null))
+                .unwrap_or(false)
     }
 
     fn prune_events(&self) {
@@ -294,9 +351,10 @@ impl Store {
         self.db
             .scan_prefix(b"event:")
             .rev()
-            .take(limit)
             .filter_map(|res| res.ok())
             .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
+            .filter(Self::is_valid_event)
+            .take(limit)
             .collect()
     }
 
@@ -314,6 +372,9 @@ impl Store {
             let Ok(j) = serde_json::from_slice::<Value>(&v) else {
                 continue;
             };
+            if !Self::is_valid_event(&j) {
+                continue;
+            }
             let level = j.get("level").and_then(|v| v.as_str()).unwrap_or("info");
             if level == "error" {
                 if seen_error >= max_error {
@@ -496,7 +557,16 @@ mod tests {
 
         // Insert out-of-order timestamps; iteration should return newest-first by key order.
         let mk = |ts: u64, id: &str| format!("event:{ts}:{id}");
-        let v = |ts: u64| serde_json::json!({"unix_ms": ts});
+        let v = |ts: u64| {
+            serde_json::json!({
+                "provider": "p1",
+                "level": "info",
+                "unix_ms": ts,
+                "code": "test_event",
+                "message": "hello",
+                "fields": serde_json::json!({}),
+            })
+        };
 
         let _ = store.db.insert(
             mk(1000, "a").as_bytes(),
@@ -525,7 +595,12 @@ mod tests {
         // Create a DB with both expected and unexpected keys.
         {
             let db = sled::open(&dir).unwrap();
-            let _ = db.insert(b"event:1:a", b"{\"unix_ms\":1}");
+            // Make the store look like a modern one (schema marker + valid event payload).
+            let _ = db.insert(Store::EVENTS_SCHEMA_KEY, Store::EVENTS_SCHEMA_VERSION);
+            let _ = db.insert(
+                b"event:1:a",
+                &br#"{"provider":"p1","level":"info","unix_ms":1,"code":"test_event","message":"hello","fields":{}}"#[..],
+            );
             let _ = db.insert(b"metrics:p1", b"{\"ok_requests\":1}");
             let _ = db.insert(b"resp:resp_test", b"big payload");
             db.flush().unwrap();
