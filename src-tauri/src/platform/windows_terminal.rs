@@ -653,19 +653,25 @@ fn discover_sessions_using_router_uncached(
         // Session id inference from rollouts can "flip" when multiple Codex processes share the
         // same CWD and new rollouts are written. Freeze the inferred session id per PID for
         // stability during the process lifetime.
-        static FROZEN: OnceLock<Mutex<std::collections::HashMap<u32, String>>> = OnceLock::new();
+        static FROZEN: OnceLock<Mutex<std::collections::HashMap<PidKey, String>>> = OnceLock::new();
         let frozen = FROZEN.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
 
+        let created_at = process_create_time(pid).and_then(systemtime_to_unix_ms);
+        let key = PidKey {
+            pid,
+            created_at_unix_ms: created_at.unwrap_or(0),
+        };
+
         if let Ok(mut guard) = frozen.lock() {
-            guard.retain(|pid, _| crate::platform::windows_loopback_peer::is_pid_alive(*pid));
-            if let Some(v) = guard.get(&pid) {
+            guard.retain(|k, _| crate::platform::windows_loopback_peer::is_pid_alive(k.pid));
+            if let Some(v) = guard.get(&key) {
                 return Some(v.clone());
             }
             let inferred = cmd
                 .and_then(parse_codex_session_id_from_cmdline)
                 .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port));
             if let Some(id) = inferred.as_ref() {
-                guard.insert(pid, id.clone());
+                guard.insert(key, id.clone());
             }
             return inferred;
         }

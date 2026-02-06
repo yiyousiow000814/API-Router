@@ -287,6 +287,9 @@ export default function App() {
         await invoke('clear_session_preferred_provider', { sessionId: codexSessionId })
       }
       await refreshStatus()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to set session preference'
+      flashToast(msg, 'error')
     } finally {
       setUpdatingSessionPref((m) => ({ ...m, [sessionId]: false }))
     }
