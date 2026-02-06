@@ -80,6 +80,7 @@ jobs:
 
           const tauriPath = "src-tauri/tauri.conf.json";
           const cargoPath = "src-tauri/Cargo.toml";
+          const cargoLockPath = "src-tauri/Cargo.lock";
           const pkgPath = "package.json";
 
           const tauri = JSON.parse(fs.readFileSync(tauriPath, "utf8"));
@@ -92,7 +93,15 @@ jobs:
           const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
           const pkgVer = String(pkg.version || "").trim();
 
-          const needsUpdate = tauriVer !== version || cargoVer !== version || pkgVer !== version;
+          const lockText = fs.readFileSync(cargoLockPath, "utf8");
+          const lockMatch = lockText.match(/\[\[package\]\]\s*[\r\n]+name\s*=\s*\"api_router\"[\s\S]*?[\r\n]+version\s*=\s*\"([^\"]+)\"/m);
+          const lockVer = lockMatch ? lockMatch[1] : "";
+
+          const needsUpdate =
+            tauriVer !== version ||
+            cargoVer !== version ||
+            pkgVer !== version ||
+            lockVer !== version;
 
           const outPath = process.env.GITHUB_OUTPUT;
           fs.appendFileSync(outPath, `tag=${tag}\n`);
@@ -105,6 +114,7 @@ jobs:
           console.log(`tauri_version=${tauriVer}`);
           console.log(`cargo_version=${cargoVer}`);
           console.log(`package_version=${pkgVer}`);
+          console.log(`cargo_lock_version=${lockVer}`);
           console.log(`needs_update=${needsUpdate}`);
           console.log(`dry_run=${dryRun}`);
           NODE
@@ -139,6 +149,7 @@ jobs:
           }
           const tauriPath = "src-tauri/tauri.conf.json";
           const cargoPath = "src-tauri/Cargo.toml";
+          const cargoLockPath = "src-tauri/Cargo.lock";
           const pkgPath = "package.json";
 
           const tauri = JSON.parse(fs.readFileSync(tauriPath, "utf8"));
@@ -152,6 +163,14 @@ jobs:
           const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
           pkg.version = version;
           fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+
+          // Keep Cargo.lock's root package version in sync so CI's `cargo test --locked` doesn't fail.
+          const lockText = fs.readFileSync(cargoLockPath, "utf8");
+          const nextLock = lockText.replace(
+            /(\[\[package\]\]\s*[\r\n]+name\s*=\s*\"api_router\"[\s\S]*?[\r\n]+version\s*=\s*\")([^\"]+)(\")/m,
+            `$1${version}$3`
+          );
+          fs.writeFileSync(cargoLockPath, nextLock);
           NODE
 
           git config user.name "github-actions[bot]"
@@ -164,7 +183,7 @@ jobs:
           fi
 
           git switch -C main "${BASE_SHA}"
-          git add src-tauri/tauri.conf.json src-tauri/Cargo.toml package.json
+          git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock package.json
           git commit -m "chore: release ${TAG}"
           git push origin HEAD:main
 
