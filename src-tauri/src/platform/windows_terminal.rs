@@ -205,16 +205,21 @@ fn infer_codex_session_id_from_rollouts_dir(
         return None;
     }
 
-    // Pick the candidate whose rollout time is closest to the process start time (helps avoid
+    // Pick the candidate whose rollout time is closest *after* the process start time (helps avoid
     // misattributing multiple running Codex processes in the same CWD to the newest session).
-    // If we don't have a start time, keep the newest (already sorted by mtime desc).
+    //
+    // We strongly prefer rollouts created at/after process start (within a small tolerance),
+    // since older rollouts could belong to previous sessions in the same CWD.
     let pick_closest = |cands: &[Candidate], start: SystemTime| -> Option<String> {
         const MAX_WINDOW: Duration = Duration::from_secs(120);
+        const BEFORE_TOLERANCE: Duration = Duration::from_secs(5);
         let mut best: Option<(&Candidate, Duration)> = None;
         for c in cands {
-            let Some(dt) = (if c.mtime >= start {
-                c.mtime.duration_since(start).ok()
-            } else {
+            if c.mtime + BEFORE_TOLERANCE < start {
+                continue;
+            }
+            let Some(dt) = c.mtime.duration_since(start).ok().or_else(|| {
+                // Allow slightly-before-start candidates within the tolerance.
                 start.duration_since(c.mtime).ok()
             }) else {
                 continue;
@@ -690,14 +695,7 @@ fn discover_sessions_using_router_uncached(
             }
             let inferred = cmd
                 .and_then(parse_codex_session_id_from_cmdline)
-                .or_else(|| {
-                    // If Codex doesn't expose the session id in its command line (i.e. no `resume <uuid>`),
-                    // trying to infer it by scanning rollouts is ambiguous when multiple sessions share
-                    // the same CWD. We only attempt rollout inference when the user explicitly sets
-                    // CODEX_HOME for that process (stronger signal / more likely single-session).
-                    crate::platform::windows_loopback_peer::read_process_env_var(pid, "CODEX_HOME")
-                        .and_then(|_| infer_codex_session_id_from_rollouts(pid, router_port))
-                });
+                .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port));
             if let Some(id) = inferred.as_ref() {
                 guard.insert(key, id.clone());
             }
@@ -706,10 +704,7 @@ fn discover_sessions_using_router_uncached(
 
         // If locking fails, fall back to a non-frozen inference.
         cmd.and_then(parse_codex_session_id_from_cmdline)
-            .or_else(|| {
-                crate::platform::windows_loopback_peer::read_process_env_var(pid, "CODEX_HOME")
-                    .and_then(|_| infer_codex_session_id_from_rollouts(pid, router_port))
-            })
+            .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port))
     }
 
     fn latest_rollout_for_session(
