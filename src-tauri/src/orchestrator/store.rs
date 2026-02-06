@@ -354,7 +354,7 @@ impl Store {
             .take(limit)
             .filter_map(|res| res.ok())
             .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
-            .filter(|j| Self::is_valid_event(j))
+            .filter(Self::is_valid_event)
             .collect()
     }
 
