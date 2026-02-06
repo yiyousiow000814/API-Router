@@ -66,10 +66,10 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
     <table className="aoTable aoTableFixed">
       <thead>
         <tr>
-          <th style={{ width: 170 }}>When</th>
-          <th style={{ width: 240 }}>Session</th>
-          <th style={{ width: 140 }}>Provider</th>
-          <th style={{ width: 90 }}>Level</th>
+          <th style={{ width: 140 }}>When</th>
+          <th style={{ width: 200 }}>Session</th>
+          <th style={{ width: 120 }}>Provider</th>
+          <th style={{ width: 80 }}>Level</th>
           <th>Message</th>
         </tr>
       </thead>
