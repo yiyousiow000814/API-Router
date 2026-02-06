@@ -172,13 +172,13 @@ export function HeroCodexCard({
                     <span
                       className={[
                         'aoBtnTagDot',
-                        swapBadgeText === 'App'
+                        swapBadgeText === 'Auth'
                           ? 'aoBtnTagDotApp'
                           : swapBadgeText === 'Error'
                             ? 'aoBtnTagDotError'
-                            : swapBadgeText === 'Mixed'
-                              ? 'aoBtnTagDotMixed'
-                              : 'aoBtnTagDotUser',
+                          : swapBadgeText === 'Mixed'
+                            ? 'aoBtnTagDotMixed'
+                            : 'aoBtnTagDotUser',
                       ].join(' ')}
                       aria-hidden="true"
                     />

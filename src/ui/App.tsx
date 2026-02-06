@@ -366,9 +366,9 @@ export default function App() {
     const overall = codexSwapStatus?.overall ?? 'error'
     const badgeText =
       overall === 'swapped'
-        ? 'App'
+        ? 'Auth'
         : overall === 'original'
-          ? 'User'
+          ? 'API'
           : overall === 'mixed'
             ? 'Mixed'
             : 'Error'
