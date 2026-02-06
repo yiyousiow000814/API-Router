@@ -4,6 +4,18 @@ use std::path::{Path, PathBuf};
 use crate::app_state::AppState;
 use crate::orchestrator::store::unix_ms;
 
+fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| e.to_string())
+}
+
+fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn user_profile_dir() -> Option<PathBuf> {
     std::env::var("USERPROFILE")
         .ok()
@@ -56,6 +68,7 @@ fn swap_state(cli_home: &Path) -> Result<&'static str, String> {
 fn strip_model_provider_line(cfg: &str) -> String {
     // Keep this minimal and deterministic: remove only the top-level key assignment.
     // We intentionally do NOT attempt to rewrite other parts of the file.
+    let eol = if cfg.contains("\r\n") { "\r\n" } else { "\n" };
     cfg.lines()
         .filter(|line| {
             let t = line.trim_start();
@@ -69,22 +82,13 @@ fn strip_model_provider_line(cfg: &str) -> String {
                 || t.starts_with("model_provider_id="))
         })
         .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
+        .join(eol)
+        + eol
 }
 
 fn read_json(path: &Path) -> Result<serde_json::Value, String> {
     let txt = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     serde_json::from_str(&txt).map_err(|e| e.to_string())
-}
-
-fn write_json_pretty(path: &Path, v: &serde_json::Value) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let txt = serde_json::to_string_pretty(v).map_err(|e| e.to_string())?;
-    std::fs::write(path, txt).map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 fn write_text(path: &Path, s: &str) -> Result<(), String> {
@@ -122,14 +126,6 @@ fn ensure_cli_files_exist(cli_home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn swap_mode_for_dir(cli_home: &Path) -> Result<&'static str, String> {
-    match swap_state(cli_home)? {
-        "original" => Ok("swap"),
-        "swapped" => Ok("restore"),
-        _ => Err("unexpected swap state".to_string()),
-    }
-}
-
 fn restore_dir(cli_home: &Path) -> Result<(), String> {
     ensure_cli_files_exist(cli_home)?;
 
@@ -139,10 +135,21 @@ fn restore_dir(cli_home: &Path) -> Result<(), String> {
     let cli_auth = cli_home.join("auth.json");
     let cli_cfg = cli_home.join("config.toml");
 
-    let bak_auth = read_json(&backup_auth)?;
-    write_json_pretty(&cli_auth, &bak_auth)?;
-    let bak_cfg = std::fs::read_to_string(&backup_cfg).map_err(|e| e.to_string())?;
-    write_text(&cli_cfg, &bak_cfg)?;
+    let cur_auth = read_bytes(&cli_auth)?;
+    let cur_cfg = read_bytes(&cli_cfg)?;
+
+    let bak_auth = read_bytes(&backup_auth)?;
+    let bak_cfg = read_bytes(&backup_cfg)?;
+
+    // Best-effort local rollback: if restoring cfg fails after auth succeeds, put auth back.
+    write_bytes(&cli_auth, &bak_auth).map_err(|e| format!("restore auth.json failed: {e}"))?;
+    if let Err(e) =
+        write_bytes(&cli_cfg, &bak_cfg).map_err(|e| format!("restore config.toml failed: {e}"))
+    {
+        let _ = write_bytes(&cli_auth, &cur_auth);
+        let _ = write_bytes(&cli_cfg, &cur_cfg);
+        return Err(e);
+    }
     let _ = std::fs::remove_dir_all(&state_dir);
     Ok(())
 }
@@ -156,14 +163,33 @@ fn swap_dir(cli_home: &Path, app_auth_json: &serde_json::Value) -> Result<(), St
     let cli_auth = cli_home.join("auth.json");
     let cli_cfg = cli_home.join("config.toml");
 
-    std::fs::create_dir_all(&state_dir).map_err(|e| e.to_string())?;
-    write_json_pretty(&backup_auth, &read_json(&cli_auth)?)?;
-    let orig_cfg_txt = std::fs::read_to_string(&cli_cfg).map_err(|e| e.to_string())?;
-    write_text(&backup_cfg, &orig_cfg_txt)?;
+    let orig_auth = read_bytes(&cli_auth)?;
+    let orig_cfg_bytes = read_bytes(&cli_cfg)?;
+    let orig_cfg_txt = String::from_utf8(orig_cfg_bytes.clone())
+        .map_err(|_| "config.toml is not valid UTF-8".to_string())?;
 
-    write_json_pretty(&cli_auth, app_auth_json)?;
+    std::fs::create_dir_all(&state_dir).map_err(|e| e.to_string())?;
+    write_bytes(&backup_auth, &orig_auth)?;
+    write_bytes(&backup_cfg, &orig_cfg_bytes)?;
+
+    // We write to auth/config sequentially, but roll back locally + clean swap state on failure.
+    let app_auth_txt = serde_json::to_string_pretty(app_auth_json).map_err(|e| e.to_string())?;
     let next_cfg = strip_model_provider_line(&orig_cfg_txt);
-    write_text(&cli_cfg, &next_cfg)?;
+
+    if let Err(e) =
+        write_text(&cli_auth, &app_auth_txt).map_err(|e| format!("write auth.json failed: {e}"))
+    {
+        let _ = std::fs::remove_dir_all(&state_dir);
+        return Err(e);
+    }
+    if let Err(e) =
+        write_text(&cli_cfg, &next_cfg).map_err(|e| format!("write config.toml failed: {e}"))
+    {
+        let _ = write_bytes(&cli_auth, &orig_auth);
+        let _ = write_bytes(&cli_cfg, &orig_cfg_bytes);
+        let _ = std::fs::remove_dir_all(&state_dir);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -187,21 +213,24 @@ pub fn toggle_cli_auth_config_swap(
         return Err("At most 2 Codex dirs are supported.".to_string());
     }
 
-    // Enforce consistent mode across multiple dirs to avoid confusing partial swaps.
-    let mut mode: Option<&'static str> = None;
+    // Determine action based on current states.
+    // If dirs are in a mixed state, we always "restore" (restore only the swapped dirs).
+    let mut any_swapped = false;
     for h in &homes {
-        let m = swap_mode_for_dir(h)?;
-        if mode.is_none() {
-            mode = Some(m);
-        } else if mode != Some(m) {
-            return Err("Codex dirs are in different swap states. Restore first.".to_string());
+        match swap_state(h)? {
+            "swapped" => any_swapped = true,
+            "original" => {}
+            _ => return Err("unexpected swap state".to_string()),
         }
     }
-    let mode = mode.unwrap_or("swap");
+    let mode = if any_swapped { "restore" } else { "swap" };
 
     if mode == "restore" {
         for h in &homes {
-            restore_dir(h)?;
+            // Restore only dirs that are currently swapped.
+            if swap_state(h)? == "swapped" {
+                restore_dir(h)?;
+            }
         }
         return Ok(json!({
           "ok": true,
@@ -217,8 +246,25 @@ pub fn toggle_cli_auth_config_swap(
         .map_err(|_| "Missing app Codex auth.json. Try logging in first.".to_string())?;
     ensure_signed_in(&app_auth_json)?;
 
+    let mut swapped: Vec<PathBuf> = Vec::new();
     for h in &homes {
-        swap_dir(h, &app_auth_json)?;
+        if let Err(e) = swap_dir(h, &app_auth_json) {
+            // Roll back any dirs already swapped in this attempt to avoid mixed state.
+            let mut rb_errs: Vec<String> = Vec::new();
+            for p in swapped.iter().rev() {
+                if let Err(re) = restore_dir(p) {
+                    rb_errs.push(format!("{}: {re}", p.display()));
+                }
+            }
+            if rb_errs.is_empty() {
+                return Err(e);
+            }
+            return Err(format!(
+                "{e}\nRollback also encountered errors. You may need to restore manually:\n{}",
+                rb_errs.join("\n")
+            ));
+        }
+        swapped.push(h.clone());
     }
 
     // Emit an event for auditability.

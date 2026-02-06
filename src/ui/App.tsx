@@ -364,7 +364,10 @@ export default function App() {
   }, [config])
 
   const codexSwapBadge = useMemo(() => {
-    const overall = codexSwapStatus?.overall ?? 'error'
+    if (!codexSwapStatus) {
+      return { badgeText: '', badgeTitle: 'Codex CLI swap status: loading' }
+    }
+    const overall = codexSwapStatus.overall
     const badgeText =
       overall === 'swapped'
         ? 'Auth'
