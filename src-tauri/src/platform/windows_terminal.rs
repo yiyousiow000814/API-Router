@@ -79,12 +79,26 @@ fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
         .get("model_provider")
         .or_else(|| payload.get("modelProvider"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .and_then(|s| {
+            let s = s.trim();
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
+        });
     let base_url = payload
         .get("base_url")
         .or_else(|| payload.get("model_provider_base_url"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .and_then(|s| {
+            let s = s.trim();
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
+        });
     Some(RolloutSessionMeta {
         id,
         cwd,
@@ -390,7 +404,14 @@ fn discover_sessions_using_router_uncached(
         t.get("model_provider")
             .or_else(|| t.get("model_provider_id"))
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .and_then(|s| {
+                let s = s.trim();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
+            })
     }
 
     fn get_provider_base_url(cfg: &toml::Value, provider_id: &str) -> Option<String> {
@@ -720,6 +741,35 @@ fn discover_sessions_using_router_uncached(
         candidates.into_iter().map(|(p, _t)| p).next()
     }
 
+    fn frozen_codex_model_provider(pid: u32) -> Option<String> {
+        static FROZEN: OnceLock<Mutex<std::collections::HashMap<PidKey, Option<String>>>> =
+            OnceLock::new();
+        let frozen = FROZEN.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+
+        let created_at = process_create_time(pid).and_then(systemtime_to_unix_ms);
+        let key = PidKey {
+            pid,
+            created_at_unix_ms: created_at.unwrap_or(0),
+        };
+
+        if let Ok(mut guard) = frozen.lock() {
+            // Prune dead PIDs opportunistically to keep the map bounded.
+            guard.retain(|k, _| crate::platform::windows_loopback_peer::is_pid_alive(k.pid));
+            if let Some(v) = guard.get(&key) {
+                return v.clone();
+            }
+
+            let v = read_effective_codex_config_with_mtime(pid)
+                .and_then(|(cfg, _mtime)| get_model_provider_id(&cfg));
+            guard.insert(key, v.clone());
+            return v;
+        }
+
+        // If locking fails, fall back to a non-frozen read.
+        read_effective_codex_config_with_mtime(pid)
+            .and_then(|(cfg, _mtime)| get_model_provider_id(&cfg))
+    }
+
     let mut out: Vec<InferredWtSession> = Vec::new();
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
@@ -811,7 +861,8 @@ fn discover_sessions_using_router_uncached(
                     pid,
                     reported_model_provider: rollout_meta
                         .as_ref()
-                        .and_then(|m| m.model_provider.clone()),
+                        .and_then(|m| m.model_provider.clone())
+                        .or_else(|| frozen_codex_model_provider(pid)),
                     reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
                     codex_session_id: Some(codex_session_id),
                     router_confirmed: matched,
@@ -842,6 +893,14 @@ mod tests {
         assert_eq!(m.id, "00000000-0000-0000-0000-000000000000");
         assert_eq!(m.cwd, "C:\\work\\example-project");
         assert_eq!(m.model_provider.as_deref(), Some("api_router"));
+        assert!(m.base_url.is_none());
+    }
+
+    #[test]
+    fn parse_rollout_session_meta_treats_empty_fields_as_missing() {
+        let line = r#"{"type":"session_meta","payload":{"id":"x","cwd":"C:\\x","model_provider":"  ","base_url":"   "}}"#;
+        let m = parse_rollout_session_meta(line).expect("parse");
+        assert!(m.model_provider.is_none());
         assert!(m.base_url.is_none());
     }
 
