@@ -1252,27 +1252,27 @@
 
 .aoMenuCompact {
   top: 34px;
-  width: 154px;
-  border-radius: 12px;
-  padding: 4px;
+  width: 140px;
+  border-radius: 11px;
+  padding: 3px;
 }
 
 .aoMenuCompact .aoMenuItem {
-  height: 30px;
-  border-radius: 10px;
-  gap: 8px;
-  padding: 0 8px;
-  font-size: 12px;
+  height: 28px;
+  border-radius: 9px;
+  gap: 7px;
+  padding: 0 7px;
+  font-size: 11px;
 }
 
 .aoMenuCompact .aoMenuIcon {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
 }
 
 .aoMenuCompact .aoMenuIcon svg {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
 }
 
 .aoMenuItem {
