@@ -176,7 +176,7 @@ export function HeroCodexCard({
       </div>
       <div className="aoHeroActions" style={{ marginTop: 15, width: '100%', justifyContent: 'space-between' }}>
         <button
-          className={`aoBtn ${status.codex_account?.signed_in ? 'aoBtnDanger' : ''}`.trim()}
+          className={`aoBtn ${status.codex_account?.signed_in ? 'aoBtnDangerSoft' : ''}`.trim()}
           onClick={onLoginLogout}
         >
           {status.codex_account?.signed_in ? 'Log out' : 'Log in'}

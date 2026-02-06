@@ -572,6 +572,17 @@
   border-color: rgba(255, 94, 125, 0.26);
 }
 
+.aoBtnDangerSoft {
+  /* Less visually "alarming" than aoBtnDanger; turns red only on hover. */
+  background: rgba(13, 18, 32, 0.04);
+  border-color: rgba(13, 18, 32, 0.14);
+}
+
+.aoBtnDangerSoft:hover {
+  background: rgba(255, 94, 125, 0.08);
+  border-color: rgba(255, 94, 125, 0.32);
+}
+
 .aoSection {
   margin-top: 12px;
 }
@@ -1246,8 +1257,9 @@
 
 .aoActionsMenuWrap {
   position: relative;
-  display: flex;
+  display: inline-flex;
   justify-content: flex-end;
+  width: max-content;
 }
 
 .aoMenu {
@@ -1269,9 +1281,10 @@
   top: 34px;
   /* Match the split button width so the option feels proportional. */
   width: 100%;
-  min-width: 172px;
+  min-width: 0;
   border-radius: 12px;
   padding: 5px;
+  box-sizing: border-box;
 }
 
 .aoMenuCompact .aoMenuItem {
