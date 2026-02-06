@@ -538,7 +538,7 @@ async fn models(
         .map(|s| s.as_str())
         .unwrap_or(cfg.routing.preferred_provider.as_str());
 
-    let (provider_name, reason) = decide_provider(&st, &cfg, preferred, &session_key);
+    let (provider_name, _reason) = decide_provider(&st, &cfg, preferred, &session_key);
     let p = match cfg.providers.get(&provider_name) {
         Some(p) => p.clone(),
         None => {
@@ -581,14 +581,10 @@ async fn models(
         .await
     {
         Ok((code, j)) if (200..300).contains(&code) => {
-            st.last_used_by_session.write().insert(
-                session_key,
-                LastUsedRoute {
-                    provider: provider_name,
-                    reason: reason.to_string(),
-                    unix_ms: unix_ms(),
-                },
-            );
+            // Do not update `last_used_by_session` for `/v1/models` since Codex may call it
+            // opportunistically. We only want to track actual routing decisions for user
+            // requests (/v1/responses) to keep "back to preferred" semantics stable.
+            st.router.mark_success(&provider_name, unix_ms());
             (StatusCode::OK, Json(j)).into_response()
         }
         _ => (StatusCode::OK, Json(json!({"object":"list","data":[]}))).into_response(),
@@ -823,19 +819,23 @@ async fn responses(
                         } else if prev
                             .as_ref()
                             .is_some_and(|p| p.provider.as_str() != provider_name)
-                            || prev
-                                .as_ref()
-                                .is_some_and(|p| p.reason.as_str() != "preferred_healthy")
                         {
                             // Only log "back to preferred" when we were previously using a
-                            // different provider or coming from a non-preferred route.
+                            // different provider.
                             st.store.add_event(
                                 &provider_name,
                                 "info",
                                 "routing.back_to_preferred",
-                                &format!("Back to preferred: {provider_name}"),
+                                &format!(
+                                    "Back to preferred: {provider_name} (from {})",
+                                    prev.as_ref()
+                                        .map(|p| p.provider.as_str())
+                                        .unwrap_or("unknown")
+                                ),
                                 json!({
                                     "provider": provider_name,
+                                    "from_provider": prev.as_ref().map(|p| p.provider.clone()),
+                                    "from_reason": prev.as_ref().map(|p| p.reason.clone()),
                                     "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                     "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                     "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
@@ -967,17 +967,21 @@ async fn responses(
                     } else if prev
                         .as_ref()
                         .is_some_and(|p| p.provider.as_str() != provider_name)
-                        || prev
-                            .as_ref()
-                            .is_some_and(|p| p.reason.as_str() != "preferred_healthy")
                     {
                         st.store.add_event(
                             &provider_name,
                             "info",
                             "routing.back_to_preferred",
-                            &format!("Back to preferred: {provider_name}"),
+                            &format!(
+                                "Back to preferred: {provider_name} (from {})",
+                                prev.as_ref()
+                                    .map(|p| p.provider.as_str())
+                                    .unwrap_or("unknown")
+                            ),
                             json!({
                                 "provider": provider_name,
+                                "from_provider": prev.as_ref().map(|p| p.provider.clone()),
+                                "from_reason": prev.as_ref().map(|p| p.reason.clone()),
                                 "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                 "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                 "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),

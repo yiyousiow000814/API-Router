@@ -439,24 +439,39 @@ fn set_session_preferred_provider(
     if codex_session_id.is_empty() {
         return Err("codex_session_id is required".to_string());
     }
-    {
+    let prev_provider: Option<String> = {
         let mut cfg = state.gateway.cfg.write();
         if !cfg.providers.contains_key(&provider) {
             return Err(format!("unknown provider: {provider}"));
         }
+        let prev = cfg
+            .routing
+            .session_preferred_providers
+            .get(&codex_session_id)
+            .cloned();
+        // No-op: avoid emitting confusing events when the user selects the same provider again.
+        if prev.as_deref() == Some(provider.as_str()) {
+            return Ok(());
+        }
         cfg.routing
             .session_preferred_providers
             .insert(codex_session_id.clone(), provider.clone());
-    }
+        prev
+    };
     persist_config(&state).map_err(|e| e.to_string())?;
+    let msg = match prev_provider.as_deref() {
+        Some(prev) => format!("session preferred_provider updated: {prev} -> {provider}"),
+        None => format!("session preferred_provider set: {provider}"),
+    };
     state.gateway.store.add_event(
         &provider,
         "info",
         "config.session_preferred_provider_updated",
-        &format!("session preferred_provider updated ({session_id})"),
+        &msg,
         serde_json::json!({
             "codex_session_id": codex_session_id,
             "provider": provider,
+            "prev_provider": prev_provider,
         }),
     );
     Ok(())
@@ -471,20 +486,28 @@ fn clear_session_preferred_provider(
     if codex_session_id.is_empty() {
         return Err("codex_session_id is required".to_string());
     }
-    {
+    let prev_provider: Option<String> = {
         let mut cfg = state.gateway.cfg.write();
         cfg.routing
             .session_preferred_providers
-            .remove(&codex_session_id);
+            .remove(&codex_session_id)
+    };
+    // No-op: don't write config or emit events if nothing was set.
+    if prev_provider.is_none() {
+        return Ok(());
     }
     persist_config(&state).map_err(|e| e.to_string())?;
     state.gateway.store.add_event(
         "gateway",
         "info",
         "config.session_preferred_provider_cleared",
-        &format!("session preferred_provider cleared ({session_id})"),
+        &format!(
+            "session preferred_provider cleared (was {})",
+            prev_provider.as_deref().unwrap_or("unknown")
+        ),
         serde_json::json!({
             "codex_session_id": codex_session_id,
+            "prev_provider": prev_provider,
         }),
     );
     Ok(())
