@@ -246,7 +246,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         // strong evidence that the session is using this gateway.
         {
             let mut map = state.gateway.client_sessions.write();
-            for s in discovered {
+            for s in discovered.iter() {
                 let Some(codex_session_id) = s.codex_session_id.as_deref() else {
                     continue;
                 };
@@ -305,7 +305,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
             std::cmp::Reverse(v.last_request_unix_ms.max(v.last_discovered_unix_ms))
         });
         items.truncate(20);
-        let sessions = items
+        let mut sessions = items
             .into_iter()
             .map(|(_codex_session_id, v)| {
                 // Consider a session "active" only if it has recently made requests through the router.
@@ -334,6 +334,27 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                 })
             })
             .collect::<Vec<_>>();
+
+        // Also surface discovery-only rows that don't have a Codex session id yet. These are still
+        // useful to show in the UI (unverified sessions) so users can see that Codex is running,
+        // even before the first request.
+        for s in discovered
+            .into_iter()
+            .filter(|s| s.codex_session_id.is_none())
+        {
+            sessions.push(serde_json::json!({
+                "id": format!("pid:{}:wt:{}", s.pid, s.wt_session),
+                "wt_session": s.wt_session,
+                "codex_session_id": serde_json::Value::Null,
+                "reported_model_provider": s.reported_model_provider,
+                "reported_base_url": s.reported_base_url,
+                "last_seen_unix_ms": now,
+                "active": false,
+                "preferred_provider": serde_json::Value::Null,
+                "verified": s.router_confirmed
+            }));
+        }
+
         sessions
     };
 

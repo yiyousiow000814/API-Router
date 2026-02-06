@@ -761,6 +761,18 @@ fn discover_sessions_using_router_uncached(
 
             let v = read_effective_codex_config_with_mtime(pid)
                 .and_then(|(cfg, _mtime)| get_model_provider_id(&cfg));
+            let v = v.or_else(|| {
+                // Last-resort fallback: our own user profile config. This is less specific than the
+                // per-process "effective" config (which can be project-scoped), but it's still
+                // better than showing an empty provider in the UI.
+                let up = std::env::var("USERPROFILE").ok()?;
+                let cfg = read_config(
+                    &std::path::PathBuf::from(up)
+                        .join(".codex")
+                        .join("config.toml"),
+                )?;
+                get_model_provider_id(&cfg)
+            });
             guard.insert(key, v.clone());
             return v;
         }
@@ -768,6 +780,15 @@ fn discover_sessions_using_router_uncached(
         // If locking fails, fall back to a non-frozen read.
         read_effective_codex_config_with_mtime(pid)
             .and_then(|(cfg, _mtime)| get_model_provider_id(&cfg))
+            .or_else(|| {
+                let up = std::env::var("USERPROFILE").ok()?;
+                let cfg = read_config(
+                    &std::path::PathBuf::from(up)
+                        .join(".codex")
+                        .join("config.toml"),
+                )?;
+                get_model_provider_id(&cfg)
+            })
     }
 
     let mut out: Vec<InferredWtSession> = Vec::new();
@@ -812,10 +833,6 @@ fn discover_sessions_using_router_uncached(
 
                 // Infer session id early; we can use it as a stronger signal than the current on-disk config.
                 let codex_session_id = frozen_codex_session_id(pid, cmd.as_deref(), server_port);
-                let Some(codex_session_id) = codex_session_id else {
-                    ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
-                    continue;
-                };
 
                 // Token: exclude on explicit mismatch; allow unknown (e.g. keyring).
                 if let Some(expected) = expected_gateway_token {
@@ -829,7 +846,8 @@ fn discover_sessions_using_router_uncached(
                 // The rollout meta reflects what the process actually launched/resumed with.
                 let codex_home = process_codex_home(pid);
                 let rollout_meta = codex_home.as_deref().and_then(|h| {
-                    let p = latest_rollout_for_session(h, &codex_session_id)?;
+                    let id = codex_session_id.as_deref()?;
+                    let p = latest_rollout_for_session(h, id)?;
                     let file = std::fs::File::open(&p).ok()?;
                     let mut r = std::io::BufReader::new(file);
                     let mut first = String::new();
@@ -864,7 +882,7 @@ fn discover_sessions_using_router_uncached(
                         .and_then(|m| m.model_provider.clone())
                         .or_else(|| frozen_codex_model_provider(pid)),
                     reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
-                    codex_session_id: Some(codex_session_id),
+                    codex_session_id,
                     router_confirmed: matched,
                 });
             }
