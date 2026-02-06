@@ -183,6 +183,9 @@ export default function App() {
   const idleUsageSchedulerRef = useRef<(() => void) | null>(null)
   const usageActiveRef = useRef<boolean>(false)
   const activeUsageTimerRef = useRef<number | null>(null)
+  const codexSwapDir1Ref = useRef<string>('')
+  const codexSwapDir2Ref = useRef<string>('')
+  const codexSwapApplyBothRef = useRef<boolean>(false)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -219,6 +222,17 @@ export default function App() {
       console.warn('Failed to load Codex swap prefs', e)
     }
   }, [])
+
+  // Keep refs in sync so background refresh (interval) never uses stale closures.
+  useEffect(() => {
+    codexSwapDir1Ref.current = codexSwapDir1
+  }, [codexSwapDir1])
+  useEffect(() => {
+    codexSwapDir2Ref.current = codexSwapDir2
+  }, [codexSwapDir2])
+  useEffect(() => {
+    codexSwapApplyBothRef.current = codexSwapApplyBoth
+  }, [codexSwapApplyBoth])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -420,8 +434,8 @@ export default function App() {
   async function refreshCodexSwapStatus() {
     if (isDevPreview) return
     try {
-      const homes = [codexSwapDir1]
-      if (codexSwapApplyBoth && codexSwapDir2.trim()) homes.push(codexSwapDir2)
+      const homes = [codexSwapDir1Ref.current]
+      if (codexSwapApplyBothRef.current && codexSwapDir2Ref.current.trim()) homes.push(codexSwapDir2Ref.current)
       const res = await invoke<CodexSwapStatus>('codex_cli_swap_status', {
         cli_homes: homes.map((s) => s.trim()).filter(Boolean),
       })

@@ -29,6 +29,29 @@ fn user_profile_dir() -> Option<PathBuf> {
         })
 }
 
+fn dedup_key(cli_home: &Path) -> String {
+    // We want stable behavior on Windows where paths are case-insensitive and may use mixed slashes.
+    // Avoid `canonicalize()` here (it requires existence and can fail); we already validate existence later.
+    let mut s = cli_home.to_string_lossy().to_string();
+    if cfg!(windows) {
+        s = s.replace('/', "\\");
+    }
+    while s.len() > 1 && (s.ends_with('\\') || s.ends_with('/')) {
+        // Keep "C:\" intact.
+        if cfg!(windows) && s.len() == 3 {
+            let b = s.as_bytes();
+            if b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') {
+                break;
+            }
+        }
+        s.pop();
+    }
+    if cfg!(windows) {
+        s = s.to_ascii_lowercase();
+    }
+    s
+}
+
 pub fn default_cli_codex_home() -> Option<PathBuf> {
     // Intentionally *not* CODEX_HOME: the app sets CODEX_HOME to its own isolated directory.
     // This swap targets the user's default Codex CLI home (typically ~/.codex).
@@ -156,6 +179,12 @@ fn restore_dir(cli_home: &Path) -> Result<(), String> {
 
 fn swap_dir(cli_home: &Path, app_auth_json: &serde_json::Value) -> Result<(), String> {
     ensure_cli_files_exist(cli_home)?;
+    if swap_state(cli_home)? == "swapped" {
+        return Err(format!(
+            "Codex dir is already swapped: {}. Restore first.",
+            cli_home.display()
+        ));
+    }
 
     let state_dir = swap_state_dir(cli_home);
     let backup_auth = state_dir.join("auth.json.bak");
@@ -197,15 +226,17 @@ pub fn toggle_cli_auth_config_swap(
     state: &tauri::State<'_, AppState>,
     cli_homes: Vec<String>,
 ) -> Result<serde_json::Value, String> {
-    let mut homes: Vec<PathBuf> = cli_homes
+    let mut homes: Vec<(String, PathBuf)> = cli_homes
         .into_iter()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
+        .map(|p| (dedup_key(&p), p))
         .collect();
 
-    homes.sort();
-    homes.dedup();
+    homes.sort_by(|a, b| a.0.cmp(&b.0));
+    homes.dedup_by(|a, b| a.0 == b.0);
+    let mut homes: Vec<PathBuf> = homes.into_iter().map(|(_, p)| p).collect();
     if homes.is_empty() {
         homes.push(default_cli_codex_home().ok_or_else(|| "missing HOME/USERPROFILE".to_string())?);
     }
@@ -287,15 +318,17 @@ pub fn toggle_cli_auth_config_swap(
 }
 
 pub fn cli_auth_config_swap_status(cli_homes: Vec<String>) -> Result<serde_json::Value, String> {
-    let mut homes: Vec<PathBuf> = cli_homes
+    let mut homes: Vec<(String, PathBuf)> = cli_homes
         .into_iter()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
+        .map(|p| (dedup_key(&p), p))
         .collect();
 
-    homes.sort();
-    homes.dedup();
+    homes.sort_by(|a, b| a.0.cmp(&b.0));
+    homes.dedup_by(|a, b| a.0 == b.0);
+    let mut homes: Vec<PathBuf> = homes.into_iter().map(|(_, p)| p).collect();
     if homes.is_empty() {
         homes.push(default_cli_codex_home().ok_or_else(|| "missing HOME/USERPROFILE".to_string())?);
     }
