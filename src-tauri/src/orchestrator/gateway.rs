@@ -594,6 +594,19 @@ async fn responses(
     let codex_session_key = session_key_from_request(&headers, &body);
     let codex_session_display = codex_session_id_for_display(&headers, &body);
     let client_session = windows_terminal::infer_wt_session(peer, cfg.listen.port);
+    let routing_session_fields = {
+        let wt = client_session.as_ref().map(|s| s.wt_session.clone());
+        let pid = client_session.as_ref().map(|s| s.pid);
+        let codex = codex_session_display
+            .as_deref()
+            .or(codex_session_key.as_deref())
+            .map(|s| s.to_string());
+        json!({
+            "wt_session": wt,
+            "pid": pid,
+            "codex_session_id": codex,
+        })
+    };
     if let Some(inferred) = client_session.as_ref() {
         let mut map = st.client_sessions.write();
         let entry = map
@@ -768,7 +781,13 @@ async fn responses(
                                 "info",
                                 "routing.stream",
                                 &format!("Streaming via {provider_name} ({reason})"),
-                                json!({ "provider": provider_name, "reason": reason }),
+                                json!({
+                                    "provider": provider_name,
+                                    "reason": reason,
+                                    "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
+                                    "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
+                                    "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
+                                }),
                             );
                         } else if prev_provider.as_deref().is_some_and(|p| p != provider_name)
                             || prev_reason
@@ -782,7 +801,12 @@ async fn responses(
                                 "info",
                                 "routing.back_to_preferred",
                                 &format!("Back to preferred: {provider_name}"),
-                                json!({ "provider": provider_name }),
+                                json!({
+                                    "provider": provider_name,
+                                    "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
+                                    "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
+                                    "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
+                                }),
                             );
                         }
                         return passthrough_sse_and_persist(
@@ -894,7 +918,13 @@ async fn responses(
                             "info",
                             "routing.route",
                             &format!("Routed via {provider_name} ({reason})"),
-                            json!({ "provider": provider_name, "reason": reason }),
+                            json!({
+                                "provider": provider_name,
+                                "reason": reason,
+                                "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
+                                "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
+                                "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
+                            }),
                         );
                     } else if prev_provider.as_deref().is_some_and(|p| p != provider_name)
                         || prev_reason
@@ -906,7 +936,12 @@ async fn responses(
                             "info",
                             "routing.back_to_preferred",
                             &format!("Back to preferred: {provider_name}"),
-                            json!({ "provider": provider_name }),
+                            json!({
+                                "provider": provider_name,
+                                "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
+                                "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
+                                "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
+                            }),
                         );
                     }
 
