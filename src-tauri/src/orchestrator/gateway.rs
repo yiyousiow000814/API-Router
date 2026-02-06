@@ -77,12 +77,16 @@ pub struct LastUsedRoute {
 
 #[derive(Clone, Debug)]
 pub struct ClientSessionRuntime {
+    // The stable Codex session id. This is the canonical session identity.
+    pub codex_session_id: String,
+    // Last observed PID owning the Codex process (best-effort; may be a helper process).
     pub pid: u32,
+    // Last observed WT_SESSION for the Codex process (best-effort; discovery-only).
+    pub wt_session: Option<String>,
     // Timestamp of last request observed from this session (not just "discovered").
     pub last_request_unix_ms: u64,
     // Timestamp of last time we saw the process in a discovery scan.
     pub last_discovered_unix_ms: u64,
-    pub last_codex_session_id: Option<String>,
     pub last_reported_model_provider: Option<String>,
     pub last_reported_base_url: Option<String>,
     // Sticky "this session uses our gateway" marker. This prevents sessions from disappearing if
@@ -525,7 +529,6 @@ async fn models(
 
     // Respect per-session preferred providers (keyed by Codex session id). Fall back to the global
     // preferred provider.
-    let client_session = windows_terminal::infer_wt_session(peer, cfg.listen.port);
     let session_key = session_key_from_request(&headers, &Value::Null)
         .or_else(|| codex_session_id_for_display(&headers, &Value::Null))
         .unwrap_or_else(|| format!("peer:{peer}"));
@@ -556,23 +559,8 @@ async fn models(
     let api_key = st.secrets.get_provider_key(&provider_name);
     let client_auth = upstream_auth(&st, client_auth);
 
-    if let Some(inferred) = client_session.as_ref() {
-        let mut map = st.client_sessions.write();
-        let entry = map
-            .entry(inferred.wt_session.clone())
-            .or_insert(ClientSessionRuntime {
-                pid: inferred.pid,
-                last_request_unix_ms: 0,
-                last_discovered_unix_ms: 0,
-                last_codex_session_id: None,
-                last_reported_model_provider: None,
-                last_reported_base_url: None,
-                confirmed_router: true,
-            });
-        entry.pid = inferred.pid;
-        entry.last_request_unix_ms = unix_ms();
-        entry.confirmed_router = true;
-    }
+    // Do not update `client_sessions` for `/v1/models`.
+    // Codex may call it opportunistically, and it may not carry a stable Codex session id.
 
     let timeout = cfg.routing.request_timeout_seconds;
     match st
@@ -631,26 +619,29 @@ async fn responses(
             "codex_session_id": codex,
         })
     };
-    if let Some(inferred) = client_session.as_ref() {
+    // Record requests against the canonical Codex session identity (from headers/body), not WT_SESSION.
+    // WT_SESSION is window-scoped and can be shared across tabs; additionally, some network calls may
+    // be owned by helper processes.
+    if !session_key.starts_with("peer:") {
         let mut map = st.client_sessions.write();
         let entry = map
-            .entry(inferred.wt_session.clone())
-            .or_insert(ClientSessionRuntime {
-                pid: inferred.pid,
+            .entry(session_key.clone())
+            .or_insert_with(|| ClientSessionRuntime {
+                codex_session_id: session_key.clone(),
+                pid: client_session.as_ref().map(|s| s.pid).unwrap_or(0),
+                wt_session: client_session.as_ref().map(|s| s.wt_session.clone()),
                 last_request_unix_ms: 0,
                 last_discovered_unix_ms: 0,
-                last_codex_session_id: None,
                 last_reported_model_provider: None,
                 last_reported_base_url: None,
                 confirmed_router: true,
             });
-        entry.pid = inferred.pid;
+        if let Some(inferred) = client_session.as_ref() {
+            entry.pid = inferred.pid;
+            entry.wt_session = Some(inferred.wt_session.clone());
+        }
         entry.last_request_unix_ms = unix_ms();
         entry.confirmed_router = true;
-        // Only treat a real Codex id as canonical (do not use "peer:*").
-        if !session_key.starts_with("peer:") {
-            entry.last_codex_session_id = Some(session_key.clone());
-        }
     }
 
     let previous_response_id = body

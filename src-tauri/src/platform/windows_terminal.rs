@@ -649,6 +649,32 @@ fn discover_sessions_using_router_uncached(
         infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, router_port, start)
     }
 
+    fn frozen_codex_session_id(pid: u32, cmd: Option<&str>, router_port: u16) -> Option<String> {
+        // Session id inference from rollouts can "flip" when multiple Codex processes share the
+        // same CWD and new rollouts are written. Freeze the inferred session id per PID for
+        // stability during the process lifetime.
+        static FROZEN: OnceLock<Mutex<std::collections::HashMap<u32, String>>> = OnceLock::new();
+        let frozen = FROZEN.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+
+        if let Ok(mut guard) = frozen.lock() {
+            guard.retain(|pid, _| crate::platform::windows_loopback_peer::is_pid_alive(*pid));
+            if let Some(v) = guard.get(&pid) {
+                return Some(v.clone());
+            }
+            let inferred = cmd
+                .and_then(parse_codex_session_id_from_cmdline)
+                .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port));
+            if let Some(id) = inferred.as_ref() {
+                guard.insert(pid, id.clone());
+            }
+            return inferred;
+        }
+
+        // If locking fails, fall back to a non-frozen inference.
+        cmd.and_then(parse_codex_session_id_from_cmdline)
+            .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port))
+    }
+
     fn latest_rollout_for_session(
         codex_home: &std::path::Path,
         session_id: &str,
@@ -729,10 +755,7 @@ fn discover_sessions_using_router_uncached(
                 }
 
                 // Infer session id early; we can use it as a stronger signal than the current on-disk config.
-                let codex_session_id = cmd
-                    .as_deref()
-                    .and_then(parse_codex_session_id_from_cmdline)
-                    .or_else(|| infer_codex_session_id_from_rollouts(pid, server_port));
+                let codex_session_id = frozen_codex_session_id(pid, cmd.as_deref(), server_port);
                 let Some(codex_session_id) = codex_session_id else {
                     ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
                     continue;

@@ -56,7 +56,7 @@ export function SessionsTable({
                 const verified = s.verified !== false
                 const routingTarget = s.preferred_provider ?? globalPreferred
                 const codexSession = s.codex_session_id ?? null
-                const wt = s.wt_session ?? s.id
+                const wt = s.wt_session ?? '-'
                 const codexProvider = s.reported_model_provider ?? '-'
                 return (
                   <tr key={s.id}>
@@ -148,7 +148,7 @@ export function SessionsTable({
                   const verified = s.verified !== false
                   const routingTarget = s.preferred_provider ?? globalPreferred
                   const codexSession = s.codex_session_id ?? null
-                  const wt = s.wt_session ?? s.id
+                  const wt = s.wt_session ?? '-'
                   const codexProvider = s.reported_model_provider ?? '-'
                   return (
                     <tr key={s.id}>

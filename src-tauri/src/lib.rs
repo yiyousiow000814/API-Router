@@ -228,24 +228,26 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         {
             let mut map = state.gateway.client_sessions.write();
             for s in discovered {
-                let entry = map.entry(s.wt_session.clone()).or_insert_with(|| {
+                let Some(codex_session_id) = s.codex_session_id.as_deref() else {
+                    continue;
+                };
+                let entry = map.entry(codex_session_id.to_string()).or_insert_with(|| {
                     crate::orchestrator::gateway::ClientSessionRuntime {
+                        codex_session_id: codex_session_id.to_string(),
                         pid: s.pid,
+                        wt_session: Some(s.wt_session.clone()),
                         last_request_unix_ms: 0,
                         last_discovered_unix_ms: 0,
-                        last_codex_session_id: None,
                         last_reported_model_provider: None,
                         last_reported_base_url: None,
                         confirmed_router: s.router_confirmed,
                     }
                 });
                 entry.pid = s.pid;
+                entry.wt_session = Some(s.wt_session.clone());
                 entry.last_discovered_unix_ms = now;
                 if s.router_confirmed {
                     entry.confirmed_router = true;
-                }
-                if let Some(cid) = s.codex_session_id.as_deref() {
-                    entry.last_codex_session_id = Some(cid.to_string());
                 }
                 if let Some(mp) = s.reported_model_provider.as_deref() {
                     entry.last_reported_model_provider = Some(mp.to_string());
@@ -265,7 +267,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
             // and no longer matches the discovery filter.
             const DISCOVERY_STALE_MS: u64 = 10_000;
             map.retain(|_, v| {
-                if !crate::platform::windows_terminal::is_pid_alive(v.pid) {
+                if v.pid != 0 && !crate::platform::windows_terminal::is_pid_alive(v.pid) {
                     return false;
                 }
                 if v.last_request_unix_ms == 0
@@ -286,24 +288,24 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         items.truncate(20);
         let sessions = items
             .into_iter()
-            .map(|(wt_session, v)| {
+            .map(|(_codex_session_id, v)| {
                 // Consider a session "active" only if it has recently made requests through the router.
                 // Discovery scans run frequently and should not keep sessions pinned as active forever.
                 let active = v.last_request_unix_ms > 0
                     && now.saturating_sub(v.last_request_unix_ms) < 60_000;
 
-                // Session preference is keyed by Codex session id.
-                let codex_id = v.last_codex_session_id.clone();
-                let pref = codex_id
-                    .as_ref()
-                    .and_then(|id| cfg.routing.session_preferred_providers.get(id))
+                let codex_id = v.codex_session_id.clone();
+                let pref = cfg
+                    .routing
+                    .session_preferred_providers
+                    .get(&codex_id)
                     .cloned()
                     .filter(|p| cfg.providers.contains_key(p));
                 let last_seen_unix_ms = v.last_request_unix_ms.max(v.last_discovered_unix_ms);
                 serde_json::json!({
-                    "id": wt_session,
-                    "wt_session": wt_session,
-                    "codex_session_id": codex_id,
+                    "id": codex_id,
+                    "wt_session": v.wt_session,
+                    "codex_session_id": v.codex_session_id,
                     "reported_model_provider": v.last_reported_model_provider,
                     "reported_base_url": v.last_reported_base_url,
                     "last_seen_unix_ms": last_seen_unix_ms,
