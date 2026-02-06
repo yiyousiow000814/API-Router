@@ -129,6 +129,20 @@ export function HeroCodexCard({
               <path d="M1 14l5.3 5.3A9 9 0 0 0 20.5 15" />
             </svg>
           </button>
+          {status.codex_account?.signed_in ? (
+            <button
+              className="aoIconBtn aoIconBtnDangerSoft"
+              title="Log out"
+              aria-label="Log out"
+              onClick={onLoginLogout}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M10 17l5-5-5-5" />
+                <path d="M15 12H3" />
+                <path d="M21 3v18" />
+              </svg>
+            </button>
+          ) : null}
         </div>
       </div>
       <div className="aoKvp">
@@ -174,13 +188,19 @@ export function HeroCodexCard({
           ) : null}
         </div>
       </div>
-      <div className="aoHeroActions" style={{ marginTop: 15, width: '100%', justifyContent: 'space-between' }}>
-        <button
-          className={`aoBtn ${status.codex_account?.signed_in ? 'aoBtnDangerSoft' : ''}`.trim()}
-          onClick={onLoginLogout}
-        >
-          {status.codex_account?.signed_in ? 'Log out' : 'Log in'}
-        </button>
+      <div
+        className="aoHeroActions"
+        style={{
+          marginTop: 15,
+          width: '100%',
+          justifyContent: status.codex_account?.signed_in ? 'flex-end' : 'space-between',
+        }}
+      >
+        {!status.codex_account?.signed_in ? (
+          <button className="aoBtn" onClick={onLoginLogout}>
+            Log in
+          </button>
+        ) : null}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <div className="aoActionsMenuWrap" ref={menuWrapRef} style={{ justifyContent: 'flex-start' }}>
             <div className="aoSplitBtn aoSplitBtnPrimary" title={swapBadgeTitle}>

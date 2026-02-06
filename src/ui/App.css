@@ -1255,6 +1255,12 @@
   stroke: rgba(145, 12, 43, 0.9);
 }
 
+.aoIconBtnDangerSoft:hover {
+  border-color: rgba(255, 94, 125, 0.45);
+  background: rgba(255, 94, 125, 0.08);
+  color: rgba(145, 12, 43, 0.9);
+}
+
 .aoActionsMenuWrap {
   position: relative;
   display: inline-flex;
