@@ -40,9 +40,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
           const isActive = activeCount > 0
           const healthLabel =
             isActive
-              ? activeCount > 1
-                ? `effective x${activeCount}`
-                : 'effective'
+              ? 'effective'
               : h.status === 'healthy'
                 ? 'yes'
                 : h.status === 'unhealthy'
