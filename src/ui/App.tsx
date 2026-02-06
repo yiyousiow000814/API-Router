@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import type { Config, Status } from './types'
+import type { CodexSwapStatus } from './types'
 import { fmtWhen } from './utils/format'
 import { computeActiveRefreshDelayMs, computeIdleRefreshDelayMs } from './utils/usageRefresh'
 import { ProvidersTable } from './components/ProvidersTable'
@@ -172,6 +173,7 @@ export default function App() {
   const [codexSwapDir1, setCodexSwapDir1] = useState<string>('')
   const [codexSwapDir2, setCodexSwapDir2] = useState<string>('')
   const [codexSwapApplyBoth, setCodexSwapApplyBoth] = useState<boolean>(false)
+  const [codexSwapStatus, setCodexSwapStatus] = useState<CodexSwapStatus | null>(null)
   const [editingProviderName, setEditingProviderName] = useState<string | null>(null)
   const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
@@ -360,6 +362,17 @@ export default function App() {
     return `provider_${maxN > 0 ? maxN + 1 : 1}`
   }, [config])
 
+  const codexSwapBadge = useMemo(() => {
+    const overall = codexSwapStatus?.overall ?? 'error'
+    const badgeText = `CLI: ${overall}`
+    const parts =
+      codexSwapStatus?.dirs?.length
+        ? codexSwapStatus.dirs.map((d) => `${d.cli_home}: ${d.state}`)
+        : []
+    const badgeTitle = parts.length ? `Codex CLI swap status - ${badgeText}. ${parts.join(' | ')}` : `Codex CLI swap status - ${badgeText}`
+    return { badgeText, badgeTitle }
+  }, [codexSwapStatus])
+
   const providerDrag = useReorderDrag<string>({
     items: orderedConfigProviders,
     onReorder: (next) => void applyProviderOrder(next),
@@ -390,6 +403,21 @@ export default function App() {
     )
     flashToast(res.mode === 'swapped' ? 'Swapped Codex auth/config' : 'Restored Codex auth/config')
     await refreshStatus()
+    await refreshCodexSwapStatus()
+  }
+
+  async function refreshCodexSwapStatus() {
+    if (isDevPreview) return
+    try {
+      const homes = [codexSwapDir1]
+      if (codexSwapApplyBoth && codexSwapDir2.trim()) homes.push(codexSwapDir2)
+      const res = await invoke<CodexSwapStatus>('codex_cli_swap_status', {
+        cli_homes: homes.map((s) => s.trim()).filter(Boolean),
+      })
+      setCodexSwapStatus(res)
+    } catch {
+      setCodexSwapStatus({ ok: true, overall: 'error', dirs: [] })
+    }
   }
 
   async function refreshStatus() {
@@ -401,6 +429,8 @@ export default function App() {
       const s = await invoke<Status>('get_status')
       setStatus(s)
       if (!overrideDirtyRef.current) setOverride(s.manual_override ?? '')
+      // Best-effort: keep swap badge fresh on the normal status poll cadence.
+      void refreshCodexSwapStatus()
     } catch (e) {
       console.error(e)
     }
@@ -1100,6 +1130,8 @@ export default function App() {
                     })()
                   }}
                   onSwapOptions={() => setCodexSwapModalOpen(true)}
+                  swapBadgeText={codexSwapBadge.badgeText}
+                  swapBadgeTitle={codexSwapBadge.badgeTitle}
                 />
                 <HeroRoutingCard
                   config={config}

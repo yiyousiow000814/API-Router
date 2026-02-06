@@ -35,6 +35,24 @@ fn swap_state_dir(cli_home: &Path) -> PathBuf {
     cli_home.join(".api-router-swap")
 }
 
+fn swap_state(cli_home: &Path) -> Result<&'static str, String> {
+    // `original` => no swap state dir
+    // `swapped`  => swap state dir exists and backups exist
+    let state_dir = swap_state_dir(cli_home);
+    if !state_dir.exists() {
+        return Ok("original");
+    }
+    let backup_auth = state_dir.join("auth.json.bak");
+    let backup_cfg = state_dir.join("config.toml.bak");
+    if backup_auth.exists() && backup_cfg.exists() {
+        return Ok("swapped");
+    }
+    Err(format!(
+        "Swap state is corrupted in: {}",
+        state_dir.display()
+    ))
+}
+
 fn strip_model_provider_line(cfg: &str) -> String {
     // Keep this minimal and deterministic: remove only the top-level key assignment.
     // We intentionally do NOT attempt to rewrite other parts of the file.
@@ -105,19 +123,11 @@ fn ensure_cli_files_exist(cli_home: &Path) -> Result<(), String> {
 }
 
 fn swap_mode_for_dir(cli_home: &Path) -> Result<&'static str, String> {
-    let state_dir = swap_state_dir(cli_home);
-    if !state_dir.exists() {
-        return Ok("swap");
+    match swap_state(cli_home)? {
+        "original" => Ok("swap"),
+        "swapped" => Ok("restore"),
+        _ => Err("unexpected swap state".to_string()),
     }
-    let backup_auth = state_dir.join("auth.json.bak");
-    let backup_cfg = state_dir.join("config.toml.bak");
-    if !backup_auth.exists() || !backup_cfg.exists() {
-        return Err(format!(
-            "Swap state is corrupted in: {}",
-            state_dir.display()
-        ));
-    }
-    Ok("restore")
 }
 
 fn restore_dir(cli_home: &Path) -> Result<(), String> {
@@ -227,6 +237,70 @@ pub fn toggle_cli_auth_config_swap(
       "ok": true,
       "mode": "swapped",
       "cli_homes": homes.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+    }))
+}
+
+pub fn cli_auth_config_swap_status(cli_homes: Vec<String>) -> Result<serde_json::Value, String> {
+    let mut homes: Vec<PathBuf> = cli_homes
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+
+    homes.sort();
+    homes.dedup();
+    if homes.is_empty() {
+        homes.push(default_cli_codex_home().ok_or_else(|| "missing HOME/USERPROFILE".to_string())?);
+    }
+    if homes.len() > 2 {
+        return Err("At most 2 Codex dirs are supported.".to_string());
+    }
+
+    let mut dirs: Vec<serde_json::Value> = Vec::new();
+    for h in &homes {
+        // Keep status call non-destructive and informative.
+        let s = match ensure_cli_files_exist(h) {
+            Ok(()) => match swap_state(h) {
+                Ok(v) => v.to_string(),
+                Err(e) => format!("error:{e}"),
+            },
+            Err(e) => format!("error:{e}"),
+        };
+        dirs.push(json!({
+          "cli_home": h.to_string_lossy(),
+          "state": s,
+        }));
+    }
+
+    let mut has_swapped = false;
+    let mut has_original = false;
+    let mut has_error = false;
+    for d in &dirs {
+        let s = d.get("state").and_then(|v| v.as_str()).unwrap_or("");
+        if s == "swapped" {
+            has_swapped = true;
+        } else if s == "original" {
+            has_original = true;
+        } else {
+            has_error = true;
+        }
+    }
+
+    let overall = if has_error {
+        "error"
+    } else if has_swapped && has_original {
+        "mixed"
+    } else if has_swapped {
+        "swapped"
+    } else {
+        "original"
+    };
+
+    Ok(json!({
+      "ok": true,
+      "overall": overall,
+      "dirs": dirs,
     }))
 }
 

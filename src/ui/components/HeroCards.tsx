@@ -77,9 +77,19 @@ type HeroCodexProps = {
   onRefresh: () => void
   onSwapAuthConfig: () => void
   onSwapOptions: () => void
+  swapBadgeText: string
+  swapBadgeTitle: string
 }
 
-export function HeroCodexCard({ status, onLoginLogout, onRefresh, onSwapAuthConfig, onSwapOptions }: HeroCodexProps) {
+export function HeroCodexCard({
+  status,
+  onLoginLogout,
+  onRefresh,
+  onSwapAuthConfig,
+  onSwapOptions,
+  swapBadgeText,
+  swapBadgeTitle,
+}: HeroCodexProps) {
   const [menuOpen, setMenuOpen] = useState<boolean>(false)
   const menuWrapRef = useRef<HTMLDivElement | null>(null)
 
@@ -154,8 +164,13 @@ export function HeroCodexCard({ status, onLoginLogout, onRefresh, onSwapAuthConf
         </button>
         <div className="aoActionsMenuWrap" ref={menuWrapRef}>
           <div style={{ display: 'flex' }}>
-            <button className="aoBtn" onClick={onSwapAuthConfig} style={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}>
-              Swap auth/config
+            <button
+              className="aoBtn"
+              onClick={onSwapAuthConfig}
+              style={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+              title={swapBadgeTitle}
+            >
+              Swap
             </button>
             <button
               className="aoBtn"
@@ -173,6 +188,15 @@ export function HeroCodexCard({ status, onLoginLogout, onRefresh, onSwapAuthConf
               ▼
             </button>
           </div>
+          {swapBadgeText ? (
+            <div style={{ position: 'absolute', right: 0, top: -22 }} title={swapBadgeTitle}>
+              <span className="aoPill" style={{ padding: '2px 8px', height: 22 }}>
+                <span className="aoPillText" style={{ fontSize: 12 }}>
+                  {swapBadgeText}
+                </span>
+              </span>
+            </div>
+          ) : null}
           {menuOpen ? (
             <div className="aoMenu" role="menu" aria-label="Swap options menu">
               <button

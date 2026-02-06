@@ -174,6 +174,7 @@ pub fn run() {
             probe_provider,
             codex_cli_toggle_auth_config_swap,
             codex_cli_default_home,
+            codex_cli_swap_status,
             codex_account_login,
             codex_account_logout,
             codex_account_refresh
@@ -1099,6 +1100,11 @@ fn codex_cli_default_home() -> Result<String, String> {
     crate::codex_cli_swap::default_cli_codex_home()
         .ok_or_else(|| "missing HOME/USERPROFILE".to_string())
         .map(|p| p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn codex_cli_swap_status(cli_homes: Option<Vec<String>>) -> Result<serde_json::Value, String> {
+    crate::codex_cli_swap::cli_auth_config_swap_status(cli_homes.unwrap_or_default())
 }
 
 fn mask_key_preview(key: &str) -> String {
