@@ -114,6 +114,7 @@ fn parse_session_id_from_rollout_filename(path: &std::path::Path) -> Option<Stri
 fn infer_codex_session_id_from_rollout_filenames(
     codex_home: &std::path::Path,
     process_start: Option<SystemTime>,
+    used_ids: &std::collections::HashSet<String>,
 ) -> Option<String> {
     // Codex writes rollouts as `.../sessions/YYYY/MM/DD/rollout-...-<uuid>.jsonl`.
     // Some rollouts can be locked for reading while Codex is running; we rely only on filenames
@@ -169,17 +170,24 @@ fn infer_codex_session_id_from_rollout_filenames(
 
     candidates.sort_by_key(|(_id, t)| std::cmp::Reverse(*t));
 
-    // If we don't have a start time, keep the newest.
-    let Some(start) = process_start else {
-        return Some(candidates[0].0.clone());
-    };
+    // If we don't have a start time, keep the newest unused.
+    if process_start.is_none() {
+        for (id, _t) in candidates.iter() {
+            if !used_ids.contains(id) {
+                return Some(id.clone());
+            }
+        }
+        return None;
+    }
+
+    let start = process_start.unwrap();
 
     // Prefer rollouts created at/after process start (small tolerance), and close in time.
     const BEFORE_TOLERANCE: Duration = Duration::from_secs(5);
     const MAX_WINDOW: Duration = Duration::from_secs(5 * 60);
 
-    let mut best: Option<(&str, Duration)> = None;
-    for (id, t) in candidates.iter().take(120) {
+    let mut scored: Vec<(String, Duration)> = Vec::new();
+    for (id, t) in candidates.iter().take(200) {
         if *t + BEFORE_TOLERANCE < start {
             continue;
         }
@@ -193,12 +201,14 @@ fn infer_codex_session_id_from_rollout_filenames(
         if dt > MAX_WINDOW {
             continue;
         }
-        if best.map(|(_, bdt)| dt < bdt).unwrap_or(true) {
-            best = Some((id.as_str(), dt));
+        if used_ids.contains(id) {
+            continue;
         }
+        scored.push((id.clone(), dt));
     }
 
-    best.map(|(id, _dt)| id.to_string())
+    scored.sort_by_key(|(_id, dt)| *dt);
+    scored.first().map(|(id, _)| id.clone())
 }
 
 #[cfg(windows)]
@@ -703,8 +713,13 @@ fn discover_sessions_using_router_uncached(
             matches_router,
         }
     }
-    fn frozen_codex_session_id(pid: u32, cmd: Option<&str>, router_port: u16) -> Option<String> {
-        let _ = router_port;
+    fn frozen_codex_session_id(
+        pid: u32,
+        cmd: Option<&str>,
+        codex_home: Option<&std::path::Path>,
+        process_start: Option<SystemTime>,
+        used_ids: &mut std::collections::HashSet<String>,
+    ) -> Option<String> {
         // Session id inference from rollouts can "flip" when multiple Codex processes share the
         // same CWD and new rollouts are written. Freeze the inferred session id per PID for
         // stability during the process lifetime.
@@ -720,21 +735,29 @@ fn discover_sessions_using_router_uncached(
         if let Ok(mut guard) = frozen.lock() {
             guard.retain(|k, _| crate::platform::windows_loopback_peer::is_pid_alive(k.pid));
             if let Some(v) = guard.get(&key) {
-                return Some(v.clone());
+                if !used_ids.contains(v) {
+                    used_ids.insert(v.clone());
+                    return Some(v.clone());
+                }
             }
             // Prefer the explicit session id when Codex uses `resume <uuid>`.
             let inferred = cmd
                 .and_then(parse_codex_session_id_from_cmdline)
                 .or_else(|| {
                     // Best-effort: infer by matching recent rollout filenames to process start time.
-                    // This avoids reading locked jsonl files and provides a session id before the first
-                    // request, but can still be imperfect if multiple processes start at the same time.
-                    let start = process_create_time(pid);
-                    let codex_home = process_codex_home(pid)?;
-                    infer_codex_session_id_from_rollout_filenames(&codex_home, start)
+                    // This avoids reading locked jsonl files and provides a session id before the
+                    // first request, but can still be imperfect if multiple processes start at the
+                    // same time. We also avoid reusing ids already claimed in this poll.
+                    let codex_home = codex_home?;
+                    infer_codex_session_id_from_rollout_filenames(
+                        codex_home,
+                        process_start,
+                        used_ids,
+                    )
                 });
             if let Some(id) = inferred.as_ref() {
                 guard.insert(key, id.clone());
+                used_ids.insert(id.clone());
             }
             return inferred;
         }
@@ -742,9 +765,8 @@ fn discover_sessions_using_router_uncached(
         // If locking fails, fall back to a non-frozen inference.
         cmd.and_then(parse_codex_session_id_from_cmdline)
             .or_else(|| {
-                let start = process_create_time(pid);
-                let codex_home = process_codex_home(pid)?;
-                infer_codex_session_id_from_rollout_filenames(&codex_home, start)
+                let codex_home = codex_home?;
+                infer_codex_session_id_from_rollout_filenames(codex_home, process_start, used_ids)
             })
     }
 
@@ -850,6 +872,16 @@ fn discover_sessions_using_router_uncached(
     // Add more names only if we have strong evidence Codex runs under them.
     let candidates = ["codex.exe", "codex"];
 
+    #[derive(Clone)]
+    struct ProcInfo {
+        pid: u32,
+        wt: String,
+        cmd: Option<String>,
+        codex_home: Option<std::path::PathBuf>,
+        start: Option<SystemTime>,
+    }
+
+    let mut procs: Vec<ProcInfo> = Vec::new();
     let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
 
@@ -865,8 +897,6 @@ fn discover_sessions_using_router_uncached(
                 crate::platform::windows_loopback_peer::read_process_env_var(pid, "WT_SESSION");
             if let Some(wt) = wt {
                 let cmd = crate::platform::windows_loopback_peer::read_process_command_line(pid);
-                let _cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid)
-                    .map(|p| p.to_string_lossy().to_string());
 
                 // Ignore Codex background helpers that are not user sessions.
                 if cmd
@@ -877,9 +907,6 @@ fn discover_sessions_using_router_uncached(
                     continue;
                 }
 
-                // Infer session id early; we can use it as a stronger signal than the current on-disk config.
-                let codex_session_id = frozen_codex_session_id(pid, cmd.as_deref(), server_port);
-
                 // Token: exclude on explicit mismatch; allow unknown (e.g. keyring).
                 if let Some(expected) = expected_gateway_token {
                     let (actual, _src) = read_effective_codex_gateway_token_info(pid);
@@ -889,52 +916,74 @@ fn discover_sessions_using_router_uncached(
                     }
                 }
 
-                // The rollout meta reflects what the process actually launched/resumed with.
                 let codex_home = process_codex_home(pid);
-                let rollout_meta = codex_home.as_deref().and_then(|h| {
-                    let id = codex_session_id.as_deref()?;
-                    let p = latest_rollout_for_session(h, id)?;
-                    let file = std::fs::File::open(&p).ok()?;
-                    let mut r = std::io::BufReader::new(file);
-                    let mut first = String::new();
-                    if r.read_line(&mut first).ok().unwrap_or(0) == 0 {
-                        return None;
-                    }
-                    parse_rollout_session_meta(&first)
-                });
-
-                let matched = match rollout_meta
-                    .as_ref()
-                    .and_then(|m| rollout_base_url_matches_router(m, server_port))
-                {
-                    Some(v) => v,
-                    None => {
-                        // Only accept env vars or a config file that we consider "trusted" for this
-                        // specific process lifetime. If the config has been edited after the
-                        // process started, it is not evidence of the *running* base_url.
-                        let ev = frozen_codex_base_url_evidence(pid, server_port);
-                        ev.matches_router
-                            && matches!(
-                                ev.kind,
-                                BaseUrlEvidenceKind::Env | BaseUrlEvidenceKind::ConfigTrusted
-                            )
-                    }
-                };
-                out.push(InferredWtSession {
-                    wt_session: wt,
+                let start = process_create_time(pid);
+                procs.push(ProcInfo {
                     pid,
-                    reported_model_provider: rollout_meta
-                        .as_ref()
-                        .and_then(|m| m.model_provider.clone())
-                        .or_else(|| frozen_codex_model_provider(pid)),
-                    reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
-                    codex_session_id,
-                    router_confirmed: matched,
+                    wt,
+                    cmd,
+                    codex_home,
+                    start,
                 });
             }
         }
 
         ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+
+    procs.sort_by_key(|p| p.start.and_then(systemtime_to_unix_ms).unwrap_or(0));
+
+    let mut used_session_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for p in procs {
+        let codex_session_id = frozen_codex_session_id(
+            p.pid,
+            p.cmd.as_deref(),
+            p.codex_home.as_deref(),
+            p.start,
+            &mut used_session_ids,
+        );
+
+        // The rollout meta reflects what the process actually launched/resumed with.
+        let rollout_meta = p.codex_home.as_deref().and_then(|h| {
+            let id = codex_session_id.as_deref()?;
+            let p = latest_rollout_for_session(h, id)?;
+            let file = std::fs::File::open(&p).ok()?;
+            let mut r = std::io::BufReader::new(file);
+            let mut first = String::new();
+            if r.read_line(&mut first).ok().unwrap_or(0) == 0 {
+                return None;
+            }
+            parse_rollout_session_meta(&first)
+        });
+
+        let matched = match rollout_meta
+            .as_ref()
+            .and_then(|m| rollout_base_url_matches_router(m, server_port))
+        {
+            Some(v) => v,
+            None => {
+                // Only accept env vars or a config file that we consider "trusted" for this
+                // specific process lifetime. If the config has been edited after the
+                // process started, it is not evidence of the *running* base_url.
+                let ev = frozen_codex_base_url_evidence(p.pid, server_port);
+                ev.matches_router
+                    && matches!(
+                        ev.kind,
+                        BaseUrlEvidenceKind::Env | BaseUrlEvidenceKind::ConfigTrusted
+                    )
+            }
+        };
+        out.push(InferredWtSession {
+            wt_session: p.wt,
+            pid: p.pid,
+            reported_model_provider: rollout_meta
+                .as_ref()
+                .and_then(|m| m.model_provider.clone())
+                .or_else(|| frozen_codex_model_provider(p.pid)),
+            reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
+            codex_session_id,
+            router_confirmed: matched,
+        });
     }
 
     let _ = unsafe { CloseHandle(snapshot) };
