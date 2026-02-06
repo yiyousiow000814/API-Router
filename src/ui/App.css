@@ -482,7 +482,8 @@
 }
 
 .aoSplitBtnPrimary:hover {
-  border-color: rgba(40, 199, 217, 0.42);
+  border-color: rgba(40, 199, 217, 0.52);
+  box-shadow: 0 0 0 3px rgba(40, 199, 217, 0.12);
 }
 
 .aoSplitBtnBtn {
@@ -499,7 +500,7 @@
 }
 
 .aoSplitBtnPrimary .aoSplitBtnBtn:hover {
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.26);
 }
 
 .aoSplitBtnBtn:hover {
