@@ -192,37 +192,31 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
     let ledgers = state.gateway.store.list_ledgers();
     let last_activity = state.gateway.last_activity_unix_ms.load(Ordering::Relaxed);
     let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
-    let (active_provider, active_reason, active_providers, active_provider_counts) =
-        if active_recent {
-            let map = state.gateway.last_used_by_session.read();
-            let last = map.values().max_by_key(|v| v.unix_ms).cloned();
+    let (active_provider, active_reason, active_provider_counts) = if active_recent {
+        let map = state.gateway.last_used_by_session.read();
+        let last = map
+            .values()
+            .filter(|v| now.saturating_sub(v.unix_ms) < 2 * 60 * 1000)
+            .max_by_key(|v| v.unix_ms)
+            .cloned();
 
-            // Multiple Codex sessions can be active simultaneously, potentially routing through different
-            // providers. Expose the full active provider set so the UI can mark multiple providers as
-            // "effective" at once.
-            let mut counts: std::collections::BTreeMap<String, u64> =
-                std::collections::BTreeMap::new();
-            for v in map.values() {
-                if now.saturating_sub(v.unix_ms) < 2 * 60 * 1000 {
-                    *counts.entry(v.provider.clone()).or_default() += 1;
-                }
+        // Multiple Codex sessions can be active simultaneously, potentially routing through different
+        // providers. Expose the full active provider set so the UI can mark multiple providers as
+        // "effective" at once.
+        let mut counts: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+        for v in map.values() {
+            if now.saturating_sub(v.unix_ms) < 2 * 60 * 1000 {
+                *counts.entry(v.provider.clone()).or_default() += 1;
             }
-            let providers = counts.keys().cloned().collect::<Vec<_>>();
-
-            (
-                last.as_ref().map(|v| v.provider.clone()),
-                last.map(|v| v.reason),
-                providers,
-                counts,
-            )
-        } else {
-            (
-                None,
-                None,
-                Vec::<String>::new(),
-                std::collections::BTreeMap::<String, u64>::new(),
-            )
-        };
+        }
+        (
+            last.as_ref().map(|v| v.provider.clone()),
+            last.map(|v| v.reason),
+            counts,
+        )
+    } else {
+        (None, None, std::collections::BTreeMap::<String, u64>::new())
+    };
     let codex_account = state
         .gateway
         .store
@@ -343,7 +337,6 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
       "recent_events": recent_events,
       "active_provider": active_provider,
       "active_reason": active_reason,
-      "active_providers": active_providers,
       "active_provider_counts": active_provider_counts,
       "quota": quota,
       "ledgers": ledgers,
