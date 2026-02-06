@@ -281,8 +281,6 @@ export default function App() {
       }
     }
     return [...sessions].sort((a, b) => {
-      const activeCmp = (b.active ? 1 : 0) - (a.active ? 1 : 0)
-      if (activeCmp) return activeCmp
       return (order[a.id] ?? 0) - (order[b.id] ?? 0)
     })
   }, [status])
