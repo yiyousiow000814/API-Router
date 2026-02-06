@@ -384,6 +384,20 @@
   font-size: 13px;
 }
 
+.aoKvpRight {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.aoKvpRight .aoVal {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .aoKey {
   color: rgba(13, 18, 32, 0.62);
 }
@@ -462,6 +476,15 @@
   overflow: hidden;
 }
 
+.aoSplitBtnPrimary {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.3), rgba(242, 193, 77, 0.22));
+  border-color: rgba(40, 199, 217, 0.3);
+}
+
+.aoSplitBtnPrimary:hover {
+  border-color: rgba(40, 199, 217, 0.42);
+}
+
 .aoSplitBtnBtn {
   height: 32px;
   border: none;
@@ -473,6 +496,10 @@
   cursor: pointer;
   display: inline-flex;
   align-items: center;
+}
+
+.aoSplitBtnPrimary .aoSplitBtnBtn:hover {
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .aoSplitBtnBtn:hover {
