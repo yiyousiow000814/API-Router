@@ -187,6 +187,7 @@ mod tests {
                 LastUsedRoute {
                     provider: "p2".to_string(),
                     reason: "preferred_unhealthy".to_string(),
+                    preferred: "p1".to_string(),
                     unix_ms: unix_ms(),
                 },
             )]))),
@@ -261,6 +262,7 @@ mod tests {
                 LastUsedRoute {
                     provider: "p2".to_string(),
                     reason: "preferred_stabilizing".to_string(),
+                    preferred: "p1".to_string(),
                     unix_ms: unix_ms(),
                 },
             )]))),

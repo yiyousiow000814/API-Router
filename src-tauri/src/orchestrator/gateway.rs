@@ -72,6 +72,7 @@ pub struct GatewayState {
 pub struct LastUsedRoute {
     pub provider: String,
     pub reason: String,
+    pub preferred: String,
     pub unix_ms: u64,
 }
 
@@ -787,6 +788,7 @@ async fn responses(
                             LastUsedRoute {
                                 provider: provider_name.clone(),
                                 reason: reason.to_string(),
+                                preferred: preferred.to_string(),
                                 unix_ms: unix_ms(),
                             },
                         );
@@ -807,10 +809,11 @@ async fn responses(
                                     "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
                                 }),
                             );
-                        } else if prev
-                            .as_ref()
-                            .is_some_and(|p| p.provider.as_str() != provider_name)
-                        {
+                        } else if prev.as_ref().is_some_and(|p| {
+                            p.provider.as_str() != provider_name
+                                && p.preferred.as_str() == provider_name
+                                && preferred == provider_name
+                        }) {
                             // Only log "back to preferred" when we were previously using a
                             // different provider.
                             st.store.add_event(
@@ -827,6 +830,8 @@ async fn responses(
                                     "provider": provider_name,
                                     "from_provider": prev.as_ref().map(|p| p.provider.clone()),
                                     "from_reason": prev.as_ref().map(|p| p.reason.clone()),
+                                    "from_preferred": prev.as_ref().map(|p| p.preferred.clone()),
+                                    "preferred": preferred,
                                     "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                     "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                     "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
@@ -922,6 +927,7 @@ async fn responses(
                         LastUsedRoute {
                             provider: provider_name.clone(),
                             reason: reason.to_string(),
+                            preferred: preferred.to_string(),
                             unix_ms: unix_ms(),
                         },
                     );
@@ -955,10 +961,11 @@ async fn responses(
                                 "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
                             }),
                         );
-                    } else if prev
-                        .as_ref()
-                        .is_some_and(|p| p.provider.as_str() != provider_name)
-                    {
+                    } else if prev.as_ref().is_some_and(|p| {
+                        p.provider.as_str() != provider_name
+                            && p.preferred.as_str() == provider_name
+                            && preferred == provider_name
+                    }) {
                         st.store.add_event(
                             &provider_name,
                             "info",
@@ -973,6 +980,8 @@ async fn responses(
                                 "provider": provider_name,
                                 "from_provider": prev.as_ref().map(|p| p.provider.clone()),
                                 "from_reason": prev.as_ref().map(|p| p.reason.clone()),
+                                "from_preferred": prev.as_ref().map(|p| p.preferred.clone()),
+                                "preferred": preferred,
                                 "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                 "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                 "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
