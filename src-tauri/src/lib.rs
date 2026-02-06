@@ -295,6 +295,16 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                 {
                     return false;
                 }
+                // If we couldn't attach a request to a live process (pid=0), we have no reliable
+                // way to know when the Codex session has ended. Prune very stale entries so closed
+                // sessions don't stick around forever.
+                if v.pid == 0 {
+                    const PIDLESS_STALE_MS: u64 = 2 * 60 * 1000;
+                    let last_seen = v.last_request_unix_ms.max(v.last_discovered_unix_ms);
+                    if last_seen > 0 && now.saturating_sub(last_seen) > PIDLESS_STALE_MS {
+                        return false;
+                    }
+                }
                 true
             });
         }
@@ -305,7 +315,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
             std::cmp::Reverse(v.last_request_unix_ms.max(v.last_discovered_unix_ms))
         });
         items.truncate(20);
-        let mut sessions = items
+        let sessions = items
             .into_iter()
             .map(|(_codex_session_id, v)| {
                 // Consider a session "active" only if it has recently made requests through the router.
@@ -339,48 +349,6 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                 })
             })
             .collect::<Vec<_>>();
-
-        // Suppress duplicate "discovery-only" rows once we've observed a real Codex session id
-        // (via request headers/body) for the same underlying process/tab.
-        let mut seen_pids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
-        let mut seen_wt: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for v in map.values() {
-            if v.pid != 0 {
-                seen_pids.insert(v.pid);
-            }
-            if let Some(wt) = v.wt_session.as_deref() {
-                let wt = wt.trim();
-                if !wt.is_empty() {
-                    seen_wt.insert(wt.to_string());
-                }
-            }
-        }
-
-        // Also surface discovery-only rows that don't have a Codex session id yet. These are still
-        // useful to show in the UI (unverified sessions) so users can see that Codex is running,
-        // even before the first request.
-        for s in discovered
-            .into_iter()
-            .filter(|s| s.codex_session_id.is_none())
-        {
-            if s.pid != 0 && seen_pids.contains(&s.pid) {
-                continue;
-            }
-            if !s.wt_session.trim().is_empty() && seen_wt.contains(s.wt_session.trim()) {
-                continue;
-            }
-            sessions.push(serde_json::json!({
-                "id": format!("pid:{}:wt:{}", s.pid, s.wt_session),
-                "wt_session": s.wt_session,
-                "codex_session_id": serde_json::Value::Null,
-                "reported_model_provider": s.reported_model_provider,
-                "reported_base_url": s.reported_base_url,
-                "last_seen_unix_ms": now,
-                "active": false,
-                "preferred_provider": serde_json::Value::Null,
-                "verified": s.router_confirmed
-            }));
-        }
 
         sessions
     };

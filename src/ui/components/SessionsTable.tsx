@@ -64,7 +64,7 @@ export function SessionsTable({
                       {codexSession ? (
                         <div title={`WT_SESSION: ${wt}`}>{codexSession}</div>
                       ) : (
-                        <div title={`Codex session id is unknown yet. WT_SESSION: ${wt}`}>{wt !== '-' ? `WT:${wt}` : '-'}</div>
+                        <div title={`WT_SESSION: ${wt}`}>-</div>
                       )}
                     </td>
                     <td className="aoCellCenter">
@@ -156,7 +156,7 @@ export function SessionsTable({
                         {codexSession ? (
                           <div title={`WT_SESSION: ${wt}`}>{codexSession}</div>
                         ) : (
-                          <div title={`Codex session id is unknown yet. WT_SESSION: ${wt}`}>{wt !== '-' ? `WT:${wt}` : '-'}</div>
+                          <div title={`WT_SESSION: ${wt}`}>-</div>
                         )}
                       </td>
                       <td className="aoCellCenter">

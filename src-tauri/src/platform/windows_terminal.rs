@@ -96,6 +96,112 @@ fn rollout_base_url_matches_router(meta: &RolloutSessionMeta, router_port: u16) 
 }
 
 #[cfg(windows)]
+fn parse_session_id_from_rollout_filename(path: &std::path::Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    if !name.to_ascii_lowercase().ends_with(".jsonl") {
+        return None;
+    }
+    let stem = name.strip_suffix(".jsonl").unwrap_or(name);
+    let last = stem.rsplit('-').next()?;
+    if uuid::Uuid::parse_str(last).is_ok() {
+        Some(last.to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn infer_codex_session_id_from_rollout_filenames(
+    codex_home: &std::path::Path,
+    process_start: Option<SystemTime>,
+) -> Option<String> {
+    // Codex writes rollouts as `.../sessions/YYYY/MM/DD/rollout-...-<uuid>.jsonl`.
+    // Some rollouts can be locked for reading while Codex is running; we rely only on filenames
+    // + filesystem timestamps here.
+    let sessions_dir = codex_home.join("sessions");
+    let mut stack: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&sessions_dir) {
+        stack.extend(rd.flatten().map(|e| e.path()));
+    } else {
+        return None;
+    }
+
+    let mut candidates: Vec<(String, SystemTime)> = Vec::new();
+
+    while let Some(p) = stack.pop() {
+        let Ok(md) = std::fs::metadata(&p) else {
+            continue;
+        };
+        if md.is_dir() {
+            if let Ok(rd) = std::fs::read_dir(&p) {
+                for e in rd.flatten() {
+                    stack.push(e.path());
+                }
+            }
+            continue;
+        }
+        if !md.is_file() {
+            continue;
+        }
+        let Some(id) = parse_session_id_from_rollout_filename(&p) else {
+            continue;
+        };
+
+        // `created()` is a better proxy for "session start" than `modified()` because the rollout
+        // file can keep getting appended to during the session.
+        let t = md
+            .created()
+            .ok()
+            .or_else(|| md.modified().ok())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+
+        candidates.push((id, t));
+
+        // Cap traversal to keep status polling cheap.
+        if candidates.len() > 300 {
+            break;
+        }
+    }
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    candidates.sort_by_key(|(_id, t)| std::cmp::Reverse(*t));
+
+    // If we don't have a start time, keep the newest.
+    let Some(start) = process_start else {
+        return Some(candidates[0].0.clone());
+    };
+
+    // Prefer rollouts created at/after process start (small tolerance), and close in time.
+    const BEFORE_TOLERANCE: Duration = Duration::from_secs(5);
+    const MAX_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+    let mut best: Option<(&str, Duration)> = None;
+    for (id, t) in candidates.iter().take(120) {
+        if *t + BEFORE_TOLERANCE < start {
+            continue;
+        }
+        let Some(dt) = t
+            .duration_since(start)
+            .ok()
+            .or_else(|| start.duration_since(*t).ok())
+        else {
+            continue;
+        };
+        if dt > MAX_WINDOW {
+            continue;
+        }
+        if best.map(|(_, bdt)| dt < bdt).unwrap_or(true) {
+            best = Some((id.as_str(), dt));
+        }
+    }
+
+    best.map(|(id, _dt)| id.to_string())
+}
+
+#[cfg(windows)]
 fn auth_status(expected: &str, actual: Option<&str>) -> &'static str {
     match actual {
         Some(a) if a == expected => "match",
@@ -616,11 +722,17 @@ fn discover_sessions_using_router_uncached(
             if let Some(v) = guard.get(&key) {
                 return Some(v.clone());
             }
-            // Only accept session ids that Codex explicitly exposes (e.g. `codex.exe resume <uuid>`).
-            //
-            // Inferring ids by scanning rollouts is ambiguous when multiple sessions share the same
-            // CWD, and can cause stale/closed session ids to "stick" to unrelated running processes.
-            let inferred = cmd.and_then(parse_codex_session_id_from_cmdline);
+            // Prefer the explicit session id when Codex uses `resume <uuid>`.
+            let inferred = cmd
+                .and_then(parse_codex_session_id_from_cmdline)
+                .or_else(|| {
+                    // Best-effort: infer by matching recent rollout filenames to process start time.
+                    // This avoids reading locked jsonl files and provides a session id before the first
+                    // request, but can still be imperfect if multiple processes start at the same time.
+                    let start = process_create_time(pid);
+                    let codex_home = process_codex_home(pid)?;
+                    infer_codex_session_id_from_rollout_filenames(&codex_home, start)
+                });
             if let Some(id) = inferred.as_ref() {
                 guard.insert(key, id.clone());
             }
@@ -629,6 +741,11 @@ fn discover_sessions_using_router_uncached(
 
         // If locking fails, fall back to a non-frozen inference.
         cmd.and_then(parse_codex_session_id_from_cmdline)
+            .or_else(|| {
+                let start = process_create_time(pid);
+                let codex_home = process_codex_home(pid)?;
+                infer_codex_session_id_from_rollout_filenames(&codex_home, start)
+            })
     }
 
     fn latest_rollout_for_session(
