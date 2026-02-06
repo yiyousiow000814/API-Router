@@ -267,9 +267,24 @@ export default function App() {
     setClearErrorsBeforeMs((prev) => Math.max(prev, maxErrorUnixMs))
   }, [status])
 
+  // Keep a stable UI ordering for sessions across status polls so rows don't "jump" just because
+  // a discovery timestamp updated.
+  const sessionOrderRef = useRef<Record<string, number>>({})
+  const sessionOrderNextRef = useRef(1)
+
   const clientSessions = useMemo(() => {
     const sessions = status?.client_sessions ?? []
-    return [...sessions].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.last_seen_unix_ms - a.last_seen_unix_ms)
+    const order = sessionOrderRef.current
+    for (const s of sessions) {
+      if (order[s.id] == null) {
+        order[s.id] = sessionOrderNextRef.current++
+      }
+    }
+    return [...sessions].sort((a, b) => {
+      const activeCmp = (b.active ? 1 : 0) - (a.active ? 1 : 0)
+      if (activeCmp) return activeCmp
+      return (order[a.id] ?? 0) - (order[b.id] ?? 0)
+    })
   }, [status])
 
   async function setSessionPreferred(sessionId: string, provider: string | null) {
