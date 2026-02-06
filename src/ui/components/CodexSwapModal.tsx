@@ -26,36 +26,42 @@ export function CodexSwapModal({
   const canApplyBoth = dir2.trim().length > 0
 
   return (
-      <div className="aoModalBackdrop aoModalBackdropTop" role="dialog" aria-modal="true" onClick={onCancel}>
+    <div className="aoModalBackdrop aoModalBackdropTop" role="dialog" aria-modal="true" onClick={onCancel}>
       <div className="aoModal" onClick={(e) => e.stopPropagation()}>
         <div className="aoModalTitle">Codex CLI dirs</div>
         <div className="aoModalSub">Defaults to %USERPROFILE%\\.codex. Supports up to 2 dirs.</div>
-
-        <div className="aoDivider" style={{ marginTop: 10 }} />
-
-        <div className="aoModalBody" style={{ paddingTop: 10, paddingBottom: 6 }}>
-          <label className="aoLabel">
+        <div style={{ display: 'grid', gap: 12, marginTop: 10 }}>
+          <label className="aoRoutingRow">
             <span className="aoMiniLabel">Dir 1</span>
-            <input className="aoInput" value={dir1} onChange={(e) => onChangeDir1(e.target.value)} />
+            <input
+              className="aoInput"
+              style={{ width: '100%', height: 36, borderRadius: 12 }}
+              value={dir1}
+              onChange={(e) => onChangeDir1(e.target.value)}
+            />
           </label>
-          <div style={{ height: 10 }} />
-          <label className="aoLabel">
-            <span className="aoMiniLabel">Dir 2 (optional)</span>
-            <input className="aoInput" value={dir2} onChange={(e) => onChangeDir2(e.target.value)} />
-          </label>
-          <div style={{ height: 10 }} />
 
-          <label className="aoKvp" style={{ alignItems: 'center', gap: 10 }}>
+          <label className="aoRoutingRow">
+            <span className="aoMiniLabel">Dir 2 (optional)</span>
+            <input
+              className="aoInput"
+              style={{ width: '100%', height: 36, borderRadius: 12 }}
+              value={dir2}
+              onChange={(e) => onChangeDir2(e.target.value)}
+            />
+          </label>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <input
               type="checkbox"
               checked={applyBoth}
               disabled={!canApplyBoth}
               onChange={(e) => onChangeApplyBoth(e.target.checked)}
             />
-            <div className="aoVal">Apply to both dirs</div>
+            <span style={{ color: 'rgba(13, 18, 32, 0.86)', fontWeight: 620 }}>Apply to both dirs</span>
           </label>
 
-          <div className="aoHint" style={{ marginTop: 8 }}>
+          <div className="aoHint">
             Each dir must contain auth.json and config.toml, otherwise you'll get an error.
           </div>
         </div>
