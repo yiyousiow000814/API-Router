@@ -200,7 +200,10 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
             .values()
             .max_by_key(|v| v.unix_ms)
             .cloned();
-        (last.as_ref().map(|v| v.provider.clone()), last.map(|v| v.reason))
+        (
+            last.as_ref().map(|v| v.provider.clone()),
+            last.map(|v| v.reason),
+        )
     } else {
         (None, None)
     };
@@ -468,7 +471,9 @@ fn clear_session_preferred_provider(
     }
     {
         let mut cfg = state.gateway.cfg.write();
-        cfg.routing.session_preferred_providers.remove(&codex_session_id);
+        cfg.routing
+            .session_preferred_providers
+            .remove(&codex_session_id);
     }
     persist_config(&state).map_err(|e| e.to_string())?;
     state.gateway.store.add_event(

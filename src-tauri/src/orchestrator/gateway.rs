@@ -489,7 +489,10 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
             .values()
             .max_by_key(|v| v.unix_ms)
             .cloned();
-        (last.as_ref().map(|v| v.provider.clone()), last.map(|v| v.reason))
+        (
+            last.as_ref().map(|v| v.provider.clone()),
+            last.map(|v| v.reason),
+        )
     } else {
         (None, None)
     };
