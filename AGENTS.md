@@ -33,6 +33,7 @@
 
 ## Canonical Implementation Policy (Breaking Changes Allowed)
 
+- **No retrofit smell**: after the change, the codebase MUST appear as if the feature existed from day one—consistent naming, structure, ownership boundaries, and data flow; no scaffolding, transitional glue, or compatibility artifacts.
 - **Single canonical path:** All changes MUST be implemented in the **primary codepath** as the **only** canonical implementation.
 - **Remove legacy:** Delete any **legacy / dead / duplicate** implementations. Do not keep parallel codepaths.
 - **No long-term compatibility:** Do NOT keep parallel implementations or long-lived compatibility layers. If external inputs vary, normalize them into one canonical internal shape and remove legacy handling as soon as possible.
