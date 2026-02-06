@@ -131,7 +131,7 @@ export function HeroCodexCard({
           </button>
           {status.codex_account?.signed_in ? (
             <button
-              className="aoIconBtn aoIconBtnDangerSoft"
+              className="aoIconBtn aoIconBtnMini aoIconBtnDangerSoft"
               title="Log out"
               aria-label="Log out"
               onClick={onLoginLogout}

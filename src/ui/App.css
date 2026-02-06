@@ -1247,6 +1247,18 @@
   shape-rendering: geometricPrecision;
 }
 
+.aoIconBtnMini {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+}
+
+.aoIconBtnMini svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2.1;
+}
+
 .aoIconBtnDanger:hover {
   border-color: rgba(255, 94, 125, 0.45);
 }
@@ -1288,8 +1300,8 @@
   /* Match the split button width so the option feels proportional. */
   width: 100%;
   min-width: 0;
-  border-radius: 12px;
-  padding: 5px;
+  border-radius: 11px;
+  padding: 2px;
   box-sizing: border-box;
 }
 
