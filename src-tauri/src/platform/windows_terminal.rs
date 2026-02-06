@@ -16,7 +16,6 @@ use std::time::{Duration, SystemTime};
 pub struct InferredWtSession {
     pub wt_session: String,
     pub pid: u32,
-    pub codex_session_id: Option<String>,
     pub reported_model_provider: Option<String>,
     pub reported_base_url: Option<String>,
     pub router_confirmed: bool,
@@ -269,14 +268,9 @@ pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWt
         if wt.trim().is_empty() {
             return None;
         }
-        let codex_session_id =
-            crate::platform::windows_loopback_peer::read_process_command_line(pid)
-                .as_deref()
-                .and_then(parse_codex_session_id_from_cmdline);
         Some(InferredWtSession {
             wt_session: wt,
             pid,
-            codex_session_id,
             reported_model_provider: None,
             reported_base_url: None,
             router_confirmed: true,
@@ -785,7 +779,6 @@ fn discover_sessions_using_router_uncached(
                 out.push(InferredWtSession {
                     wt_session: wt,
                     pid,
-                    codex_session_id: Some(codex_session_id),
                     reported_model_provider: rollout_meta
                         .as_ref()
                         .and_then(|m| m.model_provider.clone()),
