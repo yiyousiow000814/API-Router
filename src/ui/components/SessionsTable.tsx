@@ -82,7 +82,7 @@ export function SessionsTable({
                       <select
                         className="aoSelect"
                         value={s.preferred_provider ?? ''}
-                        disabled={!!updating[s.id] || !allowPreferredChanges || !verified}
+                        disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession}
                         onChange={(e) => {
                           const v = e.target.value
                           onSetPreferred(s.id, v ? v : null)
@@ -174,7 +174,7 @@ export function SessionsTable({
                         <select
                           className="aoSelect"
                           value={s.preferred_provider ?? ''}
-                          disabled={!!updating[s.id] || !allowPreferredChanges || !verified}
+                          disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession}
                           onChange={(e) => {
                             const v = e.target.value
                             onSetPreferred(s.id, v ? v : null)

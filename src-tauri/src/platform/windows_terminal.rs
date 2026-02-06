@@ -16,6 +16,7 @@ use std::time::{Duration, SystemTime};
 pub struct InferredWtSession {
     pub wt_session: String,
     pub pid: u32,
+    pub codex_session_id: Option<String>,
     pub reported_model_provider: Option<String>,
     pub reported_base_url: Option<String>,
     pub router_confirmed: bool,
@@ -24,7 +25,7 @@ pub struct InferredWtSession {
 #[cfg(windows)]
 fn parse_codex_session_id_from_cmdline(cmd: &str) -> Option<String> {
     // `codex` commonly launches as: `codex.exe resume <uuid>`.
-    // If we see `resume`, take the next UUID token. Otherwise take the first UUID token.
+    // If we see `resume`, take the next UUID token.
     let toks: Vec<&str> = cmd.split_whitespace().collect();
     for i in 0..toks.len() {
         if toks[i].eq_ignore_ascii_case("resume") {
@@ -33,11 +34,6 @@ fn parse_codex_session_id_from_cmdline(cmd: &str) -> Option<String> {
                     return Some((*next).to_string());
                 }
             }
-        }
-    }
-    for t in toks {
-        if uuid::Uuid::parse_str(t).is_ok() {
-            return Some(t.to_string());
         }
     }
     None
@@ -268,9 +264,14 @@ pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWt
         if wt.trim().is_empty() {
             return None;
         }
+        let codex_session_id =
+            crate::platform::windows_loopback_peer::read_process_command_line(pid)
+                .as_deref()
+                .and_then(parse_codex_session_id_from_cmdline);
         Some(InferredWtSession {
             wt_session: wt,
             pid,
+            codex_session_id,
             reported_model_provider: None,
             reported_base_url: None,
             router_confirmed: true,
@@ -783,6 +784,7 @@ fn discover_sessions_using_router_uncached(
                         .as_ref()
                         .and_then(|m| m.model_provider.clone()),
                     reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
+                    codex_session_id: Some(codex_session_id),
                     router_confirmed: matched,
                 });
             }

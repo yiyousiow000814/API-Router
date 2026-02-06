@@ -244,6 +244,9 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                 if s.router_confirmed {
                     entry.confirmed_router = true;
                 }
+                if let Some(cid) = s.codex_session_id.as_deref() {
+                    entry.last_codex_session_id = Some(cid.to_string());
+                }
                 if let Some(mp) = s.reported_model_provider.as_deref() {
                     entry.last_reported_model_provider = Some(mp.to_string());
                 }
@@ -289,8 +292,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                 let active = v.last_request_unix_ms > 0
                     && now.saturating_sub(v.last_request_unix_ms) < 60_000;
 
-                // Session preference is keyed by Codex session id. If we don't know it yet, do not
-                // allow setting a preference for this row.
+                // Session preference is keyed by Codex session id.
                 let codex_id = v.last_codex_session_id.clone();
                 let pref = codex_id
                     .as_ref()
@@ -307,7 +309,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                     "last_seen_unix_ms": last_seen_unix_ms,
                     "active": active,
                     "preferred_provider": pref,
-                    "verified": v.confirmed_router && v.last_codex_session_id.is_some()
+                    "verified": v.confirmed_router
                 })
             })
             .collect::<Vec<_>>();
