@@ -36,10 +36,13 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
           const q = status.quota?.[p]
           const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
           const cooldownActive = h.cooldown_until_unix_ms > Date.now()
-          const isActive = (status.active_provider ?? null) === p
+          const activeCount = status.active_provider_counts?.[p] ?? 0
+          const isActive = activeCount > 0
           const healthLabel =
             isActive
-              ? 'effective'
+              ? activeCount > 1
+                ? `effective x${activeCount}`
+                : 'effective'
               : h.status === 'healthy'
                 ? 'yes'
                 : h.status === 'unhealthy'
@@ -54,9 +57,9 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                 ? 'aoDot'
                 : h.status === 'cooldown'
                   ? 'aoDot'
-                  : h.status === 'unhealthy'
-                    ? 'aoDot aoDotBad'
-                    : 'aoDot aoDotMuted'
+                : h.status === 'unhealthy'
+                  ? 'aoDot aoDotBad'
+                  : 'aoDot aoDotMuted'
 
           const usageNode =
             kind === 'token_stats' ? (
