@@ -34,6 +34,7 @@ export type Status = {
   }>
   active_provider?: string | null
   active_reason?: string | null
+  active_provider_counts?: Record<string, number>
   quota: Record<
     string,
     {

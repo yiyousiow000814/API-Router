@@ -192,20 +192,39 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
     let ledgers = state.gateway.store.list_ledgers();
     let last_activity = state.gateway.last_activity_unix_ms.load(Ordering::Relaxed);
     let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
-    let (active_provider, active_reason) = if active_recent {
-        let last = state
-            .gateway
-            .last_used_by_session
-            .read()
-            .values()
-            .max_by_key(|v| v.unix_ms)
-            .cloned();
+    let (active_provider, active_reason, active_provider_counts) = if active_recent {
+        let map = state.gateway.last_used_by_session.read();
+
+        // Multiple Codex sessions can be active simultaneously, potentially routing through different
+        // providers. Expose the full active provider set so the UI can mark multiple providers as
+        // "effective" at once.
+        //
+        // Keep this a single pass so `active_provider` (most recent) and `active_provider_counts`
+        // share the same time window semantics.
+        let mut counts: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+        let mut last: Option<crate::orchestrator::gateway::LastUsedRoute> = None;
+
+        for v in map.values() {
+            if now.saturating_sub(v.unix_ms) >= 2 * 60 * 1000 {
+                continue;
+            }
+            *counts.entry(v.provider.clone()).or_default() += 1;
+            if last
+                .as_ref()
+                .map(|cur| v.unix_ms > cur.unix_ms)
+                .unwrap_or(true)
+            {
+                last = Some(v.clone());
+            }
+        }
+
         (
             last.as_ref().map(|v| v.provider.clone()),
             last.map(|v| v.reason),
+            counts,
         )
     } else {
-        (None, None)
+        (None, None, std::collections::BTreeMap::<String, u64>::new())
     };
     let codex_account = state
         .gateway
@@ -327,6 +346,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
       "recent_events": recent_events,
       "active_provider": active_provider,
       "active_reason": active_reason,
+      "active_provider_counts": active_provider_counts,
       "quota": quota,
       "ledgers": ledgers,
       "last_activity_unix_ms": last_activity,
