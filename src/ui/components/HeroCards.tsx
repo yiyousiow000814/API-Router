@@ -162,38 +162,39 @@ export function HeroCodexCard({
         >
           {status.codex_account?.signed_in ? 'Log out' : 'Log in'}
         </button>
-        <div className="aoActionsMenuWrap" ref={menuWrapRef} style={{ justifyContent: 'flex-start', gap: 8 }}>
-          <div style={{ display: 'flex', gap: 0 }}>
-            <button
-              className="aoBtn"
-              onClick={onSwapAuthConfig}
-              style={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
-              title={swapBadgeTitle}
-            >
+        <div className="aoActionsMenuWrap" ref={menuWrapRef} style={{ justifyContent: 'flex-start' }}>
+          <div className="aoSplitBtn" title={swapBadgeTitle}>
+            <button className="aoSplitBtnBtn" onClick={onSwapAuthConfig}>
               Swap
+              {swapBadgeText ? (
+                <span className="aoBtnTag" aria-label={`Swap status: ${swapBadgeText}`}>
+                  <span
+                    className={[
+                      'aoBtnTagDot',
+                      swapBadgeText === 'App'
+                        ? 'aoBtnTagDotApp'
+                        : swapBadgeText === 'Error'
+                          ? 'aoBtnTagDotError'
+                          : swapBadgeText === 'Mixed'
+                            ? 'aoBtnTagDotMixed'
+                            : 'aoBtnTagDotUser',
+                    ].join(' ')}
+                    aria-hidden="true"
+                  />
+                  {swapBadgeText}
+                </span>
+              ) : null}
             </button>
+            <span className="aoSplitBtnDivider" aria-hidden="true" />
             <button
-              className="aoBtn"
+              className="aoSplitBtnBtn aoSplitBtnArrow"
               aria-label="Swap options"
               title="Swap options"
               onClick={() => setMenuOpen((v) => !v)}
-              style={{
-                width: 42,
-                paddingLeft: 0,
-                paddingRight: 0,
-                borderTopLeftRadius: 0,
-                borderBottomLeftRadius: 0,
-              }}
             >
               ▼
             </button>
           </div>
-          {swapBadgeText ? (
-            <span className="aoPill" title={swapBadgeTitle} style={{ height: 32, gap: 8 }}>
-              <span className={swapBadgeText.toLowerCase().includes('error') ? 'aoDot aoDotBad' : swapBadgeText.toLowerCase().includes('app') ? 'aoDot' : 'aoDot aoDotMuted'} />
-              <span className="aoPillText">{swapBadgeText}</span>
-            </span>
-          ) : null}
           {menuOpen ? (
             <div className="aoMenu" role="menu" aria-label="Swap options menu">
               <button
