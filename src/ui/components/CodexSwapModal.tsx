@@ -26,10 +26,10 @@ export function CodexSwapModal({
   const canApplyBoth = dir2.trim().length > 0
 
   return (
-    <div className="aoModalBackdrop aoModalBackdropTop" role="dialog" aria-modal="true" onClick={onCancel}>
+      <div className="aoModalBackdrop aoModalBackdropTop" role="dialog" aria-modal="true" onClick={onCancel}>
       <div className="aoModal" onClick={(e) => e.stopPropagation()}>
         <div className="aoModalTitle">Codex CLI dirs</div>
-        <div className="aoModalSub">默认会是 %USERPROFILE%\\.codex。最多支持两个目录。</div>
+        <div className="aoModalSub">Defaults to %USERPROFILE%\\.codex. Supports up to 2 dirs.</div>
 
         <div className="aoDivider" style={{ marginTop: 10 }} />
 
@@ -52,11 +52,11 @@ export function CodexSwapModal({
               disabled={!canApplyBoth}
               onChange={(e) => onChangeApplyBoth(e.target.checked)}
             />
-            <div className="aoVal">同时替换两个目录</div>
+            <div className="aoVal">Apply to both dirs</div>
           </label>
 
           <div className="aoHint" style={{ marginTop: 8 }}>
-            目录里必须存在 auth.json 和 config.toml；否则会报错。
+            Each dir must contain auth.json and config.toml, otherwise you'll get an error.
           </div>
         </div>
 
@@ -72,4 +72,3 @@ export function CodexSwapModal({
     </div>
   )
 }
-

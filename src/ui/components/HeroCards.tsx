@@ -155,7 +155,7 @@ export function HeroCodexCard({ status, onLoginLogout, onRefresh, onSwapAuthConf
         <div className="aoActionsMenuWrap" ref={menuWrapRef}>
           <div style={{ display: 'flex' }}>
             <button className="aoBtn" onClick={onSwapAuthConfig} style={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}>
-              一键替换
+              Swap auth/config
             </button>
             <button
               className="aoBtn"
@@ -189,7 +189,7 @@ export function HeroCodexCard({ status, onLoginLogout, onRefresh, onSwapAuthConf
                     <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
                   </svg>
                 </span>
-                设置目录...
+                Configure dirs...
               </button>
             </div>
           ) : null}
