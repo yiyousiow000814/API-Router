@@ -58,7 +58,9 @@ export function CodexSwapModal({
               disabled={!canApplyBoth}
               onChange={(e) => onChangeApplyBoth(e.target.checked)}
             />
-            <span style={{ color: 'rgba(13, 18, 32, 0.86)', fontWeight: 620 }}>Apply to both dirs</span>
+            <span style={{ color: 'rgba(13, 18, 32, 0.82)', fontWeight: 650, fontSize: 13 }}>
+              Apply to both dirs
+            </span>
           </label>
 
           <div className="aoHint">
