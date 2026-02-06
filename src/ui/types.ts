@@ -17,9 +17,9 @@ export type Status = {
     provider: string
     level: string
     unix_ms: number
-    code?: string
+    code: string
     message: string
-    fields?: Record<string, unknown> | null
+    fields: Record<string, unknown> | null
   }>
   client_sessions?: Array<{
     id: string
