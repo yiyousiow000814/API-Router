@@ -15,6 +15,7 @@
 - **PR title length**: Keep PR titles at 8 words or fewer. Avoid symbols like `+` in titles.
 - **PR body format**: PR bodies must include `## What`, `## Why`, `## Changes`, `## Verify`. If the PR is long, add `## TL;DR` at the very top.
 - **PR summary scope**: Titles and bodies must describe the overall changes relative to `main`, not just the latest commit.
+- **Resolve review threads**: After addressing review comments, resolve the corresponding review conversations (click "Resolve conversation").
 - **Format before commit**: Ensure formatting checks pass before committing.
 - **PowerShell gotcha**: When using `gh pr create` / `gh pr edit` in PowerShell, avoid Markdown inline code using backticks (PowerShell uses backtick as an escape). Prefer plain text, single-quoted strings, or a here-string (`@' ... '@`).
 
