@@ -953,6 +953,18 @@
   background: rgba(var(--ao-accent-rgb), 0.08);
 }
 
+.aoUsageRefreshBtnMini {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+}
+
+.aoUsageRefreshBtnMini svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2.1;
+}
+
 .aoUsageRefreshBtnSpin svg {
   animation: aoSpin 0.9s linear infinite;
 }

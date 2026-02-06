@@ -111,10 +111,25 @@ export function HeroCodexCard({
     <div className="aoCard aoHeroCard aoHeroCodex">
       <div className="aoCardHeader">
         <div className="aoCardTitle">Codex (Auth)</div>
-        <span className="aoPill">
-          <span className={status.codex_account?.signed_in ? 'aoDot' : 'aoDot aoDotBad'} />
-          <span className="aoPillText">{status.codex_account?.signed_in ? 'signed in' : 'signed out'}</span>
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className="aoPill">
+            <span className={status.codex_account?.signed_in ? 'aoDot' : 'aoDot aoDotBad'} />
+            <span className="aoPillText">{status.codex_account?.signed_in ? 'signed in' : 'signed out'}</span>
+          </span>
+          <button
+            className={`aoUsageRefreshBtn aoUsageRefreshBtnMini${refreshing ? ' aoUsageRefreshBtnSpin' : ''}`}
+            title="Refresh"
+            aria-label="Refresh"
+            onClick={onRefresh}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M23 4v6h-6" />
+              <path d="M1 20v-6h6" />
+              <path d="M3.5 9a9 9 0 0 1 14.1-3.4L23 10" />
+              <path d="M1 14l5.3 5.3A9 9 0 0 0 20.5 15" />
+            </svg>
+          </button>
+        </div>
       </div>
       <div className="aoKvp">
         <div className="aoKey">Checked</div>
@@ -167,19 +182,6 @@ export function HeroCodexCard({
           {status.codex_account?.signed_in ? 'Log out' : 'Log in'}
         </button>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button
-            className={`aoUsageRefreshBtn${refreshing ? ' aoUsageRefreshBtnSpin' : ''}`}
-            title="Refresh"
-            aria-label="Refresh"
-            onClick={onRefresh}
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M23 4v6h-6" />
-              <path d="M1 20v-6h6" />
-              <path d="M3.5 9a9 9 0 0 1 14.1-3.4L23 10" />
-              <path d="M1 14l5.3 5.3A9 9 0 0 0 20.5 15" />
-            </svg>
-          </button>
           <div className="aoActionsMenuWrap" ref={menuWrapRef} style={{ justifyContent: 'flex-start' }}>
             <div className="aoSplitBtn aoSplitBtnPrimary" title={swapBadgeTitle}>
               <button className="aoSplitBtnBtn" onClick={onSwapAuthConfig}>
