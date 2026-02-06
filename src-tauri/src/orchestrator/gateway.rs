@@ -641,6 +641,14 @@ async fn responses(
             entry.pid = inferred.pid;
             entry.wt_session = Some(inferred.wt_session.clone());
         }
+        // If discovery can't match this session id (e.g. rollouts are locked/ambiguous), we still
+        // want to show a Codex provider in the UI once we've observed a request.
+        if entry.last_reported_model_provider.is_none() {
+            if let Some(inferred) = client_session.as_ref() {
+                entry.last_reported_model_provider =
+                    windows_terminal::best_effort_codex_model_provider_for_pid(inferred.pid);
+            }
+        }
         entry.last_request_unix_ms = unix_ms();
         entry.confirmed_router = true;
     }

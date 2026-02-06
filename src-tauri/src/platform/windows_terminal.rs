@@ -298,6 +298,99 @@ pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWt
     }
 }
 
+#[cfg(windows)]
+fn read_toml_model_provider_id(cfg: &toml::Value) -> Option<String> {
+    let t = cfg.as_table()?;
+    t.get("model_provider")
+        .or_else(|| t.get("model_provider_id"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| {
+            let s = s.trim();
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
+        })
+}
+
+#[cfg(windows)]
+fn read_toml_file(path: &std::path::Path) -> Option<toml::Value> {
+    let s = std::fs::read_to_string(path).ok()?;
+    toml::from_str::<toml::Value>(&s).ok()
+}
+
+#[cfg(windows)]
+fn find_project_codex_config(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    // Walk up from cwd looking for `.codex/config.toml`.
+    // Keep it bounded to avoid pathological traversals on deep paths.
+    let mut cur = Some(cwd);
+    for _ in 0..32 {
+        let dir = cur?;
+        let p = dir.join(".codex").join("config.toml");
+        if p.exists() {
+            return Some(p);
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+#[cfg(windows)]
+pub fn best_effort_codex_model_provider_for_pid(pid: u32) -> Option<String> {
+    use crate::platform::windows_loopback_peer;
+
+    // 1) Match Codex precedence: project `.codex/config.toml` overrides CODEX_HOME config.
+    if let Some(cwd) = windows_loopback_peer::read_process_cwd(pid) {
+        if let Some(p) = find_project_codex_config(&cwd) {
+            if let Some(cfg) = read_toml_file(&p) {
+                if let Some(v) = read_toml_model_provider_id(&cfg) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+
+    // 2) CODEX_HOME/config.toml if present for that process.
+    if let Some(codex_home) = windows_loopback_peer::read_process_env_var(pid, "CODEX_HOME") {
+        let p = std::path::PathBuf::from(codex_home).join("config.toml");
+        if let Some(cfg) = read_toml_file(&p) {
+            if let Some(v) = read_toml_model_provider_id(&cfg) {
+                return Some(v);
+            }
+        }
+    }
+
+    // 3) Last-resort: current user's global config.
+    if let Ok(up) = std::env::var("USERPROFILE") {
+        let p = std::path::PathBuf::from(up)
+            .join(".codex")
+            .join("config.toml");
+        if let Some(cfg) = read_toml_file(&p) {
+            if let Some(v) = read_toml_model_provider_id(&cfg) {
+                return Some(v);
+            }
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let p = std::path::PathBuf::from(home)
+            .join(".codex")
+            .join("config.toml");
+        if let Some(cfg) = read_toml_file(&p) {
+            if let Some(v) = read_toml_model_provider_id(&cfg) {
+                return Some(v);
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(not(windows))]
+pub fn best_effort_codex_model_provider_for_pid(_pid: u32) -> Option<String> {
+    None
+}
+
 pub fn discover_sessions_using_router(
     server_port: u16,
     expected_gateway_token: Option<&str>,
