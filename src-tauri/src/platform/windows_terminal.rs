@@ -127,7 +127,10 @@ fn infer_codex_session_id_from_rollout_filenames(
         return None;
     }
 
-    let mut candidates: Vec<(String, SystemTime)> = Vec::new();
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    const MAX_CANDIDATES: usize = 800;
+    let mut heap: BinaryHeap<(Reverse<SystemTime>, String)> = BinaryHeap::new();
 
     while let Some(p) = stack.pop() {
         let Ok(md) = std::fs::metadata(&p) else {
@@ -156,18 +159,22 @@ fn infer_codex_session_id_from_rollout_filenames(
             .or_else(|| md.modified().ok())
             .unwrap_or(SystemTime::UNIX_EPOCH);
 
-        candidates.push((id, t));
-
-        // Cap traversal to keep status polling cheap.
-        if candidates.len() > 300 {
-            break;
+        if heap.len() < MAX_CANDIDATES {
+            heap.push((Reverse(t), id));
+        } else if let Some((Reverse(oldest), _)) = heap.peek() {
+            if t > *oldest {
+                let _ = heap.pop();
+                heap.push((Reverse(t), id));
+            }
         }
     }
 
-    if candidates.is_empty() {
+    if heap.is_empty() {
         return None;
     }
 
+    let mut candidates: Vec<(String, SystemTime)> =
+        heap.into_iter().map(|(Reverse(t), id)| (id, t)).collect();
     candidates.sort_by_key(|(_id, t)| std::cmp::Reverse(*t));
 
     // If we don't have a start time, keep the newest unused.
@@ -208,7 +215,18 @@ fn infer_codex_session_id_from_rollout_filenames(
     }
 
     scored.sort_by_key(|(_id, dt)| *dt);
-    scored.first().map(|(id, _)| id.clone())
+    if let Some((id, _)) = scored.first() {
+        return Some(id.clone());
+    }
+
+    // Fallback: if no candidates fit the time window, pick the newest unused id.
+    for (id, _t) in candidates.iter() {
+        if !used_ids.contains(id) {
+            return Some(id.clone());
+        }
+    }
+
+    None
 }
 
 #[cfg(windows)]
