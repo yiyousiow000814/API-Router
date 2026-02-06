@@ -155,70 +155,72 @@ export function HeroCodexCard({
           ) : null}
         </div>
       </div>
-      <div className="aoHeroActions" style={{ marginTop: 15 }}>
+      <div className="aoHeroActions" style={{ marginTop: 15, width: '100%', justifyContent: 'space-between' }}>
         <button
           className={`aoBtn ${status.codex_account?.signed_in ? 'aoBtnDanger' : ''}`.trim()}
           onClick={onLoginLogout}
         >
           {status.codex_account?.signed_in ? 'Log out' : 'Log in'}
         </button>
-        <div className="aoActionsMenuWrap" ref={menuWrapRef} style={{ justifyContent: 'flex-start' }}>
-          <div className="aoSplitBtn" title={swapBadgeTitle}>
-            <button className="aoSplitBtnBtn" onClick={onSwapAuthConfig}>
-              Swap
-              {swapBadgeText ? (
-                <span className="aoBtnTag" aria-label={`Swap status: ${swapBadgeText}`}>
-                  <span
-                    className={[
-                      'aoBtnTagDot',
-                      swapBadgeText === 'App'
-                        ? 'aoBtnTagDotApp'
-                        : swapBadgeText === 'Error'
-                          ? 'aoBtnTagDotError'
-                          : swapBadgeText === 'Mixed'
-                            ? 'aoBtnTagDotMixed'
-                            : 'aoBtnTagDotUser',
-                    ].join(' ')}
-                    aria-hidden="true"
-                  />
-                  {swapBadgeText}
-                </span>
-              ) : null}
-            </button>
-            <span className="aoSplitBtnDivider" aria-hidden="true" />
-            <button
-              className="aoSplitBtnBtn aoSplitBtnArrow"
-              aria-label="Swap options"
-              title="Swap options"
-              onClick={() => setMenuOpen((v) => !v)}
-            >
-              ▼
-            </button>
-          </div>
-          {menuOpen ? (
-            <div className="aoMenu aoMenuCompact" role="menu" aria-label="Swap options menu">
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div className="aoActionsMenuWrap" ref={menuWrapRef} style={{ justifyContent: 'flex-start' }}>
+            <div className="aoSplitBtn" title={swapBadgeTitle}>
+              <button className="aoSplitBtnBtn" onClick={onSwapAuthConfig}>
+                Swap
+                {swapBadgeText ? (
+                  <span className="aoBtnTag" aria-label={`Swap status: ${swapBadgeText}`}>
+                    <span
+                      className={[
+                        'aoBtnTagDot',
+                        swapBadgeText === 'App'
+                          ? 'aoBtnTagDotApp'
+                          : swapBadgeText === 'Error'
+                            ? 'aoBtnTagDotError'
+                            : swapBadgeText === 'Mixed'
+                              ? 'aoBtnTagDotMixed'
+                              : 'aoBtnTagDotUser',
+                      ].join(' ')}
+                      aria-hidden="true"
+                    />
+                    {swapBadgeText}
+                  </span>
+                ) : null}
+              </button>
+              <span className="aoSplitBtnDivider" aria-hidden="true" />
               <button
-                className="aoMenuItem"
-                role="menuitem"
-                onClick={() => {
-                  setMenuOpen(false)
-                  onSwapOptions()
-                }}
+                className="aoSplitBtnBtn aoSplitBtnArrow"
+                aria-label="Swap options"
+                title="Swap options"
+                onClick={() => setMenuOpen((v) => !v)}
               >
-                <span className="aoMenuIcon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M12 20h9" />
-                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
-                  </svg>
-                </span>
-                Configure dirs...
+                ▼
               </button>
             </div>
-          ) : null}
+            {menuOpen ? (
+              <div className="aoMenu aoMenuCompact" role="menu" aria-label="Swap options menu">
+                <button
+                  className="aoMenuItem"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    onSwapOptions()
+                  }}
+                >
+                  <span className="aoMenuIcon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24">
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                    </svg>
+                  </span>
+                  Configure dirs...
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <button className="aoBtn aoBtnPrimary" onClick={onRefresh}>
+            Refresh
+          </button>
         </div>
-        <button className="aoBtn aoBtnPrimary" onClick={onRefresh}>
-          Refresh
-        </button>
       </div>
       {status.codex_account?.error ? (
         <div className="aoHint" style={{ marginTop: 8, color: 'rgba(145, 12, 43, 0.92)' }}>
