@@ -300,7 +300,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         }
 
         let map = state.gateway.client_sessions.read().clone();
-        let mut items: Vec<_> = map.into_iter().collect();
+        let mut items: Vec<_> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         items.sort_by_key(|(_k, v)| {
             std::cmp::Reverse(v.last_request_unix_ms.max(v.last_discovered_unix_ms))
         });
@@ -335,6 +335,22 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
             })
             .collect::<Vec<_>>();
 
+        // Suppress duplicate "discovery-only" rows once we've observed a real Codex session id
+        // (via request headers/body) for the same underlying process/tab.
+        let mut seen_pids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        let mut seen_wt: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for v in map.values() {
+            if v.pid != 0 {
+                seen_pids.insert(v.pid);
+            }
+            if let Some(wt) = v.wt_session.as_deref() {
+                let wt = wt.trim();
+                if !wt.is_empty() {
+                    seen_wt.insert(wt.to_string());
+                }
+            }
+        }
+
         // Also surface discovery-only rows that don't have a Codex session id yet. These are still
         // useful to show in the UI (unverified sessions) so users can see that Codex is running,
         // even before the first request.
@@ -342,6 +358,12 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
             .into_iter()
             .filter(|s| s.codex_session_id.is_none())
         {
+            if s.pid != 0 && seen_pids.contains(&s.pid) {
+                continue;
+            }
+            if !s.wt_session.trim().is_empty() && seen_wt.contains(s.wt_session.trim()) {
+                continue;
+            }
             sessions.push(serde_json::json!({
                 "id": format!("pid:{}:wt:{}", s.pid, s.wt_session),
                 "wt_session": s.wt_session,
