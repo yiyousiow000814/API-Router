@@ -17,6 +17,8 @@ import { CodexSwapModal } from './components/CodexSwapModal'
 import { HeroCodexCard, HeroRoutingCard, HeroStatusCard } from './components/HeroCards'
 import { useReorderDrag } from './hooks/useReorderDrag'
 
+type TopPage = 'dashboard' | 'usage_statistics' | 'model_switchboard'
+
 const devStatus: Status = {
   listen: { host: '127.0.0.1', port: 4000 },
   preferred_provider: 'provider_1',
@@ -178,6 +180,7 @@ export default function App() {
   const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
   const [codexRefreshing, setCodexRefreshing] = useState<boolean>(false)
+  const [activePage, setActivePage] = useState<TopPage>('dashboard')
   const [updatingSessionPref, setUpdatingSessionPref] = useState<Record<string, boolean>>({})
   const usageRefreshTimerRef = useRef<number | null>(null)
   const idleUsageSchedulerRef = useRef<(() => void) | null>(null)
@@ -1062,6 +1065,7 @@ export default function App() {
       dragBaseTop,
       dragOffsetY,
       dragOverProvider,
+      editingProviderName,
       isProviderOpen,
       onProviderHandlePointerDown,
       openKeyModal,
@@ -1091,6 +1095,51 @@ export default function App() {
               </div>
             </div>
             <div className="aoBrandRight">
+              <div className="aoTopNav" role="tablist" aria-label="Main pages">
+                <button
+                  className={`aoTopNavBtn${activePage === 'dashboard' ? ' is-active' : ''}`}
+                  role="tab"
+                  aria-selected={activePage === 'dashboard'}
+                  onClick={() => setActivePage('dashboard')}
+                >
+                  <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="4" y="4" width="6.5" height="6.5" rx="1.2" />
+                    <rect x="13.5" y="4" width="6.5" height="6.5" rx="1.2" />
+                    <rect x="4" y="13.5" width="6.5" height="6.5" rx="1.2" />
+                    <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.2" />
+                  </svg>
+                  <span>Dashboard</span>
+                </button>
+                <button
+                  className={`aoTopNavBtn${activePage === 'usage_statistics' ? ' is-active' : ''}`}
+                  role="tab"
+                  aria-selected={activePage === 'usage_statistics'}
+                  onClick={() => setActivePage('usage_statistics')}
+                >
+                  <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 19.5h16" />
+                    <path d="M7 17.5V9.5" />
+                    <path d="M12 17.5V5.5" />
+                    <path d="M17 17.5V12.5" />
+                    <path d="M5.5 6.5 9 9l4-3.5 4 2.5" />
+                  </svg>
+                  <span>Usage Statistics</span>
+                </button>
+                <button
+                  className={`aoTopNavBtn${activePage === 'model_switchboard' ? ' is-active' : ''}`}
+                  role="tab"
+                  aria-selected={activePage === 'model_switchboard'}
+                  onClick={() => setActivePage('model_switchboard')}
+                >
+                  <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 7h11" />
+                    <path d="M4 17h16" />
+                    <circle cx="17" cy="7" r="3" />
+                    <circle cx="9" cy="17" r="3" />
+                  </svg>
+                  <span>Model Switchboard</span>
+                </button>
+              </div>
               <button className="aoTinyBtn" onClick={() => setInstructionModalOpen(true)}>
                 Getting Started
               </button>
@@ -1099,7 +1148,17 @@ export default function App() {
 
           {/* Surface errors via toast to avoid layout shifts. */}
 
-          {!status ? (
+          {activePage === 'usage_statistics' ? (
+            <div className="aoCard aoPagePlaceholder">
+              <div className="aoPagePlaceholderTitle">Usage Statistics</div>
+              <div className="aoHint">Placeholder page. Dashboard data stays unchanged.</div>
+            </div>
+          ) : activePage === 'model_switchboard' ? (
+            <div className="aoCard aoPagePlaceholder">
+              <div className="aoPagePlaceholderTitle">Model Switchboard</div>
+              <div className="aoHint">Placeholder page. Dashboard data stays unchanged.</div>
+            </div>
+          ) : !status ? (
             <div className="aoHint">Loading...</div>
           ) : (
             <>
