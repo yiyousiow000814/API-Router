@@ -283,11 +283,7 @@ fn write_swapped_files(
     let cfg_path = cli_cfg_path(cli_home);
     let cur_auth = read_bytes(&auth_path)?;
     let cur_cfg = read_bytes(&cfg_path)?;
-    if let Err(e) =
-        write_json(&auth_path, next_auth).map_err(|e| format!("write auth.json failed: {e}"))
-    {
-        return Err(e);
-    }
+    write_json(&auth_path, next_auth).map_err(|e| format!("write auth.json failed: {e}"))?;
     if let Err(e) =
         write_text(&cfg_path, next_cfg_text).map_err(|e| format!("write config.toml failed: {e}"))
     {
