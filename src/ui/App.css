@@ -201,7 +201,14 @@
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 16px;
-  margin-bottom: 10px;
+  margin: 0 -14px 10px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.48);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  backdrop-filter: blur(14px) saturate(130%);
 }
 
 .aoBrandLeft {
@@ -219,6 +226,71 @@
   align-items: center;
   gap: 8px;
   align-self: center;
+}
+
+.aoTopNav {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aoTopNavBtn {
+  height: 30px;
+  border-radius: 11px;
+  border: none;
+  background: transparent;
+  color: rgba(13, 18, 32, 0.62);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.aoTopNavBtn:hover {
+  background: rgba(255, 255, 255, 0.26);
+  color: rgba(13, 18, 32, 0.82);
+}
+
+.aoTopNavBtn.is-active {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.32), rgba(242, 193, 77, 0.24));
+  color: rgba(13, 18, 32, 0.94);
+  font-weight: 680;
+  box-shadow: inset 0 0 0 1px rgba(40, 199, 217, 0.28);
+}
+
+.aoTopNavBtn.is-active:hover {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.4), rgba(242, 193, 77, 0.3));
+}
+
+.aoTopNavIcon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.aoPagePlaceholder {
+  min-height: 260px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+}
+
+.aoPagePlaceholderTitle {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.85);
 }
 
 .aoInstructionCode {
