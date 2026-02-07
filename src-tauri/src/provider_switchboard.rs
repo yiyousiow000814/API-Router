@@ -378,8 +378,14 @@ pub fn set_target(
     let target = target.trim().to_ascii_lowercase();
 
     let app_cfg = state.gateway.cfg.read().clone();
-    let app_auth = read_json(&app_auth_path(state))
-        .map_err(|_| "Missing app Codex auth.json. Try logging in first.".to_string())?;
+    let app_auth = if target == "official" {
+        let auth = read_json(&app_auth_path(state))
+            .map_err(|_| "Missing app Codex auth.json. Try logging in first.".to_string())?;
+        ensure_signed_in(&auth)?;
+        Some(auth)
+    } else {
+        None
+    };
 
     let provider_name = provider
         .as_deref()
@@ -411,10 +417,6 @@ pub fn set_target(
         (None, None, None)
     };
 
-    if target == "official" {
-        ensure_signed_in(&app_auth)?;
-    }
-
     let mut applied: Vec<PathBuf> = Vec::new();
     for h in &homes {
         let res = match target.as_str() {
@@ -422,7 +424,10 @@ pub fn set_target(
             "official" => {
                 let orig_cfg = read_original_cfg_text(h)?;
                 let next_cfg = strip_model_provider_line(&orig_cfg);
-                write_swapped_files(h, &app_auth, &next_cfg)
+                let auth = app_auth.as_ref().ok_or_else(|| {
+                    "Missing app Codex auth.json. Try logging in first.".to_string()
+                })?;
+                write_swapped_files(h, auth, &next_cfg)
             }
             "provider" => {
                 let name = direct_name

@@ -187,6 +187,7 @@ export default function App() {
   const idleUsageSchedulerRef = useRef<(() => void) | null>(null)
   const usageActiveRef = useRef<boolean>(false)
   const activeUsageTimerRef = useRef<number | null>(null)
+  const providerSwitchRefreshTimerRef = useRef<number | null>(null)
   const codexSwapDir1Ref = useRef<string>('')
   const codexSwapDir2Ref = useRef<string>('')
   const codexSwapApplyBothRef = useRef<boolean>(false)
@@ -971,8 +972,21 @@ export default function App() {
   }, [isDevPreview, status?.last_activity_unix_ms])
 
   useEffect(() => {
+    if (providerSwitchRefreshTimerRef.current) {
+      window.clearTimeout(providerSwitchRefreshTimerRef.current)
+      providerSwitchRefreshTimerRef.current = null
+    }
     if (activePage !== 'provider_switchboard') return
-    void refreshProviderSwitchStatus()
+    providerSwitchRefreshTimerRef.current = window.setTimeout(() => {
+      void refreshProviderSwitchStatus()
+      providerSwitchRefreshTimerRef.current = null
+    }, 220)
+    return () => {
+      if (providerSwitchRefreshTimerRef.current) {
+        window.clearTimeout(providerSwitchRefreshTimerRef.current)
+        providerSwitchRefreshTimerRef.current = null
+      }
+    }
   }, [activePage, codexSwapDir1, codexSwapDir2, codexSwapApplyBoth])
 
   const isProviderOpen = useCallback(
@@ -1715,10 +1729,6 @@ requires_openai_auth = true`}
               const dir2 = codexSwapDir2.trim()
               if (!dir1) throw new Error('Dir 1 is required')
               if (codexSwapApplyBoth && !dir2) throw new Error('Dir 2 is empty')
-
-              window.localStorage.setItem('ao.codexSwap.dir1', dir1)
-              window.localStorage.setItem('ao.codexSwap.dir2', dir2)
-              window.localStorage.setItem('ao.codexSwap.applyBoth', codexSwapApplyBoth ? '1' : '0')
 
               const homes = resolveCliHomes(dir1, dir2, codexSwapApplyBoth)
               await toggleCodexSwap(homes)
