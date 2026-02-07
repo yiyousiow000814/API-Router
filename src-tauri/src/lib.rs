@@ -10,6 +10,7 @@ use crate::app_state::build_state;
 use crate::orchestrator::gateway::serve_in_background;
 use crate::orchestrator::store::unix_ms;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -1247,6 +1248,15 @@ async fn refresh_codex_account_snapshot(
         }
     }
 
+    // Do not infer code review from other limits.
+    // Fetch the dedicated code-review window from ChatGPT usage API when available.
+    if let Some(access_token) = read_codex_access_token() {
+        if let Ok(Some((remaining, reset_at))) = fetch_code_review_from_wham(&access_token).await {
+            code_review_remaining = Some(remaining);
+            code_review_reset_at = reset_at;
+        }
+    }
+
     let snap = serde_json::json!({
       "ok": error.is_empty(),
       "checked_at_unix_ms": unix_ms(),
@@ -1262,6 +1272,75 @@ async fn refresh_codex_account_snapshot(
     });
     gateway.store.put_codex_account_snapshot(&snap);
     Ok(signed_in)
+}
+
+fn read_codex_access_token() -> Option<String> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(home) = std::env::var("CODEX_HOME") {
+        candidates.push(PathBuf::from(home).join("auth.json"));
+    }
+    if let Ok(user) = std::env::var("USERPROFILE") {
+        candidates.push(PathBuf::from(user).join(".codex").join("auth.json"));
+    } else if let Ok(home) = std::env::var("HOME") {
+        candidates.push(PathBuf::from(home).join(".codex").join("auth.json"));
+    }
+
+    for path in candidates {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if let Some(tok) = v
+            .get("tokens")
+            .and_then(|t| t.get("access_token"))
+            .and_then(|t| t.as_str())
+        {
+            let trimmed = tok.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+async fn fetch_code_review_from_wham(token: &str) -> Result<Option<(String, Option<String>)>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .get("https://chatgpt.com/backend-api/wham/usage")
+        .bearer_auth(token)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let node = body.get("code_review_rate_limit");
+    let used = node
+        .and_then(|n| n.get("primary_window"))
+        .and_then(get_used_percent);
+    let Some(used_percent) = used else {
+        return Ok(None);
+    };
+    let remaining = format_percent(100.0 - used_percent);
+    let reset_at = node
+        .and_then(|n| n.get("primary_window"))
+        .and_then(|n| n.get("reset_at"))
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_u64().and_then(|u| i64::try_from(u).ok()))
+                .map(|n| n.to_string())
+                .or_else(|| v.as_str().map(|s| s.to_string()))
+        });
+    Ok(Some((remaining, reset_at)))
 }
 
 fn format_percent(value: f64) -> String {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Config, Status } from '../types'
-import { fmtWhen, fmtResetIn, parsePct } from '../utils/format'
+import { fmtWhen, fmtResetIn } from '../utils/format'
 
 type HeroStatusProps = {
   status: Status
@@ -157,15 +157,11 @@ export function HeroCodexCard({
       <div className="aoLimitGrid">
         <div className="aoLimitCard">
           <div className="aoMiniLabel">5-hour limit</div>
-          <div className="aoLimitValue">
-            {status.codex_account?.limit_5h_remaining ?? (parsePct(status.codex_account?.remaining) ?? '-')}
-          </div>
+          <div className="aoLimitValue">{status.codex_account?.limit_5h_remaining ?? '-'}</div>
         </div>
         <div className="aoLimitCard">
           <div className="aoMiniLabel">Weekly limit</div>
-          <div className="aoLimitValue">
-            {status.codex_account?.limit_weekly_remaining ?? (parsePct(status.codex_account?.remaining) ?? '-')}
-          </div>
+          <div className="aoLimitValue">{status.codex_account?.limit_weekly_remaining ?? '-'}</div>
           {status.codex_account?.limit_weekly_remaining &&
           status.codex_account.limit_weekly_remaining !== '100%' &&
           status.codex_account?.limit_weekly_reset_at ? (
@@ -176,9 +172,7 @@ export function HeroCodexCard({
         </div>
         <div className="aoLimitCard">
           <div className="aoMiniLabel">Code review</div>
-          <div className="aoLimitValue">
-            {status.codex_account?.code_review_remaining ?? status.codex_account?.limit_5h_remaining ?? '-'}
-          </div>
+          <div className="aoLimitValue">{status.codex_account?.code_review_remaining ?? '-'}</div>
           {status.codex_account?.code_review_remaining &&
           status.codex_account.code_review_remaining !== '100%' &&
           status.codex_account?.code_review_reset_at ? (
