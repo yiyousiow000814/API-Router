@@ -61,7 +61,7 @@ export function CodexSwapModal({
               onChange={(e) => onChangeApplyBoth(e.target.checked)}
             />
             <span style={{ color: 'rgba(13, 18, 32, 0.82)', fontWeight: 500, fontSize: 13 }}>
-              Apply to both dirs
+              Apply to both directories
             </span>
           </label>
 

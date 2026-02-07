@@ -3,6 +3,7 @@ mod codex_app_server;
 mod codex_cli_swap;
 mod orchestrator;
 mod platform;
+mod provider_switchboard;
 
 use tauri::Manager;
 
@@ -176,6 +177,8 @@ pub fn run() {
             codex_cli_toggle_auth_config_swap,
             codex_cli_default_home,
             codex_cli_swap_status,
+            provider_switchboard_status,
+            provider_switchboard_set_target,
             codex_account_login,
             codex_account_logout,
             codex_account_refresh
@@ -1106,6 +1109,24 @@ fn codex_cli_default_home() -> Result<String, String> {
 #[tauri::command]
 fn codex_cli_swap_status(cli_homes: Option<Vec<String>>) -> Result<serde_json::Value, String> {
     crate::codex_cli_swap::cli_auth_config_swap_status(cli_homes.unwrap_or_default())
+}
+
+#[tauri::command]
+fn provider_switchboard_status(
+    state: tauri::State<'_, app_state::AppState>,
+    cli_homes: Option<Vec<String>>,
+) -> Result<serde_json::Value, String> {
+    crate::provider_switchboard::get_status(&state, cli_homes.unwrap_or_default())
+}
+
+#[tauri::command]
+fn provider_switchboard_set_target(
+    state: tauri::State<'_, app_state::AppState>,
+    cli_homes: Option<Vec<String>>,
+    target: String,
+    provider: Option<String>,
+) -> Result<serde_json::Value, String> {
+    crate::provider_switchboard::set_target(&state, cli_homes.unwrap_or_default(), target, provider)
 }
 
 fn mask_key_preview(key: &str) -> String {

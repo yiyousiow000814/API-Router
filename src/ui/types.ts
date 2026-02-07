@@ -85,6 +85,18 @@ export type CodexSwapStatus = {
   }>
 }
 
+export type ProviderSwitchboardStatus = {
+  ok: boolean
+  mode: 'gateway' | 'official' | 'provider' | 'mixed'
+  model_provider?: string | null
+  dirs?: Array<{
+    cli_home: string
+    mode: string
+    model_provider?: string | null
+  }>
+  provider_options?: string[]
+}
+
 export type Config = {
   listen: { host: string; port: number }
   routing: {
