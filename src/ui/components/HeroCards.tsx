@@ -165,7 +165,7 @@ export function HeroCodexCard({
           {status.codex_account?.limit_weekly_remaining &&
           status.codex_account.limit_weekly_remaining !== '100%' &&
           status.codex_account?.limit_weekly_reset_at ? (
-            <div className="aoHint aoResetHint" style={{ marginTop: 6 }}>
+            <div className="aoHint aoResetHint" style={{ marginTop: 0 }}>
               {fmtResetIn(status.codex_account.limit_weekly_reset_at) ?? 'Reset soon'}
             </div>
           ) : null}
@@ -176,7 +176,7 @@ export function HeroCodexCard({
           {status.codex_account?.code_review_remaining &&
           status.codex_account.code_review_remaining !== '100%' &&
           status.codex_account?.code_review_reset_at ? (
-            <div className="aoHint aoResetHint" style={{ marginTop: 6 }}>
+            <div className="aoHint aoResetHint" style={{ marginTop: 0 }}>
               {fmtResetIn(status.codex_account.code_review_reset_at) ?? 'Reset soon'}
             </div>
           ) : null}

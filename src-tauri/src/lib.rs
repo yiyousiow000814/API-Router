@@ -1306,7 +1306,9 @@ fn read_codex_access_token() -> Option<String> {
     None
 }
 
-async fn fetch_code_review_from_wham(token: &str) -> Result<Option<(String, Option<String>)>, String> {
+async fn fetch_code_review_from_wham(
+    token: &str,
+) -> Result<Option<(String, Option<String>)>, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
         .build()
