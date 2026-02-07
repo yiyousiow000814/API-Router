@@ -1065,6 +1065,7 @@ export default function App() {
       dragBaseTop,
       dragOffsetY,
       dragOverProvider,
+      editingProviderName,
       isProviderOpen,
       onProviderHandlePointerDown,
       openKeyModal,
