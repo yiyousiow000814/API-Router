@@ -1147,9 +1147,7 @@ export default function App() {
 
           {/* Surface errors via toast to avoid layout shifts. */}
 
-          {!status ? (
-            <div className="aoHint">Loading...</div>
-          ) : activePage === 'usage_statistics' ? (
+          {activePage === 'usage_statistics' ? (
             <div className="aoCard aoPagePlaceholder">
               <div className="aoPagePlaceholderTitle">Usage Statistics</div>
               <div className="aoHint">Placeholder page. Dashboard data stays unchanged.</div>
@@ -1159,6 +1157,8 @@ export default function App() {
               <div className="aoPagePlaceholderTitle">Model Switchboard</div>
               <div className="aoHint">Placeholder page. Dashboard data stays unchanged.</div>
             </div>
+          ) : !status ? (
+            <div className="aoHint">Loading...</div>
           ) : (
             <>
               <div className="aoHero">
