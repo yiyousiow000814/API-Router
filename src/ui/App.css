@@ -248,7 +248,7 @@
   font-size: 12px;
   font-weight: 650;
   letter-spacing: 0.02em;
-  transition: border-color 120ms ease, background 120ms ease;
+  transition: background 120ms ease;
 }
 
 .aoTopNavBtn:hover {
