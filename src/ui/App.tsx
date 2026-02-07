@@ -192,6 +192,11 @@ export default function App() {
   const toastTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
+    const el = containerRef.current
+    if (el) el.scrollTop = 0
+  }, [])
+
+  useEffect(() => {
     if (typeof window === 'undefined') return
     try {
       const savedProviderPanels = window.localStorage.getItem('ao.providerPanelsOpen')
