@@ -73,8 +73,16 @@ export function fmtResetIn(resetAt?: string | number | null, nowMs: number = Dat
   const m = Math.floor(diff / minMs)
 
   const parts: string[] = []
-  if (d > 0) parts.push(`${d}d`)
-  if (h > 0 || d > 0) parts.push(`${h}h`)
+  if (d > 0) {
+    parts.push(`${d}d`)
+    parts.push(`${h}h`)
+    return `Reset in ${parts.join(' ')}`
+  }
+  if (h > 0) {
+    parts.push(`${h}h`)
+    parts.push(`${m}m`)
+    return `Reset in ${parts.join(' ')}`
+  }
   parts.push(`${m}m`)
   return `Reset in ${parts.join(' ')}`
 }
