@@ -222,7 +222,13 @@ fn remove_model_provider_sections(cfg: &str, names: &[&str]) -> String {
     let eol = if cfg.contains("\r\n") { "\r\n" } else { "\n" };
     let targets = names
         .iter()
-        .map(|n| format!("[model_providers.{n}]"))
+        .flat_map(|n| {
+            let escaped = n.replace('\\', "\\\\").replace('"', "\\\"");
+            [
+                format!("[model_providers.{n}]"),
+                format!("[model_providers.\"{escaped}\"]"),
+            ]
+        })
         .collect::<Vec<_>>();
     let mut out: Vec<String> = Vec::new();
     let mut skipping = false;
@@ -261,7 +267,7 @@ fn build_direct_provider_cfg(orig_cfg: &str, provider: &str, base_url: &str) -> 
     out.push_str(base.trim_end());
     out.push_str(eol);
     out.push_str(eol);
-    out.push_str(&format!("[model_providers.{}]{}", provider_esc, eol));
+    out.push_str(&format!("[model_providers.\"{}\"]{}", provider_esc, eol));
     out.push_str(&format!("name = \"{}\"{}", provider_esc, eol));
     out.push_str(&format!("base_url = \"{}\"{}", base_url_esc, eol));
     out.push_str(&format!("wire_api = \"responses\"{}", eol));

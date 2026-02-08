@@ -1451,7 +1451,7 @@ export default function App() {
                     switchboardProviderCards.map((providerItem) => (
                       <button
                         key={providerItem.name}
-                        className={`aoSwitchProviderBtn${providerSwitchStatus?.model_provider === providerItem.name ? ' is-active' : ''}`}
+                        className={`aoSwitchProviderBtn${providerSwitchStatus?.mode === 'provider' && providerSwitchStatus?.model_provider === providerItem.name ? ' is-active' : ''}`}
                         disabled={providerSwitchBusy || !providerItem.hasKey}
                         onClick={() => void setProviderSwitchTarget('provider', providerItem.name)}
                       >
