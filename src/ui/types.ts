@@ -115,10 +115,54 @@ export type Config = {
       base_url: string
       usage_adapter?: string
       usage_base_url?: string | null
+      manual_pricing_mode?: 'per_request' | 'package_total' | null
+      manual_pricing_amount_usd?: number | null
       has_key: boolean
       key_preview?: string | null
       has_usage_token?: boolean
     }
   >
   provider_order?: string[]
+}
+
+export type UsageStatistics = {
+  ok: boolean
+  generated_at_unix_ms: number
+  window_hours: number
+  bucket_seconds: number
+  summary: {
+    total_requests: number
+    total_tokens: number
+    unique_models: number
+    estimated_total_cost_usd: number
+    by_model: Array<{
+      model: string
+      requests: number
+      input_tokens: number
+      output_tokens: number
+      total_tokens: number
+      share_pct: number
+      estimated_total_cost_usd: number
+      estimated_avg_request_cost_usd: number
+      estimated_cost_request_count: number
+    }>
+    by_provider: Array<{
+      provider: string
+      requests: number
+      total_tokens: number
+      tokens_per_request?: number | null
+      estimated_total_cost_usd: number
+      estimated_avg_request_cost_usd?: number | null
+      usd_per_million_tokens?: number | null
+      estimated_daily_cost_usd?: number | null
+      total_used_cost_usd?: number | null
+      pricing_source?: string | null
+      estimated_cost_request_count: number
+    }>
+    timeline: Array<{
+      bucket_unix_ms: number
+      requests: number
+      total_tokens: number
+    }>
+  }
 }

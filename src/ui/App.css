@@ -286,6 +286,379 @@
   color: rgba(13, 18, 32, 0.85);
 }
 
+.aoUsageStatsPage {
+  min-height: 320px;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.aoUsageStatsHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoUsageStatsActions {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aoUsageActionBtn {
+  min-width: 64px;
+  flex: 0 0 auto;
+  line-height: 1;
+  justify-content: center;
+}
+
+.aoUsageActionBtnWindow {
+  width: 46px;
+  padding: 0;
+}
+
+.aoUsageActionBtnRefresh {
+  width: 86px;
+  padding: 0;
+}
+
+.aoUsageActionBtnLoading {
+  opacity: 0.85;
+  cursor: wait;
+}
+
+.aoUsageWindowBtnActive {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.24), rgba(242, 193, 77, 0.18));
+  border-color: rgba(40, 199, 217, 0.38);
+}
+
+.aoUsageKpiGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.aoUsageKpiCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.aoUsageKpiValue {
+  font-size: 24px;
+  font-weight: 760;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: rgba(13, 18, 32, 0.92);
+}
+
+.aoUsageKpiValueSmall {
+  font-size: 20px;
+}
+
+.aoUsageFactsCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageFactsTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.aoUsageFactsTable th,
+.aoUsageFactsTable td {
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+  padding: 8px 10px;
+  font-size: 12px;
+  text-align: left;
+}
+
+.aoUsageFactsTable th {
+  width: 18%;
+  color: rgba(13, 18, 32, 0.6);
+  letter-spacing: 0.02em;
+  font-weight: 650;
+}
+
+.aoUsageFactsTable td {
+  width: 32%;
+  color: rgba(13, 18, 32, 0.86);
+  font-weight: 620;
+}
+
+.aoUsageChartsGrid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 10px;
+}
+
+.aoUsageChartCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.aoUsageTimelineChartWrap {
+  display: grid;
+  gap: 8px;
+  position: relative;
+}
+
+.aoUsageTimelineSvg {
+  width: 100%;
+  height: 170px;
+  border: 1px solid rgba(13, 18, 32, 0.07);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(13, 18, 32, 0.02));
+}
+
+.aoUsageTimelineAxis {
+  stroke: rgba(13, 18, 32, 0.24);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.aoUsageTimelineBarRect {
+  fill: rgba(40, 199, 217, 0.82);
+  pointer-events: none;
+}
+
+.aoUsageTimelineLine {
+  fill: none;
+  stroke: rgba(242, 193, 77, 0.95);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.aoUsageTimelineDot {
+  fill: rgba(242, 193, 77, 0.96);
+  pointer-events: none;
+}
+
+.aoUsageTimelineHoverBand {
+  fill: rgba(0, 0, 0, 0.001);
+  cursor: crosshair;
+}
+
+.aoUsageTimelineLegend {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.aoUsageLegendItem {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.72);
+  letter-spacing: 0.02em;
+}
+
+.aoUsageLegendBars::before,
+.aoUsageLegendLine::before {
+  content: '';
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+.aoUsageLegendBars::before {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: rgba(40, 199, 217, 0.85);
+}
+
+.aoUsageLegendLine::before {
+  width: 14px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(242, 193, 77, 0.95);
+}
+
+.aoUsageTimelineTicks {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10px;
+  color: rgba(13, 18, 32, 0.62);
+  letter-spacing: 0.01em;
+}
+
+.aoUsageTooltip {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 28px rgba(13, 18, 32, 0.16);
+  padding: 6px 8px;
+  min-width: 144px;
+}
+
+.aoUsageTooltipTitle {
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.88);
+}
+
+.aoUsageTooltipSub {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.7);
+}
+
+.aoUsageModelList {
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageModelRow {
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.aoUsageModelTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aoUsageModelName {
+  font-size: 14px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoUsageModelMeta {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.62);
+}
+
+.aoUsageModelSub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.72);
+}
+
+.aoUsageModelBarTrack {
+  height: 7px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(13, 18, 32, 0.1);
+}
+
+.aoUsageModelBarFill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(40, 199, 217, 0.92), rgba(242, 193, 77, 0.92));
+}
+
+.aoUsageProviderCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageProviderTable {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.84);
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.aoUsageProviderTable th,
+.aoUsageProviderTable td {
+  padding: 8px 10px;
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+  white-space: nowrap;
+}
+
+.aoUsageProviderTable th {
+  border-top: none;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.58);
+  background: rgba(13, 18, 32, 0.025);
+  text-align: left;
+}
+
+.aoUsageProviderTable tbody tr:first-child td {
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoUsageProviderTable tbody tr:hover td {
+  background: rgba(13, 18, 32, 0.02);
+}
+
+.aoUsagePricingGrid {
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsagePricingRow {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(170px, 1fr) minmax(150px, 0.9fr) auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.aoUsagePricingProvider {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoUsagePricingSelect,
+.aoUsagePricingInput {
+  width: 100%;
+}
+
+.aoUsageProviderName {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
+}
+
 .aoProviderSwitchboardCard {
   min-height: 320px;
   display: grid;
@@ -1901,6 +2274,21 @@
   gap: 6px;
 }
 
+.aoPricingRow {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.95fr) minmax(150px, 0.75fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.aoPricingModeSelect {
+  width: 100%;
+}
+
+.aoPricingInput {
+  width: 100%;
+}
+
 .aoTinyBtn {
   height: 24px;
   border-radius: 999px;
@@ -1994,6 +2382,35 @@
   }
   .aoLimitGrid {
     grid-template-columns: 1fr;
+  }
+  .aoUsageKpiGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .aoUsageFactsTable th,
+  .aoUsageFactsTable td {
+    display: block;
+    width: auto;
+    padding: 6px 0;
+    border-top: none;
+  }
+  .aoUsageFactsTable tr + tr th {
+    margin-top: 8px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(13, 18, 32, 0.08);
+  }
+  .aoUsageChartsGrid {
+    grid-template-columns: 1fr;
+  }
+  .aoPricingRow {
+    grid-template-columns: 1fr;
+  }
+  .aoUsageProviderTable {
+    display: block;
+    overflow-x: auto;
+  }
+  .aoUsagePricingRow {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 }
 
@@ -2139,6 +2556,16 @@
   .aoProviderRight {
     border-left: none;
     padding-left: 0;
+  }
+  .aoUsageKpiGrid {
+    grid-template-columns: 1fr;
+  }
+  .aoPricingRow {
+    grid-template-columns: 1fr;
+  }
+  .aoUsagePricingRow {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 }
 .aoModalWide {
