@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
-import type { Config, Status } from './types'
-import type { CodexSwapStatus } from './types'
-import { fmtWhen } from './utils/format'
+import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status } from './types'
+import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from './utils/format'
 import { computeActiveRefreshDelayMs, computeIdleRefreshDelayMs } from './utils/usageRefresh'
 import { ProvidersTable } from './components/ProvidersTable'
 import { SessionsTable } from './components/SessionsTable'
@@ -17,7 +16,7 @@ import { CodexSwapModal } from './components/CodexSwapModal'
 import { HeroCodexCard, HeroRoutingCard, HeroStatusCard } from './components/HeroCards'
 import { useReorderDrag } from './hooks/useReorderDrag'
 
-type TopPage = 'dashboard' | 'usage_statistics' | 'model_switchboard'
+type TopPage = 'dashboard' | 'usage_statistics' | 'provider_switchboard'
 
 const devStatus: Status = {
   listen: { host: '127.0.0.1', port: 4000 },
@@ -181,14 +180,18 @@ export default function App() {
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
   const [codexRefreshing, setCodexRefreshing] = useState<boolean>(false)
   const [activePage, setActivePage] = useState<TopPage>('dashboard')
+  const [providerSwitchStatus, setProviderSwitchStatus] = useState<ProviderSwitchboardStatus | null>(null)
+  const [providerSwitchBusy, setProviderSwitchBusy] = useState<boolean>(false)
   const [updatingSessionPref, setUpdatingSessionPref] = useState<Record<string, boolean>>({})
   const usageRefreshTimerRef = useRef<number | null>(null)
   const idleUsageSchedulerRef = useRef<(() => void) | null>(null)
   const usageActiveRef = useRef<boolean>(false)
   const activeUsageTimerRef = useRef<number | null>(null)
+  const providerSwitchRefreshTimerRef = useRef<number | null>(null)
   const codexSwapDir1Ref = useRef<string>('')
   const codexSwapDir2Ref = useRef<string>('')
   const codexSwapApplyBothRef = useRef<boolean>(false)
+  const swapPrefsLoadedRef = useRef<boolean>(false)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -226,8 +229,10 @@ export default function App() {
           .then((p) => setCodexSwapDir1((prev) => (prev.trim() ? prev : p)))
           .catch(() => {})
       }
+      swapPrefsLoadedRef.current = true
     } catch (e) {
       console.warn('Failed to load Codex swap prefs', e)
+      swapPrefsLoadedRef.current = true
     }
   }, [])
 
@@ -241,6 +246,18 @@ export default function App() {
   useEffect(() => {
     codexSwapApplyBothRef.current = codexSwapApplyBoth
   }, [codexSwapApplyBoth])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!swapPrefsLoadedRef.current) return
+    try {
+      window.localStorage.setItem('ao.codexSwap.dir1', codexSwapDir1)
+      window.localStorage.setItem('ao.codexSwap.dir2', codexSwapDir2)
+      window.localStorage.setItem('ao.codexSwap.applyBoth', codexSwapApplyBoth ? '1' : '0')
+    } catch (e) {
+      console.warn('Failed to save Codex swap prefs', e)
+    }
+  }, [codexSwapDir1, codexSwapDir2, codexSwapApplyBoth])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -428,6 +445,19 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
   }
 
+  function normPathForCompare(path: string): string {
+    return path.trim().replace(/[\\/]+/g, '/').toLowerCase()
+  }
+
+  function resolveCliHomes(dir1: string, dir2: string, applyBoth: boolean): string[] {
+    const first = dir1.trim()
+    const second = dir2.trim()
+    if (!first) return []
+    if (!applyBoth || !second) return [first]
+    if (normPathForCompare(first) === normPathForCompare(second)) return [first]
+    return [first, second]
+  }
+
   async function toggleCodexSwap(cliHomes: string[]) {
     const homes = cliHomes.map((s) => s.trim()).filter(Boolean)
     const res = await invoke<{ ok: boolean; mode: 'swapped' | 'restored'; cli_homes: string[] }>(
@@ -442,14 +472,69 @@ export default function App() {
   async function refreshCodexSwapStatus() {
     if (isDevPreview) return
     try {
-      const homes = [codexSwapDir1Ref.current]
-      if (codexSwapApplyBothRef.current && codexSwapDir2Ref.current.trim()) homes.push(codexSwapDir2Ref.current)
+      const homes = resolveCliHomes(
+        codexSwapDir1Ref.current,
+        codexSwapDir2Ref.current,
+        codexSwapApplyBothRef.current,
+      )
       const res = await invoke<CodexSwapStatus>('codex_cli_swap_status', {
-        cli_homes: homes.map((s) => s.trim()).filter(Boolean),
+        cli_homes: homes,
       })
       setCodexSwapStatus(res)
     } catch {
       setCodexSwapStatus({ ok: true, overall: 'error', dirs: [] })
+    }
+  }
+
+  async function refreshProviderSwitchStatus() {
+    const homes = resolveCliHomes(
+      codexSwapDir1Ref.current,
+      codexSwapDir2Ref.current,
+      codexSwapApplyBothRef.current,
+    )
+    if (isDevPreview) {
+      setProviderSwitchStatus({
+        ok: true,
+        mode: 'gateway',
+        model_provider: 'api_router',
+        dirs: homes.map((h) => ({ cli_home: h, mode: 'gateway', model_provider: null })),
+        provider_options: (devConfig.provider_order ?? []).filter((n) => n !== 'official'),
+      })
+      return
+    }
+    try {
+      const res = await invoke<ProviderSwitchboardStatus>('provider_switchboard_status', {
+        cli_homes: homes,
+      })
+      setProviderSwitchStatus(res)
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }
+
+  async function setProviderSwitchTarget(target: 'gateway' | 'official' | 'provider', provider?: string) {
+    const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapApplyBoth)
+    setProviderSwitchBusy(true)
+    try {
+      const res = await invoke<ProviderSwitchboardStatus>('provider_switchboard_set_target', {
+        cli_homes: homes,
+        target,
+        provider: provider ?? null,
+      })
+      setProviderSwitchStatus(res)
+      const msg =
+        target === 'provider'
+          ? `Switched to provider: ${provider}`
+          : target === 'gateway'
+            ? 'Switched to gateway'
+            : 'Switched to official'
+      flashToast(msg)
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    } finally {
+      setProviderSwitchBusy(false)
     }
   }
 
@@ -490,6 +575,85 @@ export default function App() {
       console.error(e)
     }
   }
+
+  const switchboardProviders = useMemo(() => {
+    const fromStatus = providerSwitchStatus?.provider_options ?? []
+    const base = fromStatus.length ? fromStatus : orderedConfigProviders
+    return base.filter((name) => name !== 'official')
+  }, [providerSwitchStatus, orderedConfigProviders])
+
+  const switchboardProviderCards = useMemo(() => {
+    return switchboardProviders.map((name) => {
+      const providerCfg = config?.providers?.[name]
+      const quota = status?.quota?.[name]
+      const kind = (quota?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
+      let usageHeadline = 'No usage data'
+      let usageDetail = 'Refresh after first request'
+      let usageSub: string | null = null
+      let usagePct: number | null = null
+
+      if (kind === 'token_stats') {
+        const total = quota?.today_added ?? null
+        const remaining = quota?.remaining ?? null
+        const used = quota?.today_used ?? (total != null && remaining != null ? total - remaining : null)
+        const remainingPct = pctOf(remaining ?? null, total)
+        const usedPct = pctOf(used ?? null, total)
+        usageHeadline = `Remaining ${fmtPct(remainingPct)}`
+        usageDetail = `Today ${fmtAmount(used)} / ${fmtAmount(total)}`
+        usageSub = usedPct == null ? null : `Used ${fmtPct(usedPct)}`
+        usagePct = remainingPct
+      } else if (kind === 'budget_info') {
+        const dailySpent = quota?.daily_spent_usd ?? null
+        const dailyBudget = quota?.daily_budget_usd ?? null
+        const dailyLeft =
+          dailySpent != null && dailyBudget != null ? Math.max(0, dailyBudget - dailySpent) : null
+        const dailyLeftPct = pctOf(dailyLeft, dailyBudget)
+        usageHeadline = `Daily left $${fmtUsd(dailyLeft)}`
+        usageDetail = `Daily $${fmtUsd(dailySpent)} / $${fmtUsd(dailyBudget)}`
+        const hasWeekly = quota?.weekly_spent_usd != null && quota?.weekly_budget_usd != null
+        const hasMonthly = quota?.monthly_spent_usd != null || quota?.monthly_budget_usd != null
+        if (hasWeekly) {
+          usageSub = `Weekly $${fmtUsd(quota?.weekly_spent_usd)} / $${fmtUsd(quota?.weekly_budget_usd)}`
+        } else if (hasMonthly) {
+          usageSub = `Monthly $${fmtUsd(quota?.monthly_spent_usd)} / $${fmtUsd(quota?.monthly_budget_usd)}`
+        }
+        usagePct = dailyLeftPct
+      }
+
+      return {
+        name,
+        baseUrl: providerCfg?.base_url ?? '',
+        hasKey: Boolean(providerCfg?.has_key),
+        usageHeadline,
+        usageDetail,
+        usageSub,
+        usagePct,
+      }
+    })
+  }, [config, status, switchboardProviders])
+
+  const switchboardModeLabel = providerSwitchStatus?.mode ?? '-'
+  const switchboardModelProviderLabel = useMemo(() => {
+    const mode = providerSwitchStatus?.mode
+    const raw = (providerSwitchStatus?.model_provider ?? '').trim()
+    if (mode === 'gateway') return 'api_router'
+    if (mode === 'official') return 'official default'
+    if (mode === 'provider') return raw || '-'
+    if (mode === 'mixed') return raw ? `mixed (${raw})` : 'mixed'
+    return '-'
+  }, [providerSwitchStatus])
+  const switchboardTargetDirsLabel =
+    providerSwitchStatus?.dirs?.map((d) => d.cli_home).join(' | ') || '-'
+  const hasSecondSwapDir = codexSwapDir2.trim().length > 0
+  const areSwapDirsDuplicate =
+    hasSecondSwapDir &&
+    codexSwapDir1.trim().length > 0 &&
+    normPathForCompare(codexSwapDir1) === normPathForCompare(codexSwapDir2)
+
+  useEffect(() => {
+    if (!areSwapDirsDuplicate) return
+    if (codexSwapApplyBoth) setCodexSwapApplyBoth(false)
+  }, [areSwapDirsDuplicate, codexSwapApplyBoth])
 
   async function applyOverride(next: string) {
     try {
@@ -806,6 +970,24 @@ export default function App() {
       clearActiveTimer()
     }
   }, [isDevPreview, status?.last_activity_unix_ms])
+
+  useEffect(() => {
+    if (providerSwitchRefreshTimerRef.current) {
+      window.clearTimeout(providerSwitchRefreshTimerRef.current)
+      providerSwitchRefreshTimerRef.current = null
+    }
+    if (activePage !== 'provider_switchboard') return
+    providerSwitchRefreshTimerRef.current = window.setTimeout(() => {
+      void refreshProviderSwitchStatus()
+      providerSwitchRefreshTimerRef.current = null
+    }, 220)
+    return () => {
+      if (providerSwitchRefreshTimerRef.current) {
+        window.clearTimeout(providerSwitchRefreshTimerRef.current)
+        providerSwitchRefreshTimerRef.current = null
+      }
+    }
+  }, [activePage, codexSwapDir1, codexSwapDir2, codexSwapApplyBoth])
 
   const isProviderOpen = useCallback(
     (name: string) => providerPanelsOpen[name] ?? true,
@@ -1126,10 +1308,10 @@ export default function App() {
                   <span>Usage Statistics</span>
                 </button>
                 <button
-                  className={`aoTopNavBtn${activePage === 'model_switchboard' ? ' is-active' : ''}`}
+                  className={`aoTopNavBtn${activePage === 'provider_switchboard' ? ' is-active' : ''}`}
                   role="tab"
-                  aria-selected={activePage === 'model_switchboard'}
-                  onClick={() => setActivePage('model_switchboard')}
+                  aria-selected={activePage === 'provider_switchboard'}
+                  onClick={() => setActivePage('provider_switchboard')}
                 >
                   <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M4 7h11" />
@@ -1137,7 +1319,7 @@ export default function App() {
                     <circle cx="17" cy="7" r="3" />
                     <circle cx="9" cy="17" r="3" />
                   </svg>
-                  <span>Model Switchboard</span>
+                  <span>Provider Switchboard</span>
                 </button>
               </div>
               <button className="aoTinyBtn" onClick={() => setInstructionModalOpen(true)}>
@@ -1148,15 +1330,164 @@ export default function App() {
 
           {/* Surface errors via toast to avoid layout shifts. */}
 
+          <div className={`aoMainArea${activePage === 'dashboard' ? '' : ' aoMainAreaFill'}`}>
           {activePage === 'usage_statistics' ? (
             <div className="aoCard aoPagePlaceholder">
               <div className="aoPagePlaceholderTitle">Usage Statistics</div>
               <div className="aoHint">Placeholder page. Dashboard data stays unchanged.</div>
             </div>
-          ) : activePage === 'model_switchboard' ? (
-            <div className="aoCard aoPagePlaceholder">
-              <div className="aoPagePlaceholderTitle">Model Switchboard</div>
-              <div className="aoHint">Placeholder page. Dashboard data stays unchanged.</div>
+          ) : activePage === 'provider_switchboard' ? (
+            <div className="aoCard aoProviderSwitchboardCard">
+              <div className="aoProviderSwitchboardHeader">
+                <div>
+                  <div className="aoPagePlaceholderTitle">Provider Switchboard</div>
+                  <div className="aoHint">
+                    Switch Codex between gateway, official, or direct providers.
+                  </div>
+                </div>
+                <div className="aoPill">
+                  <span className="aoDot" />
+                  <span className="aoPillText">{switchboardModeLabel}</span>
+                </div>
+              </div>
+              <div className="aoSwitchThemeBand">
+                <div className="aoSwitchThemeBandHead">
+                  <div className="aoMiniLabel">Current Target</div>
+                </div>
+                <div className="aoSwitchThemeSummary">
+                  <div className="aoSwitchThemeRow">
+                    <span className="aoSwitchThemeKey">Current Mode</span>
+                    <span className="aoSwitchThemeVal">{switchboardModeLabel}</span>
+                    <span className="aoSwitchThemeSep">|</span>
+                    <span className="aoSwitchThemeKey">Model Provider</span>
+                    <span className="aoSwitchThemeVal">{switchboardModelProviderLabel}</span>
+                  </div>
+                  <div className="aoSwitchThemeRow">
+                    <span className="aoSwitchThemeKey">Target Dirs</span>
+                    <span className="aoSwitchThemeVal aoSwitchMetaDirs">{switchboardTargetDirsLabel}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="aoSwitchboardBlock">
+                <div className="aoSwitchboardSectionHead">
+                  <div className="aoMiniLabel">Quick Switch</div>
+                </div>
+                <div className="aoSwitchQuickGrid">
+                  <button
+                    className={`aoSwitchQuickBtn${providerSwitchStatus?.mode === 'gateway' ? ' is-active' : ''}`}
+                    disabled={providerSwitchBusy}
+                    onClick={() => void setProviderSwitchTarget('gateway')}
+                  >
+                    <span className="aoSwitchQuickTitle">Gateway</span>
+                    <span className="aoSwitchQuickSub">Use local API Router</span>
+                  </button>
+                  <button
+                    className={`aoSwitchQuickBtn${providerSwitchStatus?.mode === 'official' ? ' is-active' : ''}`}
+                    disabled={providerSwitchBusy}
+                    onClick={() => void setProviderSwitchTarget('official')}
+                  >
+                    <span className="aoSwitchQuickTitle">Official</span>
+                    <span className="aoSwitchQuickSub">Use official Codex auth</span>
+                  </button>
+                  <button className="aoSwitchQuickBtn aoSwitchQuickBtnHint" disabled>
+                    <span className="aoSwitchQuickTitle">Direct Provider</span>
+                    <span className="aoSwitchQuickSub">Use selected provider below</span>
+                  </button>
+                </div>
+                <div className="aoSwitchSubOptions">
+                  <div className="aoSwitchboardSectionHead">
+                    <div className="aoMiniLabel">Switch Options</div>
+                    <div className="aoHint">Shared with Dashboard Swap settings.</div>
+                  </div>
+                  <div className="aoSwitchDirsInline">
+                    <label className="aoSwitchDirField">
+                      <span className="aoSwitchDirLabel">Dir 1</span>
+                      <input
+                        className="aoInput aoInputMono"
+                        value={codexSwapDir1}
+                        onChange={(e) => setCodexSwapDir1(e.target.value)}
+                        placeholder="%USERPROFILE%\\.codex"
+                      />
+                    </label>
+                    <label className="aoSwitchDirField">
+                      <span className="aoSwitchDirLabel">Dir 2 (optional)</span>
+                      <input
+                        className="aoInput aoInputMono"
+                        value={codexSwapDir2}
+                        onChange={(e) => {
+                          const next = e.target.value
+                          setCodexSwapDir2(next)
+                          if (!next.trim()) setCodexSwapApplyBoth(false)
+                        }}
+                        placeholder="Second Codex home"
+                      />
+                    </label>
+                  </div>
+                  <div className="aoSwitchDirMeta">
+                    <label className="aoCheckbox aoSwitchDirBoth">
+                      <input
+                        type="checkbox"
+                        checked={codexSwapApplyBoth}
+                        disabled={!hasSecondSwapDir || areSwapDirsDuplicate}
+                        onChange={(e) => setCodexSwapApplyBoth(e.target.checked)}
+                      />
+                      <span>Apply both directories</span>
+                    </label>
+                    <div className="aoHint aoSwitchDirHint">
+                      {areSwapDirsDuplicate
+                        ? 'Dir 2 matches Dir 1. Gateway, Official, and Direct Provider all use Dir 1 only.'
+                        : 'Directory targets apply to Gateway, Official, and Direct Provider switches (shared with Dashboard Swap settings).'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="aoSwitchboardBlock">
+                <div className="aoSwitchboardSectionHead">
+                  <div className="aoMiniLabel">Direct Providers</div>
+                  <div className="aoHint">Includes remaining quota and progress view.</div>
+                </div>
+                <div className="aoSwitchProviderGrid">
+                  {switchboardProviderCards.length ? (
+                    switchboardProviderCards.map((providerItem) => (
+                      <button
+                        key={providerItem.name}
+                        className={`aoSwitchProviderBtn${providerSwitchStatus?.mode === 'provider' && providerSwitchStatus?.model_provider === providerItem.name ? ' is-active' : ''}`}
+                        disabled={providerSwitchBusy || !providerItem.hasKey}
+                        onClick={() => void setProviderSwitchTarget('provider', providerItem.name)}
+                      >
+                        <span className="aoSwitchProviderHead">
+                          <span>{providerItem.name}</span>
+                          <span className={`aoSwitchProviderKey${providerItem.hasKey ? ' is-ready' : ' is-missing'}`}>
+                            {providerItem.hasKey ? 'key ready' : 'missing key'}
+                          </span>
+                        </span>
+                        <span className="aoSwitchProviderBase">{providerItem.baseUrl || 'base_url missing'}</span>
+                        <span className="aoSwitchProviderUsageBody">
+                          <span className="aoSwitchProviderUsageHeadline">{providerItem.usageHeadline}</span>
+                          <span className="aoSwitchProviderUsageDetail">{providerItem.usageDetail}</span>
+                          {providerItem.usageSub ? (
+                            <span className="aoSwitchProviderUsageSub">{providerItem.usageSub}</span>
+                          ) : (
+                            <span className="aoSwitchProviderUsageSub aoSwitchProviderUsageSubMuted">No extra usage info</span>
+                          )}
+                        </span>
+                        <span className="aoSwitchProviderProgress">
+                          <span
+                            className={`aoSwitchProviderProgressFill${providerItem.usagePct == null ? ' is-empty' : ''}`}
+                            style={
+                              providerItem.usagePct == null
+                                ? undefined
+                                : { width: `${Math.max(4, Math.min(100, providerItem.usagePct))}%` }
+                            }
+                          />
+                        </span>
+                      </button>
+                    ))
+                  ) : (
+                    <span className="aoHint">No configured providers.</span>
+                  )}
+                </div>
+              </div>
             </div>
           ) : !status ? (
             <div className="aoHint">Loading...</div>
@@ -1217,8 +1548,7 @@ export default function App() {
                   onSwapAuthConfig={() => {
                     void (async () => {
                       try {
-                        const homes = [codexSwapDir1]
-                        if (codexSwapApplyBoth && codexSwapDir2.trim()) homes.push(codexSwapDir2)
+                        const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapApplyBoth)
                         await toggleCodexSwap(homes)
                       } catch (e) {
                         flashToast(String(e), 'error')
@@ -1285,9 +1615,9 @@ export default function App() {
                 </div>
                 <EventsTable events={visibleEvents} canClearErrors={canClearErrors} onClearErrors={clearErrors} />
               </div>
-
             </>
           )}
+          </div>
         </div>
       </div>
 
@@ -1400,12 +1730,7 @@ requires_openai_auth = true`}
               if (!dir1) throw new Error('Dir 1 is required')
               if (codexSwapApplyBoth && !dir2) throw new Error('Dir 2 is empty')
 
-              window.localStorage.setItem('ao.codexSwap.dir1', dir1)
-              window.localStorage.setItem('ao.codexSwap.dir2', dir2)
-              window.localStorage.setItem('ao.codexSwap.applyBoth', codexSwapApplyBoth ? '1' : '0')
-
-              const homes = [dir1]
-              if (codexSwapApplyBoth) homes.push(dir2)
+              const homes = resolveCliHomes(dir1, dir2, codexSwapApplyBoth)
               await toggleCodexSwap(homes)
               setCodexSwapModalOpen(false)
             } catch (e) {
