@@ -559,6 +559,7 @@ export default function App() {
         Object.fromEntries(Object.entries(devConfig.providers).map(([name, p]) => [name, p.base_url])),
       )
       setGatewayTokenPreview('ao_dev********7f2a')
+      void refreshProviderSwitchStatus()
       return
     }
     try {
@@ -569,7 +570,14 @@ export default function App() {
       )
       const p = await invoke<string>('get_gateway_token_preview')
       setGatewayTokenPreview(p)
-      void refreshProviderSwitchStatus()
+      const homes = resolveCliHomes(
+        codexSwapDir1Ref.current,
+        codexSwapDir2Ref.current,
+        codexSwapApplyBothRef.current,
+      )
+      if (homes.length > 0) {
+        void refreshProviderSwitchStatus()
+      }
     } catch (e) {
       console.error(e)
     }
