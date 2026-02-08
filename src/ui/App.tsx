@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status } from './types'
 import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from './utils/format'
+import { normalizePathForCompare } from './utils/path'
 import { computeActiveRefreshDelayMs, computeIdleRefreshDelayMs } from './utils/usageRefresh'
 import { ProvidersTable } from './components/ProvidersTable'
 import { SessionsTable } from './components/SessionsTable'
@@ -188,6 +189,7 @@ export default function App() {
   const usageActiveRef = useRef<boolean>(false)
   const activeUsageTimerRef = useRef<number | null>(null)
   const providerSwitchRefreshTimerRef = useRef<number | null>(null)
+  const providerSwitchDirWatcherPrimedRef = useRef<boolean>(false)
   const codexSwapDir1Ref = useRef<string>('')
   const codexSwapDir2Ref = useRef<string>('')
   const codexSwapApplyBothRef = useRef<boolean>(false)
@@ -445,16 +447,12 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
   }
 
-  function normPathForCompare(path: string): string {
-    return path.trim().replace(/[\\/]+/g, '/').toLowerCase()
-  }
-
   function resolveCliHomes(dir1: string, dir2: string, applyBoth: boolean): string[] {
     const first = dir1.trim()
     const second = dir2.trim()
     if (!first) return []
     if (!applyBoth || !second) return [first]
-    if (normPathForCompare(first) === normPathForCompare(second)) return [first]
+    if (normalizePathForCompare(first) === normalizePathForCompare(second)) return [first]
     return [first, second]
   }
 
@@ -561,6 +559,7 @@ export default function App() {
         Object.fromEntries(Object.entries(devConfig.providers).map(([name, p]) => [name, p.base_url])),
       )
       setGatewayTokenPreview('ao_dev********7f2a')
+      void refreshProviderSwitchStatus()
       return
     }
     try {
@@ -571,6 +570,14 @@ export default function App() {
       )
       const p = await invoke<string>('get_gateway_token_preview')
       setGatewayTokenPreview(p)
+      const homes = resolveCliHomes(
+        codexSwapDir1Ref.current,
+        codexSwapDir2Ref.current,
+        codexSwapApplyBothRef.current,
+      )
+      if (homes.length > 0) {
+        void refreshProviderSwitchStatus()
+      }
     } catch (e) {
       console.error(e)
     }
@@ -608,7 +615,7 @@ export default function App() {
         const dailyLeft =
           dailySpent != null && dailyBudget != null ? Math.max(0, dailyBudget - dailySpent) : null
         const dailyLeftPct = pctOf(dailyLeft, dailyBudget)
-        usageHeadline = `Daily left $${fmtUsd(dailyLeft)}`
+        usageHeadline = `Remaining ${fmtPct(dailyLeftPct)} (Daily)`
         usageDetail = `Daily $${fmtUsd(dailySpent)} / $${fmtUsd(dailyBudget)}`
         const hasWeekly = quota?.weekly_spent_usd != null && quota?.weekly_budget_usd != null
         const hasMonthly = quota?.monthly_spent_usd != null || quota?.monthly_budget_usd != null
@@ -648,7 +655,7 @@ export default function App() {
   const areSwapDirsDuplicate =
     hasSecondSwapDir &&
     codexSwapDir1.trim().length > 0 &&
-    normPathForCompare(codexSwapDir1) === normPathForCompare(codexSwapDir2)
+    normalizePathForCompare(codexSwapDir1) === normalizePathForCompare(codexSwapDir2)
 
   useEffect(() => {
     if (!areSwapDirsDuplicate) return
@@ -883,6 +890,7 @@ export default function App() {
         Object.fromEntries(Object.entries(devConfig.providers).map(([name, p]) => [name, p.base_url])),
       )
       setGatewayTokenPreview('ao_dev********7f2a')
+      void refreshProviderSwitchStatus()
       return
     }
     void refreshStatus()
@@ -972,11 +980,14 @@ export default function App() {
   }, [isDevPreview, status?.last_activity_unix_ms])
 
   useEffect(() => {
+    if (!providerSwitchDirWatcherPrimedRef.current) {
+      providerSwitchDirWatcherPrimedRef.current = true
+      return
+    }
     if (providerSwitchRefreshTimerRef.current) {
       window.clearTimeout(providerSwitchRefreshTimerRef.current)
       providerSwitchRefreshTimerRef.current = null
     }
-    if (activePage !== 'provider_switchboard') return
     providerSwitchRefreshTimerRef.current = window.setTimeout(() => {
       void refreshProviderSwitchStatus()
       providerSwitchRefreshTimerRef.current = null
@@ -987,7 +998,7 @@ export default function App() {
         providerSwitchRefreshTimerRef.current = null
       }
     }
-  }, [activePage, codexSwapDir1, codexSwapDir2, codexSwapApplyBoth])
+  }, [codexSwapDir1, codexSwapDir2, codexSwapApplyBoth])
 
   const isProviderOpen = useCallback(
     (name: string) => providerPanelsOpen[name] ?? true,
@@ -1715,12 +1726,33 @@ requires_openai_auth = true`}
         dir1={codexSwapDir1}
         dir2={codexSwapDir2}
         applyBoth={codexSwapApplyBoth}
-        onChangeDir1={(v) => setCodexSwapDir1(v)}
+        onChangeDir1={(v) => {
+          setCodexSwapDir1(v)
+          const d1 = v.trim()
+          const d2 = codexSwapDir2.trim()
+          if (d1 && d2 && normalizePathForCompare(d1) === normalizePathForCompare(d2)) {
+            setCodexSwapApplyBoth(false)
+          }
+        }}
         onChangeDir2={(v) => {
           setCodexSwapDir2(v)
           if (!v.trim()) setCodexSwapApplyBoth(false)
+          const d1 = codexSwapDir1.trim()
+          const d2 = v.trim()
+          if (d1 && d2 && normalizePathForCompare(d1) === normalizePathForCompare(d2)) {
+            setCodexSwapApplyBoth(false)
+          }
         }}
-        onChangeApplyBoth={(v) => setCodexSwapApplyBoth(v)}
+        onChangeApplyBoth={(v) => {
+          const d1 = codexSwapDir1.trim()
+          const d2 = codexSwapDir2.trim()
+          if (v && d1 && d2 && normalizePathForCompare(d1) === normalizePathForCompare(d2)) {
+            flashToast('Dir 2 must be different from Dir 1', 'error')
+            setCodexSwapApplyBoth(false)
+            return
+          }
+          setCodexSwapApplyBoth(v)
+        }}
         onCancel={() => setCodexSwapModalOpen(false)}
         onApply={() => {
           void (async () => {
@@ -1729,6 +1761,13 @@ requires_openai_auth = true`}
               const dir2 = codexSwapDir2.trim()
               if (!dir1) throw new Error('Dir 1 is required')
               if (codexSwapApplyBoth && !dir2) throw new Error('Dir 2 is empty')
+              if (
+                codexSwapApplyBoth &&
+                dir2 &&
+                normalizePathForCompare(dir1) === normalizePathForCompare(dir2)
+              ) {
+                throw new Error('Dir 2 must be different from Dir 1')
+              }
 
               const homes = resolveCliHomes(dir1, dir2, codexSwapApplyBoth)
               await toggleCodexSwap(homes)
