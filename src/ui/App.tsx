@@ -571,6 +571,7 @@ export default function App() {
       )
       const p = await invoke<string>('get_gateway_token_preview')
       setGatewayTokenPreview(p)
+      void refreshProviderSwitchStatus()
     } catch (e) {
       console.error(e)
     }
@@ -608,7 +609,7 @@ export default function App() {
         const dailyLeft =
           dailySpent != null && dailyBudget != null ? Math.max(0, dailyBudget - dailySpent) : null
         const dailyLeftPct = pctOf(dailyLeft, dailyBudget)
-        usageHeadline = `Daily left $${fmtUsd(dailyLeft)}`
+        usageHeadline = `Remaining ${fmtPct(dailyLeftPct)} (Daily)`
         usageDetail = `Daily $${fmtUsd(dailySpent)} / $${fmtUsd(dailyBudget)}`
         const hasWeekly = quota?.weekly_spent_usd != null && quota?.weekly_budget_usd != null
         const hasMonthly = quota?.monthly_spent_usd != null || quota?.monthly_budget_usd != null
@@ -883,10 +884,12 @@ export default function App() {
         Object.fromEntries(Object.entries(devConfig.providers).map(([name, p]) => [name, p.base_url])),
       )
       setGatewayTokenPreview('ao_dev********7f2a')
+      void refreshProviderSwitchStatus()
       return
     }
     void refreshStatus()
     void refreshConfig()
+    void refreshProviderSwitchStatus()
     // Fetch usage once when opening the app, then refresh on a half-hour cadence (00/30 +/- 5 min) while idle.
     const once = window.setTimeout(() => void refreshQuotaAll({ silent: true }), 850)
     const scheduleUsageRefresh = () => {
@@ -976,7 +979,6 @@ export default function App() {
       window.clearTimeout(providerSwitchRefreshTimerRef.current)
       providerSwitchRefreshTimerRef.current = null
     }
-    if (activePage !== 'provider_switchboard') return
     providerSwitchRefreshTimerRef.current = window.setTimeout(() => {
       void refreshProviderSwitchStatus()
       providerSwitchRefreshTimerRef.current = null
@@ -987,7 +989,7 @@ export default function App() {
         providerSwitchRefreshTimerRef.current = null
       }
     }
-  }, [activePage, codexSwapDir1, codexSwapDir2, codexSwapApplyBoth])
+  }, [codexSwapDir1, codexSwapDir2, codexSwapApplyBoth])
 
   const isProviderOpen = useCallback(
     (name: string) => providerPanelsOpen[name] ?? true,
@@ -1715,12 +1717,33 @@ requires_openai_auth = true`}
         dir1={codexSwapDir1}
         dir2={codexSwapDir2}
         applyBoth={codexSwapApplyBoth}
-        onChangeDir1={(v) => setCodexSwapDir1(v)}
+        onChangeDir1={(v) => {
+          setCodexSwapDir1(v)
+          const d1 = v.trim()
+          const d2 = codexSwapDir2.trim()
+          if (d1 && d2 && normPathForCompare(d1) === normPathForCompare(d2)) {
+            setCodexSwapApplyBoth(false)
+          }
+        }}
         onChangeDir2={(v) => {
           setCodexSwapDir2(v)
           if (!v.trim()) setCodexSwapApplyBoth(false)
+          const d1 = codexSwapDir1.trim()
+          const d2 = v.trim()
+          if (d1 && d2 && normPathForCompare(d1) === normPathForCompare(d2)) {
+            setCodexSwapApplyBoth(false)
+          }
         }}
-        onChangeApplyBoth={(v) => setCodexSwapApplyBoth(v)}
+        onChangeApplyBoth={(v) => {
+          const d1 = codexSwapDir1.trim()
+          const d2 = codexSwapDir2.trim()
+          if (v && d1 && d2 && normPathForCompare(d1) === normPathForCompare(d2)) {
+            flashToast('Dir 2 must be different from Dir 1', 'error')
+            setCodexSwapApplyBoth(false)
+            return
+          }
+          setCodexSwapApplyBoth(v)
+        }}
         onCancel={() => setCodexSwapModalOpen(false)}
         onApply={() => {
           void (async () => {
@@ -1729,6 +1752,9 @@ requires_openai_auth = true`}
               const dir2 = codexSwapDir2.trim()
               if (!dir1) throw new Error('Dir 1 is required')
               if (codexSwapApplyBoth && !dir2) throw new Error('Dir 2 is empty')
+              if (dir2 && normPathForCompare(dir1) === normPathForCompare(dir2)) {
+                throw new Error('Dir 2 must be different from Dir 1')
+              }
 
               const homes = resolveCliHomes(dir1, dir2, codexSwapApplyBoth)
               await toggleCodexSwap(homes)

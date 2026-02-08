@@ -25,7 +25,11 @@ export function CodexSwapModal({
 }: Props) {
   if (!open) return null
 
-  const canApplyBoth = dir2.trim().length > 0
+  const norm = (v: string) => v.trim().replace(/[\\/]+/g, '/').toLowerCase()
+  const hasDir2 = dir2.trim().length > 0
+  const duplicateDirs = dir1.trim().length > 0 && hasDir2 && norm(dir1) === norm(dir2)
+  const canApplyBoth = hasDir2 && !duplicateDirs
+  const applyDisabled = dir1.trim().length === 0 || (applyBoth && (!hasDir2 || duplicateDirs))
 
   return (
     <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={onCancel}>
@@ -49,6 +53,7 @@ export function CodexSwapModal({
               className="aoInput"
               style={{ width: '100%', height: 36, borderRadius: 12 }}
               value={dir2}
+              placeholder="Second Codex home"
               onChange={(e) => onChangeDir2(e.target.value)}
             />
           </label>
@@ -66,7 +71,9 @@ export function CodexSwapModal({
           </label>
 
           <div className="aoHint">
-            Each dir must contain auth.json and config.toml, otherwise you'll get an error.
+            {duplicateDirs
+              ? 'Dir 2 matches Dir 1. Use a different second directory.'
+              : "Each dir must contain auth.json and config.toml, otherwise you'll get an error."}
           </div>
         </div>
 
@@ -74,7 +81,7 @@ export function CodexSwapModal({
           <button className="aoBtn" onClick={onCancel}>
             Cancel
           </button>
-          <button className="aoBtn aoBtnPrimary" onClick={onApply}>
+          <button className="aoBtn aoBtnPrimary" disabled={applyDisabled} onClick={onApply}>
             Apply
           </button>
         </div>
