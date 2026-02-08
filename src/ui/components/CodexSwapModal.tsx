@@ -1,4 +1,5 @@
 import { ModalBackdrop } from './ModalBackdrop'
+import { normalizePathForCompare } from '../utils/path'
 
 type Props = {
   open: boolean
@@ -25,9 +26,9 @@ export function CodexSwapModal({
 }: Props) {
   if (!open) return null
 
-  const norm = (v: string) => v.trim().replace(/[\\/]+/g, '/').toLowerCase()
   const hasDir2 = dir2.trim().length > 0
-  const duplicateDirs = dir1.trim().length > 0 && hasDir2 && norm(dir1) === norm(dir2)
+  const duplicateDirs =
+    dir1.trim().length > 0 && hasDir2 && normalizePathForCompare(dir1) === normalizePathForCompare(dir2)
   const canApplyBoth = hasDir2 && !duplicateDirs
   const applyDisabled = dir1.trim().length === 0 || (applyBoth && (!hasDir2 || duplicateDirs))
 

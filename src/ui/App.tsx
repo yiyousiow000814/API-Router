@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status } from './types'
 import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from './utils/format'
+import { normalizePathForCompare } from './utils/path'
 import { computeActiveRefreshDelayMs, computeIdleRefreshDelayMs } from './utils/usageRefresh'
 import { ProvidersTable } from './components/ProvidersTable'
 import { SessionsTable } from './components/SessionsTable'
@@ -188,6 +189,7 @@ export default function App() {
   const usageActiveRef = useRef<boolean>(false)
   const activeUsageTimerRef = useRef<number | null>(null)
   const providerSwitchRefreshTimerRef = useRef<number | null>(null)
+  const providerSwitchDirWatcherPrimedRef = useRef<boolean>(false)
   const codexSwapDir1Ref = useRef<string>('')
   const codexSwapDir2Ref = useRef<string>('')
   const codexSwapApplyBothRef = useRef<boolean>(false)
@@ -445,16 +447,12 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
   }
 
-  function normPathForCompare(path: string): string {
-    return path.trim().replace(/[\\/]+/g, '/').toLowerCase()
-  }
-
   function resolveCliHomes(dir1: string, dir2: string, applyBoth: boolean): string[] {
     const first = dir1.trim()
     const second = dir2.trim()
     if (!first) return []
     if (!applyBoth || !second) return [first]
-    if (normPathForCompare(first) === normPathForCompare(second)) return [first]
+    if (normalizePathForCompare(first) === normalizePathForCompare(second)) return [first]
     return [first, second]
   }
 
@@ -649,7 +647,7 @@ export default function App() {
   const areSwapDirsDuplicate =
     hasSecondSwapDir &&
     codexSwapDir1.trim().length > 0 &&
-    normPathForCompare(codexSwapDir1) === normPathForCompare(codexSwapDir2)
+    normalizePathForCompare(codexSwapDir1) === normalizePathForCompare(codexSwapDir2)
 
   useEffect(() => {
     if (!areSwapDirsDuplicate) return
@@ -889,7 +887,6 @@ export default function App() {
     }
     void refreshStatus()
     void refreshConfig()
-    void refreshProviderSwitchStatus()
     // Fetch usage once when opening the app, then refresh on a half-hour cadence (00/30 +/- 5 min) while idle.
     const once = window.setTimeout(() => void refreshQuotaAll({ silent: true }), 850)
     const scheduleUsageRefresh = () => {
@@ -975,6 +972,10 @@ export default function App() {
   }, [isDevPreview, status?.last_activity_unix_ms])
 
   useEffect(() => {
+    if (!providerSwitchDirWatcherPrimedRef.current) {
+      providerSwitchDirWatcherPrimedRef.current = true
+      return
+    }
     if (providerSwitchRefreshTimerRef.current) {
       window.clearTimeout(providerSwitchRefreshTimerRef.current)
       providerSwitchRefreshTimerRef.current = null
@@ -1721,7 +1722,7 @@ requires_openai_auth = true`}
           setCodexSwapDir1(v)
           const d1 = v.trim()
           const d2 = codexSwapDir2.trim()
-          if (d1 && d2 && normPathForCompare(d1) === normPathForCompare(d2)) {
+          if (d1 && d2 && normalizePathForCompare(d1) === normalizePathForCompare(d2)) {
             setCodexSwapApplyBoth(false)
           }
         }}
@@ -1730,14 +1731,14 @@ requires_openai_auth = true`}
           if (!v.trim()) setCodexSwapApplyBoth(false)
           const d1 = codexSwapDir1.trim()
           const d2 = v.trim()
-          if (d1 && d2 && normPathForCompare(d1) === normPathForCompare(d2)) {
+          if (d1 && d2 && normalizePathForCompare(d1) === normalizePathForCompare(d2)) {
             setCodexSwapApplyBoth(false)
           }
         }}
         onChangeApplyBoth={(v) => {
           const d1 = codexSwapDir1.trim()
           const d2 = codexSwapDir2.trim()
-          if (v && d1 && d2 && normPathForCompare(d1) === normPathForCompare(d2)) {
+          if (v && d1 && d2 && normalizePathForCompare(d1) === normalizePathForCompare(d2)) {
             flashToast('Dir 2 must be different from Dir 1', 'error')
             setCodexSwapApplyBoth(false)
             return
@@ -1752,7 +1753,11 @@ requires_openai_auth = true`}
               const dir2 = codexSwapDir2.trim()
               if (!dir1) throw new Error('Dir 1 is required')
               if (codexSwapApplyBoth && !dir2) throw new Error('Dir 2 is empty')
-              if (codexSwapApplyBoth && dir2 && normPathForCompare(dir1) === normPathForCompare(dir2)) {
+              if (
+                codexSwapApplyBoth &&
+                dir2 &&
+                normalizePathForCompare(dir1) === normalizePathForCompare(dir2)
+              ) {
                 throw new Error('Dir 2 must be different from Dir 1')
               }
 
