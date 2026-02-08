@@ -1752,7 +1752,7 @@ requires_openai_auth = true`}
               const dir2 = codexSwapDir2.trim()
               if (!dir1) throw new Error('Dir 1 is required')
               if (codexSwapApplyBoth && !dir2) throw new Error('Dir 2 is empty')
-              if (dir2 && normPathForCompare(dir1) === normPathForCompare(dir2)) {
+              if (codexSwapApplyBoth && dir2 && normPathForCompare(dir1) === normPathForCompare(dir2)) {
                 throw new Error('Dir 2 must be different from Dir 1')
               }
 
