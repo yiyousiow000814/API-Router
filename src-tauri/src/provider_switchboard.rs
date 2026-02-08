@@ -427,15 +427,15 @@ pub fn set_target(
     for h in &homes {
         let res = match target.as_str() {
             "gateway" => restore_home_original(h),
-            "official" => {
+            "official" => (|| {
                 let orig_cfg = read_original_cfg_text(h)?;
                 let next_cfg = strip_model_provider_line(&orig_cfg);
                 let auth = app_auth.as_ref().ok_or_else(|| {
                     "Missing app Codex auth.json. Try logging in first.".to_string()
                 })?;
                 write_swapped_files(h, auth, &next_cfg)
-            }
-            "provider" => {
+            })(),
+            "provider" => (|| {
                 let name = direct_name
                     .as_deref()
                     .ok_or_else(|| "provider is required for target=provider".to_string())?;
@@ -449,7 +449,7 @@ pub fn set_target(
                 let next_cfg = build_direct_provider_cfg(&orig_cfg, name, base_url);
                 let next_auth = auth_with_openai_key(key.trim());
                 write_swapped_files(h, &next_auth, &next_cfg)
-            }
+            })(),
             _ => Err("target must be one of: gateway | official | provider".to_string()),
         };
         if let Err(e) = res {
