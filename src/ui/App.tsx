@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
-import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status } from './types'
+import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status, UsageStatistics } from './types'
 import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from './utils/format'
 import { computeActiveRefreshDelayMs, computeIdleRefreshDelayMs } from './utils/usageRefresh'
 import { ProvidersTable } from './components/ProvidersTable'
@@ -182,6 +182,15 @@ export default function App() {
   const [activePage, setActivePage] = useState<TopPage>('dashboard')
   const [providerSwitchStatus, setProviderSwitchStatus] = useState<ProviderSwitchboardStatus | null>(null)
   const [providerSwitchBusy, setProviderSwitchBusy] = useState<boolean>(false)
+  const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(null)
+  const [usageWindowHours, setUsageWindowHours] = useState<number>(24)
+  const [usageStatisticsLoading, setUsageStatisticsLoading] = useState<boolean>(false)
+  const [usageChartHover, setUsageChartHover] = useState<{
+    x: number
+    y: number
+    title: string
+    subtitle: string
+  } | null>(null)
   const [updatingSessionPref, setUpdatingSessionPref] = useState<Record<string, boolean>>({})
   const usageRefreshTimerRef = useRef<number | null>(null)
   const idleUsageSchedulerRef = useRef<(() => void) | null>(null)
@@ -512,6 +521,87 @@ export default function App() {
     }
   }
 
+  async function refreshUsageStatistics() {
+    if (isDevPreview) {
+      const now = Date.now()
+      setUsageStatistics({
+        ok: true,
+        generated_at_unix_ms: now,
+        window_hours: usageWindowHours,
+        bucket_seconds: usageWindowHours <= 48 ? 3600 : 86400,
+        summary: {
+          total_requests: 222,
+          total_tokens: 131800,
+          unique_models: 2,
+          estimated_total_cost_usd: 9.24,
+          by_model: [
+            {
+              model: 'gpt-5.x',
+              requests: 180,
+              input_tokens: 70000,
+              output_tokens: 40000,
+              total_tokens: 110000,
+              share_pct: 81.08,
+              estimated_total_cost_usd: 7.42,
+              estimated_avg_request_cost_usd: 0.041,
+              estimated_cost_request_count: 180,
+            },
+            {
+              model: 'gpt-4.1',
+              requests: 42,
+              input_tokens: 14000,
+              output_tokens: 7800,
+              total_tokens: 21800,
+              share_pct: 18.92,
+              estimated_total_cost_usd: 1.82,
+              estimated_avg_request_cost_usd: 0.043,
+              estimated_cost_request_count: 42,
+            },
+          ],
+          by_provider: [
+            {
+              provider: 'provider_1',
+              requests: 210,
+              total_tokens: 128400,
+              estimated_total_cost_usd: 8.51,
+              estimated_avg_request_cost_usd: 0.041,
+              estimated_cost_request_count: 210,
+            },
+            {
+              provider: 'provider_2',
+              requests: 12,
+              total_tokens: 3400,
+              estimated_total_cost_usd: 0.73,
+              estimated_avg_request_cost_usd: 0.061,
+              estimated_cost_request_count: 12,
+            },
+          ],
+          timeline: Array.from({ length: usageWindowHours <= 48 ? 24 : 7 }).map((_, index) => ({
+            bucket_unix_ms:
+              now -
+              (usageWindowHours <= 48
+                ? (23 - index) * 60 * 60 * 1000
+                : (6 - index) * 24 * 60 * 60 * 1000),
+            requests: Math.max(1, Math.round(6 + Math.sin(index / 2) * 4)),
+            total_tokens: Math.max(100, Math.round(3200 + Math.cos(index / 2.2) * 1600)),
+          })),
+        },
+      })
+      return
+    }
+    setUsageStatisticsLoading(true)
+    try {
+      const res = await invoke<UsageStatistics>('get_usage_statistics', {
+        hours: usageWindowHours,
+      })
+      setUsageStatistics(res)
+    } catch (e) {
+      flashToast(String(e), 'error')
+    } finally {
+      setUsageStatisticsLoading(false)
+    }
+  }
+
   async function setProviderSwitchTarget(target: 'gateway' | 'official' | 'provider', provider?: string) {
     const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapApplyBoth)
     setProviderSwitchBusy(true)
@@ -644,16 +734,113 @@ export default function App() {
   }, [providerSwitchStatus])
   const switchboardTargetDirsLabel =
     providerSwitchStatus?.dirs?.map((d) => d.cli_home).join(' | ') || '-'
-  const hasSecondSwapDir = codexSwapDir2.trim().length > 0
-  const areSwapDirsDuplicate =
-    hasSecondSwapDir &&
-    codexSwapDir1.trim().length > 0 &&
-    normPathForCompare(codexSwapDir1) === normPathForCompare(codexSwapDir2)
+  const usageSummary = usageStatistics?.summary ?? null
+  const usageTimelineRaw = usageSummary?.timeline ?? []
+  const usageTimeline = useMemo(
+    () => [...usageTimelineRaw].sort((a, b) => a.bucket_unix_ms - b.bucket_unix_ms),
+    [usageTimelineRaw],
+  )
+  const usageByModel = usageSummary?.by_model ?? []
+  const usageByProvider = usageSummary?.by_provider ?? []
+  const usageMaxTimelineRequests = Math.max(1, ...usageTimeline.map((x) => x.requests ?? 0))
+  const usageMaxTimelineTokens = Math.max(1, ...usageTimeline.map((x) => x.total_tokens ?? 0))
+  const usageTotalInputTokens = usageByModel.reduce((sum, x) => sum + (x.input_tokens ?? 0), 0)
+  const usageTotalOutputTokens = usageByModel.reduce((sum, x) => sum + (x.output_tokens ?? 0), 0)
+  const usageAvgTokensPerRequest =
+    (usageSummary?.total_requests ?? 0) > 0
+      ? Math.round((usageSummary?.total_tokens ?? 0) / (usageSummary?.total_requests ?? 1))
+      : 0
+  const usageTopModel = usageByModel[0] ?? null
+  const usageEstimatedCostRequestCount = usageByModel.reduce(
+    (sum, x) => sum + (x.estimated_cost_request_count ?? 0),
+    0,
+  )
+  const usageEstimatedCostCoveragePct =
+    (usageSummary?.total_requests ?? 0) > 0
+      ? Math.round((usageEstimatedCostRequestCount / (usageSummary?.total_requests ?? 1)) * 100)
+      : 0
+  const usageAvgRequestsPerHour =
+    (usageSummary?.total_requests ?? 0) > 0 && (usageStatistics?.window_hours ?? 0) > 0
+      ? (usageSummary?.total_requests ?? 0) / (usageStatistics?.window_hours ?? 1)
+      : 0
+  const usageAvgTokensPerHour =
+    (usageSummary?.total_tokens ?? 0) > 0 && (usageStatistics?.window_hours ?? 0) > 0
+      ? (usageSummary?.total_tokens ?? 0) / (usageStatistics?.window_hours ?? 1)
+      : 0
+  const usageChart = useMemo(() => {
+    if (!usageTimeline.length) return null
+    const w = 1000
+    const h = 220
+    const padL = 26
+    const padR = 14
+    const padT = 16
+    const padB = 34
+    const plotW = w - padL - padR
+    const plotH = h - padT - padB
+    const n = usageTimeline.length
+    const step = n > 1 ? plotW / (n - 1) : 0
+    const barW = Math.max(8, Math.min(24, Math.floor((plotW / Math.max(n, 1)) * 0.55)))
+    const hoverW = n > 1 ? Math.max(12, step) : Math.max(24, barW * 2)
+    const yBase = padT + plotH
+    const points = usageTimeline.map((point, index) => {
+      const x = padL + (n === 1 ? plotW / 2 : index * step)
+      const reqH = Math.max(2, Math.round((point.requests / usageMaxTimelineRequests) * plotH))
+      const barY = yBase - reqH
+      const tokenY = yBase - Math.round((point.total_tokens / usageMaxTimelineTokens) * plotH)
+      return { point, x, barY, reqH, tokenY }
+    })
+    const linePath = points
+      .map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.tokenY.toFixed(2)}`)
+      .join(' ')
+    const tickIndexes = Array.from(new Set([0, Math.floor((n - 1) / 2), n - 1]))
+    return { w, h, yBase, points, linePath, tickIndexes, barW, hoverW }
+  }, [usageTimeline, usageMaxTimelineRequests, usageMaxTimelineTokens])
 
-  useEffect(() => {
-    if (!areSwapDirsDuplicate) return
-    if (codexSwapApplyBoth) setCodexSwapApplyBoth(false)
-  }, [areSwapDirsDuplicate, codexSwapApplyBoth])
+  function fmtUsdMaybe(value?: number | null): string {
+    if (value == null || !Number.isFinite(value) || value <= 0) return '-'
+    return `$${value >= 10 ? value.toFixed(2) : value.toFixed(3)}`
+  }
+
+  function fmtPricingSource(source?: string | null): string {
+    if (!source || source === 'none') return 'auto'
+    if (source === 'token_rate') return 'auto token-rate'
+    if (source === 'manual_per_request') return 'manual $/req'
+    if (source === 'manual_package_total') return 'manual package total'
+    return source
+  }
+
+  function fmtUsageBucketLabel(unixMs: number): string {
+    const d = new Date(unixMs)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    if ((usageStatistics?.window_hours ?? 24) <= 48) {
+      return `${pad(d.getHours())}:00`
+    }
+    return `${pad(d.getDate())}-${pad(d.getMonth() + 1)}`
+  }
+
+  function showUsageChartHover(
+    event: {
+      clientX: number
+      clientY: number
+      currentTarget: { ownerSVGElement?: SVGSVGElement | null }
+    },
+    bucketUnixMs: number,
+    requests: number,
+    totalTokens: number,
+  ) {
+    const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect()
+    if (!rect) return
+    const rawX = event.clientX - rect.left
+    const rawY = event.clientY - rect.top
+    const maxX = Math.max(8, rect.width - 176)
+    const maxY = Math.max(8, rect.height - 54)
+    setUsageChartHover({
+      x: Math.min(Math.max(rawX + 10, 8), maxX),
+      y: Math.min(Math.max(rawY - 42, 8), maxY),
+      title: fmtUsageBucketLabel(bucketUnixMs),
+      subtitle: `Requests ${requests} | Tokens ${totalTokens.toLocaleString()}`,
+    })
+  }
 
   async function applyOverride(next: string) {
     try {
@@ -694,6 +881,33 @@ export default function App() {
       }
       await refreshStatus()
       await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }
+
+  async function saveProviderPricing(name: string) {
+    const provider = config?.providers?.[name]
+    if (!provider) return
+    const mode = provider.manual_pricing_mode ?? null
+    const amount = provider.manual_pricing_amount_usd ?? null
+    try {
+      if (!mode) {
+        await invoke('set_provider_manual_pricing', {
+          provider: name,
+          mode: 'none',
+          amountUsd: null,
+        })
+      } else {
+        await invoke('set_provider_manual_pricing', {
+          provider: name,
+          mode,
+          amountUsd: amount,
+        })
+      }
+      flashToast(`Pricing saved: ${name}`)
+      await refreshConfig()
+      await refreshUsageStatistics()
     } catch (e) {
       flashToast(String(e), 'error')
     }
@@ -989,6 +1203,13 @@ export default function App() {
     }
   }, [activePage, codexSwapDir1, codexSwapDir2, codexSwapApplyBoth])
 
+  useEffect(() => {
+    if (activePage !== 'usage_statistics') return
+    void refreshUsageStatistics()
+    const t = window.setInterval(() => void refreshUsageStatistics(), 15_000)
+    return () => window.clearInterval(t)
+  }, [activePage, usageWindowHours])
+
   const isProviderOpen = useCallback(
     (name: string) => providerPanelsOpen[name] ?? true,
     [providerPanelsOpen],
@@ -1218,6 +1439,78 @@ export default function App() {
                   <div className="aoHint">
                     Usage base sets the usage endpoint. If empty, we use the provider base URL.
                   </div>
+                  <div className="aoMiniLabel">Manual Pricing (Usage Statistics)</div>
+                  <div className="aoPricingRow">
+                    <select
+                      className="aoSelect aoPricingModeSelect"
+                      value={p.manual_pricing_mode ?? 'none'}
+                      onChange={(e) =>
+                        setConfig((c) =>
+                          c
+                            ? {
+                                ...c,
+                                providers: {
+                                  ...c.providers,
+                                  [name]: {
+                                    ...c.providers[name],
+                                    manual_pricing_mode:
+                                      e.target.value === 'none'
+                                        ? null
+                                        : (e.target.value as 'per_request' | 'package_total'),
+                                    manual_pricing_amount_usd:
+                                      e.target.value === 'none'
+                                        ? null
+                                        : c.providers[name].manual_pricing_amount_usd ?? null,
+                                  },
+                                },
+                              }
+                            : c,
+                        )
+                      }
+                    >
+                      <option value="none">Auto (token-rate)</option>
+                      <option value="per_request">Manual $ / request</option>
+                      <option value="package_total">Manual package total $</option>
+                    </select>
+                    <input
+                      className="aoInput aoPricingInput"
+                      type="number"
+                      step="0.001"
+                      min="0"
+                      disabled={!p.manual_pricing_mode}
+                      placeholder={
+                        p.manual_pricing_mode === 'package_total'
+                          ? 'Package total USD'
+                          : p.manual_pricing_mode === 'per_request'
+                            ? 'USD per request'
+                            : 'Amount USD'
+                      }
+                      value={p.manual_pricing_amount_usd == null ? '' : String(p.manual_pricing_amount_usd)}
+                      onChange={(e) =>
+                        setConfig((c) =>
+                          c
+                            ? {
+                                ...c,
+                                providers: {
+                                  ...c.providers,
+                                  [name]: {
+                                    ...c.providers[name],
+                                    manual_pricing_amount_usd:
+                                      e.target.value.trim() === '' ? null : Number(e.target.value),
+                                  },
+                                },
+                              }
+                            : c,
+                        )
+                      }
+                    />
+                    <button className="aoTinyBtn" onClick={() => void saveProviderPricing(name)}>
+                      Save Pricing
+                    </button>
+                  </div>
+                  <div className="aoHint">
+                    Auto uses token-rate estimate. Package total keeps “Total $ Used” fixed.
+                  </div>
                   <div className="aoHint">
                     updated:{' '}
                     {status?.quota?.[name]?.updated_at_unix_ms
@@ -1254,6 +1547,8 @@ export default function App() {
       openUsageBaseModal,
       registerProviderCardRef,
       providerNameDrafts,
+      saveProvider,
+      saveProviderPricing,
       setConfig,
       toggleProviderOpen,
       status,
@@ -1332,9 +1627,358 @@ export default function App() {
 
           <div className={`aoMainArea${activePage === 'dashboard' ? '' : ' aoMainAreaFill'}`}>
           {activePage === 'usage_statistics' ? (
-            <div className="aoCard aoPagePlaceholder">
-              <div className="aoPagePlaceholderTitle">Usage Statistics</div>
-              <div className="aoHint">Placeholder page. Dashboard data stays unchanged.</div>
+            <div className="aoCard aoUsageStatsPage">
+              <div className="aoUsageStatsHeader">
+                <div>
+                  <div className="aoPagePlaceholderTitle">Usage Statistics</div>
+                  <div className="aoHint">
+                    Requests, tokens, model mix, and token-rate-based estimated request price by model.
+                  </div>
+                </div>
+                <div className="aoUsageStatsActions">
+                  <button
+                    className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 24 ? ' aoUsageWindowBtnActive' : ''}`}
+                    onClick={() => setUsageWindowHours(24)}
+                    disabled={usageStatisticsLoading}
+                  >
+                    24h
+                  </button>
+                  <button
+                    className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 7 * 24 ? ' aoUsageWindowBtnActive' : ''}`}
+                    onClick={() => setUsageWindowHours(7 * 24)}
+                    disabled={usageStatisticsLoading}
+                  >
+                    7d
+                  </button>
+                  <button
+                    className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnRefresh${usageStatisticsLoading ? ' aoUsageActionBtnLoading' : ''}`}
+                    onClick={() => void refreshUsageStatistics()}
+                    disabled={usageStatisticsLoading}
+                  >
+                    Refresh
+                  </button>
+                </div>
+              </div>
+
+              <div className="aoUsageKpiGrid">
+                <div className="aoUsageKpiCard">
+                  <div className="aoMiniLabel">Total Requests</div>
+                  <div className="aoUsageKpiValue">{usageSummary?.total_requests?.toLocaleString() ?? '-'}</div>
+                </div>
+                <div className="aoUsageKpiCard">
+                  <div className="aoMiniLabel">Total Tokens</div>
+                  <div className="aoUsageKpiValue">{usageSummary?.total_tokens?.toLocaleString() ?? '-'}</div>
+                </div>
+                <div className="aoUsageKpiCard">
+                  <div className="aoMiniLabel">Top Model</div>
+                  <div className="aoUsageKpiValue aoUsageKpiValueSmall">
+                    {usageTopModel ? usageTopModel.model : '-'}
+                  </div>
+                </div>
+                <div className="aoUsageKpiCard">
+                  <div className="aoMiniLabel">Estimated Cost</div>
+                  <div className="aoUsageKpiValue">{fmtUsdMaybe(usageSummary?.estimated_total_cost_usd)}</div>
+                </div>
+              </div>
+              <div className="aoUsageFactsCard">
+                <div className="aoSwitchboardSectionHead">
+                  <div className="aoMiniLabel">Window Details</div>
+                  <div className="aoHint">Secondary metrics in table format.</div>
+                </div>
+                <table className="aoUsageFactsTable">
+                  <tbody>
+                    <tr>
+                      <th>Top Model Share</th>
+                      <td>{usageTopModel ? `${Math.round(usageTopModel.share_pct ?? 0)}%` : '-'}</td>
+                      <th>Unique Models</th>
+                      <td>{usageSummary?.unique_models?.toLocaleString() ?? '-'}</td>
+                    </tr>
+                    <tr>
+                      <th>Input / Output Tokens</th>
+                      <td>{usageTotalInputTokens.toLocaleString()} / {usageTotalOutputTokens.toLocaleString()}</td>
+                      <th>Avg Tokens / Request</th>
+                      <td>{usageSummary?.total_requests ? usageAvgTokensPerRequest.toLocaleString() : '-'}</td>
+                    </tr>
+                    <tr>
+                      <th>Cost Coverage</th>
+                      <td>{usageEstimatedCostRequestCount.toLocaleString()} req ({usageEstimatedCostCoveragePct}%)</td>
+                      <th>Window Pace</th>
+                      <td>
+                        {usageAvgRequestsPerHour.toFixed(2)} req/h · {Math.round(usageAvgTokensPerHour).toLocaleString()} tok/h
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="aoUsageChartsGrid">
+                <div className="aoUsageChartCard">
+                  <div className="aoSwitchboardSectionHead">
+                    <div className="aoMiniLabel">Requests Timeline</div>
+                    <div className="aoHint">
+                      {usageSummary?.total_requests ? `${usageSummary.total_requests.toLocaleString()} requests in window` : 'No request data yet'}
+                    </div>
+                  </div>
+                  {usageChart ? (
+                    <div className="aoUsageTimelineChartWrap" onMouseLeave={() => setUsageChartHover(null)}>
+                      <svg className="aoUsageTimelineSvg" viewBox={`0 0 ${usageChart.w} ${usageChart.h}`} preserveAspectRatio="none">
+                        <line
+                          className="aoUsageTimelineAxis"
+                          x1={26}
+                          y1={usageChart.yBase}
+                          x2={usageChart.w - 14}
+                          y2={usageChart.yBase}
+                        />
+                        {usageChart.points.map((p) => (
+                          <rect
+                            key={`bar-${p.point.bucket_unix_ms}`}
+                            className="aoUsageTimelineBarRect"
+                            x={p.x - usageChart.barW / 2}
+                            y={p.barY}
+                            width={usageChart.barW}
+                            height={p.reqH}
+                            rx={4}
+                            ry={4}
+                          >
+                            <title>{`${fmtUsageBucketLabel(p.point.bucket_unix_ms)} | requests ${p.point.requests}`}</title>
+                          </rect>
+                        ))}
+                        <path className="aoUsageTimelineLine" d={usageChart.linePath} />
+                        {usageChart.points.map((p) => (
+                          <circle
+                            key={`dot-${p.point.bucket_unix_ms}`}
+                            className="aoUsageTimelineDot"
+                            cx={p.x}
+                            cy={p.tokenY}
+                            r={3}
+                          >
+                            <title>{`${fmtUsageBucketLabel(p.point.bucket_unix_ms)} | tokens ${p.point.total_tokens.toLocaleString()}`}</title>
+                          </circle>
+                        ))}
+                        {usageChart.points.map((p) => (
+                          <rect
+                            key={`hover-${p.point.bucket_unix_ms}`}
+                            className="aoUsageTimelineHoverBand"
+                            x={p.x - usageChart.hoverW / 2}
+                            y={16}
+                            width={usageChart.hoverW}
+                            height={usageChart.yBase - 16}
+                            onMouseMove={(event) =>
+                              showUsageChartHover(
+                                event,
+                                p.point.bucket_unix_ms,
+                                p.point.requests,
+                                p.point.total_tokens,
+                              )
+                            }
+                          />
+                        ))}
+                      </svg>
+                      {usageChartHover ? (
+                        <div
+                          className="aoUsageTooltip"
+                          style={{ left: `${usageChartHover.x}px`, top: `${usageChartHover.y}px` }}
+                        >
+                          <div className="aoUsageTooltipTitle">{usageChartHover.title}</div>
+                          <div className="aoUsageTooltipSub">{usageChartHover.subtitle}</div>
+                        </div>
+                      ) : null}
+                      <div className="aoUsageTimelineLegend">
+                        <span className="aoUsageLegendItem aoUsageLegendBars">Bars: Requests</span>
+                        <span className="aoUsageLegendItem aoUsageLegendLine">Line: Tokens</span>
+                        <span className="aoHint">scaled to window max</span>
+                      </div>
+                      <div className="aoUsageTimelineTicks">
+                        {usageChart.tickIndexes.map((index) => {
+                          const p = usageChart.points[index]
+                          return (
+                            <span key={`tick-${p.point.bucket_unix_ms}`}>{fmtUsageBucketLabel(p.point.bucket_unix_ms)}</span>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="aoHint">No requests have gone through the gateway in this time window.</div>
+                  )}
+                </div>
+
+                <div className="aoUsageChartCard">
+                  <div className="aoSwitchboardSectionHead">
+                    <div className="aoMiniLabel">Provider Breakdown</div>
+                    <div className="aoHint">
+                      Provider-first view (better for mixed pricing modes like package total and manual $/req).
+                    </div>
+                  </div>
+                  {usageByProvider.length ? (
+                    <div className="aoUsageModelList">
+                      {usageByProvider.slice(0, 10).map((p) => (
+                        <div key={p.provider} className="aoUsageModelRow">
+                          <div className="aoUsageModelTop">
+                            <span className="aoUsageModelName">{p.provider}</span>
+                            <span className="aoUsageModelMeta">{p.requests.toLocaleString()} req</span>
+                          </div>
+                          <div className="aoUsageModelSub">
+                            <span>{p.total_tokens.toLocaleString()} tokens</span>
+                            <span>mode {fmtPricingSource(p.pricing_source)}</span>
+                          </div>
+                          <div className="aoUsageModelBarTrack">
+                            <span
+                              className="aoUsageModelBarFill"
+                              style={{
+                                width: `${Math.max(
+                                  3,
+                                  Math.min(
+                                    100,
+                                    ((p.requests ?? 0) / Math.max(1, usageSummary?.total_requests ?? 0)) * 100,
+                                  ),
+                                )}%`,
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="aoHint">No provider-level usage yet. Send requests through the gateway first.</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="aoUsageProviderCard">
+                <div className="aoSwitchboardSectionHead">
+                  <div className="aoMiniLabel">Provider Statistics</div>
+                  <div className="aoHint">
+                    Includes tok/req, $/M tokens, estimated/day, pricing source, and fixed package total.
+                  </div>
+                </div>
+                {usageByProvider.length ? (
+                  <table className="aoUsageProviderTable">
+                    <thead>
+                      <tr>
+                        <th>Provider</th>
+                        <th>Req</th>
+                        <th>Tokens</th>
+                        <th>tok/req</th>
+                        <th>$ / req</th>
+                        <th>$ / M tok</th>
+                        <th>est $ / day</th>
+                        <th>Total $ Used</th>
+                        <th>Pricing Source</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {usageByProvider.map((p) => (
+                        <tr key={p.provider}>
+                          <td className="aoUsageProviderName">{p.provider}</td>
+                          <td>{p.requests.toLocaleString()}</td>
+                          <td>{p.total_tokens.toLocaleString()}</td>
+                          <td>
+                            {p.tokens_per_request == null || !Number.isFinite(p.tokens_per_request)
+                              ? '-'
+                              : Math.round(p.tokens_per_request).toLocaleString()}
+                          </td>
+                          <td>{fmtUsdMaybe(p.estimated_avg_request_cost_usd)}</td>
+                          <td>{fmtUsdMaybe(p.usd_per_million_tokens)}</td>
+                          <td>{fmtUsdMaybe(p.estimated_daily_cost_usd)}</td>
+                          <td>{fmtUsdMaybe(p.total_used_cost_usd)}</td>
+                          <td>{fmtPricingSource(p.pricing_source)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="aoHint">No provider usage data yet.</div>
+                )}
+                <div className="aoSwitchboardSectionHead">
+                  <div className="aoMiniLabel">Pricing Setup</div>
+                  <div className="aoHint">Set manual package total or fixed $/req for providers without spend API.</div>
+                </div>
+                <div className="aoUsagePricingGrid">
+                  {usageByProvider.map((row) => {
+                    const providerCfg = config?.providers?.[row.provider]
+                    return (
+                      <div key={`pricing-${row.provider}`} className="aoUsagePricingRow">
+                        <div className="aoUsagePricingProvider">{row.provider}</div>
+                        <select
+                          className="aoSelect aoUsagePricingSelect"
+                          value={providerCfg?.manual_pricing_mode ?? 'none'}
+                          disabled={!providerCfg}
+                          onChange={(e) =>
+                            setConfig((c) =>
+                              c
+                                ? {
+                                    ...c,
+                                    providers: {
+                                      ...c.providers,
+                                      [row.provider]: {
+                                        ...c.providers[row.provider],
+                                        manual_pricing_mode:
+                                          e.target.value === 'none'
+                                            ? null
+                                            : (e.target.value as 'per_request' | 'package_total'),
+                                        manual_pricing_amount_usd:
+                                          e.target.value === 'none'
+                                            ? null
+                                            : c.providers[row.provider].manual_pricing_amount_usd ?? null,
+                                      },
+                                    },
+                                  }
+                                : c,
+                            )
+                          }
+                        >
+                          <option value="none">Auto (token-rate)</option>
+                          <option value="package_total">Package total $</option>
+                          <option value="per_request">$ / request</option>
+                        </select>
+                        <input
+                          className="aoInput aoUsagePricingInput"
+                          type="number"
+                          step="0.001"
+                          min="0"
+                          disabled={!providerCfg || !providerCfg.manual_pricing_mode}
+                          placeholder={
+                            providerCfg?.manual_pricing_mode === 'package_total'
+                              ? 'Package total USD'
+                              : providerCfg?.manual_pricing_mode === 'per_request'
+                                ? 'USD per request'
+                                : 'Amount USD'
+                          }
+                          value={
+                            providerCfg?.manual_pricing_amount_usd == null
+                              ? ''
+                              : String(providerCfg.manual_pricing_amount_usd)
+                          }
+                          onChange={(e) =>
+                            setConfig((c) =>
+                              c
+                                ? {
+                                    ...c,
+                                    providers: {
+                                      ...c.providers,
+                                      [row.provider]: {
+                                        ...c.providers[row.provider],
+                                        manual_pricing_amount_usd:
+                                          e.target.value.trim() === '' ? null : Number(e.target.value),
+                                      },
+                                    },
+                                  }
+                                : c,
+                            )
+                          }
+                        />
+                        <button
+                          className="aoTinyBtn"
+                          disabled={!providerCfg}
+                          onClick={() => void saveProviderPricing(row.provider)}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
             </div>
           ) : activePage === 'provider_switchboard' ? (
             <div className="aoCard aoProviderSwitchboardCard">
@@ -1342,7 +1986,10 @@ export default function App() {
                 <div>
                   <div className="aoPagePlaceholderTitle">Provider Switchboard</div>
                   <div className="aoHint">
-                    Switch Codex between gateway, official, or direct providers.
+                    One-click switch for Codex auth/config target (gateway, official, or direct provider).
+                  </div>
+                  <div className="aoHint">
+                    Runtime failover routing stays in Dashboard Routing. This page does not do seamless live routing.
                   </div>
                 </div>
                 <div className="aoPill">
@@ -1397,47 +2044,13 @@ export default function App() {
                 <div className="aoSwitchSubOptions">
                   <div className="aoSwitchboardSectionHead">
                     <div className="aoMiniLabel">Switch Options</div>
-                    <div className="aoHint">Shared with Dashboard Swap settings.</div>
+                    <button type="button" className="aoTinyBtn" onClick={() => setCodexSwapModalOpen(true)}>
+                      Configure Dirs
+                    </button>
                   </div>
-                  <div className="aoSwitchDirsInline">
-                    <label className="aoSwitchDirField">
-                      <span className="aoSwitchDirLabel">Dir 1</span>
-                      <input
-                        className="aoInput aoInputMono"
-                        value={codexSwapDir1}
-                        onChange={(e) => setCodexSwapDir1(e.target.value)}
-                        placeholder="%USERPROFILE%\\.codex"
-                      />
-                    </label>
-                    <label className="aoSwitchDirField">
-                      <span className="aoSwitchDirLabel">Dir 2 (optional)</span>
-                      <input
-                        className="aoInput aoInputMono"
-                        value={codexSwapDir2}
-                        onChange={(e) => {
-                          const next = e.target.value
-                          setCodexSwapDir2(next)
-                          if (!next.trim()) setCodexSwapApplyBoth(false)
-                        }}
-                        placeholder="Second Codex home"
-                      />
-                    </label>
-                  </div>
-                  <div className="aoSwitchDirMeta">
-                    <label className="aoCheckbox aoSwitchDirBoth">
-                      <input
-                        type="checkbox"
-                        checked={codexSwapApplyBoth}
-                        disabled={!hasSecondSwapDir || areSwapDirsDuplicate}
-                        onChange={(e) => setCodexSwapApplyBoth(e.target.checked)}
-                      />
-                      <span>Apply both directories</span>
-                    </label>
-                    <div className="aoHint aoSwitchDirHint">
-                      {areSwapDirsDuplicate
-                        ? 'Dir 2 matches Dir 1. Gateway, Official, and Direct Provider all use Dir 1 only.'
-                        : 'Directory targets apply to Gateway, Official, and Direct Provider switches (shared with Dashboard Swap settings).'}
-                    </div>
+                  <div className="aoHint">
+                    Shared with Dashboard Swap settings. Gateway, Official, and Direct Provider switches all use
+                    the same directory targets.
                   </div>
                 </div>
               </div>

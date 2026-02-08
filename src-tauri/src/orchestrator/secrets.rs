@@ -13,6 +13,14 @@ struct SecretsFile {
     /// Optional non-upstream secrets used by the app (e.g. usage JWTs).
     #[serde(default)]
     usage_tokens: BTreeMap<String, String>,
+    #[serde(default)]
+    provider_pricing: BTreeMap<String, ProviderPricingOverride>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProviderPricingOverride {
+    mode: String,
+    amount_usd: f64,
 }
 
 #[derive(Clone)]
@@ -90,6 +98,40 @@ impl SecretStore {
         if let Some(v) = data.usage_tokens.remove(old) {
             data.usage_tokens.insert(new.to_string(), v);
         }
+        if let Some(v) = data.provider_pricing.remove(old) {
+            data.provider_pricing.insert(new.to_string(), v);
+        }
+        self.persist(&data)
+    }
+
+    pub fn list_provider_pricing(&self) -> BTreeMap<String, (String, f64)> {
+        let data = self.inner.lock();
+        data.provider_pricing
+            .iter()
+            .map(|(k, v)| (k.clone(), (v.mode.clone(), v.amount_usd)))
+            .collect()
+    }
+
+    pub fn set_provider_pricing(
+        &self,
+        provider: &str,
+        mode: &str,
+        amount_usd: f64,
+    ) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        data.provider_pricing.insert(
+            provider.to_string(),
+            ProviderPricingOverride {
+                mode: mode.to_string(),
+                amount_usd,
+            },
+        );
+        self.persist(&data)
+    }
+
+    pub fn clear_provider_pricing(&self, provider: &str) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        data.provider_pricing.remove(provider);
         self.persist(&data)
     }
 

@@ -10,14 +10,15 @@ const LEDGER_DEFAULT: &str = r#"{"since_last_quota_refresh_input_tokens":0,"sinc
 
 impl Store {
     const MAX_EVENTS: usize = 200;
+    const MAX_USAGE_REQUESTS: usize = 5000;
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
 
     // Breaking-change friendly: bump this to invalidate old persisted event shapes.
     const EVENTS_SCHEMA_VERSION: &'static [u8] = b"1";
     const EVENTS_SCHEMA_KEY: &'static [u8] = b"events:schema_version";
 
-    fn allowed_key_prefixes() -> [&'static [u8]; 4] {
-        [b"event:", b"metrics:", b"quota:", b"ledger:"]
+    fn allowed_key_prefixes() -> [&'static [u8]; 5] {
+        [b"event:", b"metrics:", b"quota:", b"ledger:", b"usage_req:"]
     }
 
     fn allowed_exact_keys() -> [&'static [u8]; 3] {
@@ -82,6 +83,15 @@ impl Store {
                 .unwrap_or(false)
     }
 
+    fn is_valid_usage_request(j: &Value) -> bool {
+        j.get("provider").and_then(|v| v.as_str()).is_some()
+            && j.get("model").and_then(|v| v.as_str()).is_some()
+            && j.get("unix_ms").and_then(|v| v.as_u64()).is_some()
+            && j.get("input_tokens").and_then(|v| v.as_u64()).is_some()
+            && j.get("output_tokens").and_then(|v| v.as_u64()).is_some()
+            && j.get("total_tokens").and_then(|v| v.as_u64()).is_some()
+    }
+
     fn prune_events(&self) {
         // Keep only the newest MAX_EVENTS event keys.
         // Keys are `event:{unix_ms}:{uuid}` and are lexicographically ordered by time.
@@ -112,6 +122,37 @@ impl Store {
         }
     }
 
+    fn prune_usage_requests(&self) {
+        let boundary = self
+            .db
+            .scan_prefix(b"usage_req:")
+            .rev()
+            .nth(Self::MAX_USAGE_REQUESTS);
+
+        let Some(Ok((end_key, _))) = boundary else {
+            return;
+        };
+
+        let start = b"usage_req:".to_vec();
+        let end = end_key.to_vec();
+
+        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
+        for res in self.db.range(start..=end) {
+            let Ok((k, _)) = res else {
+                continue;
+            };
+            batch.push(k);
+            if batch.len() >= 1024 {
+                for key in batch.drain(..) {
+                    let _ = self.db.remove(key);
+                }
+            }
+        }
+        for key in batch.drain(..) {
+            let _ = self.db.remove(key);
+        }
+    }
+
     fn prune_events_db(db: &sled::Db) {
         let boundary = db.scan_prefix(b"event:").rev().nth(Self::MAX_EVENTS);
         let Some(Ok((end_key, _))) = boundary else {
@@ -119,6 +160,35 @@ impl Store {
         };
 
         let start = b"event:".to_vec();
+        let end = end_key.to_vec();
+
+        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
+        for res in db.range(start..=end) {
+            let Ok((k, _)) = res else {
+                continue;
+            };
+            batch.push(k);
+            if batch.len() >= 1024 {
+                for key in batch.drain(..) {
+                    let _ = db.remove(key);
+                }
+            }
+        }
+        for key in batch.drain(..) {
+            let _ = db.remove(key);
+        }
+    }
+
+    fn prune_usage_requests_db(db: &sled::Db) {
+        let boundary = db
+            .scan_prefix(b"usage_req:")
+            .rev()
+            .nth(Self::MAX_USAGE_REQUESTS);
+        let Some(Ok((end_key, _))) = boundary else {
+            return;
+        };
+
+        let start = b"usage_req:".to_vec();
         let end = end_key.to_vec();
 
         let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
@@ -163,37 +233,17 @@ impl Store {
     }
 
     pub fn record_success(&self, provider: &str, response_obj: &Value) {
-        let usage = response_obj.get("usage").cloned().unwrap_or(Value::Null);
-        let input_tokens = usage
-            .get("input_tokens")
-            .and_then(|v| v.as_u64())
-            .or_else(|| {
-                response_obj
-                    .pointer("/usage/input_tokens")
-                    .and_then(|v| v.as_u64())
-            })
-            .unwrap_or(0);
-        let output_tokens = usage
-            .get("output_tokens")
-            .and_then(|v| v.as_u64())
-            .or_else(|| {
-                response_obj
-                    .pointer("/usage/output_tokens")
-                    .and_then(|v| v.as_u64())
-            })
-            .unwrap_or(0);
-        let total_tokens = usage
-            .get("total_tokens")
-            .and_then(|v| v.as_u64())
-            .or_else(|| {
-                response_obj
-                    .pointer("/usage/total_tokens")
-                    .and_then(|v| v.as_u64())
-            })
-            .unwrap_or(input_tokens + output_tokens);
+        let (input_tokens, output_tokens, total_tokens) = Self::extract_usage_tokens(response_obj);
 
         self.bump_metrics(provider, 1, 0, total_tokens);
         self.bump_ledger(provider, input_tokens, output_tokens, total_tokens);
+        self.add_usage_request(
+            provider,
+            &Self::extract_model(response_obj),
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        );
     }
 
     pub fn record_failure(&self, provider: &str) {
@@ -398,6 +448,17 @@ impl Store {
         out
     }
 
+    pub fn list_usage_requests(&self, limit: usize) -> Vec<Value> {
+        self.db
+            .scan_prefix(b"usage_req:")
+            .rev()
+            .filter_map(|res| res.ok())
+            .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
+            .filter(Self::is_valid_usage_request)
+            .take(limit)
+            .collect()
+    }
+
     pub fn put_codex_account_snapshot(&self, snapshot: &Value) {
         let _ = self.db.insert(
             b"codex_account:snapshot",
@@ -412,6 +473,79 @@ impl Store {
         }
         let v = self.db.get(b"official_web:snapshot").ok()??;
         serde_json::from_slice(&v).ok()
+    }
+
+    fn extract_usage_tokens(response_obj: &Value) -> (u64, u64, u64) {
+        let usage = response_obj.get("usage").cloned().unwrap_or(Value::Null);
+        let input_tokens = usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .or_else(|| {
+                response_obj
+                    .pointer("/usage/input_tokens")
+                    .and_then(|v| v.as_u64())
+            })
+            .unwrap_or(0);
+        let output_tokens = usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .or_else(|| {
+                response_obj
+                    .pointer("/usage/output_tokens")
+                    .and_then(|v| v.as_u64())
+            })
+            .unwrap_or(0);
+        let total_tokens = usage
+            .get("total_tokens")
+            .and_then(|v| v.as_u64())
+            .or_else(|| {
+                response_obj
+                    .pointer("/usage/total_tokens")
+                    .and_then(|v| v.as_u64())
+            })
+            .unwrap_or(input_tokens + output_tokens);
+        (input_tokens, output_tokens, total_tokens)
+    }
+
+    fn extract_model(response_obj: &Value) -> String {
+        response_obj
+            .get("model")
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                response_obj
+                    .pointer("/response/model")
+                    .and_then(|v| v.as_str())
+            })
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown")
+            .to_string()
+    }
+
+    fn add_usage_request(
+        &self,
+        provider: &str,
+        model: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        total_tokens: u64,
+    ) {
+        let ts = unix_ms();
+        let id = uuid::Uuid::new_v4().to_string();
+        let key = format!("usage_req:{ts}:{id}");
+        let v = serde_json::json!({
+            "provider": provider,
+            "model": model,
+            "unix_ms": ts,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+        });
+        let _ = self
+            .db
+            .insert(key.as_bytes(), serde_json::to_vec(&v).unwrap_or_default());
+        self.prune_usage_requests();
+        let _ = self.db.flush();
     }
 }
 
@@ -487,6 +621,7 @@ pub fn maintain_store_dir(path: &Path) -> anyhow::Result<()> {
         }
 
         Store::prune_events_db(&db);
+        Store::prune_usage_requests_db(&db);
         db.flush()?;
     } // drop DB handle (important for Windows rename)
 

@@ -11,6 +11,7 @@ use crate::app_state::build_state;
 use crate::orchestrator::gateway::serve_in_background;
 use crate::orchestrator::store::unix_ms;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -171,6 +172,7 @@ pub fn run() {
             clear_usage_token,
             set_usage_base_url,
             clear_usage_base_url,
+            set_provider_manual_pricing,
             get_effective_usage_base,
             set_provider_order,
             probe_provider,
@@ -181,7 +183,8 @@ pub fn run() {
             provider_switchboard_set_target,
             codex_account_login,
             codex_account_logout,
-            codex_account_refresh
+            codex_account_refresh,
+            get_usage_statistics
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -363,6 +366,348 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
 }
 
 #[tauri::command]
+fn get_usage_statistics(
+    state: tauri::State<'_, app_state::AppState>,
+    hours: Option<u64>,
+) -> serde_json::Value {
+    fn as_f64(v: Option<&Value>) -> Option<f64> {
+        v.and_then(|x| {
+            x.as_f64().or_else(|| {
+                x.as_i64()
+                    .map(|n| n as f64)
+                    .or_else(|| x.as_u64().map(|n| n as f64))
+            })
+        })
+    }
+
+    fn round3(v: f64) -> f64 {
+        (v * 1000.0).round() / 1000.0
+    }
+
+    let now = unix_ms();
+    let window_hours = hours.unwrap_or(24).clamp(1, 24 * 30);
+    let window_ms = window_hours.saturating_mul(60 * 60 * 1000);
+    let since_unix_ms = now.saturating_sub(window_ms);
+    let bucket_ms = if window_hours <= 48 {
+        60 * 60 * 1000
+    } else {
+        24 * 60 * 60 * 1000
+    };
+
+    let records = state.gateway.store.list_usage_requests(5000);
+    let quota = state.gateway.store.list_quota_snapshots();
+
+    let mut provider_requests: BTreeMap<String, u64> = BTreeMap::new();
+    let mut provider_tokens: BTreeMap<String, u64> = BTreeMap::new();
+    let mut timeline: BTreeMap<u64, (u64, u64)> = BTreeMap::new();
+    let mut filtered: Vec<(String, String, u64, u64, u64, u64)> = Vec::new();
+
+    for rec in records {
+        let ts = rec.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        if ts < since_unix_ms {
+            continue;
+        }
+        let provider = rec
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let model = rec
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown")
+            .to_string();
+        let input_tokens = rec
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let output_tokens = rec
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let total_tokens = rec
+            .get("total_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(input_tokens.saturating_add(output_tokens));
+
+        *provider_requests.entry(provider.clone()).or_default() += 1;
+        *provider_tokens.entry(provider.clone()).or_default() += total_tokens;
+        let bucket = (ts / bucket_ms) * bucket_ms;
+        let entry = timeline.entry(bucket).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += total_tokens;
+
+        filtered.push((
+            provider,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            ts,
+        ));
+    }
+
+    let mut provider_cost_per_token: BTreeMap<String, f64> = BTreeMap::new();
+    let provider_pricing = state.secrets.list_provider_pricing();
+    if let Some(qmap) = quota.as_object() {
+        for (provider, q) in qmap {
+            let kind = q.get("kind").and_then(|v| v.as_str()).unwrap_or("none");
+            if kind != "budget_info" {
+                continue;
+            }
+            let Some(spent) = as_f64(q.get("daily_spent_usd")) else {
+                continue;
+            };
+            if spent <= 0.0 {
+                continue;
+            }
+            let tok = provider_tokens.get(provider).copied().unwrap_or(0);
+            if tok > 0 {
+                provider_cost_per_token.insert(provider.to_string(), spent / tok as f64);
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct ModelAgg {
+        requests: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        total_tokens: u64,
+        estimated_total_cost_usd: f64,
+        estimated_cost_request_count: u64,
+    }
+    #[derive(Default)]
+    struct ProviderAgg {
+        requests: u64,
+        total_tokens: u64,
+        estimated_total_cost_usd: f64,
+        estimated_cost_request_count: u64,
+        manual_per_request_usd: Option<f64>,
+        manual_package_total_usd: Option<f64>,
+        pricing_source: String,
+    }
+
+    let mut by_model_map: BTreeMap<String, ModelAgg> = BTreeMap::new();
+    let mut by_provider_map: BTreeMap<String, ProviderAgg> = BTreeMap::new();
+    let mut total_requests = 0u64;
+    let mut total_tokens = 0u64;
+
+    for (provider, model, input_tokens, output_tokens, total_tokens_row, _ts) in filtered {
+        total_requests += 1;
+        total_tokens += total_tokens_row;
+
+        let model_entry = by_model_map.entry(model.clone()).or_default();
+        model_entry.requests += 1;
+        model_entry.input_tokens += input_tokens;
+        model_entry.output_tokens += output_tokens;
+        model_entry.total_tokens += total_tokens_row;
+
+        let provider_entry = by_provider_map.entry(provider.clone()).or_default();
+        provider_entry.requests += 1;
+        provider_entry.total_tokens += total_tokens_row;
+
+        let manual = provider_pricing.get(&provider);
+        let mut est_cost = 0.0;
+        if let Some((mode, amount)) = manual {
+            if mode == "per_request" && *amount > 0.0 {
+                provider_entry.manual_per_request_usd = Some(*amount);
+                provider_entry.pricing_source = "manual_per_request".to_string();
+                est_cost = *amount;
+            } else if mode == "package_total" && *amount > 0.0 {
+                provider_entry.manual_package_total_usd = Some(*amount);
+                if provider_entry.pricing_source.is_empty() {
+                    provider_entry.pricing_source = "manual_package_total".to_string();
+                }
+            }
+        }
+        if est_cost <= 0.0 {
+            est_cost = provider_cost_per_token
+                .get(&provider)
+                .map(|per_tok| *per_tok * total_tokens_row as f64)
+                .unwrap_or(0.0);
+            if est_cost > 0.0 && provider_entry.pricing_source.is_empty() {
+                provider_entry.pricing_source = "token_rate".to_string();
+            }
+        }
+        if est_cost > 0.0 {
+            model_entry.estimated_total_cost_usd += est_cost;
+            model_entry.estimated_cost_request_count += 1;
+            provider_entry.estimated_total_cost_usd += est_cost;
+            provider_entry.estimated_cost_request_count += 1;
+        }
+    }
+
+    let mut by_model: Vec<Value> = by_model_map
+        .into_iter()
+        .map(|(model, agg)| {
+            let share_pct = if total_requests > 0 {
+                (agg.requests as f64 / total_requests as f64) * 100.0
+            } else {
+                0.0
+            };
+            let avg_req_cost = if agg.estimated_cost_request_count > 0 {
+                agg.estimated_total_cost_usd / agg.estimated_cost_request_count as f64
+            } else {
+                0.0
+            };
+            serde_json::json!({
+                "model": model,
+                "requests": agg.requests,
+                "input_tokens": agg.input_tokens,
+                "output_tokens": agg.output_tokens,
+                "total_tokens": agg.total_tokens,
+                "share_pct": round3(share_pct),
+                "estimated_total_cost_usd": round3(agg.estimated_total_cost_usd),
+                "estimated_avg_request_cost_usd": round3(avg_req_cost),
+                "estimated_cost_request_count": agg.estimated_cost_request_count
+            })
+        })
+        .collect();
+    by_model.sort_by(|a, b| {
+        let ar = a.get("requests").and_then(|v| v.as_u64()).unwrap_or(0);
+        let br = b.get("requests").and_then(|v| v.as_u64()).unwrap_or(0);
+        br.cmp(&ar)
+    });
+
+    let mut by_provider: Vec<Value> = by_provider_map
+        .into_iter()
+        .map(|(provider, agg)| {
+            let mut avg_req_cost: Option<f64> = None;
+            if let Some(v) = agg.manual_per_request_usd {
+                avg_req_cost = Some(v);
+            } else if agg.estimated_cost_request_count > 0 {
+                avg_req_cost =
+                    Some(agg.estimated_total_cost_usd / agg.estimated_cost_request_count as f64);
+            }
+            let usd_per_million_tokens = if let Some(v) = agg.manual_per_request_usd {
+                if agg.requests > 0 && agg.total_tokens > 0 {
+                    Some(v * agg.requests as f64 / agg.total_tokens as f64 * 1_000_000.0)
+                } else {
+                    None
+                }
+            } else {
+                provider_cost_per_token
+                    .get(&provider)
+                    .map(|per_tok| *per_tok * 1_000_000.0)
+            };
+            let est_daily_cost = if let Some(package_total) = agg.manual_package_total_usd {
+                Some(package_total / 30.0)
+            } else if window_hours > 0 && agg.estimated_total_cost_usd > 0.0 {
+                Some((agg.estimated_total_cost_usd / window_hours as f64) * 24.0)
+            } else {
+                None
+            };
+            let total_used_cost_usd = if let Some(package_total) = agg.manual_package_total_usd {
+                Some(package_total)
+            } else if agg.estimated_total_cost_usd > 0.0 {
+                Some(agg.estimated_total_cost_usd)
+            } else {
+                None
+            };
+            let tokens_per_request = if agg.requests > 0 {
+                Some(agg.total_tokens as f64 / agg.requests as f64)
+            } else {
+                None
+            };
+            let pricing_source = if agg.pricing_source.is_empty() {
+                "none".to_string()
+            } else {
+                agg.pricing_source
+            };
+            let avg_req_cost_num = avg_req_cost.unwrap_or(0.0);
+            let usd_per_million_num = usd_per_million_tokens.unwrap_or(0.0);
+            let est_daily_num = est_daily_cost.unwrap_or(0.0);
+            let total_used_num = total_used_cost_usd.unwrap_or(0.0);
+            let tok_per_req_num = tokens_per_request.unwrap_or(0.0);
+            let avg_req_cost_json = if avg_req_cost.is_some() {
+                serde_json::json!(round3(avg_req_cost_num))
+            } else {
+                Value::Null
+            };
+            let usd_per_million_json = if usd_per_million_tokens.is_some() {
+                serde_json::json!(round3(usd_per_million_num))
+            } else {
+                Value::Null
+            };
+            let est_daily_json = if est_daily_cost.is_some() {
+                serde_json::json!(round3(est_daily_num))
+            } else {
+                Value::Null
+            };
+            let total_used_json = if total_used_cost_usd.is_some() {
+                serde_json::json!(round3(total_used_num))
+            } else {
+                Value::Null
+            };
+            let tok_per_req_json = if tokens_per_request.is_some() {
+                serde_json::json!(round3(tok_per_req_num))
+            } else {
+                Value::Null
+            };
+            serde_json::json!({
+                "provider": provider,
+                "requests": agg.requests,
+                "total_tokens": agg.total_tokens,
+                "tokens_per_request": tok_per_req_json,
+                "estimated_total_cost_usd": round3(agg.estimated_total_cost_usd),
+                "estimated_avg_request_cost_usd": avg_req_cost_json,
+                "usd_per_million_tokens": usd_per_million_json,
+                "estimated_daily_cost_usd": est_daily_json,
+                "total_used_cost_usd": total_used_json,
+                "pricing_source": pricing_source,
+                "estimated_cost_request_count": agg.estimated_cost_request_count
+            })
+        })
+        .collect();
+    by_provider.sort_by(|a, b| {
+        let ar = a.get("requests").and_then(|v| v.as_u64()).unwrap_or(0);
+        let br = b.get("requests").and_then(|v| v.as_u64()).unwrap_or(0);
+        br.cmp(&ar)
+    });
+
+    let first_bucket = (since_unix_ms / bucket_ms) * bucket_ms;
+    let last_bucket = (now / bucket_ms) * bucket_ms;
+    let mut timeline_points: Vec<Value> = Vec::new();
+    let mut bucket = first_bucket;
+    while bucket <= last_bucket {
+        let (requests, tokens) = timeline.get(&bucket).copied().unwrap_or((0, 0));
+        timeline_points.push(serde_json::json!({
+            "bucket_unix_ms": bucket,
+            "requests": requests,
+            "total_tokens": tokens
+        }));
+        bucket = bucket.saturating_add(bucket_ms);
+        if bucket_ms == 0 {
+            break;
+        }
+    }
+
+    let estimated_total_cost_usd = by_model
+        .iter()
+        .filter_map(|m| m.get("estimated_total_cost_usd").and_then(|v| v.as_f64()))
+        .sum::<f64>();
+
+    serde_json::json!({
+      "ok": true,
+      "generated_at_unix_ms": now,
+      "window_hours": window_hours,
+      "bucket_seconds": bucket_ms / 1000,
+      "summary": {
+        "total_requests": total_requests,
+        "total_tokens": total_tokens,
+        "unique_models": by_model.len(),
+        "estimated_total_cost_usd": round3(estimated_total_cost_usd),
+        "by_model": by_model,
+        "by_provider": by_provider,
+        "timeline": timeline_points
+      }
+    })
+}
+
+#[tauri::command]
 fn set_manual_override(
     state: tauri::State<'_, app_state::AppState>,
     provider: Option<String>,
@@ -386,6 +731,7 @@ fn set_manual_override(
 #[tauri::command]
 fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value {
     let cfg = state.gateway.cfg.read().clone();
+    let pricing = state.secrets.list_provider_pricing();
     // Never expose keys in UI/API.
     let providers: serde_json::Map<String, serde_json::Value> = cfg
         .providers
@@ -393,6 +739,7 @@ fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         .map(|(name, p)| {
             let key = state.secrets.get_provider_key(name);
             let usage_token = state.secrets.get_usage_token(name);
+            let manual_pricing = pricing.get(name).cloned();
             let has_key = key.is_some();
             let key_preview = key.as_deref().map(mask_key_preview);
             (
@@ -402,6 +749,8 @@ fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                   "base_url": p.base_url,
                   "usage_adapter": p.usage_adapter.clone(),
                   "usage_base_url": p.usage_base_url.clone(),
+                  "manual_pricing_mode": manual_pricing.as_ref().map(|v| v.0.clone()),
+                  "manual_pricing_amount_usd": manual_pricing.as_ref().map(|v| v.1),
                   "has_key": has_key
                   ,"key_preview": key_preview,
                   "has_usage_token": usage_token.is_some()
@@ -616,6 +965,7 @@ fn delete_provider(
         }
     }
     let _ = state.secrets.clear_provider_key(&name);
+    let _ = state.secrets.clear_provider_pricing(&name);
     persist_config(&state).map_err(|e| e.to_string())?;
     state.gateway.store.add_event(
         &name,
@@ -950,6 +1300,53 @@ fn clear_usage_base_url(
         serde_json::Value::Null,
     );
     Ok(())
+}
+
+#[tauri::command]
+fn set_provider_manual_pricing(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    mode: String,
+    amount_usd: Option<f64>,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let mode = mode.trim().to_lowercase();
+    match mode.as_str() {
+        "none" => {
+            state.secrets.clear_provider_pricing(&provider)?;
+            state.gateway.store.add_event(
+                &provider,
+                "info",
+                "config.provider_pricing_cleared",
+                "provider manual pricing cleared",
+                serde_json::Value::Null,
+            );
+            Ok(())
+        }
+        "per_request" | "package_total" => {
+            let Some(v) = amount_usd else {
+                return Err("amount_usd is required".to_string());
+            };
+            if !v.is_finite() || v <= 0.0 {
+                return Err("amount_usd must be > 0".to_string());
+            }
+            state.secrets.set_provider_pricing(&provider, &mode, v)?;
+            state.gateway.store.add_event(
+                &provider,
+                "info",
+                "config.provider_pricing_updated",
+                "provider manual pricing updated",
+                serde_json::json!({
+                    "mode": mode,
+                    "amount_usd": v,
+                }),
+            );
+            Ok(())
+        }
+        _ => Err("mode must be one of: none, per_request, package_total".to_string()),
+    }
 }
 
 #[tauri::command]
