@@ -21,6 +21,18 @@ struct SecretsFile {
 struct ProviderPricingOverride {
     mode: String,
     amount_usd: f64,
+    #[serde(default)]
+    gap_fill_mode: Option<String>,
+    #[serde(default)]
+    gap_fill_amount_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderPricingConfig {
+    pub mode: String,
+    pub amount_usd: f64,
+    pub gap_fill_mode: Option<String>,
+    pub gap_fill_amount_usd: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -104,11 +116,21 @@ impl SecretStore {
         self.persist(&data)
     }
 
-    pub fn list_provider_pricing(&self) -> BTreeMap<String, (String, f64)> {
+    pub fn list_provider_pricing(&self) -> BTreeMap<String, ProviderPricingConfig> {
         let data = self.inner.lock();
         data.provider_pricing
             .iter()
-            .map(|(k, v)| (k.clone(), (v.mode.clone(), v.amount_usd)))
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    ProviderPricingConfig {
+                        mode: v.mode.clone(),
+                        amount_usd: v.amount_usd,
+                        gap_fill_mode: v.gap_fill_mode.clone(),
+                        gap_fill_amount_usd: v.gap_fill_amount_usd,
+                    },
+                )
+            })
             .collect()
     }
 
@@ -119,13 +141,72 @@ impl SecretStore {
         amount_usd: f64,
     ) -> Result<(), String> {
         let mut data = self.inner.lock();
+        let existing_gap_mode = data
+            .provider_pricing
+            .get(provider)
+            .and_then(|v| v.gap_fill_mode.clone());
+        let existing_gap_amount = data
+            .provider_pricing
+            .get(provider)
+            .and_then(|v| v.gap_fill_amount_usd);
+        let normalized_mode = mode.trim().to_lowercase();
+
+        if normalized_mode == "none" && amount_usd <= 0.0 {
+            if existing_gap_mode.is_none() && existing_gap_amount.is_none() {
+                data.provider_pricing.remove(provider);
+            } else {
+                data.provider_pricing.insert(
+                    provider.to_string(),
+                    ProviderPricingOverride {
+                        mode: "none".to_string(),
+                        amount_usd: 0.0,
+                        gap_fill_mode: existing_gap_mode,
+                        gap_fill_amount_usd: existing_gap_amount,
+                    },
+                );
+            }
+            return self.persist(&data);
+        }
+
         data.provider_pricing.insert(
             provider.to_string(),
             ProviderPricingOverride {
-                mode: mode.to_string(),
+                mode: normalized_mode,
                 amount_usd,
+                gap_fill_mode: existing_gap_mode,
+                gap_fill_amount_usd: existing_gap_amount,
             },
         );
+        self.persist(&data)
+    }
+
+    pub fn set_provider_gap_fill(
+        &self,
+        provider: &str,
+        mode: Option<&str>,
+        amount_usd: Option<f64>,
+    ) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        let entry =
+            data.provider_pricing
+                .entry(provider.to_string())
+                .or_insert(ProviderPricingOverride {
+                    mode: "none".to_string(),
+                    amount_usd: 0.0,
+                    gap_fill_mode: None,
+                    gap_fill_amount_usd: None,
+                });
+        entry.gap_fill_mode = mode.map(|s| s.to_string());
+        entry.gap_fill_amount_usd = amount_usd;
+
+        // Keep storage clean: if no base pricing and no gap config, remove row.
+        let remove = entry.mode == "none"
+            && entry.amount_usd <= 0.0
+            && entry.gap_fill_mode.is_none()
+            && entry.gap_fill_amount_usd.is_none();
+        if remove {
+            data.provider_pricing.remove(provider);
+        }
         self.persist(&data)
     }
 

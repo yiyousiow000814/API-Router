@@ -1,3 +1,4 @@
+use chrono::{Local, TimeZone};
 use serde_json::Value;
 use std::path::Path;
 
@@ -10,15 +11,25 @@ const LEDGER_DEFAULT: &str = r#"{"since_last_quota_refresh_input_tokens":0,"sinc
 
 impl Store {
     const MAX_EVENTS: usize = 200;
-    const MAX_USAGE_REQUESTS: usize = 5000;
+    const MAX_USAGE_REQUESTS: usize = 500_000;
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
 
     // Breaking-change friendly: bump this to invalidate old persisted event shapes.
     const EVENTS_SCHEMA_VERSION: &'static [u8] = b"1";
     const EVENTS_SCHEMA_KEY: &'static [u8] = b"events:schema_version";
 
-    fn allowed_key_prefixes() -> [&'static [u8]; 5] {
-        [b"event:", b"metrics:", b"quota:", b"ledger:", b"usage_req:"]
+    fn allowed_key_prefixes() -> [&'static [u8]; 9] {
+        [
+            b"event:",
+            b"metrics:",
+            b"quota:",
+            b"ledger:",
+            b"usage_req:",
+            b"usage_day:",
+            b"spend_day:",
+            b"spend_state:",
+            b"spend_manual_day:",
+        ]
     }
 
     fn allowed_exact_keys() -> [&'static [u8]; 3] {
@@ -233,7 +244,13 @@ impl Store {
     }
 
     pub fn record_success(&self, provider: &str, response_obj: &Value) {
-        let (input_tokens, output_tokens, total_tokens) = Self::extract_usage_tokens(response_obj);
+        let (
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
+        ) = Self::extract_usage_tokens(response_obj);
 
         self.bump_metrics(provider, 1, 0, total_tokens);
         self.bump_ledger(provider, input_tokens, output_tokens, total_tokens);
@@ -243,6 +260,8 @@ impl Store {
             input_tokens,
             output_tokens,
             total_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
         );
     }
 
@@ -459,6 +478,82 @@ impl Store {
             .collect()
     }
 
+    pub fn list_usage_days(&self, provider: &str) -> Vec<Value> {
+        let prefix = format!("usage_day:{provider}:");
+        self.db
+            .scan_prefix(prefix.as_bytes())
+            .filter_map(|res| res.ok())
+            .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
+            .collect()
+    }
+
+    pub fn get_spend_state(&self, provider: &str) -> Option<Value> {
+        let key = format!("spend_state:{provider}");
+        self.db
+            .get(key.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
+    }
+
+    pub fn put_spend_state(&self, provider: &str, state: &Value) {
+        let key = format!("spend_state:{provider}");
+        let _ = self.db.insert(
+            key.as_bytes(),
+            serde_json::to_vec(state).unwrap_or_default(),
+        );
+        let _ = self.db.flush();
+    }
+
+    pub fn get_spend_day(&self, provider: &str, day_started_at_unix_ms: u64) -> Option<Value> {
+        let key = format!("spend_day:{provider}:{day_started_at_unix_ms:013}");
+        self.db
+            .get(key.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
+    }
+
+    pub fn put_spend_day(&self, provider: &str, day_started_at_unix_ms: u64, day: &Value) {
+        let key = format!("spend_day:{provider}:{day_started_at_unix_ms:013}");
+        let _ = self
+            .db
+            .insert(key.as_bytes(), serde_json::to_vec(day).unwrap_or_default());
+        let _ = self.db.flush();
+    }
+
+    pub fn list_spend_days(&self, provider: &str) -> Vec<Value> {
+        let prefix = format!("spend_day:{provider}:");
+        self.db
+            .scan_prefix(prefix.as_bytes())
+            .filter_map(|res| res.ok())
+            .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
+            .collect()
+    }
+
+    pub fn put_spend_manual_day(&self, provider: &str, day_key: &str, day: &Value) {
+        let key = format!("spend_manual_day:{provider}:{day_key}");
+        let _ = self
+            .db
+            .insert(key.as_bytes(), serde_json::to_vec(day).unwrap_or_default());
+        let _ = self.db.flush();
+    }
+
+    pub fn remove_spend_manual_day(&self, provider: &str, day_key: &str) {
+        let key = format!("spend_manual_day:{provider}:{day_key}");
+        let _ = self.db.remove(key.as_bytes());
+        let _ = self.db.flush();
+    }
+
+    pub fn list_spend_manual_days(&self, provider: &str) -> Vec<Value> {
+        let prefix = format!("spend_manual_day:{provider}:");
+        self.db
+            .scan_prefix(prefix.as_bytes())
+            .filter_map(|res| res.ok())
+            .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
+            .collect()
+    }
+
     pub fn put_codex_account_snapshot(&self, snapshot: &Value) {
         let _ = self.db.insert(
             b"codex_account:snapshot",
@@ -475,7 +570,7 @@ impl Store {
         serde_json::from_slice(&v).ok()
     }
 
-    fn extract_usage_tokens(response_obj: &Value) -> (u64, u64, u64) {
+    fn extract_usage_tokens(response_obj: &Value) -> (u64, u64, u64, u64, u64) {
         let usage = response_obj.get("usage").cloned().unwrap_or(Value::Null);
         let input_tokens = usage
             .get("input_tokens")
@@ -504,7 +599,41 @@ impl Store {
                     .and_then(|v| v.as_u64())
             })
             .unwrap_or(input_tokens + output_tokens);
-        (input_tokens, output_tokens, total_tokens)
+        let cache_creation_input_tokens = usage
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_u64())
+            .or_else(|| {
+                response_obj
+                    .pointer("/usage/cache_creation_input_tokens")
+                    .and_then(|v| v.as_u64())
+            })
+            .unwrap_or(0);
+        let cache_read_input_tokens = usage
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_u64())
+            .or_else(|| {
+                usage
+                    .pointer("/input_tokens_details/cached_tokens")
+                    .and_then(|v| v.as_u64())
+            })
+            .or_else(|| {
+                response_obj
+                    .pointer("/usage/cache_read_input_tokens")
+                    .and_then(|v| v.as_u64())
+            })
+            .or_else(|| {
+                response_obj
+                    .pointer("/usage/input_tokens_details/cached_tokens")
+                    .and_then(|v| v.as_u64())
+            })
+            .unwrap_or(0);
+        (
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
+        )
     }
 
     fn extract_model(response_obj: &Value) -> String {
@@ -529,6 +658,8 @@ impl Store {
         input_tokens: u64,
         output_tokens: u64,
         total_tokens: u64,
+        cache_creation_input_tokens: u64,
+        cache_read_input_tokens: u64,
     ) {
         let ts = unix_ms();
         let id = uuid::Uuid::new_v4().to_string();
@@ -540,12 +671,89 @@ impl Store {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
+            "cache_creation_input_tokens": cache_creation_input_tokens,
+            "cache_read_input_tokens": cache_read_input_tokens,
         });
         let _ = self
             .db
             .insert(key.as_bytes(), serde_json::to_vec(&v).unwrap_or_default());
+        self.bump_usage_day(
+            provider,
+            ts,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
+        );
         self.prune_usage_requests();
         let _ = self.db.flush();
+    }
+
+    fn local_day_key(ts_unix_ms: u64) -> String {
+        let ts = ts_unix_ms as i64;
+        if let Some(dt) = Local.timestamp_millis_opt(ts).single() {
+            dt.format("%Y-%m-%d").to_string()
+        } else {
+            "1970-01-01".to_string()
+        }
+    }
+
+    fn bump_usage_day(
+        &self,
+        provider: &str,
+        ts_unix_ms: u64,
+        input_inc: u64,
+        output_inc: u64,
+        total_inc: u64,
+        cache_creation_inc: u64,
+        cache_read_inc: u64,
+    ) {
+        let day_key = Self::local_day_key(ts_unix_ms);
+        let key = format!("usage_day:{provider}:{day_key}");
+        let cur = self
+            .db
+            .get(key.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
+            .unwrap_or_else(|| {
+                serde_json::json!({
+                    "provider": provider,
+                    "day_key": day_key,
+                    "req_count": 0u64,
+                    "input_tokens": 0u64,
+                    "output_tokens": 0u64,
+                    "total_tokens": 0u64,
+                    "cache_creation_input_tokens": 0u64,
+                    "cache_read_input_tokens": 0u64,
+                    "updated_at_unix_ms": 0u64
+                })
+            });
+
+        let next = serde_json::json!({
+            "provider": provider,
+            "day_key": day_key,
+            "req_count": cur.get("req_count").and_then(|v| v.as_u64()).unwrap_or(0).saturating_add(1),
+            "input_tokens": cur.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0).saturating_add(input_inc),
+            "output_tokens": cur.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0).saturating_add(output_inc),
+            "total_tokens": cur.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0).saturating_add(total_inc),
+            "cache_creation_input_tokens": cur
+                .get("cache_creation_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                .saturating_add(cache_creation_inc),
+            "cache_read_input_tokens": cur
+                .get("cache_read_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                .saturating_add(cache_read_inc),
+            "updated_at_unix_ms": ts_unix_ms
+        });
+        let _ = self.db.insert(
+            key.as_bytes(),
+            serde_json::to_vec(&next).unwrap_or_default(),
+        );
     }
 }
 

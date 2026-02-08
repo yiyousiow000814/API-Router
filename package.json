@@ -9,7 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "build:root-exe": "tauri build && node scripts/copy-root-exe.mjs",
+    "build:root-exe": "tauri build && node scripts/copy-root-exe.mjs && node scripts/open-root-exe.mjs",
     "ui:tauri": "node scripts/tauri-ui-check.mjs",
     "build:root-exe:checked": "node scripts/run-ui-tauri-if-windows.mjs && npm run build:root-exe",
     "test": "vitest run"

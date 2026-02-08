@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status, UsageStatistics } from './types'
@@ -14,10 +15,40 @@ import { InstructionModal } from './components/InstructionModal'
 import { GatewayTokenModal } from './components/GatewayTokenModal'
 import { ConfigModal } from './components/ConfigModal'
 import { CodexSwapModal } from './components/CodexSwapModal'
+import { ModalBackdrop } from './components/ModalBackdrop'
 import { HeroCodexCard, HeroRoutingCard, HeroStatusCard } from './components/HeroCards'
 import { useReorderDrag } from './hooks/useReorderDrag'
 
 type TopPage = 'dashboard' | 'usage_statistics' | 'provider_switchboard'
+
+type UsagePricingMode = 'none' | 'per_request' | 'package_total'
+type UsagePricingDraft = {
+  mode: UsagePricingMode
+  amountText: string
+  currency: string
+}
+
+type SpendHistoryRow = {
+  provider: string
+  day_key: string
+  req_count: number
+  total_tokens: number
+  tracked_total_usd?: number | null
+  manual_total_usd?: number | null
+  manual_usd_per_req?: number | null
+  effective_total_usd?: number | null
+  effective_usd_per_req?: number | null
+  source?: string | null
+  updated_at_unix_ms?: number
+}
+
+type FxUsdPayload = {
+  date?: string
+  usd?: Record<string, number>
+}
+
+const FX_RATES_CACHE_KEY = 'ao.fx.usd.daily.v1'
+const FX_CURRENCY_PREF_KEY_PREFIX = 'ao.usagePricing.currency.'
 
 const devStatus: Status = {
   listen: { host: '127.0.0.1', port: 4000 },
@@ -185,7 +216,26 @@ export default function App() {
   const [providerSwitchBusy, setProviderSwitchBusy] = useState<boolean>(false)
   const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(null)
   const [usageWindowHours, setUsageWindowHours] = useState<number>(24)
+  const [usageFilterProviders, setUsageFilterProviders] = useState<string[]>([])
+  const [usageFilterModels, setUsageFilterModels] = useState<string[]>([])
   const [usageStatisticsLoading, setUsageStatisticsLoading] = useState<boolean>(false)
+  const [usagePricingModalOpen, setUsagePricingModalOpen] = useState<boolean>(false)
+  const [usagePricingDrafts, setUsagePricingDrafts] = useState<Record<string, UsagePricingDraft>>({})
+  const [usageHistoryModalOpen, setUsageHistoryModalOpen] = useState<boolean>(false)
+  const [usageHistoryRows, setUsageHistoryRows] = useState<SpendHistoryRow[]>([])
+  const [usageHistoryDrafts, setUsageHistoryDrafts] = useState<
+    Record<string, { totalText: string; reqText: string }>
+  >({})
+  const [usageHistoryLoading, setUsageHistoryLoading] = useState<boolean>(false)
+  const [usagePricingCurrencyMenu, setUsagePricingCurrencyMenu] = useState<{
+    provider: string
+    left: number
+    top: number
+    width: number
+  } | null>(null)
+  const [usagePricingCurrencyQuery, setUsagePricingCurrencyQuery] = useState<string>('')
+  const [fxRatesByCurrency, setFxRatesByCurrency] = useState<Record<string, number>>({ USD: 1 })
+  const [fxRatesDate, setFxRatesDate] = useState<string>('')
   const [usageChartHover, setUsageChartHover] = useState<{
     x: number
     y: number
@@ -199,6 +249,7 @@ export default function App() {
   const activeUsageTimerRef = useRef<number | null>(null)
   const providerSwitchRefreshTimerRef = useRef<number | null>(null)
   const providerSwitchDirWatcherPrimedRef = useRef<boolean>(false)
+  const usagePricingDraftsPrimedRef = useRef<boolean>(false)
   const codexSwapDir1Ref = useRef<string>('')
   const codexSwapDir2Ref = useRef<string>('')
   const codexSwapApplyBothRef = useRef<boolean>(false)
@@ -206,12 +257,41 @@ export default function App() {
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
+  const mainAreaRef = useRef<HTMLDivElement | null>(null)
+  const usagePricingCurrencyMenuRef = useRef<HTMLDivElement | null>(null)
   const toastTimerRef = useRef<number | null>(null)
 
-  useEffect(() => {
-    const el = containerRef.current
-    if (el) el.scrollTop = 0
+  const scrollToTop = useCallback(() => {
+    const root = containerRef.current
+    if (root) root.scrollTop = 0
+    const main = mainAreaRef.current
+    if (main) main.scrollTop = 0
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+      document.documentElement.scrollTop = 0
+      document.body.scrollTop = 0
+    }
   }, [])
+
+  const switchPage = useCallback(
+    (next: TopPage) => {
+      setActivePage(next)
+      if (typeof window !== 'undefined') {
+        window.requestAnimationFrame(() => {
+          scrollToTop()
+        })
+      }
+    },
+    [scrollToTop],
+  )
+
+  useEffect(() => {
+    scrollToTop()
+  }, [scrollToTop])
+
+  useEffect(() => {
+    scrollToTop()
+  }, [activePage, scrollToTop])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -519,19 +599,31 @@ export default function App() {
     }
   }
 
-  async function refreshUsageStatistics() {
+  async function refreshUsageStatistics(options?: { silent?: boolean }) {
+    const silent = options?.silent === true
     if (isDevPreview) {
       const now = Date.now()
       setUsageStatistics({
         ok: true,
         generated_at_unix_ms: now,
         window_hours: usageWindowHours,
+        filter: {
+          providers: usageFilterProviders,
+          models: usageFilterModels,
+        },
+        catalog: {
+          providers: ['provider_1', 'provider_2'],
+          models: ['gpt-5.x', 'gpt-4.1'],
+        },
         bucket_seconds: usageWindowHours <= 48 ? 3600 : 86400,
         summary: {
           total_requests: 222,
           total_tokens: 131800,
+          cache_creation_tokens: 0,
+          cache_read_tokens: 0,
           unique_models: 2,
           estimated_total_cost_usd: 9.24,
+          estimated_daily_cost_usd: 9.24,
           by_model: [
             {
               model: 'gpt-5.x',
@@ -582,21 +674,239 @@ export default function App() {
                 : (6 - index) * 24 * 60 * 60 * 1000),
             requests: Math.max(1, Math.round(6 + Math.sin(index / 2) * 4)),
             total_tokens: Math.max(100, Math.round(3200 + Math.cos(index / 2.2) * 1600)),
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
           })),
         },
       })
       return
     }
-    setUsageStatisticsLoading(true)
+    if (!silent) setUsageStatisticsLoading(true)
     try {
       const res = await invoke<UsageStatistics>('get_usage_statistics', {
         hours: usageWindowHours,
+        providers: usageFilterProviders.length ? usageFilterProviders : null,
+        models: usageFilterModels.length ? usageFilterModels : null,
       })
       setUsageStatistics(res)
     } catch (e) {
       flashToast(String(e), 'error')
     } finally {
-      setUsageStatisticsLoading(false)
+      if (!silent) setUsageStatisticsLoading(false)
+    }
+  }
+
+  const usageCurrencyOptions = useMemo(() => {
+    const all = Object.keys(fxRatesByCurrency)
+      .map((code) => code.toUpperCase())
+      .filter((code) => /^[A-Z]{3}$/.test(code))
+    const unique = Array.from(new Set(all))
+    const preferred = ['USD', 'CNY', 'EUR', 'JPY', 'GBP', 'HKD', 'SGD', 'MYR']
+    const sorted = unique.sort((a, b) => a.localeCompare(b))
+    const head = preferred.filter((code) => sorted.includes(code))
+    const tail = sorted.filter((code) => !head.includes(code))
+    return [...head, ...tail]
+  }, [fxRatesByCurrency])
+
+  function normalizeCurrencyCode(code: string): string {
+    const raw = code.trim().toUpperCase()
+    const next = raw === 'RMB' ? 'CNY' : raw
+    return /^[A-Z]{3}$/.test(next) ? next : 'USD'
+  }
+
+  function currencyLabel(code: string): string {
+    return code === 'CNY' ? 'RMB' : code
+  }
+
+  function updateUsagePricingCurrency(providerName: string, draft: UsagePricingDraft, nextCurrency: string) {
+    const raw = normalizeCurrencyCode(nextCurrency)
+    setUsagePricingDrafts((prev) => ({
+      ...prev,
+      [providerName]: (() => {
+        const cur = prev[providerName] ?? draft
+        const oldCurrency = normalizeCurrencyCode(cur.currency)
+        const amountRaw = Number(cur.amountText)
+        const nextAmount =
+          Number.isFinite(amountRaw) && amountRaw > 0
+            ? formatDraftAmount(convertUsdToCurrency(convertCurrencyToUsd(amountRaw, oldCurrency), raw))
+            : cur.amountText
+        return {
+          ...cur,
+          currency: raw,
+          amountText: nextAmount,
+        }
+      })(),
+    }))
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(`${FX_CURRENCY_PREF_KEY_PREFIX}${providerName}`, raw)
+    }
+  }
+
+  function currencyRate(code: string): number {
+    const norm = normalizeCurrencyCode(code)
+    const rate = fxRatesByCurrency[norm]
+    if (!Number.isFinite(rate) || rate <= 0) return 1
+    return rate
+  }
+
+  function convertUsdToCurrency(usdAmount: number, currency: string): number {
+    return usdAmount * currencyRate(currency)
+  }
+
+  function convertCurrencyToUsd(amount: number, currency: string): number {
+    return amount / currencyRate(currency)
+  }
+
+  function formatDraftAmount(value: number): string {
+    if (!Number.isFinite(value) || value <= 0) return ''
+    const fixed = value.toFixed(4)
+    return fixed.replace(/\.?0+$/, '')
+  }
+
+  const closeUsagePricingCurrencyMenu = useCallback(() => {
+    setUsagePricingCurrencyMenu(null)
+    setUsagePricingCurrencyQuery('')
+  }, [])
+
+  async function refreshFxRatesDaily(force = false) {
+    const today = new Date().toISOString().slice(0, 10)
+    if (!force && typeof window !== 'undefined') {
+      try {
+        const raw = window.localStorage.getItem(FX_RATES_CACHE_KEY)
+        if (raw) {
+          const cached = JSON.parse(raw) as { date?: string; rates?: Record<string, number> }
+          if (cached?.date === today && cached.rates && Number.isFinite(cached.rates.USD)) {
+            setFxRatesByCurrency(cached.rates)
+            setFxRatesDate(cached.date)
+            return
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to read FX cache', e)
+      }
+    }
+    const endpoints = [
+      'https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json',
+      'https://latest.currency-api.pages.dev/v1/currencies/usd.json',
+    ]
+    for (const endpoint of endpoints) {
+      try {
+        const res = await fetch(endpoint, { cache: 'no-store' })
+        if (!res.ok) continue
+        const payload = (await res.json()) as FxUsdPayload
+        const usdMap = payload?.usd ?? {}
+        const rates: Record<string, number> = { USD: 1 }
+        Object.entries(usdMap).forEach(([code, value]) => {
+          const norm = code.trim().toUpperCase()
+          if (!/^[A-Z]{3}$/.test(norm)) return
+          if (!Number.isFinite(value) || value <= 0) return
+          rates[norm] = value
+        })
+        if (!Object.keys(rates).length) continue
+        const date = (payload?.date ?? today).slice(0, 10)
+        setFxRatesByCurrency(rates)
+        setFxRatesDate(date)
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(FX_RATES_CACHE_KEY, JSON.stringify({ date, rates }))
+        }
+        return
+      } catch (e) {
+        console.warn('FX fetch failed', endpoint, e)
+      }
+    }
+  }
+
+  async function saveUsagePricingRow(providerName: string) {
+    const draft = usagePricingDrafts[providerName]
+    if (!draft) return
+    const mode = draft.mode
+    try {
+      if (mode === 'none') {
+        await invoke('set_provider_manual_pricing', {
+          provider: providerName,
+          mode: 'none',
+          amountUsd: null,
+        })
+      } else {
+        const amountRaw = Number(draft.amountText)
+        if (!Number.isFinite(amountRaw) || amountRaw <= 0) {
+          flashToast('Pricing amount must be > 0', 'error')
+          return
+        }
+        const amountUsd = convertCurrencyToUsd(amountRaw, draft.currency)
+        await invoke('set_provider_manual_pricing', {
+          provider: providerName,
+          mode,
+          amountUsd,
+        })
+      }
+      await invoke('set_provider_gap_fill', {
+        provider: providerName,
+        mode: 'none',
+        amountUsd: null,
+      })
+      flashToast(`Pricing saved: ${providerName}`)
+      await refreshConfig()
+      await refreshUsageStatistics()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }
+
+  async function refreshUsageHistory(options?: { silent?: boolean }) {
+    const silent = options?.silent === true
+    if (!silent) setUsageHistoryLoading(true)
+    try {
+      const res = await invoke<{ ok: boolean; rows: SpendHistoryRow[] }>('get_spend_history', {
+        provider: null,
+        days: 180,
+      })
+      const rows = Array.isArray(res?.rows) ? res.rows : []
+      setUsageHistoryRows(rows)
+      setUsageHistoryDrafts((prev) => {
+        const next: Record<string, { totalText: string; reqText: string }> = { ...prev }
+        for (const row of rows) {
+          const key = `${row.provider}|${row.day_key}`
+          if (next[key]) continue
+          next[key] = {
+            totalText:
+              row.manual_total_usd != null && Number.isFinite(row.manual_total_usd)
+                ? formatDraftAmount(row.manual_total_usd)
+                : '',
+            reqText:
+              row.manual_usd_per_req != null && Number.isFinite(row.manual_usd_per_req)
+                ? formatDraftAmount(row.manual_usd_per_req)
+                : '',
+          }
+        }
+        return next
+      })
+    } catch (e) {
+      flashToast(String(e), 'error')
+    } finally {
+      if (!silent) setUsageHistoryLoading(false)
+    }
+  }
+
+  async function saveUsageHistoryRow(row: SpendHistoryRow) {
+    const key = `${row.provider}|${row.day_key}`
+    const draft = usageHistoryDrafts[key] ?? { totalText: '', reqText: '' }
+    const totalRaw = Number(draft.totalText)
+    const reqRaw = Number(draft.reqText)
+    const totalUsedUsd = Number.isFinite(totalRaw) && totalRaw > 0 ? totalRaw : null
+    const usdPerReq = Number.isFinite(reqRaw) && reqRaw > 0 ? reqRaw : null
+    try {
+      await invoke('set_spend_history_entry', {
+        provider: row.provider,
+        dayKey: row.day_key,
+        totalUsedUsd,
+        usdPerReq,
+      })
+      flashToast(`History saved: ${row.provider} ${row.day_key}`)
+      await refreshUsageHistory({ silent: true })
+      await refreshUsageStatistics({ silent: true })
+    } catch (e) {
+      flashToast(String(e), 'error')
     }
   }
 
@@ -758,22 +1068,186 @@ export default function App() {
       ? Math.round((usageSummary?.total_tokens ?? 0) / (usageSummary?.total_requests ?? 1))
       : 0
   const usageTopModel = usageByModel[0] ?? null
-  const usageEstimatedCostRequestCount = usageByModel.reduce(
-    (sum, x) => sum + (x.estimated_cost_request_count ?? 0),
-    0,
+  const usageCatalogProviders = usageStatistics?.catalog?.providers ?? []
+  const usageCatalogModels = usageStatistics?.catalog?.models ?? []
+  const usageProviderFilterOptions = useMemo(() => {
+    return [...usageCatalogProviders].sort((a, b) => a.localeCompare(b))
+  }, [usageCatalogProviders])
+  const usageModelFilterOptions = useMemo(
+    () => [...usageCatalogModels].sort((a, b) => a.localeCompare(b)),
+    [usageCatalogModels],
   )
-  const usageEstimatedCostCoveragePct =
+  const usagePricedRequestCount = usageByProvider.reduce((sum, row) => {
+    if (row.total_used_cost_usd == null || !Number.isFinite(row.total_used_cost_usd) || row.total_used_cost_usd <= 0) {
+      return sum
+    }
+    return sum + (row.requests ?? 0)
+  }, 0)
+  const usagePricedCoveragePct =
     (usageSummary?.total_requests ?? 0) > 0
-      ? Math.round((usageEstimatedCostRequestCount / (usageSummary?.total_requests ?? 1)) * 100)
+      ? Math.round((usagePricedRequestCount / (usageSummary?.total_requests ?? 1)) * 100)
       : 0
+  const usageActiveWindowHours = useMemo(() => {
+    const bucketSeconds = usageStatistics?.bucket_seconds ?? 0
+    if (bucketSeconds <= 0) return 0
+    const activeBucketCount = usageTimeline.reduce(
+      (sum, point) => sum + ((point.requests ?? 0) > 0 ? 1 : 0),
+      0,
+    )
+    if (activeBucketCount <= 0) return 0
+    return (activeBucketCount * bucketSeconds) / 3600
+  }, [usageTimeline, usageStatistics?.bucket_seconds])
   const usageAvgRequestsPerHour =
-    (usageSummary?.total_requests ?? 0) > 0 && (usageStatistics?.window_hours ?? 0) > 0
-      ? (usageSummary?.total_requests ?? 0) / (usageStatistics?.window_hours ?? 1)
+    (usageSummary?.total_requests ?? 0) > 0 && usageActiveWindowHours > 0
+      ? (usageSummary?.total_requests ?? 0) / usageActiveWindowHours
       : 0
   const usageAvgTokensPerHour =
-    (usageSummary?.total_tokens ?? 0) > 0 && (usageStatistics?.window_hours ?? 0) > 0
-      ? (usageSummary?.total_tokens ?? 0) / (usageStatistics?.window_hours ?? 1)
+    (usageSummary?.total_tokens ?? 0) > 0 && usageActiveWindowHours > 0
+      ? (usageSummary?.total_tokens ?? 0) / usageActiveWindowHours
       : 0
+  const usageWindowLabel = useMemo(() => {
+    if (usageWindowHours === 24) return '24 hours'
+    if (usageWindowHours === 7 * 24) return '7 days'
+    if (usageWindowHours === 30 * 24) return '1 month'
+    return `${usageWindowHours} hours`
+  }, [usageWindowHours])
+  const usageProviderTotalsAndAverages = useMemo(() => {
+    if (!usageByProvider.length) return null
+    const totalReq = usageByProvider.reduce((sum, row) => sum + (row.requests ?? 0), 0)
+    const totalTok = usageByProvider.reduce((sum, row) => sum + (row.total_tokens ?? 0), 0)
+    const totalTokPerReq = totalReq > 0 ? totalTok / totalReq : null
+    const mean = (values: Array<number | null | undefined>) => {
+      const valid = values.filter((v): v is number => Number.isFinite(v as number))
+      if (!valid.length) return null
+      return valid.reduce((sum, value) => sum + value, 0) / valid.length
+    }
+    return {
+      totalReq,
+      totalTok,
+      totalTokPerReq,
+      avgUsdPerReq: mean(usageByProvider.map((row) => row.estimated_avg_request_cost_usd)),
+      avgUsdPerMillion: mean(usageByProvider.map((row) => row.usd_per_million_tokens)),
+      avgEstDaily: mean(usageByProvider.map((row) => row.estimated_daily_cost_usd)),
+      avgTotalUsed: mean(usageByProvider.map((row) => row.total_used_cost_usd)),
+    }
+  }, [usageByProvider])
+  const usageAnomalies = useMemo(() => {
+    const messages: string[] = []
+    const highCostProviders = new Set<string>()
+    const formatBucket = (unixMs: number) => {
+      const d = new Date(unixMs)
+      const pad = (n: number) => String(n).padStart(2, '0')
+      if ((usageStatistics?.window_hours ?? 24) <= 48) {
+        return `${pad(d.getHours())}:00`
+      }
+      return `${pad(d.getDate())}-${pad(d.getMonth() + 1)}`
+    }
+
+    const reqValues = usageTimeline
+      .map((point) => point.requests ?? 0)
+      .filter((value) => value > 0)
+      .sort((a, b) => a - b)
+    if (reqValues.length >= 4) {
+      const mid = Math.floor(reqValues.length / 2)
+      const reqMedian =
+        reqValues.length % 2 === 0
+          ? (reqValues[mid - 1] + reqValues[mid]) / 2
+          : reqValues[mid]
+      const peakPoint = usageTimeline.reduce(
+        (best, point) => ((point.requests ?? 0) > (best?.requests ?? 0) ? point : best),
+        usageTimeline[0],
+      )
+      const peakReq = peakPoint?.requests ?? 0
+      if (reqMedian > 0 && peakReq >= reqMedian * 2.5 && peakReq - reqMedian >= 5) {
+        messages.push(
+          `Request spike around ${formatBucket(peakPoint.bucket_unix_ms)}: ${peakReq} vs median ${Math.round(reqMedian)}`,
+        )
+      }
+    }
+
+    const priced = usageByProvider.filter(
+      (row) =>
+        row.estimated_avg_request_cost_usd != null &&
+        Number.isFinite(row.estimated_avg_request_cost_usd) &&
+        (row.estimated_avg_request_cost_usd ?? 0) > 0 &&
+        (row.requests ?? 0) >= 3,
+    )
+    const priceValues = priced
+      .map((row) => row.estimated_avg_request_cost_usd as number)
+      .sort((a, b) => a - b)
+    if (priceValues.length >= 2) {
+      const mid = Math.floor(priceValues.length / 2)
+      const priceMedian =
+        priceValues.length % 2 === 0
+          ? (priceValues[mid - 1] + priceValues[mid]) / 2
+          : priceValues[mid]
+      priced.forEach((row) => {
+        const value = row.estimated_avg_request_cost_usd as number
+        if (priceMedian > 0 && value >= priceMedian * 2 && value - priceMedian >= 0.05) {
+          highCostProviders.add(row.provider)
+          messages.push(
+            `High $/req: ${row.provider} at ${fmtUsdMaybe(value)} vs median ${fmtUsdMaybe(priceMedian)}`,
+          )
+        }
+      })
+    }
+
+    return { messages, highCostProviders }
+  }, [usageTimeline, usageByProvider, usageStatistics?.window_hours])
+
+  useEffect(() => {
+    setUsageFilterProviders((prev) => {
+      const next = prev.filter((name) => usageProviderFilterOptions.includes(name))
+      if (next.length === prev.length && next.every((value, index) => value === prev[index])) {
+        return prev
+      }
+      return next
+    })
+  }, [usageProviderFilterOptions])
+
+  useEffect(() => {
+    setUsageFilterModels((prev) => {
+      const next = prev.filter((name) => usageModelFilterOptions.includes(name))
+      if (next.length === prev.length && next.every((value, index) => value === prev[index])) {
+        return prev
+      }
+      return next
+    })
+  }, [usageModelFilterOptions])
+
+  const toggleUsageProviderFilter = useCallback((name: string) => {
+    setUsageFilterProviders((prev) =>
+      prev.includes(name) ? prev.filter((v) => v !== name) : [...prev, name],
+    )
+  }, [])
+
+  const toggleUsageModelFilter = useCallback((name: string) => {
+    setUsageFilterModels((prev) =>
+      prev.includes(name) ? prev.filter((v) => v !== name) : [...prev, name],
+    )
+  }, [])
+
+  function buildSmoothPath(points: Array<{ x: number; y: number }>): string {
+    if (points.length === 0) return ''
+    if (points.length === 1) return `M${points[0].x.toFixed(2)},${points[0].y.toFixed(2)}`
+    const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+    let path = `M${points[0].x.toFixed(2)},${points[0].y.toFixed(2)}`
+    for (let i = 0; i < points.length - 1; i += 1) {
+      const p0 = points[Math.max(0, i - 1)]
+      const p1 = points[i]
+      const p2 = points[i + 1]
+      const p3 = points[Math.min(points.length - 1, i + 2)]
+      const c1x = p1.x + (p2.x - p0.x) / 6
+      const yMin = Math.min(p1.y, p2.y)
+      const yMax = Math.max(p1.y, p2.y)
+      const c1y = clamp(p1.y + (p2.y - p0.y) / 6, yMin, yMax)
+      const c2x = p2.x - (p3.x - p1.x) / 6
+      const c2y = clamp(p2.y - (p3.y - p1.y) / 6, yMin, yMax)
+      path += ` C${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)}`
+    }
+    return path
+  }
+
   const usageChart = useMemo(() => {
     if (!usageTimeline.length) return null
     const w = 1000
@@ -796,11 +1270,18 @@ export default function App() {
       const tokenY = yBase - Math.round((point.total_tokens / usageMaxTimelineTokens) * plotH)
       return { point, x, barY, reqH, tokenY }
     })
-    const linePath = points
-      .map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(2)},${p.tokenY.toFixed(2)}`)
-      .join(' ')
+    const linePath = buildSmoothPath(points.map((p) => ({ x: p.x, y: p.tokenY })))
     const tickIndexes = Array.from(new Set([0, Math.floor((n - 1) / 2), n - 1]))
-    return { w, h, yBase, points, linePath, tickIndexes, barW, hoverW }
+    return {
+      w,
+      h,
+      yBase,
+      points,
+      linePath,
+      tickIndexes,
+      barW,
+      hoverW,
+    }
   }, [usageTimeline, usageMaxTimelineRequests, usageMaxTimelineTokens])
   function fmtUsdMaybe(value?: number | null): string {
     if (value == null || !Number.isFinite(value) || value <= 0) return '-'
@@ -808,10 +1289,18 @@ export default function App() {
   }
 
   function fmtPricingSource(source?: string | null): string {
-    if (!source || source === 'none') return 'auto'
-    if (source === 'token_rate') return 'auto token-rate'
+    if (!source || source === 'none') return 'unconfigured'
+    if (source === 'token_rate') return 'provider budget api'
+    if (source === 'provider_budget_api') return 'provider budget api'
+    if (source === 'provider_budget_api+manual_history') return 'provider budget + history'
+    if (source === 'provider_budget_api_latest_day') return 'provider daily snapshot'
+    if (source === 'provider_token_rate') return 'provider token-rate'
     if (source === 'manual_per_request') return 'manual $/req'
     if (source === 'manual_package_total') return 'manual package total'
+    if (source === 'manual_history') return 'history manual'
+    if (source === 'gap_fill_per_request') return 'gap fill $/req'
+    if (source === 'gap_fill_total') return 'gap fill total'
+    if (source === 'gap_fill_per_day_average') return 'gap fill $/day'
     return source
   }
 
@@ -1216,9 +1705,83 @@ export default function App() {
   useEffect(() => {
     if (activePage !== 'usage_statistics') return
     void refreshUsageStatistics()
-    const t = window.setInterval(() => void refreshUsageStatistics(), 15_000)
+    const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), 15_000)
     return () => window.clearInterval(t)
-  }, [activePage, usageWindowHours])
+  }, [activePage, usageWindowHours, usageFilterProviders, usageFilterModels])
+
+  useEffect(() => {
+    if (isDevPreview) return
+    void refreshFxRatesDaily(false)
+  }, [isDevPreview])
+
+  useEffect(() => {
+    if (!usagePricingModalOpen) {
+      usagePricingDraftsPrimedRef.current = false
+      closeUsagePricingCurrencyMenu()
+      return
+    }
+    if (!config) return
+    void refreshFxRatesDaily(false)
+    if (usagePricingDraftsPrimedRef.current) return
+    setUsagePricingDrafts(() => {
+      const next: Record<string, UsagePricingDraft> = {}
+      usageByProvider.forEach((row) => {
+        const providerCfg = config?.providers?.[row.provider]
+        const mode = (providerCfg?.manual_pricing_mode ?? 'none') as UsagePricingMode
+        let cachedCurrency = 'USD'
+        if (typeof window !== 'undefined') {
+          cachedCurrency =
+            window.localStorage.getItem(`${FX_CURRENCY_PREF_KEY_PREFIX}${row.provider}`) ?? 'USD'
+        }
+        const currency = normalizeCurrencyCode(cachedCurrency)
+        const amountUsd = providerCfg?.manual_pricing_amount_usd
+        const amountText =
+          amountUsd != null && Number.isFinite(amountUsd) && amountUsd > 0
+            ? formatDraftAmount(convertUsdToCurrency(amountUsd, currency))
+            : ''
+        next[row.provider] = {
+          mode,
+          amountText,
+          currency,
+        }
+      })
+      return next
+    })
+    usagePricingDraftsPrimedRef.current = true
+  }, [usagePricingModalOpen, usageByProvider, config, fxRatesByCurrency, closeUsagePricingCurrencyMenu])
+
+  useEffect(() => {
+    if (!usageHistoryModalOpen) return
+    void refreshUsageHistory()
+  }, [usageHistoryModalOpen])
+
+  useEffect(() => {
+    if (!usagePricingCurrencyMenu) return
+    const onMouseDown = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Element)) {
+        closeUsagePricingCurrencyMenu()
+        return
+      }
+      if (usagePricingCurrencyMenuRef.current?.contains(target)) return
+      if (target.closest('.aoUsagePricingCurrencyWrap')) return
+      closeUsagePricingCurrencyMenu()
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeUsagePricingCurrencyMenu()
+    }
+    const onViewportChange = () => {
+      closeUsagePricingCurrencyMenu()
+    }
+    window.addEventListener('mousedown', onMouseDown)
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('resize', onViewportChange)
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown)
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('resize', onViewportChange)
+    }
+  }, [usagePricingCurrencyMenu, closeUsagePricingCurrencyMenu])
 
   const isProviderOpen = useCallback(
     (name: string) => providerPanelsOpen[name] ?? true,
@@ -1478,7 +2041,7 @@ export default function App() {
                         )
                       }
                     >
-                      <option value="none">Auto (token-rate)</option>
+                      <option value="none">Provider API</option>
                       <option value="per_request">Manual $ / request</option>
                       <option value="package_total">Manual package total $</option>
                     </select>
@@ -1519,7 +2082,7 @@ export default function App() {
                     </button>
                   </div>
                   <div className="aoHint">
-                    Auto uses token-rate estimate. Package total keeps “Total $ Used” fixed.
+                    Provider API uses budget-based estimate. Package total follows the selected time window.
                   </div>
                   <div className="aoHint">
                     updated:{' '}
@@ -1587,7 +2150,7 @@ export default function App() {
                   className={`aoTopNavBtn${activePage === 'dashboard' ? ' is-active' : ''}`}
                   role="tab"
                   aria-selected={activePage === 'dashboard'}
-                  onClick={() => setActivePage('dashboard')}
+                  onClick={() => switchPage('dashboard')}
                 >
                   <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
                     <rect x="4" y="4" width="6.5" height="6.5" rx="1.2" />
@@ -1601,7 +2164,7 @@ export default function App() {
                   className={`aoTopNavBtn${activePage === 'usage_statistics' ? ' is-active' : ''}`}
                   role="tab"
                   aria-selected={activePage === 'usage_statistics'}
-                  onClick={() => setActivePage('usage_statistics')}
+                  onClick={() => switchPage('usage_statistics')}
                 >
                   <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M4 19.5h16" />
@@ -1616,7 +2179,7 @@ export default function App() {
                   className={`aoTopNavBtn${activePage === 'provider_switchboard' ? ' is-active' : ''}`}
                   role="tab"
                   aria-selected={activePage === 'provider_switchboard'}
-                  onClick={() => setActivePage('provider_switchboard')}
+                  onClick={() => switchPage('provider_switchboard')}
                 >
                   <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M4 7h11" />
@@ -1635,21 +2198,20 @@ export default function App() {
 
           {/* Surface errors via toast to avoid layout shifts. */}
 
-          <div className={`aoMainArea${activePage === 'dashboard' ? '' : ' aoMainAreaFill'}`}>
+          <div className={`aoMainArea${activePage === 'dashboard' ? '' : ' aoMainAreaFill'}`} ref={mainAreaRef}>
           {activePage === 'usage_statistics' ? (
             <div className="aoCard aoUsageStatsPage">
               <div className="aoUsageStatsHeader">
                 <div>
                   <div className="aoPagePlaceholderTitle">Usage Statistics</div>
-                  <div className="aoHint">
-                    Requests, tokens, model mix, and token-rate-based estimated request price by model.
-                  </div>
+                  <div className="aoHint">Requests, tokens, model mix, and provider-aware estimated request pricing.</div>
                 </div>
                 <div className="aoUsageStatsActions">
                   <button
                     className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 24 ? ' aoUsageWindowBtnActive' : ''}`}
                     onClick={() => setUsageWindowHours(24)}
                     disabled={usageStatisticsLoading}
+                    aria-pressed={usageWindowHours === 24}
                   >
                     24h
                   </button>
@@ -1657,18 +2219,80 @@ export default function App() {
                     className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 7 * 24 ? ' aoUsageWindowBtnActive' : ''}`}
                     onClick={() => setUsageWindowHours(7 * 24)}
                     disabled={usageStatisticsLoading}
+                    aria-pressed={usageWindowHours === 7 * 24}
                   >
                     7d
                   </button>
                   <button
-                    className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnRefresh${usageStatisticsLoading ? ' aoUsageActionBtnLoading' : ''}`}
-                    onClick={() => void refreshUsageStatistics()}
+                    className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 30 * 24 ? ' aoUsageWindowBtnActive' : ''}`}
+                    onClick={() => setUsageWindowHours(30 * 24)}
                     disabled={usageStatisticsLoading}
+                    aria-pressed={usageWindowHours === 30 * 24}
                   >
-                    Refresh
+                    1M
                   </button>
                 </div>
               </div>
+              <div className="aoUsageFilterCard">
+                <div className="aoUsageFilterSection aoUsageFilterSectionCompact">
+                  <div className="aoUsageFilterSectionHead">
+                    <span className="aoMiniLabel">Providers</span>
+                  </div>
+                  <div className="aoUsageFilterChips">
+                    <button
+                      className={`aoUsageFilterChip${usageFilterProviders.length === 0 ? ' is-active' : ''}`}
+                      disabled={usageStatisticsLoading}
+                      onClick={() => setUsageFilterProviders([])}
+                    >
+                      All providers
+                    </button>
+                    {usageProviderFilterOptions.map((providerName) => (
+                      <button
+                        key={providerName}
+                        className={`aoUsageFilterChip${usageFilterProviders.includes(providerName) ? ' is-active' : ''}`}
+                        disabled={usageStatisticsLoading}
+                        onClick={() => toggleUsageProviderFilter(providerName)}
+                      >
+                        {providerName}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="aoUsageFilterSection aoUsageFilterSectionCompact">
+                  <div className="aoUsageFilterSectionHead">
+                    <span className="aoMiniLabel">Models</span>
+                  </div>
+                  <div className="aoUsageFilterChips">
+                    <button
+                      className={`aoUsageFilterChip${usageFilterModels.length === 0 ? ' is-active' : ''}`}
+                      disabled={usageStatisticsLoading}
+                      onClick={() => setUsageFilterModels([])}
+                    >
+                      All models
+                    </button>
+                    {usageModelFilterOptions.map((modelName) => (
+                      <button
+                        key={modelName}
+                        className={`aoUsageFilterChip${usageFilterModels.includes(modelName) ? ' is-active' : ''}`}
+                        disabled={usageStatisticsLoading}
+                        onClick={() => toggleUsageModelFilter(modelName)}
+                      >
+                        {modelName}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {usageAnomalies.messages.length ? (
+                <div className="aoUsageAnomalyBanner" role="status" aria-live="polite">
+                  <div className="aoMiniLabel">Anomaly Watch</div>
+                  {usageAnomalies.messages.map((message, index) => (
+                    <div key={`usage-anomaly-${index}`} className="aoUsageAnomalyText">
+                      {message}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
 
               <div className="aoUsageKpiGrid">
                 <div className="aoUsageKpiCard">
@@ -1686,20 +2310,20 @@ export default function App() {
                   </div>
                 </div>
                 <div className="aoUsageKpiCard">
-                  <div className="aoMiniLabel">Estimated Cost</div>
+                  <div className="aoMiniLabel">Total $ Used</div>
                   <div className="aoUsageKpiValue">{fmtUsdMaybe(usageSummary?.estimated_total_cost_usd)}</div>
                 </div>
               </div>
               <div className="aoUsageFactsCard">
                 <div className="aoSwitchboardSectionHead">
                   <div className="aoMiniLabel">Window Details</div>
-                  <div className="aoHint">Secondary metrics in table format.</div>
+                  <div className="aoHint">Top model share is request share. Priced coverage means calculable-cost requests.</div>
                 </div>
                 <table className="aoUsageFactsTable">
                   <tbody>
                     <tr>
                       <th>Top Model Share</th>
-                      <td>{usageTopModel ? `${Math.round(usageTopModel.share_pct ?? 0)}%` : '-'}</td>
+                      <td>{usageTopModel ? `${Math.round(usageTopModel.share_pct ?? 0)}% of requests` : '-'}</td>
                       <th>Unique Models</th>
                       <td>{usageSummary?.unique_models?.toLocaleString() ?? '-'}</td>
                     </tr>
@@ -1710,11 +2334,30 @@ export default function App() {
                       <td>{usageSummary?.total_requests ? usageAvgTokensPerRequest.toLocaleString() : '-'}</td>
                     </tr>
                     <tr>
-                      <th>Cost Coverage</th>
-                      <td>{usageEstimatedCostRequestCount.toLocaleString()} req ({usageEstimatedCostCoveragePct}%)</td>
+                      <th>Window Data</th>
+                      <td>
+                        {(usageSummary?.total_requests ?? 0).toLocaleString()} captured requests
+                        {usageActiveWindowHours > 0 ? ` · ${usageActiveWindowHours.toFixed(1)} active h` : ''}
+                      </td>
+                      <th>Priced Coverage</th>
+                      <td>
+                        {usagePricedRequestCount.toLocaleString()} / {(usageSummary?.total_requests ?? 0).toLocaleString()} req ({usagePricedCoveragePct}%)
+                      </td>
+                    </tr>
+                    <tr>
                       <th>Window Pace</th>
                       <td>
                         {usageAvgRequestsPerHour.toFixed(2)} req/h · {Math.round(usageAvgTokensPerHour).toLocaleString()} tok/h
+                      </td>
+                      <th>Selected Window</th>
+                      <td>{usageWindowLabel}</td>
+                    </tr>
+                    <tr>
+                      <th>Data Freshness</th>
+                      <td>{usageStatistics?.generated_at_unix_ms ? fmtWhen(usageStatistics.generated_at_unix_ms) : '-'}</td>
+                      <th>Sample Coverage</th>
+                      <td>
+                        {(usageSummary?.total_requests ?? 0).toLocaleString()} req · {usageActiveWindowHours.toFixed(1)} active h
                       </td>
                     </tr>
                   </tbody>
@@ -1796,7 +2439,6 @@ export default function App() {
                       <div className="aoUsageTimelineLegend">
                         <span className="aoUsageLegendItem aoUsageLegendBars">Bars: Requests</span>
                         <span className="aoUsageLegendItem aoUsageLegendLine">Line: Tokens</span>
-                        <span className="aoHint">scaled to window max</span>
                       </div>
                       <div className="aoUsageTimelineTicks">
                         {usageChart.tickIndexes.map((index) => {
@@ -1812,53 +2454,21 @@ export default function App() {
                   )}
                 </div>
 
-                <div className="aoUsageChartCard">
-                  <div className="aoSwitchboardSectionHead">
-                    <div className="aoMiniLabel">Provider Breakdown</div>
-                    <div className="aoHint">
-                      Provider-first view (better for mixed pricing modes like package total and manual $/req).
-                    </div>
-                  </div>
-                  {usageByProvider.length ? (
-                    <div className="aoUsageModelList">
-                      {usageByProvider.slice(0, 10).map((p) => (
-                        <div key={p.provider} className="aoUsageModelRow">
-                          <div className="aoUsageModelTop">
-                            <span className="aoUsageModelName">{p.provider}</span>
-                            <span className="aoUsageModelMeta">{p.requests.toLocaleString()} req</span>
-                          </div>
-                          <div className="aoUsageModelSub">
-                            <span>{p.total_tokens.toLocaleString()} tokens</span>
-                            <span>mode {fmtPricingSource(p.pricing_source)}</span>
-                          </div>
-                          <div className="aoUsageModelBarTrack">
-                            <span
-                              className="aoUsageModelBarFill"
-                              style={{
-                                width: `${Math.max(
-                                  3,
-                                  Math.min(
-                                    100,
-                                    ((p.requests ?? 0) / Math.max(1, usageSummary?.total_requests ?? 0)) * 100,
-                                  ),
-                                )}%`,
-                              }}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="aoHint">No provider-level usage yet. Send requests through the gateway first.</div>
-                  )}
-                </div>
               </div>
 
               <div className="aoUsageProviderCard">
                 <div className="aoSwitchboardSectionHead">
                   <div className="aoMiniLabel">Provider Statistics</div>
-                  <div className="aoHint">
-                    Includes tok/req, $/M tokens, estimated/day, pricing source, and fixed package total.
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+                      <div className="aoHint">
+                      Includes tok/req, $/M tokens, est/day, and selected-window total used cost.
+                      </div>
+                    <button className="aoTinyBtn" onClick={() => setUsageHistoryModalOpen(true)}>
+                      Daily History
+                    </button>
+                    <button className="aoTinyBtn" onClick={() => setUsagePricingModalOpen(true)}>
+                      Pricing Setup
+                    </button>
                   </div>
                 </div>
                 {usageByProvider.length ? (
@@ -1871,14 +2481,17 @@ export default function App() {
                         <th>tok/req</th>
                         <th>$ / req</th>
                         <th>$ / M tok</th>
-                        <th>est $ / day</th>
+                        <th>Est $ / day</th>
                         <th>Total $ Used</th>
                         <th>Pricing Source</th>
                       </tr>
                     </thead>
                     <tbody>
                       {usageByProvider.map((p) => (
-                        <tr key={p.provider}>
+                        <tr
+                          key={p.provider}
+                          className={usageAnomalies.highCostProviders.has(p.provider) ? 'aoUsageProviderRowAnomaly' : ''}
+                        >
                           <td className="aoUsageProviderName">{p.provider}</td>
                           <td>{p.requests.toLocaleString()}</td>
                           <td>{p.total_tokens.toLocaleString()}</td>
@@ -1895,98 +2508,31 @@ export default function App() {
                         </tr>
                       ))}
                     </tbody>
+                    {usageProviderTotalsAndAverages ? (
+                      <tfoot>
+                        <tr className="aoUsageProviderAvgRow">
+                          <td className="aoUsageProviderName">Average</td>
+                          <td>-</td>
+                          <td>-</td>
+                          <td>
+                            {usageProviderTotalsAndAverages.totalTokPerReq == null
+                              ? '-'
+                              : Math.round(usageProviderTotalsAndAverages.totalTokPerReq).toLocaleString()}
+                          </td>
+                          <td>{fmtUsdMaybe(usageProviderTotalsAndAverages.avgUsdPerReq)}</td>
+                          <td>{fmtUsdMaybe(usageProviderTotalsAndAverages.avgUsdPerMillion)}</td>
+                          <td>{fmtUsdMaybe(usageProviderTotalsAndAverages.avgEstDaily)}</td>
+                          <td>{fmtUsdMaybe(usageProviderTotalsAndAverages.avgTotalUsed)}</td>
+                          <td>-</td>
+                        </tr>
+                      </tfoot>
+                    ) : null}
                   </table>
                 ) : (
                   <div className="aoHint">No provider usage data yet.</div>
                 )}
-                <div className="aoSwitchboardSectionHead">
-                  <div className="aoMiniLabel">Pricing Setup</div>
-                  <div className="aoHint">Set manual package total or fixed $/req for providers without spend API.</div>
-                </div>
-                <div className="aoUsagePricingGrid">
-                  {usageByProvider.map((row) => {
-                    const providerCfg = config?.providers?.[row.provider]
-                    return (
-                      <div key={`pricing-${row.provider}`} className="aoUsagePricingRow">
-                        <div className="aoUsagePricingProvider">{row.provider}</div>
-                        <select
-                          className="aoSelect aoUsagePricingSelect"
-                          value={providerCfg?.manual_pricing_mode ?? 'none'}
-                          disabled={!providerCfg}
-                          onChange={(e) =>
-                            setConfig((c) =>
-                              c
-                                ? {
-                                    ...c,
-                                    providers: {
-                                      ...c.providers,
-                                      [row.provider]: {
-                                        ...c.providers[row.provider],
-                                        manual_pricing_mode:
-                                          e.target.value === 'none'
-                                            ? null
-                                            : (e.target.value as 'per_request' | 'package_total'),
-                                        manual_pricing_amount_usd:
-                                          e.target.value === 'none'
-                                            ? null
-                                            : c.providers[row.provider].manual_pricing_amount_usd ?? null,
-                                      },
-                                    },
-                                  }
-                                : c,
-                            )
-                          }
-                        >
-                          <option value="none">Auto (token-rate)</option>
-                          <option value="package_total">Package total $</option>
-                          <option value="per_request">$ / request</option>
-                        </select>
-                        <input
-                          className="aoInput aoUsagePricingInput"
-                          type="number"
-                          step="0.001"
-                          min="0"
-                          disabled={!providerCfg || !providerCfg.manual_pricing_mode}
-                          placeholder={
-                            providerCfg?.manual_pricing_mode === 'package_total'
-                              ? 'Package total USD'
-                              : providerCfg?.manual_pricing_mode === 'per_request'
-                                ? 'USD per request'
-                                : 'Amount USD'
-                          }
-                          value={
-                            providerCfg?.manual_pricing_amount_usd == null
-                              ? ''
-                              : String(providerCfg.manual_pricing_amount_usd)
-                          }
-                          onChange={(e) =>
-                            setConfig((c) =>
-                              c
-                                ? {
-                                    ...c,
-                                    providers: {
-                                      ...c.providers,
-                                      [row.provider]: {
-                                        ...c.providers[row.provider],
-                                        manual_pricing_amount_usd:
-                                          e.target.value.trim() === '' ? null : Number(e.target.value),
-                                      },
-                                    },
-                                  }
-                                : c,
-                            )
-                          }
-                        />
-                        <button
-                          className="aoTinyBtn"
-                          disabled={!providerCfg}
-                          onClick={() => void saveProviderPricing(row.provider)}
-                        >
-                          Save
-                        </button>
-                      </div>
-                    )
-                  })}
+                <div className="aoHint">
+                  Open Pricing Setup for base pricing. Open History to edit daily missing-cost corrections.
                 </div>
               </div>
             </div>
@@ -2332,6 +2878,326 @@ requires_openai_auth = true`}
           flashToast('Gateway token rotated')
         }}
       />
+
+      {usageHistoryModalOpen ? (
+        <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={() => setUsageHistoryModalOpen(false)}>
+          <div className="aoModal aoModalWide aoUsageHistoryModal" onClick={(e) => e.stopPropagation()}>
+            <div className="aoModalHeader">
+              <div>
+                <div className="aoModalTitle">Daily Spend History</div>
+                <div className="aoModalSub">
+                  Edit per-day manual fixes. Use this when provider daily spend resets to zero and leaves cost gaps.
+                  Showing latest 180 days.
+                </div>
+              </div>
+              <button className="aoBtn" onClick={() => setUsageHistoryModalOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="aoModalBody">
+              {usageHistoryLoading ? (
+                <div className="aoHint">Loading...</div>
+              ) : usageHistoryRows.length ? (
+                <table className="aoUsageHistoryTable">
+                  <thead>
+                    <tr>
+                      <th>Day</th>
+                      <th>Provider</th>
+                      <th>Req</th>
+                      <th>Tokens</th>
+                      <th>Tracked $</th>
+                      <th>Manual Total $</th>
+                      <th>Manual $/Req</th>
+                      <th>Effective $</th>
+                      <th>Source</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {usageHistoryRows.map((row) => {
+                      const key = `${row.provider}|${row.day_key}`
+                      const draft = usageHistoryDrafts[key] ?? { totalText: '', reqText: '' }
+                      return (
+                        <tr key={key}>
+                          <td>{row.day_key}</td>
+                          <td className="aoUsageProviderName">{row.provider}</td>
+                          <td>{(row.req_count ?? 0).toLocaleString()}</td>
+                          <td>{(row.total_tokens ?? 0).toLocaleString()}</td>
+                          <td>{fmtUsdMaybe(row.tracked_total_usd ?? null)}</td>
+                          <td>
+                            <input
+                              className="aoInput aoUsageHistoryInput"
+                              type="number"
+                              min="0"
+                              step="0.001"
+                              placeholder="0"
+                              value={draft.totalText}
+                              onChange={(e) =>
+                                setUsageHistoryDrafts((prev) => ({
+                                  ...prev,
+                                  [key]: { ...draft, totalText: e.target.value },
+                                }))
+                              }
+                            />
+                          </td>
+                          <td>
+                            <input
+                              className="aoInput aoUsageHistoryInput"
+                              type="number"
+                              min="0"
+                              step="0.0001"
+                              placeholder="0"
+                              value={draft.reqText}
+                              onChange={(e) =>
+                                setUsageHistoryDrafts((prev) => ({
+                                  ...prev,
+                                  [key]: { ...draft, reqText: e.target.value },
+                                }))
+                              }
+                            />
+                          </td>
+                          <td>{fmtUsdMaybe(row.effective_total_usd ?? null)}</td>
+                          <td>{row.source ?? '-'}</td>
+                          <td>
+                            <div className="aoUsageHistoryActions">
+                              <button className="aoTinyBtn" onClick={() => void saveUsageHistoryRow(row)}>
+                                Save
+                              </button>
+                              <button
+                                className="aoTinyBtn"
+                                onClick={() => {
+                                  void (async () => {
+                                    try {
+                                      await invoke('set_spend_history_entry', {
+                                        provider: row.provider,
+                                        dayKey: row.day_key,
+                                        totalUsedUsd: null,
+                                        usdPerReq: null,
+                                      })
+                                      setUsageHistoryDrafts((prev) => ({
+                                        ...prev,
+                                        [key]: { totalText: '', reqText: '' },
+                                      }))
+                                      await refreshUsageHistory({ silent: true })
+                                      await refreshUsageStatistics({ silent: true })
+                                      flashToast(`History cleared: ${row.provider} ${row.day_key}`)
+                                    } catch (e) {
+                                      flashToast(String(e), 'error')
+                                    }
+                                  })()
+                                }}
+                              >
+                                Clear
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="aoHint">No history yet.</div>
+              )}
+            </div>
+          </div>
+        </ModalBackdrop>
+      ) : null}
+
+      {usagePricingModalOpen ? (
+        <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={() => setUsagePricingModalOpen(false)}>
+          <div className="aoModal aoModalWide aoUsagePricingModal" onClick={(e) => e.stopPropagation()}>
+            <div className="aoModalHeader">
+              <div>
+                <div className="aoModalTitle">Pricing Setup</div>
+                <div className="aoModalSub">
+                  Configure base pricing only. Values auto-convert to USD.
+                </div>
+              </div>
+              <button className="aoBtn" onClick={() => setUsagePricingModalOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="aoModalBody">
+              <div className="aoHint" style={{ marginBottom: 8 }}>
+                FX rates date: {fxRatesDate || 'loading'} (daily update)
+              </div>
+              <div className="aoUsagePricingGrid">
+                {usageByProvider.map((row) => {
+                  const providerCfg = config?.providers?.[row.provider]
+                  const draft = usagePricingDrafts[row.provider] ?? {
+                    mode: (providerCfg?.manual_pricing_mode ?? 'none') as UsagePricingMode,
+                    amountText:
+                      providerCfg?.manual_pricing_amount_usd != null
+                        ? formatDraftAmount(providerCfg.manual_pricing_amount_usd)
+                        : '',
+                    currency: 'USD',
+                  }
+                  const mode = draft.mode
+                  const amountDisabled = !providerCfg || mode === 'none'
+                  return (
+                    <div key={`pricing-${row.provider}`} className="aoUsagePricingRow">
+                      <div className="aoUsagePricingProvider">{row.provider}</div>
+                      <select
+                        className="aoSelect aoUsagePricingSelect aoUsagePricingMode"
+                        value={mode}
+                        disabled={!providerCfg}
+                        onChange={(e) => {
+                          const nextMode = (e.target.value as UsagePricingMode) ?? 'none'
+                          setUsagePricingDrafts((prev) => ({
+                            ...prev,
+                            [row.provider]: {
+                              ...draft,
+                              mode: nextMode,
+                              amountText: nextMode === 'none' ? '' : draft.amountText,
+                            },
+                          }))
+                        }}
+                      >
+                        <option value="none">Monthly credit</option>
+                        <option value="package_total">Monthly fee</option>
+                        <option value="per_request">$ / request</option>
+                      </select>
+                      <input
+                        className="aoInput aoUsagePricingInput aoUsagePricingAmount"
+                        type="number"
+                        step="0.001"
+                        min="0"
+                        disabled={amountDisabled}
+                        placeholder="Amount"
+                        value={draft.amountText}
+                        onChange={(e) =>
+                          setUsagePricingDrafts((prev) => ({
+                            ...prev,
+                            [row.provider]: {
+                              ...draft,
+                              amountText: e.target.value,
+                            },
+                          }))
+                        }
+                      />
+                      <div className="aoUsagePricingCurrencyWrap">
+                        <button
+                          type="button"
+                          className="aoSelect aoUsagePricingCurrencyBtn"
+                          disabled={!providerCfg || amountDisabled}
+                          aria-haspopup="listbox"
+                          aria-expanded={usagePricingCurrencyMenu?.provider === row.provider}
+                          onClick={(e) => {
+                            const button = e.currentTarget
+                            const rect = button.getBoundingClientRect()
+                            setUsagePricingCurrencyMenu((prev) => {
+                              if (prev?.provider === row.provider) {
+                                setUsagePricingCurrencyQuery('')
+                                return null
+                              }
+                              setUsagePricingCurrencyQuery('')
+                              return {
+                                provider: row.provider,
+                                left: Math.max(8, Math.round(rect.left)),
+                                top: Math.round(rect.bottom + 4),
+                                width: Math.round(rect.width),
+                              }
+                            })
+                          }}
+                        >
+                          <span>{currencyLabel(normalizeCurrencyCode(draft.currency))}</span>
+                          <span className="aoUsagePricingCurrencyChevron" aria-hidden="true">
+                            ▼
+                          </span>
+                        </button>
+                      </div>
+                      <button
+                        className="aoTinyBtn"
+                        disabled={!providerCfg}
+                        onClick={() => void saveUsagePricingRow(row.provider)}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="aoHint">
+                Use History to adjust per-day missing costs or corrections.
+              </div>
+            </div>
+          </div>
+          {usagePricingCurrencyMenu
+            ? createPortal(
+                (() => {
+                  const row = usageByProvider.find((item) => item.provider === usagePricingCurrencyMenu.provider)
+                  if (!row) return null
+                  const providerCfg = config?.providers?.[row.provider]
+                  const draft = usagePricingDrafts[row.provider] ?? {
+                    mode: (providerCfg?.manual_pricing_mode ?? 'none') as UsagePricingMode,
+                    amountText:
+                      providerCfg?.manual_pricing_amount_usd != null
+                        ? formatDraftAmount(providerCfg.manual_pricing_amount_usd)
+                        : '',
+                    currency: 'USD',
+                  }
+                  const amountDisabled = !providerCfg
+                  if (amountDisabled) return null
+
+                  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1200
+                  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800
+                  const width = Math.max(74, Math.min(130, usagePricingCurrencyMenu.width))
+                  const left = Math.max(8, Math.min(usagePricingCurrencyMenu.left, viewportWidth - width - 8))
+                  const top = usagePricingCurrencyMenu.top
+                  const maxHeight = Math.max(140, Math.min(260, viewportHeight - top - 8))
+                  const query = usagePricingCurrencyQuery.trim().toUpperCase()
+                  const filteredOptions = usageCurrencyOptions.filter((currencyCode) => {
+                    const normalized = normalizeCurrencyCode(currencyCode)
+                    const label = currencyLabel(normalized).toUpperCase()
+                    return query.length === 0 || normalized.includes(query) || label.includes(query)
+                  })
+
+                  return (
+                    <div
+                      ref={usagePricingCurrencyMenuRef}
+                      className="aoUsagePricingCurrencyMenu aoUsagePricingCurrencyMenuPortal"
+                      role="listbox"
+                      style={{ left, top, width, maxHeight }}
+                    >
+                      <div className="aoUsagePricingCurrencySearchWrap">
+                        <input
+                          className="aoInput aoUsagePricingCurrencySearch"
+                          placeholder="Search"
+                          value={usagePricingCurrencyQuery}
+                          onChange={(e) => setUsagePricingCurrencyQuery(e.target.value)}
+                        />
+                      </div>
+                      {filteredOptions.map((currencyCode) => {
+                        const normalized = normalizeCurrencyCode(currencyCode)
+                        const isActive = normalizeCurrencyCode(draft.currency) === normalized
+                        return (
+                          <button
+                            type="button"
+                            key={currencyCode}
+                            className={`aoUsagePricingCurrencyItem${isActive ? ' is-active' : ''}`}
+                            onClick={() => {
+                              updateUsagePricingCurrency(row.provider, draft, normalized)
+                              closeUsagePricingCurrencyMenu()
+                            }}
+                          >
+                            {currencyLabel(normalized)}
+                          </button>
+                        )
+                      })}
+                      {filteredOptions.length === 0 ? (
+                        <div className="aoHint" style={{ padding: '6px 10px 8px' }}>
+                          No currency
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })(),
+                document.body,
+              )
+            : null}
+        </ModalBackdrop>
+      ) : null}
 
       <CodexSwapModal
         open={codexSwapModalOpen}

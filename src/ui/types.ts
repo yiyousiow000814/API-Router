@@ -117,6 +117,8 @@ export type Config = {
       usage_base_url?: string | null
       manual_pricing_mode?: 'per_request' | 'package_total' | null
       manual_pricing_amount_usd?: number | null
+      manual_gap_fill_mode?: 'per_request' | 'total' | 'per_day_average' | null
+      manual_gap_fill_amount_usd?: number | null
       has_key: boolean
       key_preview?: string | null
       has_usage_token?: boolean
@@ -129,12 +131,23 @@ export type UsageStatistics = {
   ok: boolean
   generated_at_unix_ms: number
   window_hours: number
+  filter?: {
+    providers?: string[] | null
+    models?: string[] | null
+  }
+  catalog?: {
+    providers: string[]
+    models: string[]
+  }
   bucket_seconds: number
   summary: {
     total_requests: number
     total_tokens: number
+    cache_creation_tokens?: number
+    cache_read_tokens?: number
     unique_models: number
     estimated_total_cost_usd: number
+    estimated_daily_cost_usd?: number
     by_model: Array<{
       model: string
       requests: number
@@ -163,6 +176,8 @@ export type UsageStatistics = {
       bucket_unix_ms: number
       requests: number
       total_tokens: number
+      cache_creation_tokens?: number
+      cache_read_tokens?: number
     }>
   }
 }

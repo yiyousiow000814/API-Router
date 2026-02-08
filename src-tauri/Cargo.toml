@@ -43,6 +43,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 urlencoding = "2"
 fastrand = "2"
 open = "5"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
