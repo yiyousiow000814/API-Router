@@ -52,6 +52,7 @@ type ProviderSchedulePeriod = {
 }
 
 type ProviderScheduleDraft = {
+  provider: string
   id: string
   startText: string
   endText: string
@@ -304,6 +305,7 @@ export default function App() {
   const autoSaveTimersRef = useRef<Record<string, number>>({})
   const usagePricingLastSavedSigRef = useRef<Record<string, string>>({})
   const usageScheduleLastSavedSigRef = useRef<string>('')
+  const usageScheduleLastSavedByProviderRef = useRef<Record<string, string>>({})
   const toastTimerRef = useRef<number | null>(null)
 
   const scrollToTop = useCallback(() => {
@@ -899,6 +901,7 @@ export default function App() {
   function scheduleRowsSignature(rows: ProviderScheduleDraft[]): string {
     return JSON.stringify(
       rows.map((row) => ({
+        provider: row.provider.trim(),
         id: row.id.trim(),
         start: row.startText.trim(),
         end: row.endText.trim(),
@@ -908,20 +911,64 @@ export default function App() {
     )
   }
 
+  function scheduleSignaturesByProvider(
+    rows: ProviderScheduleDraft[],
+    providerNames?: string[],
+  ): Record<string, string> {
+    const grouped: Record<string, ProviderScheduleDraft[]> = {}
+    for (const row of rows) {
+      const provider = row.provider.trim()
+      if (!provider) continue
+      if (!grouped[provider]) grouped[provider] = []
+      grouped[provider].push(row)
+    }
+    const providers = providerNames?.length
+      ? Array.from(new Set(providerNames))
+      : Object.keys(grouped)
+    const out: Record<string, string> = {}
+    providers.forEach((provider) => {
+      const providerRows = (grouped[provider] ?? [])
+        .map((row) => ({
+          id: row.id.trim(),
+          start: row.startText.trim(),
+          end: row.endText.trim(),
+          amount: row.amountText.trim(),
+          currency: normalizeCurrencyCode(row.currency),
+        }))
+        .sort((a, b) =>
+          a.start.localeCompare(b.start) ||
+          a.end.localeCompare(b.end) ||
+          a.id.localeCompare(b.id),
+        )
+      out[provider] = JSON.stringify(providerRows)
+    })
+    return out
+  }
+
   function parseScheduleRowsForSave(rows: ProviderScheduleDraft[]): {
     ok: true
-    periods: ProviderScheduleSaveInput[]
+    periodsByProvider: Record<string, ProviderScheduleSaveInput[]>
   } | { ok: false; reason: string } {
-    const parsed: ProviderScheduleSaveInput[] = []
+    const grouped: Record<string, ProviderScheduleSaveInput[]> = {}
+    const apiKeyPeriodSet = new Set<string>()
 
     for (const row of rows) {
+      const provider = row.provider.trim()
+      if (!provider) return { ok: false, reason: 'provider is required' }
       const start = fromDateTimeLocalValue(row.startText)
       const end = fromDateTimeLocalValue(row.endText)
       const amount = parsePositiveAmount(row.amountText)
       if (!start || !end || !amount || start >= end) {
         return { ok: false, reason: 'complete each row with valid start, expires, and amount' }
       }
-      parsed.push({
+      const apiKeyLabel = providerApiKeyLabel(provider)
+      const apiKeyPeriodKey = `${apiKeyLabel}|${start}|${end}`
+      if (apiKeyLabel !== '-' && apiKeyPeriodSet.has(apiKeyPeriodKey)) {
+        return { ok: false, reason: `duplicate start/expires for API key ${apiKeyLabel}` }
+      }
+      apiKeyPeriodSet.add(apiKeyPeriodKey)
+      if (!grouped[provider]) grouped[provider] = []
+      grouped[provider].push({
         id: row.id.trim() || null,
         amount_usd: convertCurrencyToUsd(amount, row.currency),
         started_at_unix_ms: start,
@@ -929,13 +976,16 @@ export default function App() {
       })
     }
 
-    parsed.sort((a, b) => a.started_at_unix_ms - b.started_at_unix_ms)
-    for (let i = 1; i < parsed.length; i += 1) {
-      if (parsed[i - 1].ended_at_unix_ms > parsed[i].started_at_unix_ms) {
-        return { ok: false, reason: 'periods must not overlap' }
+    for (const provider of Object.keys(grouped)) {
+      const periods = grouped[provider]
+      periods.sort((a, b) => a.started_at_unix_ms - b.started_at_unix_ms)
+      for (let i = 1; i < periods.length; i += 1) {
+        if (periods[i - 1].ended_at_unix_ms > periods[i].started_at_unix_ms) {
+          return { ok: false, reason: `periods overlap for ${provider}` }
+        }
       }
     }
-    return { ok: true, periods: parsed }
+    return { ok: true, periodsByProvider: grouped }
   }
 
   function providerPreferredCurrency(providerName: string): string {
@@ -944,30 +994,39 @@ export default function App() {
     return normalizeCurrencyCode(cached)
   }
 
-  function scheduleDraftFromPeriod(
-    providerName: string,
-    period: ProviderSchedulePeriod,
-    fallbackCurrency?: string,
-  ): ProviderScheduleDraft {
-    const currency = fallbackCurrency ? normalizeCurrencyCode(fallbackCurrency) : providerPreferredCurrency(providerName)
-    return {
-      id: period.id,
-      startText: toDateTimeLocalValue(period.started_at_unix_ms),
-      endText: toDateTimeLocalValue(period.ended_at_unix_ms),
-      amountText: formatDraftAmount(convertUsdToCurrency(period.amount_usd, currency)),
-      currency,
+  function providerApiKeyLabel(providerName: string): string {
+    const keyPreview = config?.providers?.[providerName]?.key_preview?.trim()
+    if (keyPreview) return keyPreview
+    if (config?.providers?.[providerName]?.has_key) return 'set'
+    return '-'
+  }
+
+function scheduleDraftFromPeriod(
+  providerName: string,
+  period: ProviderSchedulePeriod,
+  fallbackCurrency?: string,
+): ProviderScheduleDraft {
+  const currency = fallbackCurrency ? normalizeCurrencyCode(fallbackCurrency) : providerPreferredCurrency(providerName)
+  return {
+    provider: providerName,
+    id: period.id,
+    startText: toDateTimeLocalValue(period.started_at_unix_ms),
+    endText: toDateTimeLocalValue(period.ended_at_unix_ms),
+    amountText: formatDraftAmount(convertUsdToCurrency(period.amount_usd, currency)),
+    currency,
     }
   }
 
-  function newScheduleDraft(providerName: string, seedAmountUsd?: number | null, seedCurrency?: string): ProviderScheduleDraft {
+function newScheduleDraft(providerName: string, seedAmountUsd?: number | null, seedCurrency?: string): ProviderScheduleDraft {
     const now = new Date()
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime()
     const end = start + 30 * 24 * 60 * 60 * 1000
     const currency = seedCurrency ? normalizeCurrencyCode(seedCurrency) : providerPreferredCurrency(providerName)
-    return {
-      id: '',
-      startText: toDateTimeLocalValue(start),
-      endText: toDateTimeLocalValue(end),
+  return {
+    provider: providerName,
+    id: '',
+    startText: toDateTimeLocalValue(start),
+    endText: toDateTimeLocalValue(end),
       amountText:
         seedAmountUsd && seedAmountUsd > 0
           ? formatDraftAmount(convertUsdToCurrency(seedAmountUsd, currency))
@@ -1078,15 +1137,42 @@ export default function App() {
     setUsageScheduleSaveState('idle')
     setUsageScheduleSaveError('')
     try {
-      const res = await invoke<{ ok: boolean; periods?: ProviderSchedulePeriod[] }>('get_provider_schedule', {
-        provider: providerName,
-      })
-      const periods = Array.isArray(res?.periods) ? res.periods : []
-      const rows = periods
-        .sort((a, b) => a.started_at_unix_ms - b.started_at_unix_ms)
-        .map((period) => scheduleDraftFromPeriod(providerName, period, seedCurrency))
+      const providers = Array.from(
+        new Set(
+          [providerName, ...usageScheduleProviderOptions].filter(
+            (name) => Boolean(name) && Boolean(config?.providers?.[name]),
+          ),
+        ),
+      )
+      const chunks = await Promise.all(
+        providers.map(async (provider) => {
+          const res = await invoke<{ ok: boolean; periods?: ProviderSchedulePeriod[] }>('get_provider_schedule', {
+            provider,
+          })
+          const periods = Array.isArray(res?.periods) ? res.periods : []
+          return { provider, periods }
+        }),
+      )
+      const rows = chunks
+        .flatMap(({ provider, periods }) =>
+          periods
+            .sort((a, b) => a.started_at_unix_ms - b.started_at_unix_ms)
+            .map((period) =>
+              scheduleDraftFromPeriod(
+                provider,
+                period,
+                provider === providerName && seedCurrency ? seedCurrency : providerPreferredCurrency(provider),
+              ),
+            ),
+        )
+        .sort((a, b) =>
+          a.provider.localeCompare(b.provider) ||
+          a.startText.localeCompare(b.startText) ||
+          a.endText.localeCompare(b.endText),
+        )
       setUsageScheduleRows(rows)
       usageScheduleLastSavedSigRef.current = scheduleRowsSignature(rows)
+      usageScheduleLastSavedByProviderRef.current = scheduleSignaturesByProvider(rows, providers)
       setUsageScheduleSaveState(rows.length > 0 ? 'saved' : 'idle')
       setUsageScheduleSaveError('')
     } catch (e) {
@@ -1094,6 +1180,7 @@ export default function App() {
       if (!keepVisible) {
         setUsageScheduleRows([])
         usageScheduleLastSavedSigRef.current = scheduleRowsSignature([])
+        usageScheduleLastSavedByProviderRef.current = {}
       }
       setUsageScheduleSaveState('idle')
       setUsageScheduleSaveError('')
@@ -1102,12 +1189,7 @@ export default function App() {
     }
   }
 
-  async function autoSaveUsageScheduleRows(
-    providerName: string,
-    rows: ProviderScheduleDraft[],
-    signature: string,
-  ) {
-    if (!providerName) return
+  async function autoSaveUsageScheduleRows(rows: ProviderScheduleDraft[], signature: string) {
     const parsed = parseScheduleRowsForSave(rows)
     if (!parsed.ok) {
       setUsageScheduleSaveState('invalid')
@@ -1118,10 +1200,20 @@ export default function App() {
     setUsageScheduleSaveState('saving')
     setUsageScheduleSaveError('')
     try {
-      await invoke('set_provider_schedule', {
-        provider: providerName,
-        periods: parsed.periods,
-      })
+      const prevByProvider = usageScheduleLastSavedByProviderRef.current
+      const nextByProvider = scheduleSignaturesByProvider(rows)
+      const providerNames = Array.from(new Set([...Object.keys(prevByProvider), ...Object.keys(nextByProvider)]))
+      for (const provider of providerNames) {
+        if (!config?.providers?.[provider]) continue
+        const prevSig = prevByProvider[provider] ?? '[]'
+        const nextSig = nextByProvider[provider] ?? '[]'
+        if (prevSig === nextSig) continue
+        await invoke('set_provider_schedule', {
+          provider,
+          periods: parsed.periodsByProvider[provider] ?? [],
+        })
+      }
+      usageScheduleLastSavedByProviderRef.current = nextByProvider
       usageScheduleLastSavedSigRef.current = signature
       setUsageScheduleSaveState('saved')
       setUsageScheduleSaveError('')
@@ -1154,7 +1246,21 @@ export default function App() {
   async function activatePackageTotalMode(providerName: string, draft: UsagePricingDraft): Promise<boolean> {
     const providerCfg = config?.providers?.[providerName]
     if (!providerCfg) return false
-    const amountUsd = resolvePricingAmountUsd(draft, providerCfg.manual_pricing_amount_usd ?? null)
+    let amountUsd = resolvePricingAmountUsd(draft, providerCfg.manual_pricing_amount_usd ?? null)
+    if (amountUsd == null) {
+      try {
+        const res = await invoke<{ ok: boolean; periods?: ProviderSchedulePeriod[] }>('get_provider_schedule', {
+          provider: providerName,
+        })
+        const periods = Array.isArray(res?.periods) ? res.periods : []
+        const latest = periods
+          .filter((period) => Number.isFinite(period.amount_usd) && period.amount_usd > 0)
+          .sort((a, b) => b.started_at_unix_ms - a.started_at_unix_ms)[0]
+        if (latest) amountUsd = latest.amount_usd
+      } catch {
+        // Ignore read failure and fall through to idle state.
+      }
+    }
     if (amountUsd == null) {
       setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'idle' }))
       return false
@@ -2303,7 +2409,7 @@ export default function App() {
   }, [usageScheduleCurrencyMenu])
 
   useEffect(() => {
-    if (!usageScheduleModalOpen || usageScheduleLoading || !usageScheduleProvider || usageScheduleSaving) {
+    if (!usageScheduleModalOpen || usageScheduleLoading || usageScheduleSaving) {
       return
     }
     const signature = scheduleRowsSignature(usageScheduleRows)
@@ -2317,7 +2423,7 @@ export default function App() {
       return
     }
     queueAutoSaveTimer('schedule:rows', () => {
-      void autoSaveUsageScheduleRows(usageScheduleProvider, usageScheduleRows, signature)
+      void autoSaveUsageScheduleRows(usageScheduleRows, signature)
     })
     return () => {
       clearAutoSaveTimer('schedule:rows')
@@ -2325,7 +2431,6 @@ export default function App() {
   }, [
     usageScheduleModalOpen,
     usageScheduleLoading,
-    usageScheduleProvider,
     usageScheduleRows,
     usageScheduleSaving,
     usageScheduleSaveState,
@@ -3631,7 +3736,10 @@ requires_openai_auth = true`}
                       key={`pricing-${row.provider}`}
                       className={`aoUsagePricingRow${scheduleManaged ? ' is-scheduled' : ''}`}
                     >
-                      <div className="aoUsagePricingProvider">{row.provider}</div>
+                      <div className="aoUsagePricingProviderWrap">
+                        <div className="aoUsagePricingProvider">{row.provider}</div>
+                        <div className="aoHint aoUsagePricingKeyHint">key: {providerApiKeyLabel(row.provider)}</div>
+                      </div>
                       <select
                         className="aoSelect aoUsagePricingSelect aoUsagePricingMode"
                         value={mode}
@@ -3651,7 +3759,13 @@ requires_openai_auth = true`}
                             queueUsagePricingAutoSave(row.provider, nextDraft)
                           } else {
                             clearAutoSaveTimer(`pricing:${row.provider}`)
-                            void activatePackageTotalMode(row.provider, nextDraft)
+                            void (async () => {
+                              await activatePackageTotalMode(row.provider, nextDraft)
+                              await openUsageScheduleModal(
+                                row.provider,
+                                providerPreferredCurrency(row.provider),
+                              )
+                            })()
                           }
                         }}
                       >
@@ -3842,6 +3956,7 @@ requires_openai_auth = true`}
             closeUsageScheduleCurrencyMenu()
             clearAutoSaveTimer('schedule:rows')
             setUsageScheduleSaveState('idle')
+            setUsageScheduleSaveError('')
             setUsageScheduleModalOpen(false)
           }}
         >
@@ -3850,7 +3965,7 @@ requires_openai_auth = true`}
               <div>
                 <div className="aoModalTitle">Scheduled Period History</div>
                 <div className="aoModalSub">
-                  Provider: {usageScheduleProvider || '-'} . Define fixed package periods with explicit start/expires.
+                  Define fixed package periods with explicit start/expires across providers.
                 </div>
               </div>
               <button
@@ -3859,6 +3974,7 @@ requires_openai_auth = true`}
                   closeUsageScheduleCurrencyMenu()
                   clearAutoSaveTimer('schedule:rows')
                   setUsageScheduleSaveState('idle')
+                  setUsageScheduleSaveError('')
                   setUsageScheduleModalOpen(false)
                 }}
               >
@@ -3866,34 +3982,14 @@ requires_openai_auth = true`}
               </button>
             </div>
             <div className="aoModalBody">
-              {usageScheduleProviderOptions.length > 1 ? (
-                <div className="aoUsageScheduleProviderPicker">
-                  <span className="aoMiniLabel">Provider</span>
-                  <select
-                    className="aoSelect"
-                    value={usageScheduleProvider}
-                    onChange={(e) =>
-                      void openUsageScheduleModal(
-                        e.target.value,
-                        providerPreferredCurrency(e.target.value),
-                        { keepVisible: true },
-                      )
-                    }
-                  >
-                    {usageScheduleProviderOptions.map((providerName) => (
-                      <option key={`schedule-provider-${providerName}`} value={providerName}>
-                        {providerName}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ) : null}
               {usageScheduleLoading ? (
                 <div className="aoHint">Loading...</div>
               ) : (
                 <>
                   <table className="aoUsageScheduleTable">
                     <colgroup>
+                      <col className="aoUsageScheduleColProvider" />
+                      <col className="aoUsageScheduleColApiKey" />
                       <col className="aoUsageScheduleColStart" />
                       <col className="aoUsageScheduleColExpires" />
                       <col className="aoUsageScheduleColAmount" />
@@ -3902,6 +3998,8 @@ requires_openai_auth = true`}
                     </colgroup>
                     <thead>
                       <tr>
+                        <th>Provider</th>
+                        <th>API Key</th>
                         <th>Start</th>
                         <th>Expires</th>
                         <th>Amount</th>
@@ -3910,101 +4008,117 @@ requires_openai_auth = true`}
                       </tr>
                     </thead>
                     <tbody>
-                      {usageScheduleRows.map((row, index) => (
-                        <tr key={`${row.id || 'new'}-${index}`}>
-                          <td>
-                            <input
-                              className="aoInput aoUsageScheduleInput"
-                              type="datetime-local"
-                              value={row.startText}
-                              onChange={(e) => {
-                                setUsageScheduleSaveState('idle')
-                                setUsageScheduleRows((prev) =>
-                                  prev.map((item, i) =>
-                                    i === index ? { ...item, startText: e.target.value } : item,
-                                  ),
-                                )
-                              }}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="aoInput aoUsageScheduleInput"
-                              type="datetime-local"
-                              value={row.endText}
-                              onChange={(e) => {
-                                setUsageScheduleSaveState('idle')
-                                setUsageScheduleRows((prev) =>
-                                  prev.map((item, i) =>
-                                    i === index ? { ...item, endText: e.target.value } : item,
-                                  ),
-                                )
-                              }}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="aoInput aoUsageScheduleAmount"
-                              type="number"
-                              min="0"
-                              step="0.001"
-                              placeholder="0"
-                              value={row.amountText}
-                              onChange={(e) => {
-                                setUsageScheduleSaveState('idle')
-                                setUsageScheduleRows((prev) =>
-                                  prev.map((item, i) =>
-                                    i === index ? { ...item, amountText: e.target.value } : item,
-                                  ),
-                                )
-                              }}
-                            />
-                          </td>
-                          <td>
-                            <div className="aoUsageScheduleCurrencyWrap">
-                              <button
-                                type="button"
-                                className="aoSelect aoUsageScheduleCurrencyBtn"
-                                aria-haspopup="listbox"
-                                aria-expanded={usageScheduleCurrencyMenu?.rowIndex === index}
-                                onClick={(e) => {
-                                  const button = e.currentTarget
-                                  const rect = button.getBoundingClientRect()
-                                  setUsageScheduleCurrencyMenu((prev) => {
-                                    if (prev?.rowIndex === index) {
+                      {usageScheduleRows
+                        .map((row, index) => ({ row, index }))
+                        .sort((a, b) =>
+                          a.row.provider.localeCompare(b.row.provider) ||
+                          a.row.startText.localeCompare(b.row.startText) ||
+                          a.row.endText.localeCompare(b.row.endText),
+                        )
+                        .map(({ row, index }) => (
+                          <tr key={`${row.provider}-${row.id || 'new'}-${index}`}>
+                            <td>{row.provider}</td>
+                            <td>{providerApiKeyLabel(row.provider)}</td>
+                            <td>
+                              <input
+                                className="aoInput aoUsageScheduleInput"
+                                type="datetime-local"
+                                value={row.startText}
+                                onChange={(e) => {
+                                  setUsageScheduleSaveState('idle')
+                                  setUsageScheduleRows((prev) =>
+                                    prev.map((item, i) =>
+                                      i === index ? { ...item, startText: e.target.value } : item,
+                                    ),
+                                  )
+                                }}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                className="aoInput aoUsageScheduleInput"
+                                type="datetime-local"
+                                value={row.endText}
+                                onChange={(e) => {
+                                  setUsageScheduleSaveState('idle')
+                                  setUsageScheduleRows((prev) =>
+                                    prev.map((item, i) =>
+                                      i === index ? { ...item, endText: e.target.value } : item,
+                                    ),
+                                  )
+                                }}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                className="aoInput aoUsageScheduleAmount"
+                                type="number"
+                                min="0"
+                                step="0.001"
+                                placeholder="0"
+                                value={row.amountText}
+                                onChange={(e) => {
+                                  setUsageScheduleSaveState('idle')
+                                  setUsageScheduleRows((prev) =>
+                                    prev.map((item, i) =>
+                                      i === index ? { ...item, amountText: e.target.value } : item,
+                                    ),
+                                  )
+                                }}
+                              />
+                            </td>
+                            <td>
+                              <div className="aoUsageScheduleCurrencyWrap">
+                                <button
+                                  type="button"
+                                  className="aoSelect aoUsageScheduleCurrencyBtn"
+                                  aria-haspopup="listbox"
+                                  aria-expanded={usageScheduleCurrencyMenu?.rowIndex === index}
+                                  onClick={(e) => {
+                                    const button = e.currentTarget
+                                    const rect = button.getBoundingClientRect()
+                                    setUsageScheduleCurrencyMenu((prev) => {
+                                      if (prev?.rowIndex === index) {
+                                        setUsageScheduleCurrencyQuery('')
+                                        return null
+                                      }
                                       setUsageScheduleCurrencyQuery('')
-                                      return null
-                                    }
-                                    setUsageScheduleCurrencyQuery('')
-                                    return {
-                                      rowIndex: index,
-                                      left: Math.max(8, Math.round(rect.left)),
-                                      top: Math.round(rect.bottom + 4),
-                                      width: Math.round(rect.width),
-                                    }
-                                  })
+                                      return {
+                                        rowIndex: index,
+                                        left: Math.max(8, Math.round(rect.left)),
+                                        top: Math.round(rect.bottom + 4),
+                                        width: Math.round(rect.width),
+                                      }
+                                    })
+                                  }}
+                                >
+                                  <span>{currencyLabel(normalizeCurrencyCode(row.currency))}</span>
+                                  <span className="aoUsagePricingCurrencyChevron" aria-hidden="true">
+                                    ▼
+                                  </span>
+                                </button>
+                              </div>
+                            </td>
+                            <td>
+                              <button
+                                className="aoTinyBtn"
+                                onClick={() => {
+                                  setUsageScheduleSaveState('idle')
+                                  setUsageScheduleRows((prev) => prev.filter((_, i) => i !== index))
                                 }}
                               >
-                                <span>{currencyLabel(normalizeCurrencyCode(row.currency))}</span>
-                                <span className="aoUsagePricingCurrencyChevron" aria-hidden="true">
-                                  ▼
-                                </span>
+                                Delete
                               </button>
-                            </div>
-                          </td>
-                          <td>
-                            <button
-                              className="aoTinyBtn"
-                              onClick={() => {
-                                setUsageScheduleSaveState('idle')
-                                setUsageScheduleRows((prev) => prev.filter((_, i) => i !== index))
-                              }}
-                            >
-                              Delete
-                            </button>
+                            </td>
+                          </tr>
+                        ))}
+                      {usageScheduleRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={7}>
+                            <div className="aoHint">No scheduled periods yet. Click Add Period to create one.</div>
                           </td>
                         </tr>
-                      ))}
+                      ) : null}
                     </tbody>
                   </table>
                   <div className="aoUsageScheduleActions">
@@ -4012,13 +4126,20 @@ requires_openai_auth = true`}
                       className="aoTinyBtn"
                       onClick={() => {
                         setUsageScheduleSaveState('idle')
+                        const targetProvider =
+                          usageScheduleProviderOptions.includes(usageScheduleProvider)
+                            ? usageScheduleProvider
+                            : usageScheduleProviderOptions[0] ?? usageScheduleProvider
+                        if (!targetProvider) return
                         setUsageScheduleRows((prev) => {
-                          const lastAmount = parsePositiveAmount(prev[prev.length - 1]?.amountText ?? '')
-                          const lastCurrency = prev[prev.length - 1]?.currency
+                          const providerRows = prev.filter((item) => item.provider === targetProvider)
+                          const last = providerRows[providerRows.length - 1]
+                          const lastAmount = parsePositiveAmount(last?.amountText ?? '')
+                          const lastCurrency = last?.currency
                           const fallbackCurrency =
-                            lastCurrency ?? providerPreferredCurrency(usageScheduleProvider)
+                            lastCurrency ?? providerPreferredCurrency(targetProvider)
                           const providerAmountUsd =
-                            config?.providers?.[usageScheduleProvider]?.manual_pricing_amount_usd ?? null
+                            config?.providers?.[targetProvider]?.manual_pricing_amount_usd ?? null
                           const seedAmountUsd =
                             lastAmount != null
                               ? convertCurrencyToUsd(lastAmount, fallbackCurrency)
@@ -4026,7 +4147,7 @@ requires_openai_auth = true`}
                           return [
                             ...prev,
                             newScheduleDraft(
-                              usageScheduleProvider,
+                              targetProvider,
                               seedAmountUsd,
                               fallbackCurrency,
                             ),
@@ -4041,8 +4162,8 @@ requires_openai_auth = true`}
                     </span>
                   </div>
                   <div className="aoHint aoUsageScheduleHint">
-                    Scheduled period history is the source for monthly fee timelines. Editing here updates only the
-                    selected provider history.
+                    Scheduled period history is the source for monthly fee timelines. Editing here updates the listed
+                    provider rows only.
                   </div>
                 </>
               )}

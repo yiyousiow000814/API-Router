@@ -722,11 +722,11 @@
 .aoUsagePricingRow {
   display: grid;
   grid-template-columns:
-    minmax(98px, 116px)
-    180px
-    108px
-    78px
-    156px;
+    minmax(92px, 110px)
+    minmax(160px, 1fr)
+    minmax(96px, 108px)
+    72px
+    minmax(96px, 132px);
   gap: 6px;
   align-items: center;
   border: 1px solid rgba(13, 18, 32, 0.08);
@@ -736,7 +736,7 @@
 }
 
 .aoUsagePricingRow.is-scheduled {
-  grid-template-columns: minmax(98px, 116px) 180px auto;
+  grid-template-columns: minmax(92px, 110px) minmax(160px, 1fr) minmax(96px, 132px);
   justify-content: start;
 }
 
@@ -745,6 +745,18 @@
   font-size: 13px;
   font-weight: 700;
   color: rgba(13, 18, 32, 0.9);
+}
+
+.aoUsagePricingProviderWrap {
+  min-width: 0;
+}
+
+.aoUsagePricingKeyHint {
+  margin-top: 2px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .aoUsagePricingSelect,
@@ -799,7 +811,7 @@
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  min-width: 156px;
+  min-width: 96px;
   justify-self: end;
 }
 
@@ -1072,11 +1084,19 @@
 }
 
 .aoUsageScheduleColStart {
-  width: auto;
+  width: 232px;
 }
 
 .aoUsageScheduleColExpires {
-  width: auto;
+  width: 232px;
+}
+
+.aoUsageScheduleColProvider {
+  width: 92px;
+}
+
+.aoUsageScheduleColApiKey {
+  width: 126px;
 }
 
 .aoUsageScheduleColAmount {
@@ -1149,17 +1169,6 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-}
-
-.aoUsageScheduleProviderPicker {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 0 8px;
-}
-
-.aoUsageScheduleProviderPicker .aoSelect {
-  min-width: 180px;
 }
 
 .aoUsageScheduleAutosave {
@@ -3122,8 +3131,13 @@
 }
 
 .aoModalWide.aoUsagePricingModal {
-  width: min(640px, 92vw);
+  width: min(700px, 92vw);
   max-height: min(72vh, 720px);
+}
+
+.aoUsagePricingModal .aoModalBody {
+  overflow-x: hidden;
+  padding-right: 0;
 }
 
 .aoModalWide.aoUsageScheduleModal {
