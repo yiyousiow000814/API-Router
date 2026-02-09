@@ -29,6 +29,14 @@ type UsagePricingDraft = {
   currency: string
 }
 
+type UsagePricingGroup = {
+  id: string
+  providers: string[]
+  primaryProvider: string
+  displayName: string
+  keyLabel: string
+}
+
 type SpendHistoryRow = {
   provider: string
   day_key: string
@@ -276,6 +284,7 @@ export default function App() {
   const [usageHistoryLoading, setUsageHistoryLoading] = useState<boolean>(false)
   const [usagePricingCurrencyMenu, setUsagePricingCurrencyMenu] = useState<{
     provider: string
+    providers: string[]
     left: number
     top: number
     width: number
@@ -811,11 +820,17 @@ export default function App() {
     return code === 'CNY' ? 'RMB' : code
   }
 
-  function updateUsagePricingCurrency(providerName: string, draft: UsagePricingDraft, nextCurrency: string) {
+  function updateUsagePricingCurrency(
+    providerNames: string[],
+    draft: UsagePricingDraft,
+    nextCurrency: string,
+  ) {
     const raw = normalizeCurrencyCode(nextCurrency)
+    const nextProviders = providerNames.filter((providerName) => Boolean(config?.providers?.[providerName]))
+    if (!nextProviders.length) return
     let nextDraftForAutoSave: UsagePricingDraft | null = null
     setUsagePricingDrafts((prev) => {
-      const cur = prev[providerName] ?? draft
+      const cur = prev[nextProviders[0]] ?? draft
       const oldCurrency = normalizeCurrencyCode(cur.currency)
       const amountRaw = Number(cur.amountText)
       const nextAmount =
@@ -828,16 +843,19 @@ export default function App() {
         amountText: nextAmount,
       }
       nextDraftForAutoSave = nextDraft
-      return {
-        ...prev,
-        [providerName]: nextDraft,
-      }
+      const next = { ...prev }
+      nextProviders.forEach((providerName) => {
+        next[providerName] = nextDraft
+      })
+      return next
     })
     if (nextDraftForAutoSave) {
-      queueUsagePricingAutoSave(providerName, nextDraftForAutoSave)
+      queueUsagePricingAutoSaveForProviders(nextProviders, nextDraftForAutoSave)
     }
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(`${FX_CURRENCY_PREF_KEY_PREFIX}${providerName}`, raw)
+      nextProviders.forEach((providerName) => {
+        window.localStorage.setItem(`${FX_CURRENCY_PREF_KEY_PREFIX}${providerName}`, raw)
+      })
     }
   }
 
@@ -1318,7 +1336,26 @@ function newScheduleDraft(
     return null
   }
 
-  async function activatePackageTotalMode(providerName: string, draft: UsagePricingDraft): Promise<boolean> {
+  function setUsagePricingSaveStateForProviders(
+    providerNames: string[],
+    state: UsagePricingSaveState,
+  ) {
+    setUsagePricingSaveState((prev) => {
+      const next = { ...prev }
+      providerNames.forEach((providerName) => {
+        next[providerName] = state
+      })
+      return next
+    })
+  }
+
+  async function activatePackageTotalMode(
+    providerName: string,
+    draft: UsagePricingDraft,
+    options?: { skipRefresh?: boolean; silentError?: boolean },
+  ): Promise<boolean> {
+    const skipRefresh = options?.skipRefresh === true
+    const silentError = options?.silentError === true
     const providerCfg = config?.providers?.[providerName]
     if (!providerCfg) return false
     let amountUsd = resolvePricingAmountUsd(draft, providerCfg.manual_pricing_amount_usd ?? null)
@@ -1359,41 +1396,71 @@ function newScheduleDraft(
         amountText: formatDraftAmount(convertUsdToCurrency(amountUsd, draft.currency)),
       })
       setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saved' }))
-      await refreshConfig()
-      await refreshUsageStatistics({ silent: true })
+      if (!skipRefresh) {
+        await refreshConfig()
+        await refreshUsageStatistics({ silent: true })
+      }
       return true
     } catch (e) {
       setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'error' }))
-      flashToast(String(e), 'error')
+      if (!silentError) flashToast(String(e), 'error')
       return false
     }
   }
 
-  function queueUsagePricingAutoSave(providerName: string, draft: UsagePricingDraft) {
+  async function saveUsagePricingForProviders(
+    providerNames: string[],
+    draft: UsagePricingDraft,
+    options?: { silent?: boolean },
+  ): Promise<boolean> {
+    const silent = options?.silent === true
+    const targets = providerNames.filter((providerName) => Boolean(config?.providers?.[providerName]))
+    if (!targets.length) return false
+    let allOk = true
+    for (const providerName of targets) {
+      const ok = await saveUsagePricingRow(providerName, {
+        silent: true,
+        draftOverride: draft,
+        skipRefresh: true,
+      })
+      if (!ok) allOk = false
+    }
+    if (allOk) {
+      await refreshConfig()
+      await refreshUsageStatistics({ silent: true })
+      return true
+    }
+    if (!silent) flashToast('Failed to save linked pricing row', 'error')
+    return false
+  }
+
+  function queueUsagePricingAutoSaveForProviders(providerNames: string[], draft: UsagePricingDraft) {
     if (!usagePricingModalOpen) return
-    const providerCfg = config?.providers?.[providerName]
-    if (!providerCfg) return
+    const targets = providerNames.filter((providerName) => Boolean(config?.providers?.[providerName]))
+    if (!targets.length) return
     if (draft.mode === 'package_total') {
-      setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'idle' }))
+      setUsagePricingSaveStateForProviders(targets, 'idle')
       return
     }
     const signature = pricingDraftSignature(draft)
-    if (usagePricingLastSavedSigRef.current[providerName] === signature) {
-      setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saved' }))
+    if (targets.every((providerName) => usagePricingLastSavedSigRef.current[providerName] === signature)) {
+      setUsagePricingSaveStateForProviders(targets, 'saved')
       return
     }
-    const timerKey = `pricing:${providerName}`
+    const timerKey = `pricing:${targets.join('|')}`
     clearAutoSaveTimer(timerKey)
-    setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'idle' }))
+    setUsagePricingSaveStateForProviders(targets, 'idle')
     queueAutoSaveTimer(timerKey, () => {
       void (async () => {
-        setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saving' }))
-        const ok = await saveUsagePricingRow(providerName, { silent: true, draftOverride: draft })
+        setUsagePricingSaveStateForProviders(targets, 'saving')
+        const ok = await saveUsagePricingForProviders(targets, draft, { silent: true })
         if (ok) {
-          usagePricingLastSavedSigRef.current[providerName] = signature
-          setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saved' }))
+          targets.forEach((providerName) => {
+            usagePricingLastSavedSigRef.current[providerName] = signature
+          })
+          setUsagePricingSaveStateForProviders(targets, 'saved')
         } else {
-          setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'error' }))
+          setUsagePricingSaveStateForProviders(targets, 'error')
         }
       })()
     })
@@ -1401,14 +1468,18 @@ function newScheduleDraft(
 
   async function saveUsagePricingRow(
     providerName: string,
-    options?: { silent?: boolean; draftOverride?: UsagePricingDraft },
+    options?: { silent?: boolean; draftOverride?: UsagePricingDraft; skipRefresh?: boolean },
   ): Promise<boolean> {
     const silent = options?.silent === true
+    const skipRefresh = options?.skipRefresh === true
     const draft = options?.draftOverride ?? usagePricingDrafts[providerName]
     if (!draft) return false
     const mode = draft.mode
     if (mode === 'package_total') {
-      const activated = await activatePackageTotalMode(providerName, draft)
+      const activated = await activatePackageTotalMode(providerName, draft, {
+        skipRefresh,
+        silentError: silent,
+      })
       if (silent || !activated) return activated
       await openUsageScheduleModal(providerName, draft.currency)
       return true
@@ -1441,8 +1512,10 @@ function newScheduleDraft(
         amountUsd: null,
       })
       if (!silent) flashToast(`Pricing saved: ${providerName}`)
-      await refreshConfig()
-      await refreshUsageStatistics({ silent })
+      if (!skipRefresh) {
+        await refreshConfig()
+        await refreshUsageStatistics({ silent })
+      }
       return true
     } catch (e) {
       if (!silent) flashToast(String(e), 'error')
@@ -1626,6 +1699,29 @@ function newScheduleDraft(
       (name) => Boolean(name) && name !== 'official',
     )
   }, [config, orderedConfigProviders, providerSwitchStatus?.provider_options, status?.providers])
+  const providerGroupLabelByName = useMemo(() => {
+    const grouped = new Map<string, string[]>()
+    managedProviderNames.forEach((providerName) => {
+      const keyLabel = providerApiKeyLabel(providerName).trim()
+      if (!keyLabel || keyLabel === '-' || keyLabel === 'set') return
+      const names = grouped.get(keyLabel) ?? []
+      names.push(providerName)
+      grouped.set(keyLabel, names)
+    })
+    const labels: Record<string, string> = {}
+    grouped.forEach((names) => {
+      if (names.length < 2) return
+      const merged = names.join(' / ')
+      names.forEach((name) => {
+        labels[name] = merged
+      })
+    })
+    return labels
+  }, [managedProviderNames, config])
+
+  function providerDisplayName(providerName: string): string {
+    return providerGroupLabelByName[providerName] ?? providerName
+  }
 
   const switchboardProviderCards = useMemo(() => {
     return managedProviderNames.map((name) => {
@@ -1770,6 +1866,29 @@ function newScheduleDraft(
     }
   }, [usageByProvider])
   const usagePricingProviderNames = managedProviderNames
+  const usagePricingGroups = useMemo<UsagePricingGroup[]>(() => {
+    const groups = new Map<string, string[]>()
+    usagePricingProviderNames.forEach((providerName) => {
+      const keyLabel = providerApiKeyLabel(providerName).trim()
+      const groupKey =
+        keyLabel && keyLabel !== '-' && keyLabel !== 'set'
+          ? `key:${keyLabel}`
+          : `provider:${providerName}`
+      const members = groups.get(groupKey) ?? []
+      members.push(providerName)
+      groups.set(groupKey, members)
+    })
+    return Array.from(groups.values()).map((providers) => {
+      const primaryProvider = providers[0]
+      return {
+        id: providers.join('|'),
+        providers,
+        primaryProvider,
+        displayName: providers.join(' / '),
+        keyLabel: providerApiKeyLabel(primaryProvider),
+      }
+    })
+  }, [usagePricingProviderNames, config])
   const usageScheduleProviderOptions = managedProviderNames
   const usageScheduleSaveStatusText = useMemo(() => {
     if (usageScheduleSaveState === 'saving') return 'Auto-saving...'
@@ -3910,17 +4029,19 @@ requires_openai_auth = true`}
                 FX rates date: {fxRatesDate || 'loading'} (daily update)
               </div>
               <div className="aoUsagePricingGrid">
-                {usagePricingProviderNames.map((providerName) => {
+                {usagePricingGroups.map((group) => {
+                  const providerName = group.primaryProvider
                   const providerCfg = config?.providers?.[providerName]
                   const draft = usagePricingDrafts[providerName] ?? buildUsagePricingDraft(providerName, providerCfg)
                   const mode = draft.mode
                   const scheduleManaged = mode === 'package_total'
                   const amountDisabled = !providerCfg || mode === 'none' || scheduleManaged
+                  const groupState = usagePricingSaveState[providerName] ?? 'idle'
                   return (
-                    <div key={`pricing-${providerName}`} className="aoUsagePricingRow">
+                    <div key={`pricing-${group.id}`} className="aoUsagePricingRow">
                       <div className="aoUsagePricingProviderWrap">
-                        <div className="aoUsagePricingProvider">{providerName}</div>
-                        <div className="aoHint aoUsagePricingKeyHint">key: {providerApiKeyLabel(providerName)}</div>
+                        <div className="aoUsagePricingProvider">{group.displayName}</div>
+                        <div className="aoHint aoUsagePricingKeyHint">key: {group.keyLabel}</div>
                       </div>
                       <select
                         className="aoSelect aoUsagePricingSelect aoUsagePricingMode"
@@ -3933,18 +4054,31 @@ requires_openai_auth = true`}
                             mode: nextMode,
                             amountText: nextMode === 'none' ? '' : draft.amountText,
                           }
-                          setUsagePricingDrafts((prev) => ({
-                            ...prev,
-                            [providerName]: nextDraft,
-                          }))
+                          setUsagePricingDrafts((prev) => {
+                            const next = { ...prev }
+                            group.providers.forEach((name) => {
+                              next[name] = nextDraft
+                            })
+                            return next
+                          })
                           if (nextMode !== 'package_total') {
-                            queueUsagePricingAutoSave(providerName, nextDraft)
+                            queueUsagePricingAutoSaveForProviders(group.providers, nextDraft)
                           } else {
-                            clearAutoSaveTimer(`pricing:${providerName}`)
+                            clearAutoSaveTimer(`pricing:${group.id}`)
+                            setUsagePricingSaveStateForProviders(group.providers, 'saving')
                             void (async () => {
-                              const activated = await activatePackageTotalMode(providerName, nextDraft)
+                              const activated = await saveUsagePricingForProviders(group.providers, nextDraft, {
+                                silent: true,
+                              })
                               if (!activated) {
                                 await openUsageScheduleModal(providerName, providerPreferredCurrency(providerName))
+                                setUsagePricingSaveStateForProviders(group.providers, 'error')
+                              } else {
+                                const signature = pricingDraftSignature(nextDraft)
+                                group.providers.forEach((name) => {
+                                  usagePricingLastSavedSigRef.current[name] = signature
+                                })
+                                setUsagePricingSaveStateForProviders(group.providers, 'saved')
                               }
                             })()
                           }
@@ -3985,11 +4119,14 @@ requires_openai_auth = true`}
                                 ...draft,
                                 amountText: e.target.value,
                               }
-                              setUsagePricingDrafts((prev) => ({
-                                ...prev,
-                                [providerName]: nextDraft,
-                              }))
-                              queueUsagePricingAutoSave(providerName, nextDraft)
+                              setUsagePricingDrafts((prev) => {
+                                const next = { ...prev }
+                                group.providers.forEach((name) => {
+                                  next[name] = nextDraft
+                                })
+                                return next
+                              })
+                              queueUsagePricingAutoSaveForProviders(group.providers, nextDraft)
                             }}
                           />
                           <div className="aoUsagePricingCurrencyWrap">
@@ -4010,6 +4147,7 @@ requires_openai_auth = true`}
                                   setUsagePricingCurrencyQuery('')
                                   return {
                                     provider: providerName,
+                                    providers: group.providers,
                                     left: Math.max(8, Math.round(rect.left)),
                                     top: Math.round(rect.bottom + 4),
                                     width: Math.round(rect.width),
@@ -4028,14 +4166,14 @@ requires_openai_auth = true`}
                       <div className="aoUsagePricingActions">
                         <span
                           className={`aoHint aoUsagePricingAutosave aoUsagePricingAutosave-${
-                            usagePricingSaveState[providerName] ?? 'idle'
+                            groupState
                           }`}
                         >
-                          {usagePricingSaveState[providerName] === 'saving'
+                          {groupState === 'saving'
                             ? 'Auto-saving...'
-                            : usagePricingSaveState[providerName] === 'saved'
+                            : groupState === 'saved'
                               ? 'Auto-saved'
-                              : usagePricingSaveState[providerName] === 'error'
+                              : groupState === 'error'
                                 ? 'Auto-save failed'
                                 : 'Auto-save'}
                         </span>
@@ -4049,8 +4187,8 @@ requires_openai_auth = true`}
                 credit after scheduled expiry.
               </div>
               <div className="aoHint">
-                Pricing scope is per provider. If one upstream uses different API keys with different pricing, add
-                separate providers for each key.
+                Providers sharing the same API key are linked as one row in Usage editing. Other pages still keep
+                provider-level separation.
               </div>
             </div>
           </div>
@@ -4059,6 +4197,9 @@ requires_openai_auth = true`}
                 (() => {
                   const providerName = usagePricingCurrencyMenu.provider
                   if (!usagePricingProviderNames.includes(providerName)) return null
+                  const providerNames = (usagePricingCurrencyMenu.providers ?? [])
+                    .filter((name) => usagePricingProviderNames.includes(name))
+                  const targets = providerNames.length ? providerNames : [providerName]
                   const providerCfg = config?.providers?.[providerName]
                   const draft =
                     usagePricingDrafts[providerName] ?? buildUsagePricingDraft(providerName, providerCfg)
@@ -4102,7 +4243,7 @@ requires_openai_auth = true`}
                             key={currencyCode}
                             className={`aoUsagePricingCurrencyItem${isActive ? ' is-active' : ''}`}
                             onClick={() => {
-                              updateUsagePricingCurrency(providerName, draft, normalized)
+                              updateUsagePricingCurrency(targets, draft, normalized)
                               closeUsagePricingCurrencyMenu()
                             }}
                           >
@@ -4194,7 +4335,7 @@ requires_openai_auth = true`}
                         )
                         .map(({ row, index }) => (
                           <tr key={`${row.provider}-${row.id || 'new'}-${index}`}>
-                            <td>{row.provider}</td>
+                            <td>{providerDisplayName(row.provider)}</td>
                             <td>{row.apiKeyRef || providerApiKeyLabel(row.provider)}</td>
                             <td>
                               <select
