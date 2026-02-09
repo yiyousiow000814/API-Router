@@ -69,6 +69,7 @@ type ProviderSchedulePeriod = {
 
 type ProviderScheduleDraft = {
   provider: string
+  groupProviders: string[]
   id: string
   mode: PricingTimelineMode
   apiKeyRef: string
@@ -928,10 +929,12 @@ export default function App() {
     return n
   }
 
-  function scheduleRowsSignature(rows: ProviderScheduleDraft[]): string {
+function scheduleRowsSignature(rows: ProviderScheduleDraft[]): string {
     return JSON.stringify(
       rows.map((row) => ({
         provider: row.provider.trim(),
+        groupProviders: Array.from(new Set((row.groupProviders ?? []).map((name) => name.trim()).filter(Boolean)))
+          .sort(),
         id: row.id.trim(),
         mode: row.mode,
         apiKeyRef: row.apiKeyRef.trim(),
@@ -949,10 +952,18 @@ export default function App() {
   ): Record<string, string> {
     const grouped: Record<string, ProviderScheduleDraft[]> = {}
     for (const row of rows) {
-      const provider = row.provider.trim()
-      if (!provider) continue
-      if (!grouped[provider]) grouped[provider] = []
-      grouped[provider].push(row)
+      const targets = Array.from(
+        new Set(
+          [row.provider, ...(row.groupProviders ?? [])]
+            .map((name) => name.trim())
+            .filter(Boolean),
+        ),
+      )
+      if (!targets.length) continue
+      targets.forEach((provider) => {
+        if (!grouped[provider]) grouped[provider] = []
+        grouped[provider].push(row)
+      })
     }
     const providers = providerNames?.length
       ? Array.from(new Set(providerNames))
@@ -984,11 +995,18 @@ export default function App() {
     periodsByProvider: Record<string, ProviderScheduleSaveInput[]>
   } | { ok: false; reason: string } {
     const grouped: Record<string, ProviderScheduleSaveInput[]> = {}
+    const dedupeByProvider: Record<string, Set<string>> = {}
     const apiKeyPeriodSet = new Set<string>()
 
     for (const row of rows) {
-      const provider = row.provider.trim()
-      if (!provider) return { ok: false, reason: 'provider is required' }
+      const providers = Array.from(
+        new Set(
+          [row.provider, ...(row.groupProviders ?? [])]
+            .map((name) => name.trim())
+            .filter(Boolean),
+        ),
+      )
+      if (!providers.length) return { ok: false, reason: 'provider is required' }
       if (row.mode !== 'package_total' && row.mode !== 'per_request') {
         return { ok: false, reason: 'mode must be monthly fee or $/request' }
       }
@@ -1004,21 +1022,28 @@ export default function App() {
       if (end != null && start >= end) {
         return { ok: false, reason: 'each row start must be earlier than expires' }
       }
-      const apiKeyLabel = row.apiKeyRef.trim() || providerApiKeyLabel(provider)
+      const apiKeyLabel = row.apiKeyRef.trim() || providerApiKeyLabel(providers[0])
       const endKey = end == null ? 'open' : String(end)
       const apiKeyPeriodKey = `${apiKeyLabel}|${start}|${endKey}`
       if (apiKeyLabel !== '-' && apiKeyPeriodSet.has(apiKeyPeriodKey)) {
         return { ok: false, reason: `duplicate start/expires for API key ${apiKeyLabel}` }
       }
       apiKeyPeriodSet.add(apiKeyPeriodKey)
-      if (!grouped[provider]) grouped[provider] = []
-      grouped[provider].push({
-        id: row.id.trim() || null,
-        mode: row.mode,
-        amount_usd: convertCurrencyToUsd(amount, row.currency),
-        api_key_ref: apiKeyLabel,
-        started_at_unix_ms: start,
-        ended_at_unix_ms: end ?? undefined,
+      const amountUsd = convertCurrencyToUsd(amount, row.currency)
+      const dedupeKey = `${row.mode}|${apiKeyLabel}|${start}|${endKey}|${amountUsd.toFixed(8)}`
+      providers.forEach((provider) => {
+        if (!grouped[provider]) grouped[provider] = []
+        if (!dedupeByProvider[provider]) dedupeByProvider[provider] = new Set<string>()
+        if (dedupeByProvider[provider].has(dedupeKey)) return
+        dedupeByProvider[provider].add(dedupeKey)
+        grouped[provider].push({
+          id: row.id.trim() || null,
+          mode: row.mode,
+          amount_usd: amountUsd,
+          api_key_ref: apiKeyLabel,
+          started_at_unix_ms: start,
+          ended_at_unix_ms: end ?? undefined,
+        })
       })
     }
 
@@ -1052,6 +1077,7 @@ function scheduleDraftFromPeriod(
   providerName: string,
   period: ProviderSchedulePeriod,
   fallbackCurrency?: string,
+  groupProviders?: string[],
 ): ProviderScheduleDraft {
   const currency = fallbackCurrency ? normalizeCurrencyCode(fallbackCurrency) : providerPreferredCurrency(providerName)
   const mode: PricingTimelineMode = period.mode === 'per_request' ? 'per_request' : 'package_total'
@@ -1062,6 +1088,7 @@ function scheduleDraftFromPeriod(
   const endMs = period.ended_at_unix_ms ?? fallbackEndMs
   return {
     provider: providerName,
+    groupProviders: (groupProviders?.length ? groupProviders : [providerName]).filter(Boolean),
     id: period.id,
     mode,
     apiKeyRef: (period.api_key_ref ?? providerApiKeyLabel(providerName)).trim() || providerApiKeyLabel(providerName),
@@ -1077,6 +1104,7 @@ function newScheduleDraft(
   seedAmountUsd?: number | null,
   seedCurrency?: string,
   seedMode: PricingTimelineMode = 'package_total',
+  groupProviders?: string[],
 ): ProviderScheduleDraft {
     const now = new Date()
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime()
@@ -1084,6 +1112,7 @@ function newScheduleDraft(
     const currency = seedCurrency ? normalizeCurrencyCode(seedCurrency) : providerPreferredCurrency(providerName)
   return {
     provider: providerName,
+    groupProviders: (groupProviders?.length ? groupProviders : [providerName]).filter(Boolean),
     id: '',
     mode: seedMode,
     apiKeyRef: providerApiKeyLabel(providerName),
@@ -1246,23 +1275,48 @@ function newScheduleDraft(
           return { provider, periods }
         }),
       )
-      const rows = chunks
-        .flatMap(({ provider, periods }) =>
-          periods
-            .sort((a, b) => a.started_at_unix_ms - b.started_at_unix_ms)
-            .map((period) =>
+      const rowsByKey = new Map<string, ProviderScheduleDraft>()
+      chunks.forEach(({ provider, periods }) => {
+        const preferredCurrency =
+          provider === providerName && seedCurrency ? seedCurrency : providerPreferredCurrency(provider)
+        periods
+          .sort((a, b) => a.started_at_unix_ms - b.started_at_unix_ms)
+          .forEach((period) => {
+            const apiKeyRef = (period.api_key_ref ?? providerApiKeyLabel(provider)).trim() || providerApiKeyLabel(provider)
+            const linkedProviders = linkedProvidersForApiKey(apiKeyRef, provider)
+            const canonicalProvider = linkedProviders[0] ?? provider
+            const endMs = period.ended_at_unix_ms ?? null
+            const dedupeKey = [
+              apiKeyRef,
+              period.mode ?? 'package_total',
+              String(period.started_at_unix_ms),
+              String(endMs ?? 'open'),
+              Number.isFinite(period.amount_usd) ? period.amount_usd.toFixed(8) : String(period.amount_usd),
+            ].join('|')
+            const existing = rowsByKey.get(dedupeKey)
+            if (existing) {
+              const mergedProviders = Array.from(
+                new Set([...existing.groupProviders, ...linkedProviders, provider].filter(Boolean)),
+              )
+              rowsByKey.set(dedupeKey, { ...existing, groupProviders: mergedProviders })
+              return
+            }
+            rowsByKey.set(
+              dedupeKey,
               scheduleDraftFromPeriod(
-                provider,
+                canonicalProvider,
                 period,
-                provider === providerName && seedCurrency ? seedCurrency : providerPreferredCurrency(provider),
+                preferredCurrency,
+                linkedProviders,
               ),
-            ),
-        )
-        .sort((a, b) =>
-          a.provider.localeCompare(b.provider) ||
-          a.startText.localeCompare(b.startText) ||
-          a.endText.localeCompare(b.endText),
-        )
+            )
+          })
+      })
+      const rows = Array.from(rowsByKey.values()).sort((a, b) =>
+        a.provider.localeCompare(b.provider) ||
+        a.startText.localeCompare(b.startText) ||
+        a.endText.localeCompare(b.endText),
+      )
       setUsageScheduleRows(rows)
       usageScheduleLastSavedSigRef.current = scheduleRowsSignature(rows)
       usageScheduleLastSavedByProviderRef.current = scheduleSignaturesByProvider(rows, providers)
@@ -1358,34 +1412,56 @@ function newScheduleDraft(
     const silentError = options?.silentError === true
     const providerCfg = config?.providers?.[providerName]
     if (!providerCfg) return false
-    let amountUsd = resolvePricingAmountUsd(draft, providerCfg.manual_pricing_amount_usd ?? null)
-    if (amountUsd == null) {
-      try {
-        const res = await invoke<{ ok: boolean; periods?: ProviderSchedulePeriod[] }>('get_provider_timeline', {
-          provider: providerName,
-        })
-        const periods = Array.isArray(res?.periods) ? res.periods : []
-        const latest = periods
-          .filter((period) => (period.mode ?? 'package_total') === 'package_total')
-          .filter((period) => Number.isFinite(period.amount_usd) && period.amount_usd > 0)
-          .sort((a, b) => b.started_at_unix_ms - a.started_at_unix_ms)[0]
-        if (latest) amountUsd = latest.amount_usd
-      } catch {
-        // Ignore read failure and fall through to idle state.
-      }
+    const now = Date.now()
+    let timelinePeriods: ProviderSchedulePeriod[] = []
+    try {
+      const res = await invoke<{ ok: boolean; periods?: ProviderSchedulePeriod[] }>('get_provider_timeline', {
+        provider: providerName,
+      })
+      timelinePeriods = Array.isArray(res?.periods) ? res.periods : []
+    } catch {
+      timelinePeriods = []
     }
+
+    const packagePeriods = timelinePeriods
+      .filter((period) => (period.mode ?? 'package_total') === 'package_total')
+      .filter((period) => Number.isFinite(period.amount_usd) && period.amount_usd > 0)
+      .sort((a, b) => b.started_at_unix_ms - a.started_at_unix_ms)
+    const activePackage = packagePeriods.find((period) => {
+      const starts = period.started_at_unix_ms <= now
+      const notEnded = period.ended_at_unix_ms == null || now < period.ended_at_unix_ms
+      return starts && notEnded
+    })
+    const upcomingPackage = packagePeriods.find((period) => period.started_at_unix_ms > now)
+
+    let amountUsd = resolvePricingAmountUsd(draft, providerCfg.manual_pricing_amount_usd ?? null)
+    if (amountUsd == null && packagePeriods.length > 0) amountUsd = packagePeriods[0].amount_usd
     if (amountUsd == null) {
       setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'idle' }))
       return false
     }
     setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saving' }))
     try {
-      await invoke('set_provider_manual_pricing', {
-        provider: providerName,
-        mode: 'package_total',
-        amountUsd,
-        packageExpiresAtUnixMs: null,
-      })
+      if (activePackage || upcomingPackage) {
+        await invoke('set_provider_timeline', {
+          provider: providerName,
+          periods: timelinePeriods.map((period) => ({
+            id: period.id,
+            mode: (period.mode ?? 'package_total') as PricingTimelineMode,
+            amount_usd: period.amount_usd,
+            api_key_ref: period.api_key_ref ?? providerApiKeyLabel(providerName),
+            started_at_unix_ms: period.started_at_unix_ms,
+            ended_at_unix_ms: period.ended_at_unix_ms ?? undefined,
+          })),
+        })
+      } else {
+        await invoke('set_provider_manual_pricing', {
+          provider: providerName,
+          mode: 'package_total',
+          amountUsd,
+          packageExpiresAtUnixMs: null,
+        })
+      }
       await invoke('set_provider_gap_fill', {
         provider: providerName,
         mode: 'none',
@@ -1416,11 +1492,41 @@ function newScheduleDraft(
     const silent = options?.silent === true
     const targets = providerNames.filter((providerName) => Boolean(config?.providers?.[providerName]))
     if (!targets.length) return false
+    let draftForSave = draft
+    if (draft.mode === 'package_total') {
+      let sharedAmountUsd = resolvePricingAmountUsd(draft, null)
+      if (sharedAmountUsd == null) {
+        for (const providerName of targets) {
+          try {
+            const res = await invoke<{ ok: boolean; periods?: ProviderSchedulePeriod[] }>('get_provider_timeline', {
+              provider: providerName,
+            })
+            const periods = Array.isArray(res?.periods) ? res.periods : []
+            const latest = periods
+              .filter((period) => (period.mode ?? 'package_total') === 'package_total')
+              .filter((period) => Number.isFinite(period.amount_usd) && period.amount_usd > 0)
+              .sort((a, b) => b.started_at_unix_ms - a.started_at_unix_ms)[0]
+            if (latest) {
+              sharedAmountUsd = latest.amount_usd
+              break
+            }
+          } catch {
+            // Ignore read failure and continue other providers.
+          }
+        }
+      }
+      if (sharedAmountUsd != null) {
+        draftForSave = {
+          ...draft,
+          amountText: formatDraftAmount(convertUsdToCurrency(sharedAmountUsd, draft.currency)),
+        }
+      }
+    }
     let allOk = true
     for (const providerName of targets) {
       const ok = await saveUsagePricingRow(providerName, {
         silent: true,
-        draftOverride: draft,
+        draftOverride: draftForSave,
         skipRefresh: true,
       })
       if (!ok) allOk = false
@@ -1723,6 +1829,26 @@ function newScheduleDraft(
     return providerGroupLabelByName[providerName] ?? providerName
   }
 
+  const providerNamesByKeyLabel = useMemo(() => {
+    const grouped = new Map<string, string[]>()
+    managedProviderNames.forEach((providerName) => {
+      const keyLabel = providerApiKeyLabel(providerName).trim()
+      if (!keyLabel || keyLabel === '-' || keyLabel === 'set') return
+      const names = grouped.get(keyLabel) ?? []
+      names.push(providerName)
+      grouped.set(keyLabel, names)
+    })
+    return grouped
+  }, [managedProviderNames, config])
+
+  function linkedProvidersForApiKey(apiKeyRef: string, fallbackProvider: string): string[] {
+    const key = apiKeyRef.trim()
+    if (!key || key === '-' || key === 'set') return [fallbackProvider]
+    const linked = providerNamesByKeyLabel.get(key) ?? []
+    const unique = Array.from(new Set([...linked, fallbackProvider].filter(Boolean)))
+    return unique.length ? unique : [fallbackProvider]
+  }
+
   const switchboardProviderCards = useMemo(() => {
     return managedProviderNames.map((name) => {
       const providerCfg = config?.providers?.[name]
@@ -1867,6 +1993,12 @@ function newScheduleDraft(
   }, [usageByProvider])
   const usagePricingProviderNames = managedProviderNames
   const usagePricingGroups = useMemo<UsagePricingGroup[]>(() => {
+    const modePriority = (providerName: string) => {
+      const mode = (config?.providers?.[providerName]?.manual_pricing_mode ?? 'none') as UsagePricingMode
+      if (mode === 'package_total') return 2
+      if (mode === 'per_request') return 1
+      return 0
+    }
     const groups = new Map<string, string[]>()
     usagePricingProviderNames.forEach((providerName) => {
       const keyLabel = providerApiKeyLabel(providerName).trim()
@@ -1879,7 +2011,8 @@ function newScheduleDraft(
       groups.set(groupKey, members)
     })
     return Array.from(groups.values()).map((providers) => {
-      const primaryProvider = providers[0]
+      const primaryProvider =
+        [...providers].sort((a, b) => modePriority(b) - modePriority(a) || a.localeCompare(b))[0] ?? providers[0]
       return {
         id: providers.join('|'),
         providers,
@@ -4484,6 +4617,10 @@ requires_openai_auth = true`}
                             'package_total') as UsagePricingMode
                           const seedMode: PricingTimelineMode =
                             providerMode === 'per_request' ? 'per_request' : 'package_total'
+                          const linkedProviders = linkedProvidersForApiKey(
+                            providerApiKeyLabel(targetProvider),
+                            targetProvider,
+                          )
                           return [
                             ...prev,
                             newScheduleDraft(
@@ -4491,6 +4628,7 @@ requires_openai_auth = true`}
                               seedAmountUsd,
                               fallbackCurrency,
                               seedMode,
+                              linkedProviders,
                             ),
                           ]
                         })

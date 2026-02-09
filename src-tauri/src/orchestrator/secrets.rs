@@ -309,7 +309,10 @@ impl SecretStore {
             .iter()
             .filter(|period| {
                 let starts = period.started_at_unix_ms <= now;
-                let not_ended = period.ended_at_unix_ms.is_none_or(|end| now < end);
+                let not_ended = match period.ended_at_unix_ms {
+                    Some(end) => now < end,
+                    None => true,
+                };
                 starts && not_ended
             })
             .max_by_key(|period| period.started_at_unix_ms);
