@@ -573,8 +573,19 @@ export default function App() {
     if (!codexSwapStatus) {
       return { badgeText: '', badgeTitle: 'Codex CLI swap status: loading' }
     }
+    const mode = providerSwitchStatus?.mode
+    const modeLabel =
+      mode === 'provider'
+        ? 'DP' + (providerSwitchStatus?.model_provider ? ':' + providerSwitchStatus.model_provider : '')
+        : mode === 'official'
+          ? 'Auth'
+          : mode === 'gateway'
+            ? 'API'
+            : mode === 'mixed'
+              ? 'Mixed'
+              : null
     const overall = codexSwapStatus.overall
-    const badgeText =
+    const fallbackLabel =
       overall === 'swapped'
         ? 'Auth'
         : overall === 'original'
@@ -582,15 +593,21 @@ export default function App() {
           : overall === 'mixed'
             ? 'Mixed'
             : 'Error'
+    const badgeText = modeLabel ?? fallbackLabel
     const parts =
-      codexSwapStatus?.dirs?.length
-        ? codexSwapStatus.dirs.map((d) => `${d.cli_home}: ${d.state}`)
-        : []
+      providerSwitchStatus?.dirs?.length
+        ? providerSwitchStatus.dirs.map((d) => {
+            const modeText = d.mode === 'provider' ? 'provider:' + (d.model_provider ?? '-') : d.mode
+            return d.cli_home + ': ' + modeText
+          })
+        : codexSwapStatus?.dirs?.length
+          ? codexSwapStatus.dirs.map((d) => d.cli_home + ': ' + d.state)
+          : []
     const badgeTitle = parts.length
-      ? `Codex CLI swap status: ${badgeText}. ${parts.join(' | ')}`
-      : `Codex CLI swap status: ${badgeText}`
+      ? 'Codex CLI swap status: ' + badgeText + '. ' + parts.join(' | ')
+      : 'Codex CLI swap status: ' + badgeText
     return { badgeText, badgeTitle }
-  }, [codexSwapStatus])
+  }, [codexSwapStatus, providerSwitchStatus])
 
   const providerDrag = useReorderDrag<string>({
     items: orderedConfigProviders,
@@ -657,6 +674,7 @@ export default function App() {
     flashToast(res.mode === 'swapped' ? 'Swapped Codex auth/config' : 'Restored Codex auth/config')
     await refreshStatus()
     await refreshCodexSwapStatus()
+    await refreshProviderSwitchStatus()
   }
 
   async function refreshCodexSwapStatus() {
@@ -3705,9 +3723,19 @@ function newScheduleDraft(
                     <span className="aoSwitchQuickTitle">Official</span>
                     <span className="aoSwitchQuickSub">Use official Codex auth</span>
                   </button>
-                  <button className="aoSwitchQuickBtn aoSwitchQuickBtnHint" disabled>
+                  <button
+                    className={
+                      'aoSwitchQuickBtn aoSwitchQuickBtnHint' +
+                      (providerSwitchStatus?.mode === 'provider' ? ' is-active' : '')
+                    }
+                    disabled
+                  >
                     <span className="aoSwitchQuickTitle">Direct Provider</span>
-                    <span className="aoSwitchQuickSub">Use selected provider below</span>
+                    <span className="aoSwitchQuickSub">
+                      {providerSwitchStatus?.mode === 'provider' && providerSwitchStatus?.model_provider
+                        ? 'Active: ' + providerSwitchStatus.model_provider
+                        : 'Use selected provider below'}
+                    </span>
                   </button>
                 </div>
                 <div className="aoSwitchSubOptions">
