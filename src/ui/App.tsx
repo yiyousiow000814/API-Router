@@ -2417,49 +2417,6 @@ function newScheduleDraft(
     }
   }
 
-  async function saveProviderPricing(name: string) {
-    const provider = config?.providers?.[name]
-    if (!provider) return
-    const mode = provider.manual_pricing_mode ?? null
-    const amount = provider.manual_pricing_amount_usd ?? null
-    if (mode === 'package_total') {
-      const currency = providerPreferredCurrency(name)
-      const packageDraft: UsagePricingDraft = {
-        mode: 'package_total',
-        amountText:
-          amount != null && Number.isFinite(amount) && amount > 0
-            ? formatDraftAmount(convertUsdToCurrency(amount, currency))
-            : '',
-        currency,
-      }
-      await activatePackageTotalMode(name, packageDraft)
-      await openUsageScheduleModal(name, currency)
-      return
-    }
-    try {
-      if (!mode) {
-        await invoke('set_provider_manual_pricing', {
-          provider: name,
-          mode: 'none',
-          amountUsd: null,
-          packageExpiresAtUnixMs: null,
-        })
-      } else {
-        await invoke('set_provider_manual_pricing', {
-          provider: name,
-          mode,
-          amountUsd: amount,
-          packageExpiresAtUnixMs: null,
-        })
-      }
-      flashToast(`Pricing saved: ${name}`)
-      await refreshConfig()
-      await refreshUsageStatistics()
-    } catch (e) {
-      flashToast(String(e), 'error')
-    }
-  }
-
   async function deleteProvider(name: string) {
     try {
       await invoke('delete_provider', { name })
@@ -3156,78 +3113,6 @@ function newScheduleDraft(
                   <div className="aoHint">
                     Usage base sets the usage endpoint. If empty, we use the provider base URL.
                   </div>
-                  <div className="aoMiniLabel">Manual Pricing (Usage Statistics)</div>
-                  <div className="aoPricingRow">
-                    <select
-                      className="aoSelect aoPricingModeSelect"
-                      value={p.manual_pricing_mode ?? 'none'}
-                      onChange={(e) =>
-                        setConfig((c) =>
-                          c
-                            ? {
-                                ...c,
-                                providers: {
-                                  ...c.providers,
-                                  [name]: {
-                                    ...c.providers[name],
-                                    manual_pricing_mode:
-                                      e.target.value === 'none'
-                                        ? null
-                                        : (e.target.value as 'per_request' | 'package_total'),
-                                    manual_pricing_amount_usd:
-                                      e.target.value === 'none'
-                                        ? null
-                                        : c.providers[name].manual_pricing_amount_usd ?? null,
-                                  },
-                                },
-                              }
-                            : c,
-                        )
-                      }
-                    >
-                      <option value="none">Provider API</option>
-                      <option value="per_request">Manual $ / request</option>
-                      <option value="package_total">Manual package total $</option>
-                    </select>
-                    <input
-                      className="aoInput aoPricingInput"
-                      type="number"
-                      step="0.001"
-                      min="0"
-                      disabled={!p.manual_pricing_mode}
-                      placeholder={
-                        p.manual_pricing_mode === 'package_total'
-                          ? 'Package total USD'
-                          : p.manual_pricing_mode === 'per_request'
-                            ? 'USD per request'
-                            : 'Amount USD'
-                      }
-                      value={p.manual_pricing_amount_usd == null ? '' : String(p.manual_pricing_amount_usd)}
-                      onChange={(e) =>
-                        setConfig((c) =>
-                          c
-                            ? {
-                                ...c,
-                                providers: {
-                                  ...c.providers,
-                                  [name]: {
-                                    ...c.providers[name],
-                                    manual_pricing_amount_usd:
-                                      e.target.value.trim() === '' ? null : Number(e.target.value),
-                                  },
-                                },
-                              }
-                            : c,
-                        )
-                      }
-                    />
-                    <button className="aoTinyBtn" onClick={() => void saveProviderPricing(name)}>
-                      Save Pricing
-                    </button>
-                  </div>
-                  <div className="aoHint">
-                    Provider API uses budget-based estimate. Package total follows the selected time window.
-                  </div>
                   <div className="aoHint">
                     updated:{' '}
                     {status?.quota?.[name]?.updated_at_unix_ms
@@ -3265,7 +3150,6 @@ function newScheduleDraft(
       registerProviderCardRef,
       providerNameDrafts,
       saveProvider,
-      saveProviderPricing,
       setConfig,
       toggleProviderOpen,
       status,

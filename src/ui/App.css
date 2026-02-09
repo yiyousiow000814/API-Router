@@ -2831,21 +2831,6 @@
   gap: 6px;
 }
 
-.aoPricingRow {
-  display: grid;
-  grid-template-columns: minmax(170px, 0.95fr) minmax(150px, 0.75fr) auto;
-  gap: 8px;
-  align-items: center;
-}
-
-.aoPricingModeSelect {
-  width: 100%;
-}
-
-.aoPricingInput {
-  width: 100%;
-}
-
 .aoTinyBtn {
   height: 24px;
   border-radius: 999px;
@@ -2968,9 +2953,6 @@
     border-top: 1px solid rgba(13, 18, 32, 0.08);
   }
   .aoUsageChartsGrid {
-    grid-template-columns: 1fr;
-  }
-  .aoPricingRow {
     grid-template-columns: 1fr;
   }
   .aoUsageProviderTable {
@@ -3136,9 +3118,6 @@
     gap: 6px;
   }
   .aoUsageFilterCard {
-    grid-template-columns: 1fr;
-  }
-  .aoPricingRow {
     grid-template-columns: 1fr;
   }
   .aoUsagePricingRow {
