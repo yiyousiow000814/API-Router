@@ -2259,10 +2259,20 @@ function newScheduleDraft(
 
   function fmtKpiTokens(value?: number | null): string {
     if (value == null || !Number.isFinite(value) || value < 0) return '-'
+    if (value >= 1_000_000_000_000) {
+      const compact = value / 1_000_000_000_000
+      const rounded = compact >= 100 ? compact.toFixed(0) : compact.toFixed(1)
+      return rounded.replace(/\.0$/, '') + 'T'
+    }
+    if (value >= 1_000_000_000) {
+      const compact = value / 1_000_000_000
+      const rounded = compact >= 100 ? compact.toFixed(0) : compact.toFixed(1)
+      return rounded.replace(/\.0$/, '') + 'B'
+    }
     if (value >= 10_000_000) {
       const compact = value / 1_000_000
       const rounded = compact >= 100 ? compact.toFixed(0) : compact.toFixed(1)
-      return `${rounded.replace(/\.0$/, '')}M`
+      return rounded.replace(/\.0$/, '') + 'M'
     }
     return Math.round(value).toLocaleString()
   }
