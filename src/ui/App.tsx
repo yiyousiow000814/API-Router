@@ -22,6 +22,7 @@ import { useReorderDrag } from './hooks/useReorderDrag'
 type TopPage = 'dashboard' | 'usage_statistics' | 'provider_switchboard'
 
 type UsagePricingMode = 'none' | 'per_request' | 'package_total'
+type PricingTimelineMode = 'per_request' | 'package_total'
 type UsagePricingDraft = {
   mode: UsagePricingMode
   amountText: string
@@ -46,14 +47,18 @@ type SpendHistoryRow = {
 
 type ProviderSchedulePeriod = {
   id: string
+  mode?: PricingTimelineMode
   amount_usd: number
+  api_key_ref?: string
   started_at_unix_ms: number
-  ended_at_unix_ms: number
+  ended_at_unix_ms?: number | null
 }
 
 type ProviderScheduleDraft = {
   provider: string
   id: string
+  mode: PricingTimelineMode
+  apiKeyRef: string
   startText: string
   endText: string
   amountText: string
@@ -62,9 +67,11 @@ type ProviderScheduleDraft = {
 
 type ProviderScheduleSaveInput = {
   id: string | null
+  mode: PricingTimelineMode
   amount_usd: number
+  api_key_ref: string
   started_at_unix_ms: number
-  ended_at_unix_ms: number
+  ended_at_unix_ms?: number
 }
 
 type UsageScheduleSaveState = 'idle' | 'saving' | 'saved' | 'invalid' | 'error'
@@ -903,6 +910,8 @@ export default function App() {
       rows.map((row) => ({
         provider: row.provider.trim(),
         id: row.id.trim(),
+        mode: row.mode,
+        apiKeyRef: row.apiKeyRef.trim(),
         start: row.startText.trim(),
         end: row.endText.trim(),
         amount: row.amountText.trim(),
@@ -930,6 +939,8 @@ export default function App() {
       const providerRows = (grouped[provider] ?? [])
         .map((row) => ({
           id: row.id.trim(),
+          mode: row.mode,
+          apiKeyRef: row.apiKeyRef.trim(),
           start: row.startText.trim(),
           end: row.endText.trim(),
           amount: row.amountText.trim(),
@@ -955,14 +966,24 @@ export default function App() {
     for (const row of rows) {
       const provider = row.provider.trim()
       if (!provider) return { ok: false, reason: 'provider is required' }
+      if (row.mode !== 'package_total' && row.mode !== 'per_request') {
+        return { ok: false, reason: 'mode must be monthly fee or $/request' }
+      }
       const start = fromDateTimeLocalValue(row.startText)
       const end = fromDateTimeLocalValue(row.endText)
       const amount = parsePositiveAmount(row.amountText)
-      if (!start || !end || !amount || start >= end) {
-        return { ok: false, reason: 'complete each row with valid start, expires, and amount' }
+      if (!start || !amount) {
+        return { ok: false, reason: 'complete each row with valid start and amount' }
       }
-      const apiKeyLabel = providerApiKeyLabel(provider)
-      const apiKeyPeriodKey = `${apiKeyLabel}|${start}|${end}`
+      if (row.mode === 'package_total' && !end) {
+        return { ok: false, reason: 'monthly fee row requires expires time' }
+      }
+      if (end != null && start >= end) {
+        return { ok: false, reason: 'each row start must be earlier than expires' }
+      }
+      const apiKeyLabel = row.apiKeyRef.trim() || providerApiKeyLabel(provider)
+      const endKey = end == null ? 'open' : String(end)
+      const apiKeyPeriodKey = `${apiKeyLabel}|${start}|${endKey}`
       if (apiKeyLabel !== '-' && apiKeyPeriodSet.has(apiKeyPeriodKey)) {
         return { ok: false, reason: `duplicate start/expires for API key ${apiKeyLabel}` }
       }
@@ -970,9 +991,11 @@ export default function App() {
       if (!grouped[provider]) grouped[provider] = []
       grouped[provider].push({
         id: row.id.trim() || null,
+        mode: row.mode,
         amount_usd: convertCurrencyToUsd(amount, row.currency),
+        api_key_ref: apiKeyLabel,
         started_at_unix_ms: start,
-        ended_at_unix_ms: end,
+        ended_at_unix_ms: end ?? undefined,
       })
     }
 
@@ -980,7 +1003,8 @@ export default function App() {
       const periods = grouped[provider]
       periods.sort((a, b) => a.started_at_unix_ms - b.started_at_unix_ms)
       for (let i = 1; i < periods.length; i += 1) {
-        if (periods[i - 1].ended_at_unix_ms > periods[i].started_at_unix_ms) {
+        const prevEnd = periods[i - 1].ended_at_unix_ms
+        if (prevEnd == null || prevEnd > periods[i].started_at_unix_ms) {
           return { ok: false, reason: `periods overlap for ${provider}` }
         }
       }
@@ -1007,17 +1031,30 @@ function scheduleDraftFromPeriod(
   fallbackCurrency?: string,
 ): ProviderScheduleDraft {
   const currency = fallbackCurrency ? normalizeCurrencyCode(fallbackCurrency) : providerPreferredCurrency(providerName)
+  const mode: PricingTimelineMode = period.mode === 'per_request' ? 'per_request' : 'package_total'
+  const fallbackEndMs =
+    mode === 'package_total'
+      ? period.started_at_unix_ms + 30 * 24 * 60 * 60 * 1000
+      : undefined
+  const endMs = period.ended_at_unix_ms ?? fallbackEndMs
   return {
     provider: providerName,
     id: period.id,
+    mode,
+    apiKeyRef: (period.api_key_ref ?? providerApiKeyLabel(providerName)).trim() || providerApiKeyLabel(providerName),
     startText: toDateTimeLocalValue(period.started_at_unix_ms),
-    endText: toDateTimeLocalValue(period.ended_at_unix_ms),
+    endText: toDateTimeLocalValue(endMs),
     amountText: formatDraftAmount(convertUsdToCurrency(period.amount_usd, currency)),
     currency,
     }
   }
 
-function newScheduleDraft(providerName: string, seedAmountUsd?: number | null, seedCurrency?: string): ProviderScheduleDraft {
+function newScheduleDraft(
+  providerName: string,
+  seedAmountUsd?: number | null,
+  seedCurrency?: string,
+  seedMode: PricingTimelineMode = 'package_total',
+): ProviderScheduleDraft {
     const now = new Date()
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime()
     const end = start + 30 * 24 * 60 * 60 * 1000
@@ -1025,6 +1062,8 @@ function newScheduleDraft(providerName: string, seedAmountUsd?: number | null, s
   return {
     provider: providerName,
     id: '',
+    mode: seedMode,
+    apiKeyRef: providerApiKeyLabel(providerName),
     startText: toDateTimeLocalValue(start),
     endText: toDateTimeLocalValue(end),
       amountText:
@@ -1146,7 +1185,7 @@ function newScheduleDraft(providerName: string, seedAmountUsd?: number | null, s
       )
       const chunks = await Promise.all(
         providers.map(async (provider) => {
-          const res = await invoke<{ ok: boolean; periods?: ProviderSchedulePeriod[] }>('get_provider_schedule', {
+          const res = await invoke<{ ok: boolean; periods?: ProviderSchedulePeriod[] }>('get_provider_timeline', {
             provider,
           })
           const periods = Array.isArray(res?.periods) ? res.periods : []
@@ -1208,7 +1247,7 @@ function newScheduleDraft(providerName: string, seedAmountUsd?: number | null, s
         const prevSig = prevByProvider[provider] ?? '[]'
         const nextSig = nextByProvider[provider] ?? '[]'
         if (prevSig === nextSig) continue
-        await invoke('set_provider_schedule', {
+        await invoke('set_provider_timeline', {
           provider,
           periods: parsed.periodsByProvider[provider] ?? [],
         })
@@ -1249,11 +1288,12 @@ function newScheduleDraft(providerName: string, seedAmountUsd?: number | null, s
     let amountUsd = resolvePricingAmountUsd(draft, providerCfg.manual_pricing_amount_usd ?? null)
     if (amountUsd == null) {
       try {
-        const res = await invoke<{ ok: boolean; periods?: ProviderSchedulePeriod[] }>('get_provider_schedule', {
+        const res = await invoke<{ ok: boolean; periods?: ProviderSchedulePeriod[] }>('get_provider_timeline', {
           provider: providerName,
         })
         const periods = Array.isArray(res?.periods) ? res.periods : []
         const latest = periods
+          .filter((period) => (period.mode ?? 'package_total') === 'package_total')
           .filter((period) => Number.isFinite(period.amount_usd) && period.amount_usd > 0)
           .sort((a, b) => b.started_at_unix_ms - a.started_at_unix_ms)[0]
         if (latest) amountUsd = latest.amount_usd
@@ -3756,7 +3796,12 @@ requires_openai_auth = true`}
                             queueUsagePricingAutoSave(row.provider, nextDraft)
                           } else {
                             clearAutoSaveTimer(`pricing:${row.provider}`)
-                            void activatePackageTotalMode(row.provider, nextDraft)
+                            void (async () => {
+                              const activated = await activatePackageTotalMode(row.provider, nextDraft)
+                              if (!activated) {
+                                await openUsageScheduleModal(row.provider, providerPreferredCurrency(row.provider))
+                              }
+                            })()
                           }
                         }}
                       >
@@ -3956,7 +4001,7 @@ requires_openai_auth = true`}
               <div>
                 <div className="aoModalTitle">Scheduled Period History</div>
                 <div className="aoModalSub">
-                  Define fixed package periods with explicit start/expires across providers.
+                  Edit base pricing timeline rows (monthly fee or $/request) with explicit start/expires.
                 </div>
               </div>
               <button
@@ -3981,6 +4026,7 @@ requires_openai_auth = true`}
                     <colgroup>
                       <col className="aoUsageScheduleColProvider" />
                       <col className="aoUsageScheduleColApiKey" />
+                      <col className="aoUsageScheduleColMode" />
                       <col className="aoUsageScheduleColStart" />
                       <col className="aoUsageScheduleColExpires" />
                       <col className="aoUsageScheduleColAmount" />
@@ -3991,6 +4037,7 @@ requires_openai_auth = true`}
                       <tr>
                         <th>Provider</th>
                         <th>API Key</th>
+                        <th>Mode</th>
                         <th>Start</th>
                         <th>Expires</th>
                         <th>Amount</th>
@@ -4009,7 +4056,25 @@ requires_openai_auth = true`}
                         .map(({ row, index }) => (
                           <tr key={`${row.provider}-${row.id || 'new'}-${index}`}>
                             <td>{row.provider}</td>
-                            <td>{providerApiKeyLabel(row.provider)}</td>
+                            <td>{row.apiKeyRef || providerApiKeyLabel(row.provider)}</td>
+                            <td>
+                              <select
+                                className="aoSelect aoUsageScheduleMode"
+                                value={row.mode}
+                                onChange={(e) => {
+                                  const nextMode = (e.target.value as PricingTimelineMode) ?? 'package_total'
+                                  setUsageScheduleSaveState('idle')
+                                  setUsageScheduleRows((prev) =>
+                                    prev.map((item, i) =>
+                                      i === index ? { ...item, mode: nextMode } : item,
+                                    ),
+                                  )
+                                }}
+                              >
+                                <option value="package_total">Monthly fee</option>
+                                <option value="per_request">$ / request</option>
+                              </select>
+                            </td>
                             <td>
                               <input
                                 className="aoInput aoUsageScheduleInput"
@@ -4105,7 +4170,7 @@ requires_openai_auth = true`}
                         ))}
                       {usageScheduleRows.length === 0 ? (
                         <tr>
-                          <td colSpan={7}>
+                          <td colSpan={8}>
                             <div className="aoHint">No scheduled periods yet. Click Add Period to create one.</div>
                           </td>
                         </tr>
@@ -4135,12 +4200,17 @@ requires_openai_auth = true`}
                             lastAmount != null
                               ? convertCurrencyToUsd(lastAmount, fallbackCurrency)
                               : providerAmountUsd
+                          const providerMode = (config?.providers?.[targetProvider]?.manual_pricing_mode ??
+                            'package_total') as UsagePricingMode
+                          const seedMode: PricingTimelineMode =
+                            providerMode === 'per_request' ? 'per_request' : 'package_total'
                           return [
                             ...prev,
                             newScheduleDraft(
                               targetProvider,
                               seedAmountUsd,
                               fallbackCurrency,
+                              seedMode,
                             ),
                           ]
                         })
@@ -4153,8 +4223,7 @@ requires_openai_auth = true`}
                     </span>
                   </div>
                   <div className="aoHint aoUsageScheduleHint">
-                    Scheduled period history is the source for monthly fee timelines. Editing here updates the listed
-                    provider rows only.
+                    Timeline rows are the source for historical base pricing. Editing here updates only listed rows.
                   </div>
                 </>
               )}

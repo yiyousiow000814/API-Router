@@ -946,7 +946,7 @@
 }
 
 .aoUsagePricingModal {
-  width: min(640px, 92vw);
+  width: min(760px, 94vw);
   max-height: min(78vh, 820px);
 }
 
@@ -1111,6 +1111,10 @@
   width: 132px;
 }
 
+.aoUsageScheduleColMode {
+  width: 122px;
+}
+
 .aoUsageScheduleColAmount {
   width: 82px;
 }
@@ -1146,6 +1150,10 @@
 .aoUsageScheduleInput {
   width: 100%;
   min-width: 0;
+}
+
+.aoUsageScheduleMode {
+  width: 100%;
 }
 
 .aoUsageScheduleAmount {
@@ -3143,7 +3151,7 @@
 }
 
 .aoModalWide.aoUsagePricingModal {
-  width: min(700px, 92vw);
+  width: min(760px, 94vw);
   max-height: min(72vh, 720px);
 }
 

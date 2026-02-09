@@ -34,6 +34,8 @@ pub struct ProviderPricingPeriod {
     pub id: String,
     pub mode: String,
     pub amount_usd: f64,
+    #[serde(default)]
+    pub api_key_ref: String,
     pub started_at_unix_ms: u64,
     #[serde(default)]
     pub ended_at_unix_ms: Option<u64>,
@@ -154,6 +156,7 @@ impl SecretStore {
         mode: &str,
         amount_usd: f64,
         package_expires_at_unix_ms: Option<u64>,
+        api_key_ref: Option<String>,
     ) -> Result<(), String> {
         let mut data = self.inner.lock();
         let existing_gap_mode = data
@@ -200,10 +203,16 @@ impl SecretStore {
         }
 
         if normalized_mode == "package_total" || normalized_mode == "per_request" {
+            let api_key_ref = api_key_ref
+                .clone()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "-".to_string());
             periods.push(ProviderPricingPeriod {
                 id: Uuid::new_v4().to_string(),
                 mode: normalized_mode.clone(),
                 amount_usd,
+                api_key_ref,
                 started_at_unix_ms: now,
                 ended_at_unix_ms: if normalized_mode == "package_total" {
                     package_expires_at_unix_ms
@@ -244,19 +253,78 @@ impl SecretStore {
         periods
     }
 
+    pub fn list_provider_timeline(&self, provider: &str) -> Vec<ProviderPricingPeriod> {
+        let data = self.inner.lock();
+        let mut periods = data
+            .provider_pricing
+            .get(provider)
+            .map(|entry| {
+                entry
+                    .periods
+                    .iter()
+                    .filter(|period| period.mode == "package_total" || period.mode == "per_request")
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        periods.sort_by(|a, b| a.started_at_unix_ms.cmp(&b.started_at_unix_ms));
+        periods
+    }
+
     pub fn set_provider_schedule(
         &self,
         provider: &str,
         mut periods: Vec<ProviderPricingPeriod>,
     ) -> Result<(), String> {
-        periods.sort_by(|a, b| a.started_at_unix_ms.cmp(&b.started_at_unix_ms));
+        for period in periods.iter_mut() {
+            period.mode = "package_total".to_string();
+            if period.api_key_ref.trim().is_empty() {
+                period.api_key_ref = "-".to_string();
+            }
+            if period.ended_at_unix_ms.is_none() {
+                period.ended_at_unix_ms = Some(period.started_at_unix_ms.saturating_add(1));
+            }
+        }
+        self.set_provider_timeline(provider, periods)
+    }
 
+    pub fn set_provider_timeline(
+        &self,
+        provider: &str,
+        mut periods: Vec<ProviderPricingPeriod>,
+    ) -> Result<(), String> {
+        periods.sort_by(|a, b| a.started_at_unix_ms.cmp(&b.started_at_unix_ms));
         for period in periods.iter_mut() {
             if period.id.trim().is_empty() {
                 period.id = Uuid::new_v4().to_string();
             }
-            period.mode = "package_total".to_string();
+            period.mode = period.mode.trim().to_ascii_lowercase();
+            if period.api_key_ref.trim().is_empty() {
+                period.api_key_ref = "-".to_string();
+            }
         }
+
+        let now = crate::orchestrator::store::unix_ms();
+        let active = periods
+            .iter()
+            .filter(|period| {
+                let starts = period.started_at_unix_ms <= now;
+                let not_ended = period.ended_at_unix_ms.is_none_or(|end| now < end);
+                starts && not_ended
+            })
+            .max_by_key(|period| period.started_at_unix_ms);
+        let upcoming = periods
+            .iter()
+            .filter(|period| period.started_at_unix_ms > now)
+            .min_by_key(|period| period.started_at_unix_ms);
+        let next_mode = active
+            .map(|period| period.mode.clone())
+            .or_else(|| upcoming.map(|period| period.mode.clone()))
+            .unwrap_or_else(|| "none".to_string());
+        let next_amount = active
+            .map(|period| period.amount_usd)
+            .or_else(|| upcoming.map(|period| period.amount_usd))
+            .unwrap_or(0.0);
 
         let mut data = self.inner.lock();
         let existing_gap_mode = data
@@ -267,15 +335,6 @@ impl SecretStore {
             .provider_pricing
             .get(provider)
             .and_then(|v| v.gap_fill_amount_usd);
-        let latest_amount = periods
-            .last()
-            .map(|period| period.amount_usd)
-            .unwrap_or(0.0);
-        let next_mode = if periods.is_empty() {
-            "none".to_string()
-        } else {
-            "package_total".to_string()
-        };
 
         if periods.is_empty() && existing_gap_mode.is_none() && existing_gap_amount.is_none() {
             data.provider_pricing.remove(provider);
@@ -286,7 +345,7 @@ impl SecretStore {
             provider.to_string(),
             ProviderPricingOverride {
                 mode: next_mode,
-                amount_usd: latest_amount,
+                amount_usd: next_amount,
                 periods,
                 gap_fill_mode: existing_gap_mode,
                 gap_fill_amount_usd: existing_gap_amount,
