@@ -821,6 +821,52 @@ export default function App() {
     return code === 'CNY' ? 'RMB' : code
   }
 
+  function currencyPrefKeyByApiKey(apiKeyRef: string): string | null {
+    const key = apiKeyRef.trim()
+    if (!key || key === '-' || key === 'set') return null
+    return `${FX_CURRENCY_PREF_KEY_PREFIX}key:${key}`
+  }
+
+  function currencyPrefKeyByProvider(providerName: string): string {
+    const keyLabel = providerApiKeyLabel(providerName).trim()
+    const byApiKey = currencyPrefKeyByApiKey(keyLabel)
+    if (byApiKey) return byApiKey
+    return `${FX_CURRENCY_PREF_KEY_PREFIX}${providerName}`
+  }
+
+  function readPreferredCurrency(providerName: string, apiKeyRef?: string): string {
+    if (typeof window === 'undefined') return 'USD'
+    const keys: string[] = []
+    const byApiKey = currencyPrefKeyByApiKey(apiKeyRef?.trim() ?? '')
+    if (byApiKey) keys.push(byApiKey)
+    keys.push(currencyPrefKeyByProvider(providerName))
+    keys.push(`${FX_CURRENCY_PREF_KEY_PREFIX}${providerName}`)
+    for (const key of keys) {
+      const cached = window.localStorage.getItem(key)
+      if (cached?.trim()) return normalizeCurrencyCode(cached)
+    }
+    return 'USD'
+  }
+
+  function persistPreferredCurrency(
+    providerNames: string[],
+    currency: string,
+    options?: { apiKeyRef?: string },
+  ) {
+    if (typeof window === 'undefined') return
+    const normalized = normalizeCurrencyCode(currency)
+    const keys = new Set<string>()
+    const byApiKey = currencyPrefKeyByApiKey(options?.apiKeyRef?.trim() ?? '')
+    if (byApiKey) keys.add(byApiKey)
+    providerNames.forEach((providerName) => {
+      keys.add(currencyPrefKeyByProvider(providerName))
+      keys.add(`${FX_CURRENCY_PREF_KEY_PREFIX}${providerName}`)
+    })
+    keys.forEach((key) => {
+      window.localStorage.setItem(key, normalized)
+    })
+  }
+
   function updateUsagePricingCurrency(
     providerNames: string[],
     draft: UsagePricingDraft,
@@ -853,11 +899,7 @@ export default function App() {
     if (nextDraftForAutoSave) {
       queueUsagePricingAutoSaveForProviders(nextProviders, nextDraftForAutoSave)
     }
-    if (typeof window !== 'undefined') {
-      nextProviders.forEach((providerName) => {
-        window.localStorage.setItem(`${FX_CURRENCY_PREF_KEY_PREFIX}${providerName}`, raw)
-      })
-    }
+    persistPreferredCurrency(nextProviders, raw, { apiKeyRef: providerApiKeyLabel(nextProviders[0]) })
   }
 
   function closeUsageScheduleCurrencyMenu() {
@@ -867,6 +909,10 @@ export default function App() {
 
   function updateUsageScheduleCurrency(rowIndex: number, nextCurrency: string) {
     const raw = normalizeCurrencyCode(nextCurrency)
+    const row = usageScheduleRows[rowIndex]
+    if (row) {
+      persistPreferredCurrency([row.provider, ...(row.groupProviders ?? [])], raw, { apiKeyRef: row.apiKeyRef })
+    }
     setUsageScheduleSaveState('idle')
     setUsageScheduleRows((prev) =>
       prev.map((row, index) => {
@@ -1061,9 +1107,7 @@ function scheduleRowsSignature(rows: ProviderScheduleDraft[]): string {
   }
 
   function providerPreferredCurrency(providerName: string): string {
-    if (typeof window === 'undefined') return 'USD'
-    const cached = window.localStorage.getItem(`${FX_CURRENCY_PREF_KEY_PREFIX}${providerName}`) ?? 'USD'
-    return normalizeCurrencyCode(cached)
+    return readPreferredCurrency(providerName, providerApiKeyLabel(providerName))
   }
 
   function providerApiKeyLabel(providerName: string): string {
@@ -1079,7 +1123,10 @@ function scheduleDraftFromPeriod(
   fallbackCurrency?: string,
   groupProviders?: string[],
 ): ProviderScheduleDraft {
-  const currency = fallbackCurrency ? normalizeCurrencyCode(fallbackCurrency) : providerPreferredCurrency(providerName)
+  const apiKeyRef = (period.api_key_ref ?? providerApiKeyLabel(providerName)).trim() || providerApiKeyLabel(providerName)
+  const currency = fallbackCurrency
+    ? normalizeCurrencyCode(fallbackCurrency)
+    : readPreferredCurrency(providerName, apiKeyRef)
   const mode: PricingTimelineMode = period.mode === 'per_request' ? 'per_request' : 'package_total'
   const fallbackEndMs =
     mode === 'package_total'
@@ -1091,7 +1138,7 @@ function scheduleDraftFromPeriod(
     groupProviders: (groupProviders?.length ? groupProviders : [providerName]).filter(Boolean),
     id: period.id,
     mode,
-    apiKeyRef: (period.api_key_ref ?? providerApiKeyLabel(providerName)).trim() || providerApiKeyLabel(providerName),
+    apiKeyRef,
     startText: toDateTimeLocalValue(period.started_at_unix_ms),
     endText: toDateTimeLocalValue(endMs),
     amountText: formatDraftAmount(convertUsdToCurrency(period.amount_usd, currency)),
@@ -1109,7 +1156,9 @@ function newScheduleDraft(
     const now = new Date()
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime()
     const end = start + 30 * 24 * 60 * 60 * 1000
-    const currency = seedCurrency ? normalizeCurrencyCode(seedCurrency) : providerPreferredCurrency(providerName)
+    const currency = seedCurrency
+      ? normalizeCurrencyCode(seedCurrency)
+      : readPreferredCurrency(providerName, providerApiKeyLabel(providerName))
   return {
     provider: providerName,
     groupProviders: (groupProviders?.length ? groupProviders : [providerName]).filter(Boolean),
@@ -1182,11 +1231,10 @@ function newScheduleDraft(
     providerCfg?: Config['providers'][string],
   ): UsagePricingDraft {
     const mode = (providerCfg?.manual_pricing_mode ?? 'none') as UsagePricingMode
-    let cachedCurrency = 'USD'
-    if (typeof window !== 'undefined') {
-      cachedCurrency =
-        window.localStorage.getItem(`${FX_CURRENCY_PREF_KEY_PREFIX}${providerName}`) ?? 'USD'
-    }
+    const cachedCurrency = readPreferredCurrency(
+      providerName,
+      providerCfg?.key_preview?.trim() || (providerCfg?.has_key ? 'set' : '-'),
+    )
     const currency = normalizeCurrencyCode(cachedCurrency)
     const amountUsd = providerCfg?.manual_pricing_amount_usd
     const amountText =
