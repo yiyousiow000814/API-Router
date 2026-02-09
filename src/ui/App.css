@@ -721,7 +721,13 @@
 
 .aoUsagePricingRow {
   display: grid;
-  grid-template-columns: minmax(98px, 0.8fr) minmax(150px, 1.15fr) minmax(96px, 0.72fr) minmax(80px, 92px) auto;
+  grid-template-columns:
+    minmax(98px, 0.8fr)
+    minmax(150px, 1.15fr)
+    minmax(96px, 0.72fr)
+    minmax(80px, 92px)
+    minmax(172px, 1fr)
+    auto;
   gap: 8px;
   align-items: center;
   border: 1px solid rgba(13, 18, 32, 0.08);
@@ -747,6 +753,10 @@
 }
 
 .aoUsagePricingAmount {
+  min-width: 0;
+}
+
+.aoUsagePricingExpires {
   min-width: 0;
 }
 
@@ -876,6 +886,7 @@
 
 .aoUsageHistoryTable {
   width: 100%;
+  min-width: 1380px;
   border-collapse: separate;
   border-spacing: 0;
   font-size: 12px;
@@ -884,12 +895,57 @@
   overflow: hidden;
 }
 
+.aoUsageHistoryColDate {
+  width: 108px;
+}
+
+.aoUsageHistoryColProv {
+  width: 128px;
+}
+
+.aoUsageHistoryColReq {
+  width: 84px;
+}
+
+.aoUsageHistoryColTok {
+  width: 118px;
+}
+
+.aoUsageHistoryColTrk {
+  width: 132px;
+}
+
+.aoUsageHistoryColEff {
+  width: 132px;
+}
+
+.aoUsageHistoryColPkg {
+  width: 104px;
+}
+
+.aoUsageHistoryColExp {
+  width: 176px;
+}
+
+.aoUsageHistoryColSrc {
+  width: 118px;
+}
+
+.aoUsageHistoryColAct {
+  width: 132px;
+}
+
 .aoUsageHistoryTable th,
 .aoUsageHistoryTable td {
   padding: 7px 8px;
   border-bottom: 1px solid rgba(13, 18, 32, 0.08);
   text-align: left;
   vertical-align: middle;
+  white-space: nowrap;
+}
+
+.aoUsageHistoryDateCell {
+  font-variant-numeric: tabular-nums;
 }
 
 .aoUsageHistoryTable th {
@@ -905,10 +961,45 @@
 }
 
 .aoUsageHistoryInput {
-  width: 96px;
+  width: 92px;
   height: 28px;
   padding: 0 8px;
   font-size: 12px;
+}
+
+.aoUsageHistoryValueCell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoUsageHistoryEditBtn {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(255, 255, 255, 0.84);
+  color: rgba(13, 18, 32, 0.8);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.aoUsageHistoryEditBtn:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.5);
+  background: rgba(var(--ao-accent-rgb), 0.1);
+}
+
+.aoUsageHistoryEditBtn svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .aoUsageHistoryActions {
@@ -2852,6 +2943,11 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.aoModalWide.aoUsageHistoryModal {
+  width: min(1500px, 99vw);
+  max-height: min(82vh, 880px);
 }
 
 .aoModalWide.aoUsagePricingModal {

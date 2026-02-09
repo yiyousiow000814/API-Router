@@ -22,15 +22,28 @@ struct ProviderPricingOverride {
     mode: String,
     amount_usd: f64,
     #[serde(default)]
+    periods: Vec<ProviderPricingPeriod>,
+    #[serde(default)]
     gap_fill_mode: Option<String>,
     #[serde(default)]
     gap_fill_amount_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderPricingPeriod {
+    pub id: String,
+    pub mode: String,
+    pub amount_usd: f64,
+    pub started_at_unix_ms: u64,
+    #[serde(default)]
+    pub ended_at_unix_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProviderPricingConfig {
     pub mode: String,
     pub amount_usd: f64,
+    pub periods: Vec<ProviderPricingPeriod>,
     pub gap_fill_mode: Option<String>,
     pub gap_fill_amount_usd: Option<f64>,
 }
@@ -126,6 +139,7 @@ impl SecretStore {
                     ProviderPricingConfig {
                         mode: v.mode.clone(),
                         amount_usd: v.amount_usd,
+                        periods: v.periods.clone(),
                         gap_fill_mode: v.gap_fill_mode.clone(),
                         gap_fill_amount_usd: v.gap_fill_amount_usd,
                     },
@@ -139,6 +153,7 @@ impl SecretStore {
         provider: &str,
         mode: &str,
         amount_usd: f64,
+        package_expires_at_unix_ms: Option<u64>,
     ) -> Result<(), String> {
         let mut data = self.inner.lock();
         let existing_gap_mode = data
@@ -150,9 +165,21 @@ impl SecretStore {
             .get(provider)
             .and_then(|v| v.gap_fill_amount_usd);
         let normalized_mode = mode.trim().to_lowercase();
+        let now = crate::orchestrator::store::unix_ms();
+        let mut periods = data
+            .provider_pricing
+            .get(provider)
+            .map(|v| v.periods.clone())
+            .unwrap_or_default();
+
+        for period in periods.iter_mut() {
+            if period.mode == "package_total" && period.ended_at_unix_ms.is_none() {
+                period.ended_at_unix_ms = Some(now);
+            }
+        }
 
         if normalized_mode == "none" && amount_usd <= 0.0 {
-            if existing_gap_mode.is_none() && existing_gap_amount.is_none() {
+            if existing_gap_mode.is_none() && existing_gap_amount.is_none() && periods.is_empty() {
                 data.provider_pricing.remove(provider);
             } else {
                 data.provider_pricing.insert(
@@ -160,6 +187,7 @@ impl SecretStore {
                     ProviderPricingOverride {
                         mode: "none".to_string(),
                         amount_usd: 0.0,
+                        periods,
                         gap_fill_mode: existing_gap_mode,
                         gap_fill_amount_usd: existing_gap_amount,
                     },
@@ -168,11 +196,22 @@ impl SecretStore {
             return self.persist(&data);
         }
 
+        if normalized_mode == "package_total" {
+            periods.push(ProviderPricingPeriod {
+                id: Uuid::new_v4().to_string(),
+                mode: "package_total".to_string(),
+                amount_usd,
+                started_at_unix_ms: now,
+                ended_at_unix_ms: package_expires_at_unix_ms,
+            });
+        }
+
         data.provider_pricing.insert(
             provider.to_string(),
             ProviderPricingOverride {
                 mode: normalized_mode,
                 amount_usd,
+                periods,
                 gap_fill_mode: existing_gap_mode,
                 gap_fill_amount_usd: existing_gap_amount,
             },
@@ -193,6 +232,7 @@ impl SecretStore {
                 .or_insert(ProviderPricingOverride {
                     mode: "none".to_string(),
                     amount_usd: 0.0,
+                    periods: Vec::new(),
                     gap_fill_mode: None,
                     gap_fill_amount_usd: None,
                 });
@@ -202,6 +242,7 @@ impl SecretStore {
         // Keep storage clean: if no base pricing and no gap config, remove row.
         let remove = entry.mode == "none"
             && entry.amount_usd <= 0.0
+            && entry.periods.is_empty()
             && entry.gap_fill_mode.is_none()
             && entry.gap_fill_amount_usd.is_none();
         if remove {

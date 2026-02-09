@@ -117,6 +117,7 @@ export type Config = {
       usage_base_url?: string | null
       manual_pricing_mode?: 'per_request' | 'package_total' | null
       manual_pricing_amount_usd?: number | null
+      manual_pricing_expires_at_unix_ms?: number | null
       manual_gap_fill_mode?: 'per_request' | 'total' | 'per_day_average' | null
       manual_gap_fill_amount_usd?: number | null
       has_key: boolean

@@ -26,6 +26,7 @@ type UsagePricingDraft = {
   mode: UsagePricingMode
   amountText: string
   currency: string
+  expiresAtText: string
 }
 
 type SpendHistoryRow = {
@@ -34,6 +35,9 @@ type SpendHistoryRow = {
   req_count: number
   total_tokens: number
   tracked_total_usd?: number | null
+  scheduled_total_usd?: number | null
+  scheduled_package_total_usd?: number | null
+  scheduled_expires_at_unix_ms?: number | null
   manual_total_usd?: number | null
   manual_usd_per_req?: number | null
   effective_total_usd?: number | null
@@ -224,8 +228,12 @@ export default function App() {
   const [usageHistoryModalOpen, setUsageHistoryModalOpen] = useState<boolean>(false)
   const [usageHistoryRows, setUsageHistoryRows] = useState<SpendHistoryRow[]>([])
   const [usageHistoryDrafts, setUsageHistoryDrafts] = useState<
-    Record<string, { totalText: string; reqText: string }>
+    Record<string, { trackedText: string; effectiveText: string }>
   >({})
+  const [usageHistoryEditCell, setUsageHistoryEditCell] = useState<{
+    key: string
+    field: 'tracked' | 'effective'
+  } | null>(null)
   const [usageHistoryLoading, setUsageHistoryLoading] = useState<boolean>(false)
   const [usagePricingCurrencyMenu, setUsagePricingCurrencyMenu] = useState<{
     provider: string
@@ -763,6 +771,78 @@ export default function App() {
     return fixed.replace(/\.?0+$/, '')
   }
 
+  function toDateTimeLocalValue(unixMs?: number | null): string {
+    if (!unixMs || !Number.isFinite(unixMs) || unixMs <= 0) return ''
+    const d = new Date(unixMs)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const yyyy = d.getFullYear()
+    const mm = pad(d.getMonth() + 1)
+    const dd = pad(d.getDate())
+    const hh = pad(d.getHours())
+    const min = pad(d.getMinutes())
+    return `${yyyy}-${mm}-${dd}T${hh}:${min}`
+  }
+
+  function fromDateTimeLocalValue(value: string): number | null {
+    const raw = value.trim()
+    if (!raw) return null
+    const unixMs = Date.parse(raw)
+    if (!Number.isFinite(unixMs) || unixMs <= 0) return null
+    return unixMs
+  }
+
+  function parsePositiveAmount(value: string): number | null {
+    const n = Number(value)
+    if (!Number.isFinite(n) || n <= 0) return null
+    return n
+  }
+
+  function historyTrackedDisplayValue(row: SpendHistoryRow): number | null {
+    const tracked = row.tracked_total_usd
+    if (tracked == null || !Number.isFinite(tracked) || tracked <= 0) return null
+    const manual = row.manual_total_usd
+    const hasScheduled = row.scheduled_total_usd != null && Number.isFinite(row.scheduled_total_usd)
+    const hasManualPerReq = row.manual_usd_per_req != null && Number.isFinite(row.manual_usd_per_req)
+    if (
+      !hasScheduled &&
+      !hasManualPerReq &&
+      manual != null &&
+      Number.isFinite(manual) &&
+      manual > 0
+    ) {
+      return tracked + manual
+    }
+    return tracked
+  }
+
+  function historyEffectiveDisplayValue(row: SpendHistoryRow): number | null {
+    if (row.effective_total_usd != null && Number.isFinite(row.effective_total_usd) && row.effective_total_usd > 0) {
+      return row.effective_total_usd
+    }
+    const tracked = row.tracked_total_usd ?? 0
+    const scheduled = row.scheduled_total_usd ?? 0
+    const manual = row.manual_total_usd ?? 0
+    const total = tracked + scheduled + manual
+    return total > 0 ? total : null
+  }
+
+  function historyDraftFromRow(row: SpendHistoryRow): { trackedText: string; effectiveText: string } {
+    const tracked = historyTrackedDisplayValue(row)
+    const effective = historyEffectiveDisplayValue(row)
+    return {
+      trackedText: tracked != null ? formatDraftAmount(tracked) : '',
+      effectiveText: effective != null ? formatDraftAmount(effective) : '',
+    }
+  }
+
+  function fmtHistorySource(source?: string | null): string {
+    if (!source || source === 'none') return 'none'
+    if (source === 'manual_per_request' || source === 'manual_total') return 'manual'
+    if (source === 'tracked+manual_per_request' || source === 'tracked+manual_total') return 'tracked+manual'
+    if (source === 'scheduled_package_total') return 'scheduled'
+    return source
+  }
+
   const closeUsagePricingCurrencyMenu = useCallback(() => {
     setUsagePricingCurrencyMenu(null)
     setUsagePricingCurrencyQuery('')
@@ -826,6 +906,7 @@ export default function App() {
           provider: providerName,
           mode: 'none',
           amountUsd: null,
+          packageExpiresAtUnixMs: null,
         })
       } else {
         const amountRaw = Number(draft.amountText)
@@ -834,10 +915,23 @@ export default function App() {
           return
         }
         const amountUsd = convertCurrencyToUsd(amountRaw, draft.currency)
+        let packageExpiresAtUnixMs: number | null = null
+        if (mode === 'package_total') {
+          packageExpiresAtUnixMs = fromDateTimeLocalValue(draft.expiresAtText)
+          if (!packageExpiresAtUnixMs) {
+            flashToast('Monthly fee requires an expire time', 'error')
+            return
+          }
+          if (packageExpiresAtUnixMs <= Date.now()) {
+            flashToast('Expire time must be in the future', 'error')
+            return
+          }
+        }
         await invoke('set_provider_manual_pricing', {
           provider: providerName,
           mode,
           amountUsd,
+          packageExpiresAtUnixMs,
         })
       }
       await invoke('set_provider_gap_fill', {
@@ -863,24 +957,15 @@ export default function App() {
       })
       const rows = Array.isArray(res?.rows) ? res.rows : []
       setUsageHistoryRows(rows)
-      setUsageHistoryDrafts((prev) => {
-        const next: Record<string, { totalText: string; reqText: string }> = { ...prev }
+      setUsageHistoryDrafts(() => {
+        const next: Record<string, { trackedText: string; effectiveText: string }> = {}
         for (const row of rows) {
           const key = `${row.provider}|${row.day_key}`
-          if (next[key]) continue
-          next[key] = {
-            totalText:
-              row.manual_total_usd != null && Number.isFinite(row.manual_total_usd)
-                ? formatDraftAmount(row.manual_total_usd)
-                : '',
-            reqText:
-              row.manual_usd_per_req != null && Number.isFinite(row.manual_usd_per_req)
-                ? formatDraftAmount(row.manual_usd_per_req)
-                : '',
-          }
+          next[key] = historyDraftFromRow(row)
         }
         return next
       })
+      setUsageHistoryEditCell(null)
     } catch (e) {
       flashToast(String(e), 'error')
     } finally {
@@ -890,11 +975,44 @@ export default function App() {
 
   async function saveUsageHistoryRow(row: SpendHistoryRow) {
     const key = `${row.provider}|${row.day_key}`
-    const draft = usageHistoryDrafts[key] ?? { totalText: '', reqText: '' }
-    const totalRaw = Number(draft.totalText)
-    const reqRaw = Number(draft.reqText)
-    const totalUsedUsd = Number.isFinite(totalRaw) && totalRaw > 0 ? totalRaw : null
-    const usdPerReq = Number.isFinite(reqRaw) && reqRaw > 0 ? reqRaw : null
+    const draft = usageHistoryDrafts[key] ?? historyDraftFromRow(row)
+    const trackedDraft = parsePositiveAmount(draft.trackedText)
+    const effectiveDraft = parsePositiveAmount(draft.effectiveText)
+    const trackedNow = historyTrackedDisplayValue(row)
+    const effectiveNow = historyEffectiveDisplayValue(row)
+    const trackedBase = row.tracked_total_usd ?? 0
+    const scheduledBase = row.scheduled_total_usd ?? 0
+    const closeEnough = (a: number, b: number) => Math.abs(a - b) < 0.0005
+    const effectiveChanged =
+      effectiveDraft != null && (effectiveNow == null || !closeEnough(effectiveDraft, effectiveNow))
+    const trackedChanged =
+      trackedDraft != null && (trackedNow == null || !closeEnough(trackedDraft, trackedNow))
+    let totalUsedUsd: number | null = null
+    const usdPerReq: number | null = null
+
+    if (effectiveChanged) {
+      const minimum = trackedBase + scheduledBase
+      if (effectiveDraft < minimum - 0.0005) {
+        flashToast('Effective $ cannot be lower than tracked + scheduled', 'error')
+        return
+      }
+      const delta = effectiveDraft - minimum
+      totalUsedUsd = delta > 0.0005 ? delta : null
+    } else if (trackedChanged) {
+      if (row.tracked_total_usd != null && trackedDraft < row.tracked_total_usd - 0.0005) {
+        flashToast('Tracked $ cannot be lower than provider tracked value', 'error')
+        return
+      }
+      if (row.tracked_total_usd != null) {
+        const delta = trackedDraft - row.tracked_total_usd
+        totalUsedUsd = delta > 0.0005 ? delta : null
+      } else {
+        totalUsedUsd = trackedDraft > 0.0005 ? trackedDraft : null
+      }
+    } else {
+      flashToast('No history change to save')
+      return
+    }
     try {
       await invoke('set_spend_history_entry', {
         provider: row.provider,
@@ -1295,8 +1413,10 @@ export default function App() {
     if (source === 'provider_budget_api+manual_history') return 'provider budget + history'
     if (source === 'provider_budget_api_latest_day') return 'provider daily snapshot'
     if (source === 'provider_token_rate') return 'provider token-rate'
-    if (source === 'manual_per_request') return 'manual $/req'
+    if (source === 'manual_per_request') return 'manual'
     if (source === 'manual_package_total') return 'manual package total'
+    if (source === 'manual_package_timeline') return 'scheduled'
+    if (source === 'manual_package_timeline+manual_history') return 'scheduled + manual'
     if (source === 'manual_history') return 'history manual'
     if (source === 'gap_fill_per_request') return 'gap fill $/req'
     if (source === 'gap_fill_total') return 'gap fill total'
@@ -1386,18 +1506,21 @@ export default function App() {
     if (!provider) return
     const mode = provider.manual_pricing_mode ?? null
     const amount = provider.manual_pricing_amount_usd ?? null
+    const expiresAt = provider.manual_pricing_expires_at_unix_ms ?? null
     try {
       if (!mode) {
         await invoke('set_provider_manual_pricing', {
           provider: name,
           mode: 'none',
           amountUsd: null,
+          packageExpiresAtUnixMs: null,
         })
       } else {
         await invoke('set_provider_manual_pricing', {
           provider: name,
           mode,
           amountUsd: amount,
+          packageExpiresAtUnixMs: mode === 'package_total' ? expiresAt : null,
         })
       }
       flashToast(`Pricing saved: ${name}`)
@@ -1739,10 +1862,15 @@ export default function App() {
           amountUsd != null && Number.isFinite(amountUsd) && amountUsd > 0
             ? formatDraftAmount(convertUsdToCurrency(amountUsd, currency))
             : ''
+        const expiresAtText =
+          mode === 'package_total'
+            ? toDateTimeLocalValue(providerCfg?.manual_pricing_expires_at_unix_ms ?? null)
+            : ''
         next[row.provider] = {
           mode,
           amountText,
           currency,
+          expiresAtText,
         }
       })
       return next
@@ -2899,16 +3027,28 @@ requires_openai_auth = true`}
                 <div className="aoHint">Loading...</div>
               ) : usageHistoryRows.length ? (
                 <table className="aoUsageHistoryTable">
+                  <colgroup>
+                    <col className="aoUsageHistoryColDate" />
+                    <col className="aoUsageHistoryColProv" />
+                    <col className="aoUsageHistoryColReq" />
+                    <col className="aoUsageHistoryColTok" />
+                    <col className="aoUsageHistoryColTrk" />
+                    <col className="aoUsageHistoryColEff" />
+                    <col className="aoUsageHistoryColPkg" />
+                    <col className="aoUsageHistoryColExp" />
+                    <col className="aoUsageHistoryColSrc" />
+                    <col className="aoUsageHistoryColAct" />
+                  </colgroup>
                   <thead>
                     <tr>
-                      <th>Day</th>
+                      <th>Date</th>
                       <th>Provider</th>
-                      <th>Req</th>
+                      <th>Requests</th>
                       <th>Tokens</th>
                       <th>Tracked $</th>
-                      <th>Manual Total $</th>
-                      <th>Manual $/Req</th>
                       <th>Effective $</th>
+                      <th>Package $</th>
+                      <th>Expires</th>
                       <th>Source</th>
                       <th>Action</th>
                     </tr>
@@ -2916,51 +3056,127 @@ requires_openai_auth = true`}
                   <tbody>
                     {usageHistoryRows.map((row) => {
                       const key = `${row.provider}|${row.day_key}`
-                      const draft = usageHistoryDrafts[key] ?? { totalText: '', reqText: '' }
+                      const baseDraft = historyDraftFromRow(row)
+                      const draft = usageHistoryDrafts[key] ?? baseDraft
+                      const trackedDisplay = historyTrackedDisplayValue(row)
+                      const effectiveDisplay = historyEffectiveDisplayValue(row)
+                      const trackedEditing =
+                        usageHistoryEditCell?.key === key && usageHistoryEditCell.field === 'tracked'
+                      const effectiveEditing =
+                        usageHistoryEditCell?.key === key && usageHistoryEditCell.field === 'effective'
+                      const isDirty =
+                        draft.trackedText.trim() !== baseDraft.trackedText ||
+                        draft.effectiveText.trim() !== baseDraft.effectiveText
                       return (
                         <tr key={key}>
-                          <td>{row.day_key}</td>
+                          <td className="aoUsageHistoryDateCell">{row.day_key}</td>
                           <td className="aoUsageProviderName">{row.provider}</td>
                           <td>{(row.req_count ?? 0).toLocaleString()}</td>
                           <td>{(row.total_tokens ?? 0).toLocaleString()}</td>
-                          <td>{fmtUsdMaybe(row.tracked_total_usd ?? null)}</td>
                           <td>
-                            <input
-                              className="aoInput aoUsageHistoryInput"
-                              type="number"
-                              min="0"
-                              step="0.001"
-                              placeholder="0"
-                              value={draft.totalText}
-                              onChange={(e) =>
-                                setUsageHistoryDrafts((prev) => ({
-                                  ...prev,
-                                  [key]: { ...draft, totalText: e.target.value },
-                                }))
-                              }
-                            />
+                            <div className="aoUsageHistoryValueCell">
+                              {trackedEditing ? (
+                                <input
+                                  className="aoInput aoUsageHistoryInput"
+                                  type="number"
+                                  min="0"
+                                  step="0.001"
+                                  placeholder="0"
+                                  value={draft.trackedText}
+                                  onChange={(e) =>
+                                    setUsageHistoryDrafts((prev) => ({
+                                      ...prev,
+                                      [key]: { ...draft, trackedText: e.target.value },
+                                    }))
+                                  }
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      void saveUsageHistoryRow(row)
+                                    } else if (e.key === 'Escape') {
+                                      setUsageHistoryDrafts((prev) => ({ ...prev, [key]: baseDraft }))
+                                      setUsageHistoryEditCell(null)
+                                    }
+                                  }}
+                                  autoFocus
+                                />
+                              ) : (
+                                <span>{fmtUsdMaybe(trackedDisplay)}</span>
+                              )}
+                              <button
+                                className="aoUsageHistoryEditBtn"
+                                title="Edit tracked"
+                                aria-label="Edit tracked"
+                                onClick={() => {
+                                  setUsageHistoryDrafts((prev) => ({ ...prev, [key]: draft }))
+                                  setUsageHistoryEditCell({ key, field: 'tracked' })
+                                }}
+                              >
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                  <path d="M12 20h9" />
+                                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                                </svg>
+                              </button>
+                            </div>
                           </td>
                           <td>
-                            <input
-                              className="aoInput aoUsageHistoryInput"
-                              type="number"
-                              min="0"
-                              step="0.0001"
-                              placeholder="0"
-                              value={draft.reqText}
-                              onChange={(e) =>
-                                setUsageHistoryDrafts((prev) => ({
-                                  ...prev,
-                                  [key]: { ...draft, reqText: e.target.value },
-                                }))
-                              }
-                            />
+                            <div className="aoUsageHistoryValueCell">
+                              {effectiveEditing ? (
+                                <input
+                                  className="aoInput aoUsageHistoryInput"
+                                  type="number"
+                                  min="0"
+                                  step="0.001"
+                                  placeholder="0"
+                                  value={draft.effectiveText}
+                                  onChange={(e) =>
+                                    setUsageHistoryDrafts((prev) => ({
+                                      ...prev,
+                                      [key]: { ...draft, effectiveText: e.target.value },
+                                    }))
+                                  }
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      void saveUsageHistoryRow(row)
+                                    } else if (e.key === 'Escape') {
+                                      setUsageHistoryDrafts((prev) => ({ ...prev, [key]: baseDraft }))
+                                      setUsageHistoryEditCell(null)
+                                    }
+                                  }}
+                                  autoFocus
+                                />
+                              ) : (
+                                <span>{fmtUsdMaybe(effectiveDisplay)}</span>
+                              )}
+                              <button
+                                className="aoUsageHistoryEditBtn"
+                                title="Edit effective"
+                                aria-label="Edit effective"
+                                onClick={() => {
+                                  setUsageHistoryDrafts((prev) => ({ ...prev, [key]: draft }))
+                                  setUsageHistoryEditCell({ key, field: 'effective' })
+                                }}
+                              >
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                  <path d="M12 20h9" />
+                                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                                </svg>
+                              </button>
+                            </div>
                           </td>
-                          <td>{fmtUsdMaybe(row.effective_total_usd ?? null)}</td>
-                          <td>{row.source ?? '-'}</td>
+                          <td>{fmtUsdMaybe(row.scheduled_package_total_usd ?? null)}</td>
+                          <td>
+                            {row.scheduled_expires_at_unix_ms && row.scheduled_expires_at_unix_ms > 0
+                              ? fmtWhen(row.scheduled_expires_at_unix_ms)
+                              : '-'}
+                          </td>
+                          <td>{fmtHistorySource(row.source)}</td>
                           <td>
                             <div className="aoUsageHistoryActions">
-                              <button className="aoTinyBtn" onClick={() => void saveUsageHistoryRow(row)}>
+                              <button
+                                className="aoTinyBtn"
+                                onClick={() => void saveUsageHistoryRow(row)}
+                                disabled={!isDirty}
+                              >
                                 Save
                               </button>
                               <button
@@ -2974,10 +3190,7 @@ requires_openai_auth = true`}
                                         totalUsedUsd: null,
                                         usdPerReq: null,
                                       })
-                                      setUsageHistoryDrafts((prev) => ({
-                                        ...prev,
-                                        [key]: { totalText: '', reqText: '' },
-                                      }))
+                                      setUsageHistoryEditCell(null)
                                       await refreshUsageHistory({ silent: true })
                                       await refreshUsageStatistics({ silent: true })
                                       flashToast(`History cleared: ${row.provider} ${row.day_key}`)
@@ -3032,6 +3245,9 @@ requires_openai_auth = true`}
                         ? formatDraftAmount(providerCfg.manual_pricing_amount_usd)
                         : '',
                     currency: 'USD',
+                    expiresAtText: toDateTimeLocalValue(
+                      providerCfg?.manual_pricing_expires_at_unix_ms ?? null,
+                    ),
                   }
                   const mode = draft.mode
                   const amountDisabled = !providerCfg || mode === 'none'
@@ -3050,6 +3266,10 @@ requires_openai_auth = true`}
                               ...draft,
                               mode: nextMode,
                               amountText: nextMode === 'none' ? '' : draft.amountText,
+                              expiresAtText:
+                                nextMode === 'package_total'
+                                  ? draft.expiresAtText
+                                  : '',
                             },
                           }))
                         }}
@@ -3107,6 +3327,21 @@ requires_openai_auth = true`}
                           </span>
                         </button>
                       </div>
+                      <input
+                        className="aoInput aoUsagePricingInput aoUsagePricingExpires"
+                        type="datetime-local"
+                        disabled={!providerCfg || mode !== 'package_total'}
+                        value={draft.expiresAtText}
+                        onChange={(e) =>
+                          setUsagePricingDrafts((prev) => ({
+                            ...prev,
+                            [row.provider]: {
+                              ...draft,
+                              expiresAtText: e.target.value,
+                            },
+                          }))
+                        }
+                      />
                       <button
                         className="aoTinyBtn"
                         disabled={!providerCfg}
@@ -3119,7 +3354,8 @@ requires_openai_auth = true`}
                 })}
               </div>
               <div className="aoHint">
-                Use History to adjust per-day missing costs or corrections.
+                Monthly fee requires an expire time and creates a fixed period. Later changes only affect new periods.
+                Use History to adjust per-day corrections.
               </div>
             </div>
           </div>
@@ -3136,6 +3372,9 @@ requires_openai_auth = true`}
                         ? formatDraftAmount(providerCfg.manual_pricing_amount_usd)
                         : '',
                     currency: 'USD',
+                    expiresAtText: toDateTimeLocalValue(
+                      providerCfg?.manual_pricing_expires_at_unix_ms ?? null,
+                    ),
                   }
                   const amountDisabled = !providerCfg
                   if (amountDisabled) return null

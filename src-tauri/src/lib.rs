@@ -389,6 +389,191 @@ fn local_day_range_from_key(day_key: &str) -> Option<(u64, u64)> {
     Some((start_ms, end_ms))
 }
 
+fn add_package_total_segment_by_day(
+    by_day: &mut BTreeMap<String, f64>,
+    package_total_usd: f64,
+    segment_start_unix_ms: u64,
+    segment_end_unix_ms: u64,
+    window_start_unix_ms: u64,
+    window_end_unix_ms: u64,
+) {
+    if !package_total_usd.is_finite() || package_total_usd <= 0.0 {
+        return;
+    }
+    if segment_end_unix_ms <= segment_start_unix_ms || window_end_unix_ms <= window_start_unix_ms {
+        return;
+    }
+    let overlap_start = segment_start_unix_ms.max(window_start_unix_ms);
+    let overlap_end = segment_end_unix_ms.min(window_end_unix_ms);
+    if overlap_end <= overlap_start {
+        return;
+    }
+
+    let month_ms = (30_u64 * 24 * 60 * 60 * 1000) as f64;
+    let mut cursor = overlap_start;
+    while cursor < overlap_end {
+        let Some(day_key) = local_day_key_from_unix_ms(cursor) else {
+            break;
+        };
+        let Some((day_start, day_end)) = local_day_range_from_key(&day_key) else {
+            break;
+        };
+        let part_start = cursor.max(day_start);
+        let part_end = overlap_end.min(day_end);
+        if part_end > part_start {
+            let part_ms = (part_end.saturating_sub(part_start)) as f64;
+            let cost = package_total_usd * (part_ms / month_ms);
+            by_day
+                .entry(day_key)
+                .and_modify(|v| *v += cost)
+                .or_insert(cost);
+        }
+        if day_end <= cursor {
+            break;
+        }
+        cursor = day_end;
+    }
+}
+
+fn package_total_schedule_by_day(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+    window_start_unix_ms: u64,
+    window_end_unix_ms: u64,
+) -> BTreeMap<String, f64> {
+    let mut by_day: BTreeMap<String, f64> = BTreeMap::new();
+    let Some(cfg) = pricing_cfg else {
+        return by_day;
+    };
+    let mut has_timeline = false;
+    for period in cfg.periods.iter() {
+        if period.mode != "package_total" {
+            continue;
+        }
+        if !period.amount_usd.is_finite() || period.amount_usd <= 0.0 {
+            continue;
+        }
+        let segment_end = period.ended_at_unix_ms.unwrap_or(window_end_unix_ms);
+        add_package_total_segment_by_day(
+            &mut by_day,
+            period.amount_usd,
+            period.started_at_unix_ms,
+            segment_end,
+            window_start_unix_ms,
+            window_end_unix_ms,
+        );
+        has_timeline = true;
+    }
+    if !has_timeline
+        && cfg.mode == "package_total"
+        && cfg.amount_usd.is_finite()
+        && cfg.amount_usd > 0.0
+    {
+        add_package_total_segment_by_day(
+            &mut by_day,
+            cfg.amount_usd,
+            window_start_unix_ms,
+            window_end_unix_ms,
+            window_start_unix_ms,
+            window_end_unix_ms,
+        );
+    }
+    by_day
+}
+
+fn active_package_period(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+    now_unix_ms: u64,
+) -> Option<(f64, Option<u64>)> {
+    let cfg = pricing_cfg?;
+    let mut active: Option<(f64, Option<u64>)> = None;
+    let mut active_start = 0u64;
+    for period in cfg.periods.iter() {
+        if period.mode != "package_total" {
+            continue;
+        }
+        if !period.amount_usd.is_finite() || period.amount_usd <= 0.0 {
+            continue;
+        }
+        let ended = period.ended_at_unix_ms.unwrap_or(u64::MAX);
+        if period.started_at_unix_ms <= now_unix_ms
+            && now_unix_ms < ended
+            && period.started_at_unix_ms >= active_start
+        {
+            active = Some((period.amount_usd, period.ended_at_unix_ms));
+            active_start = period.started_at_unix_ms;
+        }
+    }
+    if active.is_some() {
+        return active;
+    }
+    if cfg.mode == "package_total" && cfg.amount_usd.is_finite() && cfg.amount_usd > 0.0 {
+        return Some((cfg.amount_usd, None));
+    }
+    None
+}
+
+fn active_package_total_usd(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+    now_unix_ms: u64,
+) -> Option<f64> {
+    active_package_period(pricing_cfg, now_unix_ms).map(|(amount, _)| amount)
+}
+
+fn package_profile_for_day(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+    day_start_unix_ms: u64,
+) -> Option<(f64, Option<u64>)> {
+    let cfg = pricing_cfg?;
+    let mut matched: Option<(f64, Option<u64>, u64)> = None;
+    for period in cfg.periods.iter() {
+        if period.mode != "package_total"
+            || !period.amount_usd.is_finite()
+            || period.amount_usd <= 0.0
+        {
+            continue;
+        }
+        let ended = period.ended_at_unix_ms.unwrap_or(u64::MAX);
+        if period.started_at_unix_ms <= day_start_unix_ms && day_start_unix_ms < ended {
+            let replace = matched
+                .as_ref()
+                .map(|(_, _, started)| period.started_at_unix_ms >= *started)
+                .unwrap_or(true);
+            if replace {
+                matched = Some((
+                    period.amount_usd,
+                    period.ended_at_unix_ms,
+                    period.started_at_unix_ms,
+                ));
+            }
+        }
+    }
+    if let Some((amount, expires, _)) = matched {
+        return Some((amount, expires));
+    }
+    if cfg.mode == "package_total" && cfg.amount_usd.is_finite() && cfg.amount_usd > 0.0 {
+        return Some((cfg.amount_usd, None));
+    }
+    None
+}
+
+fn aligned_bucket_start_unix_ms(ts_unix_ms: u64, bucket_ms: u64) -> Option<u64> {
+    if bucket_ms == 24 * 60 * 60 * 1000 {
+        let day_key = local_day_key_from_unix_ms(ts_unix_ms)?;
+        let (start, _) = local_day_range_from_key(&day_key)?;
+        return Some(start);
+    }
+    if bucket_ms == 60 * 60 * 1000 {
+        let ts = i64::try_from(ts_unix_ms).ok()?;
+        let dt = Local.timestamp_millis_opt(ts).single()?;
+        let hour = dt.with_minute(0)?.with_second(0)?.with_nanosecond(0)?;
+        return u64::try_from(hour.timestamp_millis()).ok();
+    }
+    if bucket_ms == 0 {
+        return Some(ts_unix_ms);
+    }
+    Some((ts_unix_ms / bucket_ms) * bucket_ms)
+}
+
 #[tauri::command]
 fn get_usage_statistics(
     state: tauri::State<'_, app_state::AppState>,
@@ -491,6 +676,8 @@ fn get_usage_statistics(
     let mut total_cache_read_tokens = 0u64;
     let mut by_model_map: BTreeMap<String, ModelAgg> = BTreeMap::new();
     let mut by_provider_map: BTreeMap<String, ProviderAgg> = BTreeMap::new();
+    let mut provider_req_by_day_in_window: BTreeMap<String, BTreeMap<String, u64>> =
+        BTreeMap::new();
 
     for rec in records {
         let ts = rec.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -562,8 +749,17 @@ fn get_usage_statistics(
             entry.requests = entry.requests.saturating_add(1);
             entry.total_tokens = entry.total_tokens.saturating_add(total_tokens_row);
         }
+        if let Some(day_key) = local_day_key_from_unix_ms(ts) {
+            provider_req_by_day_in_window
+                .entry(provider.clone())
+                .or_default()
+                .entry(day_key)
+                .and_modify(|cur| *cur = cur.saturating_add(1))
+                .or_insert(1);
+        }
 
-        let bucket = (ts / bucket_ms) * bucket_ms;
+        let bucket =
+            aligned_bucket_start_unix_ms(ts, bucket_ms).unwrap_or((ts / bucket_ms) * bucket_ms);
         provider_active_buckets
             .entry(provider.clone())
             .or_default()
@@ -621,6 +817,32 @@ fn get_usage_statistics(
         let amount_usd = pricing_cfg
             .map(|cfg| cfg.amount_usd)
             .filter(|v| v.is_finite() && *v > 0.0);
+        let req_by_day_in_window = provider_req_by_day_in_window.get(provider);
+        let usage_days = state.gateway.store.list_usage_days(provider);
+        let mut req_by_day: BTreeMap<String, u64> = BTreeMap::new();
+        for day in usage_days {
+            let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let req = day.get("req_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            req_by_day
+                .entry(day_key.to_string())
+                .and_modify(|cur| *cur = cur.saturating_add(req))
+                .or_insert(req);
+        }
+        let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>)> = BTreeMap::new();
+        for day in state.gateway.store.list_spend_manual_days(provider) {
+            let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let manual_total =
+                as_f64(day.get("manual_total_usd")).filter(|v| v.is_finite() && *v > 0.0);
+            let manual_per_req =
+                as_f64(day.get("manual_usd_per_req")).filter(|v| v.is_finite() && *v > 0.0);
+            if manual_total.is_some() || manual_per_req.is_some() {
+                manual_by_day.insert(day_key.to_string(), (manual_total, manual_per_req));
+            }
+        }
 
         let mut total_used_cost_usd: Option<f64> = None;
         let mut estimated_avg_request_cost_usd: Option<f64> = None;
@@ -641,18 +863,112 @@ fn get_usage_statistics(
                 }
             }
             "package_total" => {
-                if let Some(package_total) = amount_usd {
-                    let total_used = if window_hours >= 30 * 24 {
-                        package_total
-                    } else {
-                        package_total * (window_hours as f64 / (30.0 * 24.0))
-                    };
+                let has_package_timeline = pricing_cfg
+                    .map(|cfg| {
+                        cfg.periods
+                            .iter()
+                            .any(|period| period.mode == "package_total")
+                    })
+                    .unwrap_or(false);
+                let scheduled_by_day =
+                    package_total_schedule_by_day(pricing_cfg, since_unix_ms, now);
+                let mut day_keys: BTreeSet<String> = BTreeSet::new();
+                day_keys.extend(scheduled_by_day.keys().cloned());
+                day_keys.extend(manual_by_day.keys().cloned());
+
+                let mut scheduled_in_window = 0.0_f64;
+                let mut manual_in_window = 0.0_f64;
+                let mut total_used = 0.0_f64;
+
+                for day_key in day_keys {
+                    let scheduled_day = scheduled_by_day.get(&day_key).copied().unwrap_or(0.0);
+                    if scheduled_day > 0.0 {
+                        scheduled_in_window += scheduled_day;
+                    }
+
+                    let manual_window =
+                        manual_by_day
+                            .get(&day_key)
+                            .and_then(|(manual_total, manual_per_req)| {
+                                let (day_start, day_end) = local_day_range_from_key(&day_key)?;
+                                let overlap_start = day_start.max(since_unix_ms);
+                                let overlap_end = day_end.min(now);
+                                if overlap_end <= overlap_start {
+                                    return None;
+                                }
+                                let ratio = (overlap_end.saturating_sub(overlap_start)) as f64
+                                    / (day_end.saturating_sub(day_start).max(1) as f64);
+                                let day_req_total =
+                                    req_by_day.get(&day_key).copied().unwrap_or(0) as f64;
+                                let day_req_in_window = req_by_day_in_window
+                                    .and_then(|m| m.get(&day_key))
+                                    .copied()
+                                    .unwrap_or(0)
+                                    as f64;
+                                if let Some(v) = manual_total {
+                                    if day_req_total > 0.0 {
+                                        let req_ratio =
+                                            (day_req_in_window / day_req_total).clamp(0.0, 1.0);
+                                        Some(*v * req_ratio)
+                                    } else {
+                                        Some(*v * ratio)
+                                    }
+                                } else if let Some(v) = manual_per_req {
+                                    if day_req_in_window > 0.0 {
+                                        Some(*v * day_req_in_window)
+                                    } else {
+                                        Some(*v * day_req_total * ratio)
+                                    }
+                                } else {
+                                    None
+                                }
+                            });
+
+                    if let Some(v) = manual_window {
+                        if v > 0.0 {
+                            manual_in_window += v;
+                            total_used += v;
+                        }
+                    } else if scheduled_day > 0.0 {
+                        total_used += scheduled_day;
+                    }
+                }
+
+                if total_used > 0.0 {
                     total_used_cost_usd = Some(total_used);
                     if agg.requests > 0 {
                         estimated_avg_request_cost_usd = Some(total_used / agg.requests as f64);
                     }
-                    estimated_daily_cost_usd = Some(package_total / 30.0);
-                    pricing_source = "manual_package_total".to_string();
+                    let active_package_total = active_package_total_usd(pricing_cfg, now);
+                    if let Some(v) = active_package_total {
+                        estimated_daily_cost_usd = Some(v / 30.0);
+                    } else if window_hours > 0 {
+                        estimated_daily_cost_usd = Some(total_used * 24.0 / window_hours as f64);
+                    }
+                    pricing_source = if scheduled_in_window > 0.0 && manual_in_window > 0.0 {
+                        "manual_package_timeline+manual_history".to_string()
+                    } else if scheduled_in_window > 0.0 {
+                        "manual_package_timeline".to_string()
+                    } else {
+                        "manual_history".to_string()
+                    };
+                    if manual_in_window > 0.0 {
+                        gap_filled_spend_usd = Some(manual_in_window);
+                    }
+                } else if !has_package_timeline {
+                    if let Some(package_total) = amount_usd {
+                        let total_used = if window_hours >= 30 * 24 {
+                            package_total
+                        } else {
+                            package_total * (window_hours as f64 / (30.0 * 24.0))
+                        };
+                        total_used_cost_usd = Some(total_used);
+                        if agg.requests > 0 {
+                            estimated_avg_request_cost_usd = Some(total_used / agg.requests as f64);
+                        }
+                        estimated_daily_cost_usd = Some(package_total / 30.0);
+                        pricing_source = "manual_package_total".to_string();
+                    }
                 }
             }
             _ => {
@@ -686,25 +1002,8 @@ fn get_usage_statistics(
                     tracked_in_window += tracked * (overlap_len / segment_len);
                 }
 
-                let usage_days = state.gateway.store.list_usage_days(provider);
-                let mut req_by_day: BTreeMap<String, u64> = BTreeMap::new();
-                for day in usage_days {
-                    let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
-                        continue;
-                    };
-                    let req = day.get("req_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                    req_by_day
-                        .entry(day_key.to_string())
-                        .and_modify(|cur| *cur = cur.saturating_add(req))
-                        .or_insert(req);
-                }
-
-                let manual_days = state.gateway.store.list_spend_manual_days(provider);
                 let mut manual_additional_in_window = 0.0_f64;
-                for day in manual_days {
-                    let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
-                        continue;
-                    };
+                for (day_key, (manual_total, manual_per_req)) in manual_by_day.iter() {
                     let Some((day_start, day_end)) = local_day_range_from_key(day_key) else {
                         continue;
                     };
@@ -715,15 +1014,24 @@ fn get_usage_statistics(
                     }
                     let ratio = (overlap_end.saturating_sub(overlap_start)) as f64
                         / (day_end.saturating_sub(day_start).max(1) as f64);
-                    let day_req = req_by_day.get(day_key).copied().unwrap_or(0) as f64 * ratio;
-                    let manual_total =
-                        as_f64(day.get("manual_total_usd")).filter(|v| v.is_finite() && *v > 0.0);
-                    let manual_per_req =
-                        as_f64(day.get("manual_usd_per_req")).filter(|v| v.is_finite() && *v > 0.0);
+                    let day_req_total = req_by_day.get(day_key).copied().unwrap_or(0) as f64;
+                    let day_req_in_window = req_by_day_in_window
+                        .and_then(|m| m.get(day_key))
+                        .copied()
+                        .unwrap_or(0) as f64;
                     if let Some(v) = manual_total {
-                        manual_additional_in_window += v * ratio;
+                        if day_req_total > 0.0 {
+                            let req_ratio = (day_req_in_window / day_req_total).clamp(0.0, 1.0);
+                            manual_additional_in_window += *v * req_ratio;
+                        } else {
+                            manual_additional_in_window += *v * ratio;
+                        }
                     } else if let Some(v) = manual_per_req {
-                        manual_additional_in_window += v * day_req;
+                        if day_req_in_window > 0.0 {
+                            manual_additional_in_window += *v * day_req_in_window;
+                        } else {
+                            manual_additional_in_window += *v * day_req_total * ratio;
+                        }
                     }
                 }
 
@@ -906,8 +1214,10 @@ fn get_usage_statistics(
         br.cmp(&ar)
     });
 
-    let first_bucket = (since_unix_ms / bucket_ms) * bucket_ms;
-    let last_bucket = (now / bucket_ms) * bucket_ms;
+    let first_bucket = aligned_bucket_start_unix_ms(since_unix_ms, bucket_ms)
+        .unwrap_or((since_unix_ms / bucket_ms) * bucket_ms);
+    let last_bucket =
+        aligned_bucket_start_unix_ms(now, bucket_ms).unwrap_or((now / bucket_ms) * bucket_ms);
     let mut timeline_points: Vec<Value> = Vec::new();
     let mut bucket = first_bucket;
     while bucket <= last_bucket {
@@ -1004,6 +1314,7 @@ fn get_spend_history(
         .filter(|s| !s.is_empty());
 
     let cfg = state.gateway.cfg.read().clone();
+    let pricing = state.secrets.list_provider_pricing();
     let mut providers: Vec<String> = cfg.providers.keys().cloned().collect();
     providers.sort();
 
@@ -1127,11 +1438,15 @@ fn get_spend_history(
                 (manual_total, manual_per_req, updated_at),
             );
         }
+        let mut scheduled_by_day =
+            package_total_schedule_by_day(pricing.get(&provider_name), since, now);
+        scheduled_by_day.retain(|_, v| v.is_finite() && *v > 0.0);
 
         let mut day_keys: BTreeSet<String> = BTreeSet::new();
         day_keys.extend(usage_by_day.keys().cloned());
         day_keys.extend(tracked_by_day.keys().cloned());
         day_keys.extend(manual_by_day.keys().cloned());
+        day_keys.extend(scheduled_by_day.keys().cloned());
 
         for day_key in day_keys {
             let Some((day_start, _day_end)) = local_day_range_from_key(&day_key) else {
@@ -1142,7 +1457,11 @@ fn get_spend_history(
             }
             let (req_count, total_tokens, usage_updated_at) =
                 usage_by_day.get(&day_key).copied().unwrap_or((0, 0, 0));
+            let package_profile = package_profile_for_day(pricing.get(&provider_name), day_start);
             let tracked_total = tracked_by_day.get(&day_key).copied();
+            let scheduled_total = scheduled_by_day.get(&day_key).copied();
+            let scheduled_package_total_usd = package_profile.map(|(amount, _)| amount);
+            let scheduled_expires_at_unix_ms = package_profile.and_then(|(_, expires)| expires);
             let (manual_total, manual_per_req, manual_updated_at) = manual_by_day
                 .get(&day_key)
                 .copied()
@@ -1159,7 +1478,12 @@ fn get_spend_history(
             } else {
                 None
             };
-            let effective_total = match (tracked_total, manual_additional) {
+            let effective_extra = if manual_additional.is_some() {
+                manual_additional
+            } else {
+                scheduled_total
+            };
+            let effective_total = match (tracked_total, effective_extra) {
                 (Some(a), Some(b)) => Some(a + b),
                 (Some(a), None) => Some(a),
                 (None, Some(b)) => Some(b),
@@ -1176,12 +1500,14 @@ fn get_spend_history(
             } else {
                 None
             };
-            let source = match (tracked_total, manual_total, manual_per_req) {
-                (Some(_), Some(_), _) => "tracked+manual_total",
-                (Some(_), None, Some(_)) => "tracked+manual_per_request",
-                (Some(_), None, None) => "tracked",
-                (None, Some(_), _) => "manual_total",
-                (None, None, Some(_)) => "manual_per_request",
+            let source = match (tracked_total, scheduled_total, manual_total, manual_per_req) {
+                (Some(_), _, Some(_), _) => "tracked+manual_total",
+                (Some(_), _, None, Some(_)) => "tracked+manual_per_request",
+                (Some(_), Some(_), None, None) => "tracked+scheduled",
+                (Some(_), None, None, None) => "tracked",
+                (None, _, Some(_), _) => "manual_total",
+                (None, _, None, Some(_)) => "manual_per_request",
+                (None, Some(_), None, None) => "scheduled_package_total",
                 _ => "none",
             };
             let updated_at = usage_updated_at
@@ -1193,6 +1519,9 @@ fn get_spend_history(
                 "req_count": req_count,
                 "total_tokens": total_tokens,
                 "tracked_total_usd": tracked_total.map(round3),
+                "scheduled_total_usd": scheduled_total.map(round3),
+                "scheduled_package_total_usd": scheduled_package_total_usd.map(round3),
+                "scheduled_expires_at_unix_ms": scheduled_expires_at_unix_ms,
                 "manual_total_usd": manual_total.map(round3),
                 "manual_usd_per_req": manual_per_req.map(round3),
                 "effective_total_usd": effective_total.map(round3),
@@ -1309,6 +1638,7 @@ fn set_manual_override(
 fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value {
     let cfg = state.gateway.cfg.read().clone();
     let pricing = state.secrets.list_provider_pricing();
+    let now = unix_ms();
     // Never expose keys in UI/API.
     let providers: serde_json::Map<String, serde_json::Value> = cfg
         .providers
@@ -1317,6 +1647,19 @@ fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
             let key = state.secrets.get_provider_key(name);
             let usage_token = state.secrets.get_usage_token(name);
             let manual_pricing = pricing.get(name).cloned();
+            let active_package = active_package_period(manual_pricing.as_ref(), now);
+            let active_package_amount = active_package.map(|(amount, _)| amount);
+            let active_package_expires = active_package.and_then(|(_, expires)| expires);
+            let manual_mode = manual_pricing.as_ref().map(|v| v.mode.clone());
+            let manual_amount = manual_pricing.as_ref().and_then(|v| {
+                if v.mode == "none" {
+                    None
+                } else if v.mode == "package_total" {
+                    active_package_amount.or(Some(v.amount_usd))
+                } else {
+                    Some(v.amount_usd)
+                }
+            });
             let has_key = key.is_some();
             let key_preview = key.as_deref().map(mask_key_preview);
             (
@@ -1326,8 +1669,9 @@ fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                   "base_url": p.base_url,
                   "usage_adapter": p.usage_adapter.clone(),
                   "usage_base_url": p.usage_base_url.clone(),
-                  "manual_pricing_mode": manual_pricing.as_ref().map(|v| v.mode.clone()).filter(|m| m != "none"),
-                  "manual_pricing_amount_usd": manual_pricing.as_ref().and_then(|v| if v.mode == "none" { None } else { Some(v.amount_usd) }),
+                  "manual_pricing_mode": manual_mode.filter(|m| m != "none"),
+                  "manual_pricing_amount_usd": manual_amount,
+                  "manual_pricing_expires_at_unix_ms": active_package_expires,
                   "manual_gap_fill_mode": manual_pricing.as_ref().and_then(|v| v.gap_fill_mode.clone()),
                   "manual_gap_fill_amount_usd": manual_pricing.as_ref().and_then(|v| v.gap_fill_amount_usd),
                   "has_key": has_key
@@ -1887,6 +2231,7 @@ fn set_provider_manual_pricing(
     provider: String,
     mode: String,
     amount_usd: Option<f64>,
+    package_expires_at_unix_ms: Option<u64>,
 ) -> Result<(), String> {
     if !state.gateway.cfg.read().providers.contains_key(&provider) {
         return Err(format!("unknown provider: {provider}"));
@@ -1894,7 +2239,9 @@ fn set_provider_manual_pricing(
     let mode = mode.trim().to_lowercase();
     match mode.as_str() {
         "none" => {
-            state.secrets.set_provider_pricing(&provider, "none", 0.0)?;
+            state
+                .secrets
+                .set_provider_pricing(&provider, "none", 0.0, None)?;
             state.gateway.store.add_event(
                 &provider,
                 "info",
@@ -1911,7 +2258,21 @@ fn set_provider_manual_pricing(
             if !v.is_finite() || v <= 0.0 {
                 return Err("amount_usd must be > 0".to_string());
             }
-            state.secrets.set_provider_pricing(&provider, &mode, v)?;
+            let expires = if mode == "package_total" {
+                if let Some(ts) = package_expires_at_unix_ms {
+                    if ts <= unix_ms() {
+                        return Err("package_expires_at_unix_ms must be in the future".to_string());
+                    }
+                    Some(ts)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            state
+                .secrets
+                .set_provider_pricing(&provider, &mode, v, expires)?;
             state.gateway.store.add_event(
                 &provider,
                 "info",
@@ -1920,6 +2281,7 @@ fn set_provider_manual_pricing(
                 serde_json::json!({
                     "mode": mode,
                     "amount_usd": v,
+                    "package_expires_at_unix_ms": expires,
                 }),
             );
             Ok(())
