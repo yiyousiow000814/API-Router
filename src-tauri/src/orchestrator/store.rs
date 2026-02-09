@@ -9,6 +9,15 @@ pub struct Store {
 
 const LEDGER_DEFAULT: &str = r#"{"since_last_quota_refresh_input_tokens":0,"since_last_quota_refresh_output_tokens":0,"since_last_quota_refresh_total_tokens":0,"last_reset_unix_ms":0}"#;
 
+#[derive(Clone, Copy)]
+struct UsageTokenIncrements {
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    cache_creation_input_tokens: u64,
+    cache_read_input_tokens: u64,
+}
+
 impl Store {
     const MAX_EVENTS: usize = 200;
     const MAX_USAGE_REQUESTS: usize = 500_000;
@@ -251,18 +260,17 @@ impl Store {
             cache_creation_input_tokens,
             cache_read_input_tokens,
         ) = Self::extract_usage_tokens(response_obj);
-
-        self.bump_metrics(provider, 1, 0, total_tokens);
-        self.bump_ledger(provider, input_tokens, output_tokens, total_tokens);
-        self.add_usage_request(
-            provider,
-            &Self::extract_model(response_obj),
+        let increments = UsageTokenIncrements {
             input_tokens,
             output_tokens,
             total_tokens,
             cache_creation_input_tokens,
             cache_read_input_tokens,
-        );
+        };
+
+        self.bump_metrics(provider, 1, 0, total_tokens);
+        self.bump_ledger(provider, input_tokens, output_tokens, total_tokens);
+        self.add_usage_request(provider, &Self::extract_model(response_obj), increments);
     }
 
     pub fn record_failure(&self, provider: &str) {
@@ -651,16 +659,7 @@ impl Store {
             .to_string()
     }
 
-    fn add_usage_request(
-        &self,
-        provider: &str,
-        model: &str,
-        input_tokens: u64,
-        output_tokens: u64,
-        total_tokens: u64,
-        cache_creation_input_tokens: u64,
-        cache_read_input_tokens: u64,
-    ) {
+    fn add_usage_request(&self, provider: &str, model: &str, increments: UsageTokenIncrements) {
         let ts = unix_ms();
         let id = uuid::Uuid::new_v4().to_string();
         let key = format!("usage_req:{ts}:{id}");
@@ -668,24 +667,16 @@ impl Store {
             "provider": provider,
             "model": model,
             "unix_ms": ts,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": total_tokens,
-            "cache_creation_input_tokens": cache_creation_input_tokens,
-            "cache_read_input_tokens": cache_read_input_tokens,
+            "input_tokens": increments.input_tokens,
+            "output_tokens": increments.output_tokens,
+            "total_tokens": increments.total_tokens,
+            "cache_creation_input_tokens": increments.cache_creation_input_tokens,
+            "cache_read_input_tokens": increments.cache_read_input_tokens,
         });
         let _ = self
             .db
             .insert(key.as_bytes(), serde_json::to_vec(&v).unwrap_or_default());
-        self.bump_usage_day(
-            provider,
-            ts,
-            input_tokens,
-            output_tokens,
-            total_tokens,
-            cache_creation_input_tokens,
-            cache_read_input_tokens,
-        );
+        self.bump_usage_day(provider, ts, increments);
         self.prune_usage_requests();
         let _ = self.db.flush();
     }
@@ -699,16 +690,7 @@ impl Store {
         }
     }
 
-    fn bump_usage_day(
-        &self,
-        provider: &str,
-        ts_unix_ms: u64,
-        input_inc: u64,
-        output_inc: u64,
-        total_inc: u64,
-        cache_creation_inc: u64,
-        cache_read_inc: u64,
-    ) {
+    fn bump_usage_day(&self, provider: &str, ts_unix_ms: u64, increments: UsageTokenIncrements) {
         let day_key = Self::local_day_key(ts_unix_ms);
         let key = format!("usage_day:{provider}:{day_key}");
         let cur = self
@@ -735,19 +717,19 @@ impl Store {
             "provider": provider,
             "day_key": day_key,
             "req_count": cur.get("req_count").and_then(|v| v.as_u64()).unwrap_or(0).saturating_add(1),
-            "input_tokens": cur.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0).saturating_add(input_inc),
-            "output_tokens": cur.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0).saturating_add(output_inc),
-            "total_tokens": cur.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0).saturating_add(total_inc),
+            "input_tokens": cur.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0).saturating_add(increments.input_tokens),
+            "output_tokens": cur.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0).saturating_add(increments.output_tokens),
+            "total_tokens": cur.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0).saturating_add(increments.total_tokens),
             "cache_creation_input_tokens": cur
                 .get("cache_creation_input_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0)
-                .saturating_add(cache_creation_inc),
+                .saturating_add(increments.cache_creation_input_tokens),
             "cache_read_input_tokens": cur
                 .get("cache_read_input_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0)
-                .saturating_add(cache_read_inc),
+                .saturating_add(increments.cache_read_input_tokens),
             "updated_at_unix_ms": ts_unix_ms
         });
         let _ = self.db.insert(

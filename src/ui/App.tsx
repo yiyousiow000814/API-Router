@@ -293,10 +293,8 @@ export default function App() {
   const mainAreaRef = useRef<HTMLDivElement | null>(null)
   const usagePricingCurrencyMenuRef = useRef<HTMLDivElement | null>(null)
   const usageScheduleCurrencyMenuRef = useRef<HTMLDivElement | null>(null)
-  const usagePricingAutoSaveTimersRef = useRef<Record<string, number>>({})
+  const autoSaveTimersRef = useRef<Record<string, number>>({})
   const usagePricingLastSavedSigRef = useRef<Record<string, string>>({})
-  const usageHistoryAutoSaveTimerRef = useRef<number | null>(null)
-  const usageScheduleAutoSaveTimerRef = useRef<number | null>(null)
   const usageScheduleLastSavedSigRef = useRef<string>('')
   const toastTimerRef = useRef<number | null>(null)
 
@@ -342,6 +340,15 @@ export default function App() {
       }
     } catch (e) {
       console.warn('Failed to load UI prefs', e)
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      Object.keys(autoSaveTimersRef.current).forEach((key) => {
+        window.clearTimeout(autoSaveTimersRef.current[key])
+      })
+      autoSaveTimersRef.current = {}
     }
   }, [])
 
@@ -573,6 +580,31 @@ export default function App() {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current)
     const ms = kind === 'error' ? 5200 : 2400
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
+  }
+
+  function clearAutoSaveTimer(key: string) {
+    const timer = autoSaveTimersRef.current[key]
+    if (timer) {
+      window.clearTimeout(timer)
+      delete autoSaveTimersRef.current[key]
+    }
+  }
+
+  function clearAutoSaveTimersByPrefix(prefix: string) {
+    Object.keys(autoSaveTimersRef.current).forEach((key) => {
+      if (key.startsWith(prefix)) {
+        window.clearTimeout(autoSaveTimersRef.current[key])
+        delete autoSaveTimersRef.current[key]
+      }
+    })
+  }
+
+  function queueAutoSaveTimer(key: string, callback: () => void, delayMs = 700) {
+    clearAutoSaveTimer(key)
+    autoSaveTimersRef.current[key] = window.setTimeout(() => {
+      delete autoSaveTimersRef.current[key]
+      callback()
+    }, delayMs)
   }
 
   function resolveCliHomes(dir1: string, dir2: string, applyBoth: boolean): string[] {
@@ -1113,13 +1145,10 @@ export default function App() {
       setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saved' }))
       return
     }
-    const pending = usagePricingAutoSaveTimersRef.current[providerName]
-    if (pending) {
-      window.clearTimeout(pending)
-      delete usagePricingAutoSaveTimersRef.current[providerName]
-    }
+    const timerKey = `pricing:${providerName}`
+    clearAutoSaveTimer(timerKey)
     setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'idle' }))
-    usagePricingAutoSaveTimersRef.current[providerName] = window.setTimeout(() => {
+    queueAutoSaveTimer(timerKey, () => {
       void (async () => {
         setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saving' }))
         const ok = await saveUsagePricingRow(providerName, { silent: true, draftOverride: draft })
@@ -1130,8 +1159,7 @@ export default function App() {
           setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'error' }))
         }
       })()
-      delete usagePricingAutoSaveTimersRef.current[providerName]
-    }, 700)
+    })
   }
 
   async function saveUsagePricingRow(
@@ -1219,14 +1247,9 @@ export default function App() {
 
   function queueUsageHistoryAutoSave(row: SpendHistoryRow) {
     if (!usageHistoryModalOpen) return
-    if (usageHistoryAutoSaveTimerRef.current) {
-      window.clearTimeout(usageHistoryAutoSaveTimerRef.current)
-      usageHistoryAutoSaveTimerRef.current = null
-    }
-    usageHistoryAutoSaveTimerRef.current = window.setTimeout(() => {
+    queueAutoSaveTimer('history:edit', () => {
       void saveUsageHistoryRow(row, { silent: true })
-      usageHistoryAutoSaveTimerRef.current = null
-    }, 700)
+    })
   }
 
   async function saveUsageHistoryRow(row: SpendHistoryRow, options?: { silent?: boolean }) {
@@ -2107,10 +2130,7 @@ export default function App() {
     if (!usagePricingModalOpen) {
       usagePricingDraftsPrimedRef.current = false
       closeUsagePricingCurrencyMenu()
-      Object.values(usagePricingAutoSaveTimersRef.current).forEach((timerId) => {
-        window.clearTimeout(timerId)
-      })
-      usagePricingAutoSaveTimersRef.current = {}
+      clearAutoSaveTimersByPrefix('pricing:')
       usagePricingLastSavedSigRef.current = {}
       setUsagePricingSaveState({})
       return
@@ -2155,10 +2175,7 @@ export default function App() {
 
   useEffect(() => {
     if (!usageHistoryModalOpen) {
-      if (usageHistoryAutoSaveTimerRef.current) {
-        window.clearTimeout(usageHistoryAutoSaveTimerRef.current)
-        usageHistoryAutoSaveTimerRef.current = null
-      }
+      clearAutoSaveTimer('history:edit')
       return
     }
     void refreshUsageHistory()
@@ -2233,19 +2250,11 @@ export default function App() {
       }
       return
     }
-    if (usageScheduleAutoSaveTimerRef.current) {
-      window.clearTimeout(usageScheduleAutoSaveTimerRef.current)
-      usageScheduleAutoSaveTimerRef.current = null
-    }
-    usageScheduleAutoSaveTimerRef.current = window.setTimeout(() => {
+    queueAutoSaveTimer('schedule:rows', () => {
       void autoSaveUsageScheduleRows(usageScheduleProvider, usageScheduleRows, signature)
-      usageScheduleAutoSaveTimerRef.current = null
-    }, 700)
+    })
     return () => {
-      if (usageScheduleAutoSaveTimerRef.current) {
-        window.clearTimeout(usageScheduleAutoSaveTimerRef.current)
-        usageScheduleAutoSaveTimerRef.current = null
-      }
+      clearAutoSaveTimer('schedule:rows')
     }
   }, [
     usageScheduleModalOpen,
@@ -3448,10 +3457,7 @@ requires_openai_auth = true`}
                                     }
                                   }}
                                   onBlur={() => {
-                                    if (usageHistoryAutoSaveTimerRef.current) {
-                                      window.clearTimeout(usageHistoryAutoSaveTimerRef.current)
-                                      usageHistoryAutoSaveTimerRef.current = null
-                                    }
+                                    clearAutoSaveTimer('history:edit')
                                     void saveUsageHistoryRow(row, { silent: true })
                                   }}
                                   autoFocus
@@ -3573,11 +3579,7 @@ requires_openai_auth = true`}
                           if (nextMode !== 'package_total') {
                             queueUsagePricingAutoSave(row.provider, nextDraft)
                           } else {
-                            const pending = usagePricingAutoSaveTimersRef.current[row.provider]
-                            if (pending) {
-                              window.clearTimeout(pending)
-                              delete usagePricingAutoSaveTimersRef.current[row.provider]
-                            }
+                            clearAutoSaveTimer(`pricing:${row.provider}`)
                             setUsagePricingSaveState((prev) => ({ ...prev, [row.provider]: 'idle' }))
                           }
                         }}
@@ -3754,10 +3756,7 @@ requires_openai_auth = true`}
           className="aoModalBackdrop aoModalBackdropTop"
           onClose={() => {
             closeUsageScheduleCurrencyMenu()
-            if (usageScheduleAutoSaveTimerRef.current) {
-              window.clearTimeout(usageScheduleAutoSaveTimerRef.current)
-              usageScheduleAutoSaveTimerRef.current = null
-            }
+            clearAutoSaveTimer('schedule:rows')
             setUsageScheduleSaveState('idle')
             setUsageScheduleModalOpen(false)
           }}
@@ -3774,10 +3773,7 @@ requires_openai_auth = true`}
                 className="aoBtn"
                 onClick={() => {
                   closeUsageScheduleCurrencyMenu()
-                  if (usageScheduleAutoSaveTimerRef.current) {
-                    window.clearTimeout(usageScheduleAutoSaveTimerRef.current)
-                    usageScheduleAutoSaveTimerRef.current = null
-                  }
+                  clearAutoSaveTimer('schedule:rows')
                   setUsageScheduleSaveState('idle')
                   setUsageScheduleModalOpen(false)
                 }}
