@@ -1100,6 +1100,8 @@ fn get_usage_statistics(
                                 } else if let Some(v) = manual_per_req {
                                     if day_req_in_window > 0.0 {
                                         Some(*v * day_req_in_window)
+                                    } else if has_model_filter {
+                                        Some(0.0)
                                     } else {
                                         Some(*v * day_req_total * ratio)
                                     }
@@ -1226,6 +1228,8 @@ fn get_usage_statistics(
                     } else if let Some(v) = manual_per_req {
                         if day_req_in_window > 0.0 {
                             manual_additional_in_window += *v * day_req_in_window;
+                        } else if has_model_filter {
+                            manual_additional_in_window += 0.0;
                         } else {
                             manual_additional_in_window += *v * day_req_total * ratio;
                         }
