@@ -1814,9 +1814,10 @@ fn get_spend_history(
                 })
                 .or_insert((1, total_tokens, ts));
         }
-        // Prefer request-derived day rows when present (more complete for historical backfill).
+        // Backfill only missing days from raw requests; keep existing usage_day aggregation
+        // as the canonical source when both are present.
         for (day_key, row) in usage_by_day_from_req {
-            usage_by_day.insert(day_key, row);
+            usage_by_day.entry(day_key).or_insert(row);
         }
 
         let mut tracked_by_day: BTreeMap<String, f64> = BTreeMap::new();

@@ -412,6 +412,8 @@ impl Store {
         if old == new {
             return;
         }
+
+        let new_provider = new.to_string();
         for prefix in ["metrics:", "quota:", "ledger:", "spend_state:"] {
             let old_key = format!("{prefix}{old}");
             if let Ok(Some(v)) = self.db.get(old_key.as_bytes()) {
@@ -419,6 +421,33 @@ impl Store {
                 let _ = self.db.insert(new_key.as_bytes(), v);
                 let _ = self.db.remove(old_key.as_bytes());
             }
+        }
+
+        let mut usage_req_updates: Vec<(sled::IVec, Vec<u8>)> = Vec::new();
+        for res in self.db.scan_prefix(b"usage_req:") {
+            let Ok((key, value)) = res else {
+                continue;
+            };
+            let Ok(mut request) = serde_json::from_slice::<Value>(&value) else {
+                continue;
+            };
+            let Some(object) = request.as_object_mut() else {
+                continue;
+            };
+            let provider = object
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if provider != old {
+                continue;
+            }
+            object.insert("provider".to_string(), Value::String(new_provider.clone()));
+            if let Ok(encoded) = serde_json::to_vec(&request) {
+                usage_req_updates.push((key, encoded));
+            }
+        }
+        for (key, encoded) in usage_req_updates {
+            let _ = self.db.insert(key, encoded);
         }
 
         for prefix in ["usage_day:", "spend_day:", "spend_manual_day:"] {
