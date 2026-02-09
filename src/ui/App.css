@@ -983,6 +983,10 @@
   width: 102px;
 }
 
+.aoUsageHistoryColReqUsd {
+  width: 94px;
+}
+
 .aoUsageHistoryColEff {
   width: 122px;
 }
@@ -1096,40 +1100,40 @@
 }
 
 .aoUsageScheduleColStart {
-  width: 208px;
+  width: 200px;
 }
 
 .aoUsageScheduleColExpires {
-  width: 208px;
+  width: 200px;
 }
 
 .aoUsageScheduleColProvider {
-  width: 104px;
+  width: 118px;
 }
 
 .aoUsageScheduleColApiKey {
-  width: 132px;
+  width: 124px;
 }
 
 .aoUsageScheduleColMode {
-  width: 122px;
+  width: 136px;
 }
 
 .aoUsageScheduleColAmount {
-  width: 82px;
+  width: 92px;
 }
 
 .aoUsageScheduleColCurrency {
-  width: 94px;
+  width: 92px;
 }
 
 .aoUsageScheduleColAction {
-  width: 84px;
+  width: 88px;
 }
 
 .aoUsageScheduleTable th,
 .aoUsageScheduleTable td {
-  padding: 5px 6px;
+  padding: 6px 8px;
   border-bottom: 1px solid rgba(13, 18, 32, 0.08);
   text-align: left;
   vertical-align: middle;
@@ -1157,7 +1161,8 @@
 }
 
 .aoUsageScheduleAmount {
-  width: 72px;
+  width: 100%;
+  min-width: 0;
   appearance: textfield;
   -moz-appearance: textfield;
   padding-right: 8px;

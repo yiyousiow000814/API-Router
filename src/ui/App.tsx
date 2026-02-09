@@ -45,6 +45,11 @@ type SpendHistoryRow = {
   updated_at_unix_ms?: number
 }
 
+type UsageHistoryDraft = {
+  effectiveText: string
+  perReqText: string
+}
+
 type ProviderSchedulePeriod = {
   id: string
   mode?: PricingTimelineMode
@@ -266,7 +271,7 @@ export default function App() {
   const [usageScheduleSaveError, setUsageScheduleSaveError] = useState<string>('')
   const [usageHistoryModalOpen, setUsageHistoryModalOpen] = useState<boolean>(false)
   const [usageHistoryRows, setUsageHistoryRows] = useState<SpendHistoryRow[]>([])
-  const [usageHistoryDrafts, setUsageHistoryDrafts] = useState<Record<string, { effectiveText: string }>>({})
+  const [usageHistoryDrafts, setUsageHistoryDrafts] = useState<Record<string, UsageHistoryDraft>>({})
   const [usageHistoryEditCell, setUsageHistoryEditCell] = useState<string | null>(null)
   const [usageHistoryLoading, setUsageHistoryLoading] = useState<boolean>(false)
   const [usagePricingCurrencyMenu, setUsagePricingCurrencyMenu] = useState<{
@@ -1085,10 +1090,22 @@ function newScheduleDraft(
     return total > 0 ? total : null
   }
 
-  function historyDraftFromRow(row: SpendHistoryRow): { effectiveText: string } {
+  function historyPerReqDisplayValue(row: SpendHistoryRow): number | null {
+    if (row.effective_usd_per_req != null && Number.isFinite(row.effective_usd_per_req) && row.effective_usd_per_req > 0) {
+      return row.effective_usd_per_req
+    }
+    if (row.manual_usd_per_req != null && Number.isFinite(row.manual_usd_per_req) && row.manual_usd_per_req > 0) {
+      return row.manual_usd_per_req
+    }
+    return null
+  }
+
+  function historyDraftFromRow(row: SpendHistoryRow): UsageHistoryDraft {
     const effective = historyEffectiveDisplayValue(row)
+    const perReq = historyPerReqDisplayValue(row)
     return {
       effectiveText: effective != null ? formatDraftAmount(effective) : '',
+      perReqText: perReq != null ? formatDraftAmount(perReq) : '',
     }
   }
 
@@ -1111,6 +1128,25 @@ function newScheduleDraft(
       amountText: draft.amountText.trim(),
       currency: normalizeCurrencyCode(draft.currency),
     })
+  }
+
+  function buildUsagePricingDraft(
+    providerName: string,
+    providerCfg?: Config['providers'][string],
+  ): UsagePricingDraft {
+    const mode = (providerCfg?.manual_pricing_mode ?? 'none') as UsagePricingMode
+    let cachedCurrency = 'USD'
+    if (typeof window !== 'undefined') {
+      cachedCurrency =
+        window.localStorage.getItem(`${FX_CURRENCY_PREF_KEY_PREFIX}${providerName}`) ?? 'USD'
+    }
+    const currency = normalizeCurrencyCode(cachedCurrency)
+    const amountUsd = providerCfg?.manual_pricing_amount_usd
+    const amountText =
+      amountUsd != null && Number.isFinite(amountUsd) && amountUsd > 0
+        ? formatDraftAmount(convertUsdToCurrency(amountUsd, currency))
+        : ''
+    return { mode, amountText, currency }
   }
 
   async function refreshFxRatesDaily(force = false) {
@@ -1427,7 +1463,7 @@ function newScheduleDraft(
       const rows = Array.isArray(res?.rows) ? res.rows : []
       setUsageHistoryRows(rows)
       setUsageHistoryDrafts(() => {
-        const next: Record<string, { effectiveText: string }> = {}
+        const next: Record<string, UsageHistoryDraft> = {}
         for (const row of rows) {
           const key = `${row.provider}|${row.day_key}`
           next[key] = historyDraftFromRow(row)
@@ -1442,32 +1478,40 @@ function newScheduleDraft(
     }
   }
 
-  function queueUsageHistoryAutoSave(row: SpendHistoryRow) {
+  function queueUsageHistoryAutoSave(row: SpendHistoryRow, field: 'effective' | 'per_req') {
     if (!usageHistoryModalOpen) return
     queueAutoSaveTimer('history:edit', () => {
-      void saveUsageHistoryRow(row, { silent: true, keepEditCell: true })
+      void saveUsageHistoryRow(row, { silent: true, keepEditCell: true, field })
     })
   }
 
   async function saveUsageHistoryRow(
     row: SpendHistoryRow,
-    options?: { silent?: boolean; keepEditCell?: boolean },
+    options?: { silent?: boolean; keepEditCell?: boolean; field?: 'effective' | 'per_req' },
   ) {
     const silent = options?.silent === true
     const keepEditCell = options?.keepEditCell === true
+    const field = options?.field ?? 'effective'
     const key = `${row.provider}|${row.day_key}`
     const draft = usageHistoryDrafts[key] ?? historyDraftFromRow(row)
     const effectiveDraft = parsePositiveAmount(draft.effectiveText)
     const effectiveNow = historyEffectiveDisplayValue(row)
+    const perReqDraft = parsePositiveAmount(draft.perReqText)
+    const perReqNow = historyPerReqDisplayValue(row)
     const trackedBase = row.tracked_total_usd ?? 0
     const scheduledBase = row.scheduled_total_usd ?? 0
     const closeEnough = (a: number, b: number) => Math.abs(a - b) < 0.0005
     const effectiveChanged =
       effectiveDraft != null && (effectiveNow == null || !closeEnough(effectiveDraft, effectiveNow))
+    const perReqChanged =
+      perReqDraft != null && (perReqNow == null || !closeEnough(perReqDraft, perReqNow))
     let totalUsedUsd: number | null = null
-    const usdPerReq: number | null = null
+    let usdPerReq: number | null = null
 
-    if (effectiveChanged) {
+    if (field === 'per_req' && perReqChanged) {
+      totalUsedUsd = null
+      usdPerReq = perReqDraft
+    } else if (field === 'effective' && effectiveChanged) {
       const minimum = trackedBase + scheduledBase
       if (effectiveDraft < minimum - 0.0005) {
         if (!silent) flashToast('Effective $ cannot be lower than tracked + scheduled', 'error')
@@ -1475,6 +1519,7 @@ function newScheduleDraft(
       }
       const delta = effectiveDraft - minimum
       totalUsedUsd = delta > 0.0005 ? delta : null
+      usdPerReq = null
     } else {
       if (!silent) flashToast('No history change to save')
       return
@@ -1567,14 +1612,23 @@ function newScheduleDraft(
     }
   }
 
-  const switchboardProviders = useMemo(() => {
-    const fromStatus = providerSwitchStatus?.provider_options ?? []
-    const base = fromStatus.length ? fromStatus : orderedConfigProviders
-    return base.filter((name) => name !== 'official')
-  }, [providerSwitchStatus, orderedConfigProviders])
+  const managedProviderNames = useMemo(() => {
+    if (config?.providers) {
+      const fromOrder = orderedConfigProviders.filter((name) => Boolean(config.providers[name]))
+      const leftovers = Object.keys(config.providers)
+        .filter((name) => !fromOrder.includes(name))
+        .sort((a, b) => a.localeCompare(b))
+      return [...fromOrder, ...leftovers].filter((name) => name !== 'official')
+    }
+    const fromSwitchboard = providerSwitchStatus?.provider_options ?? []
+    const fromStatus = status?.providers ? Object.keys(status.providers) : []
+    return Array.from(new Set([...fromSwitchboard, ...fromStatus])).filter(
+      (name) => Boolean(name) && name !== 'official',
+    )
+  }, [config, orderedConfigProviders, providerSwitchStatus?.provider_options, status?.providers])
 
   const switchboardProviderCards = useMemo(() => {
-    return switchboardProviders.map((name) => {
+    return managedProviderNames.map((name) => {
       const providerCfg = config?.providers?.[name]
       const quota = status?.quota?.[name]
       const kind = (quota?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
@@ -1621,7 +1675,7 @@ function newScheduleDraft(
         usagePct,
       }
     })
-  }, [config, status, switchboardProviders])
+  }, [config, status, managedProviderNames])
 
   const switchboardModeLabel = providerSwitchStatus?.mode ?? '-'
   const switchboardModelProviderLabel = useMemo(() => {
@@ -1715,13 +1769,8 @@ function newScheduleDraft(
       avgTotalUsed: mean(usageByProvider.map((row) => providerTotalUsedDisplayUsd(row))),
     }
   }, [usageByProvider])
-  const usageScheduleProviderOptions = useMemo(() => {
-    const fromConfig = orderedConfigProviders.filter((name) => Boolean(config?.providers?.[name]))
-    if (fromConfig.length) return fromConfig
-    return usageByProvider
-      .map((row) => row.provider)
-      .filter((name) => Boolean(name) && Boolean(config?.providers?.[name]))
-  }, [config, orderedConfigProviders, usageByProvider])
+  const usagePricingProviderNames = managedProviderNames
+  const usageScheduleProviderOptions = managedProviderNames
   const usageScheduleSaveStatusText = useMemo(() => {
     if (usageScheduleSaveState === 'saving') return 'Auto-saving...'
     if (usageScheduleSaveState === 'saved') return 'Auto-saved'
@@ -1752,16 +1801,22 @@ function newScheduleDraft(
       .filter((value) => value > 0)
       .sort((a, b) => a - b)
     if (reqValues.length >= 4) {
-      const p90Index = Math.min(reqValues.length - 1, Math.max(0, Math.ceil(reqValues.length * 0.9) - 1))
-      const reqP90 = reqValues[p90Index]
+      const providerCount = Math.max(1, usageByProvider.length)
+      const mid = Math.floor(reqValues.length / 2)
+      const reqMedian =
+        reqValues.length % 2 === 0
+          ? (reqValues[mid - 1] + reqValues[mid]) / 2
+          : reqValues[mid]
       const peakPoint = usageTimeline.reduce(
         (best, point) => ((point.requests ?? 0) > (best?.requests ?? 0) ? point : best),
         usageTimeline[0],
       )
       const peakReq = peakPoint?.requests ?? 0
-      if (reqP90 > 0 && peakReq >= reqP90 * 1.2 && peakReq - reqP90 >= 5) {
+      const medianPerProvider = reqMedian / providerCount
+      const peakPerProvider = peakReq / providerCount
+      if (medianPerProvider > 0 && peakPerProvider >= medianPerProvider * 5) {
         messages.push(
-          `Request spike around ${formatBucket(peakPoint.bucket_unix_ms)}: ${peakReq} vs p90 ${Math.round(reqP90)}`,
+          `Request spike around ${formatBucket(peakPoint.bucket_unix_ms)}: ${peakPerProvider.toFixed(1)}/provider vs median ${medianPerProvider.toFixed(1)}/provider`,
         )
       }
     }
@@ -1887,6 +1942,16 @@ function newScheduleDraft(
   function fmtUsdMaybe(value?: number | null): string {
     if (value == null || !Number.isFinite(value) || value <= 0) return '-'
     return `$${value >= 10 ? value.toFixed(2) : value.toFixed(3)}`
+  }
+
+  function fmtKpiTokens(value?: number | null): string {
+    if (value == null || !Number.isFinite(value) || value < 0) return '-'
+    if (value >= 10_000_000) {
+      const compact = value / 1_000_000
+      const rounded = compact >= 100 ? compact.toFixed(0) : compact.toFixed(1)
+      return `${rounded.replace(/\.0$/, '')}M`
+    }
+    return Math.round(value).toLocaleString()
   }
 
   function fmtPricingSource(source?: string | null): string {
@@ -2351,38 +2416,60 @@ function newScheduleDraft(
     if (usagePricingDraftsPrimedRef.current) return
     setUsagePricingDrafts(() => {
       const next: Record<string, UsagePricingDraft> = {}
-      usageByProvider.forEach((row) => {
-        const providerCfg = config?.providers?.[row.provider]
-        const mode = (providerCfg?.manual_pricing_mode ?? 'none') as UsagePricingMode
-        let cachedCurrency = 'USD'
-        if (typeof window !== 'undefined') {
-          cachedCurrency =
-            window.localStorage.getItem(`${FX_CURRENCY_PREF_KEY_PREFIX}${row.provider}`) ?? 'USD'
-        }
-        const currency = normalizeCurrencyCode(cachedCurrency)
-        const amountUsd = providerCfg?.manual_pricing_amount_usd
-        const amountText =
-          amountUsd != null && Number.isFinite(amountUsd) && amountUsd > 0
-            ? formatDraftAmount(convertUsdToCurrency(amountUsd, currency))
-            : ''
-        next[row.provider] = {
-          mode,
-          amountText,
-          currency,
-        }
-        usagePricingLastSavedSigRef.current[row.provider] = pricingDraftSignature(next[row.provider])
+      usagePricingProviderNames.forEach((providerName) => {
+        const providerCfg = config?.providers?.[providerName]
+        next[providerName] = buildUsagePricingDraft(providerName, providerCfg)
+        usagePricingLastSavedSigRef.current[providerName] = pricingDraftSignature(next[providerName])
       })
       return next
     })
     setUsagePricingSaveState(() => {
       const next: Record<string, UsagePricingSaveState> = {}
-      usageByProvider.forEach((row) => {
-        next[row.provider] = 'saved'
+      usagePricingProviderNames.forEach((providerName) => {
+        next[providerName] = 'saved'
       })
       return next
     })
     usagePricingDraftsPrimedRef.current = true
-  }, [usagePricingModalOpen, usageByProvider, config, fxRatesByCurrency, closeUsagePricingCurrencyMenu])
+  }, [usagePricingModalOpen, usagePricingProviderNames, config, closeUsagePricingCurrencyMenu])
+
+  useEffect(() => {
+    if (!usagePricingModalOpen || !config || !usagePricingDraftsPrimedRef.current) return
+    const providerSet = new Set(usagePricingProviderNames)
+    setUsagePricingDrafts((prev) => {
+      const next: Record<string, UsagePricingDraft> = { ...prev }
+      let changed = false
+      usagePricingProviderNames.forEach((providerName) => {
+        if (next[providerName]) return
+        const providerCfg = config.providers?.[providerName]
+        next[providerName] = buildUsagePricingDraft(providerName, providerCfg)
+        usagePricingLastSavedSigRef.current[providerName] = pricingDraftSignature(next[providerName])
+        changed = true
+      })
+      Object.keys(next).forEach((providerName) => {
+        if (providerSet.has(providerName)) return
+        delete next[providerName]
+        delete usagePricingLastSavedSigRef.current[providerName]
+        changed = true
+      })
+      return changed ? next : prev
+    })
+    setUsagePricingSaveState((prev) => {
+      const next: Record<string, UsagePricingSaveState> = { ...prev }
+      let changed = false
+      usagePricingProviderNames.forEach((providerName) => {
+        if (next[providerName]) return
+        next[providerName] = 'saved'
+        changed = true
+      })
+      Object.keys(next).forEach((providerName) => {
+        if (providerSet.has(providerName)) return
+        delete next[providerName]
+        changed = true
+      })
+      return changed ? next : prev
+    })
+  }, [usagePricingModalOpen, usagePricingProviderNames, config])
 
   useEffect(() => {
     if (!usageHistoryModalOpen) {
@@ -2994,7 +3081,7 @@ function newScheduleDraft(
                 </div>
                 <div className="aoUsageKpiCard">
                   <div className="aoMiniLabel">Total Tokens</div>
-                  <div className="aoUsageKpiValue">{usageSummary?.total_tokens?.toLocaleString() ?? '-'}</div>
+                  <div className="aoUsageKpiValue">{fmtKpiTokens(usageSummary?.total_tokens)}</div>
                 </div>
                 <div className="aoUsageKpiCard">
                   <div className="aoMiniLabel">Top Model</div>
@@ -3160,7 +3247,7 @@ function newScheduleDraft(
                       Daily History
                     </button>
                     <button className="aoTinyBtn" onClick={() => setUsagePricingModalOpen(true)}>
-                      Pricing Setup
+                      Base Pricing
                     </button>
                     <button
                       className="aoTinyBtn"
@@ -3176,7 +3263,7 @@ function newScheduleDraft(
                       }}
                       disabled={!usageScheduleProviderOptions.length}
                     >
-                      Scheduled History
+                      Pricing Timeline
                     </button>
                   </div>
                 </div>
@@ -3241,8 +3328,8 @@ function newScheduleDraft(
                   <div className="aoHint">No provider usage data yet.</div>
                 )}
                 <div className="aoHint">
-                  Open Pricing Setup for base pricing, Scheduled for monthly fee periods, and History for day-level
-                  corrections.
+                  Open Base Pricing for current mode, Pricing Timeline for historical periods, and Daily History for
+                  day-level fixes.
                 </div>
               </div>
             </div>
@@ -3594,7 +3681,7 @@ requires_openai_auth = true`}
           <div className="aoModal aoModalWide aoUsageHistoryModal" onClick={(e) => e.stopPropagation()}>
             <div className="aoModalHeader">
               <div>
-                <div className="aoModalTitle">Daily Spend History</div>
+                <div className="aoModalTitle">Daily History</div>
                 <div className="aoModalSub">
                   Edit per-day manual fixes. Use this when provider daily spend resets to zero and leaves cost gaps.
                   Showing latest 180 days.
@@ -3614,6 +3701,7 @@ requires_openai_auth = true`}
                     <col className="aoUsageHistoryColProv" />
                     <col className="aoUsageHistoryColReq" />
                     <col className="aoUsageHistoryColTok" />
+                    <col className="aoUsageHistoryColReqUsd" />
                     <col className="aoUsageHistoryColEff" />
                     <col className="aoUsageHistoryColPkg" />
                     <col className="aoUsageHistoryColSrc" />
@@ -3625,6 +3713,7 @@ requires_openai_auth = true`}
                       <th>Provider</th>
                       <th>Req</th>
                       <th>Tokens</th>
+                      <th>$ / req</th>
                       <th>Effective $</th>
                       <th>Package $</th>
                       <th>Source</th>
@@ -3636,14 +3725,73 @@ requires_openai_auth = true`}
                       const key = `${row.provider}|${row.day_key}`
                       const baseDraft = historyDraftFromRow(row)
                       const draft = usageHistoryDrafts[key] ?? baseDraft
+                      const perReqDisplay = historyPerReqDisplayValue(row)
                       const effectiveDisplay = historyEffectiveDisplayValue(row)
-                      const effectiveEditing = usageHistoryEditCell === key
+                      const effectiveEditing = usageHistoryEditCell === `${key}|effective`
+                      const perReqEditing = usageHistoryEditCell === `${key}|per_req`
                       return (
                         <tr key={key}>
                           <td className="aoUsageHistoryDateCell">{row.day_key}</td>
                           <td className="aoUsageProviderName">{row.provider}</td>
                           <td>{(row.req_count ?? 0).toLocaleString()}</td>
                           <td>{(row.total_tokens ?? 0).toLocaleString()}</td>
+                          <td>
+                            <div className="aoUsageHistoryValueCell">
+                              {perReqEditing ? (
+                                <input
+                                  className="aoInput aoUsageHistoryInput"
+                                  type="number"
+                                  min="0"
+                                  step="0.0001"
+                                  placeholder="0"
+                                  value={draft.perReqText}
+                                  onChange={(e) => {
+                                    setUsageHistoryDrafts((prev) => ({
+                                      ...prev,
+                                      [key]: { ...draft, perReqText: e.target.value },
+                                    }))
+                                    queueUsageHistoryAutoSave(row, 'per_req')
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      clearAutoSaveTimer('history:edit')
+                                      setUsageHistoryEditCell(null)
+                                      void saveUsageHistoryRow(row, { field: 'per_req' })
+                                    } else if (e.key === 'Escape') {
+                                      setUsageHistoryDrafts((prev) => ({ ...prev, [key]: baseDraft }))
+                                      setUsageHistoryEditCell(null)
+                                    }
+                                  }}
+                                  onBlur={() => {
+                                    clearAutoSaveTimer('history:edit')
+                                    setUsageHistoryEditCell(null)
+                                    void saveUsageHistoryRow(row, {
+                                      silent: true,
+                                      keepEditCell: false,
+                                      field: 'per_req',
+                                    })
+                                  }}
+                                  autoFocus
+                                />
+                              ) : (
+                                <span>{fmtUsdMaybe(perReqDisplay)}</span>
+                              )}
+                              <button
+                                className="aoUsageHistoryEditBtn"
+                                title="Edit $/req"
+                                aria-label="Edit $/req"
+                                onClick={() => {
+                                  setUsageHistoryDrafts((prev) => ({ ...prev, [key]: draft }))
+                                  setUsageHistoryEditCell(`${key}|per_req`)
+                                }}
+                              >
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                  <path d="M12 20h9" />
+                                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                                </svg>
+                              </button>
+                            </div>
+                          </td>
                           <td>
                             <div className="aoUsageHistoryValueCell">
                               {effectiveEditing ? (
@@ -3659,13 +3807,13 @@ requires_openai_auth = true`}
                                       ...prev,
                                       [key]: { ...draft, effectiveText: e.target.value },
                                     }))
-                                    queueUsageHistoryAutoSave(row)
+                                    queueUsageHistoryAutoSave(row, 'effective')
                                   }}
                                   onKeyDown={(e) => {
                                     if (e.key === 'Enter') {
                                       clearAutoSaveTimer('history:edit')
                                       setUsageHistoryEditCell(null)
-                                      void saveUsageHistoryRow(row)
+                                      void saveUsageHistoryRow(row, { field: 'effective' })
                                     } else if (e.key === 'Escape') {
                                       setUsageHistoryDrafts((prev) => ({ ...prev, [key]: baseDraft }))
                                       setUsageHistoryEditCell(null)
@@ -3674,7 +3822,11 @@ requires_openai_auth = true`}
                                   onBlur={() => {
                                     clearAutoSaveTimer('history:edit')
                                     setUsageHistoryEditCell(null)
-                                    void saveUsageHistoryRow(row, { silent: true, keepEditCell: false })
+                                    void saveUsageHistoryRow(row, {
+                                      silent: true,
+                                      keepEditCell: false,
+                                      field: 'effective',
+                                    })
                                   }}
                                   autoFocus
                                 />
@@ -3687,7 +3839,7 @@ requires_openai_auth = true`}
                                 aria-label="Edit effective"
                                 onClick={() => {
                                   setUsageHistoryDrafts((prev) => ({ ...prev, [key]: draft }))
-                                  setUsageHistoryEditCell(key)
+                                  setUsageHistoryEditCell(`${key}|effective`)
                                 }}
                               >
                                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -3744,7 +3896,7 @@ requires_openai_auth = true`}
           <div className="aoModal aoModalWide aoUsagePricingModal" onClick={(e) => e.stopPropagation()}>
             <div className="aoModalHeader">
               <div>
-                <div className="aoModalTitle">Pricing Setup</div>
+                <div className="aoModalTitle">Base Pricing</div>
                 <div className="aoModalSub">
                   Configure base pricing only. Values auto-convert to USD.
                 </div>
@@ -3758,24 +3910,17 @@ requires_openai_auth = true`}
                 FX rates date: {fxRatesDate || 'loading'} (daily update)
               </div>
               <div className="aoUsagePricingGrid">
-                {usageByProvider.map((row) => {
-                  const providerCfg = config?.providers?.[row.provider]
-                  const draft = usagePricingDrafts[row.provider] ?? {
-                    mode: (providerCfg?.manual_pricing_mode ?? 'none') as UsagePricingMode,
-                    amountText:
-                      providerCfg?.manual_pricing_amount_usd != null
-                        ? formatDraftAmount(providerCfg.manual_pricing_amount_usd)
-                        : '',
-                    currency: 'USD',
-                  }
+                {usagePricingProviderNames.map((providerName) => {
+                  const providerCfg = config?.providers?.[providerName]
+                  const draft = usagePricingDrafts[providerName] ?? buildUsagePricingDraft(providerName, providerCfg)
                   const mode = draft.mode
                   const scheduleManaged = mode === 'package_total'
                   const amountDisabled = !providerCfg || mode === 'none' || scheduleManaged
                   return (
-                    <div key={`pricing-${row.provider}`} className="aoUsagePricingRow">
+                    <div key={`pricing-${providerName}`} className="aoUsagePricingRow">
                       <div className="aoUsagePricingProviderWrap">
-                        <div className="aoUsagePricingProvider">{row.provider}</div>
-                        <div className="aoHint aoUsagePricingKeyHint">key: {providerApiKeyLabel(row.provider)}</div>
+                        <div className="aoUsagePricingProvider">{providerName}</div>
+                        <div className="aoHint aoUsagePricingKeyHint">key: {providerApiKeyLabel(providerName)}</div>
                       </div>
                       <select
                         className="aoSelect aoUsagePricingSelect aoUsagePricingMode"
@@ -3790,16 +3935,16 @@ requires_openai_auth = true`}
                           }
                           setUsagePricingDrafts((prev) => ({
                             ...prev,
-                            [row.provider]: nextDraft,
+                            [providerName]: nextDraft,
                           }))
                           if (nextMode !== 'package_total') {
-                            queueUsagePricingAutoSave(row.provider, nextDraft)
+                            queueUsagePricingAutoSave(providerName, nextDraft)
                           } else {
-                            clearAutoSaveTimer(`pricing:${row.provider}`)
+                            clearAutoSaveTimer(`pricing:${providerName}`)
                             void (async () => {
-                              const activated = await activatePackageTotalMode(row.provider, nextDraft)
+                              const activated = await activatePackageTotalMode(providerName, nextDraft)
                               if (!activated) {
-                                await openUsageScheduleModal(row.provider, providerPreferredCurrency(row.provider))
+                                await openUsageScheduleModal(providerName, providerPreferredCurrency(providerName))
                               }
                             })()
                           }
@@ -3816,8 +3961,8 @@ requires_openai_auth = true`}
                             disabled={!providerCfg}
                             onClick={() =>
                               void openUsageScheduleModal(
-                                row.provider,
-                                providerPreferredCurrency(row.provider),
+                                providerName,
+                                providerPreferredCurrency(providerName),
                               )
                             }
                           >
@@ -3842,9 +3987,9 @@ requires_openai_auth = true`}
                               }
                               setUsagePricingDrafts((prev) => ({
                                 ...prev,
-                                [row.provider]: nextDraft,
+                                [providerName]: nextDraft,
                               }))
-                              queueUsagePricingAutoSave(row.provider, nextDraft)
+                              queueUsagePricingAutoSave(providerName, nextDraft)
                             }}
                           />
                           <div className="aoUsagePricingCurrencyWrap">
@@ -3853,18 +3998,18 @@ requires_openai_auth = true`}
                               className="aoSelect aoUsagePricingCurrencyBtn"
                               disabled={!providerCfg || amountDisabled}
                               aria-haspopup="listbox"
-                              aria-expanded={usagePricingCurrencyMenu?.provider === row.provider}
+                              aria-expanded={usagePricingCurrencyMenu?.provider === providerName}
                               onClick={(e) => {
                                 const button = e.currentTarget
                                 const rect = button.getBoundingClientRect()
                                 setUsagePricingCurrencyMenu((prev) => {
-                                  if (prev?.provider === row.provider) {
+                                  if (prev?.provider === providerName) {
                                     setUsagePricingCurrencyQuery('')
                                     return null
                                   }
                                   setUsagePricingCurrencyQuery('')
                                   return {
-                                    provider: row.provider,
+                                    provider: providerName,
                                     left: Math.max(8, Math.round(rect.left)),
                                     top: Math.round(rect.bottom + 4),
                                     width: Math.round(rect.width),
@@ -3883,14 +4028,14 @@ requires_openai_auth = true`}
                       <div className="aoUsagePricingActions">
                         <span
                           className={`aoHint aoUsagePricingAutosave aoUsagePricingAutosave-${
-                            usagePricingSaveState[row.provider] ?? 'idle'
+                            usagePricingSaveState[providerName] ?? 'idle'
                           }`}
                         >
-                          {usagePricingSaveState[row.provider] === 'saving'
+                          {usagePricingSaveState[providerName] === 'saving'
                             ? 'Auto-saving...'
-                            : usagePricingSaveState[row.provider] === 'saved'
+                            : usagePricingSaveState[providerName] === 'saved'
                               ? 'Auto-saved'
-                              : usagePricingSaveState[row.provider] === 'error'
+                              : usagePricingSaveState[providerName] === 'error'
                                 ? 'Auto-save failed'
                                 : 'Auto-save'}
                         </span>
@@ -3912,17 +4057,11 @@ requires_openai_auth = true`}
           {usagePricingCurrencyMenu
             ? createPortal(
                 (() => {
-                  const row = usageByProvider.find((item) => item.provider === usagePricingCurrencyMenu.provider)
-                  if (!row) return null
-                  const providerCfg = config?.providers?.[row.provider]
-                  const draft = usagePricingDrafts[row.provider] ?? {
-                    mode: (providerCfg?.manual_pricing_mode ?? 'none') as UsagePricingMode,
-                    amountText:
-                      providerCfg?.manual_pricing_amount_usd != null
-                        ? formatDraftAmount(providerCfg.manual_pricing_amount_usd)
-                        : '',
-                    currency: 'USD',
-                  }
+                  const providerName = usagePricingCurrencyMenu.provider
+                  if (!usagePricingProviderNames.includes(providerName)) return null
+                  const providerCfg = config?.providers?.[providerName]
+                  const draft =
+                    usagePricingDrafts[providerName] ?? buildUsagePricingDraft(providerName, providerCfg)
                   const amountDisabled = !providerCfg || draft.mode === 'package_total'
                   if (amountDisabled) return null
 
@@ -3963,7 +4102,7 @@ requires_openai_auth = true`}
                             key={currencyCode}
                             className={`aoUsagePricingCurrencyItem${isActive ? ' is-active' : ''}`}
                             onClick={() => {
-                              updateUsagePricingCurrency(row.provider, draft, normalized)
+                              updateUsagePricingCurrency(providerName, draft, normalized)
                               closeUsagePricingCurrencyMenu()
                             }}
                           >
@@ -3999,7 +4138,7 @@ requires_openai_auth = true`}
           <div className="aoModal aoModalWide aoUsageScheduleModal" onClick={(e) => e.stopPropagation()}>
             <div className="aoModalHeader">
               <div>
-                <div className="aoModalTitle">Scheduled Period History</div>
+                <div className="aoModalTitle">Pricing Timeline</div>
                 <div className="aoModalSub">
                   Edit base pricing timeline rows (monthly fee or $/request) with explicit start/expires.
                 </div>
