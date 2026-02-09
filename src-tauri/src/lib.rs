@@ -805,6 +805,8 @@ fn get_usage_statistics(
     let mut by_provider_map: BTreeMap<String, ProviderAgg> = BTreeMap::new();
     let mut provider_req_by_day_in_window: BTreeMap<String, BTreeMap<String, u64>> =
         BTreeMap::new();
+    let mut provider_req_by_day_all_from_req: BTreeMap<String, BTreeMap<String, u64>> =
+        BTreeMap::new();
     let mut provider_request_timestamps_in_window: BTreeMap<String, Vec<u64>> = BTreeMap::new();
 
     for rec in records {
@@ -849,6 +851,16 @@ fn get_usage_statistics(
         }
         let provider_matches = !has_provider_filter || provider_filter.contains(&provider_lc);
         let model_matches = !has_model_filter || model_filter.contains(&model_lc);
+        if provider_matches {
+            if let Some(day_key) = local_day_key_from_unix_ms(ts) {
+                provider_req_by_day_all_from_req
+                    .entry(provider.clone())
+                    .or_default()
+                    .entry(day_key)
+                    .and_modify(|cur| *cur = cur.saturating_add(1))
+                    .or_insert(1);
+            }
+        }
         if ts < since_unix_ms {
             continue;
         }
@@ -966,6 +978,11 @@ fn get_usage_statistics(
                 .and_modify(|cur| *cur = cur.saturating_add(req))
                 .or_insert(req);
         }
+        if let Some(by_day_from_req) = provider_req_by_day_all_from_req.get(provider) {
+            for (day_key, req_count) in by_day_from_req {
+                req_by_day.entry(day_key.clone()).or_insert(*req_count);
+            }
+        }
         let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>)> = BTreeMap::new();
         for day in state.gateway.store.list_spend_manual_days(provider) {
             let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
@@ -1075,6 +1092,8 @@ fn get_usage_statistics(
                                         let req_ratio =
                                             (day_req_in_window / day_req_total).clamp(0.0, 1.0);
                                         Some(*v * req_ratio)
+                                    } else if has_model_filter {
+                                        Some(0.0)
                                     } else {
                                         Some(*v * ratio)
                                     }
@@ -1170,6 +1189,8 @@ fn get_usage_statistics(
                         .unwrap_or(0) as f64;
                     let ratio = if day_req_total > 0.0 {
                         (day_req_in_window / day_req_total).clamp(0.0, 1.0)
+                    } else if has_model_filter {
+                        0.0
                     } else {
                         time_ratio
                     };
@@ -1197,6 +1218,8 @@ fn get_usage_statistics(
                         if day_req_total > 0.0 {
                             let req_ratio = (day_req_in_window / day_req_total).clamp(0.0, 1.0);
                             manual_additional_in_window += *v * req_ratio;
+                        } else if has_model_filter {
+                            manual_additional_in_window += 0.0;
                         } else {
                             manual_additional_in_window += *v * ratio;
                         }
