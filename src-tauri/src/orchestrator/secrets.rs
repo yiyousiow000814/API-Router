@@ -173,7 +173,10 @@ impl SecretStore {
             .unwrap_or_default();
 
         for period in periods.iter_mut() {
-            if period.mode == "package_total" && period.ended_at_unix_ms.is_none() {
+            if period.ended_at_unix_ms.is_some() {
+                continue;
+            }
+            if normalized_mode == "none" || period.mode == normalized_mode {
                 period.ended_at_unix_ms = Some(now);
             }
         }
@@ -196,13 +199,17 @@ impl SecretStore {
             return self.persist(&data);
         }
 
-        if normalized_mode == "package_total" {
+        if normalized_mode == "package_total" || normalized_mode == "per_request" {
             periods.push(ProviderPricingPeriod {
                 id: Uuid::new_v4().to_string(),
-                mode: "package_total".to_string(),
+                mode: normalized_mode.clone(),
                 amount_usd,
                 started_at_unix_ms: now,
-                ended_at_unix_ms: package_expires_at_unix_ms,
+                ended_at_unix_ms: if normalized_mode == "package_total" {
+                    package_expires_at_unix_ms
+                } else {
+                    None
+                },
             });
         }
 
@@ -211,6 +218,75 @@ impl SecretStore {
             ProviderPricingOverride {
                 mode: normalized_mode,
                 amount_usd,
+                periods,
+                gap_fill_mode: existing_gap_mode,
+                gap_fill_amount_usd: existing_gap_amount,
+            },
+        );
+        self.persist(&data)
+    }
+
+    pub fn list_provider_schedule(&self, provider: &str) -> Vec<ProviderPricingPeriod> {
+        let data = self.inner.lock();
+        let mut periods = data
+            .provider_pricing
+            .get(provider)
+            .map(|entry| {
+                entry
+                    .periods
+                    .iter()
+                    .filter(|period| period.mode == "package_total")
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        periods.sort_by(|a, b| a.started_at_unix_ms.cmp(&b.started_at_unix_ms));
+        periods
+    }
+
+    pub fn set_provider_schedule(
+        &self,
+        provider: &str,
+        mut periods: Vec<ProviderPricingPeriod>,
+    ) -> Result<(), String> {
+        periods.sort_by(|a, b| a.started_at_unix_ms.cmp(&b.started_at_unix_ms));
+
+        for period in periods.iter_mut() {
+            if period.id.trim().is_empty() {
+                period.id = Uuid::new_v4().to_string();
+            }
+            period.mode = "package_total".to_string();
+        }
+
+        let mut data = self.inner.lock();
+        let existing_gap_mode = data
+            .provider_pricing
+            .get(provider)
+            .and_then(|v| v.gap_fill_mode.clone());
+        let existing_gap_amount = data
+            .provider_pricing
+            .get(provider)
+            .and_then(|v| v.gap_fill_amount_usd);
+        let latest_amount = periods
+            .last()
+            .map(|period| period.amount_usd)
+            .unwrap_or(0.0);
+        let next_mode = if periods.is_empty() {
+            "none".to_string()
+        } else {
+            "package_total".to_string()
+        };
+
+        if periods.is_empty() && existing_gap_mode.is_none() && existing_gap_amount.is_none() {
+            data.provider_pricing.remove(provider);
+            return self.persist(&data);
+        }
+
+        data.provider_pricing.insert(
+            provider.to_string(),
+            ProviderPricingOverride {
+                mode: next_mode,
+                amount_usd: latest_amount,
                 periods,
                 gap_fill_mode: existing_gap_mode,
                 gap_fill_amount_usd: existing_gap_amount,

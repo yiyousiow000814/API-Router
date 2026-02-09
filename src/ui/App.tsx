@@ -26,7 +26,6 @@ type UsagePricingDraft = {
   mode: UsagePricingMode
   amountText: string
   currency: string
-  expiresAtText: string
 }
 
 type SpendHistoryRow = {
@@ -37,7 +36,6 @@ type SpendHistoryRow = {
   tracked_total_usd?: number | null
   scheduled_total_usd?: number | null
   scheduled_package_total_usd?: number | null
-  scheduled_expires_at_unix_ms?: number | null
   manual_total_usd?: number | null
   manual_usd_per_req?: number | null
   effective_total_usd?: number | null
@@ -45,6 +43,24 @@ type SpendHistoryRow = {
   source?: string | null
   updated_at_unix_ms?: number
 }
+
+type ProviderSchedulePeriod = {
+  id: string
+  amount_usd: number
+  started_at_unix_ms: number
+  ended_at_unix_ms: number
+}
+
+type ProviderScheduleDraft = {
+  id: string
+  startText: string
+  endText: string
+  amountText: string
+  currency: string
+}
+
+type UsageScheduleSaveState = 'idle' | 'saving' | 'saved' | 'invalid' | 'error'
+type UsagePricingSaveState = 'idle' | 'saving' | 'saved' | 'error'
 
 type FxUsdPayload = {
   date?: string
@@ -225,15 +241,17 @@ export default function App() {
   const [usageStatisticsLoading, setUsageStatisticsLoading] = useState<boolean>(false)
   const [usagePricingModalOpen, setUsagePricingModalOpen] = useState<boolean>(false)
   const [usagePricingDrafts, setUsagePricingDrafts] = useState<Record<string, UsagePricingDraft>>({})
+  const [usagePricingSaveState, setUsagePricingSaveState] = useState<Record<string, UsagePricingSaveState>>({})
+  const [usageScheduleModalOpen, setUsageScheduleModalOpen] = useState<boolean>(false)
+  const [usageScheduleProvider, setUsageScheduleProvider] = useState<string>('')
+  const [usageScheduleRows, setUsageScheduleRows] = useState<ProviderScheduleDraft[]>([])
+  const [usageScheduleLoading, setUsageScheduleLoading] = useState<boolean>(false)
+  const [usageScheduleSaving, setUsageScheduleSaving] = useState<boolean>(false)
+  const [usageScheduleSaveState, setUsageScheduleSaveState] = useState<UsageScheduleSaveState>('idle')
   const [usageHistoryModalOpen, setUsageHistoryModalOpen] = useState<boolean>(false)
   const [usageHistoryRows, setUsageHistoryRows] = useState<SpendHistoryRow[]>([])
-  const [usageHistoryDrafts, setUsageHistoryDrafts] = useState<
-    Record<string, { trackedText: string; effectiveText: string }>
-  >({})
-  const [usageHistoryEditCell, setUsageHistoryEditCell] = useState<{
-    key: string
-    field: 'tracked' | 'effective'
-  } | null>(null)
+  const [usageHistoryDrafts, setUsageHistoryDrafts] = useState<Record<string, { effectiveText: string }>>({})
+  const [usageHistoryEditCell, setUsageHistoryEditCell] = useState<string | null>(null)
   const [usageHistoryLoading, setUsageHistoryLoading] = useState<boolean>(false)
   const [usagePricingCurrencyMenu, setUsagePricingCurrencyMenu] = useState<{
     provider: string
@@ -242,6 +260,13 @@ export default function App() {
     width: number
   } | null>(null)
   const [usagePricingCurrencyQuery, setUsagePricingCurrencyQuery] = useState<string>('')
+  const [usageScheduleCurrencyMenu, setUsageScheduleCurrencyMenu] = useState<{
+    rowIndex: number
+    left: number
+    top: number
+    width: number
+  } | null>(null)
+  const [usageScheduleCurrencyQuery, setUsageScheduleCurrencyQuery] = useState<string>('')
   const [fxRatesByCurrency, setFxRatesByCurrency] = useState<Record<string, number>>({ USD: 1 })
   const [fxRatesDate, setFxRatesDate] = useState<string>('')
   const [usageChartHover, setUsageChartHover] = useState<{
@@ -267,6 +292,12 @@ export default function App() {
   const contentRef = useRef<HTMLDivElement | null>(null)
   const mainAreaRef = useRef<HTMLDivElement | null>(null)
   const usagePricingCurrencyMenuRef = useRef<HTMLDivElement | null>(null)
+  const usageScheduleCurrencyMenuRef = useRef<HTMLDivElement | null>(null)
+  const usagePricingAutoSaveTimersRef = useRef<Record<string, number>>({})
+  const usagePricingLastSavedSigRef = useRef<Record<string, string>>({})
+  const usageHistoryAutoSaveTimerRef = useRef<number | null>(null)
+  const usageScheduleAutoSaveTimerRef = useRef<number | null>(null)
+  const usageScheduleLastSavedSigRef = useRef<string>('')
   const toastTimerRef = useRef<number | null>(null)
 
   const scrollToTop = useCallback(() => {
@@ -728,26 +759,54 @@ export default function App() {
 
   function updateUsagePricingCurrency(providerName: string, draft: UsagePricingDraft, nextCurrency: string) {
     const raw = normalizeCurrencyCode(nextCurrency)
-    setUsagePricingDrafts((prev) => ({
-      ...prev,
-      [providerName]: (() => {
-        const cur = prev[providerName] ?? draft
-        const oldCurrency = normalizeCurrencyCode(cur.currency)
-        const amountRaw = Number(cur.amountText)
-        const nextAmount =
-          Number.isFinite(amountRaw) && amountRaw > 0
-            ? formatDraftAmount(convertUsdToCurrency(convertCurrencyToUsd(amountRaw, oldCurrency), raw))
-            : cur.amountText
-        return {
-          ...cur,
-          currency: raw,
-          amountText: nextAmount,
-        }
-      })(),
-    }))
+    let nextDraftForAutoSave: UsagePricingDraft | null = null
+    setUsagePricingDrafts((prev) => {
+      const cur = prev[providerName] ?? draft
+      const oldCurrency = normalizeCurrencyCode(cur.currency)
+      const amountRaw = Number(cur.amountText)
+      const nextAmount =
+        Number.isFinite(amountRaw) && amountRaw > 0
+          ? formatDraftAmount(convertUsdToCurrency(convertCurrencyToUsd(amountRaw, oldCurrency), raw))
+          : cur.amountText
+      const nextDraft = {
+        ...cur,
+        currency: raw,
+        amountText: nextAmount,
+      }
+      nextDraftForAutoSave = nextDraft
+      return {
+        ...prev,
+        [providerName]: nextDraft,
+      }
+    })
+    if (nextDraftForAutoSave) {
+      queueUsagePricingAutoSave(providerName, nextDraftForAutoSave)
+    }
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(`${FX_CURRENCY_PREF_KEY_PREFIX}${providerName}`, raw)
     }
+  }
+
+  function closeUsageScheduleCurrencyMenu() {
+    setUsageScheduleCurrencyMenu(null)
+    setUsageScheduleCurrencyQuery('')
+  }
+
+  function updateUsageScheduleCurrency(rowIndex: number, nextCurrency: string) {
+    const raw = normalizeCurrencyCode(nextCurrency)
+    setUsageScheduleSaveState('idle')
+    setUsageScheduleRows((prev) =>
+      prev.map((row, index) => {
+        if (index !== rowIndex) return row
+        const oldCurrency = normalizeCurrencyCode(row.currency)
+        const amountRaw = Number(row.amountText)
+        const nextAmount =
+          Number.isFinite(amountRaw) && amountRaw > 0
+            ? formatDraftAmount(convertUsdToCurrency(convertCurrencyToUsd(amountRaw, oldCurrency), raw))
+            : row.amountText
+        return { ...row, currency: raw, amountText: nextAmount }
+      }),
+    )
   }
 
   function currencyRate(code: string): number {
@@ -797,22 +856,94 @@ export default function App() {
     return n
   }
 
-  function historyTrackedDisplayValue(row: SpendHistoryRow): number | null {
-    const tracked = row.tracked_total_usd
-    if (tracked == null || !Number.isFinite(tracked) || tracked <= 0) return null
-    const manual = row.manual_total_usd
-    const hasScheduled = row.scheduled_total_usd != null && Number.isFinite(row.scheduled_total_usd)
-    const hasManualPerReq = row.manual_usd_per_req != null && Number.isFinite(row.manual_usd_per_req)
-    if (
-      !hasScheduled &&
-      !hasManualPerReq &&
-      manual != null &&
-      Number.isFinite(manual) &&
-      manual > 0
-    ) {
-      return tracked + manual
+  function scheduleRowsSignature(rows: ProviderScheduleDraft[]): string {
+    return JSON.stringify(
+      rows.map((row) => ({
+        id: row.id.trim(),
+        start: row.startText.trim(),
+        end: row.endText.trim(),
+        amount: row.amountText.trim(),
+        currency: normalizeCurrencyCode(row.currency),
+      })),
+    )
+  }
+
+  function parseScheduleRowsForSave(rows: ProviderScheduleDraft[]): {
+    ok: true
+    periods: Array<{
+      id: string | null
+      amountUsd: number
+      startedAtUnixMs: number
+      endedAtUnixMs: number
+    }>
+  } | { ok: false } {
+    const parsed: Array<{
+      id: string | null
+      amountUsd: number
+      startedAtUnixMs: number
+      endedAtUnixMs: number
+    }> = []
+
+    for (const row of rows) {
+      const start = fromDateTimeLocalValue(row.startText)
+      const end = fromDateTimeLocalValue(row.endText)
+      const amount = parsePositiveAmount(row.amountText)
+      if (!start || !end || !amount || start >= end) {
+        return { ok: false }
+      }
+      parsed.push({
+        id: row.id.trim() || null,
+        amountUsd: convertCurrencyToUsd(amount, row.currency),
+        startedAtUnixMs: start,
+        endedAtUnixMs: end,
+      })
     }
-    return tracked
+
+    parsed.sort((a, b) => a.startedAtUnixMs - b.startedAtUnixMs)
+    for (let i = 1; i < parsed.length; i += 1) {
+      if (parsed[i - 1].endedAtUnixMs > parsed[i].startedAtUnixMs) {
+        return { ok: false }
+      }
+    }
+    return { ok: true, periods: parsed }
+  }
+
+  function providerPreferredCurrency(providerName: string): string {
+    if (typeof window === 'undefined') return 'USD'
+    const cached = window.localStorage.getItem(`${FX_CURRENCY_PREF_KEY_PREFIX}${providerName}`) ?? 'USD'
+    return normalizeCurrencyCode(cached)
+  }
+
+  function scheduleDraftFromPeriod(
+    providerName: string,
+    period: ProviderSchedulePeriod,
+    fallbackCurrency?: string,
+  ): ProviderScheduleDraft {
+    const currency = fallbackCurrency ? normalizeCurrencyCode(fallbackCurrency) : providerPreferredCurrency(providerName)
+    return {
+      id: period.id,
+      startText: toDateTimeLocalValue(period.started_at_unix_ms),
+      endText: toDateTimeLocalValue(period.ended_at_unix_ms),
+      amountText: formatDraftAmount(convertUsdToCurrency(period.amount_usd, currency)),
+      currency,
+    }
+  }
+
+  function newScheduleDraft(providerName: string, seedAmountUsd?: number | null, seedCurrency?: string): ProviderScheduleDraft {
+    const now = new Date()
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime()
+    const end = start + 30 * 24 * 60 * 60 * 1000
+    const currency = seedCurrency ? normalizeCurrencyCode(seedCurrency) : providerPreferredCurrency(providerName)
+    return {
+      id: '',
+      startText: toDateTimeLocalValue(start),
+      endText: toDateTimeLocalValue(end),
+      amountText:
+        seedAmountUsd && seedAmountUsd > 0
+          ? formatDraftAmount(convertUsdToCurrency(seedAmountUsd, currency))
+          : '',
+      currency,
+    }
   }
 
   function historyEffectiveDisplayValue(row: SpendHistoryRow): number | null {
@@ -826,11 +957,9 @@ export default function App() {
     return total > 0 ? total : null
   }
 
-  function historyDraftFromRow(row: SpendHistoryRow): { trackedText: string; effectiveText: string } {
-    const tracked = historyTrackedDisplayValue(row)
+  function historyDraftFromRow(row: SpendHistoryRow): { effectiveText: string } {
     const effective = historyEffectiveDisplayValue(row)
     return {
-      trackedText: tracked != null ? formatDraftAmount(tracked) : '',
       effectiveText: effective != null ? formatDraftAmount(effective) : '',
     }
   }
@@ -847,6 +976,14 @@ export default function App() {
     setUsagePricingCurrencyMenu(null)
     setUsagePricingCurrencyQuery('')
   }, [])
+
+  function pricingDraftSignature(draft: UsagePricingDraft): string {
+    return JSON.stringify({
+      mode: draft.mode,
+      amountText: draft.amountText.trim(),
+      currency: normalizeCurrencyCode(draft.currency),
+    })
+  }
 
   async function refreshFxRatesDaily(force = false) {
     const today = new Date().toISOString().slice(0, 10)
@@ -896,10 +1033,125 @@ export default function App() {
     }
   }
 
-  async function saveUsagePricingRow(providerName: string) {
-    const draft = usagePricingDrafts[providerName]
-    if (!draft) return
+  async function openUsageScheduleModal(
+    providerName: string,
+    seedAmountUsd?: number | null,
+    seedCurrency?: string,
+  ) {
+    closeUsagePricingCurrencyMenu()
+    closeUsageScheduleCurrencyMenu()
+    setUsageScheduleProvider(providerName)
+    setUsageScheduleModalOpen(true)
+    setUsageScheduleLoading(true)
+    setUsageScheduleSaveState('idle')
+    try {
+      const res = await invoke<{ ok: boolean; periods?: ProviderSchedulePeriod[] }>('get_provider_schedule', {
+        provider: providerName,
+      })
+      const periods = Array.isArray(res?.periods) ? res.periods : []
+      const rows = periods
+        .sort((a, b) => a.started_at_unix_ms - b.started_at_unix_ms)
+        .map((period) => scheduleDraftFromPeriod(providerName, period, seedCurrency))
+      const nextRows =
+        rows.length > 0 ? rows : [newScheduleDraft(providerName, seedAmountUsd, seedCurrency)]
+      setUsageScheduleRows(nextRows)
+      usageScheduleLastSavedSigRef.current = scheduleRowsSignature(nextRows)
+      setUsageScheduleSaveState(rows.length > 0 ? 'saved' : 'idle')
+    } catch (e) {
+      flashToast(String(e), 'error')
+      const fallback = [newScheduleDraft(providerName, seedAmountUsd, seedCurrency)]
+      setUsageScheduleRows(fallback)
+      usageScheduleLastSavedSigRef.current = scheduleRowsSignature(fallback)
+      setUsageScheduleSaveState('idle')
+    } finally {
+      setUsageScheduleLoading(false)
+    }
+  }
+
+  async function autoSaveUsageScheduleRows(
+    providerName: string,
+    rows: ProviderScheduleDraft[],
+    signature: string,
+  ) {
+    if (!providerName) return
+    const parsed = parseScheduleRowsForSave(rows)
+    if (!parsed.ok) {
+      setUsageScheduleSaveState('invalid')
+      return
+    }
+    setUsageScheduleSaving(true)
+    setUsageScheduleSaveState('saving')
+    try {
+      await invoke('set_provider_schedule', {
+        provider: providerName,
+        periods: parsed.periods,
+      })
+      usageScheduleLastSavedSigRef.current = signature
+      setUsageScheduleSaveState('saved')
+      await refreshConfig()
+      await refreshUsageStatistics({ silent: true })
+      if (usageHistoryModalOpen) {
+        await refreshUsageHistory({ silent: true })
+      }
+    } catch {
+      setUsageScheduleSaveState('error')
+    } finally {
+      setUsageScheduleSaving(false)
+    }
+  }
+
+  function queueUsagePricingAutoSave(providerName: string, draft: UsagePricingDraft) {
+    if (!usagePricingModalOpen) return
+    const providerCfg = config?.providers?.[providerName]
+    if (!providerCfg) return
+    if (draft.mode === 'package_total') {
+      setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'idle' }))
+      return
+    }
+    const signature = pricingDraftSignature(draft)
+    if (usagePricingLastSavedSigRef.current[providerName] === signature) {
+      setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saved' }))
+      return
+    }
+    const pending = usagePricingAutoSaveTimersRef.current[providerName]
+    if (pending) {
+      window.clearTimeout(pending)
+      delete usagePricingAutoSaveTimersRef.current[providerName]
+    }
+    setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'idle' }))
+    usagePricingAutoSaveTimersRef.current[providerName] = window.setTimeout(() => {
+      void (async () => {
+        setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saving' }))
+        const ok = await saveUsagePricingRow(providerName, { silent: true, draftOverride: draft })
+        if (ok) {
+          usagePricingLastSavedSigRef.current[providerName] = signature
+          setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saved' }))
+        } else {
+          setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'error' }))
+        }
+      })()
+      delete usagePricingAutoSaveTimersRef.current[providerName]
+    }, 700)
+  }
+
+  async function saveUsagePricingRow(
+    providerName: string,
+    options?: { silent?: boolean; draftOverride?: UsagePricingDraft },
+  ): Promise<boolean> {
+    const silent = options?.silent === true
+    const draft = options?.draftOverride ?? usagePricingDrafts[providerName]
+    if (!draft) return false
     const mode = draft.mode
+    if (mode === 'package_total') {
+      if (silent) return false
+      const amountRaw = Number(draft.amountText)
+      const seedAmountUsd =
+        Number.isFinite(amountRaw) && amountRaw > 0
+          ? convertCurrencyToUsd(amountRaw, draft.currency)
+          : null
+      await openUsageScheduleModal(providerName, seedAmountUsd, draft.currency)
+      return true
+    }
     try {
       if (mode === 'none') {
         await invoke('set_provider_manual_pricing', {
@@ -911,27 +1163,15 @@ export default function App() {
       } else {
         const amountRaw = Number(draft.amountText)
         if (!Number.isFinite(amountRaw) || amountRaw <= 0) {
-          flashToast('Pricing amount must be > 0', 'error')
-          return
+          if (!silent) flashToast('Pricing amount must be > 0', 'error')
+          return false
         }
         const amountUsd = convertCurrencyToUsd(amountRaw, draft.currency)
-        let packageExpiresAtUnixMs: number | null = null
-        if (mode === 'package_total') {
-          packageExpiresAtUnixMs = fromDateTimeLocalValue(draft.expiresAtText)
-          if (!packageExpiresAtUnixMs) {
-            flashToast('Monthly fee requires an expire time', 'error')
-            return
-          }
-          if (packageExpiresAtUnixMs <= Date.now()) {
-            flashToast('Expire time must be in the future', 'error')
-            return
-          }
-        }
         await invoke('set_provider_manual_pricing', {
           provider: providerName,
           mode,
           amountUsd,
-          packageExpiresAtUnixMs,
+          packageExpiresAtUnixMs: null,
         })
       }
       await invoke('set_provider_gap_fill', {
@@ -939,33 +1179,37 @@ export default function App() {
         mode: 'none',
         amountUsd: null,
       })
-      flashToast(`Pricing saved: ${providerName}`)
+      if (!silent) flashToast(`Pricing saved: ${providerName}`)
       await refreshConfig()
-      await refreshUsageStatistics()
+      await refreshUsageStatistics({ silent })
+      return true
     } catch (e) {
-      flashToast(String(e), 'error')
+      if (!silent) flashToast(String(e), 'error')
+      return false
     }
   }
 
-  async function refreshUsageHistory(options?: { silent?: boolean }) {
+  async function refreshUsageHistory(options?: { silent?: boolean; keepEditCell?: boolean }) {
     const silent = options?.silent === true
+    const keepEditCell = options?.keepEditCell === true
     if (!silent) setUsageHistoryLoading(true)
     try {
       const res = await invoke<{ ok: boolean; rows: SpendHistoryRow[] }>('get_spend_history', {
         provider: null,
         days: 180,
+        compactOnly: true,
       })
       const rows = Array.isArray(res?.rows) ? res.rows : []
       setUsageHistoryRows(rows)
       setUsageHistoryDrafts(() => {
-        const next: Record<string, { trackedText: string; effectiveText: string }> = {}
+        const next: Record<string, { effectiveText: string }> = {}
         for (const row of rows) {
           const key = `${row.provider}|${row.day_key}`
           next[key] = historyDraftFromRow(row)
         }
         return next
       })
-      setUsageHistoryEditCell(null)
+      if (!keepEditCell) setUsageHistoryEditCell(null)
     } catch (e) {
       flashToast(String(e), 'error')
     } finally {
@@ -973,44 +1217,42 @@ export default function App() {
     }
   }
 
-  async function saveUsageHistoryRow(row: SpendHistoryRow) {
+  function queueUsageHistoryAutoSave(row: SpendHistoryRow) {
+    if (!usageHistoryModalOpen) return
+    if (usageHistoryAutoSaveTimerRef.current) {
+      window.clearTimeout(usageHistoryAutoSaveTimerRef.current)
+      usageHistoryAutoSaveTimerRef.current = null
+    }
+    usageHistoryAutoSaveTimerRef.current = window.setTimeout(() => {
+      void saveUsageHistoryRow(row, { silent: true })
+      usageHistoryAutoSaveTimerRef.current = null
+    }, 700)
+  }
+
+  async function saveUsageHistoryRow(row: SpendHistoryRow, options?: { silent?: boolean }) {
+    const silent = options?.silent === true
     const key = `${row.provider}|${row.day_key}`
     const draft = usageHistoryDrafts[key] ?? historyDraftFromRow(row)
-    const trackedDraft = parsePositiveAmount(draft.trackedText)
     const effectiveDraft = parsePositiveAmount(draft.effectiveText)
-    const trackedNow = historyTrackedDisplayValue(row)
     const effectiveNow = historyEffectiveDisplayValue(row)
     const trackedBase = row.tracked_total_usd ?? 0
     const scheduledBase = row.scheduled_total_usd ?? 0
     const closeEnough = (a: number, b: number) => Math.abs(a - b) < 0.0005
     const effectiveChanged =
       effectiveDraft != null && (effectiveNow == null || !closeEnough(effectiveDraft, effectiveNow))
-    const trackedChanged =
-      trackedDraft != null && (trackedNow == null || !closeEnough(trackedDraft, trackedNow))
     let totalUsedUsd: number | null = null
     const usdPerReq: number | null = null
 
     if (effectiveChanged) {
       const minimum = trackedBase + scheduledBase
       if (effectiveDraft < minimum - 0.0005) {
-        flashToast('Effective $ cannot be lower than tracked + scheduled', 'error')
+        if (!silent) flashToast('Effective $ cannot be lower than tracked + scheduled', 'error')
         return
       }
       const delta = effectiveDraft - minimum
       totalUsedUsd = delta > 0.0005 ? delta : null
-    } else if (trackedChanged) {
-      if (row.tracked_total_usd != null && trackedDraft < row.tracked_total_usd - 0.0005) {
-        flashToast('Tracked $ cannot be lower than provider tracked value', 'error')
-        return
-      }
-      if (row.tracked_total_usd != null) {
-        const delta = trackedDraft - row.tracked_total_usd
-        totalUsedUsd = delta > 0.0005 ? delta : null
-      } else {
-        totalUsedUsd = trackedDraft > 0.0005 ? trackedDraft : null
-      }
     } else {
-      flashToast('No history change to save')
+      if (!silent) flashToast('No history change to save')
       return
     }
     try {
@@ -1020,11 +1262,11 @@ export default function App() {
         totalUsedUsd,
         usdPerReq,
       })
-      flashToast(`History saved: ${row.provider} ${row.day_key}`)
-      await refreshUsageHistory({ silent: true })
+      if (!silent) flashToast(`History saved: ${row.provider} ${row.day_key}`)
+      await refreshUsageHistory({ silent: true, keepEditCell: silent })
       await refreshUsageStatistics({ silent: true })
     } catch (e) {
-      flashToast(String(e), 'error')
+      if (!silent) flashToast(String(e), 'error')
     }
   }
 
@@ -1246,9 +1488,16 @@ export default function App() {
       avgUsdPerReq: mean(usageByProvider.map((row) => row.estimated_avg_request_cost_usd)),
       avgUsdPerMillion: mean(usageByProvider.map((row) => row.usd_per_million_tokens)),
       avgEstDaily: mean(usageByProvider.map((row) => row.estimated_daily_cost_usd)),
-      avgTotalUsed: mean(usageByProvider.map((row) => row.total_used_cost_usd)),
+      avgTotalUsed: mean(usageByProvider.map((row) => providerTotalUsedDisplayUsd(row))),
     }
   }, [usageByProvider])
+  const usageScheduleSaveStatusText = useMemo(() => {
+    if (usageScheduleSaveState === 'saving') return 'Auto-saving...'
+    if (usageScheduleSaveState === 'saved') return 'Auto-saved'
+    if (usageScheduleSaveState === 'invalid') return 'Auto-save paused (complete row to save)'
+    if (usageScheduleSaveState === 'error') return 'Auto-save failed'
+    return 'Auto-save'
+  }, [usageScheduleSaveState])
   const usageAnomalies = useMemo(() => {
     const messages: string[] = []
     const highCostProviders = new Set<string>()
@@ -1408,12 +1657,13 @@ export default function App() {
 
   function fmtPricingSource(source?: string | null): string {
     if (!source || source === 'none') return 'unconfigured'
-    if (source === 'token_rate') return 'provider budget api'
-    if (source === 'provider_budget_api') return 'provider budget api'
-    if (source === 'provider_budget_api+manual_history') return 'provider budget + history'
-    if (source === 'provider_budget_api_latest_day') return 'provider daily snapshot'
-    if (source === 'provider_token_rate') return 'provider token-rate'
+    if (source === 'token_rate') return 'monthly credit'
+    if (source === 'provider_budget_api') return 'monthly credit'
+    if (source === 'provider_budget_api+manual_history') return 'monthly credit'
+    if (source === 'provider_budget_api_latest_day') return 'monthly credit'
+    if (source === 'provider_token_rate') return 'monthly credit'
     if (source === 'manual_per_request') return 'manual'
+    if (source === 'manual_per_request_timeline') return 'manual'
     if (source === 'manual_package_total') return 'manual package total'
     if (source === 'manual_package_timeline') return 'scheduled'
     if (source === 'manual_package_timeline+manual_history') return 'scheduled + manual'
@@ -1422,6 +1672,19 @@ export default function App() {
     if (source === 'gap_fill_total') return 'gap fill total'
     if (source === 'gap_fill_per_day_average') return 'gap fill $/day'
     return source
+  }
+
+  function providerTotalUsedDisplayUsd(row: UsageStatistics['summary']['by_provider'][number]): number | null {
+    const source = row.pricing_source ?? ''
+    const isScheduled =
+      source === 'manual_package_timeline' || source === 'manual_package_timeline+manual_history'
+    if (isScheduled) {
+      const daily = row.estimated_daily_cost_usd
+      if (daily != null && Number.isFinite(daily) && daily > 0) return daily
+    }
+    const totalUsed = row.total_used_cost_usd
+    if (totalUsed == null || !Number.isFinite(totalUsed) || totalUsed <= 0) return null
+    return totalUsed
   }
 
   function fmtUsageBucketLabel(unixMs: number): string {
@@ -1506,7 +1769,10 @@ export default function App() {
     if (!provider) return
     const mode = provider.manual_pricing_mode ?? null
     const amount = provider.manual_pricing_amount_usd ?? null
-    const expiresAt = provider.manual_pricing_expires_at_unix_ms ?? null
+    if (mode === 'package_total') {
+      await openUsageScheduleModal(name, amount, providerPreferredCurrency(name))
+      return
+    }
     try {
       if (!mode) {
         await invoke('set_provider_manual_pricing', {
@@ -1520,7 +1786,7 @@ export default function App() {
           provider: name,
           mode,
           amountUsd: amount,
-          packageExpiresAtUnixMs: mode === 'package_total' ? expiresAt : null,
+          packageExpiresAtUnixMs: null,
         })
       }
       flashToast(`Pricing saved: ${name}`)
@@ -1841,6 +2107,12 @@ export default function App() {
     if (!usagePricingModalOpen) {
       usagePricingDraftsPrimedRef.current = false
       closeUsagePricingCurrencyMenu()
+      Object.values(usagePricingAutoSaveTimersRef.current).forEach((timerId) => {
+        window.clearTimeout(timerId)
+      })
+      usagePricingAutoSaveTimersRef.current = {}
+      usagePricingLastSavedSigRef.current = {}
+      setUsagePricingSaveState({})
       return
     }
     if (!config) return
@@ -1862,16 +2134,19 @@ export default function App() {
           amountUsd != null && Number.isFinite(amountUsd) && amountUsd > 0
             ? formatDraftAmount(convertUsdToCurrency(amountUsd, currency))
             : ''
-        const expiresAtText =
-          mode === 'package_total'
-            ? toDateTimeLocalValue(providerCfg?.manual_pricing_expires_at_unix_ms ?? null)
-            : ''
         next[row.provider] = {
           mode,
           amountText,
           currency,
-          expiresAtText,
         }
+        usagePricingLastSavedSigRef.current[row.provider] = pricingDraftSignature(next[row.provider])
+      })
+      return next
+    })
+    setUsagePricingSaveState(() => {
+      const next: Record<string, UsagePricingSaveState> = {}
+      usageByProvider.forEach((row) => {
+        next[row.provider] = 'saved'
       })
       return next
     })
@@ -1879,7 +2154,13 @@ export default function App() {
   }, [usagePricingModalOpen, usageByProvider, config, fxRatesByCurrency, closeUsagePricingCurrencyMenu])
 
   useEffect(() => {
-    if (!usageHistoryModalOpen) return
+    if (!usageHistoryModalOpen) {
+      if (usageHistoryAutoSaveTimerRef.current) {
+        window.clearTimeout(usageHistoryAutoSaveTimerRef.current)
+        usageHistoryAutoSaveTimerRef.current = null
+      }
+      return
+    }
     void refreshUsageHistory()
   }, [usageHistoryModalOpen])
 
@@ -1910,6 +2191,70 @@ export default function App() {
       window.removeEventListener('resize', onViewportChange)
     }
   }, [usagePricingCurrencyMenu, closeUsagePricingCurrencyMenu])
+
+  useEffect(() => {
+    if (!usageScheduleCurrencyMenu) return
+    const onMouseDown = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Element)) {
+        closeUsageScheduleCurrencyMenu()
+        return
+      }
+      if (usageScheduleCurrencyMenuRef.current?.contains(target)) return
+      if (target.closest('.aoUsageScheduleCurrencyWrap')) return
+      closeUsageScheduleCurrencyMenu()
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeUsageScheduleCurrencyMenu()
+    }
+    const onViewportChange = () => {
+      closeUsageScheduleCurrencyMenu()
+    }
+    window.addEventListener('mousedown', onMouseDown)
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('resize', onViewportChange)
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown)
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('resize', onViewportChange)
+    }
+  }, [usageScheduleCurrencyMenu])
+
+  useEffect(() => {
+    if (!usageScheduleModalOpen || usageScheduleLoading || !usageScheduleProvider || usageScheduleSaving) {
+      return
+    }
+    const signature = scheduleRowsSignature(usageScheduleRows)
+    if (signature === usageScheduleLastSavedSigRef.current) {
+      if (usageScheduleSaveState === 'saving') {
+        setUsageScheduleSaveState('saved')
+      } else if (usageScheduleSaveState === 'invalid' || usageScheduleSaveState === 'error') {
+        setUsageScheduleSaveState('idle')
+      }
+      return
+    }
+    if (usageScheduleAutoSaveTimerRef.current) {
+      window.clearTimeout(usageScheduleAutoSaveTimerRef.current)
+      usageScheduleAutoSaveTimerRef.current = null
+    }
+    usageScheduleAutoSaveTimerRef.current = window.setTimeout(() => {
+      void autoSaveUsageScheduleRows(usageScheduleProvider, usageScheduleRows, signature)
+      usageScheduleAutoSaveTimerRef.current = null
+    }, 700)
+    return () => {
+      if (usageScheduleAutoSaveTimerRef.current) {
+        window.clearTimeout(usageScheduleAutoSaveTimerRef.current)
+        usageScheduleAutoSaveTimerRef.current = null
+      }
+    }
+  }, [
+    usageScheduleModalOpen,
+    usageScheduleLoading,
+    usageScheduleProvider,
+    usageScheduleRows,
+    usageScheduleSaving,
+    usageScheduleSaveState,
+  ])
 
   const isProviderOpen = useCallback(
     (name: string) => providerPanelsOpen[name] ?? true,
@@ -2597,6 +2942,20 @@ export default function App() {
                     <button className="aoTinyBtn" onClick={() => setUsagePricingModalOpen(true)}>
                       Pricing Setup
                     </button>
+                    <button
+                      className="aoTinyBtn"
+                      onClick={() => {
+                        const providerName =
+                          orderedConfigProviders.find(
+                            (name) => config?.providers?.[name]?.manual_pricing_mode === 'package_total',
+                          ) ?? usageByProvider[0]?.provider
+                        if (!providerName) return
+                        void openUsageScheduleModal(providerName, null, providerPreferredCurrency(providerName))
+                      }}
+                      disabled={!usageByProvider.length}
+                    >
+                      Scheduled
+                    </button>
                   </div>
                 </div>
                 {usageByProvider.length ? (
@@ -2611,7 +2970,7 @@ export default function App() {
                         <th>$ / M tok</th>
                         <th>Est $ / day</th>
                         <th>Total $ Used</th>
-                        <th>Pricing Source</th>
+                        <th>Source</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2631,7 +2990,7 @@ export default function App() {
                           <td>{fmtUsdMaybe(p.estimated_avg_request_cost_usd)}</td>
                           <td>{fmtUsdMaybe(p.usd_per_million_tokens)}</td>
                           <td>{fmtUsdMaybe(p.estimated_daily_cost_usd)}</td>
-                          <td>{fmtUsdMaybe(p.total_used_cost_usd)}</td>
+                          <td>{fmtUsdMaybe(providerTotalUsedDisplayUsd(p))}</td>
                           <td>{fmtPricingSource(p.pricing_source)}</td>
                         </tr>
                       ))}
@@ -2660,7 +3019,8 @@ export default function App() {
                   <div className="aoHint">No provider usage data yet.</div>
                 )}
                 <div className="aoHint">
-                  Open Pricing Setup for base pricing. Open History to edit daily missing-cost corrections.
+                  Open Pricing Setup for base pricing, Scheduled for monthly fee periods, and History for day-level
+                  corrections.
                 </div>
               </div>
             </div>
@@ -3032,10 +3392,8 @@ requires_openai_auth = true`}
                     <col className="aoUsageHistoryColProv" />
                     <col className="aoUsageHistoryColReq" />
                     <col className="aoUsageHistoryColTok" />
-                    <col className="aoUsageHistoryColTrk" />
                     <col className="aoUsageHistoryColEff" />
                     <col className="aoUsageHistoryColPkg" />
-                    <col className="aoUsageHistoryColExp" />
                     <col className="aoUsageHistoryColSrc" />
                     <col className="aoUsageHistoryColAct" />
                   </colgroup>
@@ -3043,12 +3401,10 @@ requires_openai_auth = true`}
                     <tr>
                       <th>Date</th>
                       <th>Provider</th>
-                      <th>Requests</th>
+                      <th>Req</th>
                       <th>Tokens</th>
-                      <th>Tracked $</th>
                       <th>Effective $</th>
                       <th>Package $</th>
-                      <th>Expires</th>
                       <th>Source</th>
                       <th>Action</th>
                     </tr>
@@ -3058,66 +3414,14 @@ requires_openai_auth = true`}
                       const key = `${row.provider}|${row.day_key}`
                       const baseDraft = historyDraftFromRow(row)
                       const draft = usageHistoryDrafts[key] ?? baseDraft
-                      const trackedDisplay = historyTrackedDisplayValue(row)
                       const effectiveDisplay = historyEffectiveDisplayValue(row)
-                      const trackedEditing =
-                        usageHistoryEditCell?.key === key && usageHistoryEditCell.field === 'tracked'
-                      const effectiveEditing =
-                        usageHistoryEditCell?.key === key && usageHistoryEditCell.field === 'effective'
-                      const isDirty =
-                        draft.trackedText.trim() !== baseDraft.trackedText ||
-                        draft.effectiveText.trim() !== baseDraft.effectiveText
+                      const effectiveEditing = usageHistoryEditCell === key
                       return (
                         <tr key={key}>
                           <td className="aoUsageHistoryDateCell">{row.day_key}</td>
                           <td className="aoUsageProviderName">{row.provider}</td>
                           <td>{(row.req_count ?? 0).toLocaleString()}</td>
                           <td>{(row.total_tokens ?? 0).toLocaleString()}</td>
-                          <td>
-                            <div className="aoUsageHistoryValueCell">
-                              {trackedEditing ? (
-                                <input
-                                  className="aoInput aoUsageHistoryInput"
-                                  type="number"
-                                  min="0"
-                                  step="0.001"
-                                  placeholder="0"
-                                  value={draft.trackedText}
-                                  onChange={(e) =>
-                                    setUsageHistoryDrafts((prev) => ({
-                                      ...prev,
-                                      [key]: { ...draft, trackedText: e.target.value },
-                                    }))
-                                  }
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      void saveUsageHistoryRow(row)
-                                    } else if (e.key === 'Escape') {
-                                      setUsageHistoryDrafts((prev) => ({ ...prev, [key]: baseDraft }))
-                                      setUsageHistoryEditCell(null)
-                                    }
-                                  }}
-                                  autoFocus
-                                />
-                              ) : (
-                                <span>{fmtUsdMaybe(trackedDisplay)}</span>
-                              )}
-                              <button
-                                className="aoUsageHistoryEditBtn"
-                                title="Edit tracked"
-                                aria-label="Edit tracked"
-                                onClick={() => {
-                                  setUsageHistoryDrafts((prev) => ({ ...prev, [key]: draft }))
-                                  setUsageHistoryEditCell({ key, field: 'tracked' })
-                                }}
-                              >
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                  <path d="M12 20h9" />
-                                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
-                                </svg>
-                              </button>
-                            </div>
-                          </td>
                           <td>
                             <div className="aoUsageHistoryValueCell">
                               {effectiveEditing ? (
@@ -3128,12 +3432,13 @@ requires_openai_auth = true`}
                                   step="0.001"
                                   placeholder="0"
                                   value={draft.effectiveText}
-                                  onChange={(e) =>
+                                  onChange={(e) => {
                                     setUsageHistoryDrafts((prev) => ({
                                       ...prev,
                                       [key]: { ...draft, effectiveText: e.target.value },
                                     }))
-                                  }
+                                    queueUsageHistoryAutoSave(row)
+                                  }}
                                   onKeyDown={(e) => {
                                     if (e.key === 'Enter') {
                                       void saveUsageHistoryRow(row)
@@ -3141,6 +3446,13 @@ requires_openai_auth = true`}
                                       setUsageHistoryDrafts((prev) => ({ ...prev, [key]: baseDraft }))
                                       setUsageHistoryEditCell(null)
                                     }
+                                  }}
+                                  onBlur={() => {
+                                    if (usageHistoryAutoSaveTimerRef.current) {
+                                      window.clearTimeout(usageHistoryAutoSaveTimerRef.current)
+                                      usageHistoryAutoSaveTimerRef.current = null
+                                    }
+                                    void saveUsageHistoryRow(row, { silent: true })
                                   }}
                                   autoFocus
                                 />
@@ -3153,7 +3465,7 @@ requires_openai_auth = true`}
                                 aria-label="Edit effective"
                                 onClick={() => {
                                   setUsageHistoryDrafts((prev) => ({ ...prev, [key]: draft }))
-                                  setUsageHistoryEditCell({ key, field: 'effective' })
+                                  setUsageHistoryEditCell(key)
                                 }}
                               >
                                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -3164,21 +3476,9 @@ requires_openai_auth = true`}
                             </div>
                           </td>
                           <td>{fmtUsdMaybe(row.scheduled_package_total_usd ?? null)}</td>
-                          <td>
-                            {row.scheduled_expires_at_unix_ms && row.scheduled_expires_at_unix_ms > 0
-                              ? fmtWhen(row.scheduled_expires_at_unix_ms)
-                              : '-'}
-                          </td>
                           <td>{fmtHistorySource(row.source)}</td>
                           <td>
                             <div className="aoUsageHistoryActions">
-                              <button
-                                className="aoTinyBtn"
-                                onClick={() => void saveUsageHistoryRow(row)}
-                                disabled={!isDirty}
-                              >
-                                Save
-                              </button>
                               <button
                                 className="aoTinyBtn"
                                 onClick={() => {
@@ -3245,14 +3545,15 @@ requires_openai_auth = true`}
                         ? formatDraftAmount(providerCfg.manual_pricing_amount_usd)
                         : '',
                     currency: 'USD',
-                    expiresAtText: toDateTimeLocalValue(
-                      providerCfg?.manual_pricing_expires_at_unix_ms ?? null,
-                    ),
                   }
                   const mode = draft.mode
-                  const amountDisabled = !providerCfg || mode === 'none'
+                  const scheduleManaged = mode === 'package_total'
+                  const amountDisabled = !providerCfg || mode === 'none' || scheduleManaged
                   return (
-                    <div key={`pricing-${row.provider}`} className="aoUsagePricingRow">
+                    <div
+                      key={`pricing-${row.provider}`}
+                      className={`aoUsagePricingRow${scheduleManaged ? ' is-scheduled' : ''}`}
+                    >
                       <div className="aoUsagePricingProvider">{row.provider}</div>
                       <select
                         className="aoSelect aoUsagePricingSelect aoUsagePricingMode"
@@ -3260,102 +3561,115 @@ requires_openai_auth = true`}
                         disabled={!providerCfg}
                         onChange={(e) => {
                           const nextMode = (e.target.value as UsagePricingMode) ?? 'none'
+                          const nextDraft: UsagePricingDraft = {
+                            ...draft,
+                            mode: nextMode,
+                            amountText: nextMode === 'none' ? '' : draft.amountText,
+                          }
                           setUsagePricingDrafts((prev) => ({
                             ...prev,
-                            [row.provider]: {
-                              ...draft,
-                              mode: nextMode,
-                              amountText: nextMode === 'none' ? '' : draft.amountText,
-                              expiresAtText:
-                                nextMode === 'package_total'
-                                  ? draft.expiresAtText
-                                  : '',
-                            },
+                            [row.provider]: nextDraft,
                           }))
+                          if (nextMode !== 'package_total') {
+                            queueUsagePricingAutoSave(row.provider, nextDraft)
+                          } else {
+                            const pending = usagePricingAutoSaveTimersRef.current[row.provider]
+                            if (pending) {
+                              window.clearTimeout(pending)
+                              delete usagePricingAutoSaveTimersRef.current[row.provider]
+                            }
+                            setUsagePricingSaveState((prev) => ({ ...prev, [row.provider]: 'idle' }))
+                          }
                         }}
                       >
                         <option value="none">Monthly credit</option>
                         <option value="package_total">Monthly fee</option>
                         <option value="per_request">$ / request</option>
                       </select>
-                      <input
-                        className="aoInput aoUsagePricingInput aoUsagePricingAmount"
-                        type="number"
-                        step="0.001"
-                        min="0"
-                        disabled={amountDisabled}
-                        placeholder="Amount"
-                        value={draft.amountText}
-                        onChange={(e) =>
-                          setUsagePricingDrafts((prev) => ({
-                            ...prev,
-                            [row.provider]: {
-                              ...draft,
-                              amountText: e.target.value,
-                            },
-                          }))
-                        }
-                      />
-                      <div className="aoUsagePricingCurrencyWrap">
+                      {scheduleManaged ? null : (
+                        <>
+                          <input
+                            className="aoInput aoUsagePricingInput aoUsagePricingAmount"
+                            type="number"
+                            step="0.001"
+                            min="0"
+                            disabled={amountDisabled}
+                            placeholder="Amount"
+                            value={draft.amountText}
+                            onChange={(e) => {
+                              const nextDraft: UsagePricingDraft = {
+                                ...draft,
+                                amountText: e.target.value,
+                              }
+                              setUsagePricingDrafts((prev) => ({
+                                ...prev,
+                                [row.provider]: nextDraft,
+                              }))
+                              queueUsagePricingAutoSave(row.provider, nextDraft)
+                            }}
+                          />
+                          <div className="aoUsagePricingCurrencyWrap">
+                            <button
+                              type="button"
+                              className="aoSelect aoUsagePricingCurrencyBtn"
+                              disabled={!providerCfg || amountDisabled}
+                              aria-haspopup="listbox"
+                              aria-expanded={usagePricingCurrencyMenu?.provider === row.provider}
+                              onClick={(e) => {
+                                const button = e.currentTarget
+                                const rect = button.getBoundingClientRect()
+                                setUsagePricingCurrencyMenu((prev) => {
+                                  if (prev?.provider === row.provider) {
+                                    setUsagePricingCurrencyQuery('')
+                                    return null
+                                  }
+                                  setUsagePricingCurrencyQuery('')
+                                  return {
+                                    provider: row.provider,
+                                    left: Math.max(8, Math.round(rect.left)),
+                                    top: Math.round(rect.bottom + 4),
+                                    width: Math.round(rect.width),
+                                  }
+                                })
+                              }}
+                            >
+                              <span>{currencyLabel(normalizeCurrencyCode(draft.currency))}</span>
+                              <span className="aoUsagePricingCurrencyChevron" aria-hidden="true">
+                                ▼
+                              </span>
+                            </button>
+                          </div>
+                        </>
+                      )}
+                      {mode === 'package_total' ? (
                         <button
-                          type="button"
-                          className="aoSelect aoUsagePricingCurrencyBtn"
-                          disabled={!providerCfg || amountDisabled}
-                          aria-haspopup="listbox"
-                          aria-expanded={usagePricingCurrencyMenu?.provider === row.provider}
-                          onClick={(e) => {
-                            const button = e.currentTarget
-                            const rect = button.getBoundingClientRect()
-                            setUsagePricingCurrencyMenu((prev) => {
-                              if (prev?.provider === row.provider) {
-                                setUsagePricingCurrencyQuery('')
-                                return null
-                              }
-                              setUsagePricingCurrencyQuery('')
-                              return {
-                                provider: row.provider,
-                                left: Math.max(8, Math.round(rect.left)),
-                                top: Math.round(rect.bottom + 4),
-                                width: Math.round(rect.width),
-                              }
-                            })
-                          }}
+                          className="aoTinyBtn"
+                          disabled={!providerCfg}
+                          onClick={() => void saveUsagePricingRow(row.provider)}
                         >
-                          <span>{currencyLabel(normalizeCurrencyCode(draft.currency))}</span>
-                          <span className="aoUsagePricingCurrencyChevron" aria-hidden="true">
-                            ▼
-                          </span>
+                          Scheduled
                         </button>
-                      </div>
-                      <input
-                        className="aoInput aoUsagePricingInput aoUsagePricingExpires"
-                        type="datetime-local"
-                        disabled={!providerCfg || mode !== 'package_total'}
-                        value={draft.expiresAtText}
-                        onChange={(e) =>
-                          setUsagePricingDrafts((prev) => ({
-                            ...prev,
-                            [row.provider]: {
-                              ...draft,
-                              expiresAtText: e.target.value,
-                            },
-                          }))
-                        }
-                      />
-                      <button
-                        className="aoTinyBtn"
-                        disabled={!providerCfg}
-                        onClick={() => void saveUsagePricingRow(row.provider)}
-                      >
-                        Save
-                      </button>
+                      ) : (
+                        <span
+                          className={`aoHint aoUsagePricingAutosave aoUsagePricingAutosave-${
+                            usagePricingSaveState[row.provider] ?? 'idle'
+                          }`}
+                        >
+                          {usagePricingSaveState[row.provider] === 'saving'
+                            ? 'Auto-saving...'
+                            : usagePricingSaveState[row.provider] === 'saved'
+                              ? 'Auto-saved'
+                              : usagePricingSaveState[row.provider] === 'error'
+                                ? 'Auto-save failed'
+                                : 'Auto-save'}
+                        </span>
+                      )}
                     </div>
                   )
                 })}
               </div>
               <div className="aoHint">
-                Monthly fee requires an expire time and creates a fixed period. Later changes only affect new periods.
-                Use History to adjust per-day corrections.
+                Monthly fee uses Scheduled periods. Click Scheduled to manage start/expires history.
               </div>
             </div>
           </div>
@@ -3372,11 +3686,8 @@ requires_openai_auth = true`}
                         ? formatDraftAmount(providerCfg.manual_pricing_amount_usd)
                         : '',
                     currency: 'USD',
-                    expiresAtText: toDateTimeLocalValue(
-                      providerCfg?.manual_pricing_expires_at_unix_ms ?? null,
-                    ),
                   }
-                  const amountDisabled = !providerCfg
+                  const amountDisabled = !providerCfg || draft.mode === 'package_total'
                   if (amountDisabled) return null
 
                   const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1200
@@ -3418,6 +3729,270 @@ requires_openai_auth = true`}
                             onClick={() => {
                               updateUsagePricingCurrency(row.provider, draft, normalized)
                               closeUsagePricingCurrencyMenu()
+                            }}
+                          >
+                            {currencyLabel(normalized)}
+                          </button>
+                        )
+                      })}
+                      {filteredOptions.length === 0 ? (
+                        <div className="aoHint" style={{ padding: '6px 10px 8px' }}>
+                          No currency
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })(),
+                document.body,
+              )
+            : null}
+        </ModalBackdrop>
+      ) : null}
+
+      {usageScheduleModalOpen ? (
+        <ModalBackdrop
+          className="aoModalBackdrop aoModalBackdropTop"
+          onClose={() => {
+            closeUsageScheduleCurrencyMenu()
+            if (usageScheduleAutoSaveTimerRef.current) {
+              window.clearTimeout(usageScheduleAutoSaveTimerRef.current)
+              usageScheduleAutoSaveTimerRef.current = null
+            }
+            setUsageScheduleSaveState('idle')
+            setUsageScheduleModalOpen(false)
+          }}
+        >
+          <div className="aoModal aoModalWide aoUsageScheduleModal" onClick={(e) => e.stopPropagation()}>
+            <div className="aoModalHeader">
+              <div>
+                <div className="aoModalTitle">Scheduled Periods</div>
+                <div className="aoModalSub">
+                  Provider: {usageScheduleProvider || '-'} . Define fixed package periods with explicit start/expires.
+                </div>
+              </div>
+              <button
+                className="aoBtn"
+                onClick={() => {
+                  closeUsageScheduleCurrencyMenu()
+                  if (usageScheduleAutoSaveTimerRef.current) {
+                    window.clearTimeout(usageScheduleAutoSaveTimerRef.current)
+                    usageScheduleAutoSaveTimerRef.current = null
+                  }
+                  setUsageScheduleSaveState('idle')
+                  setUsageScheduleModalOpen(false)
+                }}
+              >
+                Close
+              </button>
+            </div>
+            <div className="aoModalBody">
+              {usageScheduleLoading ? (
+                <div className="aoHint">Loading...</div>
+              ) : (
+                <>
+                  <table className="aoUsageScheduleTable">
+                    <colgroup>
+                      <col className="aoUsageScheduleColStart" />
+                      <col className="aoUsageScheduleColExpires" />
+                      <col className="aoUsageScheduleColAmount" />
+                      <col className="aoUsageScheduleColCurrency" />
+                      <col className="aoUsageScheduleColAction" />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th>Start</th>
+                        <th>Expires</th>
+                        <th>Amount</th>
+                        <th>Currency</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {usageScheduleRows.map((row, index) => (
+                        <tr key={`${row.id || 'new'}-${index}`}>
+                          <td>
+                            <input
+                              className="aoInput aoUsageScheduleInput"
+                              type="datetime-local"
+                              value={row.startText}
+                              onChange={(e) => {
+                                setUsageScheduleSaveState('idle')
+                                setUsageScheduleRows((prev) =>
+                                  prev.map((item, i) =>
+                                    i === index ? { ...item, startText: e.target.value } : item,
+                                  ),
+                                )
+                              }}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              className="aoInput aoUsageScheduleInput"
+                              type="datetime-local"
+                              value={row.endText}
+                              onChange={(e) => {
+                                setUsageScheduleSaveState('idle')
+                                setUsageScheduleRows((prev) =>
+                                  prev.map((item, i) =>
+                                    i === index ? { ...item, endText: e.target.value } : item,
+                                  ),
+                                )
+                              }}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              className="aoInput aoUsageScheduleAmount"
+                              type="number"
+                              min="0"
+                              step="0.001"
+                              placeholder="0"
+                              value={row.amountText}
+                              onChange={(e) => {
+                                setUsageScheduleSaveState('idle')
+                                setUsageScheduleRows((prev) =>
+                                  prev.map((item, i) =>
+                                    i === index ? { ...item, amountText: e.target.value } : item,
+                                  ),
+                                )
+                              }}
+                            />
+                          </td>
+                          <td>
+                            <div className="aoUsageScheduleCurrencyWrap">
+                              <button
+                                type="button"
+                                className="aoSelect aoUsageScheduleCurrencyBtn"
+                                aria-haspopup="listbox"
+                                aria-expanded={usageScheduleCurrencyMenu?.rowIndex === index}
+                                onClick={(e) => {
+                                  const button = e.currentTarget
+                                  const rect = button.getBoundingClientRect()
+                                  setUsageScheduleCurrencyMenu((prev) => {
+                                    if (prev?.rowIndex === index) {
+                                      setUsageScheduleCurrencyQuery('')
+                                      return null
+                                    }
+                                    setUsageScheduleCurrencyQuery('')
+                                    return {
+                                      rowIndex: index,
+                                      left: Math.max(8, Math.round(rect.left)),
+                                      top: Math.round(rect.bottom + 4),
+                                      width: Math.round(rect.width),
+                                    }
+                                  })
+                                }}
+                              >
+                                <span>{currencyLabel(normalizeCurrencyCode(row.currency))}</span>
+                                <span className="aoUsagePricingCurrencyChevron" aria-hidden="true">
+                                  ▼
+                                </span>
+                              </button>
+                            </div>
+                          </td>
+                          <td>
+                            <button
+                              className="aoTinyBtn"
+                              onClick={() => {
+                                setUsageScheduleSaveState('idle')
+                                setUsageScheduleRows((prev) => prev.filter((_, i) => i !== index))
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div className="aoUsageScheduleActions">
+                    <button
+                      className="aoTinyBtn"
+                      onClick={() => {
+                        setUsageScheduleSaveState('idle')
+                        setUsageScheduleRows((prev) => {
+                          const lastAmount = parsePositiveAmount(prev[prev.length - 1]?.amountText ?? '')
+                          const lastCurrency = prev[prev.length - 1]?.currency
+                          return [
+                            ...prev,
+                            newScheduleDraft(
+                              usageScheduleProvider,
+                              lastAmount != null
+                                ? convertCurrencyToUsd(
+                                    lastAmount,
+                                    lastCurrency ?? providerPreferredCurrency(usageScheduleProvider),
+                                  )
+                                : null,
+                              lastCurrency ?? providerPreferredCurrency(usageScheduleProvider),
+                            ),
+                          ]
+                        })
+                      }}
+                    >
+                      Add Period
+                    </button>
+                    <span className={`aoHint aoUsageScheduleAutosave aoUsageScheduleAutosave-${usageScheduleSaveState}`}>
+                      {usageScheduleSaveStatusText}
+                    </span>
+                  </div>
+                  <div className="aoHint aoUsageScheduleHint">
+                    Scheduled periods are the only source for monthly fee timelines. Editing here does not rewrite
+                    unrelated past periods.
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+          {usageScheduleCurrencyMenu
+            ? createPortal(
+                (() => {
+                  const row = usageScheduleRows[usageScheduleCurrencyMenu.rowIndex]
+                  if (!row) return null
+                  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1200
+                  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800
+                  const width = Math.max(86, Math.min(132, usageScheduleCurrencyMenu.width))
+                  const left = Math.max(8, Math.min(usageScheduleCurrencyMenu.left, viewportWidth - width - 8))
+                  const menuHeight = 260
+                  const belowSpace = viewportHeight - usageScheduleCurrencyMenu.top - 8
+                  const top =
+                    belowSpace >= 180
+                      ? usageScheduleCurrencyMenu.top
+                      : Math.max(8, usageScheduleCurrencyMenu.top - menuHeight - 36)
+                  const maxHeight = Math.max(140, Math.min(menuHeight, viewportHeight - top - 8))
+                  const query = usageScheduleCurrencyQuery.trim().toUpperCase()
+                  const filteredOptions = usageCurrencyOptions.filter((currencyCode) => {
+                    const normalized = normalizeCurrencyCode(currencyCode)
+                    const label = currencyLabel(normalized).toUpperCase()
+                    return query.length === 0 || normalized.includes(query) || label.includes(query)
+                  })
+
+                  return (
+                    <div
+                      ref={usageScheduleCurrencyMenuRef}
+                      className="aoUsagePricingCurrencyMenu aoUsagePricingCurrencyMenuPortal"
+                      role="listbox"
+                      style={{ left, top, width, maxHeight }}
+                    >
+                      <div className="aoUsagePricingCurrencySearchWrap">
+                        <input
+                          className="aoInput aoUsagePricingCurrencySearch"
+                          placeholder="Search"
+                          value={usageScheduleCurrencyQuery}
+                          onChange={(e) => setUsageScheduleCurrencyQuery(e.target.value)}
+                          autoFocus
+                        />
+                      </div>
+                      {filteredOptions.map((currencyCode) => {
+                        const normalized = normalizeCurrencyCode(currencyCode)
+                        const isActive = normalizeCurrencyCode(row.currency) === normalized
+                        return (
+                          <button
+                            type="button"
+                            key={currencyCode}
+                            className={`aoUsagePricingCurrencyItem${isActive ? ' is-active' : ''}`}
+                            onClick={() => {
+                              updateUsageScheduleCurrency(usageScheduleCurrencyMenu.rowIndex, normalized)
+                              closeUsageScheduleCurrencyMenu()
                             }}
                           >
                             {currencyLabel(normalized)}

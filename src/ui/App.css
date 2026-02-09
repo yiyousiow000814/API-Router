@@ -722,18 +722,22 @@
 .aoUsagePricingRow {
   display: grid;
   grid-template-columns:
-    minmax(98px, 0.8fr)
-    minmax(150px, 1.15fr)
-    minmax(96px, 0.72fr)
-    minmax(80px, 92px)
-    minmax(172px, 1fr)
+    minmax(98px, 116px)
+    180px
+    108px
+    78px
     auto;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
   border: 1px solid rgba(13, 18, 32, 0.08);
   border-radius: 10px;
-  padding: 7px 8px;
+  padding: 6px 8px;
   background: rgba(255, 255, 255, 0.74);
+}
+
+.aoUsagePricingRow.is-scheduled {
+  grid-template-columns: minmax(98px, 116px) 180px auto;
+  justify-content: start;
 }
 
 .aoUsagePricingProvider {
@@ -753,10 +757,6 @@
 }
 
 .aoUsagePricingAmount {
-  min-width: 0;
-}
-
-.aoUsagePricingExpires {
   min-width: 0;
 }
 
@@ -785,6 +785,19 @@
   gap: 6px;
 }
 
+.aoUsagePricingAutosave {
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.aoUsagePricingAutosave-saving {
+  color: rgba(var(--ao-accent-rgb), 0.95);
+}
+
+.aoUsagePricingAutosave-error {
+  color: rgba(205, 58, 74, 0.95);
+}
+
 .aoUsagePricingCurrencyChevron {
   font-size: 10px;
   color: rgba(13, 18, 32, 0.7);
@@ -806,6 +819,27 @@
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(13, 18, 32, 0.26) rgba(13, 18, 32, 0.06);
+}
+
+.aoUsagePricingCurrencyMenu::-webkit-scrollbar {
+  width: 8px;
+}
+
+.aoUsagePricingCurrencyMenu::-webkit-scrollbar-track {
+  background: rgba(13, 18, 32, 0.06);
+  border-radius: 999px;
+}
+
+.aoUsagePricingCurrencyMenu::-webkit-scrollbar-thumb {
+  background: rgba(13, 18, 32, 0.26);
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+.aoUsagePricingCurrencyMenu::-webkit-scrollbar-thumb:hover {
+  background: rgba(13, 18, 32, 0.38);
 }
 
 .aoUsagePricingCurrencySearchWrap {
@@ -886,7 +920,8 @@
 
 .aoUsageHistoryTable {
   width: 100%;
-  min-width: 1380px;
+  min-width: 0;
+  table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
   font-size: 12px;
@@ -896,43 +931,35 @@
 }
 
 .aoUsageHistoryColDate {
-  width: 108px;
-}
-
-.aoUsageHistoryColProv {
-  width: 128px;
-}
-
-.aoUsageHistoryColReq {
   width: 84px;
 }
 
-.aoUsageHistoryColTok {
-  width: 118px;
+.aoUsageHistoryColProv {
+  width: 108px;
 }
 
-.aoUsageHistoryColTrk {
-  width: 132px;
+.aoUsageHistoryColReq {
+  width: 62px;
+}
+
+.aoUsageHistoryColTok {
+  width: 102px;
 }
 
 .aoUsageHistoryColEff {
-  width: 132px;
+  width: 122px;
 }
 
 .aoUsageHistoryColPkg {
-  width: 104px;
-}
-
-.aoUsageHistoryColExp {
-  width: 176px;
+  width: 82px;
 }
 
 .aoUsageHistoryColSrc {
-  width: 118px;
+  width: 104px;
 }
 
 .aoUsageHistoryColAct {
-  width: 132px;
+  width: 102px;
 }
 
 .aoUsageHistoryTable th,
@@ -1004,7 +1031,119 @@
 
 .aoUsageHistoryActions {
   display: inline-flex;
+  gap: 4px;
+}
+
+.aoUsageScheduleModal {
+  width: min(900px, 94vw);
+  max-height: min(82vh, 860px);
+}
+
+.aoUsageScheduleTable {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.aoUsageScheduleColStart {
+  width: auto;
+}
+
+.aoUsageScheduleColExpires {
+  width: auto;
+}
+
+.aoUsageScheduleColAmount {
+  width: 88px;
+}
+
+.aoUsageScheduleColCurrency {
+  width: 100px;
+}
+
+.aoUsageScheduleColAction {
+  width: 90px;
+}
+
+.aoUsageScheduleTable th,
+.aoUsageScheduleTable td {
+  padding: 5px 6px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.aoUsageScheduleTable th {
+  background: rgba(13, 18, 32, 0.04);
+  color: rgba(13, 18, 32, 0.72);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.aoUsageScheduleTable tr:last-child td {
+  border-bottom: none;
+}
+
+.aoUsageScheduleInput {
+  width: 100%;
+  min-width: 0;
+}
+
+.aoUsageScheduleAmount {
+  width: 72px;
+  appearance: textfield;
+  -moz-appearance: textfield;
+  padding-right: 8px;
+}
+
+.aoUsageScheduleAmount::-webkit-outer-spin-button,
+.aoUsageScheduleAmount::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.aoUsageScheduleCurrencyWrap {
+  position: relative;
+  min-width: 0;
+}
+
+.aoUsageScheduleCurrencyBtn {
+  width: 100%;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 6px;
+}
+
+.aoUsageScheduleActions {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.aoUsageScheduleAutosave {
+  margin-left: 2px;
+}
+
+.aoUsageScheduleAutosave-saving {
+  color: rgba(var(--ao-accent-rgb), 0.95);
+}
+
+.aoUsageScheduleAutosave-error {
+  color: rgba(205, 58, 74, 0.95);
+}
+
+.aoUsageScheduleHint {
+  margin-top: 10px;
 }
 
 .aoProviderSwitchboardCard {
@@ -2953,6 +3092,11 @@
 .aoModalWide.aoUsagePricingModal {
   width: min(640px, 92vw);
   max-height: min(72vh, 720px);
+}
+
+.aoModalWide.aoUsageScheduleModal {
+  width: min(900px, 94vw);
+  max-height: min(82vh, 860px);
 }
 
 .aoModalHeader {
