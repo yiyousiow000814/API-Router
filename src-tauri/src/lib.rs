@@ -1009,8 +1009,7 @@ fn get_usage_statistics(
                     total_used_cost_usd = Some(timeline_total_used);
                     let avg_req = timeline_total_used / timeline_priced_reqs as f64;
                     estimated_avg_request_cost_usd = Some(avg_req);
-                    estimated_daily_cost_usd =
-                        Some(timeline_total_used + req_per_hour * projection_hours * avg_req);
+                    estimated_daily_cost_usd = Some(req_per_hour * projection_hours * avg_req);
                     pricing_source = if has_per_request_timeline(pricing_cfg) {
                         "manual_per_request_timeline".to_string()
                     } else {
@@ -1020,8 +1019,7 @@ fn get_usage_statistics(
                     let total_used = per_req * agg.requests as f64;
                     total_used_cost_usd = Some(total_used);
                     estimated_avg_request_cost_usd = Some(per_req);
-                    estimated_daily_cost_usd =
-                        Some(total_used + req_per_hour * projection_hours * per_req);
+                    estimated_daily_cost_usd = Some(req_per_hour * projection_hours * per_req);
                     pricing_source = "manual_per_request".to_string();
                 }
             }
@@ -1261,8 +1259,7 @@ fn get_usage_statistics(
                     if agg.requests > 0 {
                         let avg = total_used / agg.requests as f64;
                         estimated_avg_request_cost_usd = Some(avg);
-                        estimated_daily_cost_usd =
-                            Some(total_used + req_per_hour * projection_hours * avg);
+                        estimated_daily_cost_usd = Some(req_per_hour * projection_hours * avg);
                     } else if let Some(spent_today) =
                         provider_daily_spent_usd.get(provider).copied()
                     {
@@ -1287,7 +1284,7 @@ fn get_usage_statistics(
                                     total_used_cost_usd = Some(total_used);
                                     estimated_avg_request_cost_usd = Some(amount);
                                     estimated_daily_cost_usd =
-                                        Some(total_used + req_per_hour * projection_hours * amount);
+                                        Some(req_per_hour * projection_hours * amount);
                                     gap_filled_spend_usd = Some(total_used);
                                     pricing_source = "gap_fill_per_request".to_string();
                                 }
@@ -1297,7 +1294,7 @@ fn get_usage_statistics(
                                         let avg = amount / agg.requests as f64;
                                         estimated_avg_request_cost_usd = Some(avg);
                                         estimated_daily_cost_usd =
-                                            Some(amount + req_per_hour * projection_hours * avg);
+                                            Some(req_per_hour * projection_hours * avg);
                                     }
                                     gap_filled_spend_usd = Some(amount);
                                     pricing_source = "gap_fill_total".to_string();
