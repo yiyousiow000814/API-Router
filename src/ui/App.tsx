@@ -2005,6 +2005,10 @@ function newScheduleDraft(
       ? Math.round((usagePricedRequestCount / (usageSummary?.total_requests ?? 1)) * 100)
       : 0
   const usageActiveWindowHours = useMemo(() => {
+    const summaryActiveHours = usageSummary?.active_window_hours
+    if (summaryActiveHours != null && Number.isFinite(summaryActiveHours) && summaryActiveHours > 0) {
+      return summaryActiveHours
+    }
     const bucketSeconds = usageStatistics?.bucket_seconds ?? 0
     if (bucketSeconds <= 0) return 0
     const activeBucketCount = usageTimeline.reduce(
@@ -2013,7 +2017,7 @@ function newScheduleDraft(
     )
     if (activeBucketCount <= 0) return 0
     return (activeBucketCount * bucketSeconds) / 3600
-  }, [usageTimeline, usageStatistics?.bucket_seconds])
+  }, [usageSummary?.active_window_hours, usageTimeline, usageStatistics?.bucket_seconds])
   const usageAvgRequestsPerHour =
     (usageSummary?.total_requests ?? 0) > 0 && usageActiveWindowHours > 0
       ? (usageSummary?.total_requests ?? 0) / usageActiveWindowHours
