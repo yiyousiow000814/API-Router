@@ -285,6 +285,24 @@ impl SecretStore {
                 period.ended_at_unix_ms = Some(period.started_at_unix_ms.saturating_add(1));
             }
         }
+
+        // Preserve existing per-request timeline rows when replacing package schedule rows.
+        let existing_per_request: Vec<ProviderPricingPeriod> = {
+            let data = self.inner.lock();
+            data.provider_pricing
+                .get(provider)
+                .map(|entry| {
+                    entry
+                        .periods
+                        .iter()
+                        .filter(|period| period.mode == "per_request")
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        periods.extend(existing_per_request);
+
         self.set_provider_timeline(provider, periods)
     }
 

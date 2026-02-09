@@ -412,7 +412,7 @@ impl Store {
         if old == new {
             return;
         }
-        for prefix in ["metrics:", "quota:", "ledger:"] {
+        for prefix in ["metrics:", "quota:", "ledger:", "spend_state:"] {
             let old_key = format!("{prefix}{old}");
             if let Ok(Some(v)) = self.db.get(old_key.as_bytes()) {
                 let new_key = format!("{prefix}{new}");
@@ -420,6 +420,32 @@ impl Store {
                 let _ = self.db.remove(old_key.as_bytes());
             }
         }
+
+        for prefix in ["usage_day:", "spend_day:", "spend_manual_day:"] {
+            let old_prefix = format!("{prefix}{old}:");
+            let new_prefix = format!("{prefix}{new}:");
+            let old_prefix_bytes = old_prefix.as_bytes();
+            let mut to_rename: Vec<(sled::IVec, Vec<u8>, sled::IVec)> = Vec::new();
+
+            for res in self.db.scan_prefix(old_prefix_bytes) {
+                let Ok((k, v)) = res else {
+                    continue;
+                };
+                if !k.as_ref().starts_with(old_prefix_bytes) {
+                    continue;
+                }
+                let suffix = &k.as_ref()[old_prefix_bytes.len()..];
+                let mut new_key = new_prefix.as_bytes().to_vec();
+                new_key.extend_from_slice(suffix);
+                to_rename.push((k, new_key, v));
+            }
+
+            for (old_key, new_key, value) in to_rename {
+                let _ = self.db.insert(new_key, value);
+                let _ = self.db.remove(old_key);
+            }
+        }
+
         let _ = self.db.flush();
     }
 
