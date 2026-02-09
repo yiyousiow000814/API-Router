@@ -3732,10 +3732,7 @@ requires_openai_auth = true`}
                   const scheduleManaged = mode === 'package_total'
                   const amountDisabled = !providerCfg || mode === 'none' || scheduleManaged
                   return (
-                    <div
-                      key={`pricing-${row.provider}`}
-                      className={`aoUsagePricingRow${scheduleManaged ? ' is-scheduled' : ''}`}
-                    >
+                    <div key={`pricing-${row.provider}`} className="aoUsagePricingRow">
                       <div className="aoUsagePricingProviderWrap">
                         <div className="aoUsagePricingProvider">{row.provider}</div>
                         <div className="aoHint aoUsagePricingKeyHint">key: {providerApiKeyLabel(row.provider)}</div>
@@ -3759,13 +3756,7 @@ requires_openai_auth = true`}
                             queueUsagePricingAutoSave(row.provider, nextDraft)
                           } else {
                             clearAutoSaveTimer(`pricing:${row.provider}`)
-                            void (async () => {
-                              await activatePackageTotalMode(row.provider, nextDraft)
-                              await openUsageScheduleModal(
-                                row.provider,
-                                providerPreferredCurrency(row.provider),
-                              )
-                            })()
+                            void activatePackageTotalMode(row.provider, nextDraft)
                           }
                         }}
                       >
@@ -3773,7 +3764,23 @@ requires_openai_auth = true`}
                         <option value="package_total">Monthly fee</option>
                         <option value="per_request">$ / request</option>
                       </select>
-                      {scheduleManaged ? null : (
+                      {scheduleManaged ? (
+                        <>
+                          <button
+                            className="aoTinyBtn aoUsagePricingScheduleInline"
+                            disabled={!providerCfg}
+                            onClick={() =>
+                              void openUsageScheduleModal(
+                                row.provider,
+                                providerPreferredCurrency(row.provider),
+                              )
+                            }
+                          >
+                            Schedule
+                          </button>
+                          <div className="aoUsagePricingSchedulePlaceholder" />
+                        </>
+                      ) : (
                         <>
                           <input
                             className="aoInput aoUsagePricingInput aoUsagePricingAmount"
@@ -3829,35 +3836,19 @@ requires_openai_auth = true`}
                         </>
                       )}
                       <div className="aoUsagePricingActions">
-                        {mode === 'package_total' ? null : (
-                          <span
-                            className={`aoHint aoUsagePricingAutosave aoUsagePricingAutosave-${
-                              usagePricingSaveState[row.provider] ?? 'idle'
-                            }`}
-                          >
-                            {usagePricingSaveState[row.provider] === 'saving'
-                              ? 'Auto-saving...'
-                              : usagePricingSaveState[row.provider] === 'saved'
-                                ? 'Auto-saved'
-                                : usagePricingSaveState[row.provider] === 'error'
-                                  ? 'Auto-save failed'
-                                  : 'Auto-save'}
-                          </span>
-                        )}
-                        {mode === 'package_total' ? (
-                          <button
-                            className="aoTinyBtn"
-                            disabled={!providerCfg}
-                            onClick={() =>
-                              void openUsageScheduleModal(
-                                row.provider,
-                                providerPreferredCurrency(row.provider),
-                              )
-                            }
-                          >
-                            Schedule
-                          </button>
-                        ) : null}
+                        <span
+                          className={`aoHint aoUsagePricingAutosave aoUsagePricingAutosave-${
+                            usagePricingSaveState[row.provider] ?? 'idle'
+                          }`}
+                        >
+                          {usagePricingSaveState[row.provider] === 'saving'
+                            ? 'Auto-saving...'
+                            : usagePricingSaveState[row.provider] === 'saved'
+                              ? 'Auto-saved'
+                              : usagePricingSaveState[row.provider] === 'error'
+                                ? 'Auto-save failed'
+                                : 'Auto-save'}
+                        </span>
                       </div>
                     </div>
                   )

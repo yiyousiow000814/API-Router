@@ -736,8 +736,12 @@
 }
 
 .aoUsagePricingRow.is-scheduled {
-  grid-template-columns: minmax(132px, 170px) minmax(160px, 1fr) minmax(96px, 132px);
-  justify-content: start;
+  grid-template-columns:
+    minmax(132px, 170px)
+    minmax(160px, 1fr)
+    minmax(96px, 108px)
+    72px
+    minmax(96px, 132px);
 }
 
 .aoUsagePricingProvider {
@@ -812,6 +816,15 @@
   gap: 8px;
   min-width: 96px;
   justify-self: end;
+}
+
+.aoUsagePricingScheduleInline {
+  justify-self: start;
+  white-space: nowrap;
+}
+
+.aoUsagePricingSchedulePlaceholder {
+  min-width: 0;
 }
 
 .aoUsagePricingAutosave-saving {
