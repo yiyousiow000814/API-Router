@@ -286,6 +286,932 @@
   color: rgba(13, 18, 32, 0.85);
 }
 
+.aoUsageStatsPage {
+  min-height: 320px;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.aoUsageStatsHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoUsageStatsActions {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aoUsageFilterCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+  padding: 8px 10px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.aoUsageFilterSection {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.aoUsageFilterSectionCompact {
+  align-content: start;
+}
+
+.aoUsageFilterSectionHead {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.aoUsageFilterChips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.aoUsageFilterChip {
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(13, 18, 32, 0.82);
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 620;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.aoUsageFilterChip:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.45);
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoUsageFilterChip.is-active {
+  border-color: rgba(33, 168, 183, 0.58);
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.24), rgba(242, 193, 77, 0.2));
+  color: rgba(13, 18, 32, 0.94);
+}
+
+.aoUsageFilterChip:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.aoUsageAnomalyBanner {
+  border: 1px solid rgba(214, 74, 86, 0.34);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(245, 99, 110, 0.1), rgba(245, 207, 84, 0.08));
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.aoUsageAnomalyText {
+  font-size: 12px;
+  color: rgba(145, 12, 43, 0.9);
+  font-weight: 620;
+}
+
+.aoUsageActionBtn {
+  min-width: 64px;
+  flex: 0 0 auto;
+  line-height: 1;
+  justify-content: center;
+}
+
+.aoUsageActionBtnWindow {
+  width: 46px;
+  padding: 0;
+}
+
+.aoUsageActionBtnRefresh {
+  width: 86px;
+  padding: 0;
+}
+
+.aoUsageActionBtnLoading {
+  opacity: 0.85;
+  cursor: wait;
+}
+
+.aoUsageWindowBtnActive {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.3), rgba(242, 193, 77, 0.24));
+  border-color: rgba(13, 18, 32, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.58);
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoUsageKpiGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.aoUsageKpiCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.aoUsageKpiValue {
+  font-size: 24px;
+  font-weight: 760;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: rgba(13, 18, 32, 0.92);
+}
+
+.aoUsageKpiValueSmall {
+  font-size: 20px;
+}
+
+.aoUsageFactsCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageFactsTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.aoUsageFactsTable th,
+.aoUsageFactsTable td {
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+  padding: 8px 10px;
+  font-size: 12px;
+  text-align: left;
+}
+
+.aoUsageFactsTable th {
+  width: 18%;
+  color: rgba(13, 18, 32, 0.6);
+  letter-spacing: 0.02em;
+  font-weight: 650;
+}
+
+.aoUsageFactsTable td {
+  width: 32%;
+  color: rgba(13, 18, 32, 0.86);
+  font-weight: 620;
+}
+
+.aoUsageChartsGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.aoUsageChartCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.aoUsageTimelineChartWrap {
+  display: grid;
+  gap: 8px;
+  position: relative;
+}
+
+.aoUsageTimelineSvg {
+  width: 100%;
+  height: 170px;
+  border: 1px solid rgba(13, 18, 32, 0.07);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(13, 18, 32, 0.02));
+}
+
+.aoUsageTimelineAxis {
+  stroke: rgba(13, 18, 32, 0.24);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.aoUsageTimelineBarRect {
+  fill: rgba(40, 199, 217, 0.82);
+  pointer-events: none;
+}
+
+.aoUsageTimelineLine {
+  fill: none;
+  stroke: rgba(242, 193, 77, 0.95);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.aoUsageTimelineDot {
+  fill: rgba(242, 193, 77, 0.96);
+  pointer-events: none;
+}
+
+.aoUsageTimelineHoverBand {
+  fill: rgba(0, 0, 0, 0.001);
+  cursor: crosshair;
+}
+
+.aoUsageTimelineLegend {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.aoUsageLegendItem {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.72);
+  letter-spacing: 0.02em;
+}
+
+.aoUsageLegendBars::before,
+.aoUsageLegendLine::before {
+  content: '';
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+.aoUsageLegendBars::before {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: rgba(40, 199, 217, 0.85);
+}
+
+.aoUsageLegendLine::before {
+  width: 14px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(242, 193, 77, 0.95);
+}
+
+.aoUsageTimelineTicks {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10px;
+  color: rgba(13, 18, 32, 0.62);
+  letter-spacing: 0.01em;
+}
+
+.aoUsageTooltip {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 28px rgba(13, 18, 32, 0.16);
+  padding: 6px 8px;
+  min-width: 144px;
+}
+
+.aoUsageTooltipTitle {
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.88);
+}
+
+.aoUsageTooltipSub {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.7);
+}
+
+.aoUsageModelList {
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageModelRow {
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.aoUsageModelTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aoUsageModelName {
+  font-size: 14px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoUsageModelMeta {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.62);
+}
+
+.aoUsageModelSub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.72);
+}
+
+.aoUsageModelBarTrack {
+  height: 7px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(13, 18, 32, 0.1);
+}
+
+.aoUsageModelBarFill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(40, 199, 217, 0.92), rgba(242, 193, 77, 0.92));
+}
+
+.aoUsageProviderCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageProviderTable {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.84);
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.aoUsageProviderTable th,
+.aoUsageProviderTable td {
+  padding: 8px 10px;
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+  white-space: nowrap;
+}
+
+.aoUsageProviderTable th {
+  border-top: none;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.58);
+  background: rgba(13, 18, 32, 0.025);
+  text-align: left;
+}
+
+.aoUsageProviderTable tbody tr:first-child td {
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoUsageProviderTable tbody tr:hover td {
+  background: rgba(13, 18, 32, 0.02);
+}
+
+.aoUsageProviderTable tfoot td {
+  border-top: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(13, 18, 32, 0.03);
+  font-weight: 700;
+}
+
+.aoUsageProviderRowAnomaly td {
+  background: rgba(245, 99, 110, 0.08);
+}
+
+.aoUsagePricingGrid {
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsagePricingRow {
+  display: grid;
+  grid-template-columns:
+    minmax(132px, 170px)
+    minmax(160px, 1fr)
+    minmax(96px, 108px)
+    72px
+    minmax(96px, 132px);
+  gap: 6px;
+  align-items: center;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 10px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.aoUsagePricingRow.is-scheduled {
+  grid-template-columns:
+    minmax(132px, 170px)
+    minmax(160px, 1fr)
+    minmax(96px, 108px)
+    72px
+    minmax(96px, 132px);
+}
+
+.aoUsagePricingProvider {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoUsagePricingProviderWrap {
+  min-width: 0;
+}
+
+.aoUsagePricingKeyHint {
+  margin-top: 2px;
+  font-size: 11px;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.aoUsagePricingSelect,
+.aoUsagePricingInput {
+  width: 100%;
+}
+
+.aoUsagePricingMode {
+  min-width: 0;
+}
+
+.aoUsagePricingAmount {
+  min-width: 0;
+}
+
+.aoUsagePricingInput[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+  padding-right: 8px;
+}
+
+.aoUsagePricingInput[type="number"]::-webkit-outer-spin-button,
+.aoUsagePricingInput[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.aoUsagePricingCurrencyWrap {
+  position: relative;
+  min-width: 0;
+}
+
+.aoUsagePricingCurrencyBtn {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.aoUsagePricingAutosave {
+  display: inline-block;
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.aoUsagePricingActions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 96px;
+  justify-self: end;
+}
+
+.aoUsagePricingScheduleInline {
+  justify-self: start;
+  white-space: nowrap;
+}
+
+.aoUsagePricingSchedulePlaceholder {
+  min-width: 0;
+}
+
+.aoUsagePricingAutosave-saving {
+  color: rgba(var(--ao-accent-rgb), 0.95);
+}
+
+.aoUsagePricingAutosave-error {
+  color: rgba(205, 58, 74, 0.95);
+}
+
+.aoUsagePricingCurrencyChevron {
+  font-size: 10px;
+  color: rgba(13, 18, 32, 0.7);
+}
+
+.aoUsagePricingCurrencyMenu {
+  position: absolute;
+  top: 34px;
+  right: 0;
+  z-index: 50;
+  width: 100%;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow:
+    0 10px 24px rgba(13, 18, 32, 0.16),
+    0 2px 8px rgba(13, 18, 32, 0.1);
+  max-height: 220px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(13, 18, 32, 0.26) rgba(13, 18, 32, 0.06);
+}
+
+.aoUsagePricingCurrencyMenu::-webkit-scrollbar {
+  width: 8px;
+}
+
+.aoUsagePricingCurrencyMenu::-webkit-scrollbar-track {
+  background: rgba(13, 18, 32, 0.06);
+  border-radius: 999px;
+}
+
+.aoUsagePricingCurrencyMenu::-webkit-scrollbar-thumb {
+  background: rgba(13, 18, 32, 0.26);
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+.aoUsagePricingCurrencyMenu::-webkit-scrollbar-thumb:hover {
+  background: rgba(13, 18, 32, 0.38);
+}
+
+.aoUsagePricingCurrencySearchWrap {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(255, 255, 255, 0.98);
+  padding: 6px 6px 4px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoUsagePricingCurrencySearch {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.aoUsagePricingCurrencyMenuPortal {
+  position: fixed;
+  top: 0;
+  right: auto;
+  z-index: 10120;
+}
+
+.aoUsagePricingCurrencyItem {
+  width: 100%;
+  height: 30px;
+  border: none;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  background: transparent;
+  color: rgba(13, 18, 32, 0.9);
+  font-size: 12px;
+  font-weight: 620;
+  text-align: left;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.aoUsagePricingCurrencyItem:last-child {
+  border-bottom: none;
+}
+
+.aoUsagePricingCurrencyItem:hover {
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoUsagePricingCurrencyItem.is-active {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.18), rgba(242, 193, 77, 0.14));
+  color: rgba(13, 18, 32, 0.95);
+}
+
+.aoUsagePricingSelect:disabled,
+.aoUsagePricingInput:disabled,
+.aoUsagePricingCurrencyBtn:disabled {
+  background: rgba(13, 18, 32, 0.06);
+  color: rgba(13, 18, 32, 0.45);
+  border-color: rgba(13, 18, 32, 0.12);
+  cursor: not-allowed;
+}
+
+.aoUsageProviderName {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoUsagePricingModal {
+  width: min(760px, 94vw);
+  max-height: min(78vh, 820px);
+}
+
+.aoUsageHistoryModal {
+  width: min(1100px, 96vw);
+  max-height: min(82vh, 880px);
+}
+
+.aoUsageHistoryTable {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.aoUsageHistoryColDate {
+  width: 84px;
+}
+
+.aoUsageHistoryColProv {
+  width: 108px;
+}
+
+.aoUsageHistoryColReq {
+  width: 62px;
+}
+
+.aoUsageHistoryColTok {
+  width: 102px;
+}
+
+.aoUsageHistoryColReqUsd {
+  width: 94px;
+}
+
+.aoUsageHistoryColEff {
+  width: 122px;
+}
+
+.aoUsageHistoryColPkg {
+  width: 82px;
+}
+
+.aoUsageHistoryColSrc {
+  width: 104px;
+}
+
+.aoUsageHistoryColAct {
+  width: 102px;
+}
+
+.aoUsageHistoryTable th,
+.aoUsageHistoryTable td {
+  padding: 7px 8px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.aoUsageHistoryDateCell {
+  font-variant-numeric: tabular-nums;
+}
+
+.aoUsageHistoryTable th {
+  background: rgba(13, 18, 32, 0.04);
+  color: rgba(13, 18, 32, 0.72);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.aoUsageHistoryTable tr:last-child td {
+  border-bottom: none;
+}
+
+.aoUsageHistoryInput {
+  width: 92px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.aoUsageHistoryInput::-webkit-outer-spin-button,
+.aoUsageHistoryInput::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.aoUsageHistoryValueCell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoUsageHistoryEditBtn {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(255, 255, 255, 0.84);
+  color: rgba(13, 18, 32, 0.8);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.aoUsageHistoryEditBtn:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.5);
+  background: rgba(var(--ao-accent-rgb), 0.1);
+}
+
+.aoUsageHistoryEditBtn svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.aoUsageHistoryActions {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.aoUsageScheduleModal {
+  width: min(1120px, 96vw);
+  max-height: min(82vh, 860px);
+}
+
+.aoUsageScheduleTable {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.aoUsageScheduleColStart {
+  width: 200px;
+}
+
+.aoUsageScheduleColExpires {
+  width: 200px;
+}
+
+.aoUsageScheduleColProvider {
+  width: 118px;
+}
+
+.aoUsageScheduleColApiKey {
+  width: 124px;
+}
+
+.aoUsageScheduleColMode {
+  width: 136px;
+}
+
+.aoUsageScheduleColAmount {
+  width: 92px;
+}
+
+.aoUsageScheduleColCurrency {
+  width: 92px;
+}
+
+.aoUsageScheduleColAction {
+  width: 88px;
+}
+
+.aoUsageScheduleTable th,
+.aoUsageScheduleTable td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.aoUsageScheduleTable th {
+  background: rgba(13, 18, 32, 0.04);
+  color: rgba(13, 18, 32, 0.72);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.aoUsageScheduleTable tr:last-child td {
+  border-bottom: none;
+}
+
+.aoUsageScheduleInput {
+  width: 100%;
+  min-width: 0;
+}
+
+.aoUsageScheduleMode {
+  width: 100%;
+}
+
+.aoUsageScheduleAmount {
+  width: 100%;
+  min-width: 0;
+  appearance: textfield;
+  -moz-appearance: textfield;
+  padding-right: 8px;
+}
+
+.aoUsageScheduleAmount::-webkit-outer-spin-button,
+.aoUsageScheduleAmount::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.aoUsageScheduleCurrencyWrap {
+  position: relative;
+  min-width: 0;
+}
+
+.aoUsageScheduleCurrencyBtn {
+  width: 100%;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.aoUsageScheduleActions {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.aoUsageScheduleAutosave {
+  margin-left: 2px;
+}
+
+.aoUsageScheduleAutosave-saving {
+  color: rgba(var(--ao-accent-rgb), 0.95);
+}
+
+.aoUsageScheduleAutosave-error {
+  color: rgba(205, 58, 74, 0.95);
+}
+
+.aoUsageScheduleHint {
+  margin-top: 10px;
+}
+
 .aoProviderSwitchboardCard {
   min-height: 320px;
   display: grid;
@@ -1901,6 +2827,21 @@
   gap: 6px;
 }
 
+.aoPricingRow {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.95fr) minmax(150px, 0.75fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.aoPricingModeSelect {
+  width: 100%;
+}
+
+.aoPricingInput {
+  width: 100%;
+}
+
 .aoTinyBtn {
   height: 24px;
   border-radius: 999px;
@@ -1919,6 +2860,18 @@
 .aoTinyBtn:hover {
   border-color: rgba(var(--ao-accent-rgb), 0.55);
   background: rgba(var(--ao-accent-rgb), 0.06);
+}
+
+.aoTinyBtn.aoUsageWindowBtnActive {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.3), rgba(242, 193, 77, 0.24));
+  border-color: rgba(13, 18, 32, 0.22);
+  color: rgba(13, 18, 32, 0.9);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62);
+}
+
+.aoTinyBtn.aoUsageWindowBtnActive:hover {
+  border-color: rgba(13, 18, 32, 0.3);
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.34), rgba(242, 193, 77, 0.28));
 }
 
 .aoUsageLine {
@@ -1995,6 +2948,38 @@
   .aoLimitGrid {
     grid-template-columns: 1fr;
   }
+  .aoUsageKpiGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .aoUsageFactsTable th,
+  .aoUsageFactsTable td {
+    display: block;
+    width: auto;
+    padding: 6px 0;
+    border-top: none;
+  }
+  .aoUsageFactsTable tr + tr th {
+    margin-top: 8px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(13, 18, 32, 0.08);
+  }
+  .aoUsageChartsGrid {
+    grid-template-columns: 1fr;
+  }
+  .aoPricingRow {
+    grid-template-columns: 1fr;
+  }
+  .aoUsageProviderTable {
+    display: block;
+    overflow-x: auto;
+  }
+  .aoUsagePricingRow {
+    grid-template-columns: 1fr 1fr;
+    align-items: stretch;
+  }
+  .aoUsagePricingProvider {
+    grid-column: 1 / -1;
+  }
 }
 
 .aoMiniTitle {
@@ -2042,7 +3027,7 @@
   top: 14px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 9999;
+  z-index: 11050;
   max-width: min(860px, calc(100vw - 28px));
   padding: 10px 14px;
   border-radius: 14px;
@@ -2140,6 +3125,22 @@
     border-left: none;
     padding-left: 0;
   }
+  .aoUsageKpiGrid {
+    grid-template-columns: 1fr;
+  }
+  .aoUsageFilterChips {
+    gap: 6px;
+  }
+  .aoUsageFilterCard {
+    grid-template-columns: 1fr;
+  }
+  .aoPricingRow {
+    grid-template-columns: 1fr;
+  }
+  .aoUsagePricingRow {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
 }
 .aoModalWide {
   width: min(980px, 92vw);
@@ -2147,6 +3148,31 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.aoModalWide.aoUsageHistoryModal {
+  width: min(1500px, 99vw);
+  max-height: min(82vh, 880px);
+}
+
+.aoModalWide.aoUsagePricingModal {
+  width: min(760px, 94vw);
+  max-height: min(72vh, 720px);
+}
+
+.aoUsagePricingModal .aoModalBody {
+  overflow-x: hidden;
+  padding-right: 0;
+}
+
+.aoModalWide.aoUsageScheduleModal {
+  width: min(1120px, 96vw);
+  max-height: min(82vh, 860px);
+}
+
+.aoUsageScheduleModal .aoModalBody {
+  overflow-x: hidden;
+  padding-right: 0;
 }
 
 .aoModalHeader {

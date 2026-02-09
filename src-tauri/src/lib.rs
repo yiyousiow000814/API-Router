@@ -10,7 +10,9 @@ use tauri::Manager;
 use crate::app_state::build_state;
 use crate::orchestrator::gateway::serve_in_background;
 use crate::orchestrator::store::unix_ms;
+use chrono::{Local, LocalResult, NaiveDate, TimeZone, Timelike};
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -171,6 +173,12 @@ pub fn run() {
             clear_usage_token,
             set_usage_base_url,
             clear_usage_base_url,
+            set_provider_manual_pricing,
+            get_provider_timeline,
+            set_provider_timeline,
+            get_provider_schedule,
+            set_provider_schedule,
+            set_provider_gap_fill,
             get_effective_usage_base,
             set_provider_order,
             probe_provider,
@@ -181,7 +189,10 @@ pub fn run() {
             provider_switchboard_set_target,
             codex_account_login,
             codex_account_logout,
-            codex_account_refresh
+            codex_account_refresh,
+            get_usage_statistics,
+            get_spend_history,
+            set_spend_history_entry
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -362,6 +373,1676 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
     })
 }
 
+fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
+    let ts = i64::try_from(ts_unix_ms).ok()?;
+    let dt = Local.timestamp_millis_opt(ts).single()?;
+    Some(dt.format("%Y-%m-%d").to_string())
+}
+
+fn local_day_range_from_key(day_key: &str) -> Option<(u64, u64)> {
+    let date = NaiveDate::parse_from_str(day_key, "%Y-%m-%d").ok()?;
+    let start_naive = date.and_hms_opt(0, 0, 0)?;
+    let start = match Local.from_local_datetime(&start_naive) {
+        LocalResult::Single(dt) => dt,
+        LocalResult::Ambiguous(a, b) => a.min(b),
+        LocalResult::None => return None,
+    };
+    let end = start + chrono::Duration::days(1);
+    let start_ms = u64::try_from(start.timestamp_millis()).ok()?;
+    let end_ms = u64::try_from(end.timestamp_millis()).ok()?;
+    Some((start_ms, end_ms))
+}
+
+fn add_package_total_segment_by_day(
+    by_day: &mut BTreeMap<String, f64>,
+    package_total_usd: f64,
+    segment_start_unix_ms: u64,
+    segment_end_unix_ms: u64,
+    window_start_unix_ms: u64,
+    window_end_unix_ms: u64,
+) {
+    if !package_total_usd.is_finite() || package_total_usd <= 0.0 {
+        return;
+    }
+    if segment_end_unix_ms <= segment_start_unix_ms || window_end_unix_ms <= window_start_unix_ms {
+        return;
+    }
+    let overlap_start = segment_start_unix_ms.max(window_start_unix_ms);
+    let overlap_end = segment_end_unix_ms.min(window_end_unix_ms);
+    if overlap_end <= overlap_start {
+        return;
+    }
+
+    let month_ms = (30_u64 * 24 * 60 * 60 * 1000) as f64;
+    let mut cursor = overlap_start;
+    while cursor < overlap_end {
+        let Some(day_key) = local_day_key_from_unix_ms(cursor) else {
+            break;
+        };
+        let Some((day_start, day_end)) = local_day_range_from_key(&day_key) else {
+            break;
+        };
+        let part_start = cursor.max(day_start);
+        let part_end = overlap_end.min(day_end);
+        if part_end > part_start {
+            let part_ms = (part_end.saturating_sub(part_start)) as f64;
+            let cost = package_total_usd * (part_ms / month_ms);
+            by_day
+                .entry(day_key)
+                .and_modify(|v| *v += cost)
+                .or_insert(cost);
+        }
+        if day_end <= cursor {
+            break;
+        }
+        cursor = day_end;
+    }
+}
+
+fn package_total_schedule_by_day(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+    window_start_unix_ms: u64,
+    window_end_unix_ms: u64,
+) -> BTreeMap<String, f64> {
+    let mut by_day: BTreeMap<String, f64> = BTreeMap::new();
+    let Some(cfg) = pricing_cfg else {
+        return by_day;
+    };
+    let mut has_timeline = false;
+    for period in cfg.periods.iter() {
+        if period.mode != "package_total" {
+            continue;
+        }
+        if !period.amount_usd.is_finite() || period.amount_usd <= 0.0 {
+            continue;
+        }
+        let segment_end = period.ended_at_unix_ms.unwrap_or(window_end_unix_ms);
+        add_package_total_segment_by_day(
+            &mut by_day,
+            period.amount_usd,
+            period.started_at_unix_ms,
+            segment_end,
+            window_start_unix_ms,
+            window_end_unix_ms,
+        );
+        has_timeline = true;
+    }
+    if !has_timeline
+        && cfg.mode == "package_total"
+        && cfg.amount_usd.is_finite()
+        && cfg.amount_usd > 0.0
+    {
+        add_package_total_segment_by_day(
+            &mut by_day,
+            cfg.amount_usd,
+            window_start_unix_ms,
+            window_end_unix_ms,
+            window_start_unix_ms,
+            window_end_unix_ms,
+        );
+    }
+    by_day
+}
+
+fn package_total_amount_for_slice(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+    slice_start_unix_ms: u64,
+    slice_end_unix_ms: u64,
+) -> Option<f64> {
+    let cfg = pricing_cfg?;
+    if slice_end_unix_ms <= slice_start_unix_ms {
+        return None;
+    }
+    let mut best: Option<(f64, u64, u64)> = None; // (amount, overlap_ms, started_at)
+    let mut has_timeline = false;
+    for period in cfg.periods.iter() {
+        if period.mode != "package_total" {
+            continue;
+        }
+        if !period.amount_usd.is_finite() || period.amount_usd <= 0.0 {
+            continue;
+        }
+        has_timeline = true;
+        let period_end = period.ended_at_unix_ms.unwrap_or(u64::MAX);
+        let overlap_start = period.started_at_unix_ms.max(slice_start_unix_ms);
+        let overlap_end = period_end.min(slice_end_unix_ms);
+        if overlap_end <= overlap_start {
+            continue;
+        }
+        let overlap_ms = overlap_end.saturating_sub(overlap_start);
+        let should_replace = best
+            .as_ref()
+            .map(|(_, cur_overlap, cur_started)| {
+                overlap_ms > *cur_overlap
+                    || (overlap_ms == *cur_overlap && period.started_at_unix_ms >= *cur_started)
+            })
+            .unwrap_or(true);
+        if should_replace {
+            best = Some((period.amount_usd, overlap_ms, period.started_at_unix_ms));
+        }
+    }
+    if let Some((amount, _, _)) = best {
+        return Some(amount);
+    }
+    if !has_timeline
+        && cfg.mode == "package_total"
+        && cfg.amount_usd.is_finite()
+        && cfg.amount_usd > 0.0
+    {
+        return Some(cfg.amount_usd);
+    }
+    None
+}
+
+fn package_total_window_total_by_day_slots(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+    window_start_unix_ms: u64,
+    window_end_unix_ms: u64,
+    window_hours: u64,
+) -> f64 {
+    if window_end_unix_ms <= window_start_unix_ms || window_hours == 0 {
+        return 0.0;
+    }
+    let slot_ms = 24_u64 * 60 * 60 * 1000;
+    let slot_count = (window_hours / 24).max(1);
+    let mut total = 0.0_f64;
+    for i in 0..slot_count {
+        let slot_end = window_end_unix_ms.saturating_sub(i.saturating_mul(slot_ms));
+        if slot_end <= window_start_unix_ms {
+            break;
+        }
+        let slot_start = slot_end.saturating_sub(slot_ms).max(window_start_unix_ms);
+        if let Some(monthly_total) =
+            package_total_amount_for_slice(pricing_cfg, slot_start, slot_end)
+        {
+            total += monthly_total / 30.0;
+        }
+    }
+    total
+}
+
+fn active_package_period(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+    now_unix_ms: u64,
+) -> Option<(f64, Option<u64>)> {
+    let cfg = pricing_cfg?;
+    let mut active: Option<(f64, Option<u64>)> = None;
+    let mut active_start = 0u64;
+    for period in cfg.periods.iter() {
+        if period.mode != "package_total" {
+            continue;
+        }
+        if !period.amount_usd.is_finite() || period.amount_usd <= 0.0 {
+            continue;
+        }
+        let ended = period.ended_at_unix_ms.unwrap_or(u64::MAX);
+        if period.started_at_unix_ms <= now_unix_ms
+            && now_unix_ms < ended
+            && period.started_at_unix_ms >= active_start
+        {
+            active = Some((period.amount_usd, period.ended_at_unix_ms));
+            active_start = period.started_at_unix_ms;
+        }
+    }
+    if active.is_some() {
+        return active;
+    }
+    if cfg.mode == "package_total" && cfg.amount_usd.is_finite() && cfg.amount_usd > 0.0 {
+        return Some((cfg.amount_usd, None));
+    }
+    None
+}
+
+fn active_package_total_usd(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+    now_unix_ms: u64,
+) -> Option<f64> {
+    active_package_period(pricing_cfg, now_unix_ms).map(|(amount, _)| amount)
+}
+
+fn package_profile_for_day(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+    day_start_unix_ms: u64,
+) -> Option<(f64, Option<u64>)> {
+    let cfg = pricing_cfg?;
+    let mut matched: Option<(f64, Option<u64>, u64)> = None;
+    for period in cfg.periods.iter() {
+        if period.mode != "package_total"
+            || !period.amount_usd.is_finite()
+            || period.amount_usd <= 0.0
+        {
+            continue;
+        }
+        let ended = period.ended_at_unix_ms.unwrap_or(u64::MAX);
+        if period.started_at_unix_ms <= day_start_unix_ms && day_start_unix_ms < ended {
+            let replace = matched
+                .as_ref()
+                .map(|(_, _, started)| period.started_at_unix_ms >= *started)
+                .unwrap_or(true);
+            if replace {
+                matched = Some((
+                    period.amount_usd,
+                    period.ended_at_unix_ms,
+                    period.started_at_unix_ms,
+                ));
+            }
+        }
+    }
+    if let Some((amount, expires, _)) = matched {
+        return Some((amount, expires));
+    }
+    if cfg.mode == "package_total" && cfg.amount_usd.is_finite() && cfg.amount_usd > 0.0 {
+        return Some((cfg.amount_usd, None));
+    }
+    None
+}
+
+fn per_request_amount_at(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+    ts_unix_ms: u64,
+) -> Option<f64> {
+    let cfg = pricing_cfg?;
+    let mut matched: Option<(f64, u64)> = None;
+    for period in cfg.periods.iter() {
+        if period.mode != "per_request"
+            || !period.amount_usd.is_finite()
+            || period.amount_usd <= 0.0
+        {
+            continue;
+        }
+        let ended = period.ended_at_unix_ms.unwrap_or(u64::MAX);
+        if period.started_at_unix_ms <= ts_unix_ms && ts_unix_ms < ended {
+            let replace = matched
+                .as_ref()
+                .map(|(_, started)| period.started_at_unix_ms >= *started)
+                .unwrap_or(true);
+            if replace {
+                matched = Some((period.amount_usd, period.started_at_unix_ms));
+            }
+        }
+    }
+    if let Some((amount, _)) = matched {
+        return Some(amount);
+    }
+    if cfg.mode == "per_request" && cfg.amount_usd.is_finite() && cfg.amount_usd > 0.0 {
+        return Some(cfg.amount_usd);
+    }
+    None
+}
+
+fn has_per_request_timeline(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+) -> bool {
+    let Some(cfg) = pricing_cfg else {
+        return false;
+    };
+    cfg.periods.iter().any(|period| {
+        period.mode == "per_request" && period.amount_usd.is_finite() && period.amount_usd > 0.0
+    })
+}
+
+fn aligned_bucket_start_unix_ms(ts_unix_ms: u64, bucket_ms: u64) -> Option<u64> {
+    if bucket_ms == 24 * 60 * 60 * 1000 {
+        let day_key = local_day_key_from_unix_ms(ts_unix_ms)?;
+        let (start, _) = local_day_range_from_key(&day_key)?;
+        return Some(start);
+    }
+    if bucket_ms == 60 * 60 * 1000 {
+        let ts = i64::try_from(ts_unix_ms).ok()?;
+        let dt = Local.timestamp_millis_opt(ts).single()?;
+        let hour = dt.with_minute(0)?.with_second(0)?.with_nanosecond(0)?;
+        return u64::try_from(hour.timestamp_millis()).ok();
+    }
+    if bucket_ms == 0 {
+        return Some(ts_unix_ms);
+    }
+    Some((ts_unix_ms / bucket_ms) * bucket_ms)
+}
+
+#[tauri::command]
+fn get_usage_statistics(
+    state: tauri::State<'_, app_state::AppState>,
+    hours: Option<u64>,
+    providers: Option<Vec<String>>,
+    models: Option<Vec<String>>,
+) -> serde_json::Value {
+    fn as_f64(v: Option<&Value>) -> Option<f64> {
+        v.and_then(|x| {
+            x.as_f64().or_else(|| {
+                x.as_i64()
+                    .map(|n| n as f64)
+                    .or_else(|| x.as_u64().map(|n| n as f64))
+            })
+        })
+    }
+
+    fn round3(v: f64) -> f64 {
+        (v * 1000.0).round() / 1000.0
+    }
+
+    fn projection_hours_until_midnight_cap_16() -> f64 {
+        let now = Local::now();
+        let secs_since_midnight =
+            now.hour() as u64 * 3600 + now.minute() as u64 * 60 + now.second() as u64;
+        let secs_to_midnight = 24 * 3600_u64 - secs_since_midnight.min(24 * 3600_u64);
+        let hours_to_midnight = secs_to_midnight as f64 / 3600.0;
+        hours_to_midnight.clamp(0.0, 16.0)
+    }
+
+    #[derive(Clone)]
+    struct UsageRow {
+        provider: String,
+        model: String,
+    }
+
+    #[derive(Default)]
+    struct ModelAgg {
+        requests: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        total_tokens: u64,
+        estimated_total_cost_usd: f64,
+        estimated_cost_request_count: u64,
+    }
+
+    #[derive(Default)]
+    struct ProviderAgg {
+        requests: u64,
+        total_tokens: u64,
+    }
+
+    fn json_num_or_null(value: Option<f64>) -> Value {
+        if let Some(v) = value {
+            serde_json::json!(round3(v))
+        } else {
+            Value::Null
+        }
+    }
+
+    let now = unix_ms();
+    let window_hours = hours.unwrap_or(24).clamp(1, 24 * 30);
+    let window_ms = window_hours.saturating_mul(60 * 60 * 1000);
+    let since_unix_ms = now.saturating_sub(window_ms);
+    let provider_filter: BTreeSet<String> = providers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let model_filter: BTreeSet<String> = models
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let has_provider_filter = !provider_filter.is_empty();
+    let has_model_filter = !model_filter.is_empty();
+    let bucket_ms = if window_hours <= 48 {
+        60 * 60 * 1000
+    } else {
+        24 * 60 * 60 * 1000
+    };
+    let projection_hours = projection_hours_until_midnight_cap_16();
+
+    let records = state.gateway.store.list_usage_requests(500_000);
+    let quota = state.gateway.store.list_quota_snapshots();
+    let provider_pricing = state.secrets.list_provider_pricing();
+
+    let mut provider_tokens_24h: BTreeMap<String, u64> = BTreeMap::new();
+    let mut provider_active_buckets: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
+    let mut catalog_providers: BTreeSet<String> = BTreeSet::new();
+    let mut catalog_models: BTreeSet<String> = BTreeSet::new();
+    let mut timeline: BTreeMap<u64, (u64, u64, u64, u64)> = BTreeMap::new();
+    let mut filtered: Vec<UsageRow> = Vec::new();
+    let last_24h_unix_ms = now.saturating_sub(24 * 60 * 60 * 1000);
+    let mut total_requests = 0u64;
+    let mut total_tokens = 0u64;
+    let mut total_cache_creation_tokens = 0u64;
+    let mut total_cache_read_tokens = 0u64;
+    let mut by_model_map: BTreeMap<String, ModelAgg> = BTreeMap::new();
+    let mut by_provider_map: BTreeMap<String, ProviderAgg> = BTreeMap::new();
+    let mut provider_req_by_day_in_window: BTreeMap<String, BTreeMap<String, u64>> =
+        BTreeMap::new();
+    let mut provider_req_by_day_filtered_total: BTreeMap<String, BTreeMap<String, u64>> =
+        BTreeMap::new();
+    let mut provider_request_timestamps_in_window: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+
+    for rec in records {
+        let ts = rec.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        let provider = rec
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let model = rec
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown")
+            .to_string();
+        let provider_lc = provider.to_ascii_lowercase();
+        let model_lc = model.to_ascii_lowercase();
+        let input_tokens = rec
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let output_tokens = rec
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let total_tokens_row = rec
+            .get("total_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(input_tokens.saturating_add(output_tokens));
+        let cache_creation_input_tokens = rec
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let cache_read_input_tokens = rec
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        if ts >= last_24h_unix_ms {
+            *provider_tokens_24h.entry(provider.clone()).or_default() += total_tokens_row;
+        }
+        if has_provider_filter && !provider_filter.contains(&provider_lc) {
+            continue;
+        }
+        if has_model_filter && !model_filter.contains(&model_lc) {
+            continue;
+        }
+        if let Some(day_key) = local_day_key_from_unix_ms(ts) {
+            provider_req_by_day_filtered_total
+                .entry(provider.clone())
+                .or_default()
+                .entry(day_key)
+                .and_modify(|cur| *cur = cur.saturating_add(1))
+                .or_insert(1);
+        }
+        if ts < since_unix_ms {
+            continue;
+        }
+        catalog_providers.insert(provider.clone());
+        catalog_models.insert(model.clone());
+
+        total_requests = total_requests.saturating_add(1);
+        total_tokens = total_tokens.saturating_add(total_tokens_row);
+        total_cache_creation_tokens =
+            total_cache_creation_tokens.saturating_add(cache_creation_input_tokens);
+        total_cache_read_tokens = total_cache_read_tokens.saturating_add(cache_read_input_tokens);
+
+        {
+            let entry = by_model_map.entry(model.clone()).or_default();
+            entry.requests = entry.requests.saturating_add(1);
+            entry.input_tokens = entry.input_tokens.saturating_add(input_tokens);
+            entry.output_tokens = entry.output_tokens.saturating_add(output_tokens);
+            entry.total_tokens = entry.total_tokens.saturating_add(total_tokens_row);
+        }
+        {
+            let entry = by_provider_map.entry(provider.clone()).or_default();
+            entry.requests = entry.requests.saturating_add(1);
+            entry.total_tokens = entry.total_tokens.saturating_add(total_tokens_row);
+        }
+        provider_request_timestamps_in_window
+            .entry(provider.clone())
+            .or_default()
+            .push(ts);
+        if let Some(day_key) = local_day_key_from_unix_ms(ts) {
+            provider_req_by_day_in_window
+                .entry(provider.clone())
+                .or_default()
+                .entry(day_key)
+                .and_modify(|cur| *cur = cur.saturating_add(1))
+                .or_insert(1);
+        }
+
+        let bucket =
+            aligned_bucket_start_unix_ms(ts, bucket_ms).unwrap_or((ts / bucket_ms) * bucket_ms);
+        provider_active_buckets
+            .entry(provider.clone())
+            .or_default()
+            .insert(bucket);
+        let entry = timeline.entry(bucket).or_insert((0, 0, 0, 0));
+        entry.0 += 1;
+        entry.1 += total_tokens_row;
+        entry.2 += cache_creation_input_tokens;
+        entry.3 += cache_read_input_tokens;
+
+        filtered.push(UsageRow { provider, model });
+    }
+
+    let mut provider_daily_cost_per_token: BTreeMap<String, f64> = BTreeMap::new();
+    let mut provider_daily_spent_usd: BTreeMap<String, f64> = BTreeMap::new();
+    if let Some(qmap) = quota.as_object() {
+        for (provider, q) in qmap {
+            let kind = q.get("kind").and_then(|v| v.as_str()).unwrap_or("none");
+            if kind != "budget_info" {
+                continue;
+            }
+            let Some(spent) = as_f64(q.get("daily_spent_usd")) else {
+                continue;
+            };
+            if spent <= 0.0 {
+                continue;
+            }
+            provider_daily_spent_usd.insert(provider.to_string(), spent);
+            let tok = provider_tokens_24h.get(provider).copied().unwrap_or(0);
+            if tok > 0 {
+                provider_daily_cost_per_token.insert(provider.to_string(), spent / tok as f64);
+            }
+        }
+    }
+
+    let mut provider_avg_req_cost: BTreeMap<String, f64> = BTreeMap::new();
+    let mut by_provider: Vec<Value> = Vec::new();
+    for (provider, agg) in by_provider_map.iter() {
+        let active_hours = provider_active_buckets
+            .get(provider)
+            .map(|buckets| {
+                let bucket_hours = bucket_ms as f64 / (60.0 * 60.0 * 1000.0);
+                (buckets.len() as f64 * bucket_hours).max(1.0)
+            })
+            .unwrap_or_else(|| (window_hours as f64).max(1.0));
+        let req_per_hour = if active_hours > 0.0 {
+            agg.requests as f64 / active_hours
+        } else {
+            0.0
+        };
+        let pricing_cfg = provider_pricing.get(provider);
+        let mode = pricing_cfg
+            .map(|cfg| cfg.mode.trim().to_ascii_lowercase())
+            .unwrap_or_else(|| "none".to_string());
+        let amount_usd = pricing_cfg
+            .map(|cfg| cfg.amount_usd)
+            .filter(|v| v.is_finite() && *v > 0.0);
+        let req_by_day_in_window = provider_req_by_day_in_window.get(provider);
+        let req_by_day_total_filtered = provider_req_by_day_filtered_total.get(provider);
+        let usage_days = state.gateway.store.list_usage_days(provider);
+        let mut req_by_day: BTreeMap<String, u64> = BTreeMap::new();
+        for day in usage_days {
+            let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let req = day.get("req_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            req_by_day
+                .entry(day_key.to_string())
+                .and_modify(|cur| *cur = cur.saturating_add(req))
+                .or_insert(req);
+        }
+        let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>)> = BTreeMap::new();
+        for day in state.gateway.store.list_spend_manual_days(provider) {
+            let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let manual_total =
+                as_f64(day.get("manual_total_usd")).filter(|v| v.is_finite() && *v > 0.0);
+            let manual_per_req =
+                as_f64(day.get("manual_usd_per_req")).filter(|v| v.is_finite() && *v > 0.0);
+            if manual_total.is_some() || manual_per_req.is_some() {
+                manual_by_day.insert(day_key.to_string(), (manual_total, manual_per_req));
+            }
+        }
+
+        let mut total_used_cost_usd: Option<f64> = None;
+        let mut estimated_avg_request_cost_usd: Option<f64> = None;
+        let mut estimated_daily_cost_usd: Option<f64> = None;
+        let mut pricing_source = "none".to_string();
+        let mut actual_tracked_spend_usd: Option<f64> = None;
+        let mut gap_filled_spend_usd: Option<f64> = None;
+
+        match mode.as_str() {
+            "per_request" => {
+                let mut timeline_total_used = 0.0_f64;
+                let mut timeline_priced_reqs = 0u64;
+                if let Some(ts_list) = provider_request_timestamps_in_window.get(provider) {
+                    for ts in ts_list {
+                        if let Some(per_req) = per_request_amount_at(pricing_cfg, *ts) {
+                            timeline_total_used += per_req;
+                            timeline_priced_reqs = timeline_priced_reqs.saturating_add(1);
+                        }
+                    }
+                }
+
+                if timeline_priced_reqs > 0 && timeline_total_used > 0.0 {
+                    total_used_cost_usd = Some(timeline_total_used);
+                    let avg_req = timeline_total_used / timeline_priced_reqs as f64;
+                    estimated_avg_request_cost_usd = Some(avg_req);
+                    estimated_daily_cost_usd =
+                        Some(timeline_total_used + req_per_hour * projection_hours * avg_req);
+                    pricing_source = if has_per_request_timeline(pricing_cfg) {
+                        "manual_per_request_timeline".to_string()
+                    } else {
+                        "manual_per_request".to_string()
+                    };
+                } else if let Some(per_req) = amount_usd {
+                    let total_used = per_req * agg.requests as f64;
+                    total_used_cost_usd = Some(total_used);
+                    estimated_avg_request_cost_usd = Some(per_req);
+                    estimated_daily_cost_usd =
+                        Some(total_used + req_per_hour * projection_hours * per_req);
+                    pricing_source = "manual_per_request".to_string();
+                }
+            }
+            "package_total" => {
+                let has_package_timeline = pricing_cfg
+                    .map(|cfg| {
+                        cfg.periods
+                            .iter()
+                            .any(|period| period.mode == "package_total")
+                    })
+                    .unwrap_or(false);
+                let scheduled_by_day =
+                    package_total_schedule_by_day(pricing_cfg, since_unix_ms, now);
+                let forward_window_end = now.saturating_add(window_ms);
+                let scheduled_total_by_slots = package_total_window_total_by_day_slots(
+                    pricing_cfg,
+                    now,
+                    forward_window_end,
+                    window_hours,
+                );
+                let mut day_keys: BTreeSet<String> = BTreeSet::new();
+                day_keys.extend(scheduled_by_day.keys().cloned());
+                day_keys.extend(manual_by_day.keys().cloned());
+
+                let mut scheduled_in_window = 0.0_f64;
+                let mut manual_in_window = 0.0_f64;
+                let mut total_used = 0.0_f64;
+
+                if manual_by_day.is_empty() {
+                    scheduled_in_window = scheduled_total_by_slots;
+                    total_used = scheduled_total_by_slots;
+                } else {
+                    for day_key in day_keys {
+                        let scheduled_day = scheduled_by_day.get(&day_key).copied().unwrap_or(0.0);
+                        if scheduled_day > 0.0 {
+                            scheduled_in_window += scheduled_day;
+                        }
+
+                        let manual_window = manual_by_day.get(&day_key).and_then(
+                            |(manual_total, manual_per_req)| {
+                                let (day_start, day_end) = local_day_range_from_key(&day_key)?;
+                                let overlap_start = day_start.max(since_unix_ms);
+                                let overlap_end = day_end.min(now);
+                                if overlap_end <= overlap_start {
+                                    return None;
+                                }
+                                let ratio = (overlap_end.saturating_sub(overlap_start)) as f64
+                                    / (day_end.saturating_sub(day_start).max(1) as f64);
+                                let day_req_total = req_by_day_total_filtered
+                                    .and_then(|m| m.get(&day_key))
+                                    .copied()
+                                    .unwrap_or_else(|| {
+                                        req_by_day.get(&day_key).copied().unwrap_or(0)
+                                    }) as f64;
+                                let day_req_in_window = req_by_day_in_window
+                                    .and_then(|m| m.get(&day_key))
+                                    .copied()
+                                    .unwrap_or(0)
+                                    as f64;
+                                if let Some(v) = manual_total {
+                                    if day_req_total > 0.0 {
+                                        let req_ratio =
+                                            (day_req_in_window / day_req_total).clamp(0.0, 1.0);
+                                        Some(*v * req_ratio)
+                                    } else {
+                                        Some(*v * ratio)
+                                    }
+                                } else if let Some(v) = manual_per_req {
+                                    if day_req_in_window > 0.0 {
+                                        Some(*v * day_req_in_window)
+                                    } else {
+                                        Some(*v * day_req_total * ratio)
+                                    }
+                                } else {
+                                    None
+                                }
+                            },
+                        );
+
+                        if let Some(v) = manual_window {
+                            if v > 0.0 {
+                                manual_in_window += v;
+                                total_used += v;
+                            }
+                        } else if scheduled_day > 0.0 {
+                            total_used += scheduled_day;
+                        }
+                    }
+                }
+
+                if total_used > 0.0 {
+                    total_used_cost_usd = Some(total_used);
+                    if agg.requests > 0 {
+                        estimated_avg_request_cost_usd = Some(total_used / agg.requests as f64);
+                    }
+                    let active_package_total = active_package_total_usd(pricing_cfg, now);
+                    if let Some(v) = active_package_total {
+                        estimated_daily_cost_usd = Some(v / 30.0);
+                    } else if window_hours > 0 {
+                        estimated_daily_cost_usd = Some(total_used * 24.0 / window_hours as f64);
+                    }
+                    pricing_source = if scheduled_in_window > 0.0 && manual_in_window > 0.0 {
+                        "manual_package_timeline+manual_history".to_string()
+                    } else if scheduled_in_window > 0.0 {
+                        "manual_package_timeline".to_string()
+                    } else {
+                        "manual_history".to_string()
+                    };
+                    if manual_in_window > 0.0 {
+                        gap_filled_spend_usd = Some(manual_in_window);
+                    }
+                } else if !has_package_timeline {
+                    if let Some(package_total) = amount_usd {
+                        let total_used = if window_hours >= 30 * 24 {
+                            package_total
+                        } else {
+                            package_total * (window_hours as f64 / (30.0 * 24.0))
+                        };
+                        total_used_cost_usd = Some(total_used);
+                        if agg.requests > 0 {
+                            estimated_avg_request_cost_usd = Some(total_used / agg.requests as f64);
+                        }
+                        estimated_daily_cost_usd = Some(package_total / 30.0);
+                        pricing_source = "manual_package_total".to_string();
+                    }
+                }
+            }
+            _ => {
+                let spend_days = state.gateway.store.list_spend_days(provider);
+                let mut tracked_in_window = 0.0_f64;
+                for day in spend_days {
+                    let tracked = as_f64(day.get("tracked_spend_usd")).unwrap_or(0.0);
+                    if tracked <= 0.0 || !tracked.is_finite() {
+                        continue;
+                    }
+                    let started = day
+                        .get("started_at_unix_ms")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let Some(day_key) = local_day_key_from_unix_ms(started) else {
+                        continue;
+                    };
+                    let Some((day_start, day_end)) = local_day_range_from_key(&day_key) else {
+                        continue;
+                    };
+                    let overlap_start = day_start.max(since_unix_ms);
+                    let overlap_end = day_end.min(now);
+                    if overlap_end <= overlap_start {
+                        continue;
+                    }
+                    let time_ratio = (overlap_end.saturating_sub(overlap_start)) as f64
+                        / (day_end.saturating_sub(day_start).max(1) as f64);
+                    let day_req_total = req_by_day_total_filtered
+                        .and_then(|m| m.get(&day_key))
+                        .copied()
+                        .unwrap_or_else(|| req_by_day.get(&day_key).copied().unwrap_or(0))
+                        as f64;
+                    let day_req_in_window = req_by_day_in_window
+                        .and_then(|m| m.get(&day_key))
+                        .copied()
+                        .unwrap_or(0) as f64;
+                    let ratio = if day_req_total > 0.0 {
+                        (day_req_in_window / day_req_total).clamp(0.0, 1.0)
+                    } else {
+                        time_ratio
+                    };
+                    tracked_in_window += tracked * ratio;
+                }
+
+                let mut manual_additional_in_window = 0.0_f64;
+                for (day_key, (manual_total, manual_per_req)) in manual_by_day.iter() {
+                    let Some((day_start, day_end)) = local_day_range_from_key(day_key) else {
+                        continue;
+                    };
+                    let overlap_start = day_start.max(since_unix_ms);
+                    let overlap_end = day_end.min(now);
+                    if overlap_end <= overlap_start {
+                        continue;
+                    }
+                    let ratio = (overlap_end.saturating_sub(overlap_start)) as f64
+                        / (day_end.saturating_sub(day_start).max(1) as f64);
+                    let day_req_total = req_by_day_total_filtered
+                        .and_then(|m| m.get(day_key))
+                        .copied()
+                        .unwrap_or_else(|| req_by_day.get(day_key).copied().unwrap_or(0))
+                        as f64;
+                    let day_req_in_window = req_by_day_in_window
+                        .and_then(|m| m.get(day_key))
+                        .copied()
+                        .unwrap_or(0) as f64;
+                    if let Some(v) = manual_total {
+                        if day_req_total > 0.0 {
+                            let req_ratio = (day_req_in_window / day_req_total).clamp(0.0, 1.0);
+                            manual_additional_in_window += *v * req_ratio;
+                        } else {
+                            manual_additional_in_window += *v * ratio;
+                        }
+                    } else if let Some(v) = manual_per_req {
+                        if day_req_in_window > 0.0 {
+                            manual_additional_in_window += *v * day_req_in_window;
+                        } else {
+                            manual_additional_in_window += *v * day_req_total * ratio;
+                        }
+                    }
+                }
+
+                if tracked_in_window > 0.0 || manual_additional_in_window > 0.0 {
+                    let total_used = tracked_in_window + manual_additional_in_window;
+                    total_used_cost_usd = Some(total_used);
+                    if tracked_in_window > 0.0 {
+                        actual_tracked_spend_usd = Some(tracked_in_window);
+                    }
+                    if manual_additional_in_window > 0.0 {
+                        gap_filled_spend_usd = Some(manual_additional_in_window);
+                    }
+                    pricing_source = if tracked_in_window > 0.0 && manual_additional_in_window > 0.0
+                    {
+                        "provider_budget_api+manual_history".to_string()
+                    } else if tracked_in_window > 0.0 {
+                        "provider_budget_api".to_string()
+                    } else {
+                        "manual_history".to_string()
+                    };
+                } else if let Some(spent_today) = provider_daily_spent_usd.get(provider).copied() {
+                    total_used_cost_usd = Some(spent_today);
+                    actual_tracked_spend_usd = Some(spent_today);
+                    pricing_source = "provider_budget_api_latest_day".to_string();
+                } else if let Some(per_tok) = provider_daily_cost_per_token.get(provider).copied() {
+                    let estimated = per_tok * agg.total_tokens as f64;
+                    if estimated > 0.0 {
+                        total_used_cost_usd = Some(estimated);
+                        pricing_source = "provider_token_rate".to_string();
+                    }
+                }
+
+                if let Some(total_used) = total_used_cost_usd {
+                    if agg.requests > 0 {
+                        let avg = total_used / agg.requests as f64;
+                        estimated_avg_request_cost_usd = Some(avg);
+                        estimated_daily_cost_usd =
+                            Some(total_used + req_per_hour * projection_hours * avg);
+                    } else if let Some(spent_today) =
+                        provider_daily_spent_usd.get(provider).copied()
+                    {
+                        estimated_daily_cost_usd = Some(spent_today);
+                    }
+                }
+
+                if total_used_cost_usd.is_none() {
+                    if let Some(cfg) = pricing_cfg {
+                        let gap_mode = cfg
+                            .gap_fill_mode
+                            .as_ref()
+                            .map(|m| m.trim().to_ascii_lowercase())
+                            .unwrap_or_else(|| "none".to_string());
+                        let gap_amount = cfg
+                            .gap_fill_amount_usd
+                            .filter(|v| v.is_finite() && *v > 0.0);
+                        if let Some(amount) = gap_amount {
+                            match gap_mode.as_str() {
+                                "per_request" => {
+                                    let total_used = amount * agg.requests as f64;
+                                    total_used_cost_usd = Some(total_used);
+                                    estimated_avg_request_cost_usd = Some(amount);
+                                    estimated_daily_cost_usd =
+                                        Some(total_used + req_per_hour * projection_hours * amount);
+                                    gap_filled_spend_usd = Some(total_used);
+                                    pricing_source = "gap_fill_per_request".to_string();
+                                }
+                                "total" => {
+                                    total_used_cost_usd = Some(amount);
+                                    if agg.requests > 0 {
+                                        let avg = amount / agg.requests as f64;
+                                        estimated_avg_request_cost_usd = Some(avg);
+                                        estimated_daily_cost_usd =
+                                            Some(amount + req_per_hour * projection_hours * avg);
+                                    }
+                                    gap_filled_spend_usd = Some(amount);
+                                    pricing_source = "gap_fill_total".to_string();
+                                }
+                                "per_day_average" => {
+                                    let total_used = amount * (window_hours as f64 / 24.0);
+                                    total_used_cost_usd = Some(total_used);
+                                    if agg.requests > 0 {
+                                        estimated_avg_request_cost_usd =
+                                            Some(total_used / agg.requests as f64);
+                                    }
+                                    estimated_daily_cost_usd = Some(amount);
+                                    gap_filled_spend_usd = Some(total_used);
+                                    pricing_source = "gap_fill_per_day_average".to_string();
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(avg) = estimated_avg_request_cost_usd {
+            if avg > 0.0 {
+                provider_avg_req_cost.insert(provider.clone(), avg);
+            }
+        }
+
+        let tokens_per_request = if agg.requests > 0 {
+            Some(agg.total_tokens as f64 / agg.requests as f64)
+        } else {
+            None
+        };
+        let usd_per_million_tokens =
+            if let (Some(total_used), true) = (total_used_cost_usd, agg.total_tokens > 0) {
+                Some(total_used / agg.total_tokens as f64 * 1_000_000.0)
+            } else {
+                None
+            };
+        let estimated_cost_request_count = if estimated_avg_request_cost_usd.is_some() {
+            agg.requests
+        } else {
+            0
+        };
+        by_provider.push(serde_json::json!({
+            "provider": provider,
+            "requests": agg.requests,
+            "total_tokens": agg.total_tokens,
+            "tokens_per_request": json_num_or_null(tokens_per_request),
+            "estimated_total_cost_usd": round3(total_used_cost_usd.unwrap_or(0.0)),
+            "estimated_avg_request_cost_usd": json_num_or_null(estimated_avg_request_cost_usd),
+            "usd_per_million_tokens": json_num_or_null(usd_per_million_tokens),
+            "estimated_daily_cost_usd": json_num_or_null(estimated_daily_cost_usd),
+            "total_used_cost_usd": json_num_or_null(total_used_cost_usd),
+            "pricing_source": pricing_source,
+            "estimated_cost_request_count": estimated_cost_request_count,
+            "actual_tracked_spend_usd": json_num_or_null(actual_tracked_spend_usd),
+            "gap_filled_spend_usd": json_num_or_null(gap_filled_spend_usd)
+        }));
+    }
+    by_provider.sort_by(|a, b| {
+        let ar = a.get("requests").and_then(|v| v.as_u64()).unwrap_or(0);
+        let br = b.get("requests").and_then(|v| v.as_u64()).unwrap_or(0);
+        br.cmp(&ar)
+    });
+
+    for row in &filtered {
+        if let Some(avg_req) = provider_avg_req_cost.get(&row.provider).copied() {
+            if let Some(entry) = by_model_map.get_mut(&row.model) {
+                entry.estimated_total_cost_usd += avg_req;
+                entry.estimated_cost_request_count =
+                    entry.estimated_cost_request_count.saturating_add(1);
+            }
+        }
+    }
+
+    let mut by_model: Vec<Value> = by_model_map
+        .into_iter()
+        .map(|(model, agg)| {
+            let share_pct = if total_requests > 0 {
+                (agg.requests as f64 / total_requests as f64) * 100.0
+            } else {
+                0.0
+            };
+            let avg_req_cost = if agg.estimated_cost_request_count > 0 {
+                agg.estimated_total_cost_usd / agg.estimated_cost_request_count as f64
+            } else {
+                0.0
+            };
+            serde_json::json!({
+                "model": model,
+                "requests": agg.requests,
+                "input_tokens": agg.input_tokens,
+                "output_tokens": agg.output_tokens,
+                "total_tokens": agg.total_tokens,
+                "share_pct": round3(share_pct),
+                "estimated_total_cost_usd": round3(agg.estimated_total_cost_usd),
+                "estimated_avg_request_cost_usd": round3(avg_req_cost),
+                "estimated_cost_request_count": agg.estimated_cost_request_count
+            })
+        })
+        .collect();
+    by_model.sort_by(|a, b| {
+        let ar = a.get("requests").and_then(|v| v.as_u64()).unwrap_or(0);
+        let br = b.get("requests").and_then(|v| v.as_u64()).unwrap_or(0);
+        br.cmp(&ar)
+    });
+
+    let first_bucket = aligned_bucket_start_unix_ms(since_unix_ms, bucket_ms)
+        .unwrap_or((since_unix_ms / bucket_ms) * bucket_ms);
+    let last_bucket =
+        aligned_bucket_start_unix_ms(now, bucket_ms).unwrap_or((now / bucket_ms) * bucket_ms);
+    let mut timeline_points: Vec<Value> = Vec::new();
+    let mut bucket = first_bucket;
+    while bucket <= last_bucket {
+        let (requests, tokens, cache_creation_tokens, cache_read_tokens) =
+            timeline.get(&bucket).copied().unwrap_or((0, 0, 0, 0));
+        timeline_points.push(serde_json::json!({
+            "bucket_unix_ms": bucket,
+            "requests": requests,
+            "total_tokens": tokens,
+            "cache_creation_tokens": cache_creation_tokens,
+            "cache_read_tokens": cache_read_tokens
+        }));
+        bucket = bucket.saturating_add(bucket_ms);
+        if bucket_ms == 0 {
+            break;
+        }
+    }
+
+    let total_used_cost_usd = by_provider
+        .iter()
+        .filter_map(|p| p.get("total_used_cost_usd").and_then(|v| v.as_f64()))
+        .sum::<f64>();
+    let estimated_daily_cost_usd = by_provider
+        .iter()
+        .filter_map(|p| p.get("estimated_daily_cost_usd").and_then(|v| v.as_f64()))
+        .sum::<f64>();
+    let filter_providers_json = if has_provider_filter {
+        serde_json::json!(provider_filter.into_iter().collect::<Vec<_>>())
+    } else {
+        Value::Null
+    };
+    let filter_models_json = if has_model_filter {
+        serde_json::json!(model_filter.into_iter().collect::<Vec<_>>())
+    } else {
+        Value::Null
+    };
+    let catalog_provider_values: Vec<String> = catalog_providers.into_iter().collect();
+    let catalog_model_values: Vec<String> = catalog_models.into_iter().collect();
+
+    serde_json::json!({
+      "ok": true,
+      "generated_at_unix_ms": now,
+      "window_hours": window_hours,
+      "filter": {
+        "providers": filter_providers_json,
+        "models": filter_models_json
+      },
+      "catalog": {
+        "providers": catalog_provider_values,
+        "models": catalog_model_values
+      },
+      "bucket_seconds": bucket_ms / 1000,
+      "summary": {
+        "total_requests": total_requests,
+        "total_tokens": total_tokens,
+        "cache_creation_tokens": total_cache_creation_tokens,
+        "cache_read_tokens": total_cache_read_tokens,
+        "unique_models": by_model.len(),
+        "estimated_total_cost_usd": round3(total_used_cost_usd),
+        "estimated_daily_cost_usd": round3(estimated_daily_cost_usd),
+        "by_model": by_model,
+        "by_provider": by_provider,
+        "timeline": timeline_points
+      }
+    })
+}
+
+#[tauri::command]
+fn get_provider_schedule(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+) -> Result<serde_json::Value, String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let periods = state.secrets.list_provider_schedule(&provider);
+    let rows = periods
+        .into_iter()
+        .filter_map(|period| {
+            let ended = period.ended_at_unix_ms?;
+            Some(serde_json::json!({
+                "id": period.id,
+                "amount_usd": period.amount_usd,
+                "api_key_ref": period.api_key_ref,
+                "started_at_unix_ms": period.started_at_unix_ms,
+                "ended_at_unix_ms": ended,
+            }))
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "ok": true,
+        "provider": provider,
+        "periods": rows
+    }))
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ProviderSchedulePeriodInput {
+    id: Option<String>,
+    #[serde(alias = "amountUsd")]
+    amount_usd: f64,
+    #[serde(default, alias = "apiKeyRef")]
+    api_key_ref: Option<String>,
+    #[serde(alias = "startedAtUnixMs")]
+    started_at_unix_ms: u64,
+    #[serde(alias = "endedAtUnixMs")]
+    ended_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ProviderTimelinePeriodInput {
+    id: Option<String>,
+    mode: String,
+    #[serde(alias = "amountUsd")]
+    amount_usd: f64,
+    #[serde(default, alias = "apiKeyRef")]
+    api_key_ref: Option<String>,
+    #[serde(alias = "startedAtUnixMs")]
+    started_at_unix_ms: u64,
+    #[serde(default, alias = "endedAtUnixMs")]
+    ended_at_unix_ms: Option<u64>,
+}
+
+fn provider_api_key_ref(state: &tauri::State<'_, app_state::AppState>, provider: &str) -> String {
+    state
+        .secrets
+        .get_provider_key(provider)
+        .as_deref()
+        .map(mask_key_preview)
+        .unwrap_or_else(|| "-".to_string())
+}
+
+#[tauri::command]
+fn get_provider_timeline(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+) -> Result<serde_json::Value, String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let rows = state
+        .secrets
+        .list_provider_timeline(&provider)
+        .into_iter()
+        .map(|period| {
+            serde_json::json!({
+                "id": period.id,
+                "mode": period.mode,
+                "amount_usd": period.amount_usd,
+                "api_key_ref": period.api_key_ref,
+                "started_at_unix_ms": period.started_at_unix_ms,
+                "ended_at_unix_ms": period.ended_at_unix_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "ok": true,
+        "provider": provider,
+        "periods": rows
+    }))
+}
+
+#[tauri::command]
+fn set_provider_timeline(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    periods: Vec<ProviderTimelinePeriodInput>,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let default_key_ref = provider_api_key_ref(&state, &provider);
+
+    let mut normalized = periods
+        .into_iter()
+        .map(|period| {
+            let mode = period.mode.trim().to_ascii_lowercase();
+            if mode != "package_total" && mode != "per_request" {
+                return Err("timeline mode must be package_total or per_request".to_string());
+            }
+            if !period.amount_usd.is_finite() || period.amount_usd <= 0.0 {
+                return Err("timeline amount_usd must be > 0".to_string());
+            }
+            if period.started_at_unix_ms == 0 {
+                return Err("timeline started_at_unix_ms must be valid".to_string());
+            }
+            if mode == "package_total" && period.ended_at_unix_ms.is_none() {
+                return Err("package_total timeline requires ended_at_unix_ms".to_string());
+            }
+            if let Some(end) = period.ended_at_unix_ms {
+                if end == 0 || period.started_at_unix_ms >= end {
+                    return Err(
+                        "timeline started_at_unix_ms must be less than ended_at_unix_ms"
+                            .to_string(),
+                    );
+                }
+            }
+            Ok(crate::orchestrator::secrets::ProviderPricingPeriod {
+                id: period.id.unwrap_or_default(),
+                mode,
+                amount_usd: period.amount_usd,
+                api_key_ref: period
+                    .api_key_ref
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| default_key_ref.clone()),
+                started_at_unix_ms: period.started_at_unix_ms,
+                ended_at_unix_ms: period.ended_at_unix_ms,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    normalized.sort_by(|a, b| a.started_at_unix_ms.cmp(&b.started_at_unix_ms));
+    for pair in normalized.windows(2) {
+        let left = &pair[0];
+        let right = &pair[1];
+        let Some(left_end) = left.ended_at_unix_ms else {
+            return Err("open-ended timeline period must be the latest row".to_string());
+        };
+        if left_end > right.started_at_unix_ms {
+            return Err("timeline periods must not overlap".to_string());
+        }
+    }
+
+    let count = normalized.len();
+    state.secrets.set_provider_timeline(&provider, normalized)?;
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        "config.provider_timeline_updated",
+        "provider pricing timeline updated",
+        serde_json::json!({ "count": count }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn set_provider_schedule(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    periods: Vec<ProviderSchedulePeriodInput>,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+
+    let default_key_ref = provider_api_key_ref(&state, &provider);
+    let mut normalized = periods
+        .into_iter()
+        .map(|period| {
+            if !period.amount_usd.is_finite() || period.amount_usd <= 0.0 {
+                return Err("period amount_usd must be > 0".to_string());
+            }
+            if period.started_at_unix_ms == 0 || period.ended_at_unix_ms == 0 {
+                return Err("period start/end must be valid timestamps".to_string());
+            }
+            if period.started_at_unix_ms >= period.ended_at_unix_ms {
+                return Err(
+                    "period started_at_unix_ms must be less than ended_at_unix_ms".to_string(),
+                );
+            }
+            Ok(crate::orchestrator::secrets::ProviderPricingPeriod {
+                id: period.id.unwrap_or_default(),
+                mode: "package_total".to_string(),
+                amount_usd: period.amount_usd,
+                api_key_ref: period
+                    .api_key_ref
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| default_key_ref.clone()),
+                started_at_unix_ms: period.started_at_unix_ms,
+                ended_at_unix_ms: Some(period.ended_at_unix_ms),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    normalized.sort_by(|a, b| a.started_at_unix_ms.cmp(&b.started_at_unix_ms));
+    for pair in normalized.windows(2) {
+        let left = &pair[0];
+        let right = &pair[1];
+        let left_end = left.ended_at_unix_ms.unwrap_or(0);
+        if left_end > right.started_at_unix_ms {
+            return Err("schedule periods must not overlap".to_string());
+        }
+    }
+
+    let count = normalized.len();
+    state.secrets.set_provider_schedule(&provider, normalized)?;
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        "config.provider_schedule_updated",
+        "provider scheduled package periods updated",
+        serde_json::json!({ "count": count }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn get_spend_history(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: Option<String>,
+    days: Option<u64>,
+    compact_only: Option<bool>,
+) -> serde_json::Value {
+    fn as_f64(v: Option<&Value>) -> Option<f64> {
+        v.and_then(|x| {
+            x.as_f64().or_else(|| {
+                x.as_i64()
+                    .map(|n| n as f64)
+                    .or_else(|| x.as_u64().map(|n| n as f64))
+            })
+        })
+    }
+
+    fn round3(v: f64) -> f64 {
+        (v * 1000.0).round() / 1000.0
+    }
+
+    let now = unix_ms();
+    let keep_days = days.unwrap_or(60).clamp(1, 365);
+    let compact_only = compact_only.unwrap_or(true);
+    let since = now.saturating_sub(keep_days.saturating_mul(24 * 60 * 60 * 1000));
+    let provider_filter = provider
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+
+    let cfg = state.gateway.cfg.read().clone();
+    let pricing = state.secrets.list_provider_pricing();
+    let mut providers: Vec<String> = cfg.providers.keys().cloned().collect();
+    providers.sort();
+
+    let mut rows: Vec<Value> = Vec::new();
+    for provider_name in providers {
+        if provider_filter
+            .as_deref()
+            .is_some_and(|f| f != provider_name.to_ascii_lowercase())
+        {
+            continue;
+        }
+
+        let mut usage_by_day: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+        for day in state.gateway.store.list_usage_days(&provider_name) {
+            let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let req_count = day.get("req_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let total_tokens = day
+                .get("total_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let updated_at = day
+                .get("updated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            usage_by_day
+                .entry(day_key.to_string())
+                .and_modify(|(r, t, u)| {
+                    *r = r.saturating_add(req_count);
+                    *t = t.saturating_add(total_tokens);
+                    *u = (*u).max(updated_at);
+                })
+                .or_insert((req_count, total_tokens, updated_at));
+        }
+        // Backfill from raw usage requests so History can show days that existed
+        // before `usage_day:*` aggregation was introduced or when day aggregates are missing.
+        let mut usage_by_day_from_req: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+        for req in state.gateway.store.list_usage_requests(100_000) {
+            let req_provider = req.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+            if req_provider != provider_name {
+                continue;
+            }
+            let ts = req.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            if ts == 0 {
+                continue;
+            }
+            let Some(day_key) = local_day_key_from_unix_ms(ts) else {
+                continue;
+            };
+            let total_tokens = req
+                .get("total_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_else(|| {
+                    let input_tokens = req
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let output_tokens = req
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    input_tokens.saturating_add(output_tokens)
+                });
+            usage_by_day_from_req
+                .entry(day_key)
+                .and_modify(|(r, t, u)| {
+                    *r = r.saturating_add(1);
+                    *t = t.saturating_add(total_tokens);
+                    *u = (*u).max(ts);
+                })
+                .or_insert((1, total_tokens, ts));
+        }
+        // Backfill only missing days from raw requests; keep existing usage_day aggregation
+        // as the canonical source when both are present.
+        for (day_key, row) in usage_by_day_from_req {
+            usage_by_day.entry(day_key).or_insert(row);
+        }
+
+        let mut tracked_by_day: BTreeMap<String, f64> = BTreeMap::new();
+        let mut updated_by_day: BTreeMap<String, u64> = BTreeMap::new();
+        for day in state.gateway.store.list_spend_days(&provider_name) {
+            let started = day
+                .get("started_at_unix_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let Some(day_key) = local_day_key_from_unix_ms(started) else {
+                continue;
+            };
+            let tracked = as_f64(day.get("tracked_spend_usd")).unwrap_or(0.0);
+            if tracked > 0.0 && tracked.is_finite() {
+                tracked_by_day
+                    .entry(day_key.clone())
+                    .and_modify(|v| *v += tracked)
+                    .or_insert(tracked);
+            }
+            let updated_at = day
+                .get("updated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(started);
+            updated_by_day
+                .entry(day_key)
+                .and_modify(|v| *v = (*v).max(updated_at))
+                .or_insert(updated_at);
+        }
+
+        let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>, u64)> = BTreeMap::new();
+        for day in state.gateway.store.list_spend_manual_days(&provider_name) {
+            let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let manual_total =
+                as_f64(day.get("manual_total_usd")).filter(|v| v.is_finite() && *v > 0.0);
+            let manual_per_req =
+                as_f64(day.get("manual_usd_per_req")).filter(|v| v.is_finite() && *v > 0.0);
+            let updated_at = day
+                .get("updated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            manual_by_day.insert(
+                day_key.to_string(),
+                (manual_total, manual_per_req, updated_at),
+            );
+        }
+        let mut scheduled_by_day =
+            package_total_schedule_by_day(pricing.get(&provider_name), since, now);
+        scheduled_by_day.retain(|_, v| v.is_finite() && *v > 0.0);
+
+        let mut day_keys: BTreeSet<String> = BTreeSet::new();
+        day_keys.extend(usage_by_day.keys().cloned());
+        day_keys.extend(tracked_by_day.keys().cloned());
+        day_keys.extend(manual_by_day.keys().cloned());
+        day_keys.extend(scheduled_by_day.keys().cloned());
+
+        for day_key in day_keys {
+            let Some((day_start, _day_end)) = local_day_range_from_key(&day_key) else {
+                continue;
+            };
+            if day_start < since || day_start > now {
+                continue;
+            }
+            let (req_count, total_tokens, usage_updated_at) =
+                usage_by_day.get(&day_key).copied().unwrap_or((0, 0, 0));
+            let package_profile = package_profile_for_day(pricing.get(&provider_name), day_start);
+            let tracked_total = tracked_by_day.get(&day_key).copied();
+            let scheduled_total = scheduled_by_day.get(&day_key).copied();
+            let scheduled_package_total_usd = package_profile.map(|(amount, _)| amount);
+            let (manual_total, manual_per_req, manual_updated_at) = manual_by_day
+                .get(&day_key)
+                .copied()
+                .unwrap_or((None, None, 0));
+            let has_scheduled = scheduled_total.is_some() || scheduled_package_total_usd.is_some();
+            if compact_only && req_count == 0 && manual_total.is_none() && manual_per_req.is_none()
+            {
+                continue;
+            }
+
+            let manual_additional = if let Some(v) = manual_total {
+                Some(v)
+            } else if let Some(v) = manual_per_req {
+                if req_count > 0 {
+                    Some(v * req_count as f64)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let effective_extra = if manual_additional.is_some() {
+                manual_additional
+            } else {
+                scheduled_total
+            };
+            let effective_total = match (tracked_total, effective_extra) {
+                (Some(a), Some(b)) => Some(a + b),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
+            let effective_per_req = if let Some(v) = manual_per_req {
+                Some(v)
+            } else if let Some(total) = effective_total {
+                if req_count > 0 {
+                    Some(total / req_count as f64)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let source = match (tracked_total, has_scheduled, manual_total, manual_per_req) {
+                (Some(_), _, Some(_), _) => "tracked+manual_total",
+                (Some(_), _, None, Some(_)) => "tracked+manual_per_request",
+                (Some(_), true, None, None) => "tracked+scheduled",
+                (Some(_), false, None, None) => "tracked",
+                (None, _, Some(_), _) => "manual_total",
+                (None, _, None, Some(_)) => "manual_per_request",
+                (None, true, None, None) => "scheduled_package_total",
+                _ => "none",
+            };
+            let updated_at = usage_updated_at
+                .max(manual_updated_at)
+                .max(updated_by_day.get(&day_key).copied().unwrap_or(0));
+            rows.push(serde_json::json!({
+                "provider": provider_name,
+                "day_key": day_key,
+                "req_count": req_count,
+                "total_tokens": total_tokens,
+                "tracked_total_usd": tracked_total.map(round3),
+                "scheduled_total_usd": scheduled_total.map(round3),
+                "scheduled_package_total_usd": scheduled_package_total_usd.map(round3),
+                "manual_total_usd": manual_total.map(round3),
+                "manual_usd_per_req": manual_per_req.map(round3),
+                "effective_total_usd": effective_total.map(round3),
+                "effective_usd_per_req": effective_per_req.map(round3),
+                "source": source,
+                "updated_at_unix_ms": updated_at
+            }));
+        }
+    }
+
+    rows.sort_by(|a, b| {
+        let ad = a.get("day_key").and_then(|v| v.as_str()).unwrap_or("");
+        let bd = b.get("day_key").and_then(|v| v.as_str()).unwrap_or("");
+        match bd.cmp(ad) {
+            std::cmp::Ordering::Equal => {
+                let ap = a.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+                let bp = b.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+                ap.cmp(bp)
+            }
+            ord => ord,
+        }
+    });
+
+    serde_json::json!({
+        "ok": true,
+        "generated_at_unix_ms": now,
+        "days": keep_days,
+        "rows": rows
+    })
+}
+
+#[tauri::command]
+fn set_spend_history_entry(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    day_key: String,
+    total_used_usd: Option<f64>,
+    usd_per_req: Option<f64>,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let day_key = day_key.trim().to_string();
+    if local_day_range_from_key(&day_key).is_none() {
+        return Err("day_key must be YYYY-MM-DD".to_string());
+    }
+    let total_used_usd = total_used_usd
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .or(None);
+    let usd_per_req = usd_per_req.filter(|v| v.is_finite() && *v > 0.0).or(None);
+
+    if total_used_usd.is_none() && usd_per_req.is_none() {
+        state
+            .gateway
+            .store
+            .remove_spend_manual_day(&provider, &day_key);
+        state.gateway.store.add_event(
+            &provider,
+            "info",
+            "usage.spend_history_entry_cleared",
+            "spend history manual entry cleared",
+            serde_json::json!({ "day_key": day_key }),
+        );
+        return Ok(());
+    }
+
+    let row = serde_json::json!({
+        "provider": provider,
+        "day_key": day_key,
+        "manual_total_usd": total_used_usd,
+        "manual_usd_per_req": usd_per_req,
+        "updated_at_unix_ms": unix_ms()
+    });
+    state
+        .gateway
+        .store
+        .put_spend_manual_day(&provider, &day_key, &row);
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        "usage.spend_history_entry_updated",
+        "spend history manual entry updated",
+        serde_json::json!({
+            "day_key": day_key,
+            "manual_total_usd": total_used_usd,
+            "manual_usd_per_req": usd_per_req
+        }),
+    );
+    Ok(())
+}
+
 #[tauri::command]
 fn set_manual_override(
     state: tauri::State<'_, app_state::AppState>,
@@ -386,6 +2067,8 @@ fn set_manual_override(
 #[tauri::command]
 fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value {
     let cfg = state.gateway.cfg.read().clone();
+    let pricing = state.secrets.list_provider_pricing();
+    let now = unix_ms();
     // Never expose keys in UI/API.
     let providers: serde_json::Map<String, serde_json::Value> = cfg
         .providers
@@ -393,6 +2076,20 @@ fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
         .map(|(name, p)| {
             let key = state.secrets.get_provider_key(name);
             let usage_token = state.secrets.get_usage_token(name);
+            let manual_pricing = pricing.get(name).cloned();
+            let active_package = active_package_period(manual_pricing.as_ref(), now);
+            let active_package_amount = active_package.map(|(amount, _)| amount);
+            let active_package_expires = active_package.and_then(|(_, expires)| expires);
+            let manual_mode = manual_pricing.as_ref().map(|v| v.mode.clone());
+            let manual_amount = manual_pricing.as_ref().and_then(|v| {
+                if v.mode == "none" {
+                    None
+                } else if v.mode == "package_total" {
+                    active_package_amount.or(Some(v.amount_usd))
+                } else {
+                    Some(v.amount_usd)
+                }
+            });
             let has_key = key.is_some();
             let key_preview = key.as_deref().map(mask_key_preview);
             (
@@ -402,6 +2099,11 @@ fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                   "base_url": p.base_url,
                   "usage_adapter": p.usage_adapter.clone(),
                   "usage_base_url": p.usage_base_url.clone(),
+                  "manual_pricing_mode": manual_mode.filter(|m| m != "none"),
+                  "manual_pricing_amount_usd": manual_amount,
+                  "manual_pricing_expires_at_unix_ms": active_package_expires,
+                  "manual_gap_fill_mode": manual_pricing.as_ref().and_then(|v| v.gap_fill_mode.clone()),
+                  "manual_gap_fill_amount_usd": manual_pricing.as_ref().and_then(|v| v.gap_fill_amount_usd),
                   "has_key": has_key
                   ,"key_preview": key_preview,
                   "has_usage_token": usage_token.is_some()
@@ -616,6 +2318,7 @@ fn delete_provider(
         }
     }
     let _ = state.secrets.clear_provider_key(&name);
+    let _ = state.secrets.clear_provider_pricing(&name);
     persist_config(&state).map_err(|e| e.to_string())?;
     state.gateway.store.add_event(
         &name,
@@ -950,6 +2653,129 @@ fn clear_usage_base_url(
         serde_json::Value::Null,
     );
     Ok(())
+}
+
+#[tauri::command]
+fn set_provider_manual_pricing(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    mode: String,
+    amount_usd: Option<f64>,
+    package_expires_at_unix_ms: Option<u64>,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let mode = mode.trim().to_lowercase();
+    let api_key_ref = provider_api_key_ref(&state, &provider);
+    match mode.as_str() {
+        "none" => {
+            state.secrets.set_provider_pricing(
+                &provider,
+                "none",
+                0.0,
+                None,
+                Some(api_key_ref.clone()),
+            )?;
+            state.gateway.store.add_event(
+                &provider,
+                "info",
+                "config.provider_pricing_cleared",
+                "provider manual pricing cleared",
+                serde_json::Value::Null,
+            );
+            Ok(())
+        }
+        "per_request" | "package_total" => {
+            let Some(v) = amount_usd else {
+                return Err("amount_usd is required".to_string());
+            };
+            if !v.is_finite() || v <= 0.0 {
+                return Err("amount_usd must be > 0".to_string());
+            }
+            let expires = if mode == "package_total" {
+                if let Some(ts) = package_expires_at_unix_ms {
+                    if ts <= unix_ms() {
+                        return Err("package_expires_at_unix_ms must be in the future".to_string());
+                    }
+                    Some(ts)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            state.secrets.set_provider_pricing(
+                &provider,
+                &mode,
+                v,
+                expires,
+                Some(api_key_ref.clone()),
+            )?;
+            state.gateway.store.add_event(
+                &provider,
+                "info",
+                "config.provider_pricing_updated",
+                "provider manual pricing updated",
+                serde_json::json!({
+                    "mode": mode,
+                    "amount_usd": v,
+                    "package_expires_at_unix_ms": expires,
+                }),
+            );
+            Ok(())
+        }
+        _ => Err("mode must be one of: none, per_request, package_total".to_string()),
+    }
+}
+
+#[tauri::command]
+fn set_provider_gap_fill(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    mode: String,
+    amount_usd: Option<f64>,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let mode = mode.trim().to_lowercase();
+    match mode.as_str() {
+        "none" => {
+            state.secrets.set_provider_gap_fill(&provider, None, None)?;
+            state.gateway.store.add_event(
+                &provider,
+                "info",
+                "config.provider_gap_fill_cleared",
+                "provider gap-fill pricing cleared",
+                serde_json::Value::Null,
+            );
+            Ok(())
+        }
+        "per_request" | "total" | "per_day_average" => {
+            let Some(v) = amount_usd else {
+                return Err("amount_usd is required".to_string());
+            };
+            if !v.is_finite() || v <= 0.0 {
+                return Err("amount_usd must be > 0".to_string());
+            }
+            state
+                .secrets
+                .set_provider_gap_fill(&provider, Some(&mode), Some(v))?;
+            state.gateway.store.add_event(
+                &provider,
+                "info",
+                "config.provider_gap_fill_updated",
+                "provider gap-fill pricing updated",
+                serde_json::json!({
+                    "mode": mode,
+                    "amount_usd": v,
+                }),
+            );
+            Ok(())
+        }
+        _ => Err("mode must be one of: none, per_request, total, per_day_average".to_string()),
+    }
 }
 
 #[tauri::command]

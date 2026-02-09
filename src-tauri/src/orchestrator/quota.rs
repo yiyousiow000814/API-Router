@@ -447,6 +447,7 @@ async fn compute_quota_snapshot(
 
 fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
     let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
+    track_budget_spend(st, provider_name, snap);
     if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
         st.store.reset_ledger(provider_name);
     }
@@ -467,6 +468,120 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
 fn store_quota_snapshot_silent(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
     let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
     // Propagation writes should not affect per-provider ledgers; only a real refresh should reset.
+    // Tracking budget spend here would duplicate the same shared-key delta across propagated
+    // providers and inflate total usage cost.
+}
+
+fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
+    if snap.kind != UsageKind::BudgetInfo {
+        return;
+    }
+    if !snap.last_error.is_empty() || snap.updated_at_unix_ms == 0 {
+        return;
+    }
+    let Some(current_daily_spent) = snap.daily_spent_usd.filter(|v| v.is_finite() && *v >= 0.0)
+    else {
+        return;
+    };
+
+    let now = snap.updated_at_unix_ms;
+    let existing_state = st.store.get_spend_state(provider_name);
+
+    let mut tracking_started_unix_ms = existing_state
+        .as_ref()
+        .and_then(|s| s.get("tracking_started_unix_ms"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(now);
+    let mut open_day_started_at_unix_ms = existing_state
+        .as_ref()
+        .and_then(|s| s.get("open_day_started_at_unix_ms"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(now);
+    let mut last_seen_daily_spent = existing_state
+        .as_ref()
+        .and_then(|s| as_f64(s.get("last_seen_daily_spent_usd")))
+        .unwrap_or(current_daily_spent);
+
+    // First observed snapshot for this provider: initialize tracking baseline.
+    if existing_state.is_none() {
+        tracking_started_unix_ms = now;
+        open_day_started_at_unix_ms = now;
+        last_seen_daily_spent = current_daily_spent;
+        let day = serde_json::json!({
+            "provider": provider_name,
+            "started_at_unix_ms": open_day_started_at_unix_ms,
+            "ended_at_unix_ms": Value::Null,
+            // First snapshot of the day already includes spend that happened before refresh.
+            "tracked_spend_usd": current_daily_spent,
+            "last_seen_daily_spent_usd": current_daily_spent,
+            "updated_at_unix_ms": now
+        });
+        st.store
+            .put_spend_day(provider_name, open_day_started_at_unix_ms, &day);
+    } else {
+        let epsilon = 1e-7_f64;
+        if current_daily_spent + epsilon < last_seen_daily_spent {
+            if let Some(mut prev_day) = st
+                .store
+                .get_spend_day(provider_name, open_day_started_at_unix_ms)
+            {
+                if prev_day.get("ended_at_unix_ms").is_none()
+                    || prev_day.get("ended_at_unix_ms").is_some_and(Value::is_null)
+                {
+                    prev_day["ended_at_unix_ms"] = serde_json::json!(now);
+                }
+                prev_day["updated_at_unix_ms"] = serde_json::json!(now);
+                prev_day["last_seen_daily_spent_usd"] = serde_json::json!(last_seen_daily_spent);
+                st.store
+                    .put_spend_day(provider_name, open_day_started_at_unix_ms, &prev_day);
+            }
+
+            open_day_started_at_unix_ms = now;
+            let day = serde_json::json!({
+                "provider": provider_name,
+                "started_at_unix_ms": open_day_started_at_unix_ms,
+                "ended_at_unix_ms": Value::Null,
+                // New day baseline can be non-zero if first refresh happens after early usage.
+                "tracked_spend_usd": current_daily_spent,
+                "last_seen_daily_spent_usd": current_daily_spent,
+                "updated_at_unix_ms": now
+            });
+            st.store
+                .put_spend_day(provider_name, open_day_started_at_unix_ms, &day);
+            last_seen_daily_spent = current_daily_spent;
+        } else {
+            let delta = (current_daily_spent - last_seen_daily_spent).max(0.0);
+            let mut day = st
+                .store
+                .get_spend_day(provider_name, open_day_started_at_unix_ms)
+                .unwrap_or_else(|| {
+                    serde_json::json!({
+                        "provider": provider_name,
+                        "started_at_unix_ms": open_day_started_at_unix_ms,
+                        "ended_at_unix_ms": Value::Null,
+                        "tracked_spend_usd": 0.0,
+                        "last_seen_daily_spent_usd": last_seen_daily_spent,
+                        "updated_at_unix_ms": now
+                    })
+                });
+            let tracked = as_f64(day.get("tracked_spend_usd")).unwrap_or(0.0);
+            day["tracked_spend_usd"] = serde_json::json!(tracked + delta);
+            day["last_seen_daily_spent_usd"] = serde_json::json!(current_daily_spent);
+            day["updated_at_unix_ms"] = serde_json::json!(now);
+            st.store
+                .put_spend_day(provider_name, open_day_started_at_unix_ms, &day);
+            last_seen_daily_spent = current_daily_spent;
+        }
+    }
+
+    let state = serde_json::json!({
+        "provider": provider_name,
+        "tracking_started_unix_ms": tracking_started_unix_ms,
+        "open_day_started_at_unix_ms": open_day_started_at_unix_ms,
+        "last_seen_daily_spent_usd": last_seen_daily_spent,
+        "updated_at_unix_ms": now
+    });
+    st.store.put_spend_state(provider_name, &state);
 }
 
 async fn propagate_quota_snapshot_shared(
@@ -1222,6 +1337,27 @@ mod tests {
         assert!(snap.last_error.is_empty());
         assert_eq!(snap.kind.as_str(), "token_stats");
         assert_eq!(snap.remaining.unwrap_or(0.0), 12.3);
+    }
+
+    #[test]
+    fn silent_quota_propagation_does_not_duplicate_budget_spend() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("http://127.0.0.1:9/v1".to_string(), secrets);
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = 1_739_120_000_000;
+        snap.daily_spent_usd = Some(5.0);
+
+        store_quota_snapshot(&st, "p1", &snap);
+        store_quota_snapshot_silent(&st, "p2", &snap);
+
+        let p1_days = st.store.list_spend_days("p1");
+        let p2_days = st.store.list_spend_days("p2");
+        assert_eq!(p1_days.len(), 1);
+        assert!(p2_days.is_empty());
+        assert!(st.store.get_spend_state("p1").is_some());
+        assert!(st.store.get_spend_state("p2").is_none());
     }
 
     async fn start_mock_server_token_info() -> (String, tokio::task::JoinHandle<()>) {
