@@ -570,27 +570,46 @@ export default function App() {
   }, [config])
 
   const codexSwapBadge = useMemo(() => {
-    if (!codexSwapStatus) {
+    if (!codexSwapStatus && !providerSwitchStatus) {
       return { badgeText: '', badgeTitle: 'Codex CLI swap status: loading' }
     }
-    const overall = codexSwapStatus.overall
-    const badgeText =
+    const mode = providerSwitchStatus?.mode
+    const switchboardLabel =
+      mode === 'provider'
+        ? 'DP' + (providerSwitchStatus?.model_provider ? ':' + providerSwitchStatus.model_provider : '')
+        : mode === 'official'
+          ? 'Auth'
+          : mode === 'gateway'
+            ? 'API'
+            : mode === 'mixed'
+              ? 'Mixed'
+              : null
+    const overall = codexSwapStatus?.overall
+    const swapFallbackLabel =
       overall === 'swapped'
         ? 'Auth'
         : overall === 'original'
           ? 'API'
           : overall === 'mixed'
             ? 'Mixed'
-            : 'Error'
+            : overall === 'error'
+              ? 'Error'
+              : 'Loading'
+    const badgeText = switchboardLabel ?? swapFallbackLabel
     const parts =
-      codexSwapStatus?.dirs?.length
-        ? codexSwapStatus.dirs.map((d) => `${d.cli_home}: ${d.state}`)
-        : []
+      providerSwitchStatus?.dirs?.length
+        ? providerSwitchStatus.dirs.map((d) => {
+            const modeText = d.mode === 'provider' ? 'provider:' + (d.model_provider ?? '-') : d.mode
+            return d.cli_home + ': ' + modeText
+          })
+        : codexSwapStatus?.dirs?.length
+          ? codexSwapStatus.dirs.map((d) => d.cli_home + ': ' + d.state)
+          : []
     const badgeTitle = parts.length
-      ? `Codex CLI swap status: ${badgeText}. ${parts.join(' | ')}`
-      : `Codex CLI swap status: ${badgeText}`
+      ? 'Codex CLI swap status: ' + badgeText + '. ' + parts.join(' | ')
+      : 'Codex CLI swap status: ' + badgeText
     return { badgeText, badgeTitle }
-  }, [codexSwapStatus])
+  }, [codexSwapStatus, providerSwitchStatus])
 
   const providerDrag = useReorderDrag<string>({
     items: orderedConfigProviders,
@@ -655,18 +674,25 @@ export default function App() {
       { cli_homes: homes },
     )
     flashToast(res.mode === 'swapped' ? 'Swapped Codex auth/config' : 'Restored Codex auth/config')
-    await refreshStatus()
-    await refreshCodexSwapStatus()
+    await refreshStatus({ refreshSwapStatus: false })
+    await Promise.all([
+      refreshCodexSwapStatus(homes),
+      refreshProviderSwitchStatus(homes),
+      refreshConfig({ refreshProviderSwitchStatus: false }),
+    ])
   }
 
-  async function refreshCodexSwapStatus() {
+  async function refreshCodexSwapStatus(cliHomes?: string[]) {
     if (isDevPreview) return
     try {
-      const homes = resolveCliHomes(
-        codexSwapDir1Ref.current,
-        codexSwapDir2Ref.current,
-        codexSwapApplyBothRef.current,
-      )
+      const homes =
+        cliHomes && cliHomes.length
+          ? cliHomes
+          : resolveCliHomes(
+              codexSwapDir1Ref.current,
+              codexSwapDir2Ref.current,
+              codexSwapApplyBothRef.current,
+            )
       const res = await invoke<CodexSwapStatus>('codex_cli_swap_status', {
         cli_homes: homes,
       })
@@ -676,12 +702,15 @@ export default function App() {
     }
   }
 
-  async function refreshProviderSwitchStatus() {
-    const homes = resolveCliHomes(
-      codexSwapDir1Ref.current,
-      codexSwapDir2Ref.current,
-      codexSwapApplyBothRef.current,
-    )
+  async function refreshProviderSwitchStatus(cliHomes?: string[]) {
+    const homes =
+      cliHomes && cliHomes.length
+        ? cliHomes
+        : resolveCliHomes(
+            codexSwapDir1Ref.current,
+            codexSwapDir2Ref.current,
+            codexSwapApplyBothRef.current,
+          )
     if (isDevPreview) {
       setProviderSwitchStatus({
         ok: true,
@@ -1787,13 +1816,13 @@ function newScheduleDraft(
       setProviderSwitchStatus(res)
       const msg =
         target === 'provider'
-          ? `Switched to provider: ${provider}`
+          ? 'Switched to provider: ' + provider
           : target === 'gateway'
             ? 'Switched to gateway'
             : 'Switched to official'
       flashToast(msg)
-      await refreshStatus()
-      await refreshConfig()
+      await refreshStatus({ refreshSwapStatus: false })
+      await Promise.all([refreshCodexSwapStatus(homes), refreshConfig({ refreshProviderSwitchStatus: false })])
     } catch (e) {
       flashToast(String(e), 'error')
     } finally {
@@ -1801,30 +1830,39 @@ function newScheduleDraft(
     }
   }
 
-  async function refreshStatus() {
+  async function refreshStatus(options?: { refreshSwapStatus?: boolean }) {
+    const shouldRefreshSwapStatus = options?.refreshSwapStatus ?? true
     if (isDevPreview) {
       setStatus(devStatus)
+      if (shouldRefreshSwapStatus) {
+        void refreshCodexSwapStatus()
+      }
       return
     }
     try {
       const s = await invoke<Status>('get_status')
       setStatus(s)
       if (!overrideDirtyRef.current) setOverride(s.manual_override ?? '')
-      // Best-effort: keep swap badge fresh on the normal status poll cadence.
-      void refreshCodexSwapStatus()
+      if (shouldRefreshSwapStatus) {
+        // Best-effort: keep swap badge fresh on the normal status poll cadence.
+        void refreshCodexSwapStatus()
+      }
     } catch (e) {
       console.error(e)
     }
   }
 
-  async function refreshConfig() {
+  async function refreshConfig(options?: { refreshProviderSwitchStatus?: boolean }) {
+    const shouldRefreshProviderSwitchStatus = options?.refreshProviderSwitchStatus ?? true
     if (isDevPreview) {
       setConfig(devConfig)
       setBaselineBaseUrls(
         Object.fromEntries(Object.entries(devConfig.providers).map(([name, p]) => [name, p.base_url])),
       )
       setGatewayTokenPreview('ao_dev********7f2a')
-      void refreshProviderSwitchStatus()
+      if (shouldRefreshProviderSwitchStatus) {
+        void refreshProviderSwitchStatus()
+      }
       return
     }
     try {
@@ -1840,8 +1878,8 @@ function newScheduleDraft(
         codexSwapDir2Ref.current,
         codexSwapApplyBothRef.current,
       )
-      if (homes.length > 0) {
-        void refreshProviderSwitchStatus()
+      if (homes.length > 0 && shouldRefreshProviderSwitchStatus) {
+        void refreshProviderSwitchStatus(homes)
       }
     } catch (e) {
       console.error(e)
@@ -3715,9 +3753,19 @@ function newScheduleDraft(
                     <span className="aoSwitchQuickTitle">Official</span>
                     <span className="aoSwitchQuickSub">Use official Codex auth</span>
                   </button>
-                  <button className="aoSwitchQuickBtn aoSwitchQuickBtnHint" disabled>
+                  <button
+                    className={
+                      'aoSwitchQuickBtn aoSwitchQuickBtnHint' +
+                      (providerSwitchStatus?.mode === 'provider' ? ' is-active' : '')
+                    }
+                    disabled
+                  >
                     <span className="aoSwitchQuickTitle">Direct Provider</span>
-                    <span className="aoSwitchQuickSub">Use selected provider below</span>
+                    <span className="aoSwitchQuickSub">
+                      {providerSwitchStatus?.mode === 'provider' && providerSwitchStatus?.model_provider
+                        ? 'Active: ' + providerSwitchStatus.model_provider
+                        : 'Use selected provider below'}
+                    </span>
                   </button>
                 </div>
                 <div className="aoSwitchSubOptions">

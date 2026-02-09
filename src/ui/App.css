@@ -1386,6 +1386,10 @@
   cursor: not-allowed;
   transform: none;
 }
+.aoSwitchQuickBtn.is-active:disabled {
+  opacity: 1;
+}
+
 
 .aoSwitchQuickTitle {
   font-size: 13px;
