@@ -805,8 +805,6 @@ fn get_usage_statistics(
     let mut by_provider_map: BTreeMap<String, ProviderAgg> = BTreeMap::new();
     let mut provider_req_by_day_in_window: BTreeMap<String, BTreeMap<String, u64>> =
         BTreeMap::new();
-    let mut provider_req_by_day_filtered_total: BTreeMap<String, BTreeMap<String, u64>> =
-        BTreeMap::new();
     let mut provider_request_timestamps_in_window: BTreeMap<String, Vec<u64>> = BTreeMap::new();
 
     for rec in records {
@@ -851,16 +849,6 @@ fn get_usage_statistics(
         }
         let provider_matches = !has_provider_filter || provider_filter.contains(&provider_lc);
         let model_matches = !has_model_filter || model_filter.contains(&model_lc);
-        if provider_matches && model_matches {
-            if let Some(day_key) = local_day_key_from_unix_ms(ts) {
-                provider_req_by_day_filtered_total
-                    .entry(provider.clone())
-                    .or_default()
-                    .entry(day_key)
-                    .and_modify(|cur| *cur = cur.saturating_add(1))
-                    .or_insert(1);
-            }
-        }
         if ts < since_unix_ms {
             continue;
         }
@@ -966,7 +954,6 @@ fn get_usage_statistics(
             .map(|cfg| cfg.amount_usd)
             .filter(|v| v.is_finite() && *v > 0.0);
         let req_by_day_in_window = provider_req_by_day_in_window.get(provider);
-        let req_by_day_total_filtered = provider_req_by_day_filtered_total.get(provider);
         let usage_days = state.gateway.store.list_usage_days(provider);
         let mut req_by_day: BTreeMap<String, u64> = BTreeMap::new();
         for day in usage_days {
@@ -1076,12 +1063,8 @@ fn get_usage_statistics(
                                 }
                                 let ratio = (overlap_end.saturating_sub(overlap_start)) as f64
                                     / (day_end.saturating_sub(day_start).max(1) as f64);
-                                let day_req_total = req_by_day_total_filtered
-                                    .and_then(|m| m.get(&day_key))
-                                    .copied()
-                                    .unwrap_or_else(|| {
-                                        req_by_day.get(&day_key).copied().unwrap_or(0)
-                                    }) as f64;
+                                let day_req_total =
+                                    req_by_day.get(&day_key).copied().unwrap_or(0) as f64;
                                 let day_req_in_window = req_by_day_in_window
                                     .and_then(|m| m.get(&day_key))
                                     .copied()
@@ -1180,11 +1163,7 @@ fn get_usage_statistics(
                     }
                     let time_ratio = (overlap_end.saturating_sub(overlap_start)) as f64
                         / (day_end.saturating_sub(day_start).max(1) as f64);
-                    let day_req_total = req_by_day_total_filtered
-                        .and_then(|m| m.get(&day_key))
-                        .copied()
-                        .unwrap_or_else(|| req_by_day.get(&day_key).copied().unwrap_or(0))
-                        as f64;
+                    let day_req_total = req_by_day.get(&day_key).copied().unwrap_or(0) as f64;
                     let day_req_in_window = req_by_day_in_window
                         .and_then(|m| m.get(&day_key))
                         .copied()
@@ -1209,11 +1188,7 @@ fn get_usage_statistics(
                     }
                     let ratio = (overlap_end.saturating_sub(overlap_start)) as f64
                         / (day_end.saturating_sub(day_start).max(1) as f64);
-                    let day_req_total = req_by_day_total_filtered
-                        .and_then(|m| m.get(day_key))
-                        .copied()
-                        .unwrap_or_else(|| req_by_day.get(day_key).copied().unwrap_or(0))
-                        as f64;
+                    let day_req_total = req_by_day.get(day_key).copied().unwrap_or(0) as f64;
                     let day_req_in_window = req_by_day_in_window
                         .and_then(|m| m.get(day_key))
                         .copied()
