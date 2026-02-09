@@ -59,6 +59,13 @@ type ProviderScheduleDraft = {
   currency: string
 }
 
+type ProviderScheduleSaveInput = {
+  id: string | null
+  amount_usd: number
+  started_at_unix_ms: number
+  ended_at_unix_ms: number
+}
+
 type UsageScheduleSaveState = 'idle' | 'saving' | 'saved' | 'invalid' | 'error'
 type UsagePricingSaveState = 'idle' | 'saving' | 'saved' | 'error'
 
@@ -903,19 +910,9 @@ export default function App() {
 
   function parseScheduleRowsForSave(rows: ProviderScheduleDraft[]): {
     ok: true
-    periods: Array<{
-      id: string | null
-      amountUsd: number
-      startedAtUnixMs: number
-      endedAtUnixMs: number
-    }>
+    periods: ProviderScheduleSaveInput[]
   } | { ok: false; reason: string } {
-    const parsed: Array<{
-      id: string | null
-      amountUsd: number
-      startedAtUnixMs: number
-      endedAtUnixMs: number
-    }> = []
+    const parsed: ProviderScheduleSaveInput[] = []
 
     for (const row of rows) {
       const start = fromDateTimeLocalValue(row.startText)
@@ -926,15 +923,15 @@ export default function App() {
       }
       parsed.push({
         id: row.id.trim() || null,
-        amountUsd: convertCurrencyToUsd(amount, row.currency),
-        startedAtUnixMs: start,
-        endedAtUnixMs: end,
+        amount_usd: convertCurrencyToUsd(amount, row.currency),
+        started_at_unix_ms: start,
+        ended_at_unix_ms: end,
       })
     }
 
-    parsed.sort((a, b) => a.startedAtUnixMs - b.startedAtUnixMs)
+    parsed.sort((a, b) => a.started_at_unix_ms - b.started_at_unix_ms)
     for (let i = 1; i < parsed.length; i += 1) {
-      if (parsed[i - 1].endedAtUnixMs > parsed[i].startedAtUnixMs) {
+      if (parsed[i - 1].ended_at_unix_ms > parsed[i].started_at_unix_ms) {
         return { ok: false, reason: 'periods must not overlap' }
       }
     }
@@ -1068,14 +1065,16 @@ export default function App() {
 
   async function openUsageScheduleModal(
     providerName: string,
-    seedAmountUsd?: number | null,
     seedCurrency?: string,
+    options?: { keepVisible?: boolean },
   ) {
+    if (!providerName) return
+    const keepVisible = options?.keepVisible === true && usageScheduleModalOpen
     closeUsagePricingCurrencyMenu()
     closeUsageScheduleCurrencyMenu()
     setUsageScheduleProvider(providerName)
     setUsageScheduleModalOpen(true)
-    setUsageScheduleLoading(true)
+    if (!keepVisible) setUsageScheduleLoading(true)
     setUsageScheduleSaveState('idle')
     setUsageScheduleSaveError('')
     try {
@@ -1086,17 +1085,16 @@ export default function App() {
       const rows = periods
         .sort((a, b) => a.started_at_unix_ms - b.started_at_unix_ms)
         .map((period) => scheduleDraftFromPeriod(providerName, period, seedCurrency))
-      const nextRows =
-        rows.length > 0 ? rows : [newScheduleDraft(providerName, seedAmountUsd, seedCurrency)]
-      setUsageScheduleRows(nextRows)
-      usageScheduleLastSavedSigRef.current = scheduleRowsSignature(nextRows)
+      setUsageScheduleRows(rows)
+      usageScheduleLastSavedSigRef.current = scheduleRowsSignature(rows)
       setUsageScheduleSaveState(rows.length > 0 ? 'saved' : 'idle')
       setUsageScheduleSaveError('')
     } catch (e) {
       flashToast(String(e), 'error')
-      const fallback = [newScheduleDraft(providerName, seedAmountUsd, seedCurrency)]
-      setUsageScheduleRows(fallback)
-      usageScheduleLastSavedSigRef.current = scheduleRowsSignature(fallback)
+      if (!keepVisible) {
+        setUsageScheduleRows([])
+        usageScheduleLastSavedSigRef.current = scheduleRowsSignature([])
+      }
       setUsageScheduleSaveState('idle')
       setUsageScheduleSaveError('')
     } finally {
@@ -1142,6 +1140,53 @@ export default function App() {
     }
   }
 
+  function resolvePricingAmountUsd(draft: UsagePricingDraft, fallbackAmountUsd?: number | null): number | null {
+    const amountRaw = Number(draft.amountText)
+    if (Number.isFinite(amountRaw) && amountRaw > 0) {
+      return convertCurrencyToUsd(amountRaw, draft.currency)
+    }
+    if (fallbackAmountUsd != null && Number.isFinite(fallbackAmountUsd) && fallbackAmountUsd > 0) {
+      return fallbackAmountUsd
+    }
+    return null
+  }
+
+  async function activatePackageTotalMode(providerName: string, draft: UsagePricingDraft): Promise<boolean> {
+    const providerCfg = config?.providers?.[providerName]
+    if (!providerCfg) return false
+    const amountUsd = resolvePricingAmountUsd(draft, providerCfg.manual_pricing_amount_usd ?? null)
+    if (amountUsd == null) {
+      setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'idle' }))
+      return false
+    }
+    setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saving' }))
+    try {
+      await invoke('set_provider_manual_pricing', {
+        provider: providerName,
+        mode: 'package_total',
+        amountUsd,
+        packageExpiresAtUnixMs: null,
+      })
+      await invoke('set_provider_gap_fill', {
+        provider: providerName,
+        mode: 'none',
+        amountUsd: null,
+      })
+      usagePricingLastSavedSigRef.current[providerName] = pricingDraftSignature({
+        ...draft,
+        amountText: formatDraftAmount(convertUsdToCurrency(amountUsd, draft.currency)),
+      })
+      setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saved' }))
+      await refreshConfig()
+      await refreshUsageStatistics({ silent: true })
+      return true
+    } catch (e) {
+      setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'error' }))
+      flashToast(String(e), 'error')
+      return false
+    }
+  }
+
   function queueUsagePricingAutoSave(providerName: string, draft: UsagePricingDraft) {
     if (!usagePricingModalOpen) return
     const providerCfg = config?.providers?.[providerName]
@@ -1181,13 +1226,9 @@ export default function App() {
     if (!draft) return false
     const mode = draft.mode
     if (mode === 'package_total') {
-      if (silent) return false
-      const amountRaw = Number(draft.amountText)
-      const seedAmountUsd =
-        Number.isFinite(amountRaw) && amountRaw > 0
-          ? convertCurrencyToUsd(amountRaw, draft.currency)
-          : null
-      await openUsageScheduleModal(providerName, seedAmountUsd, draft.currency)
+      const activated = await activatePackageTotalMode(providerName, draft)
+      if (silent || !activated) return activated
+      await openUsageScheduleModal(providerName, draft.currency)
       return true
     }
     try {
@@ -1565,19 +1606,16 @@ export default function App() {
       .filter((value) => value > 0)
       .sort((a, b) => a - b)
     if (reqValues.length >= 4) {
-      const mid = Math.floor(reqValues.length / 2)
-      const reqMedian =
-        reqValues.length % 2 === 0
-          ? (reqValues[mid - 1] + reqValues[mid]) / 2
-          : reqValues[mid]
+      const p90Index = Math.min(reqValues.length - 1, Math.max(0, Math.ceil(reqValues.length * 0.9) - 1))
+      const reqP90 = reqValues[p90Index]
       const peakPoint = usageTimeline.reduce(
         (best, point) => ((point.requests ?? 0) > (best?.requests ?? 0) ? point : best),
         usageTimeline[0],
       )
       const peakReq = peakPoint?.requests ?? 0
-      if (reqMedian > 0 && peakReq >= reqMedian * 2.5 && peakReq - reqMedian >= 5) {
+      if (reqP90 > 0 && peakReq >= reqP90 * 1.2 && peakReq - reqP90 >= 5) {
         messages.push(
-          `Request spike around ${formatBucket(peakPoint.bucket_unix_ms)}: ${peakReq} vs median ${Math.round(reqMedian)}`,
+          `Request spike around ${formatBucket(peakPoint.bucket_unix_ms)}: ${peakReq} vs p90 ${Math.round(reqP90)}`,
         )
       }
     }
@@ -1820,7 +1858,7 @@ export default function App() {
     const mode = provider.manual_pricing_mode ?? null
     const amount = provider.manual_pricing_amount_usd ?? null
     if (mode === 'package_total') {
-      await openUsageScheduleModal(name, amount, providerPreferredCurrency(name))
+      await openUsageScheduleModal(name, providerPreferredCurrency(name))
       return
     }
     try {
@@ -2989,7 +3027,7 @@ export default function App() {
                           usageScheduleProviderOptions[0] ??
                           usageByProvider[0]?.provider
                         if (!providerName) return
-                        void openUsageScheduleModal(providerName, null, providerPreferredCurrency(providerName))
+                        void openUsageScheduleModal(providerName, providerPreferredCurrency(providerName))
                       }}
                       disabled={!usageScheduleProviderOptions.length}
                     >
@@ -3613,7 +3651,7 @@ requires_openai_auth = true`}
                             queueUsagePricingAutoSave(row.provider, nextDraft)
                           } else {
                             clearAutoSaveTimer(`pricing:${row.provider}`)
-                            setUsagePricingSaveState((prev) => ({ ...prev, [row.provider]: 'idle' }))
+                            void activatePackageTotalMode(row.provider, nextDraft)
                           }
                         }}
                       >
@@ -3692,19 +3730,20 @@ requires_openai_auth = true`}
                                   : 'Auto-save'}
                           </span>
                         )}
-                        <button
-                          className="aoTinyBtn"
-                          disabled={!providerCfg}
-                          onClick={() =>
-                            void openUsageScheduleModal(
-                              row.provider,
-                              providerCfg?.manual_pricing_amount_usd ?? null,
-                              providerPreferredCurrency(row.provider),
-                            )
-                          }
-                        >
-                          History
-                        </button>
+                        {mode === 'package_total' ? (
+                          <button
+                            className="aoTinyBtn"
+                            disabled={!providerCfg}
+                            onClick={() =>
+                              void openUsageScheduleModal(
+                                row.provider,
+                                providerPreferredCurrency(row.provider),
+                              )
+                            }
+                          >
+                            Schedule
+                          </button>
+                        ) : null}
                       </div>
                     </div>
                   )
@@ -3713,6 +3752,10 @@ requires_openai_auth = true`}
               <div className="aoHint">
                 Monthly fee uses Scheduled Period History. Switching to Monthly credit keeps past history and applies
                 credit after scheduled expiry.
+              </div>
+              <div className="aoHint">
+                Pricing scope is per provider. If one upstream uses different API keys with different pricing, add
+                separate providers for each key.
               </div>
             </div>
           </div>
@@ -3832,8 +3875,8 @@ requires_openai_auth = true`}
                     onChange={(e) =>
                       void openUsageScheduleModal(
                         e.target.value,
-                        config?.providers?.[e.target.value]?.manual_pricing_amount_usd ?? null,
                         providerPreferredCurrency(e.target.value),
+                        { keepVisible: true },
                       )
                     }
                   >
@@ -3972,17 +4015,20 @@ requires_openai_auth = true`}
                         setUsageScheduleRows((prev) => {
                           const lastAmount = parsePositiveAmount(prev[prev.length - 1]?.amountText ?? '')
                           const lastCurrency = prev[prev.length - 1]?.currency
+                          const fallbackCurrency =
+                            lastCurrency ?? providerPreferredCurrency(usageScheduleProvider)
+                          const providerAmountUsd =
+                            config?.providers?.[usageScheduleProvider]?.manual_pricing_amount_usd ?? null
+                          const seedAmountUsd =
+                            lastAmount != null
+                              ? convertCurrencyToUsd(lastAmount, fallbackCurrency)
+                              : providerAmountUsd
                           return [
                             ...prev,
                             newScheduleDraft(
                               usageScheduleProvider,
-                              lastAmount != null
-                                ? convertCurrencyToUsd(
-                                    lastAmount,
-                                    lastCurrency ?? providerPreferredCurrency(usageScheduleProvider),
-                                  )
-                                : null,
-                              lastCurrency ?? providerPreferredCurrency(usageScheduleProvider),
+                              seedAmountUsd,
+                              fallbackCurrency,
                             ),
                           ]
                         })

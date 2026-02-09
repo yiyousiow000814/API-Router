@@ -726,7 +726,7 @@
     180px
     108px
     78px
-    auto;
+    156px;
   gap: 6px;
   align-items: center;
   border: 1px solid rgba(13, 18, 32, 0.08);
@@ -786,7 +786,12 @@
 }
 
 .aoUsagePricingAutosave {
+  display: inline-block;
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: right;
 }
 
 .aoUsagePricingActions {
@@ -794,7 +799,8 @@
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  min-width: 0;
+  min-width: 156px;
+  justify-self: end;
 }
 
 .aoUsagePricingAutosave-saving {
