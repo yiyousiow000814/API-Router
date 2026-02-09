@@ -722,7 +722,7 @@
 .aoUsagePricingRow {
   display: grid;
   grid-template-columns:
-    minmax(92px, 110px)
+    minmax(132px, 170px)
     minmax(160px, 1fr)
     minmax(96px, 108px)
     72px
@@ -736,7 +736,7 @@
 }
 
 .aoUsagePricingRow.is-scheduled {
-  grid-template-columns: minmax(92px, 110px) minmax(160px, 1fr) minmax(96px, 132px);
+  grid-template-columns: minmax(132px, 170px) minmax(160px, 1fr) minmax(96px, 132px);
   justify-content: start;
 }
 
@@ -754,9 +754,8 @@
 .aoUsagePricingKeyHint {
   margin-top: 2px;
   font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .aoUsagePricingSelect,
@@ -1068,7 +1067,7 @@
 }
 
 .aoUsageScheduleModal {
-  width: min(900px, 94vw);
+  width: min(1120px, 96vw);
   max-height: min(82vh, 860px);
 }
 
@@ -1084,31 +1083,31 @@
 }
 
 .aoUsageScheduleColStart {
-  width: 232px;
+  width: 208px;
 }
 
 .aoUsageScheduleColExpires {
-  width: 232px;
+  width: 208px;
 }
 
 .aoUsageScheduleColProvider {
-  width: 92px;
+  width: 104px;
 }
 
 .aoUsageScheduleColApiKey {
-  width: 126px;
+  width: 132px;
 }
 
 .aoUsageScheduleColAmount {
-  width: 88px;
+  width: 82px;
 }
 
 .aoUsageScheduleColCurrency {
-  width: 100px;
+  width: 94px;
 }
 
 .aoUsageScheduleColAction {
-  width: 90px;
+  width: 84px;
 }
 
 .aoUsageScheduleTable th,
@@ -3141,8 +3140,13 @@
 }
 
 .aoModalWide.aoUsageScheduleModal {
-  width: min(900px, 94vw);
+  width: min(1120px, 96vw);
   max-height: min(82vh, 860px);
+}
+
+.aoUsageScheduleModal .aoModalBody {
+  overflow-x: hidden;
+  padding-right: 0;
 }
 
 .aoModalHeader {
