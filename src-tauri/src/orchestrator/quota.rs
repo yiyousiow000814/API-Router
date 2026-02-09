@@ -467,8 +467,9 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
 
 fn store_quota_snapshot_silent(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
     let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
-    track_budget_spend(st, provider_name, snap);
     // Propagation writes should not affect per-provider ledgers; only a real refresh should reset.
+    // Tracking budget spend here would duplicate the same shared-key delta across propagated
+    // providers and inflate total usage cost.
 }
 
 fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
@@ -1336,6 +1337,27 @@ mod tests {
         assert!(snap.last_error.is_empty());
         assert_eq!(snap.kind.as_str(), "token_stats");
         assert_eq!(snap.remaining.unwrap_or(0.0), 12.3);
+    }
+
+    #[test]
+    fn silent_quota_propagation_does_not_duplicate_budget_spend() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("http://127.0.0.1:9/v1".to_string(), secrets);
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = 1_739_120_000_000;
+        snap.daily_spent_usd = Some(5.0);
+
+        store_quota_snapshot(&st, "p1", &snap);
+        store_quota_snapshot_silent(&st, "p2", &snap);
+
+        let p1_days = st.store.list_spend_days("p1");
+        let p2_days = st.store.list_spend_days("p2");
+        assert_eq!(p1_days.len(), 1);
+        assert!(p2_days.is_empty());
+        assert!(st.store.get_spend_state("p1").is_some());
+        assert!(st.store.get_spend_state("p2").is_none());
     }
 
     async fn start_mock_server_token_info() -> (String, tokio::task::JoinHandle<()>) {
