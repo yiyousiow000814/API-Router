@@ -847,25 +847,30 @@ fn get_usage_statistics(
         if ts >= last_24h_unix_ms {
             *provider_tokens_24h.entry(provider.clone()).or_default() += total_tokens_row;
         }
-        if has_provider_filter && !provider_filter.contains(&provider_lc) {
-            continue;
-        }
-        if has_model_filter && !model_filter.contains(&model_lc) {
-            continue;
-        }
-        if let Some(day_key) = local_day_key_from_unix_ms(ts) {
-            provider_req_by_day_filtered_total
-                .entry(provider.clone())
-                .or_default()
-                .entry(day_key)
-                .and_modify(|cur| *cur = cur.saturating_add(1))
-                .or_insert(1);
+        let provider_matches = !has_provider_filter || provider_filter.contains(&provider_lc);
+        let model_matches = !has_model_filter || model_filter.contains(&model_lc);
+        if provider_matches && model_matches {
+            if let Some(day_key) = local_day_key_from_unix_ms(ts) {
+                provider_req_by_day_filtered_total
+                    .entry(provider.clone())
+                    .or_default()
+                    .entry(day_key)
+                    .and_modify(|cur| *cur = cur.saturating_add(1))
+                    .or_insert(1);
+            }
         }
         if ts < since_unix_ms {
             continue;
         }
-        catalog_providers.insert(provider.clone());
-        catalog_models.insert(model.clone());
+        if model_matches {
+            catalog_providers.insert(provider.clone());
+        }
+        if provider_matches {
+            catalog_models.insert(model.clone());
+        }
+        if !provider_matches || !model_matches {
+            continue;
+        }
 
         total_requests = total_requests.saturating_add(1);
         total_tokens = total_tokens.saturating_add(total_tokens_row);
