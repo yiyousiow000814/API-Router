@@ -570,7 +570,7 @@ export default function App() {
   }, [config])
 
   const codexSwapBadge = useMemo(() => {
-    if (!codexSwapStatus) {
+    if (!codexSwapStatus && !providerSwitchStatus) {
       return { badgeText: '', badgeTitle: 'Codex CLI swap status: loading' }
     }
     const mode = providerSwitchStatus?.mode
@@ -584,7 +584,7 @@ export default function App() {
             : mode === 'mixed'
               ? 'Mixed'
               : null
-    const overall = codexSwapStatus.overall
+    const overall = codexSwapStatus?.overall
     const fallbackLabel =
       overall === 'swapped'
         ? 'Auth'
@@ -592,7 +592,9 @@ export default function App() {
           ? 'API'
           : overall === 'mixed'
             ? 'Mixed'
-            : 'Error'
+            : overall === 'error'
+              ? 'Error'
+              : 'Loading'
     const badgeText = modeLabel ?? fallbackLabel
     const parts =
       providerSwitchStatus?.dirs?.length
@@ -672,19 +674,21 @@ export default function App() {
       { cli_homes: homes },
     )
     flashToast(res.mode === 'swapped' ? 'Swapped Codex auth/config' : 'Restored Codex auth/config')
-    await refreshStatus()
-    await refreshCodexSwapStatus()
-    await refreshProviderSwitchStatus()
+    await refreshStatus({ refreshSwapStatus: false })
+    await Promise.all([refreshCodexSwapStatus(homes), refreshProviderSwitchStatus(homes)])
   }
 
-  async function refreshCodexSwapStatus() {
+  async function refreshCodexSwapStatus(cliHomes?: string[]) {
     if (isDevPreview) return
     try {
-      const homes = resolveCliHomes(
-        codexSwapDir1Ref.current,
-        codexSwapDir2Ref.current,
-        codexSwapApplyBothRef.current,
-      )
+      const homes =
+        cliHomes && cliHomes.length
+          ? cliHomes
+          : resolveCliHomes(
+              codexSwapDir1Ref.current,
+              codexSwapDir2Ref.current,
+              codexSwapApplyBothRef.current,
+            )
       const res = await invoke<CodexSwapStatus>('codex_cli_swap_status', {
         cli_homes: homes,
       })
@@ -694,12 +698,15 @@ export default function App() {
     }
   }
 
-  async function refreshProviderSwitchStatus() {
-    const homes = resolveCliHomes(
-      codexSwapDir1Ref.current,
-      codexSwapDir2Ref.current,
-      codexSwapApplyBothRef.current,
-    )
+  async function refreshProviderSwitchStatus(cliHomes?: string[]) {
+    const homes =
+      cliHomes && cliHomes.length
+        ? cliHomes
+        : resolveCliHomes(
+            codexSwapDir1Ref.current,
+            codexSwapDir2Ref.current,
+            codexSwapApplyBothRef.current,
+          )
     if (isDevPreview) {
       setProviderSwitchStatus({
         ok: true,
@@ -1805,12 +1812,13 @@ function newScheduleDraft(
       setProviderSwitchStatus(res)
       const msg =
         target === 'provider'
-          ? `Switched to provider: ${provider}`
+          ? 'Switched to provider: ' + provider
           : target === 'gateway'
             ? 'Switched to gateway'
             : 'Switched to official'
       flashToast(msg)
-      await refreshStatus()
+      await refreshStatus({ refreshSwapStatus: false })
+      await refreshCodexSwapStatus(homes)
       await refreshConfig()
     } catch (e) {
       flashToast(String(e), 'error')
@@ -1819,7 +1827,7 @@ function newScheduleDraft(
     }
   }
 
-  async function refreshStatus() {
+  async function refreshStatus(options?: { refreshSwapStatus?: boolean }) {
     if (isDevPreview) {
       setStatus(devStatus)
       return
@@ -1828,8 +1836,10 @@ function newScheduleDraft(
       const s = await invoke<Status>('get_status')
       setStatus(s)
       if (!overrideDirtyRef.current) setOverride(s.manual_override ?? '')
-      // Best-effort: keep swap badge fresh on the normal status poll cadence.
-      void refreshCodexSwapStatus()
+      if (options?.refreshSwapStatus ?? true) {
+        // Best-effort: keep swap badge fresh on the normal status poll cadence.
+        void refreshCodexSwapStatus()
+      }
     } catch (e) {
       console.error(e)
     }
