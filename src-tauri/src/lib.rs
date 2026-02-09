@@ -782,6 +782,7 @@ fn get_usage_statistics(
     } else {
         24 * 60 * 60 * 1000
     };
+    let active_bucket_ms = 60 * 60 * 1000;
     let projection_hours = projection_hours_until_midnight_cap_16();
 
     let records = state.gateway.store.list_usage_requests(500_000);
@@ -789,7 +790,8 @@ fn get_usage_statistics(
     let provider_pricing = state.secrets.list_provider_pricing();
 
     let mut provider_tokens_24h: BTreeMap<String, u64> = BTreeMap::new();
-    let mut provider_active_buckets: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
+    let mut provider_active_hour_buckets: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
+    let mut active_window_hour_buckets: BTreeSet<u64> = BTreeSet::new();
     let mut catalog_providers: BTreeSet<String> = BTreeSet::new();
     let mut catalog_models: BTreeSet<String> = BTreeSet::new();
     let mut timeline: BTreeMap<u64, (u64, u64, u64, u64)> = BTreeMap::new();
@@ -898,12 +900,16 @@ fn get_usage_statistics(
                 .or_insert(1);
         }
 
-        let bucket =
-            aligned_bucket_start_unix_ms(ts, bucket_ms).unwrap_or((ts / bucket_ms) * bucket_ms);
-        provider_active_buckets
+        let active_hour_bucket = aligned_bucket_start_unix_ms(ts, active_bucket_ms)
+            .unwrap_or((ts / active_bucket_ms) * active_bucket_ms);
+        provider_active_hour_buckets
             .entry(provider.clone())
             .or_default()
-            .insert(bucket);
+            .insert(active_hour_bucket);
+        active_window_hour_buckets.insert(active_hour_bucket);
+
+        let bucket =
+            aligned_bucket_start_unix_ms(ts, bucket_ms).unwrap_or((ts / bucket_ms) * bucket_ms);
         let entry = timeline.entry(bucket).or_insert((0, 0, 0, 0));
         entry.0 += 1;
         entry.1 += total_tokens_row;
@@ -938,12 +944,9 @@ fn get_usage_statistics(
     let mut provider_avg_req_cost: BTreeMap<String, f64> = BTreeMap::new();
     let mut by_provider: Vec<Value> = Vec::new();
     for (provider, agg) in by_provider_map.iter() {
-        let active_hours = provider_active_buckets
+        let active_hours = provider_active_hour_buckets
             .get(provider)
-            .map(|buckets| {
-                let bucket_hours = bucket_ms as f64 / (60.0 * 60.0 * 1000.0);
-                (buckets.len() as f64 * bucket_hours).max(1.0)
-            })
+            .map(|buckets| (buckets.len() as f64).max(1.0))
             .unwrap_or_else(|| (window_hours as f64).max(1.0));
         let req_per_hour = if active_hours > 0.0 {
             agg.requests as f64 / active_hours
@@ -1426,6 +1429,8 @@ fn get_usage_statistics(
         }
     }
 
+    let active_window_hours = active_window_hour_buckets.len() as f64;
+
     let total_used_cost_usd = by_provider
         .iter()
         .filter_map(|p| p.get("total_used_cost_usd").and_then(|v| v.as_f64()))
@@ -1463,6 +1468,7 @@ fn get_usage_statistics(
       "summary": {
         "total_requests": total_requests,
         "total_tokens": total_tokens,
+        "active_window_hours": round3(active_window_hours),
         "cache_creation_tokens": total_cache_creation_tokens,
         "cache_read_tokens": total_cache_read_tokens,
         "unique_models": by_model.len(),

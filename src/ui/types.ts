@@ -144,6 +144,7 @@ export type UsageStatistics = {
   summary: {
     total_requests: number
     total_tokens: number
+    active_window_hours?: number
     cache_creation_tokens?: number
     cache_read_tokens?: number
     unique_models: number
