@@ -15,12 +15,26 @@ if (process.platform !== 'win32') {
   process.exit(0)
 }
 
-const child = spawn(exePath, [], {
-  cwd: root,
-  detached: true,
-  stdio: 'ignore',
-  windowsHide: false,
+const result = await new Promise((resolve) => {
+  const child = spawn(exePath, [], {
+    cwd: root,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false,
+  })
+
+  child.once('spawn', () => {
+    child.unref()
+    resolve({ ok: true })
+  })
+  child.once('error', (error) => {
+    resolve({ ok: false, error })
+  })
 })
 
-child.unref()
+if (!result.ok) {
+  console.warn(`Skip auto-open root exe: ${String(result.error)}`)
+  process.exit(0)
+}
+
 console.log(`Opened: ${exePath}`)

@@ -1491,16 +1491,25 @@ function newScheduleDraft(
     setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saving' }))
     try {
       if (activePackage || upcomingPackage) {
-        await invoke('set_provider_timeline', {
-          provider: providerName,
-          periods: timelinePeriods.map((period) => ({
+        const rewrittenPeriods = timelinePeriods.map((period) => {
+          const mode = (period.mode ?? 'package_total') as PricingTimelineMode
+          const inActiveOrUpcomingWindow =
+            mode === 'package_total' &&
+            (period.started_at_unix_ms >= now ||
+              (period.started_at_unix_ms <= now &&
+                (period.ended_at_unix_ms == null || now < period.ended_at_unix_ms)))
+          return {
             id: period.id,
-            mode: (period.mode ?? 'package_total') as PricingTimelineMode,
-            amount_usd: period.amount_usd,
+            mode,
+            amount_usd: inActiveOrUpcomingWindow ? amountUsd : period.amount_usd,
             api_key_ref: period.api_key_ref ?? providerApiKeyLabel(providerName),
             started_at_unix_ms: period.started_at_unix_ms,
             ended_at_unix_ms: period.ended_at_unix_ms ?? undefined,
-          })),
+          }
+        })
+        await invoke('set_provider_timeline', {
+          provider: providerName,
+          periods: rewrittenPeriods,
         })
       } else {
         await invoke('set_provider_manual_pricing', {
@@ -2274,13 +2283,6 @@ function newScheduleDraft(
   }
 
   function providerTotalUsedDisplayUsd(row: UsageStatistics['summary']['by_provider'][number]): number | null {
-    const source = row.pricing_source ?? ''
-    const isScheduled =
-      source === 'manual_package_timeline' || source === 'manual_package_timeline+manual_history'
-    if (isScheduled) {
-      const daily = row.estimated_daily_cost_usd
-      if (daily != null && Number.isFinite(daily) && daily > 0) return daily
-    }
     const totalUsed = row.total_used_cost_usd
     if (totalUsed == null || !Number.isFinite(totalUsed) || totalUsed <= 0) return null
     return totalUsed
@@ -2369,7 +2371,17 @@ function newScheduleDraft(
     const mode = provider.manual_pricing_mode ?? null
     const amount = provider.manual_pricing_amount_usd ?? null
     if (mode === 'package_total') {
-      await openUsageScheduleModal(name, providerPreferredCurrency(name))
+      const currency = providerPreferredCurrency(name)
+      const packageDraft: UsagePricingDraft = {
+        mode: 'package_total',
+        amountText:
+          amount != null && Number.isFinite(amount) && amount > 0
+            ? formatDraftAmount(convertUsdToCurrency(amount, currency))
+            : '',
+        currency,
+      }
+      await activatePackageTotalMode(name, packageDraft)
+      await openUsageScheduleModal(name, currency)
       return
     }
     try {

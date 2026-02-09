@@ -1,10 +1,13 @@
 use chrono::{Local, TimeZone};
 use serde_json::Value;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct Store {
     db: sled::Db,
+    usage_prune_seq: Arc<AtomicU64>,
 }
 
 const LEDGER_DEFAULT: &str = r#"{"since_last_quota_refresh_input_tokens":0,"since_last_quota_refresh_output_tokens":0,"since_last_quota_refresh_total_tokens":0,"last_reset_unix_ms":0}"#;
@@ -21,6 +24,7 @@ struct UsageTokenIncrements {
 impl Store {
     const MAX_EVENTS: usize = 200;
     const MAX_USAGE_REQUESTS: usize = 500_000;
+    const USAGE_PRUNE_EVERY: u64 = 128;
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
 
     // Breaking-change friendly: bump this to invalidate old persisted event shapes.
@@ -51,7 +55,10 @@ impl Store {
 
     pub fn open(path: &std::path::Path) -> Result<Self, sled::Error> {
         let db = sled::open(path)?;
-        let store = Self { db };
+        let store = Self {
+            db,
+            usage_prune_seq: Arc::new(AtomicU64::new(0)),
+        };
         store.ensure_events_schema();
         Ok(store)
     }
@@ -268,13 +275,19 @@ impl Store {
             cache_read_input_tokens,
         };
 
-        self.bump_metrics(provider, 1, 0, total_tokens);
-        self.bump_ledger(provider, input_tokens, output_tokens, total_tokens);
-        self.add_usage_request(provider, &Self::extract_model(response_obj), increments);
+        // Fast path: flush once at the end in add_usage_request.
+        self.bump_metrics(provider, 1, 0, total_tokens, false);
+        self.bump_ledger(provider, input_tokens, output_tokens, total_tokens, false);
+        self.add_usage_request(
+            provider,
+            &Self::extract_model(response_obj),
+            increments,
+            true,
+        );
     }
 
     pub fn record_failure(&self, provider: &str) {
-        self.bump_metrics(provider, 0, 1, 0);
+        self.bump_metrics(provider, 0, 1, 0, true);
     }
 
     pub fn get_metrics(&self) -> serde_json::Value {
@@ -289,7 +302,14 @@ impl Store {
         Value::Object(out)
     }
 
-    fn bump_metrics(&self, provider: &str, ok_inc: u64, err_inc: u64, tokens_inc: u64) {
+    fn bump_metrics(
+        &self,
+        provider: &str,
+        ok_inc: u64,
+        err_inc: u64,
+        tokens_inc: u64,
+        flush: bool,
+    ) {
         let key = format!("metrics:{provider}");
         let cur = self
             .db
@@ -325,7 +345,9 @@ impl Store {
             key.as_bytes(),
             serde_json::to_vec(&next).unwrap_or_default(),
         );
-        let _ = self.db.flush();
+        if flush {
+            let _ = self.db.flush();
+        }
     }
 
     pub fn put_quota_snapshot(&self, provider: &str, snapshot: &Value) -> Result<(), sled::Error> {
@@ -401,7 +423,14 @@ impl Store {
         let _ = self.db.flush();
     }
 
-    fn bump_ledger(&self, provider: &str, input_inc: u64, output_inc: u64, total_inc: u64) {
+    fn bump_ledger(
+        &self,
+        provider: &str,
+        input_inc: u64,
+        output_inc: u64,
+        total_inc: u64,
+        flush: bool,
+    ) {
         let key = format!("ledger:{provider}");
         let cur = self.get_ledger(provider);
         let next = serde_json::json!({
@@ -414,7 +443,9 @@ impl Store {
             key.as_bytes(),
             serde_json::to_vec(&next).unwrap_or_default(),
         );
-        let _ = self.db.flush();
+        if flush {
+            let _ = self.db.flush();
+        }
     }
 
     #[allow(dead_code)]
@@ -659,7 +690,13 @@ impl Store {
             .to_string()
     }
 
-    fn add_usage_request(&self, provider: &str, model: &str, increments: UsageTokenIncrements) {
+    fn add_usage_request(
+        &self,
+        provider: &str,
+        model: &str,
+        increments: UsageTokenIncrements,
+        flush: bool,
+    ) {
         let ts = unix_ms();
         let id = uuid::Uuid::new_v4().to_string();
         let key = format!("usage_req:{ts}:{id}");
@@ -677,8 +714,14 @@ impl Store {
             .db
             .insert(key.as_bytes(), serde_json::to_vec(&v).unwrap_or_default());
         self.bump_usage_day(provider, ts, increments);
-        self.prune_usage_requests();
-        let _ = self.db.flush();
+        // Avoid full usage_req scan on every request; keep storage bounded with periodic pruning.
+        let seq = self.usage_prune_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        if seq % Self::USAGE_PRUNE_EVERY == 0 {
+            self.prune_usage_requests();
+        }
+        if flush {
+            let _ = self.db.flush();
+        }
     }
 
     fn local_day_key(ts_unix_ms: u64) -> String {

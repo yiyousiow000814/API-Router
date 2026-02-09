@@ -11,6 +11,9 @@ import { PNG } from 'pngjs'
 process.env.NODE_NO_WARNINGS = '1'
 // Keep the terminal clean in default (headless-ish) mode.
 process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, '--no-deprecation'].filter(Boolean).join(' ')
+const STRICT_UI_CHECK =
+  String(process.env.UI_TAURI_STRICT || '').trim() === '1' ||
+  String(process.env.CI || '').trim().toLowerCase() === 'true'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -285,6 +288,13 @@ function quoteCmdArg(s) {
   const str = String(s)
   if (/[\s"]/g.test(str)) return `"${str.replaceAll('"', '\\"')}"`
   return str
+}
+
+function warnOrFail(message) {
+  if (STRICT_UI_CHECK) {
+    throw new Error(message)
+  }
+  console.warn(`[ui:tauri] ${message}`)
 }
 
 function startHiddenDesktopProcess({ exe, args, cwd, env, keepVisible }) {
@@ -818,7 +828,7 @@ async function main() {
       if (ph0 < 0) {
         const b64 = await driver.takeScreenshot()
         fs.writeFileSync(screenshotPath.replace('.png', `-up-no-drag.png`), Buffer.from(b64, 'base64'))
-        console.warn('[ui:tauri] Subtest B degraded (drag did not start); continuing with remaining checks.')
+        warnOrFail('Subtest B degraded (drag did not start).')
         await driver.actions({ async: true }).release().perform()
         await new Promise((r) => setTimeout(r, 150))
       } else {

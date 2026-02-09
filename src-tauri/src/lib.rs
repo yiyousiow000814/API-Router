@@ -484,6 +484,83 @@ fn package_total_schedule_by_day(
     by_day
 }
 
+fn package_total_amount_for_slice(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+    slice_start_unix_ms: u64,
+    slice_end_unix_ms: u64,
+) -> Option<f64> {
+    let cfg = pricing_cfg?;
+    if slice_end_unix_ms <= slice_start_unix_ms {
+        return None;
+    }
+    let mut best: Option<(f64, u64, u64)> = None; // (amount, overlap_ms, started_at)
+    let mut has_timeline = false;
+    for period in cfg.periods.iter() {
+        if period.mode != "package_total" {
+            continue;
+        }
+        if !period.amount_usd.is_finite() || period.amount_usd <= 0.0 {
+            continue;
+        }
+        has_timeline = true;
+        let period_end = period.ended_at_unix_ms.unwrap_or(u64::MAX);
+        let overlap_start = period.started_at_unix_ms.max(slice_start_unix_ms);
+        let overlap_end = period_end.min(slice_end_unix_ms);
+        if overlap_end <= overlap_start {
+            continue;
+        }
+        let overlap_ms = overlap_end.saturating_sub(overlap_start);
+        let should_replace = best
+            .as_ref()
+            .map(|(_, cur_overlap, cur_started)| {
+                overlap_ms > *cur_overlap
+                    || (overlap_ms == *cur_overlap && period.started_at_unix_ms >= *cur_started)
+            })
+            .unwrap_or(true);
+        if should_replace {
+            best = Some((period.amount_usd, overlap_ms, period.started_at_unix_ms));
+        }
+    }
+    if let Some((amount, _, _)) = best {
+        return Some(amount);
+    }
+    if !has_timeline
+        && cfg.mode == "package_total"
+        && cfg.amount_usd.is_finite()
+        && cfg.amount_usd > 0.0
+    {
+        return Some(cfg.amount_usd);
+    }
+    None
+}
+
+fn package_total_window_total_by_day_slots(
+    pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
+    window_start_unix_ms: u64,
+    window_end_unix_ms: u64,
+    window_hours: u64,
+) -> f64 {
+    if window_end_unix_ms <= window_start_unix_ms || window_hours == 0 {
+        return 0.0;
+    }
+    let slot_ms = 24_u64 * 60 * 60 * 1000;
+    let slot_count = (window_hours / 24).max(1);
+    let mut total = 0.0_f64;
+    for i in 0..slot_count {
+        let slot_end = window_end_unix_ms.saturating_sub(i.saturating_mul(slot_ms));
+        if slot_end <= window_start_unix_ms {
+            break;
+        }
+        let slot_start = slot_end.saturating_sub(slot_ms).max(window_start_unix_ms);
+        if let Some(monthly_total) =
+            package_total_amount_for_slice(pricing_cfg, slot_start, slot_end)
+        {
+            total += monthly_total / 30.0;
+        }
+    }
+    total
+}
+
 fn active_package_period(
     pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
     now_unix_ms: u64,
@@ -958,6 +1035,13 @@ fn get_usage_statistics(
                     .unwrap_or(false);
                 let scheduled_by_day =
                     package_total_schedule_by_day(pricing_cfg, since_unix_ms, now);
+                let forward_window_end = now.saturating_add(window_ms);
+                let scheduled_total_by_slots = package_total_window_total_by_day_slots(
+                    pricing_cfg,
+                    now,
+                    forward_window_end,
+                    window_hours,
+                );
                 let mut day_keys: BTreeSet<String> = BTreeSet::new();
                 day_keys.extend(scheduled_by_day.keys().cloned());
                 day_keys.extend(manual_by_day.keys().cloned());
@@ -966,16 +1050,18 @@ fn get_usage_statistics(
                 let mut manual_in_window = 0.0_f64;
                 let mut total_used = 0.0_f64;
 
-                for day_key in day_keys {
-                    let scheduled_day = scheduled_by_day.get(&day_key).copied().unwrap_or(0.0);
-                    if scheduled_day > 0.0 {
-                        scheduled_in_window += scheduled_day;
-                    }
+                if manual_by_day.is_empty() {
+                    scheduled_in_window = scheduled_total_by_slots;
+                    total_used = scheduled_total_by_slots;
+                } else {
+                    for day_key in day_keys {
+                        let scheduled_day = scheduled_by_day.get(&day_key).copied().unwrap_or(0.0);
+                        if scheduled_day > 0.0 {
+                            scheduled_in_window += scheduled_day;
+                        }
 
-                    let manual_window =
-                        manual_by_day
-                            .get(&day_key)
-                            .and_then(|(manual_total, manual_per_req)| {
+                        let manual_window = manual_by_day.get(&day_key).and_then(
+                            |(manual_total, manual_per_req)| {
                                 let (day_start, day_end) = local_day_range_from_key(&day_key)?;
                                 let overlap_start = day_start.max(since_unix_ms);
                                 let overlap_end = day_end.min(now);
@@ -1012,15 +1098,17 @@ fn get_usage_statistics(
                                 } else {
                                     None
                                 }
-                            });
+                            },
+                        );
 
-                    if let Some(v) = manual_window {
-                        if v > 0.0 {
-                            manual_in_window += v;
-                            total_used += v;
+                        if let Some(v) = manual_window {
+                            if v > 0.0 {
+                                manual_in_window += v;
+                                total_used += v;
+                            }
+                        } else if scheduled_day > 0.0 {
+                            total_used += scheduled_day;
                         }
-                    } else if scheduled_day > 0.0 {
-                        total_used += scheduled_day;
                     }
                 }
 
