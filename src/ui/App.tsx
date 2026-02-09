@@ -248,6 +248,7 @@ export default function App() {
   const [usageScheduleLoading, setUsageScheduleLoading] = useState<boolean>(false)
   const [usageScheduleSaving, setUsageScheduleSaving] = useState<boolean>(false)
   const [usageScheduleSaveState, setUsageScheduleSaveState] = useState<UsageScheduleSaveState>('idle')
+  const [usageScheduleSaveError, setUsageScheduleSaveError] = useState<string>('')
   const [usageHistoryModalOpen, setUsageHistoryModalOpen] = useState<boolean>(false)
   const [usageHistoryRows, setUsageHistoryRows] = useState<SpendHistoryRow[]>([])
   const [usageHistoryDrafts, setUsageHistoryDrafts] = useState<Record<string, { effectiveText: string }>>({})
@@ -908,7 +909,7 @@ export default function App() {
       startedAtUnixMs: number
       endedAtUnixMs: number
     }>
-  } | { ok: false } {
+  } | { ok: false; reason: string } {
     const parsed: Array<{
       id: string | null
       amountUsd: number
@@ -921,7 +922,7 @@ export default function App() {
       const end = fromDateTimeLocalValue(row.endText)
       const amount = parsePositiveAmount(row.amountText)
       if (!start || !end || !amount || start >= end) {
-        return { ok: false }
+        return { ok: false, reason: 'complete each row with valid start, expires, and amount' }
       }
       parsed.push({
         id: row.id.trim() || null,
@@ -934,7 +935,7 @@ export default function App() {
     parsed.sort((a, b) => a.startedAtUnixMs - b.startedAtUnixMs)
     for (let i = 1; i < parsed.length; i += 1) {
       if (parsed[i - 1].endedAtUnixMs > parsed[i].startedAtUnixMs) {
-        return { ok: false }
+        return { ok: false, reason: 'periods must not overlap' }
       }
     }
     return { ok: true, periods: parsed }
@@ -1076,6 +1077,7 @@ export default function App() {
     setUsageScheduleModalOpen(true)
     setUsageScheduleLoading(true)
     setUsageScheduleSaveState('idle')
+    setUsageScheduleSaveError('')
     try {
       const res = await invoke<{ ok: boolean; periods?: ProviderSchedulePeriod[] }>('get_provider_schedule', {
         provider: providerName,
@@ -1089,12 +1091,14 @@ export default function App() {
       setUsageScheduleRows(nextRows)
       usageScheduleLastSavedSigRef.current = scheduleRowsSignature(nextRows)
       setUsageScheduleSaveState(rows.length > 0 ? 'saved' : 'idle')
+      setUsageScheduleSaveError('')
     } catch (e) {
       flashToast(String(e), 'error')
       const fallback = [newScheduleDraft(providerName, seedAmountUsd, seedCurrency)]
       setUsageScheduleRows(fallback)
       usageScheduleLastSavedSigRef.current = scheduleRowsSignature(fallback)
       setUsageScheduleSaveState('idle')
+      setUsageScheduleSaveError('')
     } finally {
       setUsageScheduleLoading(false)
     }
@@ -1109,10 +1113,12 @@ export default function App() {
     const parsed = parseScheduleRowsForSave(rows)
     if (!parsed.ok) {
       setUsageScheduleSaveState('invalid')
+      setUsageScheduleSaveError(parsed.reason)
       return
     }
     setUsageScheduleSaving(true)
     setUsageScheduleSaveState('saving')
+    setUsageScheduleSaveError('')
     try {
       await invoke('set_provider_schedule', {
         provider: providerName,
@@ -1120,13 +1126,17 @@ export default function App() {
       })
       usageScheduleLastSavedSigRef.current = signature
       setUsageScheduleSaveState('saved')
+      setUsageScheduleSaveError('')
       await refreshConfig()
       await refreshUsageStatistics({ silent: true })
       if (usageHistoryModalOpen) {
         await refreshUsageHistory({ silent: true })
       }
-    } catch {
+    } catch (e) {
       setUsageScheduleSaveState('error')
+      const msg = String(e)
+      setUsageScheduleSaveError(msg)
+      flashToast(`Scheduled auto-save failed: ${msg}`, 'error')
     } finally {
       setUsageScheduleSaving(false)
     }
@@ -1248,12 +1258,16 @@ export default function App() {
   function queueUsageHistoryAutoSave(row: SpendHistoryRow) {
     if (!usageHistoryModalOpen) return
     queueAutoSaveTimer('history:edit', () => {
-      void saveUsageHistoryRow(row, { silent: true })
+      void saveUsageHistoryRow(row, { silent: true, keepEditCell: true })
     })
   }
 
-  async function saveUsageHistoryRow(row: SpendHistoryRow, options?: { silent?: boolean }) {
+  async function saveUsageHistoryRow(
+    row: SpendHistoryRow,
+    options?: { silent?: boolean; keepEditCell?: boolean },
+  ) {
     const silent = options?.silent === true
+    const keepEditCell = options?.keepEditCell === true
     const key = `${row.provider}|${row.day_key}`
     const draft = usageHistoryDrafts[key] ?? historyDraftFromRow(row)
     const effectiveDraft = parsePositiveAmount(draft.effectiveText)
@@ -1286,7 +1300,7 @@ export default function App() {
         usdPerReq,
       })
       if (!silent) flashToast(`History saved: ${row.provider} ${row.day_key}`)
-      await refreshUsageHistory({ silent: true, keepEditCell: silent })
+      await refreshUsageHistory({ silent: true, keepEditCell })
       await refreshUsageStatistics({ silent: true })
     } catch (e) {
       if (!silent) flashToast(String(e), 'error')
@@ -1514,13 +1528,26 @@ export default function App() {
       avgTotalUsed: mean(usageByProvider.map((row) => providerTotalUsedDisplayUsd(row))),
     }
   }, [usageByProvider])
+  const usageScheduleProviderOptions = useMemo(() => {
+    const fromConfig = orderedConfigProviders.filter((name) => Boolean(config?.providers?.[name]))
+    if (fromConfig.length) return fromConfig
+    return usageByProvider
+      .map((row) => row.provider)
+      .filter((name) => Boolean(name) && Boolean(config?.providers?.[name]))
+  }, [config, orderedConfigProviders, usageByProvider])
   const usageScheduleSaveStatusText = useMemo(() => {
     if (usageScheduleSaveState === 'saving') return 'Auto-saving...'
     if (usageScheduleSaveState === 'saved') return 'Auto-saved'
-    if (usageScheduleSaveState === 'invalid') return 'Auto-save paused (complete row to save)'
-    if (usageScheduleSaveState === 'error') return 'Auto-save failed'
+    if (usageScheduleSaveState === 'invalid') {
+      return usageScheduleSaveError
+        ? `Auto-save paused: ${usageScheduleSaveError}`
+        : 'Auto-save paused (complete row to save)'
+    }
+    if (usageScheduleSaveState === 'error') {
+      return usageScheduleSaveError ? `Auto-save failed: ${usageScheduleSaveError}` : 'Auto-save failed'
+    }
     return 'Auto-save'
-  }, [usageScheduleSaveState])
+  }, [usageScheduleSaveError, usageScheduleSaveState])
   const usageAnomalies = useMemo(() => {
     const messages: string[] = []
     const highCostProviders = new Set<string>()
@@ -2247,6 +2274,7 @@ export default function App() {
         setUsageScheduleSaveState('saved')
       } else if (usageScheduleSaveState === 'invalid' || usageScheduleSaveState === 'error') {
         setUsageScheduleSaveState('idle')
+        setUsageScheduleSaveError('')
       }
       return
     }
@@ -2955,15 +2983,17 @@ export default function App() {
                       className="aoTinyBtn"
                       onClick={() => {
                         const providerName =
-                          orderedConfigProviders.find(
+                          usageScheduleProviderOptions.find(
                             (name) => config?.providers?.[name]?.manual_pricing_mode === 'package_total',
-                          ) ?? usageByProvider[0]?.provider
+                          ) ??
+                          usageScheduleProviderOptions[0] ??
+                          usageByProvider[0]?.provider
                         if (!providerName) return
                         void openUsageScheduleModal(providerName, null, providerPreferredCurrency(providerName))
                       }}
-                      disabled={!usageByProvider.length}
+                      disabled={!usageScheduleProviderOptions.length}
                     >
-                      Scheduled
+                      Scheduled History
                     </button>
                   </div>
                 </div>
@@ -3450,6 +3480,8 @@ requires_openai_auth = true`}
                                   }}
                                   onKeyDown={(e) => {
                                     if (e.key === 'Enter') {
+                                      clearAutoSaveTimer('history:edit')
+                                      setUsageHistoryEditCell(null)
                                       void saveUsageHistoryRow(row)
                                     } else if (e.key === 'Escape') {
                                       setUsageHistoryDrafts((prev) => ({ ...prev, [key]: baseDraft }))
@@ -3458,7 +3490,8 @@ requires_openai_auth = true`}
                                   }}
                                   onBlur={() => {
                                     clearAutoSaveTimer('history:edit')
-                                    void saveUsageHistoryRow(row, { silent: true })
+                                    setUsageHistoryEditCell(null)
+                                    void saveUsageHistoryRow(row, { silent: true, keepEditCell: false })
                                   }}
                                   autoFocus
                                 />
@@ -3643,35 +3676,43 @@ requires_openai_auth = true`}
                           </div>
                         </>
                       )}
-                      {mode === 'package_total' ? (
+                      <div className="aoUsagePricingActions">
+                        {mode === 'package_total' ? null : (
+                          <span
+                            className={`aoHint aoUsagePricingAutosave aoUsagePricingAutosave-${
+                              usagePricingSaveState[row.provider] ?? 'idle'
+                            }`}
+                          >
+                            {usagePricingSaveState[row.provider] === 'saving'
+                              ? 'Auto-saving...'
+                              : usagePricingSaveState[row.provider] === 'saved'
+                                ? 'Auto-saved'
+                                : usagePricingSaveState[row.provider] === 'error'
+                                  ? 'Auto-save failed'
+                                  : 'Auto-save'}
+                          </span>
+                        )}
                         <button
                           className="aoTinyBtn"
                           disabled={!providerCfg}
-                          onClick={() => void saveUsagePricingRow(row.provider)}
+                          onClick={() =>
+                            void openUsageScheduleModal(
+                              row.provider,
+                              providerCfg?.manual_pricing_amount_usd ?? null,
+                              providerPreferredCurrency(row.provider),
+                            )
+                          }
                         >
-                          Scheduled
+                          History
                         </button>
-                      ) : (
-                        <span
-                          className={`aoHint aoUsagePricingAutosave aoUsagePricingAutosave-${
-                            usagePricingSaveState[row.provider] ?? 'idle'
-                          }`}
-                        >
-                          {usagePricingSaveState[row.provider] === 'saving'
-                            ? 'Auto-saving...'
-                            : usagePricingSaveState[row.provider] === 'saved'
-                              ? 'Auto-saved'
-                              : usagePricingSaveState[row.provider] === 'error'
-                                ? 'Auto-save failed'
-                                : 'Auto-save'}
-                        </span>
-                      )}
+                      </div>
                     </div>
                   )
                 })}
               </div>
               <div className="aoHint">
-                Monthly fee uses Scheduled periods. Click Scheduled to manage start/expires history.
+                Monthly fee uses Scheduled Period History. Switching to Monthly credit keeps past history and applies
+                credit after scheduled expiry.
               </div>
             </div>
           </div>
@@ -3764,7 +3805,7 @@ requires_openai_auth = true`}
           <div className="aoModal aoModalWide aoUsageScheduleModal" onClick={(e) => e.stopPropagation()}>
             <div className="aoModalHeader">
               <div>
-                <div className="aoModalTitle">Scheduled Periods</div>
+                <div className="aoModalTitle">Scheduled Period History</div>
                 <div className="aoModalSub">
                   Provider: {usageScheduleProvider || '-'} . Define fixed package periods with explicit start/expires.
                 </div>
@@ -3782,6 +3823,28 @@ requires_openai_auth = true`}
               </button>
             </div>
             <div className="aoModalBody">
+              {usageScheduleProviderOptions.length > 1 ? (
+                <div className="aoUsageScheduleProviderPicker">
+                  <span className="aoMiniLabel">Provider</span>
+                  <select
+                    className="aoSelect"
+                    value={usageScheduleProvider}
+                    onChange={(e) =>
+                      void openUsageScheduleModal(
+                        e.target.value,
+                        config?.providers?.[e.target.value]?.manual_pricing_amount_usd ?? null,
+                        providerPreferredCurrency(e.target.value),
+                      )
+                    }
+                  >
+                    {usageScheduleProviderOptions.map((providerName) => (
+                      <option key={`schedule-provider-${providerName}`} value={providerName}>
+                        {providerName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
               {usageScheduleLoading ? (
                 <div className="aoHint">Loading...</div>
               ) : (
@@ -3932,8 +3995,8 @@ requires_openai_auth = true`}
                     </span>
                   </div>
                   <div className="aoHint aoUsageScheduleHint">
-                    Scheduled periods are the only source for monthly fee timelines. Editing here does not rewrite
-                    unrelated past periods.
+                    Scheduled period history is the source for monthly fee timelines. Editing here updates only the
+                    selected provider history.
                   </div>
                 </>
               )}

@@ -786,8 +786,15 @@
 }
 
 .aoUsagePricingAutosave {
-  justify-self: end;
   white-space: nowrap;
+}
+
+.aoUsagePricingActions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
 }
 
 .aoUsagePricingAutosave-saving {
@@ -992,6 +999,14 @@
   height: 28px;
   padding: 0 8px;
   font-size: 12px;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.aoUsageHistoryInput::-webkit-outer-spin-button,
+.aoUsageHistoryInput::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 .aoUsageHistoryValueCell {
@@ -1128,6 +1143,17 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.aoUsageScheduleProviderPicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.aoUsageScheduleProviderPicker .aoSelect {
+  min-width: 180px;
 }
 
 .aoUsageScheduleAutosave {
@@ -2961,7 +2987,7 @@
   top: 14px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 9999;
+  z-index: 11050;
   max-width: min(860px, calc(100vw - 28px));
   padding: 10px 14px;
   border-radius: 14px;
