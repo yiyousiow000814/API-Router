@@ -1038,8 +1038,14 @@
   background: rgb(242, 244, 247);
 }
 
-.aoUsageHistoryTableWrap {
+.aoUsageHistoryTableBody {
   position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.aoUsageHistoryTableWrap {
   flex: 1;
   min-height: 0;
   overflow: auto;

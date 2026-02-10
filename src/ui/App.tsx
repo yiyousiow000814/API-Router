@@ -4429,18 +4429,19 @@ requires_openai_auth = true`}
                       </thead>
                     </table>
                   </div>
-                  <div
-                    ref={usageHistoryTableWrapRef}
-                    className="aoUsageHistoryTableWrap"
-                    onScroll={() => {
-                      refreshUsageHistoryScrollbarUi()
-                      activateUsageHistoryScrollbarUi()
-                    }}
-                    onWheel={activateUsageHistoryScrollbarUi}
-                    onTouchMove={activateUsageHistoryScrollbarUi}
-                    onPointerDown={activateUsageHistoryScrollbarUi}
-                  >
-                    <table className="aoUsageHistoryTable">
+                  <div className="aoUsageHistoryTableBody">
+                    <div
+                      ref={usageHistoryTableWrapRef}
+                      className="aoUsageHistoryTableWrap"
+                      onScroll={() => {
+                        refreshUsageHistoryScrollbarUi()
+                        activateUsageHistoryScrollbarUi()
+                      }}
+                      onWheel={activateUsageHistoryScrollbarUi}
+                      onTouchMove={activateUsageHistoryScrollbarUi}
+                      onPointerDown={activateUsageHistoryScrollbarUi}
+                    >
+                      <table className="aoUsageHistoryTable">
                       {renderUsageHistoryColGroup()}
                       <tbody>
                     {usageHistoryRows.map((row) => {
@@ -4609,7 +4610,8 @@ requires_openai_auth = true`}
                       )
                     })}
                       </tbody>
-                    </table>
+                      </table>
+                    </div>
                     <div
                       className={`aoUsageHistoryScrollbarOverlay${
                         usageHistoryScrollbarUi.active && usageHistoryScrollbarUi.enabled
