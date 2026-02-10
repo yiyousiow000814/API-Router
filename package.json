@@ -11,6 +11,9 @@
     "tauri": "tauri",
     "build:root-exe": "tauri build && node scripts/copy-root-exe.mjs && node scripts/open-root-exe.mjs",
     "ui:tauri": "node scripts/tauri-ui-check.mjs",
+    "ui:check": "node scripts/run-ui-tauri-if-windows.mjs",
+    "backend:check": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
+    "check:all": "npm run test && npm run backend:check && npm run ui:check",
     "build:root-exe:checked": "node scripts/run-ui-tauri-if-windows.mjs && npm run build:root-exe",
     "test": "vitest run"
   },

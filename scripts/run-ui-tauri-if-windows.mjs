@@ -8,6 +8,15 @@ if (process.platform !== 'win32') {
   process.exit(0)
 }
 
-const res = spawnSync('npm.cmd', ['run', 'ui:tauri'], { stdio: 'inherit', shell: false, windowsHide: true })
-process.exit(res.status ?? 1)
+const res = spawnSync('cmd.exe', ['/d', '/s', '/c', 'npm.cmd', 'run', 'ui:tauri'], {
+  stdio: 'inherit',
+  shell: false,
+  windowsHide: true,
+})
 
+if (res.error) {
+  console.error(`[ui:tauri] wrapper failed: ${res.error.message}`)
+  process.exit(1)
+}
+
+process.exit(res.status ?? 1)

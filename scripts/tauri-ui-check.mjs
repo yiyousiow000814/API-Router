@@ -53,6 +53,42 @@ function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true })
 }
 
+function cleanupDirBestEffort(dirPath, retries = 5, waitMs = 300) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      fs.rmSync(dirPath, { recursive: true, force: true })
+      return true
+    } catch {
+      if (i >= retries) return false
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs)
+    }
+  }
+  return false
+}
+
+function pruneUiCheckRuntimeDirs(baseDir, keepMs = 3 * 24 * 60 * 60 * 1000) {
+  try {
+    if (!fs.existsSync(baseDir)) return
+    const now = Date.now()
+    const entries = fs.readdirSync(baseDir, { withFileTypes: true })
+    for (const e of entries) {
+      if (!e.isDirectory()) continue
+      const full = path.join(baseDir, e.name)
+      let ts = Number(e.name)
+      if (!Number.isFinite(ts)) {
+        try {
+          ts = fs.statSync(full).mtimeMs
+        } catch {
+          continue
+        }
+      }
+      if (now - ts > keepMs) {
+        cleanupDirBestEffort(full, 1, 100)
+      }
+    }
+  } catch {}
+}
+
 function findFileRecursive(dir, filenameLower) {
   const entries = fs.readdirSync(dir, { withFileTypes: true })
   for (const e of entries) {
@@ -494,6 +530,95 @@ async function getOverlayRect(driver) {
   `)
 }
 
+async function waitVisible(driver, locator, timeoutMs = 12000) {
+  const el = await driver.wait(until.elementLocated(locator), timeoutMs)
+  await driver.wait(until.elementIsVisible(el), timeoutMs)
+  return el
+}
+
+async function clickButtonByText(driver, label, timeoutMs = 12000) {
+  try {
+    const btn = await waitVisible(
+      driver,
+      By.xpath(`//button[@aria-label='${label}' or normalize-space()='${label}' or .//span[normalize-space()='${label}']]`),
+      timeoutMs,
+    )
+    await btn.click()
+    return btn
+  } catch {
+    const clicked = await driver.executeScript(
+      `
+        const want = arguments[0];
+      const btns = Array.from(document.querySelectorAll('button'));
+      for (const b of btns) {
+        const aria = (b.getAttribute('aria-label') || '').trim();
+        if (aria === want && b.offsetParent !== null && !b.disabled) {
+          b.click();
+          return true;
+        }
+        const txt = (b.innerText || b.textContent || '').trim();
+        if (txt === want && b.offsetParent !== null && !b.disabled) {
+          b.click();
+          return true;
+        }
+        }
+        return false;
+      `,
+      label,
+    )
+    if (!clicked) throw new Error(`Button not found/clickable: ${label}`)
+    return null
+  }
+}
+
+async function clickTopNav(driver, label) {
+  const btn = await waitVisible(
+    driver,
+    By.xpath(`//button[contains(@class,'aoTopNavBtn')][.//span[normalize-space()='${label}']]`),
+    15000,
+  )
+  await btn.click()
+}
+
+async function waitPageTitle(driver, title, timeoutMs = 12000) {
+  await waitVisible(driver, By.xpath(`//div[contains(@class,'aoPagePlaceholderTitle')][normalize-space()='${title}']`), timeoutMs)
+}
+
+async function waitSectionHeading(driver, heading, timeoutMs = 12000) {
+  await waitVisible(driver, By.xpath(`//h3[contains(@class,'aoH3') and normalize-space()='${heading}']`), timeoutMs)
+}
+
+async function openModalAndClose(driver, triggerLabel, modalTitle, closeLabel) {
+  await clickButtonByText(driver, triggerLabel, 15000)
+  const modal = await waitVisible(
+    driver,
+    By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and (normalize-space()='${modalTitle}' or contains(normalize-space(),'${modalTitle}'))]]`),
+    15000,
+  )
+  const closeBtn = await modal.findElement(By.xpath(`.//button[normalize-space()='${closeLabel}' or contains(normalize-space(),'${closeLabel}')]`))
+  await closeBtn.click()
+  await driver.wait(
+    async () => {
+      const found = await driver.findElements(
+        By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and (normalize-space()='${modalTitle}' or contains(normalize-space(),'${modalTitle}'))]]`),
+      )
+      return found.length === 0
+    },
+    10000,
+    `Modal "${modalTitle}" should close after clicking "${closeLabel}"`,
+  )
+}
+
+async function openModalAndCloseOptional(driver, triggerLabel, modalTitle, closeLabel, label) {
+  try {
+    await openModalAndClose(driver, triggerLabel, modalTitle, closeLabel)
+    return true
+  } catch (e) {
+    warnOrFail(`${label} degraded: ${String(e?.message || e)}`)
+    return false
+  }
+}
+
 function centerY(r) {
   return r.top + r.height / 2
 }
@@ -538,16 +663,14 @@ async function main() {
   const appPath = resolveTauriAppPath(buildMode)
   console.log(`[ui:tauri] App: ${appPath}`)
 
-  // Single-instance apps will immediately exit when another instance is already running,
-  // which causes WebDriver session creation to fail. Ensure a clean slate.
-  if (process.platform === 'win32') {
-    killProcessImage('api_router.exe')
-    killProcessImage('API Router.exe')
-  }
-
   const artifactsDir = path.join(repoRoot, 'user-data', 'ui-artifacts', 'tauri')
   ensureDir(artifactsDir)
   const screenshotPath = path.join(artifactsDir, `drag-border-${Date.now()}.png`)
+  const uiRuntimeRoot = path.join(repoRoot, 'user-data', 'ui-check-runtime')
+  ensureDir(uiRuntimeRoot)
+  pruneUiCheckRuntimeDirs(uiRuntimeRoot)
+  const uiProfileDir = path.join(uiRuntimeRoot, String(Date.now()))
+  ensureDir(uiProfileDir)
 
   const driverHost = '127.0.0.1'
   const driverPort = 4444
@@ -569,13 +692,17 @@ async function main() {
         args: tauriDriverArgs,
         cwd: repoRoot,
         keepVisible,
-        env: { ...process.env, UI_TAURI: '1' },
+        env: { ...process.env, UI_TAURI: '1', UI_TAURI_PROFILE_DIR: uiProfileDir },
       })
     : spawn(tauriDriverExe, tauriDriverArgs, {
         cwd: repoRoot,
         windowsHide: !keepVisible,
         stdio: keepVisible ? 'inherit' : 'ignore',
-        env: { ...process.env, UI_TAURI: keepVisible ? undefined : '1' },
+        env: {
+          ...process.env,
+          UI_TAURI: keepVisible ? undefined : '1',
+          UI_TAURI_PROFILE_DIR: uiProfileDir,
+        },
       })
 
   let driver
@@ -619,25 +746,56 @@ async function main() {
     try {
       if (keepVisible) {
         // Make the window shorter to force scroll/clipping scenarios (best-effort).
-        await driver.manage().window().setRect({ width: 980, height: 760 })
+        await driver.manage().window().setRect({ width: 1360, height: 820 })
       } else {
         // Push far off-screen. Keep a normal size so element coordinates stay in-bounds.
         // Some window managers clamp negative coords; try both directions.
         try {
-          await driver.manage().window().setRect({ x: 100000, y: 100000, width: 980, height: 760 })
+          await driver.manage().window().setRect({ x: 100000, y: 100000, width: 1360, height: 820 })
         } catch {}
         try {
-          await driver.manage().window().setRect({ x: -10000, y: -10000, width: 980, height: 760 })
+          await driver.manage().window().setRect({ x: -10000, y: -10000, width: 1360, height: 820 })
         } catch {}
       }
     } catch {}
 
-    // Best-effort: hide the app window itself (some environments ignore off-screen moves).
-    if (!keepVisible && process.platform === 'win32') {
-      try {
-        hideWindowByProcessName('api_router')
-        hideWindowByProcessName('API Router')
-      } catch {}
+    // === Subtest A: main page contracts and key modals ===
+    {
+      console.log('[ui:tauri] Subtest A: contracts start')
+      const bodyTextLen = Number(await driver.executeScript('return (document.body && document.body.innerText ? document.body.innerText.trim().length : 0)'))
+      if (!Number.isFinite(bodyTextLen) || bodyTextLen < 40) {
+        throw new Error(`UI appears blank (document body text length=${bodyTextLen})`)
+      }
+
+      await waitSectionHeading(driver, 'Providers', 45000)
+      await waitSectionHeading(driver, 'Sessions')
+      await waitSectionHeading(driver, 'Events')
+
+      console.log('[ui:tauri] Subtest A: getting started modal')
+      await openModalAndCloseOptional(driver, 'Getting Started', 'Codex config', 'Close', 'Getting Started modal check')
+      console.log('[ui:tauri] Subtest A: gateway token modal')
+      await openModalAndClose(driver, 'Show / Rotate', 'Codex gateway token', 'Close')
+
+      console.log('[ui:tauri] Subtest A: usage statistics page')
+      await clickTopNav(driver, 'Usage Statistics')
+      await waitPageTitle(driver, 'Usage Statistics')
+      await waitVisible(driver, By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Provider Statistics']`), 12000)
+      await openModalAndCloseOptional(driver, 'Daily History', 'Daily History', 'Close', 'Daily History modal check')
+      await openModalAndCloseOptional(driver, 'Base Pricing', 'Base Pricing', 'Close', 'Base Pricing modal check')
+      await openModalAndCloseOptional(driver, 'Pricing Timeline', 'Pricing Timeline', 'Close', 'Pricing Timeline modal check')
+
+      console.log('[ui:tauri] Subtest A: provider switchboard page')
+      await clickTopNav(driver, 'Provider Switchboard')
+      await waitPageTitle(driver, 'Provider Switchboard')
+      await waitVisible(driver, By.xpath(`//span[contains(@class,'aoSwitchQuickTitle') and normalize-space()='Gateway']`), 12000)
+      await waitVisible(driver, By.xpath(`//span[contains(@class,'aoSwitchQuickTitle') and normalize-space()='Official']`), 12000)
+      await waitVisible(driver, By.xpath(`//span[contains(@class,'aoSwitchQuickTitle') and normalize-space()='Direct Provider']`), 12000)
+      await openModalAndClose(driver, 'Configure Dirs', 'Codex CLI dirs', 'Cancel')
+
+      console.log('[ui:tauri] Subtest A: back to dashboard')
+      await clickTopNav(driver, 'Dashboard')
+      await waitSectionHeading(driver, 'Providers')
+      console.log('[ui:tauri] Subtest A: contracts pass')
     }
 
     // Open Config modal.
@@ -660,7 +818,52 @@ async function main() {
     const cards = await driver.findElements(By.css('.aoProviderConfigCard[data-provider]'))
     if (cards.length < 2) throw new Error(`Expected >=2 provider cards, got ${cards.length}`)
 
-    // === Subtest A: drag down one slot (highlight should be the card below) ===
+    // Subtest: Config modal action contracts (key / usage base modals).
+    {
+      const setKeyBtn = await waitVisible(driver, By.css('.aoProviderConfigCard[data-provider] button[title="Set key"]'), 12000)
+      await setKeyBtn.click()
+      await waitVisible(
+        driver,
+        By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Set API key']]`),
+        12000,
+      )
+      await clickButtonByText(driver, 'Cancel', 12000)
+      await driver.wait(
+        async () => {
+          const found = await driver.findElements(
+            By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Set API key']]`),
+          )
+          return found.length === 0
+        },
+        10000,
+        'Set API key modal should close after cancel',
+      )
+
+      const usageBaseBtn = await waitVisible(
+        driver,
+        By.xpath(`(//div[contains(@class,'aoProviderConfigCard') and @data-provider]//button[normalize-space()='Usage Base'])[1]`),
+        12000,
+      )
+      await usageBaseBtn.click()
+      await waitVisible(
+        driver,
+        By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Usage base URL']]`),
+        12000,
+      )
+      await clickButtonByText(driver, 'Cancel', 12000)
+      await driver.wait(
+        async () => {
+          const found = await driver.findElements(
+            By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Usage base URL']]`),
+          )
+          return found.length === 0
+        },
+        10000,
+        'Usage base URL modal should close after cancel',
+      )
+    }
+
+    // === Subtest B: drag down one slot (highlight should be the card below) ===
     {
       const viewportH = Number(await driver.executeScript('return window.innerHeight'))
       const beforeOrder = await getProviderOrder(driver)
@@ -758,17 +961,17 @@ async function main() {
     // Refresh order + references (DOM may have animated during the prior drag).
     const cards2 = await driver.findElements(By.css('.aoProviderConfigCard[data-provider]'))
 
-    // === Subtest B: drag up one slot (highlight should be the card above) ===
+    // === Subtest C: drag up one slot (highlight should be the card above) ===
     {
       const beforeOrder = await getProviderOrder(driver)
       if (beforeOrder.length < 2) {
-        console.log('[ui:tauri] Subtest B skipped (need at least 2 provider cards after Subtest A).')
+        console.log('[ui:tauri] Subtest C skipped (need at least 2 provider cards after Subtest B).')
       } else {
       const viewportH = Number(await driver.executeScript('return window.innerHeight'))
       const draggingName = beforeOrder[1] ?? beforeOrder[beforeOrder.length - 1]
       const aboveName = beforeOrder[0]
       if (!draggingName || !aboveName || draggingName === aboveName) {
-        console.log('[ui:tauri] Subtest B skipped (insufficient distinct cards for drag-up).')
+        console.log('[ui:tauri] Subtest C skipped (insufficient distinct cards for drag-up).')
       } else {
       const draggingCard = await driver.findElement(By.css(`.aoProviderConfigCard[data-provider="${draggingName}"]`))
       const aboveCard = await driver.findElement(By.css(`.aoProviderConfigCard[data-provider="${aboveName}"]`))
@@ -828,7 +1031,7 @@ async function main() {
       if (ph0 < 0) {
         const b64 = await driver.takeScreenshot()
         fs.writeFileSync(screenshotPath.replace('.png', `-up-no-drag.png`), Buffer.from(b64, 'base64'))
-        warnOrFail('Subtest B degraded (drag did not start).')
+        warnOrFail('Subtest C degraded (drag did not start).')
         await driver.actions({ async: true }).release().perform()
         await new Promise((r) => setTimeout(r, 150))
       } else {
@@ -891,7 +1094,7 @@ async function main() {
       }
     }
 
-    // === Subtest C: drag while scrolling (overlay should stay pinned under cursor) ===
+    // === Subtest D: drag while scrolling (overlay should stay pinned under cursor) ===
     {
       const scrollInfo = await driver.executeScript(`
         const body = document.querySelector('.aoModalBody');
@@ -899,7 +1102,7 @@ async function main() {
         return { scrollTop: body.scrollTop, scrollHeight: body.scrollHeight, clientHeight: body.clientHeight };
       `)
       if (!scrollInfo || !(scrollInfo.scrollHeight > scrollInfo.clientHeight + 2)) {
-        console.log('[ui:tauri] Subtest C skipped (modal body not scrollable).')
+        console.log('[ui:tauri] Subtest D skipped (modal body not scrollable).')
       } else {
         const viewportH = Number(await driver.executeScript('return window.innerHeight'))
         const beforeOrder = await getProviderOrder(driver)
@@ -970,7 +1173,7 @@ async function main() {
       }
     }
 
-    // === Subtest D: autoscroll up should not "snap" to top instantly ===
+    // === Subtest E: autoscroll up should not "snap" to top instantly ===
     {
       const info = await driver.executeScript(`
         const body = document.querySelector('.aoModalBody');
@@ -978,7 +1181,7 @@ async function main() {
         return { scrollHeight: body.scrollHeight, clientHeight: body.clientHeight };
       `)
       if (!info || !(info.scrollHeight > info.clientHeight + 2)) {
-        console.log('[ui:tauri] Subtest D skipped (modal body not scrollable).')
+        console.log('[ui:tauri] Subtest E skipped (modal body not scrollable).')
       } else {
         // Put us somewhere in the middle so there is room to scroll up.
         const startTop = Number(
@@ -1048,6 +1251,9 @@ async function main() {
     } catch {}
     try {
       if (fs.existsSync(msedgedriverLogPath)) console.log(`[ui:tauri] EdgeDriver log: ${msedgedriverLogPath}`)
+    } catch {}
+    try {
+      cleanupDirBestEffort(uiProfileDir)
     } catch {}
   }
 }
