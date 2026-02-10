@@ -2292,6 +2292,25 @@ fn set_preferred_provider(
     Ok(())
 }
 
+fn session_is_agent(state: &app_state::AppState, codex_session_id: &str) -> bool {
+    if state
+        .gateway
+        .client_sessions
+        .read()
+        .get(codex_session_id)
+        .is_some_and(|s| s.is_agent)
+    {
+        return true;
+    }
+    // Agent rows are pruned from runtime sessions when idle, so fall back to rollout discovery.
+    let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
+    let expected = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
+    let port = state.gateway.cfg.read().listen.port;
+    crate::platform::windows_terminal::discover_sessions_using_router(port, expected)
+        .into_iter()
+        .any(|s| s.is_agent && s.codex_session_id.as_deref() == Some(codex_session_id))
+}
+
 #[tauri::command]
 fn set_session_preferred_provider(
     state: tauri::State<'_, app_state::AppState>,
@@ -2303,13 +2322,7 @@ fn set_session_preferred_provider(
     if codex_session_id.is_empty() {
         return Err("codex_session_id is required".to_string());
     }
-    if state
-        .gateway
-        .client_sessions
-        .read()
-        .get(&codex_session_id)
-        .is_some_and(|s| s.is_agent)
-    {
+    if session_is_agent(&state, &codex_session_id) {
         return Err("agent sessions cannot set preferred provider".to_string());
     }
     let prev_provider: Option<String> = {
