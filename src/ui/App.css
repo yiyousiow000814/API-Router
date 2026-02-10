@@ -1016,6 +1016,59 @@
   max-height: min(82vh, 880px);
 }
 
+.aoUsageHistoryTableSurface {
+  --ao-history-scrollbar-size: 12px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(248, 250, 253, 0.94);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  overflow: hidden;
+}
+
+.aoUsageHistoryTableHead {
+  flex: 0 0 auto;
+  padding-right: var(--ao-history-scrollbar-size);
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgb(242, 244, 247);
+}
+
+.aoUsageHistoryTableWrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(13, 18, 32, 0.34) transparent;
+}
+
+.aoUsageHistoryTableWrap::-webkit-scrollbar {
+  width: var(--ao-history-scrollbar-size);
+}
+
+.aoUsageHistoryTableWrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.aoUsageHistoryTableWrap::-webkit-scrollbar-thumb {
+  background: rgba(13, 18, 32, 0.36);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+.aoUsageHistoryTableWrap::-webkit-scrollbar-thumb:hover {
+  background: rgba(13, 18, 32, 0.52);
+}
+
+.aoUsageHistoryTableWrap::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 .aoUsageHistoryTable {
   width: 100%;
   min-width: 0;
@@ -1023,9 +1076,6 @@
   border-collapse: separate;
   border-spacing: 0;
   font-size: 12px;
-  border: 1px solid rgba(13, 18, 32, 0.12);
-  border-radius: 12px;
-  overflow: hidden;
 }
 
 .aoUsageHistoryColDate {
@@ -1077,12 +1127,16 @@
   white-space: nowrap;
 }
 
+.aoUsageHistoryTable td {
+  background: rgba(255, 255, 255, 0.72);
+}
+
 .aoUsageHistoryDateCell {
   font-variant-numeric: tabular-nums;
 }
 
 .aoUsageHistoryTable th {
-  background: rgba(13, 18, 32, 0.04);
+  background: rgb(242, 244, 247);
   color: rgba(13, 18, 32, 0.72);
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1094,9 +1148,10 @@
 }
 
 .aoUsageHistoryInput {
-  width: 92px;
+  width: 66px;
+  max-width: 100%;
   height: 28px;
-  padding: 0 8px;
+  padding: 0 6px;
   font-size: 12px;
   appearance: textfield;
   -moz-appearance: textfield;
@@ -1111,7 +1166,8 @@
 .aoUsageHistoryValueCell {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
+  min-width: 0;
 }
 
 .aoUsageHistoryEditBtn {
@@ -3211,6 +3267,15 @@
 .aoUsagePricingModal .aoModalBody {
   overflow-x: hidden;
   padding-right: 0;
+}
+
+/* Daily History keeps header fixed while only rows scroll inside the table area. */
+.aoUsageHistoryModal .aoModalBody {
+  overflow: hidden;
+  padding-right: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .aoModalWide.aoUsageScheduleModal {
