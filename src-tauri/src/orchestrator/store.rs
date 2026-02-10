@@ -573,6 +573,86 @@ impl Store {
             .collect()
     }
 
+    pub fn backfill_api_key_ref_fields(
+        &self,
+        provider_api_key_ref: &std::collections::BTreeMap<String, String>,
+    ) -> usize {
+        fn has_key_ref(day: &Value) -> bool {
+            day.get("api_key_ref")
+                .and_then(|v| v.as_str())
+                .map(|s| {
+                    let t = s.trim();
+                    !t.is_empty() && t != "-"
+                })
+                .unwrap_or(false)
+        }
+
+        let mut updated = 0usize;
+
+        for res in self.db.scan_prefix(b"usage_req:") {
+            let Ok((k, v)) = res else {
+                continue;
+            };
+            let Ok(mut row) = serde_json::from_slice::<Value>(&v) else {
+                continue;
+            };
+            if has_key_ref(&row) {
+                continue;
+            }
+            let provider = row
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            let Some(provider) = provider else {
+                continue;
+            };
+            let key_ref = provider_api_key_ref
+                .get(provider)
+                .cloned()
+                .unwrap_or_else(|| "-".to_string());
+            row["api_key_ref"] = serde_json::json!(key_ref);
+            let _ = self
+                .db
+                .insert(k, serde_json::to_vec(&row).unwrap_or_default());
+            updated = updated.saturating_add(1);
+        }
+
+        for res in self.db.scan_prefix(b"spend_day:") {
+            let Ok((k, v)) = res else {
+                continue;
+            };
+            let Ok(mut row) = serde_json::from_slice::<Value>(&v) else {
+                continue;
+            };
+            if has_key_ref(&row) {
+                continue;
+            }
+            let provider = row
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            let Some(provider) = provider else {
+                continue;
+            };
+            let key_ref = provider_api_key_ref
+                .get(provider)
+                .cloned()
+                .unwrap_or_else(|| "-".to_string());
+            row["api_key_ref"] = serde_json::json!(key_ref);
+            let _ = self
+                .db
+                .insert(k, serde_json::to_vec(&row).unwrap_or_default());
+            updated = updated.saturating_add(1);
+        }
+
+        if updated > 0 {
+            let _ = self.db.flush();
+        }
+        updated
+    }
+
     pub fn list_usage_days(&self, provider: &str) -> Vec<Value> {
         let prefix = format!("usage_day:{provider}:");
         self.db

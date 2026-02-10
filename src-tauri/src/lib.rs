@@ -819,13 +819,6 @@ fn get_usage_statistics(
     let records = state.gateway.store.list_usage_requests(500_000);
     let quota = state.gateway.store.list_quota_snapshots();
     let provider_pricing = state.secrets.list_provider_pricing();
-    let mut provider_default_api_key_ref: BTreeMap<String, String> = BTreeMap::new();
-    for provider_name in state.gateway.cfg.read().providers.keys() {
-        provider_default_api_key_ref.insert(
-            provider_name.clone(),
-            provider_api_key_ref(&state, provider_name),
-        );
-    }
 
     let mut provider_tokens_24h: BTreeMap<String, u64> = BTreeMap::new();
     let mut provider_active_hour_buckets: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
@@ -917,10 +910,9 @@ fn get_usage_statistics(
             .get("api_key_ref")
             .and_then(|v| v.as_str())
             .map(|s| s.trim())
-            .filter(|s| !s.is_empty() && *s != "-")
-            .map(|s| s.to_string())
-            .or_else(|| provider_default_api_key_ref.get(&provider).cloned())
-            .unwrap_or_else(|| "-".to_string());
+            .filter(|s| !s.is_empty())
+            .unwrap_or("-")
+            .to_string();
 
         total_requests = total_requests.saturating_add(1);
         total_tokens = total_tokens.saturating_add(total_tokens_row);
@@ -1839,8 +1831,6 @@ fn get_spend_history(
         {
             continue;
         }
-        let fallback_api_key_ref = provider_api_key_ref(&state, &provider_name);
-
         let mut usage_by_day: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
         for day in state.gateway.store.list_usage_days(&provider_name) {
             let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
@@ -2067,7 +2057,7 @@ fn get_spend_history(
                 })
                 .or_else(|| tracked_api_key_ref_by_day.get(&day_key).cloned())
                 .or_else(|| package_profile.as_ref().and_then(|(_, _, key_ref)| key_ref.clone()))
-                .unwrap_or_else(|| fallback_api_key_ref.clone());
+                .unwrap_or_else(|| "-".to_string());
             rows.push(serde_json::json!({
                 "provider": provider_name,
                 "api_key_ref": history_api_key_ref,

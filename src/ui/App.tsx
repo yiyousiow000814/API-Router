@@ -2160,10 +2160,7 @@ function newScheduleDraft(
         providers: group.providers,
         rows: group.rows,
         displayName: group.providers.join(' / '),
-        detailLabel:
-          group.apiKeyRef && group.apiKeyRef !== '-'
-            ? group.apiKeyRef
-            : providerApiKeyLabel(group.providers[0] ?? ''),
+        detailLabel: group.apiKeyRef && group.apiKeyRef !== '-' ? group.apiKeyRef : '-',
         requests,
         totalTokens,
         tokensPerRequest: requests > 0 ? totalTokens / requests : null,
@@ -4224,7 +4221,7 @@ requires_openai_auth = true`}
                         <tr key={key}>
                           <td className="aoUsageHistoryDateCell">{row.day_key}</td>
                           <td className="aoUsageProviderName">{row.provider}</td>
-                          <td>{(row.api_key_ref ?? providerApiKeyLabel(row.provider)).trim() || providerApiKeyLabel(row.provider)}</td>
+                          <td>{(row.api_key_ref ?? '-').trim() || '-'}</td>
                           <td>{(row.req_count ?? 0).toLocaleString()}</td>
                           <td>{(row.total_tokens ?? 0).toLocaleString()}</td>
                           <td>
