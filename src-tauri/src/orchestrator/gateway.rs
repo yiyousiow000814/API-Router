@@ -842,6 +842,7 @@ async fn responses(
                             resp,
                             st.clone(),
                             provider_name,
+                            api_key_ref_from_raw(api_key.as_deref()),
                             previous_response_id.clone(),
                             body_for_provider.clone(),
                             codex_session_key.clone(),
@@ -941,9 +942,11 @@ async fn responses(
                         .to_string();
                     let text = extract_text_from_responses(&upstream_json);
                     let response_obj = upstream_json;
+                    let api_key_ref = api_key_ref_from_raw(api_key.as_deref());
 
                     // Persist the exchange so we can keep continuity if provider changes later.
-                    st.store.record_success(&provider_name, &response_obj);
+                    st.store
+                        .record_success(&provider_name, &response_obj, Some(&api_key_ref));
 
                     // Avoid spamming the event log for routine successful requests; only surface
                     // interesting routing outcomes (failover / non-preferred).
@@ -1092,6 +1095,28 @@ fn bearer_token(auth: &str) -> Option<&str> {
     None
 }
 
+fn api_key_ref_from_raw(key: Option<&str>) -> String {
+    let raw = key.unwrap_or("").trim();
+    if raw.is_empty() {
+        return "-".to_string();
+    }
+    let chars: Vec<char> = raw.chars().collect();
+    if chars.len() < 10 {
+        return "set".to_string();
+    }
+    let start_len = std::cmp::min(6, chars.len().saturating_sub(4));
+    let start: String = chars.iter().take(start_len).collect();
+    let end: String = chars
+        .iter()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{start}******{end}")
+}
+
 fn redact_url_for_logs(url: &reqwest::Url) -> String {
     // Avoid logging secrets in query strings. Keep only scheme://host[:port]/path.
     let scheme = url.scheme();
@@ -1190,6 +1215,7 @@ fn passthrough_sse_and_persist(
     upstream_resp: reqwest::Response,
     st: GatewayState,
     provider_name: String,
+    api_key_ref: String,
     _parent_id: Option<String>,
     _request_json: Value,
     _session_key: Option<String>,
@@ -1209,6 +1235,7 @@ fn passthrough_sse_and_persist(
     // Persist on drop isn't guaranteed; do it after stream completes.
     let st2 = st.clone();
     let provider2 = provider_name.clone();
+    let api_key_ref2 = api_key_ref.clone();
     let tap3 = tap.clone();
     let stream = async_stream::stream! {
         let mut forwarded_bytes: u64 = 0;
@@ -1301,7 +1328,8 @@ fn passthrough_sse_and_persist(
             }
         }
         if let Some((_rid, resp_obj)) = tap3.lock().take_completed() {
-            st2.store.record_success(&provider2, &resp_obj);
+            st2.store
+                .record_success(&provider2, &resp_obj, Some(&api_key_ref2));
         }
     };
 

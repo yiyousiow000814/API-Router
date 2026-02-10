@@ -2038,6 +2038,11 @@ function newScheduleDraft(
     () => [...usageCatalogModels].sort((a, b) => a.localeCompare(b)),
     [usageCatalogModels],
   )
+  const usageProviderRowKey = (row: UsageStatistics['summary']['by_provider'][number]) => {
+    const provider = String(row.provider)
+    const keyRef = String(row.api_key_ref ?? '').trim() || '-'
+    return `${provider}::${keyRef}`
+  }
   const usageSharedCostView = useMemo(() => {
     const isSharedAccountSource = (sourceRaw?: string | null) => {
       const source = (sourceRaw ?? '').trim().toLowerCase()
@@ -2062,25 +2067,28 @@ function newScheduleDraft(
       keyMap.set(apiKeyRef, arr)
     })
 
-    const zeroProviders = new Set<string>()
+    const zeroRowKeys = new Set<string>()
     for (const rows of keyMap.values()) {
       if (rows.length <= 1) continue
       const keeper =
         [...rows].sort(
           (a, b) =>
             (b.requests ?? 0) - (a.requests ?? 0) ||
+            String(a.api_key_ref ?? '').localeCompare(String(b.api_key_ref ?? '')) ||
             String(a.provider).localeCompare(String(b.provider)),
         )[0] ?? rows[0]
       rows.forEach((row) => {
-        if (row.provider !== keeper.provider) zeroProviders.add(String(row.provider))
+        if (usageProviderRowKey(row) !== usageProviderRowKey(keeper)) {
+          zeroRowKeys.add(usageProviderRowKey(row))
+        }
       })
     }
 
-    const effectiveDailyByProvider = new Map<string, number | null>()
-    const effectiveTotalByProvider = new Map<string, number | null>()
+    const effectiveDailyByRowKey = new Map<string, number | null>()
+    const effectiveTotalByRowKey = new Map<string, number | null>()
     usageByProvider.forEach((row) => {
-      const provider = String(row.provider)
-      const zeroed = zeroProviders.has(provider)
+      const rowKey = usageProviderRowKey(row)
+      const zeroed = zeroRowKeys.has(rowKey)
       const daily = zeroed
         ? 0
         : row.estimated_daily_cost_usd != null && Number.isFinite(row.estimated_daily_cost_usd)
@@ -2091,14 +2099,14 @@ function newScheduleDraft(
         : row.total_used_cost_usd != null && Number.isFinite(row.total_used_cost_usd)
           ? Number(row.total_used_cost_usd)
           : null
-      effectiveDailyByProvider.set(provider, daily)
-      effectiveTotalByProvider.set(provider, total)
+      effectiveDailyByRowKey.set(rowKey, daily)
+      effectiveTotalByRowKey.set(rowKey, total)
     })
 
     return {
-      zeroProviders,
-      effectiveDailyByProvider,
-      effectiveTotalByProvider,
+      zeroRowKeys,
+      effectiveDailyByRowKey,
+      effectiveTotalByRowKey,
     }
   }, [usageByProvider])
   const usageProviderDisplayGroups = useMemo(() => {
@@ -2138,17 +2146,19 @@ function newScheduleDraft(
         0,
       )
       const effectiveDailyValues = group.rows
-        .map((row) => usageSharedCostView.effectiveDailyByProvider.get(String(row.provider)))
+        .map((row) => usageSharedCostView.effectiveDailyByRowKey.get(usageProviderRowKey(row)))
         .filter((value): value is number => value != null && Number.isFinite(value))
       const effectiveTotalValues = group.rows
-        .map((row) => usageSharedCostView.effectiveTotalByProvider.get(String(row.provider)))
+        .map((row) => usageSharedCostView.effectiveTotalByRowKey.get(usageProviderRowKey(row)))
         .filter((value): value is number => value != null && Number.isFinite(value))
       const pricingSources = Array.from(
         new Set(group.rows.map((row) => String(row.pricing_source ?? '').trim()).filter(Boolean)),
       )
+      const groupId = `${group.providers.join('|')}::${group.apiKeyRef || '-'}`
       return {
-        id: group.providers.join('|'),
+        id: groupId,
         providers: group.providers,
+        rows: group.rows,
         displayName: group.providers.join(' / '),
         detailLabel: group.apiKeyRef && group.apiKeyRef !== '-' ? group.apiKeyRef : 'api key',
         requests,
@@ -2174,14 +2184,14 @@ function newScheduleDraft(
     })
   }, [usageByProvider, usageSharedCostView])
   const usagePricedRequestCount = usageByProvider.reduce((sum, row) => {
-    const total = usageSharedCostView.effectiveTotalByProvider.get(String(row.provider))
+    const total = usageSharedCostView.effectiveTotalByRowKey.get(usageProviderRowKey(row))
     if (total == null || !Number.isFinite(total) || total <= 0) {
       return sum
     }
     return sum + (row.requests ?? 0)
   }, 0)
   const usageDedupedTotalUsedUsd = usageByProvider.reduce((sum, row) => {
-    const total = usageSharedCostView.effectiveTotalByProvider.get(String(row.provider))
+    const total = usageSharedCostView.effectiveTotalByRowKey.get(usageProviderRowKey(row))
     if (total != null && Number.isFinite(total) && total > 0) return sum + total
     return sum
   }, 0)
@@ -2234,14 +2244,14 @@ function newScheduleDraft(
       avgUsdPerReq: mean(usageByProvider.map((row) => row.estimated_avg_request_cost_usd)),
       avgUsdPerMillion: mean(usageByProvider.map((row) => row.usd_per_million_tokens)),
       avgEstDaily: mean(
-        usageByProvider.map((row) =>
-          usageSharedCostView.effectiveDailyByProvider.get(String(row.provider)),
-        ),
+        usageByProvider
+          .filter((row) => !usageSharedCostView.zeroRowKeys.has(usageProviderRowKey(row)))
+          .map((row) => usageSharedCostView.effectiveDailyByRowKey.get(usageProviderRowKey(row))),
       ),
       avgTotalUsed: mean(
-        usageByProvider.map((row) =>
-          usageSharedCostView.effectiveTotalByProvider.get(String(row.provider)),
-        ),
+        usageByProvider
+          .filter((row) => !usageSharedCostView.zeroRowKeys.has(usageProviderRowKey(row)))
+          .map((row) => usageSharedCostView.effectiveTotalByRowKey.get(usageProviderRowKey(row))),
       ),
     }
   }, [usageByProvider, usageSharedCostView])
@@ -2292,7 +2302,7 @@ function newScheduleDraft(
   }, [usageScheduleSaveError, usageScheduleSaveState])
   const usageAnomalies = useMemo(() => {
     const messages: string[] = []
-    const highCostProviders = new Set<string>()
+    const highCostRowKeys = new Set<string>()
     const isPerRequestComparableSource = (sourceRaw?: string | null) => {
       const source = (sourceRaw ?? '').trim().toLowerCase()
       if (!source || source === 'none') return false
@@ -2362,7 +2372,7 @@ function newScheduleDraft(
       priced.forEach((row) => {
         const value = row.estimated_avg_request_cost_usd as number
         if (priceMedian > 0 && value >= priceMedian * 2 && value - priceMedian >= 0.05) {
-          highCostProviders.add(row.provider)
+          highCostRowKeys.add(usageProviderRowKey(row))
           messages.push(
             `High $/req: ${row.provider} at ${fmtUsdMaybe(value)} vs median ${fmtUsdMaybe(priceMedian)}`,
           )
@@ -2370,7 +2380,7 @@ function newScheduleDraft(
       })
     }
 
-    return { messages, highCostProviders }
+    return { messages, highCostRowKeys }
   }, [usageTimeline, usageByProvider, usageStatistics?.window_hours])
 
   useEffect(() => {
@@ -3678,6 +3688,9 @@ function newScheduleDraft(
                     >
                       Pricing Timeline
                     </button>
+                    <span className="aoUsageActionsSep" aria-hidden="true">
+                      |
+                    </span>
                     <button
                       className="aoTinyBtn"
                       onClick={() => {
@@ -3690,7 +3703,7 @@ function newScheduleDraft(
                         })
                       }}
                     >
-                      {usageProviderShowDetails ? 'Hide Details' : 'Show Details'}
+                      {usageProviderShowDetails ? 'Hide' : 'Show'}
                     </button>
                   </div>
                 </div>
@@ -3722,8 +3735,8 @@ function newScheduleDraft(
                     </thead>
                     <tbody>
                       {usageProviderDisplayGroups.flatMap((group) => {
-                        const hasAnomaly = group.providers.some((provider) =>
-                          usageAnomalies.highCostProviders.has(provider),
+                        const hasAnomaly = group.rows.some((row) =>
+                          usageAnomalies.highCostRowKeys.has(usageProviderRowKey(row)),
                         )
                         if (!usageProviderShowDetails) {
                           return [

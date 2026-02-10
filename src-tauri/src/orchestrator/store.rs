@@ -259,7 +259,7 @@ impl Store {
         let _ = self.db.flush();
     }
 
-    pub fn record_success(&self, provider: &str, response_obj: &Value) {
+    pub fn record_success(&self, provider: &str, response_obj: &Value, api_key_ref: Option<&str>) {
         let (
             input_tokens,
             output_tokens,
@@ -282,6 +282,7 @@ impl Store {
             provider,
             &Self::extract_model(response_obj),
             increments,
+            api_key_ref,
             true,
         );
     }
@@ -750,6 +751,7 @@ impl Store {
         provider: &str,
         model: &str,
         increments: UsageTokenIncrements,
+        api_key_ref: Option<&str>,
         flush: bool,
     ) {
         let ts = unix_ms();
@@ -757,6 +759,7 @@ impl Store {
         let key = format!("usage_req:{ts}:{id}");
         let v = serde_json::json!({
             "provider": provider,
+            "api_key_ref": api_key_ref.unwrap_or("-"),
             "model": model,
             "unix_ms": ts,
             "input_tokens": increments.input_tokens,

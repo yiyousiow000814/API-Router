@@ -473,6 +473,28 @@ fn store_quota_snapshot_silent(st: &GatewayState, provider_name: &str, snap: &Qu
 }
 
 fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
+    fn api_key_ref_from_raw(key: Option<&str>) -> String {
+        let raw = key.unwrap_or("").trim();
+        if raw.is_empty() {
+            return "-".to_string();
+        }
+        let chars: Vec<char> = raw.chars().collect();
+        if chars.len() < 10 {
+            return "set".to_string();
+        }
+        let start_len = std::cmp::min(6, chars.len().saturating_sub(4));
+        let start: String = chars.iter().take(start_len).collect();
+        let end: String = chars
+            .iter()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        format!("{start}******{end}")
+    }
+
     if snap.kind != UsageKind::BudgetInfo {
         return;
     }
@@ -485,6 +507,7 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
     };
 
     let now = snap.updated_at_unix_ms;
+    let api_key_ref = api_key_ref_from_raw(st.secrets.get_provider_key(provider_name).as_deref());
     let existing_state = st.store.get_spend_state(provider_name);
 
     let mut tracking_started_unix_ms = existing_state
@@ -509,6 +532,7 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
         last_seen_daily_spent = current_daily_spent;
         let day = serde_json::json!({
             "provider": provider_name,
+            "api_key_ref": api_key_ref.clone(),
             "started_at_unix_ms": open_day_started_at_unix_ms,
             "ended_at_unix_ms": Value::Null,
             // First snapshot of the day already includes spend that happened before refresh.
@@ -539,6 +563,7 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
             open_day_started_at_unix_ms = now;
             let day = serde_json::json!({
                 "provider": provider_name,
+                "api_key_ref": api_key_ref.clone(),
                 "started_at_unix_ms": open_day_started_at_unix_ms,
                 "ended_at_unix_ms": Value::Null,
                 // New day baseline can be non-zero if first refresh happens after early usage.
@@ -557,6 +582,7 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
                 .unwrap_or_else(|| {
                     serde_json::json!({
                         "provider": provider_name,
+                        "api_key_ref": api_key_ref.clone(),
                         "started_at_unix_ms": open_day_started_at_unix_ms,
                         "ended_at_unix_ms": Value::Null,
                         "tracked_spend_usd": 0.0,

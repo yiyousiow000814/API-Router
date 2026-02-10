@@ -750,6 +750,12 @@
   background: rgba(245, 99, 110, 0.08);
 }
 
+.aoUsageActionsSep {
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.28);
+  margin: 0 -2px;
+}
+
 .aoUsagePricingGrid {
   display: grid;
   gap: 8px;
