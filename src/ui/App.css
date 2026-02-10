@@ -1017,7 +1017,10 @@
 }
 
 .aoUsageHistoryTableSurface {
-  --ao-history-scrollbar-size: 12px;
+  --ao-history-scrollbar-size: 10px;
+  --ao-history-scroll-track: rgba(13, 18, 32, 0.08);
+  --ao-history-scroll-thumb: rgba(84, 95, 118, 0.52);
+  --ao-history-scroll-thumb-hover: rgba(60, 72, 98, 0.62);
   flex: 1;
   min-height: 0;
   display: flex;
@@ -1043,7 +1046,7 @@
   background: transparent;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
-  scrollbar-color: rgba(13, 18, 32, 0.34) transparent;
+  scrollbar-color: var(--ao-history-scroll-thumb) var(--ao-history-scroll-track);
 }
 
 .aoUsageHistoryTableWrap::-webkit-scrollbar {
@@ -1051,18 +1054,20 @@
 }
 
 .aoUsageHistoryTableWrap::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.aoUsageHistoryTableWrap::-webkit-scrollbar-thumb {
-  background: rgba(13, 18, 32, 0.36);
-  border: 3px solid transparent;
-  background-clip: padding-box;
+  background: var(--ao-history-scroll-track);
   border-radius: 999px;
 }
 
+.aoUsageHistoryTableWrap::-webkit-scrollbar-thumb {
+  background: var(--ao-history-scroll-thumb);
+  border: 2px solid var(--ao-history-scroll-track);
+  background-clip: padding-box;
+  border-radius: 999px;
+  transition: background-color 120ms ease;
+}
+
 .aoUsageHistoryTableWrap::-webkit-scrollbar-thumb:hover {
-  background: rgba(13, 18, 32, 0.52);
+  background: var(--ao-history-scroll-thumb-hover);
 }
 
 .aoUsageHistoryTableWrap::-webkit-scrollbar-corner {
