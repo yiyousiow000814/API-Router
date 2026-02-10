@@ -1,0 +1,552 @@
+.aoRoot {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable both-edges;
+  padding: 0 18px;
+}
+
+.aoScale {
+  transform: none;
+}
+
+.aoShell {
+  width: min(1240px, 100%);
+  min-width: 1120px;
+  min-height: 100%;
+  margin: -1px auto 0;
+  padding: 0 14px 12px;
+  border: 1px solid var(--ao-line);
+  border-top: none;
+  border-radius: 0;
+  background: linear-gradient(180deg, var(--ao-card2), var(--ao-card));
+  box-shadow: var(--ao-shadow);
+  position: relative;
+}
+
+.aoShell::before {
+  content: "";
+  position: absolute;
+  inset: 0 -1px -1px -1px;
+  border-radius: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(115deg, rgba(40, 199, 217, 0.22), transparent 30%),
+    linear-gradient(245deg, rgba(242, 193, 77, 0.18), transparent 34%),
+    linear-gradient(0deg, rgba(255, 94, 125, 0.12), transparent 38%);
+  mask:
+    linear-gradient(#000, #000) content-box,
+    linear-gradient(#000, #000);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  padding: 1px;
+}
+
+.aoHero {
+  display: grid;
+  /* Make Routing a bit narrower, and Codex a bit wider so "Reset in ..." fits on one line. */
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.85fr) minmax(0, 1.05fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.aoHeroStatus {
+  order: 1;
+}
+
+.aoHeroRouting {
+  order: 2;
+}
+
+.aoHeroCodex {
+  order: 3;
+}
+
+.aoHeroCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.aoHeroActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.aoStatGrid {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  row-gap: 8px;
+  column-gap: 10px;
+  font-size: 13px;
+}
+
+.aoTokenRow {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: center;
+}
+
+.aoTokenRowRight {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.aoResetHint {
+  white-space: nowrap;
+}
+
+.aoStatStack {
+  display: grid;
+  gap: 8px;
+}
+
+.aoLimitGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.aoLimitCard {
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.06);
+  background: rgba(13, 18, 32, 0.025);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.aoLimitValue {
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoValSmall {
+  font-size: 12px;
+}
+
+.aoDivider {
+  height: 1px;
+  background: rgba(13, 18, 32, 0.08);
+  border-radius: 999px;
+  margin: 4px 0 2px;
+}
+
+.aoDividerSoft {
+  background: rgba(13, 18, 32, 0.06);
+  margin: 8px 0 6px;
+}
+
+.aoRowWrap {
+  flex-wrap: wrap;
+}
+
+.aoStatBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(13, 18, 32, 0.03);
+  border: 1px solid rgba(13, 18, 32, 0.06);
+}
+
+.aoStatLabel {
+  color: rgba(13, 18, 32, 0.6);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.aoStatValue {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoRoutingGrid {
+  display: grid;
+  gap: 10px;
+}
+
+.aoRoutingRow {
+  display: grid;
+  gap: 6px;
+}
+
+.aoMiniLabel {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.52);
+}
+
+.aoBrand {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 0 -14px 10px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.48);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  backdrop-filter: blur(14px) saturate(130%);
+}
+
+.aoBrandLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.aoBrandLeft > div {
+  transform: translateY(1px);
+}
+
+.aoBrandRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: center;
+}
+
+.aoTopNav {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aoTopNavBtn {
+  height: 30px;
+  border-radius: 11px;
+  border: none;
+  background: transparent;
+  color: rgba(13, 18, 32, 0.62);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  transition: background 120ms ease;
+}
+
+.aoTopNavBtn:hover {
+  background: rgba(255, 255, 255, 0.26);
+  color: rgba(13, 18, 32, 0.82);
+}
+
+.aoTopNavBtn.is-active {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.32), rgba(242, 193, 77, 0.24));
+  color: rgba(13, 18, 32, 0.94);
+  font-weight: 680;
+  box-shadow: inset 0 0 0 1px rgba(40, 199, 217, 0.28);
+}
+
+.aoTopNavBtn.is-active:hover {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.4), rgba(242, 193, 77, 0.3));
+}
+
+.aoTopNavIcon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.aoPagePlaceholder {
+  min-height: 260px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+}
+
+.aoPagePlaceholderTitle {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.85);
+}
+
+.aoUsageStatsPage {
+  min-height: 320px;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.aoUsageStatsHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoUsageStatsActions {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aoUsageFilterCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+  padding: 8px 10px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.aoUsageFilterSection {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.aoUsageFilterSectionCompact {
+  align-content: start;
+}
+
+.aoUsageFilterSectionHead {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.aoUsageFilterChips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.aoUsageFilterChip {
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(13, 18, 32, 0.82);
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 620;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.aoUsageFilterChip:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.45);
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoUsageFilterChip.is-active {
+  border-color: rgba(33, 168, 183, 0.58);
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.24), rgba(242, 193, 77, 0.2));
+  color: rgba(13, 18, 32, 0.94);
+}
+
+.aoUsageFilterChip:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.aoUsageAnomalyBanner {
+  border: 1px solid rgba(214, 74, 86, 0.34);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(245, 99, 110, 0.1), rgba(245, 207, 84, 0.08));
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.aoUsageAnomalyText {
+  font-size: 12px;
+  color: rgba(145, 12, 43, 0.9);
+  font-weight: 620;
+}
+
+.aoUsageActionBtn {
+  min-width: 64px;
+  flex: 0 0 auto;
+  line-height: 1;
+  justify-content: center;
+}
+
+.aoUsageActionBtnWindow {
+  width: 46px;
+  padding: 0;
+}
+
+.aoUsageActionBtnRefresh {
+  width: 86px;
+  padding: 0;
+}
+
+.aoUsageActionBtnLoading {
+  opacity: 0.85;
+  cursor: wait;
+}
+
+.aoUsageWindowBtnActive {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.3), rgba(242, 193, 77, 0.24));
+  border-color: rgba(13, 18, 32, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.58);
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoUsageKpiGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.aoUsageKpiCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.aoUsageKpiValue {
+  font-size: 24px;
+  font-weight: 760;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: rgba(13, 18, 32, 0.92);
+}
+
+.aoUsageKpiValueSmall {
+  font-size: 20px;
+}
+
+.aoUsageFactsCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageFactsTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.aoUsageFactsTable th,
+.aoUsageFactsTable td {
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+  padding: 8px 10px;
+  font-size: 12px;
+  text-align: left;
+}
+
+.aoUsageFactsTable th {
+  width: 18%;
+  color: rgba(13, 18, 32, 0.6);
+  letter-spacing: 0.02em;
+  font-weight: 650;
+}
+
+.aoUsageFactsTable td {
+  width: 32%;
+  color: rgba(13, 18, 32, 0.86);
+  font-weight: 620;
+}
+
+.aoUsageChartsGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.aoUsageChartCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.aoUsageTimelineChartWrap {
+  display: grid;
+  gap: 8px;
+  position: relative;
+}
+
+.aoUsageTimelineSvg {
+  width: 100%;
+  height: 170px;
+  border: 1px solid rgba(13, 18, 32, 0.07);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(13, 18, 32, 0.02));
+}
+
+.aoUsageTimelineAxis {
+  stroke: rgba(13, 18, 32, 0.24);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.aoUsageTimelineBarRect {
+  fill: rgba(40, 199, 217, 0.82);
+  pointer-events: none;
+}
+
+.aoUsageTimelineLine {
+  fill: none;
+  stroke: rgba(242, 193, 77, 0.95);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.aoUsageTimelineDot {
+  fill: rgba(242, 193, 77, 0.96);
+  pointer-events: none;
+}
+
+.aoUsageTimelineHoverBand {
+  fill: rgba(0, 0, 0, 0.001);
+  cursor: crosshair;
+}
+
+.aoUsageTimelineLegend {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.aoUsageLegendItem {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.72);
+  letter-spacing: 0.02em;
+}
