@@ -18,7 +18,6 @@ use axum::routing::{get, post};
 use axum::Router;
 use bytes::Bytes;
 use parking_lot::RwLock;
-use reqwest::Url;
 use serde_json::{json, Value};
 
 use super::config::AppConfig;
@@ -26,7 +25,7 @@ use super::openai::{
     extract_text_from_responses, input_to_items_preserve_tools, input_to_messages,
     messages_to_responses_input, messages_to_simple_input_list, sse_events_for_text,
 };
-use super::router::RouterState;
+use super::router::{provider_group, RouterState};
 use super::secrets::SecretStore;
 use super::store::{unix_ms, Store};
 use super::upstream::UpstreamClient;
@@ -466,20 +465,8 @@ async fn health() -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-fn provider_group(cfg: &AppConfig, name: &str) -> Option<String> {
-    let p = cfg.providers.get(name)?;
-    let host = Url::parse(&p.base_url)
-        .ok()
-        .and_then(|u| u.host_str().map(|s| s.to_string()))?;
-    if host.ends_with("ppchat.vip") || host.ends_with("pumpkinai.vip") {
-        return Some("ppchat_pumpkin".to_string());
-    }
-    None
-}
-
-fn provider_has_remaining_quota(st: &GatewayState, provider: &str) -> bool {
-    let snapshots = st.store.list_quota_snapshots();
-    let Some(snap) = snapshots.get(provider) else {
+fn provider_has_remaining_quota(quota_snapshots: &Value, provider: &str) -> bool {
+    let Some(snap) = quota_snapshots.get(provider) else {
         return true;
     };
 
@@ -496,11 +483,21 @@ fn provider_has_remaining_quota(st: &GatewayState, provider: &str) -> bool {
     true
 }
 
-fn provider_is_routable_for_selection(st: &GatewayState, provider: &str) -> bool {
-    st.router.is_provider_routable(provider) && provider_has_remaining_quota(st, provider)
+fn provider_is_routable_for_selection(
+    st: &GatewayState,
+    quota_snapshots: &Value,
+    provider: &str,
+) -> bool {
+    st.router.is_provider_routable(provider)
+        && provider_has_remaining_quota(quota_snapshots, provider)
 }
 
-fn fallback_with_quota(st: &GatewayState, cfg: &AppConfig, preferred: &str) -> String {
+fn fallback_with_quota(
+    st: &GatewayState,
+    cfg: &AppConfig,
+    preferred: &str,
+    quota_snapshots: &Value,
+) -> String {
     let preferred_group = provider_group(cfg, preferred);
 
     for name in cfg.providers.keys() {
@@ -510,7 +507,7 @@ fn fallback_with_quota(st: &GatewayState, cfg: &AppConfig, preferred: &str) -> S
         if preferred_group.is_some() && provider_group(cfg, name) == preferred_group {
             continue;
         }
-        if provider_is_routable_for_selection(st, name) {
+        if provider_is_routable_for_selection(st, quota_snapshots, name) {
             return name.clone();
         }
     }
@@ -519,7 +516,7 @@ fn fallback_with_quota(st: &GatewayState, cfg: &AppConfig, preferred: &str) -> S
         if name == preferred {
             continue;
         }
-        if provider_is_routable_for_selection(st, name) {
+        if provider_is_routable_for_selection(st, quota_snapshots, name) {
             return name.clone();
         }
     }
@@ -538,6 +535,8 @@ pub(crate) fn decide_provider(
         return st.router.decide_with_preferred(cfg, preferred);
     }
 
+    let quota_snapshots = st.store.list_quota_snapshots();
+
     if cfg.routing.auto_return_to_preferred {
         let last_provider = st
             .last_used_by_session
@@ -553,22 +552,22 @@ pub(crate) fn decide_provider(
                 .should_suppress_preferred(preferred, cfg, unix_ms())
         {
             if let Some(p) = last_provider {
-                if provider_is_routable_for_selection(st, &p) {
+                if provider_is_routable_for_selection(st, &quota_snapshots, &p) {
                     return (p, "preferred_stabilizing");
                 }
             }
             return (
-                fallback_with_quota(st, cfg, preferred),
+                fallback_with_quota(st, cfg, preferred, &quota_snapshots),
                 "preferred_stabilizing",
             );
         }
     }
 
-    if provider_is_routable_for_selection(st, preferred) {
+    if provider_is_routable_for_selection(st, &quota_snapshots, preferred) {
         return (preferred.to_string(), "preferred_healthy");
     }
     (
-        fallback_with_quota(st, cfg, preferred),
+        fallback_with_quota(st, cfg, preferred, &quota_snapshots),
         "preferred_unhealthy",
     )
 }

@@ -214,7 +214,7 @@ impl RouterState {
     }
 }
 
-fn provider_group(cfg: &AppConfig, name: &str) -> Option<String> {
+pub(crate) fn provider_group(cfg: &AppConfig, name: &str) -> Option<String> {
     let p = cfg.providers.get(name)?;
     let host = Url::parse(&p.base_url)
         .ok()
