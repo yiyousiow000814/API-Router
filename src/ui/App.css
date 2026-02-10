@@ -2612,6 +2612,25 @@
   background: rgba(13, 18, 32, 0.02);
 }
 
+.aoSessionRowAgent td {
+  background: rgba(40, 199, 217, 0.03) !important;
+}
+
+.aoSessionRowAgent td:first-child {
+  box-shadow: inset 2px 0 0 rgba(40, 199, 217, 0.62);
+}
+
+.aoSessionRowAgent .aoPill {
+  background: rgba(40, 199, 217, 0.09);
+  border-color: rgba(40, 199, 217, 0.22);
+}
+
+.aoSessionRowAgent .aoSelect:disabled {
+  color: rgba(13, 18, 32, 0.44);
+  border-color: rgba(40, 199, 217, 0.2);
+  background: rgba(40, 199, 217, 0.05);
+}
+
 .aoPill {
   display: inline-flex;
   align-items: center;

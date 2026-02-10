@@ -299,6 +299,7 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                         last_discovered_unix_ms: 0,
                         last_reported_model_provider: None,
                         last_reported_base_url: None,
+                        is_agent: s.is_agent,
                         confirmed_router: s.router_confirmed,
                     }
                 });
@@ -314,6 +315,9 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                 if let Some(bu) = s.reported_base_url.as_deref() {
                     entry.last_reported_base_url = Some(bu.to_string());
                 }
+                if s.is_agent {
+                    entry.is_agent = true;
+                }
             }
         }
 
@@ -325,6 +329,11 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
             // around briefly for UI visibility, but prune if they go cold to avoid unbounded growth.
             const STALE_NO_PID_MS: u64 = 5 * 60 * 1000;
             map.retain(|_, v| {
+                let active = v.last_request_unix_ms > 0
+                    && now.saturating_sub(v.last_request_unix_ms) < 60_000;
+                if v.is_agent && !active {
+                    return false;
+                }
                 if v.pid != 0 && !crate::platform::windows_terminal::is_pid_alive(v.pid) {
                     return false;
                 }
@@ -369,7 +378,8 @@ fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value
                     "last_seen_unix_ms": last_seen_unix_ms,
                     "active": active,
                     "preferred_provider": pref,
-                    "verified": v.confirmed_router
+                    "verified": v.confirmed_router,
+                    "is_agent": v.is_agent
                 })
             })
             .collect::<Vec<_>>();
@@ -2282,6 +2292,25 @@ fn set_preferred_provider(
     Ok(())
 }
 
+fn session_is_agent(state: &app_state::AppState, codex_session_id: &str) -> bool {
+    if state
+        .gateway
+        .client_sessions
+        .read()
+        .get(codex_session_id)
+        .is_some_and(|s| s.is_agent)
+    {
+        return true;
+    }
+    // Agent rows are pruned from runtime sessions when idle, so fall back to rollout discovery.
+    let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
+    let expected = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
+    let port = state.gateway.cfg.read().listen.port;
+    crate::platform::windows_terminal::discover_sessions_using_router(port, expected)
+        .into_iter()
+        .any(|s| s.is_agent && s.codex_session_id.as_deref() == Some(codex_session_id))
+}
+
 #[tauri::command]
 fn set_session_preferred_provider(
     state: tauri::State<'_, app_state::AppState>,
@@ -2292,6 +2321,9 @@ fn set_session_preferred_provider(
     let codex_session_id = session_id.trim().to_string();
     if codex_session_id.is_empty() {
         return Err("codex_session_id is required".to_string());
+    }
+    if session_is_agent(&state, &codex_session_id) {
+        return Err("agent sessions cannot set preferred provider".to_string());
     }
     let prev_provider: Option<String> = {
         let mut cfg = state.gateway.cfg.write();
