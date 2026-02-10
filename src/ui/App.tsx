@@ -404,7 +404,6 @@ export default function App() {
     setUsageHistoryModalOpen(true)
   }, [devAutoOpenHistory])
   const [usageHistoryLoading, setUsageHistoryLoading] = useState<boolean>(false)
-  const [usageHistoryScrollbarActive, setUsageHistoryScrollbarActive] = useState<boolean>(false)
   const [usageProviderShowDetails, setUsageProviderShowDetails] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true
     return window.localStorage.getItem(USAGE_PROVIDER_SHOW_DETAILS_KEY) !== '0'
@@ -441,7 +440,6 @@ export default function App() {
   const providerSwitchDirWatcherPrimedRef = useRef<boolean>(false)
   const usagePricingDraftsPrimedRef = useRef<boolean>(false)
   const usageHistoryLoadedRef = useRef<boolean>(false)
-  const usageHistoryScrollbarTimerRef = useRef<number | null>(null)
   const codexSwapDir1Ref = useRef<string>('')
   const codexSwapDir2Ref = useRef<string>('')
   const codexSwapApplyBothRef = useRef<boolean>(false)
@@ -1369,18 +1367,6 @@ function newScheduleDraft(
     if (source === 'scheduled_package_total') return 'scheduled'
     return source
   }
-
-  const markUsageHistoryScrollbarActive = useCallback(() => {
-    if (typeof window === 'undefined') return
-    setUsageHistoryScrollbarActive(true)
-    if (usageHistoryScrollbarTimerRef.current != null) {
-      window.clearTimeout(usageHistoryScrollbarTimerRef.current)
-    }
-    usageHistoryScrollbarTimerRef.current = window.setTimeout(() => {
-      setUsageHistoryScrollbarActive(false)
-      usageHistoryScrollbarTimerRef.current = null
-    }, 900)
-  }, [])
 
   function renderUsageHistoryColGroup() {
     return (
@@ -3116,25 +3102,11 @@ function newScheduleDraft(
   useEffect(() => {
     if (!usageHistoryModalOpen) {
       clearAutoSaveTimer('history:edit')
-      if (usageHistoryScrollbarTimerRef.current != null && typeof window !== 'undefined') {
-        window.clearTimeout(usageHistoryScrollbarTimerRef.current)
-        usageHistoryScrollbarTimerRef.current = null
-      }
-      setUsageHistoryScrollbarActive(false)
       return
     }
     const shouldSilentRefresh = usageHistoryLoadedRef.current
     void refreshUsageHistory({ silent: shouldSilentRefresh })
   }, [usageHistoryModalOpen])
-
-  useEffect(() => {
-    return () => {
-      if (usageHistoryScrollbarTimerRef.current != null && typeof window !== 'undefined') {
-        window.clearTimeout(usageHistoryScrollbarTimerRef.current)
-        usageHistoryScrollbarTimerRef.current = null
-      }
-    }
-  }, [])
 
   useEffect(() => {
     if (!usagePricingCurrencyMenu) return
@@ -4348,11 +4320,7 @@ requires_openai_auth = true`}
               {usageHistoryLoading && !usageHistoryRows.length ? (
                 <div className="aoHint">Loading...</div>
               ) : usageHistoryRows.length ? (
-                <div
-                  className={`aoUsageHistoryTableSurface${
-                    usageHistoryScrollbarActive ? ' aoUsageHistoryTableSurfaceActive' : ''
-                  }`}
-                >
+                <div className="aoUsageHistoryTableSurface">
                   <div className="aoUsageHistoryTableHead" aria-hidden="true">
                     <table className="aoUsageHistoryTable">
                       {renderUsageHistoryColGroup()}
@@ -4372,13 +4340,7 @@ requires_openai_auth = true`}
                       </thead>
                     </table>
                   </div>
-                  <div
-                    className={`aoUsageHistoryTableWrap${usageHistoryScrollbarActive ? ' aoUsageHistoryTableWrapActive' : ''}`}
-                    onScroll={markUsageHistoryScrollbarActive}
-                    onWheel={markUsageHistoryScrollbarActive}
-                    onTouchMove={markUsageHistoryScrollbarActive}
-                    onPointerDown={markUsageHistoryScrollbarActive}
-                  >
+                  <div className="aoUsageHistoryTableWrap">
                     <table className="aoUsageHistoryTable">
                       {renderUsageHistoryColGroup()}
                       <tbody>
