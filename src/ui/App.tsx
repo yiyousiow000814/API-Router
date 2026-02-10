@@ -2138,6 +2138,23 @@ function newScheduleDraft(
   const usageAnomalies = useMemo(() => {
     const messages: string[] = []
     const highCostProviders = new Set<string>()
+    const isPerRequestComparableSource = (sourceRaw?: string | null) => {
+      const source = (sourceRaw ?? '').trim().toLowerCase()
+      if (!source || source === 'none') return false
+
+      // Monthly/package-style sources are not comparable in "$/req" anomaly checks.
+      if (
+        source === 'token_rate' ||
+        source === 'provider_token_rate' ||
+        source.startsWith('provider_budget_api') ||
+        source.startsWith('manual_package_') ||
+        source === 'gap_fill_total' ||
+        source === 'gap_fill_per_day_average'
+      ) {
+        return false
+      }
+      return true
+    }
     const formatBucket = (unixMs: number) => {
       const d = new Date(unixMs)
       const pad = (n: number) => String(n).padStart(2, '0')
@@ -2174,6 +2191,7 @@ function newScheduleDraft(
 
     const priced = usageByProvider.filter(
       (row) =>
+        isPerRequestComparableSource(row.pricing_source) &&
         row.estimated_avg_request_cost_usd != null &&
         Number.isFinite(row.estimated_avg_request_cost_usd) &&
         (row.estimated_avg_request_cost_usd ?? 0) > 0 &&
