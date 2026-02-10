@@ -1373,6 +1373,7 @@ fn get_usage_statistics(
         };
         by_provider.push(serde_json::json!({
             "provider": provider,
+            "api_key_ref": provider_api_key_ref(&state, provider),
             "requests": agg.requests,
             "total_tokens": agg.total_tokens,
             "tokens_per_request": json_num_or_null(tokens_per_request),

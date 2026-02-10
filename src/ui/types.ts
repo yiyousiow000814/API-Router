@@ -163,6 +163,7 @@ export type UsageStatistics = {
     }>
     by_provider: Array<{
       provider: string
+      api_key_ref?: string | null
       requests: number
       total_tokens: number
       tokens_per_request?: number | null

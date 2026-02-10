@@ -2032,11 +2032,80 @@ function newScheduleDraft(
     () => [...usageCatalogModels].sort((a, b) => a.localeCompare(b)),
     [usageCatalogModels],
   )
+  const usageSharedCostView = useMemo(() => {
+    const isSharedAccountSource = (sourceRaw?: string | null) => {
+      const source = (sourceRaw ?? '').trim().toLowerCase()
+      if (!source || source === 'none') return false
+      return (
+        source.startsWith('manual_package_') ||
+        source === 'token_rate' ||
+        source === 'provider_token_rate' ||
+        source.startsWith('provider_budget_api')
+      )
+    }
+    const keyMap = new Map<
+      string,
+      Array<UsageStatistics['summary']['by_provider'][number]>
+    >()
+    usageByProvider.forEach((row) => {
+      if (!isSharedAccountSource(row.pricing_source)) return
+      const apiKeyRef = String(row.api_key_ref ?? '').trim()
+      if (!apiKeyRef || apiKeyRef === '-') return
+      const arr = keyMap.get(apiKeyRef) ?? []
+      arr.push(row)
+      keyMap.set(apiKeyRef, arr)
+    })
+
+    const zeroProviders = new Set<string>()
+    for (const rows of keyMap.values()) {
+      if (rows.length <= 1) continue
+      const keeper =
+        [...rows].sort(
+          (a, b) =>
+            (b.requests ?? 0) - (a.requests ?? 0) ||
+            String(a.provider).localeCompare(String(b.provider)),
+        )[0] ?? rows[0]
+      rows.forEach((row) => {
+        if (row.provider !== keeper.provider) zeroProviders.add(String(row.provider))
+      })
+    }
+
+    const effectiveDailyByProvider = new Map<string, number | null>()
+    const effectiveTotalByProvider = new Map<string, number | null>()
+    usageByProvider.forEach((row) => {
+      const provider = String(row.provider)
+      const zeroed = zeroProviders.has(provider)
+      const daily = zeroed
+        ? 0
+        : row.estimated_daily_cost_usd != null && Number.isFinite(row.estimated_daily_cost_usd)
+          ? Number(row.estimated_daily_cost_usd)
+          : null
+      const total = zeroed
+        ? 0
+        : row.total_used_cost_usd != null && Number.isFinite(row.total_used_cost_usd)
+          ? Number(row.total_used_cost_usd)
+          : null
+      effectiveDailyByProvider.set(provider, daily)
+      effectiveTotalByProvider.set(provider, total)
+    })
+
+    return {
+      zeroProviders,
+      effectiveDailyByProvider,
+      effectiveTotalByProvider,
+    }
+  }, [usageByProvider])
   const usagePricedRequestCount = usageByProvider.reduce((sum, row) => {
-    if (row.total_used_cost_usd == null || !Number.isFinite(row.total_used_cost_usd) || row.total_used_cost_usd <= 0) {
+    const total = usageSharedCostView.effectiveTotalByProvider.get(String(row.provider))
+    if (total == null || !Number.isFinite(total) || total <= 0) {
       return sum
     }
     return sum + (row.requests ?? 0)
+  }, 0)
+  const usageDedupedTotalUsedUsd = usageByProvider.reduce((sum, row) => {
+    const total = usageSharedCostView.effectiveTotalByProvider.get(String(row.provider))
+    if (total != null && Number.isFinite(total) && total > 0) return sum + total
+    return sum
   }, 0)
   const usagePricedCoveragePct =
     (usageSummary?.total_requests ?? 0) > 0
@@ -2086,10 +2155,18 @@ function newScheduleDraft(
       totalTokPerReq,
       avgUsdPerReq: mean(usageByProvider.map((row) => row.estimated_avg_request_cost_usd)),
       avgUsdPerMillion: mean(usageByProvider.map((row) => row.usd_per_million_tokens)),
-      avgEstDaily: mean(usageByProvider.map((row) => row.estimated_daily_cost_usd)),
-      avgTotalUsed: mean(usageByProvider.map((row) => providerTotalUsedDisplayUsd(row))),
+      avgEstDaily: mean(
+        usageByProvider.map((row) =>
+          usageSharedCostView.effectiveDailyByProvider.get(String(row.provider)),
+        ),
+      ),
+      avgTotalUsed: mean(
+        usageByProvider.map((row) =>
+          usageSharedCostView.effectiveTotalByProvider.get(String(row.provider)),
+        ),
+      ),
     }
-  }, [usageByProvider])
+  }, [usageByProvider, usageSharedCostView])
   const usagePricingProviderNames = managedProviderNames
   const usagePricingGroups = useMemo<UsagePricingGroup[]>(() => {
     const modePriority = (providerName: string) => {
@@ -2138,6 +2215,21 @@ function newScheduleDraft(
   const usageAnomalies = useMemo(() => {
     const messages: string[] = []
     const highCostProviders = new Set<string>()
+    const isPerRequestComparableSource = (sourceRaw?: string | null) => {
+      const source = (sourceRaw ?? '').trim().toLowerCase()
+      if (!source || source === 'none') return false
+      if (
+        source === 'token_rate' ||
+        source === 'provider_token_rate' ||
+        source.startsWith('provider_budget_api') ||
+        source.startsWith('manual_package_') ||
+        source === 'gap_fill_total' ||
+        source === 'gap_fill_per_day_average'
+      ) {
+        return false
+      }
+      return true
+    }
     const formatBucket = (unixMs: number) => {
       const d = new Date(unixMs)
       const pad = (n: number) => String(n).padStart(2, '0')
@@ -2174,6 +2266,7 @@ function newScheduleDraft(
 
     const priced = usageByProvider.filter(
       (row) =>
+        isPerRequestComparableSource(row.pricing_source) &&
         row.estimated_avg_request_cost_usd != null &&
         Number.isFinite(row.estimated_avg_request_cost_usd) &&
         (row.estimated_avg_request_cost_usd ?? 0) > 0 &&
@@ -2332,12 +2425,6 @@ function newScheduleDraft(
     if (source === 'gap_fill_total') return 'gap fill total'
     if (source === 'gap_fill_per_day_average') return 'gap fill $/day'
     return source
-  }
-
-  function providerTotalUsedDisplayUsd(row: UsageStatistics['summary']['by_provider'][number]): number | null {
-    const totalUsed = row.total_used_cost_usd
-    if (totalUsed == null || !Number.isFinite(totalUsed) || totalUsed <= 0) return null
-    return totalUsed
   }
 
   function fmtUsageBucketLabel(unixMs: number): string {
@@ -3339,7 +3426,7 @@ function newScheduleDraft(
                 </div>
                 <div className="aoUsageKpiCard">
                   <div className="aoMiniLabel">Total $ Used</div>
-                  <div className="aoUsageKpiValue">{fmtUsdMaybe(usageSummary?.estimated_total_cost_usd)}</div>
+                  <div className="aoUsageKpiValue">{fmtUsdMaybe(usageDedupedTotalUsedUsd)}</div>
                 </div>
               </div>
               <div className="aoUsageFactsCard">
@@ -3531,26 +3618,32 @@ function newScheduleDraft(
                       </tr>
                     </thead>
                     <tbody>
-                      {usageByProvider.map((p) => (
-                        <tr
-                          key={p.provider}
-                          className={usageAnomalies.highCostProviders.has(p.provider) ? 'aoUsageProviderRowAnomaly' : ''}
-                        >
-                          <td className="aoUsageProviderName">{p.provider}</td>
-                          <td>{p.requests.toLocaleString()}</td>
-                          <td>{p.total_tokens.toLocaleString()}</td>
-                          <td>
-                            {p.tokens_per_request == null || !Number.isFinite(p.tokens_per_request)
-                              ? '-'
-                              : Math.round(p.tokens_per_request).toLocaleString()}
-                          </td>
-                          <td>{fmtUsdMaybe(p.estimated_avg_request_cost_usd)}</td>
-                          <td>{fmtUsdMaybe(p.usd_per_million_tokens)}</td>
-                          <td>{fmtUsdMaybe(p.estimated_daily_cost_usd)}</td>
-                          <td>{fmtUsdMaybe(providerTotalUsedDisplayUsd(p))}</td>
-                          <td>{fmtPricingSource(p.pricing_source)}</td>
-                        </tr>
-                      ))}
+                      {usageByProvider.map((p) => {
+                        const provider = String(p.provider)
+                        const zeroCost = usageSharedCostView.zeroProviders.has(provider)
+                        const effectiveDaily = usageSharedCostView.effectiveDailyByProvider.get(provider) ?? null
+                        const effectiveTotal = usageSharedCostView.effectiveTotalByProvider.get(provider) ?? null
+                        return (
+                          <tr
+                            key={p.provider}
+                            className={usageAnomalies.highCostProviders.has(p.provider) ? 'aoUsageProviderRowAnomaly' : ''}
+                          >
+                            <td className="aoUsageProviderName">{p.provider}</td>
+                            <td>{p.requests.toLocaleString()}</td>
+                            <td>{p.total_tokens.toLocaleString()}</td>
+                            <td>
+                              {p.tokens_per_request == null || !Number.isFinite(p.tokens_per_request)
+                                ? '-'
+                                : Math.round(p.tokens_per_request).toLocaleString()}
+                            </td>
+                            <td>{fmtUsdMaybe(p.estimated_avg_request_cost_usd)}</td>
+                            <td>{fmtUsdMaybe(p.usd_per_million_tokens)}</td>
+                            <td>{zeroCost ? '$0.000' : fmtUsdMaybe(effectiveDaily)}</td>
+                            <td>{zeroCost ? '$0.000' : fmtUsdMaybe(effectiveTotal)}</td>
+                            <td>{fmtPricingSource(p.pricing_source)}</td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                     {usageProviderTotalsAndAverages ? (
                       <tfoot>
