@@ -1017,8 +1017,8 @@
 }
 
 .aoUsageHistoryTableSurface {
-  --ao-history-scrollbar-size: 9px;
-  --ao-history-scroll-track: transparent;
+  --ao-history-scrollbar-size: 0px;
+  --ao-history-scrollbar-visible-size: 9px;
   --ao-history-scroll-thumb: rgba(84, 95, 118, 0.56);
   --ao-history-scroll-thumb-hover: rgba(60, 72, 98, 0.7);
   flex: 1;
@@ -1030,6 +1030,10 @@
   background: rgba(248, 250, 253, 0.94);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
   overflow: hidden;
+}
+
+.aoUsageHistoryTableSurface.aoUsageHistoryTableSurfaceActive {
+  --ao-history-scrollbar-size: var(--ao-history-scrollbar-visible-size);
 }
 
 .aoUsageHistoryTableHead {
@@ -1044,13 +1048,18 @@
   min-height: 0;
   overflow: auto;
   background: transparent;
-  scrollbar-gutter: stable;
+  scrollbar-width: none;
+  scrollbar-color: transparent transparent;
+}
+
+.aoUsageHistoryTableWrap.aoUsageHistoryTableWrapActive {
   scrollbar-width: thin;
-  scrollbar-color: var(--ao-history-scroll-thumb) var(--ao-history-scroll-track);
+  scrollbar-color: var(--ao-history-scroll-thumb) transparent;
 }
 
 .aoUsageHistoryTableWrap::-webkit-scrollbar {
   width: var(--ao-history-scrollbar-size);
+  height: var(--ao-history-scrollbar-size);
   background: transparent;
 }
 
