@@ -1,5 +1,5 @@
 use reqwest::Url;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use parking_lot::RwLock;
@@ -53,6 +53,25 @@ impl ProviderHealth {
 pub struct RouterState {
     pub manual_override: RwLock<Option<String>>,
     health: RwLock<HashMap<String, ProviderHealth>>,
+}
+
+pub(crate) fn provider_iteration_order(cfg: &AppConfig) -> Vec<String> {
+    let mut ordered: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for name in &cfg.provider_order {
+        if cfg.providers.contains_key(name) && seen.insert(name.clone()) {
+            ordered.push(name.clone());
+        }
+    }
+
+    for name in cfg.providers.keys() {
+        if seen.insert(name.clone()) {
+            ordered.push(name.clone());
+        }
+    }
+
+    ordered
 }
 
 impl RouterState {
@@ -189,7 +208,9 @@ impl RouterState {
     pub fn fallback(&self, cfg: &AppConfig, preferred: &str) -> String {
         let preferred_group = provider_group(cfg, preferred);
 
-        for name in cfg.providers.keys() {
+        let ordered_names = provider_iteration_order(cfg);
+
+        for name in &ordered_names {
             if name == preferred {
                 continue;
             }
@@ -201,7 +222,7 @@ impl RouterState {
             }
         }
 
-        for name in cfg.providers.keys() {
+        for name in &ordered_names {
             if name == preferred {
                 continue;
             }

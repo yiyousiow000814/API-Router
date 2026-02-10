@@ -25,7 +25,7 @@ use super::openai::{
     extract_text_from_responses, input_to_items_preserve_tools, input_to_messages,
     messages_to_responses_input, messages_to_simple_input_list, sse_events_for_text,
 };
-use super::router::{provider_group, RouterState};
+use super::router::{provider_group, provider_iteration_order, RouterState};
 use super::secrets::SecretStore;
 use super::store::{unix_ms, Store};
 use super::upstream::UpstreamClient;
@@ -500,7 +500,9 @@ fn fallback_with_quota(
 ) -> String {
     let preferred_group = provider_group(cfg, preferred);
 
-    for name in cfg.providers.keys() {
+    let ordered_names = provider_iteration_order(cfg);
+
+    for name in &ordered_names {
         if name == preferred {
             continue;
         }
@@ -512,7 +514,7 @@ fn fallback_with_quota(
         }
     }
 
-    for name in cfg.providers.keys() {
+    for name in &ordered_names {
         if name == preferred {
             continue;
         }
