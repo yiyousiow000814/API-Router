@@ -1069,7 +1069,7 @@
   position: absolute;
   top: 4px;
   right: 2px;
-  bottom: 10px;
+  bottom: 7px;
   width: var(--ao-history-scrollbar-size);
   overflow: hidden;
   border-radius: 999px;
