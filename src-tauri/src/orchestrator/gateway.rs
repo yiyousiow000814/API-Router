@@ -18,6 +18,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use bytes::Bytes;
 use parking_lot::RwLock;
+use reqwest::Url;
 use serde_json::{json, Value};
 
 use super::config::AppConfig;
@@ -465,6 +466,67 @@ async fn health() -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
+fn provider_group(cfg: &AppConfig, name: &str) -> Option<String> {
+    let p = cfg.providers.get(name)?;
+    let host = Url::parse(&p.base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))?;
+    if host.ends_with("ppchat.vip") || host.ends_with("pumpkinai.vip") {
+        return Some("ppchat_pumpkin".to_string());
+    }
+    None
+}
+
+fn provider_has_remaining_quota(st: &GatewayState, provider: &str) -> bool {
+    let snapshots = st.store.list_quota_snapshots();
+    let Some(snap) = snapshots.get(provider) else {
+        return true;
+    };
+
+    if let Some(remaining) = snap.get("remaining").and_then(|v| v.as_f64()) {
+        return remaining > 0.0;
+    }
+
+    let today_used = snap.get("today_used").and_then(|v| v.as_f64());
+    let today_added = snap.get("today_added").and_then(|v| v.as_f64());
+    if let (Some(used), Some(added)) = (today_used, today_added) {
+        return used < added;
+    }
+
+    true
+}
+
+fn provider_is_routable_for_selection(st: &GatewayState, provider: &str) -> bool {
+    st.router.is_provider_routable(provider) && provider_has_remaining_quota(st, provider)
+}
+
+fn fallback_with_quota(st: &GatewayState, cfg: &AppConfig, preferred: &str) -> String {
+    let preferred_group = provider_group(cfg, preferred);
+
+    for name in cfg.providers.keys() {
+        if name == preferred {
+            continue;
+        }
+        if preferred_group.is_some() && provider_group(cfg, name) == preferred_group {
+            continue;
+        }
+        if provider_is_routable_for_selection(st, name) {
+            return name.clone();
+        }
+    }
+
+    for name in cfg.providers.keys() {
+        if name == preferred {
+            continue;
+        }
+        if provider_is_routable_for_selection(st, name) {
+            return name.clone();
+        }
+    }
+
+    preferred.to_string()
+}
+
 pub(crate) fn decide_provider(
     st: &GatewayState,
     cfg: &AppConfig,
@@ -491,15 +553,24 @@ pub(crate) fn decide_provider(
                 .should_suppress_preferred(preferred, cfg, unix_ms())
         {
             if let Some(p) = last_provider {
-                if st.router.is_provider_routable(&p) {
+                if provider_is_routable_for_selection(st, &p) {
                     return (p, "preferred_stabilizing");
                 }
             }
-            return (st.router.fallback(cfg, preferred), "preferred_stabilizing");
+            return (
+                fallback_with_quota(st, cfg, preferred),
+                "preferred_stabilizing",
+            );
         }
     }
 
-    st.router.decide_with_preferred(cfg, preferred)
+    if provider_is_routable_for_selection(st, preferred) {
+        return (preferred.to_string(), "preferred_healthy");
+    }
+    (
+        fallback_with_quota(st, cfg, preferred),
+        "preferred_unhealthy",
+    )
 }
 
 async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
