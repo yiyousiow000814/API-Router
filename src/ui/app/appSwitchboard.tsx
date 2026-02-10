@@ -67,6 +67,22 @@ export function useAppSwitchboard({
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (codexSwapDir1.trim()) return;
+    void (async () => {
+      try {
+        const home = await invoke<string>("codex_cli_default_home");
+        const next = home.trim();
+        if (next) {
+          setCodexSwapDir1(next);
+        }
+      } catch {
+        // Fallback to backend default by keeping dir1 empty.
+      }
+    })();
+  }, [codexSwapDir1, setCodexSwapDir1]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
     const payload = {
       dir1: codexSwapDir1,
       dir2: codexSwapDir2,

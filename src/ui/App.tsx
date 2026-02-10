@@ -278,7 +278,8 @@ requires_openai_auth = true`}
             try {
               const dir1 = vm.codexSwapDir1.trim();
               const dir2 = vm.codexSwapDir2.trim();
-              if (!dir1) throw new Error("Dir 1 is required");
+              if (vm.codexSwapApplyBoth && !dir1)
+                throw new Error("Dir 1 is required when applying both dirs");
               if (vm.codexSwapApplyBoth && !dir2)
                 throw new Error("Dir 2 is empty");
               if (

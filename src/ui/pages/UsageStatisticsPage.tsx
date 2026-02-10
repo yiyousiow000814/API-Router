@@ -281,7 +281,7 @@ export function UsageStatisticsPage({ vm }: UsageStatisticsPageProps) {
           </div>
         </div>
         {usageByModel.length ? (
-          <table className="aoUsageModelTable">
+          <table className="aoUsageProviderTable">
             <thead>
               <tr>
                 <th>Model</th>
@@ -317,7 +317,7 @@ export function UsageStatisticsPage({ vm }: UsageStatisticsPageProps) {
           <div className="aoMiniLabel">Timeline</div>
         </div>
         {usageTimeline.length ? (
-          <table className="aoUsageTimelineTable">
+          <table className="aoUsageProviderTable">
             <thead>
               <tr>
                 <th>Bucket</th>
