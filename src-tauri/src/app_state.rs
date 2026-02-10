@@ -134,7 +134,8 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         client_sessions: Arc::new(RwLock::new(HashMap::new())),
     };
     {
-        let mut key_refs: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+        let mut key_refs: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
         for provider_name in gateway.cfg.read().providers.keys() {
             let key_ref = secrets
                 .get_provider_key(provider_name)

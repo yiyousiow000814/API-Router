@@ -1388,7 +1388,10 @@ fn get_usage_statistics(
             .cloned()
             .unwrap_or_else(|| {
                 let mut fallback = BTreeMap::new();
-                fallback.insert(provider_api_key_ref(&state, provider), (agg.requests, agg.total_tokens));
+                fallback.insert(
+                    provider_api_key_ref(&state, provider),
+                    (agg.requests, agg.total_tokens),
+                );
                 fallback
             });
         let total_requests_for_split = agg.requests.max(1);
@@ -1990,7 +1993,8 @@ fn get_spend_history(
             let package_profile = package_profile_for_day(pricing.get(&provider_name), day_start);
             let tracked_total = tracked_by_day.get(&day_key).copied();
             let scheduled_total = scheduled_by_day.get(&day_key).copied();
-            let scheduled_package_total_usd = package_profile.as_ref().map(|(amount, _, _)| *amount);
+            let scheduled_package_total_usd =
+                package_profile.as_ref().map(|(amount, _, _)| *amount);
             let (manual_total, manual_per_req, manual_updated_at) = manual_by_day
                 .get(&day_key)
                 .copied()
@@ -2056,7 +2060,11 @@ fn get_spend_history(
                         .map(|(key_ref, _)| key_ref.clone())
                 })
                 .or_else(|| tracked_api_key_ref_by_day.get(&day_key).cloned())
-                .or_else(|| package_profile.as_ref().and_then(|(_, _, key_ref)| key_ref.clone()))
+                .or_else(|| {
+                    package_profile
+                        .as_ref()
+                        .and_then(|(_, _, key_ref)| key_ref.clone())
+                })
                 .unwrap_or_else(|| "-".to_string());
             rows.push(serde_json::json!({
                 "provider": provider_name,
