@@ -259,7 +259,7 @@ impl Store {
         let _ = self.db.flush();
     }
 
-    pub fn record_success(&self, provider: &str, response_obj: &Value) {
+    pub fn record_success(&self, provider: &str, response_obj: &Value, api_key_ref: Option<&str>) {
         let (
             input_tokens,
             output_tokens,
@@ -282,6 +282,7 @@ impl Store {
             provider,
             &Self::extract_model(response_obj),
             increments,
+            api_key_ref,
             true,
         );
     }
@@ -572,6 +573,86 @@ impl Store {
             .collect()
     }
 
+    pub fn backfill_api_key_ref_fields(
+        &self,
+        provider_api_key_ref: &std::collections::BTreeMap<String, String>,
+    ) -> usize {
+        fn has_key_ref(day: &Value) -> bool {
+            day.get("api_key_ref")
+                .and_then(|v| v.as_str())
+                .map(|s| {
+                    let t = s.trim();
+                    !t.is_empty() && t != "-"
+                })
+                .unwrap_or(false)
+        }
+
+        let mut updated = 0usize;
+
+        for res in self.db.scan_prefix(b"usage_req:") {
+            let Ok((k, v)) = res else {
+                continue;
+            };
+            let Ok(mut row) = serde_json::from_slice::<Value>(&v) else {
+                continue;
+            };
+            if has_key_ref(&row) {
+                continue;
+            }
+            let provider = row
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            let Some(provider) = provider else {
+                continue;
+            };
+            let key_ref = provider_api_key_ref
+                .get(provider)
+                .cloned()
+                .unwrap_or_else(|| "-".to_string());
+            row["api_key_ref"] = serde_json::json!(key_ref);
+            let _ = self
+                .db
+                .insert(k, serde_json::to_vec(&row).unwrap_or_default());
+            updated = updated.saturating_add(1);
+        }
+
+        for res in self.db.scan_prefix(b"spend_day:") {
+            let Ok((k, v)) = res else {
+                continue;
+            };
+            let Ok(mut row) = serde_json::from_slice::<Value>(&v) else {
+                continue;
+            };
+            if has_key_ref(&row) {
+                continue;
+            }
+            let provider = row
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+            let Some(provider) = provider else {
+                continue;
+            };
+            let key_ref = provider_api_key_ref
+                .get(provider)
+                .cloned()
+                .unwrap_or_else(|| "-".to_string());
+            row["api_key_ref"] = serde_json::json!(key_ref);
+            let _ = self
+                .db
+                .insert(k, serde_json::to_vec(&row).unwrap_or_default());
+            updated = updated.saturating_add(1);
+        }
+
+        if updated > 0 {
+            let _ = self.db.flush();
+        }
+        updated
+    }
+
     pub fn list_usage_days(&self, provider: &str) -> Vec<Value> {
         let prefix = format!("usage_day:{provider}:");
         self.db
@@ -750,6 +831,7 @@ impl Store {
         provider: &str,
         model: &str,
         increments: UsageTokenIncrements,
+        api_key_ref: Option<&str>,
         flush: bool,
     ) {
         let ts = unix_ms();
@@ -757,6 +839,7 @@ impl Store {
         let key = format!("usage_req:{ts}:{id}");
         let v = serde_json::json!({
             "provider": provider,
+            "api_key_ref": api_key_ref.unwrap_or("-"),
             "model": model,
             "unix_ms": ts,
             "input_tokens": increments.input_tokens,

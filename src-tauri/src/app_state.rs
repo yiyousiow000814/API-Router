@@ -12,6 +12,25 @@ use crate::orchestrator::store::unix_ms;
 use crate::orchestrator::upstream::UpstreamClient;
 use std::sync::atomic::AtomicU64;
 
+fn mask_key_preview(key: &str) -> String {
+    let k = key.trim();
+    let chars: Vec<char> = k.chars().collect();
+    if chars.len() < 10 {
+        return "set".to_string();
+    }
+    let start_len = std::cmp::min(6, chars.len().saturating_sub(4));
+    let start: String = chars.iter().take(start_len).collect();
+    let end: String = chars
+        .iter()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{start}******{end}")
+}
+
 pub struct AppState {
     pub config_path: PathBuf,
     pub gateway: GatewayState,
@@ -114,6 +133,19 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
         client_sessions: Arc::new(RwLock::new(HashMap::new())),
     };
+    {
+        let mut key_refs: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for provider_name in gateway.cfg.read().providers.keys() {
+            let key_ref = secrets
+                .get_provider_key(provider_name)
+                .as_deref()
+                .map(mask_key_preview)
+                .unwrap_or_else(|| "-".to_string());
+            key_refs.insert(provider_name.clone(), key_ref);
+        }
+        let _ = gateway.store.backfill_api_key_ref_fields(&key_refs);
+    }
     Ok(AppState {
         config_path,
         gateway,

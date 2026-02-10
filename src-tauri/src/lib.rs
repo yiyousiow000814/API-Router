@@ -624,9 +624,9 @@ fn active_package_total_usd(
 fn package_profile_for_day(
     pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
     day_start_unix_ms: u64,
-) -> Option<(f64, Option<u64>)> {
+) -> Option<(f64, Option<u64>, Option<String>)> {
     let cfg = pricing_cfg?;
-    let mut matched: Option<(f64, Option<u64>, u64)> = None;
+    let mut matched: Option<(f64, Option<u64>, u64, String)> = None;
     for period in cfg.periods.iter() {
         if period.mode != "package_total"
             || !period.amount_usd.is_finite()
@@ -638,22 +638,32 @@ fn package_profile_for_day(
         if period.started_at_unix_ms <= day_start_unix_ms && day_start_unix_ms < ended {
             let replace = matched
                 .as_ref()
-                .map(|(_, _, started)| period.started_at_unix_ms >= *started)
+                .map(|(_, _, started, _)| period.started_at_unix_ms >= *started)
                 .unwrap_or(true);
             if replace {
                 matched = Some((
                     period.amount_usd,
                     period.ended_at_unix_ms,
                     period.started_at_unix_ms,
+                    period.api_key_ref.clone(),
                 ));
             }
         }
     }
-    if let Some((amount, expires, _)) = matched {
-        return Some((amount, expires));
+    if let Some((amount, expires, _, api_key_ref)) = matched {
+        let key = api_key_ref.trim();
+        return Some((
+            amount,
+            expires,
+            if key.is_empty() || key == "-" {
+                None
+            } else {
+                Some(key.to_string())
+            },
+        ));
     }
     if cfg.mode == "package_total" && cfg.amount_usd.is_finite() && cfg.amount_usd > 0.0 {
-        return Some((cfg.amount_usd, None));
+        return Some((cfg.amount_usd, None, None));
     }
     None
 }
@@ -824,6 +834,8 @@ fn get_usage_statistics(
     let mut total_cache_read_tokens = 0u64;
     let mut by_model_map: BTreeMap<String, ModelAgg> = BTreeMap::new();
     let mut by_provider_map: BTreeMap<String, ProviderAgg> = BTreeMap::new();
+    let mut provider_req_by_key_in_window: BTreeMap<String, BTreeMap<String, (u64, u64)>> =
+        BTreeMap::new();
     let mut provider_req_by_day_in_window: BTreeMap<String, BTreeMap<String, u64>> =
         BTreeMap::new();
     let mut provider_req_by_day_all_from_req: BTreeMap<String, BTreeMap<String, u64>> =
@@ -894,6 +906,13 @@ fn get_usage_statistics(
         if !provider_matches || !model_matches {
             continue;
         }
+        let api_key_ref = rec
+            .get("api_key_ref")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("-")
+            .to_string();
 
         total_requests = total_requests.saturating_add(1);
         total_tokens = total_tokens.saturating_add(total_tokens_row);
@@ -912,6 +931,15 @@ fn get_usage_statistics(
             let entry = by_provider_map.entry(provider.clone()).or_default();
             entry.requests = entry.requests.saturating_add(1);
             entry.total_tokens = entry.total_tokens.saturating_add(total_tokens_row);
+        }
+        {
+            let key_entry = provider_req_by_key_in_window
+                .entry(provider.clone())
+                .or_default()
+                .entry(api_key_ref)
+                .or_insert((0, 0));
+            key_entry.0 = key_entry.0.saturating_add(1);
+            key_entry.1 = key_entry.1.saturating_add(total_tokens_row);
         }
         provider_request_timestamps_in_window
             .entry(provider.clone())
@@ -1355,37 +1383,60 @@ fn get_usage_statistics(
             }
         }
 
-        let tokens_per_request = if agg.requests > 0 {
-            Some(agg.total_tokens as f64 / agg.requests as f64)
-        } else {
-            None
-        };
-        let usd_per_million_tokens =
-            if let (Some(total_used), true) = (total_used_cost_usd, agg.total_tokens > 0) {
-                Some(total_used / agg.total_tokens as f64 * 1_000_000.0)
+        let key_rows = provider_req_by_key_in_window
+            .get(provider)
+            .cloned()
+            .unwrap_or_else(|| {
+                let mut fallback = BTreeMap::new();
+                fallback.insert(
+                    provider_api_key_ref(&state, provider),
+                    (agg.requests, agg.total_tokens),
+                );
+                fallback
+            });
+        let total_requests_for_split = agg.requests.max(1);
+        for (api_key_ref, (key_requests, key_total_tokens)) in key_rows {
+            let request_ratio = key_requests as f64 / total_requests_for_split as f64;
+            let key_total_used_cost_usd = total_used_cost_usd.map(|v| v * request_ratio);
+            let key_estimated_daily_cost_usd = estimated_daily_cost_usd.map(|v| v * request_ratio);
+            let key_avg_request_cost_usd = if key_requests > 0 {
+                key_total_used_cost_usd.map(|v| v / key_requests as f64)
             } else {
                 None
             };
-        let estimated_cost_request_count = if estimated_avg_request_cost_usd.is_some() {
-            agg.requests
-        } else {
-            0
-        };
-        by_provider.push(serde_json::json!({
-            "provider": provider,
-            "requests": agg.requests,
-            "total_tokens": agg.total_tokens,
-            "tokens_per_request": json_num_or_null(tokens_per_request),
-            "estimated_total_cost_usd": round3(total_used_cost_usd.unwrap_or(0.0)),
-            "estimated_avg_request_cost_usd": json_num_or_null(estimated_avg_request_cost_usd),
-            "usd_per_million_tokens": json_num_or_null(usd_per_million_tokens),
-            "estimated_daily_cost_usd": json_num_or_null(estimated_daily_cost_usd),
-            "total_used_cost_usd": json_num_or_null(total_used_cost_usd),
-            "pricing_source": pricing_source,
-            "estimated_cost_request_count": estimated_cost_request_count,
-            "actual_tracked_spend_usd": json_num_or_null(actual_tracked_spend_usd),
-            "gap_filled_spend_usd": json_num_or_null(gap_filled_spend_usd)
-        }));
+            let tokens_per_request = if key_requests > 0 {
+                Some(key_total_tokens as f64 / key_requests as f64)
+            } else {
+                None
+            };
+            let usd_per_million_tokens =
+                if let (Some(total_used), true) = (key_total_used_cost_usd, key_total_tokens > 0) {
+                    Some(total_used / key_total_tokens as f64 * 1_000_000.0)
+                } else {
+                    None
+                };
+            let estimated_cost_request_count = if key_avg_request_cost_usd.is_some() {
+                key_requests
+            } else {
+                0
+            };
+            by_provider.push(serde_json::json!({
+                "provider": provider,
+                "api_key_ref": api_key_ref,
+                "requests": key_requests,
+                "total_tokens": key_total_tokens,
+                "tokens_per_request": json_num_or_null(tokens_per_request),
+                "estimated_total_cost_usd": round3(key_total_used_cost_usd.unwrap_or(0.0)),
+                "estimated_avg_request_cost_usd": json_num_or_null(key_avg_request_cost_usd),
+                "usd_per_million_tokens": json_num_or_null(usd_per_million_tokens),
+                "estimated_daily_cost_usd": json_num_or_null(key_estimated_daily_cost_usd),
+                "total_used_cost_usd": json_num_or_null(key_total_used_cost_usd),
+                "pricing_source": pricing_source,
+                "estimated_cost_request_count": estimated_cost_request_count,
+                "actual_tracked_spend_usd": json_num_or_null(actual_tracked_spend_usd.map(|v| v * request_ratio)),
+                "gap_filled_spend_usd": json_num_or_null(gap_filled_spend_usd.map(|v| v * request_ratio))
+            }));
+        }
     }
     by_provider.sort_by(|a, b| {
         let ar = a.get("requests").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -1783,7 +1834,6 @@ fn get_spend_history(
         {
             continue;
         }
-
         let mut usage_by_day: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
         for day in state.gateway.store.list_usage_days(&provider_name) {
             let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
@@ -1810,6 +1860,8 @@ fn get_spend_history(
         // Backfill from raw usage requests so History can show days that existed
         // before `usage_day:*` aggregation was introduced or when day aggregates are missing.
         let mut usage_by_day_from_req: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+        let mut api_key_ref_counts_by_day: BTreeMap<String, BTreeMap<String, u64>> =
+            BTreeMap::new();
         for req in state.gateway.store.list_usage_requests(100_000) {
             let req_provider = req.get("provider").and_then(|v| v.as_str()).unwrap_or("");
             if req_provider != provider_name {
@@ -1837,13 +1889,27 @@ fn get_spend_history(
                     input_tokens.saturating_add(output_tokens)
                 });
             usage_by_day_from_req
-                .entry(day_key)
+                .entry(day_key.clone())
                 .and_modify(|(r, t, u)| {
                     *r = r.saturating_add(1);
                     *t = t.saturating_add(total_tokens);
                     *u = (*u).max(ts);
                 })
                 .or_insert((1, total_tokens, ts));
+            let req_api_key_ref = req
+                .get("api_key_ref")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty() && *s != "-")
+                .map(|s| s.to_string());
+            if let Some(key_ref) = req_api_key_ref {
+                api_key_ref_counts_by_day
+                    .entry(day_key)
+                    .or_default()
+                    .entry(key_ref)
+                    .and_modify(|v| *v = v.saturating_add(1))
+                    .or_insert(1);
+            }
         }
         // Backfill only missing days from raw requests; keep existing usage_day aggregation
         // as the canonical source when both are present.
@@ -1852,6 +1918,7 @@ fn get_spend_history(
         }
 
         let mut tracked_by_day: BTreeMap<String, f64> = BTreeMap::new();
+        let mut tracked_api_key_ref_by_day: BTreeMap<String, String> = BTreeMap::new();
         let mut updated_by_day: BTreeMap<String, u64> = BTreeMap::new();
         for day in state.gateway.store.list_spend_days(&provider_name) {
             let started = day
@@ -1867,6 +1934,14 @@ fn get_spend_history(
                     .entry(day_key.clone())
                     .and_modify(|v| *v += tracked)
                     .or_insert(tracked);
+            }
+            if let Some(key_ref) = day
+                .get("api_key_ref")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty() && *s != "-")
+            {
+                tracked_api_key_ref_by_day.insert(day_key.clone(), key_ref.to_string());
             }
             let updated_at = day
                 .get("updated_at_unix_ms")
@@ -1918,7 +1993,8 @@ fn get_spend_history(
             let package_profile = package_profile_for_day(pricing.get(&provider_name), day_start);
             let tracked_total = tracked_by_day.get(&day_key).copied();
             let scheduled_total = scheduled_by_day.get(&day_key).copied();
-            let scheduled_package_total_usd = package_profile.map(|(amount, _)| amount);
+            let scheduled_package_total_usd =
+                package_profile.as_ref().map(|(amount, _, _)| *amount);
             let (manual_total, manual_per_req, manual_updated_at) = manual_by_day
                 .get(&day_key)
                 .copied()
@@ -1975,8 +2051,24 @@ fn get_spend_history(
             let updated_at = usage_updated_at
                 .max(manual_updated_at)
                 .max(updated_by_day.get(&day_key).copied().unwrap_or(0));
+            let history_api_key_ref = api_key_ref_counts_by_day
+                .get(&day_key)
+                .and_then(|counts| {
+                    counts
+                        .iter()
+                        .max_by(|a, b| a.1.cmp(b.1).then_with(|| a.0.cmp(b.0)))
+                        .map(|(key_ref, _)| key_ref.clone())
+                })
+                .or_else(|| tracked_api_key_ref_by_day.get(&day_key).cloned())
+                .or_else(|| {
+                    package_profile
+                        .as_ref()
+                        .and_then(|(_, _, key_ref)| key_ref.clone())
+                })
+                .unwrap_or_else(|| "-".to_string());
             rows.push(serde_json::json!({
                 "provider": provider_name,
+                "api_key_ref": history_api_key_ref,
                 "day_key": day_key,
                 "req_count": req_count,
                 "total_tokens": total_tokens,
