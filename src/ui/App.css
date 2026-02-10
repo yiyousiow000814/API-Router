@@ -1017,10 +1017,10 @@
 }
 
 .aoUsageHistoryTableSurface {
-  --ao-history-scrollbar-size: 10px;
-  --ao-history-scroll-track: rgba(13, 18, 32, 0.08);
-  --ao-history-scroll-thumb: rgba(84, 95, 118, 0.52);
-  --ao-history-scroll-thumb-hover: rgba(60, 72, 98, 0.62);
+  --ao-history-scrollbar-size: 9px;
+  --ao-history-scroll-track: transparent;
+  --ao-history-scroll-thumb: rgba(84, 95, 118, 0.56);
+  --ao-history-scroll-thumb-hover: rgba(60, 72, 98, 0.7);
   flex: 1;
   min-height: 0;
   display: flex;
@@ -1055,17 +1055,37 @@
 
 .aoUsageHistoryTableWrap::-webkit-scrollbar-button,
 .aoUsageHistoryTableWrap::-webkit-scrollbar-button:single-button,
-.aoUsageHistoryTableWrap::-webkit-scrollbar-button:start:decrement,
-.aoUsageHistoryTableWrap::-webkit-scrollbar-button:end:increment {
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button:double-button,
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button:vertical,
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button:vertical:decrement,
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button:vertical:increment,
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button:vertical:start:decrement,
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button:vertical:start:increment,
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button:vertical:end:decrement,
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button:vertical:end:increment,
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button:horizontal,
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button:horizontal:decrement,
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button:horizontal:increment {
   display: none !important;
   width: 0 !important;
   height: 0 !important;
-  background: transparent;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  border: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  -webkit-appearance: none;
 }
 
+.aoUsageHistoryTableWrap::-webkit-scrollbar-track-piece,
 .aoUsageHistoryTableWrap::-webkit-scrollbar-track-piece:start,
-.aoUsageHistoryTableWrap::-webkit-scrollbar-track-piece:end {
+.aoUsageHistoryTableWrap::-webkit-scrollbar-track-piece:end,
+.aoUsageHistoryTableWrap::-webkit-scrollbar-track-piece:vertical:start,
+.aoUsageHistoryTableWrap::-webkit-scrollbar-track-piece:vertical:end {
   background: transparent;
+  border: 0;
 }
 
 .aoUsageHistoryTableWrap::-webkit-scrollbar-track {
@@ -1075,7 +1095,7 @@
 
 .aoUsageHistoryTableWrap::-webkit-scrollbar-thumb {
   background: var(--ao-history-scroll-thumb);
-  border: 2px solid var(--ao-history-scroll-track);
+  border: 2px solid transparent;
   background-clip: padding-box;
   border-radius: 999px;
   transition: background-color 120ms ease;
