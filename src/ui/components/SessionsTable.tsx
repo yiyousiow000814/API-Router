@@ -11,6 +11,7 @@ type SessionRow = {
   active: boolean
   preferred_provider?: string | null
   verified?: boolean
+  is_agent?: boolean
 }
 
 type Props = {
@@ -57,9 +58,10 @@ export function SessionsTable({
                 const routingTarget = s.preferred_provider ?? globalPreferred
                 const codexSession = s.codex_session_id ?? null
                 const wt = s.wt_session ?? '-'
-                const codexProvider = s.reported_model_provider ?? '-'
+                const isAgent = s.is_agent === true
+                const codexProvider = isAgent ? 'agents' : (s.reported_model_provider ?? '-')
                 return (
-                  <tr key={s.id}>
+                  <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
                     <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>
                       {codexSession ? (
                         <div title={`WT_SESSION: ${wt}`}>{codexSession}</div>
@@ -82,7 +84,7 @@ export function SessionsTable({
                       <select
                         className="aoSelect"
                         value={s.preferred_provider ?? ''}
-                        disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession}
+                        disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession || isAgent}
                         onChange={(e) => {
                           const v = e.target.value
                           onSetPreferred(s.id, v ? v : null)
@@ -149,9 +151,10 @@ export function SessionsTable({
                   const routingTarget = s.preferred_provider ?? globalPreferred
                   const codexSession = s.codex_session_id ?? null
                   const wt = s.wt_session ?? '-'
-                  const codexProvider = s.reported_model_provider ?? '-'
+                  const isAgent = s.is_agent === true
+                  const codexProvider = isAgent ? 'agents' : (s.reported_model_provider ?? '-')
                   return (
-                    <tr key={s.id}>
+                    <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
                       <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>
                         {codexSession ? (
                           <div title={`WT_SESSION: ${wt}`}>{codexSession}</div>
@@ -174,7 +177,7 @@ export function SessionsTable({
                         <select
                           className="aoSelect"
                           value={s.preferred_provider ?? ''}
-                          disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession}
+                          disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession || isAgent}
                           onChange={(e) => {
                             const v = e.target.value
                             onSetPreferred(s.id, v ? v : null)

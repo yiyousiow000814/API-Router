@@ -2527,6 +2527,16 @@
   background: rgba(13, 18, 32, 0.02);
 }
 
+.aoSessionRowAgent td {
+  background: linear-gradient(90deg, rgba(40, 199, 217, 0.16), rgba(214, 230, 85, 0.15)) !important;
+}
+
+.aoSessionRowAgent .aoSelect:disabled {
+  color: rgba(13, 18, 32, 0.48);
+  border-color: rgba(13, 18, 32, 0.14);
+  background: rgba(13, 18, 32, 0.04);
+}
+
 .aoPill {
   display: inline-flex;
   align-items: center;

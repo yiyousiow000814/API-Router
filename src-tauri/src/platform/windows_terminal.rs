@@ -20,6 +20,7 @@ pub struct InferredWtSession {
     pub reported_model_provider: Option<String>,
     pub reported_base_url: Option<String>,
     pub router_confirmed: bool,
+    pub is_agent: bool,
 }
 
 #[cfg(windows)]
@@ -107,6 +108,22 @@ struct RolloutSessionMeta {
     cwd: String,
     model_provider: Option<String>,
     base_url: Option<String>,
+    is_agent: bool,
+}
+
+#[cfg(windows)]
+fn rollout_source_is_agent(source: Option<&serde_json::Value>) -> bool {
+    let Some(source) = source else {
+        return false;
+    };
+    match source {
+        // V1/V2 wire shapes: {"subagent": {...}} / {"subAgent": {...}}
+        serde_json::Value::Object(map) => {
+            map.contains_key("subagent") || map.contains_key("subAgent")
+        }
+        serde_json::Value::String(s) => s.to_ascii_lowercase().contains("subagent"),
+        _ => false,
+    }
 }
 
 #[cfg(windows)]
@@ -130,11 +147,13 @@ fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
         .or_else(|| payload.get("model_provider_base_url"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let is_agent = rollout_source_is_agent(payload.get("source"));
     Some(RolloutSessionMeta {
         id,
         cwd,
         model_provider,
         base_url,
+        is_agent,
     })
 }
 
@@ -324,6 +343,7 @@ pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWt
             reported_model_provider: None,
             reported_base_url: None,
             router_confirmed: true,
+            is_agent: false,
         })
     }
 }
@@ -918,6 +938,7 @@ fn discover_sessions_using_router_uncached(
                     reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
                     codex_session_id: Some(codex_session_id),
                     router_confirmed: matched,
+                    is_agent: rollout_meta.as_ref().map(|m| m.is_agent).unwrap_or(false),
                 });
             }
         }
@@ -949,6 +970,14 @@ mod tests {
         assert_eq!(m.cwd, "C:\\work\\example-project");
         assert_eq!(m.model_provider.as_deref(), Some("api_router"));
         assert!(m.base_url.is_none());
+        assert!(!m.is_agent);
+    }
+
+    #[test]
+    fn parse_rollout_session_meta_detects_subagent_source() {
+        let line = r#"{"type":"session_meta","payload":{"id":"x","cwd":"C:\\x","model_provider":"api_router","source":{"subagent":{"thread_spawn":{"parent_thread_id":"p","depth":1}}}}}"#;
+        let m = parse_rollout_session_meta(line).expect("parse");
+        assert!(m.is_agent);
     }
 
     #[test]
@@ -1107,6 +1136,7 @@ mod tests {
             eprintln!("wt_session={}", s.wt_session.trim());
             eprintln!("pid={}", s.pid);
             eprintln!("router_confirmed={}", s.router_confirmed);
+            eprintln!("is_agent={}", s.is_agent);
             eprintln!(
                 "reported_model_provider={}",
                 s.reported_model_provider.as_deref().unwrap_or("<none>")

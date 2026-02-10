@@ -90,6 +90,8 @@ pub struct ClientSessionRuntime {
     pub last_discovered_unix_ms: u64,
     pub last_reported_model_provider: Option<String>,
     pub last_reported_base_url: Option<String>,
+    // Mark sessions spawned from Codex subagent flows.
+    pub is_agent: bool,
     // Sticky "this session uses our gateway" marker. This prevents sessions from disappearing if
     // the user edits Codex config files while Codex is running (the process keeps the old config
     // in memory, but we may no longer be able to prove it from disk).
@@ -243,6 +245,31 @@ fn codex_session_id_for_display(headers: &HeaderMap, body: &Value) -> Option<Str
         }
     }
     None
+}
+
+fn body_session_source_is_agent(body: &Value) -> bool {
+    let source = body
+        .get("session_source")
+        .or_else(|| body.get("sessionSource"));
+    let Some(source) = source else {
+        return false;
+    };
+    match source {
+        Value::Object(map) => map.contains_key("subagent") || map.contains_key("subAgent"),
+        Value::String(v) => v.to_ascii_lowercase().contains("subagent"),
+        _ => false,
+    }
+}
+
+fn request_is_agent(headers: &HeaderMap, body: &Value) -> bool {
+    if headers
+        .get("x-openai-subagent")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        return true;
+    }
+    body_session_source_is_agent(body)
 }
 
 fn is_prev_id_unsupported_error(message: &str) -> bool {
@@ -609,6 +636,7 @@ async fn responses(
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("peer:{peer}"));
     let client_session = windows_terminal::infer_wt_session(peer, cfg.listen.port);
+    let agent_request = request_is_agent(&headers, &body);
     let routing_session_fields = {
         let wt = client_session.as_ref().map(|s| s.wt_session.clone());
         let pid = client_session.as_ref().map(|s| s.pid);
@@ -618,6 +646,7 @@ async fn responses(
             "wt_session": wt,
             "pid": pid,
             "codex_session_id": codex,
+            "is_agent": agent_request,
         })
     };
     // Record requests against the canonical Codex session identity (from headers/body), not WT_SESSION.
@@ -635,11 +664,18 @@ async fn responses(
                 last_discovered_unix_ms: 0,
                 last_reported_model_provider: None,
                 last_reported_base_url: None,
+                is_agent: agent_request || client_session.as_ref().is_some_and(|s| s.is_agent),
                 confirmed_router: true,
             });
         if let Some(inferred) = client_session.as_ref() {
             entry.pid = inferred.pid;
             entry.wt_session = Some(inferred.wt_session.clone());
+            if inferred.is_agent {
+                entry.is_agent = true;
+            }
+        }
+        if agent_request {
+            entry.is_agent = true;
         }
         entry.last_request_unix_ms = unix_ms();
         entry.confirmed_router = true;
