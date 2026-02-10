@@ -53,6 +53,42 @@ function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true })
 }
 
+function cleanupDirBestEffort(dirPath, retries = 5, waitMs = 300) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      fs.rmSync(dirPath, { recursive: true, force: true })
+      return true
+    } catch {
+      if (i >= retries) return false
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs)
+    }
+  }
+  return false
+}
+
+function pruneUiCheckRuntimeDirs(baseDir, keepMs = 3 * 24 * 60 * 60 * 1000) {
+  try {
+    if (!fs.existsSync(baseDir)) return
+    const now = Date.now()
+    const entries = fs.readdirSync(baseDir, { withFileTypes: true })
+    for (const e of entries) {
+      if (!e.isDirectory()) continue
+      const full = path.join(baseDir, e.name)
+      let ts = Number(e.name)
+      if (!Number.isFinite(ts)) {
+        try {
+          ts = fs.statSync(full).mtimeMs
+        } catch {
+          continue
+        }
+      }
+      if (now - ts > keepMs) {
+        cleanupDirBestEffort(full, 1, 100)
+      }
+    }
+  } catch {}
+}
+
 function findFileRecursive(dir, filenameLower) {
   const entries = fs.readdirSync(dir, { withFileTypes: true })
   for (const e of entries) {
@@ -630,7 +666,10 @@ async function main() {
   const artifactsDir = path.join(repoRoot, 'user-data', 'ui-artifacts', 'tauri')
   ensureDir(artifactsDir)
   const screenshotPath = path.join(artifactsDir, `drag-border-${Date.now()}.png`)
-  const uiProfileDir = path.join(repoRoot, 'user-data', 'ui-check-runtime', String(Date.now()))
+  const uiRuntimeRoot = path.join(repoRoot, 'user-data', 'ui-check-runtime')
+  ensureDir(uiRuntimeRoot)
+  pruneUiCheckRuntimeDirs(uiRuntimeRoot)
+  const uiProfileDir = path.join(uiRuntimeRoot, String(Date.now()))
   ensureDir(uiProfileDir)
 
   const driverHost = '127.0.0.1'
@@ -926,13 +965,13 @@ async function main() {
     {
       const beforeOrder = await getProviderOrder(driver)
       if (beforeOrder.length < 2) {
-        console.log('[ui:tauri] Subtest B skipped (need at least 2 provider cards after Subtest A).')
+        console.log('[ui:tauri] Subtest C skipped (need at least 2 provider cards after Subtest B).')
       } else {
       const viewportH = Number(await driver.executeScript('return window.innerHeight'))
       const draggingName = beforeOrder[1] ?? beforeOrder[beforeOrder.length - 1]
       const aboveName = beforeOrder[0]
       if (!draggingName || !aboveName || draggingName === aboveName) {
-        console.log('[ui:tauri] Subtest B skipped (insufficient distinct cards for drag-up).')
+        console.log('[ui:tauri] Subtest C skipped (insufficient distinct cards for drag-up).')
       } else {
       const draggingCard = await driver.findElement(By.css(`.aoProviderConfigCard[data-provider="${draggingName}"]`))
       const aboveCard = await driver.findElement(By.css(`.aoProviderConfigCard[data-provider="${aboveName}"]`))
@@ -992,7 +1031,7 @@ async function main() {
       if (ph0 < 0) {
         const b64 = await driver.takeScreenshot()
         fs.writeFileSync(screenshotPath.replace('.png', `-up-no-drag.png`), Buffer.from(b64, 'base64'))
-        warnOrFail('Subtest B degraded (drag did not start).')
+        warnOrFail('Subtest C degraded (drag did not start).')
         await driver.actions({ async: true }).release().perform()
         await new Promise((r) => setTimeout(r, 150))
       } else {
@@ -1063,7 +1102,7 @@ async function main() {
         return { scrollTop: body.scrollTop, scrollHeight: body.scrollHeight, clientHeight: body.clientHeight };
       `)
       if (!scrollInfo || !(scrollInfo.scrollHeight > scrollInfo.clientHeight + 2)) {
-        console.log('[ui:tauri] Subtest C skipped (modal body not scrollable).')
+        console.log('[ui:tauri] Subtest D skipped (modal body not scrollable).')
       } else {
         const viewportH = Number(await driver.executeScript('return window.innerHeight'))
         const beforeOrder = await getProviderOrder(driver)
@@ -1142,7 +1181,7 @@ async function main() {
         return { scrollHeight: body.scrollHeight, clientHeight: body.clientHeight };
       `)
       if (!info || !(info.scrollHeight > info.clientHeight + 2)) {
-        console.log('[ui:tauri] Subtest D skipped (modal body not scrollable).')
+        console.log('[ui:tauri] Subtest E skipped (modal body not scrollable).')
       } else {
         // Put us somewhere in the middle so there is room to scroll up.
         const startTop = Number(
@@ -1212,6 +1251,9 @@ async function main() {
     } catch {}
     try {
       if (fs.existsSync(msedgedriverLogPath)) console.log(`[ui:tauri] EdgeDriver log: ${msedgedriverLogPath}`)
+    } catch {}
+    try {
+      cleanupDirBestEffort(uiProfileDir)
     } catch {}
   }
 }
