@@ -1017,10 +1017,9 @@
 }
 
 .aoUsageHistoryTableSurface {
-  --ao-history-scrollbar-size: 10px;
-  --ao-history-scroll-track: rgba(13, 18, 32, 0.08);
-  --ao-history-scroll-thumb: rgba(84, 95, 118, 0.52);
-  --ao-history-scroll-thumb-hover: rgba(60, 72, 98, 0.62);
+  --ao-history-scrollbar-size: 8px;
+  --ao-history-scroll-thumb: rgba(120, 132, 156, 0.44);
+  --ao-history-scroll-thumb-hover: rgba(94, 108, 136, 0.56);
   flex: 1;
   min-height: 0;
   display: flex;
@@ -1034,23 +1033,24 @@
 
 .aoUsageHistoryTableHead {
   flex: 0 0 auto;
-  padding-right: var(--ao-history-scrollbar-size);
+  padding-right: 0;
   border-bottom: 1px solid rgba(13, 18, 32, 0.08);
   background: rgb(242, 244, 247);
 }
 
 .aoUsageHistoryTableWrap {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow: auto;
   background: transparent;
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: var(--ao-history-scroll-thumb) var(--ao-history-scroll-track);
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 .aoUsageHistoryTableWrap::-webkit-scrollbar {
-  width: var(--ao-history-scrollbar-size);
+  width: 0;
+  height: 0;
 }
 
 .aoUsageHistoryTableWrap::-webkit-scrollbar-button {
@@ -1059,25 +1059,33 @@
   height: 0;
 }
 
-.aoUsageHistoryTableWrap::-webkit-scrollbar-track {
-  background: var(--ao-history-scroll-track);
-  border-radius: 999px;
+.aoUsageHistoryScrollbarOverlay {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  bottom: 4px;
+  width: var(--ao-history-scrollbar-size);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+  z-index: 2;
 }
 
-.aoUsageHistoryTableWrap::-webkit-scrollbar-thumb {
-  background: var(--ao-history-scroll-thumb);
-  border: 2px solid var(--ao-history-scroll-track);
-  background-clip: padding-box;
+.aoUsageHistoryScrollbarOverlayVisible {
+  opacity: 1;
+}
+
+.aoUsageHistoryScrollbarThumb {
+  width: 100%;
+  min-height: 24px;
   border-radius: 999px;
+  background: var(--ao-history-scroll-thumb);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
   transition: background-color 120ms ease;
 }
 
-.aoUsageHistoryTableWrap::-webkit-scrollbar-thumb:hover {
+.aoUsageHistoryTableSurfaceScrollbarVisible .aoUsageHistoryScrollbarThumb {
   background: var(--ao-history-scroll-thumb-hover);
-}
-
-.aoUsageHistoryTableWrap::-webkit-scrollbar-corner {
-  background: transparent;
 }
 
 .aoUsageHistoryTable {
