@@ -819,6 +819,13 @@ fn get_usage_statistics(
     let records = state.gateway.store.list_usage_requests(500_000);
     let quota = state.gateway.store.list_quota_snapshots();
     let provider_pricing = state.secrets.list_provider_pricing();
+    let mut provider_default_api_key_ref: BTreeMap<String, String> = BTreeMap::new();
+    for provider_name in state.gateway.cfg.read().providers.keys() {
+        provider_default_api_key_ref.insert(
+            provider_name.clone(),
+            provider_api_key_ref(&state, provider_name),
+        );
+    }
 
     let mut provider_tokens_24h: BTreeMap<String, u64> = BTreeMap::new();
     let mut provider_active_hour_buckets: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
@@ -910,8 +917,10 @@ fn get_usage_statistics(
             .get("api_key_ref")
             .and_then(|v| v.as_str())
             .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("-");
+            .filter(|s| !s.is_empty() && *s != "-")
+            .map(|s| s.to_string())
+            .or_else(|| provider_default_api_key_ref.get(&provider).cloned())
+            .unwrap_or_else(|| "-".to_string());
 
         total_requests = total_requests.saturating_add(1);
         total_tokens = total_tokens.saturating_add(total_tokens_row);
@@ -935,7 +944,7 @@ fn get_usage_statistics(
             let key_entry = provider_req_by_key_in_window
                 .entry(provider.clone())
                 .or_default()
-                .entry(api_key_ref.to_string())
+                .entry(api_key_ref)
                 .or_insert((0, 0));
             key_entry.0 = key_entry.0.saturating_add(1);
             key_entry.1 = key_entry.1.saturating_add(total_tokens_row);

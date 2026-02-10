@@ -2160,7 +2160,10 @@ function newScheduleDraft(
         providers: group.providers,
         rows: group.rows,
         displayName: group.providers.join(' / '),
-        detailLabel: group.apiKeyRef && group.apiKeyRef !== '-' ? group.apiKeyRef : 'api key',
+        detailLabel:
+          group.apiKeyRef && group.apiKeyRef !== '-'
+            ? group.apiKeyRef
+            : providerApiKeyLabel(group.providers[0] ?? ''),
         requests,
         totalTokens,
         tokensPerRequest: requests > 0 ? totalTokens / requests : null,
