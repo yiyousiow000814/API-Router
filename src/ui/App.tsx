@@ -1385,17 +1385,18 @@ function newScheduleDraft(
     const thumb = usageHistoryScrollbarThumbRef.current
     if (!wrap || !overlay || !thumb) return
     const viewportHeight = wrap.clientHeight
+    const overlayHeight = overlay.clientHeight
     const scrollHeight = wrap.scrollHeight
     const maxScroll = Math.max(0, scrollHeight - viewportHeight)
-    if (viewportHeight <= 0 || maxScroll <= 0) {
+    if (viewportHeight <= 0 || overlayHeight <= 0 || maxScroll <= 0) {
       overlay.style.opacity = '0'
       thumb.style.height = '0px'
       thumb.style.transform = 'translateY(0px)'
       setUsageHistoryScrollbarVisible(false)
       return
     }
-    const thumbHeight = Math.max(24, Math.round((viewportHeight / scrollHeight) * viewportHeight))
-    const thumbTravel = Math.max(0, viewportHeight - thumbHeight)
+    const thumbHeight = Math.max(24, Math.round((viewportHeight / scrollHeight) * overlayHeight))
+    const thumbTravel = Math.max(0, overlayHeight - thumbHeight)
     const thumbTop = maxScroll > 0 ? Math.round((wrap.scrollTop / maxScroll) * thumbTravel) : 0
     thumb.style.height = `${thumbHeight}px`
     thumb.style.transform = `translateY(${thumbTop}px)`

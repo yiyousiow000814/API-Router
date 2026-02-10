@@ -1071,6 +1071,8 @@
   right: 2px;
   bottom: 10px;
   width: var(--ao-history-scrollbar-size);
+  overflow: hidden;
+  border-radius: 999px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 140ms ease;
