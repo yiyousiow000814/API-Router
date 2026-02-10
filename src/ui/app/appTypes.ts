@@ -174,7 +174,7 @@ export const devConfig: Config = {
       usage_adapter: 'ppchat',
       usage_base_url: 'https://code.ppchat.vip',
       has_key: true,
-      key_preview: 'sk-pp********c61',
+      key_preview: 'preview-key-provider-1',
       has_usage_token: false,
     },
     provider_2: {
@@ -183,7 +183,7 @@ export const devConfig: Config = {
       usage_adapter: 'packycode',
       usage_base_url: 'https://codex-api.packycode.com',
       has_key: true,
-      key_preview: 'sk-pk********mN5',
+      key_preview: 'preview-key-provider-2',
       has_usage_token: true,
     },
   },
