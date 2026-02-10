@@ -120,7 +120,7 @@ export function useAppState() {
   );
 
   const refreshStatus = useCallback(async () => {
-    const next = await invoke<Status>("status");
+    const next = await invoke<Status>("get_status");
     setStatus(next);
     if (!overrideDirtyRef.current) {
       setOverride(next.manual_override ?? "");

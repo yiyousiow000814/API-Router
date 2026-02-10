@@ -79,15 +79,10 @@ export function useAppSwitchboard({
     (dir1Raw: string, dir2Raw: string, applyBoth: boolean) => {
       const dir1 = dir1Raw.trim();
       const dir2 = dir2Raw.trim();
-      if (!dir1) {
-        throw new Error("Dir 1 is required");
-      }
-      if (!applyBoth || !dir2) {
+      if (!dir1) return [];
+      if (!applyBoth || !dir2) return [dir1];
+      if (normalizePathForCompare(dir1) === normalizePathForCompare(dir2))
         return [dir1];
-      }
-      if (normalizePathForCompare(dir1) === normalizePathForCompare(dir2)) {
-        throw new Error("Dir 2 must be different from Dir 1");
-      }
       return [dir1, dir2];
     },
     [],
@@ -98,7 +93,7 @@ export function useAppSwitchboard({
       const result = await invoke<ProviderSwitchboardStatus>(
         "provider_switchboard_status",
         {
-          cliHomes: resolveCliHomes(
+          cli_homes: resolveCliHomes(
             codexSwapDir1,
             codexSwapDir2,
             codexSwapApplyBoth,
@@ -120,7 +115,7 @@ export function useAppSwitchboard({
   const refreshCodexSwapStatus = useCallback(async () => {
     try {
       const result = await invoke<CodexSwapStatus>("codex_cli_swap_status", {
-        cliHomes: resolveCliHomes(
+        cli_homes: resolveCliHomes(
           codexSwapDir1,
           codexSwapDir2,
           codexSwapApplyBoth,
@@ -148,7 +143,7 @@ export function useAppSwitchboard({
         mode: "swapped" | "restored";
         cli_homes: string[];
       }>("codex_cli_toggle_auth_config_swap", {
-        cliHomes,
+        cli_homes: cliHomes,
       });
       flashToast(
         result.mode === "swapped"
@@ -174,9 +169,9 @@ export function useAppSwitchboard({
       setProviderSwitchBusy(true);
       try {
         await invoke("provider_switchboard_set_target", {
-          mode,
+          target: mode,
           provider: provider ?? null,
-          cliHomes: resolveCliHomes(
+          cli_homes: resolveCliHomes(
             codexSwapDir1,
             codexSwapDir2,
             codexSwapApplyBoth,
