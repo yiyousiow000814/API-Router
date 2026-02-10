@@ -19,14 +19,18 @@ use std::time::Duration;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
+    let mut builder = tauri::Builder::default();
+    if !is_ui_tauri {
         // Ensure clicking the EXE again focuses the existing instance instead of launching a second one.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
                 let _ = w.set_focus();
             }
-        }))
+        }));
+    }
+    builder
         .setup(|app| {
             // UI automation should not steal focus or visibly pop up windows.
             // The WebView still needs a real window on Windows/WebView2, so we move it far off-screen
@@ -57,16 +61,31 @@ pub fn run() {
             // - user-data/config.toml
             // - user-data/secrets.json
             // - user-data/data/* (sled store, metrics, events)
-            let user_data_dir = (|| -> Option<std::path::PathBuf> {
-                let exe = std::env::current_exe().ok()?;
-                let dir = exe.parent()?.to_path_buf();
-                let local = dir.join("user-data");
-                if local.exists() {
-                    return Some(local);
+            let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
+            let user_data_dir = if is_ui_tauri {
+                if let Ok(p) = std::env::var("UI_TAURI_PROFILE_DIR") {
+                    let p = PathBuf::from(p);
+                    let _ = std::fs::create_dir_all(&p);
+                    p
+                } else {
+                    let p = std::env::temp_dir()
+                        .join("api-router-ui-check")
+                        .join(format!("{}", std::process::id()));
+                    let _ = std::fs::create_dir_all(&p);
+                    p
                 }
-                None
-            })()
-            .unwrap_or(app.path().app_data_dir()?);
+            } else {
+                (|| -> Option<std::path::PathBuf> {
+                    let exe = std::env::current_exe().ok()?;
+                    let dir = exe.parent()?.to_path_buf();
+                    let local = dir.join("user-data");
+                    if local.exists() {
+                        return Some(local);
+                    }
+                    None
+                })()
+                .unwrap_or(app.path().app_data_dir()?)
+            };
 
             // Isolate Codex auth/session from the default ~/.codex directory to avoid overwrites.
             // This keeps the app's login independent from CLI logins.
@@ -80,21 +99,23 @@ pub fn run() {
             )?;
             app.manage(state);
 
-            // Spawn the local OpenAI-compatible gateway.
-            let st = app.state::<app_state::AppState>();
-            let gateway = st.gateway.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = serve_in_background(gateway).await {
-                    log::error!("gateway exited: {e:?}");
-                }
-            });
+            if !is_ui_tauri {
+                // Spawn the local OpenAI-compatible gateway.
+                let st = app.state::<app_state::AppState>();
+                let gateway = st.gateway.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = serve_in_background(gateway).await {
+                        log::error!("gateway exited: {e:?}");
+                    }
+                });
 
-            // Quota refresh scheduler: only runs when the gateway is actively being used.
-            let st = app.state::<app_state::AppState>();
-            let gateway = st.gateway.clone();
-            tauri::async_runtime::spawn(async move {
-                crate::orchestrator::quota::run_quota_scheduler(gateway).await;
-            });
+                // Quota refresh scheduler: only runs when the gateway is actively being used.
+                let st = app.state::<app_state::AppState>();
+                let gateway = st.gateway.clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::orchestrator::quota::run_quota_scheduler(gateway).await;
+                });
+            }
 
             // Tray menu so the app is usable even when the main window starts hidden.
             let show = tauri::menu::MenuItemBuilder::with_id("show", "Show").build(app)?;

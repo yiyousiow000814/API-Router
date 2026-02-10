@@ -3218,7 +3218,7 @@ function newScheduleDraft(
                   <span>Provider Switchboard</span>
                 </button>
               </div>
-              <button className="aoTinyBtn" onClick={() => setInstructionModalOpen(true)}>
+              <button className="aoTinyBtn" aria-label="Getting Started" onClick={() => setInstructionModalOpen(true)}>
                 Getting Started
               </button>
             </div>

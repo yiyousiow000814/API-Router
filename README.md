@@ -98,3 +98,16 @@ npm run build:root-exe
 ```
 
 The EXE will be written to the repo root as `API Router.exe`.
+
+## Checks
+
+```powershell
+npm run test
+npm run backend:check
+npm run ui:check
+npm run check:all
+```
+
+Notes:
+- `ui:check` is Windows-only and auto-skips on non-Windows.
+- `check:all` runs frontend tests + backend tests + UI check.
