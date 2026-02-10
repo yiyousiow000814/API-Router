@@ -39,6 +39,7 @@ type UsagePricingGroup = {
 
 type SpendHistoryRow = {
   provider: string
+  api_key_ref?: string | null
   day_key: string
   req_count: number
   total_tokens: number
@@ -98,6 +99,7 @@ type FxUsdPayload = {
 
 const FX_RATES_CACHE_KEY = 'ao.fx.usd.daily.v1'
 const FX_CURRENCY_PREF_KEY_PREFIX = 'ao.usagePricing.currency.'
+const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
 
 const devStatus: Status = {
   listen: { host: '127.0.0.1', port: 4000 },
@@ -283,6 +285,10 @@ export default function App() {
   const [usageHistoryDrafts, setUsageHistoryDrafts] = useState<Record<string, UsageHistoryDraft>>({})
   const [usageHistoryEditCell, setUsageHistoryEditCell] = useState<string | null>(null)
   const [usageHistoryLoading, setUsageHistoryLoading] = useState<boolean>(false)
+  const [usageProviderShowDetails, setUsageProviderShowDetails] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true
+    return window.localStorage.getItem(USAGE_PROVIDER_SHOW_DETAILS_KEY) !== '0'
+  })
   const [usagePricingCurrencyMenu, setUsagePricingCurrencyMenu] = useState<{
     provider: string
     providers: string[]
@@ -2095,6 +2101,78 @@ function newScheduleDraft(
       effectiveTotalByProvider,
     }
   }, [usageByProvider])
+  const usageProviderDisplayGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        apiKeyRef: string
+        providers: string[]
+        rows: Array<UsageStatistics['summary']['by_provider'][number]>
+      }
+    >()
+    usageByProvider.forEach((row) => {
+      const provider = String(row.provider)
+      const apiKeyRef = String(row.api_key_ref ?? '').trim()
+      const groupKey = apiKeyRef && apiKeyRef !== '-' ? `key:${apiKeyRef}` : `provider:${provider}`
+      const existing = groups.get(groupKey)
+      if (existing) {
+        if (!existing.providers.includes(provider)) existing.providers.push(provider)
+        existing.rows.push(row)
+      } else {
+        groups.set(groupKey, {
+          apiKeyRef,
+          providers: [provider],
+          rows: [row],
+        })
+      }
+    })
+    return Array.from(groups.values()).map((group) => {
+      const requests = group.rows.reduce((sum, row) => sum + (row.requests ?? 0), 0)
+      const totalTokens = group.rows.reduce((sum, row) => sum + (row.total_tokens ?? 0), 0)
+      const estimatedTotalCost = group.rows.reduce((sum, row) => {
+        const value = row.estimated_total_cost_usd
+        return value != null && Number.isFinite(value) ? sum + Number(value) : sum
+      }, 0)
+      const estimatedCostReqCount = group.rows.reduce(
+        (sum, row) => sum + (row.estimated_cost_request_count ?? 0),
+        0,
+      )
+      const effectiveDailyValues = group.rows
+        .map((row) => usageSharedCostView.effectiveDailyByProvider.get(String(row.provider)))
+        .filter((value): value is number => value != null && Number.isFinite(value))
+      const effectiveTotalValues = group.rows
+        .map((row) => usageSharedCostView.effectiveTotalByProvider.get(String(row.provider)))
+        .filter((value): value is number => value != null && Number.isFinite(value))
+      const pricingSources = Array.from(
+        new Set(group.rows.map((row) => String(row.pricing_source ?? '').trim()).filter(Boolean)),
+      )
+      return {
+        id: group.providers.join('|'),
+        providers: group.providers,
+        displayName: group.providers.join(' / '),
+        detailLabel: group.apiKeyRef && group.apiKeyRef !== '-' ? group.apiKeyRef : 'api key',
+        requests,
+        totalTokens,
+        tokensPerRequest: requests > 0 ? totalTokens / requests : null,
+        estimatedAvgRequestCostUsd:
+          estimatedCostReqCount > 0 ? estimatedTotalCost / estimatedCostReqCount : null,
+        usdPerMillionTokens:
+          totalTokens > 0 && Number.isFinite(estimatedTotalCost)
+            ? (estimatedTotalCost * 1_000_000) / totalTokens
+            : null,
+        effectiveDaily:
+          effectiveDailyValues.length > 0
+            ? effectiveDailyValues.reduce((sum, value) => sum + value, 0)
+            : null,
+        effectiveTotal:
+          effectiveTotalValues.length > 0
+            ? effectiveTotalValues.reduce((sum, value) => sum + value, 0)
+            : null,
+        pricingSource:
+          pricingSources.length === 1 ? pricingSources[0] : pricingSources.length > 1 ? 'mixed' : null,
+      }
+    })
+  }, [usageByProvider, usageSharedCostView])
   const usagePricedRequestCount = usageByProvider.reduce((sum, row) => {
     const total = usageSharedCostView.effectiveTotalByProvider.get(String(row.provider))
     if (total == null || !Number.isFinite(total) || total <= 0) {
@@ -3600,10 +3678,35 @@ function newScheduleDraft(
                     >
                       Pricing Timeline
                     </button>
+                    <button
+                      className="aoTinyBtn"
+                      onClick={() => {
+                        setUsageProviderShowDetails((prev) => {
+                          const next = !prev
+                          if (typeof window !== 'undefined') {
+                            window.localStorage.setItem(USAGE_PROVIDER_SHOW_DETAILS_KEY, next ? '1' : '0')
+                          }
+                          return next
+                        })
+                      }}
+                    >
+                      {usageProviderShowDetails ? 'Hide Details' : 'Show Details'}
+                    </button>
                   </div>
                 </div>
                 {usageByProvider.length ? (
                   <table className="aoUsageProviderTable">
+                    <colgroup>
+                      <col className="aoUsageProviderColProv" />
+                      <col className="aoUsageProviderColReq" />
+                      <col className="aoUsageProviderColTok" />
+                      <col className="aoUsageProviderColTokReq" />
+                      <col className="aoUsageProviderColReqUsd" />
+                      <col className="aoUsageProviderColMilUsd" />
+                      <col className="aoUsageProviderColDay" />
+                      <col className="aoUsageProviderColTotal" />
+                      <col className="aoUsageProviderColSrc" />
+                    </colgroup>
                     <thead>
                       <tr>
                         <th>Provider</th>
@@ -3618,31 +3721,56 @@ function newScheduleDraft(
                       </tr>
                     </thead>
                     <tbody>
-                      {usageByProvider.map((p) => {
-                        const provider = String(p.provider)
-                        const zeroCost = usageSharedCostView.zeroProviders.has(provider)
-                        const effectiveDaily = usageSharedCostView.effectiveDailyByProvider.get(provider) ?? null
-                        const effectiveTotal = usageSharedCostView.effectiveTotalByProvider.get(provider) ?? null
-                        return (
-                          <tr
-                            key={p.provider}
-                            className={usageAnomalies.highCostProviders.has(p.provider) ? 'aoUsageProviderRowAnomaly' : ''}
-                          >
-                            <td className="aoUsageProviderName">{p.provider}</td>
-                            <td>{p.requests.toLocaleString()}</td>
-                            <td>{p.total_tokens.toLocaleString()}</td>
-                            <td>
-                              {p.tokens_per_request == null || !Number.isFinite(p.tokens_per_request)
-                                ? '-'
-                                : Math.round(p.tokens_per_request).toLocaleString()}
-                            </td>
-                            <td>{fmtUsdMaybe(p.estimated_avg_request_cost_usd)}</td>
-                            <td>{fmtUsdMaybe(p.usd_per_million_tokens)}</td>
-                            <td>{zeroCost ? '$0.000' : fmtUsdMaybe(effectiveDaily)}</td>
-                            <td>{zeroCost ? '$0.000' : fmtUsdMaybe(effectiveTotal)}</td>
-                            <td>{fmtPricingSource(p.pricing_source)}</td>
-                          </tr>
+                      {usageProviderDisplayGroups.flatMap((group) => {
+                        const hasAnomaly = group.providers.some((provider) =>
+                          usageAnomalies.highCostProviders.has(provider),
                         )
+                        if (!usageProviderShowDetails) {
+                          return [
+                            <tr key={`summary-${group.id}`} className={hasAnomaly ? 'aoUsageProviderRowAnomaly' : ''}>
+                              <td className="aoUsageProviderName">{group.displayName}</td>
+                              <td>{group.requests.toLocaleString()}</td>
+                              <td>{group.totalTokens.toLocaleString()}</td>
+                              <td>
+                                {group.tokensPerRequest == null || !Number.isFinite(group.tokensPerRequest)
+                                  ? '-'
+                                  : Math.round(group.tokensPerRequest).toLocaleString()}
+                              </td>
+                              <td>{fmtUsdMaybe(group.estimatedAvgRequestCostUsd)}</td>
+                              <td>{fmtUsdMaybe(group.usdPerMillionTokens)}</td>
+                              <td>{fmtUsdMaybe(group.effectiveDaily)}</td>
+                              <td>{fmtUsdMaybe(group.effectiveTotal)}</td>
+                              <td>{fmtPricingSource(group.pricingSource)}</td>
+                            </tr>,
+                          ]
+                        }
+                        return [
+                          <tr key={`group-${group.id}`} className="aoUsageProviderGroupRow">
+                            <td colSpan={9} className="aoUsageProviderName">
+                              {group.displayName}
+                            </td>
+                          </tr>,
+                          <tr
+                            key={`detail-${group.id}`}
+                            className={hasAnomaly ? 'aoUsageProviderRowAnomaly' : ''}
+                          >
+                            <td className="aoUsageProviderName aoUsageProviderDetailName" title={group.detailLabel}>
+                              <span className="aoUsageProviderDetailText">{group.detailLabel}</span>
+                            </td>
+                            <td>{group.requests.toLocaleString()}</td>
+                            <td>{group.totalTokens.toLocaleString()}</td>
+                            <td>
+                              {group.tokensPerRequest == null || !Number.isFinite(group.tokensPerRequest)
+                                ? '-'
+                                : Math.round(group.tokensPerRequest).toLocaleString()}
+                            </td>
+                            <td>{fmtUsdMaybe(group.estimatedAvgRequestCostUsd)}</td>
+                            <td>{fmtUsdMaybe(group.usdPerMillionTokens)}</td>
+                            <td>{fmtUsdMaybe(group.effectiveDaily)}</td>
+                            <td>{fmtUsdMaybe(group.effectiveTotal)}</td>
+                            <td>{fmtPricingSource(group.pricingSource)}</td>
+                          </tr>,
+                        ]
                       })}
                     </tbody>
                     {usageProviderTotalsAndAverages ? (
@@ -4050,6 +4178,7 @@ requires_openai_auth = true`}
                   <colgroup>
                     <col className="aoUsageHistoryColDate" />
                     <col className="aoUsageHistoryColProv" />
+                    <col className="aoUsageHistoryColKey" />
                     <col className="aoUsageHistoryColReq" />
                     <col className="aoUsageHistoryColTok" />
                     <col className="aoUsageHistoryColReqUsd" />
@@ -4062,6 +4191,7 @@ requires_openai_auth = true`}
                     <tr>
                       <th>Date</th>
                       <th>Provider</th>
+                      <th>API Key</th>
                       <th>Req</th>
                       <th>Tokens</th>
                       <th>$ / req</th>
@@ -4084,6 +4214,7 @@ requires_openai_auth = true`}
                         <tr key={key}>
                           <td className="aoUsageHistoryDateCell">{row.day_key}</td>
                           <td className="aoUsageProviderName">{row.provider}</td>
+                          <td>{(row.api_key_ref ?? providerApiKeyLabel(row.provider)).trim() || providerApiKeyLabel(row.provider)}</td>
                           <td>{(row.req_count ?? 0).toLocaleString()}</td>
                           <td>{(row.total_tokens ?? 0).toLocaleString()}</td>
                           <td>

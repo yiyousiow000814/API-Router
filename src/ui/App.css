@@ -679,6 +679,42 @@
   overflow: hidden;
 }
 
+.aoUsageProviderColProv {
+  width: 176px;
+}
+
+.aoUsageProviderColReq {
+  width: 68px;
+}
+
+.aoUsageProviderColTok {
+  width: 116px;
+}
+
+.aoUsageProviderColTokReq {
+  width: 92px;
+}
+
+.aoUsageProviderColReqUsd {
+  width: 82px;
+}
+
+.aoUsageProviderColMilUsd {
+  width: 94px;
+}
+
+.aoUsageProviderColDay {
+  width: 102px;
+}
+
+.aoUsageProviderColTotal {
+  width: 108px;
+}
+
+.aoUsageProviderColSrc {
+  width: 116px;
+}
+
 .aoUsageProviderTable th,
 .aoUsageProviderTable td {
   padding: 8px 10px;
@@ -945,6 +981,25 @@
   color: rgba(13, 18, 32, 0.9);
 }
 
+.aoUsageProviderDetailName {
+  padding-left: 10px;
+}
+
+.aoUsageProviderDetailText {
+  display: inline-block;
+  padding-left: 10px;
+}
+
+.aoUsageProviderTable th:first-child,
+.aoUsageProviderTable td:first-child {
+  padding-right: 4px;
+}
+
+.aoUsageProviderTable th:nth-child(2),
+.aoUsageProviderTable td:nth-child(2) {
+  padding-left: 6px;
+}
+
 .aoUsagePricingModal {
   width: min(760px, 94vw);
   max-height: min(78vh, 820px);
@@ -973,6 +1028,10 @@
 
 .aoUsageHistoryColProv {
   width: 108px;
+}
+
+.aoUsageHistoryColKey {
+  width: 132px;
 }
 
 .aoUsageHistoryColReq {
