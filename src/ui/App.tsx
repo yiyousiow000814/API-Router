@@ -2309,17 +2309,11 @@ function newScheduleDraft(
     const isPerRequestComparableSource = (sourceRaw?: string | null) => {
       const source = (sourceRaw ?? '').trim().toLowerCase()
       if (!source || source === 'none') return false
-      if (
-        source === 'token_rate' ||
-        source === 'provider_token_rate' ||
-        source.startsWith('provider_budget_api') ||
-        source.startsWith('manual_package_') ||
-        source === 'gap_fill_total' ||
-        source === 'gap_fill_per_day_average'
-      ) {
-        return false
-      }
-      return true
+      return (
+        source === 'manual_per_request' ||
+        source === 'manual_per_request_timeline' ||
+        source === 'gap_fill_per_request'
+      )
     }
     const formatBucket = (unixMs: number) => {
       const d = new Date(unixMs)
