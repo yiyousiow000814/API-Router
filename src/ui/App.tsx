@@ -2137,20 +2137,16 @@ function newScheduleDraft(
     return Array.from(groups.values()).map((group) => {
       const requests = group.rows.reduce((sum, row) => sum + (row.requests ?? 0), 0)
       const totalTokens = group.rows.reduce((sum, row) => sum + (row.total_tokens ?? 0), 0)
-      const estimatedTotalCost = group.rows.reduce((sum, row) => {
-        const value = row.estimated_total_cost_usd
-        return value != null && Number.isFinite(value) ? sum + Number(value) : sum
-      }, 0)
-      const estimatedCostReqCount = group.rows.reduce(
-        (sum, row) => sum + (row.estimated_cost_request_count ?? 0),
-        0,
-      )
       const effectiveDailyValues = group.rows
         .map((row) => usageSharedCostView.effectiveDailyByRowKey.get(usageProviderRowKey(row)))
         .filter((value): value is number => value != null && Number.isFinite(value))
       const effectiveTotalValues = group.rows
         .map((row) => usageSharedCostView.effectiveTotalByRowKey.get(usageProviderRowKey(row)))
         .filter((value): value is number => value != null && Number.isFinite(value))
+      const effectiveTotal =
+        effectiveTotalValues.length > 0
+          ? effectiveTotalValues.reduce((sum, value) => sum + value, 0)
+          : null
       const pricingSources = Array.from(
         new Set(group.rows.map((row) => String(row.pricing_source ?? '').trim()).filter(Boolean)),
       )
@@ -2165,19 +2161,16 @@ function newScheduleDraft(
         totalTokens,
         tokensPerRequest: requests > 0 ? totalTokens / requests : null,
         estimatedAvgRequestCostUsd:
-          estimatedCostReqCount > 0 ? estimatedTotalCost / estimatedCostReqCount : null,
+          effectiveTotal != null && requests > 0 ? effectiveTotal / requests : null,
         usdPerMillionTokens:
-          totalTokens > 0 && Number.isFinite(estimatedTotalCost)
-            ? (estimatedTotalCost * 1_000_000) / totalTokens
+          totalTokens > 0 && effectiveTotal != null
+            ? (effectiveTotal * 1_000_000) / totalTokens
             : null,
         effectiveDaily:
           effectiveDailyValues.length > 0
             ? effectiveDailyValues.reduce((sum, value) => sum + value, 0)
             : null,
-        effectiveTotal:
-          effectiveTotalValues.length > 0
-            ? effectiveTotalValues.reduce((sum, value) => sum + value, 0)
-            : null,
+        effectiveTotal,
         pricingSource:
           pricingSources.length === 1 ? pricingSources[0] : pricingSources.length > 1 ? 'mixed' : null,
       }
