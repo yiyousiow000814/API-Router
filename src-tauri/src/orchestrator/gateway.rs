@@ -843,9 +843,6 @@ async fn responses(
                             st.clone(),
                             provider_name,
                             api_key_ref_from_raw(api_key.as_deref()),
-                            previous_response_id.clone(),
-                            body_for_provider.clone(),
-                            codex_session_key.clone(),
                             timeout,
                         );
                     }
@@ -1216,9 +1213,6 @@ fn passthrough_sse_and_persist(
     st: GatewayState,
     provider_name: String,
     api_key_ref: String,
-    _parent_id: Option<String>,
-    _request_json: Value,
-    _session_key: Option<String>,
     idle_timeout_seconds: u64,
 ) -> Response {
     use futures_util::StreamExt;
