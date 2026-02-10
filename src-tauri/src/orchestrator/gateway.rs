@@ -89,6 +89,7 @@ pub struct ClientSessionRuntime {
     // Timestamp of last time we saw the process in a discovery scan.
     pub last_discovered_unix_ms: u64,
     pub last_reported_model_provider: Option<String>,
+    // Last requested model from request body (best-effort).
     pub last_reported_model: Option<String>,
     pub last_reported_base_url: Option<String>,
     // Mark sessions spawned from Codex subagent flows.
@@ -503,6 +504,9 @@ pub(crate) fn decide_provider(
     st.router.decide_with_preferred(cfg, preferred)
 }
 
+// Lightweight HTTP status for gateway health/ops.
+// Full dashboard session details (including client_sessions/model fields) are exposed
+// by the Tauri `get_status` command in `src-tauri/src/lib.rs`.
 async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let cfg = st.cfg.read().clone();
     let now = unix_ms();

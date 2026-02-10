@@ -1,4 +1,4 @@
-﻿import { useState } from 'react'
+import { useState } from 'react'
 import { fmtWhen } from '../utils/format'
 
 type SessionRow = {
@@ -62,7 +62,7 @@ export function SessionsTable({
                 const wt = s.wt_session ?? '-'
                 const isAgent = s.is_agent === true
                 const codexProvider = isAgent ? 'agents' : (s.reported_model_provider ?? '-')
-                const modelName = s.reported_model ?? '-'
+                const modelName = s.reported_model ?? '暂无'
                 return (
                   <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
                     <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>
@@ -157,7 +157,7 @@ export function SessionsTable({
                   const wt = s.wt_session ?? '-'
                   const isAgent = s.is_agent === true
                   const codexProvider = isAgent ? 'agents' : (s.reported_model_provider ?? '-')
-                  const modelName = s.reported_model ?? '-'
+                  const modelName = s.reported_model ?? '暂无'
                   return (
                     <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
                       <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>
