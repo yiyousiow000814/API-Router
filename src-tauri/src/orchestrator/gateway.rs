@@ -89,6 +89,7 @@ pub struct ClientSessionRuntime {
     // Timestamp of last time we saw the process in a discovery scan.
     pub last_discovered_unix_ms: u64,
     pub last_reported_model_provider: Option<String>,
+    pub last_reported_model: Option<String>,
     pub last_reported_base_url: Option<String>,
     // Mark sessions spawned from Codex subagent flows.
     pub is_agent: bool,
@@ -630,6 +631,12 @@ async fn responses(
 
     let codex_session_key = session_key_from_request(&headers, &body);
     let codex_session_display = codex_session_id_for_display(&headers, &body);
+    let reported_model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string());
     let session_key = codex_session_display
         .as_deref()
         .or(codex_session_key.as_deref())
@@ -663,6 +670,7 @@ async fn responses(
                 last_request_unix_ms: 0,
                 last_discovered_unix_ms: 0,
                 last_reported_model_provider: None,
+                last_reported_model: None,
                 last_reported_base_url: None,
                 is_agent: agent_request || client_session.as_ref().is_some_and(|s| s.is_agent),
                 confirmed_router: true,
@@ -676,6 +684,9 @@ async fn responses(
         }
         if agent_request {
             entry.is_agent = true;
+        }
+        if let Some(model) = reported_model.as_ref() {
+            entry.last_reported_model = Some(model.clone());
         }
         entry.last_request_unix_ms = unix_ms();
         entry.confirmed_router = true;

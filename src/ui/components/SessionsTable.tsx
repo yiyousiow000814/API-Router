@@ -1,4 +1,4 @@
-import { useState } from 'react'
+﻿import { useState } from 'react'
 import { fmtWhen } from '../utils/format'
 
 type SessionRow = {
@@ -6,6 +6,7 @@ type SessionRow = {
   wt_session?: string | null
   codex_session_id?: string | null
   reported_model_provider?: string | null
+  reported_model?: string | null
   reported_base_url?: string | null
   last_seen_unix_ms: number
   active: boolean
@@ -45,6 +46,7 @@ export function SessionsTable({
           </th>
           <th style={{ width: 170 }}>Last seen</th>
           <th style={{ width: 160 }}>Codex provider</th>
+          <th style={{ width: 130 }}>Model</th>
           <th>Routing provider</th>
           <th style={{ width: 260 }}>Preferred provider</th>
         </tr>
@@ -60,6 +62,7 @@ export function SessionsTable({
                 const wt = s.wt_session ?? '-'
                 const isAgent = s.is_agent === true
                 const codexProvider = isAgent ? 'agents' : (s.reported_model_provider ?? '-')
+                const modelName = s.reported_model ?? '-'
                 return (
                   <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
                     <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>
@@ -79,6 +82,7 @@ export function SessionsTable({
                     </td>
                     <td>{fmtWhen(s.last_seen_unix_ms)}</td>
                     <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{codexProvider}</td>
+                    <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{modelName}</td>
                     <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{routingTarget}</td>
                     <td>
                       <select
@@ -103,7 +107,7 @@ export function SessionsTable({
               })
             ) : (
               <tr>
-                <td colSpan={6} className="aoHint">
+                <td colSpan={7} className="aoHint">
                   No verified sessions yet.
                 </td>
               </tr>
@@ -111,7 +115,7 @@ export function SessionsTable({
 
             {!!unverifiedRows.length && (
               <tr>
-                <td colSpan={6} className="aoHint">
+                <td colSpan={7} className="aoHint">
                   <button
                     type="button"
                     className="aoIconGhost"
@@ -142,7 +146,7 @@ export function SessionsTable({
             {showUnverified && (
               <>
                 <tr>
-                  <td colSpan={6} className="aoHint">
+                  <td colSpan={7} className="aoHint">
                     Discovered in Windows Terminal, but API Router can&apos;t confirm their base_url yet. They&apos;ll become verified after the first request goes through the gateway.
                   </td>
                 </tr>
@@ -153,6 +157,7 @@ export function SessionsTable({
                   const wt = s.wt_session ?? '-'
                   const isAgent = s.is_agent === true
                   const codexProvider = isAgent ? 'agents' : (s.reported_model_provider ?? '-')
+                  const modelName = s.reported_model ?? '-'
                   return (
                     <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
                       <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>
@@ -172,6 +177,7 @@ export function SessionsTable({
                       </td>
                       <td>{fmtWhen(s.last_seen_unix_ms)}</td>
                       <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{codexProvider}</td>
+                      <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{modelName}</td>
                       <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{routingTarget}</td>
                       <td>
                         <select
@@ -199,7 +205,7 @@ export function SessionsTable({
           </>
         ) : (
           <tr>
-            <td colSpan={6} className="aoHint">
+            <td colSpan={7} className="aoHint">
               No sessions yet. Start Codex from Windows Terminal. If Codex is configured to use API Router, it should appear here even before the first request.
             </td>
           </tr>
@@ -208,3 +214,4 @@ export function SessionsTable({
     </table>
   )
 }
+
