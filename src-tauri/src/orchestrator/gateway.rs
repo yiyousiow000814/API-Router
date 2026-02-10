@@ -25,7 +25,7 @@ use super::openai::{
     extract_text_from_responses, input_to_items_preserve_tools, input_to_messages,
     messages_to_responses_input, messages_to_simple_input_list, sse_events_for_text,
 };
-use super::router::{provider_group, provider_iteration_order, RouterState};
+use super::router::{select_fallback_provider, RouterState};
 use super::secrets::SecretStore;
 use super::store::{unix_ms, Store};
 use super::upstream::UpstreamClient;
@@ -498,32 +498,9 @@ fn fallback_with_quota(
     preferred: &str,
     quota_snapshots: &Value,
 ) -> String {
-    let preferred_group = provider_group(cfg, preferred);
-
-    let ordered_names = provider_iteration_order(cfg);
-
-    for name in &ordered_names {
-        if name == preferred {
-            continue;
-        }
-        if preferred_group.is_some() && provider_group(cfg, name) == preferred_group {
-            continue;
-        }
-        if provider_is_routable_for_selection(st, quota_snapshots, name) {
-            return name.clone();
-        }
-    }
-
-    for name in &ordered_names {
-        if name == preferred {
-            continue;
-        }
-        if provider_is_routable_for_selection(st, quota_snapshots, name) {
-            return name.clone();
-        }
-    }
-
-    preferred.to_string()
+    select_fallback_provider(cfg, preferred, |name| {
+        provider_is_routable_for_selection(st, quota_snapshots, name)
+    })
 }
 
 pub(crate) fn decide_provider(

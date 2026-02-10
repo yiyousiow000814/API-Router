@@ -74,6 +74,41 @@ pub(crate) fn provider_iteration_order(cfg: &AppConfig) -> Vec<String> {
     ordered
 }
 
+pub(crate) fn select_fallback_provider<F>(
+    cfg: &AppConfig,
+    preferred: &str,
+    mut is_routable: F,
+) -> String
+where
+    F: FnMut(&str) -> bool,
+{
+    let preferred_group = provider_group(cfg, preferred);
+    let ordered_names = provider_iteration_order(cfg);
+
+    for name in &ordered_names {
+        if name == preferred {
+            continue;
+        }
+        if preferred_group.is_some() && provider_group(cfg, name) == preferred_group {
+            continue;
+        }
+        if is_routable(name) {
+            return name.clone();
+        }
+    }
+
+    for name in &ordered_names {
+        if name == preferred {
+            continue;
+        }
+        if is_routable(name) {
+            return name.clone();
+        }
+    }
+
+    preferred.to_string()
+}
+
 impl RouterState {
     pub fn new(cfg: &AppConfig, now_ms: u64) -> Self {
         let mut health = HashMap::new();
@@ -206,32 +241,7 @@ impl RouterState {
     }
 
     pub fn fallback(&self, cfg: &AppConfig, preferred: &str) -> String {
-        let preferred_group = provider_group(cfg, preferred);
-
-        let ordered_names = provider_iteration_order(cfg);
-
-        for name in &ordered_names {
-            if name == preferred {
-                continue;
-            }
-            if preferred_group.is_some() && provider_group(cfg, name) == preferred_group {
-                continue;
-            }
-            if self.is_routable(name) {
-                return name.clone();
-            }
-        }
-
-        for name in &ordered_names {
-            if name == preferred {
-                continue;
-            }
-            if self.is_routable(name) {
-                return name.clone();
-            }
-        }
-
-        preferred.to_string()
+        select_fallback_provider(cfg, preferred, |name| self.is_routable(name))
     }
 }
 
