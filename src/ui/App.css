@@ -1051,6 +1051,7 @@
 
 .aoUsageHistoryTableWrap::-webkit-scrollbar {
   width: var(--ao-history-scrollbar-size);
+  background: transparent;
 }
 
 .aoUsageHistoryTableWrap::-webkit-scrollbar-button,
@@ -1066,7 +1067,7 @@
 .aoUsageHistoryTableWrap::-webkit-scrollbar-button:horizontal,
 .aoUsageHistoryTableWrap::-webkit-scrollbar-button:horizontal:decrement,
 .aoUsageHistoryTableWrap::-webkit-scrollbar-button:horizontal:increment {
-  display: none !important;
+  display: block !important;
   width: 0 !important;
   height: 0 !important;
   min-width: 0 !important;
@@ -1075,6 +1076,7 @@
   margin: 0 !important;
   padding: 0 !important;
   background: transparent !important;
+  background-image: none !important;
   box-shadow: none !important;
   -webkit-appearance: none;
 }
@@ -1089,14 +1091,13 @@
 }
 
 .aoUsageHistoryTableWrap::-webkit-scrollbar-track {
-  background: var(--ao-history-scroll-track);
-  border-radius: 999px;
+  background: transparent !important;
+  border-radius: 0;
 }
 
 .aoUsageHistoryTableWrap::-webkit-scrollbar-thumb {
   background: var(--ao-history-scroll-thumb);
-  border: 2px solid transparent;
-  background-clip: padding-box;
+  border: 0;
   border-radius: 999px;
   transition: background-color 120ms ease;
 }
