@@ -59,13 +59,6 @@ type UsageHistoryDraft = {
   perReqText: string
 }
 
-type UsageHistoryScrollbarUi = {
-  active: boolean
-  enabled: boolean
-  thumbHeight: number
-  thumbTop: number
-}
-
 type ProviderSchedulePeriod = {
   id: string
   mode?: PricingTimelineMode
@@ -411,12 +404,6 @@ export default function App() {
     setUsageHistoryModalOpen(true)
   }, [devAutoOpenHistory])
   const [usageHistoryLoading, setUsageHistoryLoading] = useState<boolean>(false)
-  const [usageHistoryScrollbarUi, setUsageHistoryScrollbarUi] = useState<UsageHistoryScrollbarUi>({
-    active: false,
-    enabled: false,
-    thumbHeight: 0,
-    thumbTop: 0,
-  })
   const [usageProviderShowDetails, setUsageProviderShowDetails] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true
     return window.localStorage.getItem(USAGE_PROVIDER_SHOW_DETAILS_KEY) !== '0'
@@ -454,7 +441,11 @@ export default function App() {
   const usagePricingDraftsPrimedRef = useRef<boolean>(false)
   const usageHistoryLoadedRef = useRef<boolean>(false)
   const usageHistoryTableWrapRef = useRef<HTMLDivElement | null>(null)
+  const usageHistoryTableSurfaceRef = useRef<HTMLDivElement | null>(null)
+  const usageHistoryScrollbarOverlayRef = useRef<HTMLDivElement | null>(null)
+  const usageHistoryScrollbarThumbRef = useRef<HTMLDivElement | null>(null)
   const usageHistoryScrollbarHideTimerRef = useRef<number | null>(null)
+  const usageHistoryScrollbarRafRef = useRef<number | null>(null)
   const codexSwapDir1Ref = useRef<string>('')
   const codexSwapDir2Ref = useRef<string>('')
   const codexSwapApplyBothRef = useRef<boolean>(false)
@@ -1383,38 +1374,53 @@ function newScheduleDraft(
     return source
   }
 
+  const setUsageHistoryScrollbarVisible = useCallback((visible: boolean) => {
+    usageHistoryTableSurfaceRef.current?.classList.toggle('aoUsageHistoryTableSurfaceScrollbarVisible', visible)
+    usageHistoryScrollbarOverlayRef.current?.classList.toggle('aoUsageHistoryScrollbarOverlayVisible', visible)
+  }, [])
+
   const refreshUsageHistoryScrollbarUi = useCallback(() => {
     const wrap = usageHistoryTableWrapRef.current
-    if (!wrap) return
+    const overlay = usageHistoryScrollbarOverlayRef.current
+    const thumb = usageHistoryScrollbarThumbRef.current
+    if (!wrap || !overlay || !thumb) return
     const viewportHeight = wrap.clientHeight
     const scrollHeight = wrap.scrollHeight
     const maxScroll = Math.max(0, scrollHeight - viewportHeight)
     if (viewportHeight <= 0 || maxScroll <= 0) {
-      setUsageHistoryScrollbarUi((prev) =>
-        prev.enabled || prev.thumbHeight || prev.thumbTop ? { ...prev, enabled: false, thumbHeight: 0, thumbTop: 0 } : prev,
-      )
+      overlay.style.opacity = '0'
+      thumb.style.height = '0px'
+      thumb.style.transform = 'translateY(0px)'
+      setUsageHistoryScrollbarVisible(false)
       return
     }
-    const thumbHeight = Math.max(28, Math.round((viewportHeight / scrollHeight) * viewportHeight))
+    const thumbHeight = Math.max(24, Math.round((viewportHeight / scrollHeight) * viewportHeight))
     const thumbTravel = Math.max(0, viewportHeight - thumbHeight)
     const thumbTop = maxScroll > 0 ? Math.round((wrap.scrollTop / maxScroll) * thumbTravel) : 0
-    setUsageHistoryScrollbarUi((prev) => {
-      if (prev.enabled && prev.thumbHeight === thumbHeight && prev.thumbTop === thumbTop) return prev
-      return { ...prev, enabled: true, thumbHeight, thumbTop }
+    thumb.style.height = `${thumbHeight}px`
+    thumb.style.transform = `translateY(${thumbTop}px)`
+  }, [setUsageHistoryScrollbarVisible])
+
+  const scheduleUsageHistoryScrollbarSync = useCallback(() => {
+    if (typeof window === 'undefined') return
+    if (usageHistoryScrollbarRafRef.current != null) return
+    usageHistoryScrollbarRafRef.current = window.requestAnimationFrame(() => {
+      usageHistoryScrollbarRafRef.current = null
+      refreshUsageHistoryScrollbarUi()
     })
-  }, [])
+  }, [refreshUsageHistoryScrollbarUi])
 
   const activateUsageHistoryScrollbarUi = useCallback(() => {
     if (typeof window === 'undefined') return
-    setUsageHistoryScrollbarUi((prev) => (prev.active ? prev : { ...prev, active: true }))
+    setUsageHistoryScrollbarVisible(true)
     if (usageHistoryScrollbarHideTimerRef.current != null) {
       window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
     }
     usageHistoryScrollbarHideTimerRef.current = window.setTimeout(() => {
-      setUsageHistoryScrollbarUi((prev) => (prev.active ? { ...prev, active: false } : prev))
+      setUsageHistoryScrollbarVisible(false)
       usageHistoryScrollbarHideTimerRef.current = null
-    }, 900)
-  }, [])
+    }, 700)
+  }, [setUsageHistoryScrollbarVisible])
 
   function renderUsageHistoryColGroup() {
     return (
@@ -3150,16 +3156,22 @@ function newScheduleDraft(
   useEffect(() => {
     if (!usageHistoryModalOpen) {
       clearAutoSaveTimer('history:edit')
-      if (usageHistoryScrollbarHideTimerRef.current != null && typeof window !== 'undefined') {
-        window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
-        usageHistoryScrollbarHideTimerRef.current = null
+      if (typeof window !== 'undefined') {
+        if (usageHistoryScrollbarHideTimerRef.current != null) {
+          window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
+          usageHistoryScrollbarHideTimerRef.current = null
+        }
+        if (usageHistoryScrollbarRafRef.current != null) {
+          window.cancelAnimationFrame(usageHistoryScrollbarRafRef.current)
+          usageHistoryScrollbarRafRef.current = null
+        }
       }
-      setUsageHistoryScrollbarUi({ active: false, enabled: false, thumbHeight: 0, thumbTop: 0 })
+      setUsageHistoryScrollbarVisible(false)
       return
     }
     const shouldSilentRefresh = usageHistoryLoadedRef.current
     void refreshUsageHistory({ silent: shouldSilentRefresh })
-  }, [usageHistoryModalOpen])
+  }, [usageHistoryModalOpen, setUsageHistoryScrollbarVisible])
 
   useEffect(() => {
     if (!usageHistoryModalOpen || typeof window === 'undefined') return
@@ -3174,19 +3186,25 @@ function newScheduleDraft(
   useEffect(() => {
     if (!usageHistoryModalOpen || typeof window === 'undefined') return
     const onResize = () => {
-      refreshUsageHistoryScrollbarUi()
+      scheduleUsageHistoryScrollbarSync()
     }
     window.addEventListener('resize', onResize)
     return () => {
       window.removeEventListener('resize', onResize)
     }
-  }, [usageHistoryModalOpen, refreshUsageHistoryScrollbarUi])
+  }, [usageHistoryModalOpen, scheduleUsageHistoryScrollbarSync])
 
   useEffect(() => {
     return () => {
-      if (usageHistoryScrollbarHideTimerRef.current != null && typeof window !== 'undefined') {
-        window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
-        usageHistoryScrollbarHideTimerRef.current = null
+      if (typeof window !== 'undefined') {
+        if (usageHistoryScrollbarHideTimerRef.current != null) {
+          window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
+          usageHistoryScrollbarHideTimerRef.current = null
+        }
+        if (usageHistoryScrollbarRafRef.current != null) {
+          window.cancelAnimationFrame(usageHistoryScrollbarRafRef.current)
+          usageHistoryScrollbarRafRef.current = null
+        }
       }
     }
   }, [])
@@ -4403,13 +4421,7 @@ requires_openai_auth = true`}
               {usageHistoryLoading && !usageHistoryRows.length ? (
                 <div className="aoHint">Loading...</div>
               ) : usageHistoryRows.length ? (
-                <div
-                  className={`aoUsageHistoryTableSurface${
-                    usageHistoryScrollbarUi.active && usageHistoryScrollbarUi.enabled
-                      ? ' aoUsageHistoryTableSurfaceScrollbarVisible'
-                      : ''
-                  }`}
-                >
+                <div ref={usageHistoryTableSurfaceRef} className="aoUsageHistoryTableSurface">
                   <div className="aoUsageHistoryTableHead" aria-hidden="true">
                     <table className="aoUsageHistoryTable">
                       {renderUsageHistoryColGroup()}
@@ -4434,10 +4446,13 @@ requires_openai_auth = true`}
                       ref={usageHistoryTableWrapRef}
                       className="aoUsageHistoryTableWrap"
                       onScroll={() => {
-                        refreshUsageHistoryScrollbarUi()
+                        scheduleUsageHistoryScrollbarSync()
                         activateUsageHistoryScrollbarUi()
                       }}
-                      onWheel={activateUsageHistoryScrollbarUi}
+                      onWheel={() => {
+                        scheduleUsageHistoryScrollbarSync()
+                        activateUsageHistoryScrollbarUi()
+                      }}
                       onTouchMove={activateUsageHistoryScrollbarUi}
                       onPointerDown={activateUsageHistoryScrollbarUi}
                     >
@@ -4612,21 +4627,8 @@ requires_openai_auth = true`}
                       </tbody>
                       </table>
                     </div>
-                    <div
-                      className={`aoUsageHistoryScrollbarOverlay${
-                        usageHistoryScrollbarUi.active && usageHistoryScrollbarUi.enabled
-                          ? ' aoUsageHistoryScrollbarOverlayVisible'
-                          : ''
-                      }`}
-                      aria-hidden="true"
-                    >
-                      <div
-                        className="aoUsageHistoryScrollbarThumb"
-                        style={{
-                          height: `${usageHistoryScrollbarUi.thumbHeight}px`,
-                          transform: `translateY(${usageHistoryScrollbarUi.thumbTop}px)`,
-                        }}
-                      />
+                    <div ref={usageHistoryScrollbarOverlayRef} className="aoUsageHistoryScrollbarOverlay" aria-hidden="true">
+                      <div ref={usageHistoryScrollbarThumbRef} className="aoUsageHistoryScrollbarThumb" />
                     </div>
                   </div>
                 </div>
