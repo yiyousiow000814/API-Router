@@ -1389,7 +1389,6 @@ function newScheduleDraft(
     const scrollHeight = wrap.scrollHeight
     const maxScroll = Math.max(0, scrollHeight - viewportHeight)
     if (viewportHeight <= 0 || overlayHeight <= 0 || maxScroll <= 0) {
-      overlay.style.opacity = '0'
       thumb.style.height = '0px'
       thumb.style.transform = 'translateY(0px)'
       setUsageHistoryScrollbarVisible(false)
