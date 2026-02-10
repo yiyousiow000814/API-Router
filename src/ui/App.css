@@ -1016,6 +1016,88 @@
   max-height: min(82vh, 880px);
 }
 
+.aoUsageHistoryTableSurface {
+  --ao-history-scrollbar-size: 8px;
+  --ao-history-scroll-thumb: rgba(120, 132, 156, 0.44);
+  --ao-history-scroll-thumb-hover: rgba(94, 108, 136, 0.56);
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(248, 250, 253, 0.94);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  overflow: hidden;
+}
+
+.aoUsageHistoryTableHead {
+  flex: 0 0 auto;
+  padding-right: 0;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgb(242, 244, 247);
+}
+
+.aoUsageHistoryTableBody {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.aoUsageHistoryTableWrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: transparent;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.aoUsageHistoryTableWrap::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.aoUsageHistoryScrollbarOverlay {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  bottom: 7px;
+  width: var(--ao-history-scrollbar-size);
+  overflow: hidden;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+  z-index: 2;
+}
+
+.aoUsageHistoryScrollbarOverlayVisible {
+  opacity: 1;
+}
+
+.aoUsageHistoryScrollbarThumb {
+  width: 100%;
+  min-height: 24px;
+  border-radius: 999px;
+  background: var(--ao-history-scroll-thumb);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  transition: background-color 120ms ease;
+  will-change: transform;
+}
+
+
+.aoUsageHistoryTableSurfaceScrollbarVisible .aoUsageHistoryScrollbarThumb {
+  background: var(--ao-history-scroll-thumb-hover);
+}
+
 .aoUsageHistoryTable {
   width: 100%;
   min-width: 0;
@@ -1023,9 +1105,6 @@
   border-collapse: separate;
   border-spacing: 0;
   font-size: 12px;
-  border: 1px solid rgba(13, 18, 32, 0.12);
-  border-radius: 12px;
-  overflow: hidden;
 }
 
 .aoUsageHistoryColDate {
@@ -1077,12 +1156,16 @@
   white-space: nowrap;
 }
 
+.aoUsageHistoryTable td {
+  background: rgba(255, 255, 255, 0.72);
+}
+
 .aoUsageHistoryDateCell {
   font-variant-numeric: tabular-nums;
 }
 
 .aoUsageHistoryTable th {
-  background: rgba(13, 18, 32, 0.04);
+  background: rgb(242, 244, 247);
   color: rgba(13, 18, 32, 0.72);
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1094,9 +1177,10 @@
 }
 
 .aoUsageHistoryInput {
-  width: 92px;
+  width: 66px;
+  max-width: 100%;
   height: 28px;
-  padding: 0 8px;
+  padding: 0 6px;
   font-size: 12px;
   appearance: textfield;
   -moz-appearance: textfield;
@@ -1111,7 +1195,8 @@
 .aoUsageHistoryValueCell {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
+  min-width: 0;
 }
 
 .aoUsageHistoryEditBtn {
@@ -3211,6 +3296,15 @@
 .aoUsagePricingModal .aoModalBody {
   overflow-x: hidden;
   padding-right: 0;
+}
+
+/* Daily History keeps header fixed while only rows scroll inside the table area. */
+.aoUsageHistoryModal .aoModalBody {
+  overflow: hidden;
+  padding-right: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .aoModalWide.aoUsageScheduleModal {

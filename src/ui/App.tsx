@@ -211,6 +211,114 @@ const devConfig: Config = {
   provider_order: ['provider_1', 'provider_2'],
 }
 
+
+const DEV_MOCK_DAY_MS = 24 * 60 * 60 * 1000
+
+function toDayKey(unixMs: number): string {
+  return new Date(unixMs).toISOString().slice(0, 10)
+}
+
+function parseDevFlag(v: string | null): boolean {
+  if (!v) return false
+  const s = v.trim().toLowerCase()
+  return s === '1' || s === 'true' || s === 'yes' || s === 'on'
+}
+
+function buildDevMockHistoryRows(days = 90): SpendHistoryRow[] {
+  const now = Date.now()
+  const providers = [
+    {
+      provider: 'packycode',
+      api_key_ref: 'sk-tPN******hxNs',
+      req_base: 1200,
+      token_base: 128_000_000,
+      usd_per_req: 0.037,
+      package_usd: null as number | null,
+    },
+    {
+      provider: 'ppchat',
+      api_key_ref: 'sk-DWB******HD6I',
+      req_base: 14,
+      token_base: 1_020_000,
+      usd_per_req: 0.16,
+      package_usd: 56.1,
+    },
+    {
+      provider: 'pumpkinai',
+      api_key_ref: 'sk-DWB******HD6I',
+      req_base: 4,
+      token_base: 560_000,
+      usd_per_req: 0.62,
+      package_usd: 56.1,
+    },
+  ]
+
+  const out: SpendHistoryRow[] = []
+  for (let d = 0; d < days; d += 1) {
+    const dayMs = now - d * DEV_MOCK_DAY_MS
+    const day_key = toDayKey(dayMs)
+    for (let i = 0; i < providers.length; i += 1) {
+      const p = providers[i]
+      if (p.provider !== 'packycode' && d % 3 !== 0) continue
+      if (p.provider === 'pumpkinai' && d % 5 !== 0) continue
+
+      const factor = 0.6 + (((d * 17 + i * 11) % 41) / 100)
+      const req_count = Math.max(1, Math.round(p.req_base * factor))
+      const total_tokens = Math.max(1, Math.round(p.token_base * factor))
+      const tracked_total_usd = Number((req_count * p.usd_per_req).toFixed(3))
+
+      let scheduled_total_usd: number | null = null
+      let scheduled_package_total_usd: number | null = null
+      let manual_total_usd: number | null = null
+      let manual_usd_per_req: number | null = null
+      let source = 'tracked'
+
+      if (p.package_usd != null && d % 6 === 0) {
+        scheduled_total_usd = Number((p.package_usd * 0.028).toFixed(3))
+        scheduled_package_total_usd = p.package_usd
+        source = 'scheduled'
+      }
+
+      if (d % 11 === 0 && p.provider === 'packycode') {
+        manual_total_usd = Number((tracked_total_usd * 0.08).toFixed(3))
+        source = 'manual'
+      }
+
+      if (d % 14 === 0 && p.provider !== 'packycode') {
+        manual_usd_per_req = Number((p.usd_per_req * 0.95).toFixed(4))
+        source = scheduled_total_usd != null ? 'manual+scheduled' : 'manual'
+      }
+
+      const effective_total_usd = Number(
+        (
+          tracked_total_usd +
+          (scheduled_total_usd ?? 0) +
+          (manual_total_usd ?? 0) +
+          (manual_usd_per_req != null ? manual_usd_per_req * req_count : 0)
+        ).toFixed(3),
+      )
+
+      out.push({
+        provider: p.provider,
+        api_key_ref: p.api_key_ref,
+        day_key,
+        req_count,
+        total_tokens,
+        tracked_total_usd,
+        scheduled_total_usd,
+        scheduled_package_total_usd,
+        manual_total_usd,
+        manual_usd_per_req,
+        effective_total_usd,
+        effective_usd_per_req: req_count > 0 ? Number((effective_total_usd / req_count).toFixed(4)) : null,
+        source,
+        updated_at_unix_ms: dayMs + (i + 1) * 7_200_000,
+      })
+    }
+  }
+  return out
+}
+
 export default function App() {
   const isDevPreview = useMemo(() => {
     if (!import.meta.env.DEV) return false
@@ -218,6 +326,12 @@ export default function App() {
     const w = window as unknown as { __TAURI__?: { core?: { invoke?: unknown } } }
     return !Boolean(w.__TAURI__?.core?.invoke)
   }, [])
+  const devFlags = useMemo(() => {
+    if (typeof window === 'undefined') return new URLSearchParams()
+    return new URLSearchParams(window.location.search)
+  }, [])
+  const devMockHistoryEnabled = useMemo(() => parseDevFlag(devFlags.get('mockHistory')), [devFlags])
+  const devAutoOpenHistory = useMemo(() => parseDevFlag(devFlags.get('openHistory')), [devFlags])
   const [status, setStatus] = useState<Status | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
   const [baselineBaseUrls, setBaselineBaseUrls] = useState<Record<string, string>>({})
@@ -284,6 +398,11 @@ export default function App() {
   const [usageHistoryRows, setUsageHistoryRows] = useState<SpendHistoryRow[]>([])
   const [usageHistoryDrafts, setUsageHistoryDrafts] = useState<Record<string, UsageHistoryDraft>>({})
   const [usageHistoryEditCell, setUsageHistoryEditCell] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!devAutoOpenHistory) return
+    setUsageHistoryModalOpen(true)
+  }, [devAutoOpenHistory])
   const [usageHistoryLoading, setUsageHistoryLoading] = useState<boolean>(false)
   const [usageProviderShowDetails, setUsageProviderShowDetails] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true
@@ -320,6 +439,13 @@ export default function App() {
   const providerSwitchRefreshTimerRef = useRef<number | null>(null)
   const providerSwitchDirWatcherPrimedRef = useRef<boolean>(false)
   const usagePricingDraftsPrimedRef = useRef<boolean>(false)
+  const usageHistoryLoadedRef = useRef<boolean>(false)
+  const usageHistoryTableWrapRef = useRef<HTMLDivElement | null>(null)
+  const usageHistoryTableSurfaceRef = useRef<HTMLDivElement | null>(null)
+  const usageHistoryScrollbarOverlayRef = useRef<HTMLDivElement | null>(null)
+  const usageHistoryScrollbarThumbRef = useRef<HTMLDivElement | null>(null)
+  const usageHistoryScrollbarHideTimerRef = useRef<number | null>(null)
+  const usageHistoryScrollbarRafRef = useRef<number | null>(null)
   const codexSwapDir1Ref = useRef<string>('')
   const codexSwapDir2Ref = useRef<string>('')
   const codexSwapApplyBothRef = useRef<boolean>(false)
@@ -1248,6 +1374,71 @@ function newScheduleDraft(
     return source
   }
 
+  const setUsageHistoryScrollbarVisible = useCallback((visible: boolean) => {
+    usageHistoryTableSurfaceRef.current?.classList.toggle('aoUsageHistoryTableSurfaceScrollbarVisible', visible)
+    usageHistoryScrollbarOverlayRef.current?.classList.toggle('aoUsageHistoryScrollbarOverlayVisible', visible)
+  }, [])
+
+  const refreshUsageHistoryScrollbarUi = useCallback(() => {
+    const wrap = usageHistoryTableWrapRef.current
+    const overlay = usageHistoryScrollbarOverlayRef.current
+    const thumb = usageHistoryScrollbarThumbRef.current
+    if (!wrap || !overlay || !thumb) return
+    const viewportHeight = wrap.clientHeight
+    const overlayHeight = overlay.clientHeight
+    const scrollHeight = wrap.scrollHeight
+    const maxScroll = Math.max(0, scrollHeight - viewportHeight)
+    if (viewportHeight <= 0 || overlayHeight <= 0 || maxScroll <= 0) {
+      thumb.style.height = '0px'
+      thumb.style.transform = 'translateY(0px)'
+      setUsageHistoryScrollbarVisible(false)
+      return
+    }
+    const thumbHeight = Math.max(24, Math.round((viewportHeight / scrollHeight) * overlayHeight))
+    const thumbTravel = Math.max(0, overlayHeight - thumbHeight)
+    const thumbTop = maxScroll > 0 ? Math.round((wrap.scrollTop / maxScroll) * thumbTravel) : 0
+    thumb.style.height = `${thumbHeight}px`
+    thumb.style.transform = `translateY(${thumbTop}px)`
+  }, [setUsageHistoryScrollbarVisible])
+
+  const scheduleUsageHistoryScrollbarSync = useCallback(() => {
+    if (typeof window === 'undefined') return
+    if (usageHistoryScrollbarRafRef.current != null) return
+    usageHistoryScrollbarRafRef.current = window.requestAnimationFrame(() => {
+      usageHistoryScrollbarRafRef.current = null
+      refreshUsageHistoryScrollbarUi()
+    })
+  }, [refreshUsageHistoryScrollbarUi])
+
+  const activateUsageHistoryScrollbarUi = useCallback(() => {
+    if (typeof window === 'undefined') return
+    setUsageHistoryScrollbarVisible(true)
+    if (usageHistoryScrollbarHideTimerRef.current != null) {
+      window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
+    }
+    usageHistoryScrollbarHideTimerRef.current = window.setTimeout(() => {
+      setUsageHistoryScrollbarVisible(false)
+      usageHistoryScrollbarHideTimerRef.current = null
+    }, 700)
+  }, [setUsageHistoryScrollbarVisible])
+
+  function renderUsageHistoryColGroup() {
+    return (
+      <colgroup>
+        <col className="aoUsageHistoryColDate" />
+        <col className="aoUsageHistoryColProv" />
+        <col className="aoUsageHistoryColKey" />
+        <col className="aoUsageHistoryColReq" />
+        <col className="aoUsageHistoryColTok" />
+        <col className="aoUsageHistoryColReqUsd" />
+        <col className="aoUsageHistoryColEff" />
+        <col className="aoUsageHistoryColPkg" />
+        <col className="aoUsageHistoryColSrc" />
+        <col className="aoUsageHistoryColAct" />
+      </colgroup>
+    )
+  }
+
   const closeUsagePricingCurrencyMenu = useCallback(() => {
     setUsagePricingCurrencyMenu(null)
     setUsagePricingCurrencyQuery('')
@@ -1726,13 +1917,21 @@ function newScheduleDraft(
     const keepEditCell = options?.keepEditCell === true
     if (!silent) setUsageHistoryLoading(true)
     try {
-      const res = await invoke<{ ok: boolean; rows: SpendHistoryRow[] }>('get_spend_history', {
-        provider: null,
-        days: 180,
-        compactOnly: true,
-      })
-      const rows = Array.isArray(res?.rows) ? res.rows : []
+      let rows: SpendHistoryRow[] = []
+      if (devMockHistoryEnabled) {
+        rows = buildDevMockHistoryRows(120)
+      } else if (isDevPreview) {
+        rows = []
+      } else {
+        const res = await invoke<{ ok: boolean; rows: SpendHistoryRow[] }>('get_spend_history', {
+          provider: null,
+          days: 180,
+          compactOnly: true,
+        })
+        rows = Array.isArray(res?.rows) ? res.rows : []
+      }
       setUsageHistoryRows(rows)
+      usageHistoryLoadedRef.current = true
       setUsageHistoryDrafts(() => {
         const next: Record<string, UsageHistoryDraft> = {}
         for (const row of rows) {
@@ -2957,10 +3156,58 @@ function newScheduleDraft(
   useEffect(() => {
     if (!usageHistoryModalOpen) {
       clearAutoSaveTimer('history:edit')
+      if (typeof window !== 'undefined') {
+        if (usageHistoryScrollbarHideTimerRef.current != null) {
+          window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
+          usageHistoryScrollbarHideTimerRef.current = null
+        }
+        if (usageHistoryScrollbarRafRef.current != null) {
+          window.cancelAnimationFrame(usageHistoryScrollbarRafRef.current)
+          usageHistoryScrollbarRafRef.current = null
+        }
+      }
+      setUsageHistoryScrollbarVisible(false)
       return
     }
-    void refreshUsageHistory()
-  }, [usageHistoryModalOpen])
+    const shouldSilentRefresh = usageHistoryLoadedRef.current
+    void refreshUsageHistory({ silent: shouldSilentRefresh })
+  }, [usageHistoryModalOpen, setUsageHistoryScrollbarVisible])
+
+  useEffect(() => {
+    if (!usageHistoryModalOpen || typeof window === 'undefined') return
+    const frame = window.requestAnimationFrame(() => {
+      refreshUsageHistoryScrollbarUi()
+    })
+    return () => {
+      window.cancelAnimationFrame(frame)
+    }
+  }, [usageHistoryModalOpen, usageHistoryRows, refreshUsageHistoryScrollbarUi])
+
+  useEffect(() => {
+    if (!usageHistoryModalOpen || typeof window === 'undefined') return
+    const onResize = () => {
+      scheduleUsageHistoryScrollbarSync()
+    }
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+    }
+  }, [usageHistoryModalOpen, scheduleUsageHistoryScrollbarSync])
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== 'undefined') {
+        if (usageHistoryScrollbarHideTimerRef.current != null) {
+          window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
+          usageHistoryScrollbarHideTimerRef.current = null
+        }
+        if (usageHistoryScrollbarRafRef.current != null) {
+          window.cancelAnimationFrame(usageHistoryScrollbarRafRef.current)
+          usageHistoryScrollbarRafRef.current = null
+        }
+      }
+    }
+  }, [])
 
   useEffect(() => {
     if (!usagePricingCurrencyMenu) return
@@ -4171,37 +4418,47 @@ requires_openai_auth = true`}
               </button>
             </div>
             <div className="aoModalBody">
-              {usageHistoryLoading ? (
+              {usageHistoryLoading && !usageHistoryRows.length ? (
                 <div className="aoHint">Loading...</div>
               ) : usageHistoryRows.length ? (
-                <table className="aoUsageHistoryTable">
-                  <colgroup>
-                    <col className="aoUsageHistoryColDate" />
-                    <col className="aoUsageHistoryColProv" />
-                    <col className="aoUsageHistoryColKey" />
-                    <col className="aoUsageHistoryColReq" />
-                    <col className="aoUsageHistoryColTok" />
-                    <col className="aoUsageHistoryColReqUsd" />
-                    <col className="aoUsageHistoryColEff" />
-                    <col className="aoUsageHistoryColPkg" />
-                    <col className="aoUsageHistoryColSrc" />
-                    <col className="aoUsageHistoryColAct" />
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Provider</th>
-                      <th>API Key</th>
-                      <th>Req</th>
-                      <th>Tokens</th>
-                      <th>$ / req</th>
-                      <th>Effective $</th>
-                      <th>Package $</th>
-                      <th>Source</th>
-                      <th>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+                <div ref={usageHistoryTableSurfaceRef} className="aoUsageHistoryTableSurface">
+                  <div className="aoUsageHistoryTableHead" aria-hidden="true">
+                    <table className="aoUsageHistoryTable">
+                      {renderUsageHistoryColGroup()}
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th>Provider</th>
+                          <th>API Key</th>
+                          <th>Req</th>
+                          <th>Tokens</th>
+                          <th>$ / req</th>
+                          <th>Effective $</th>
+                          <th>Package $</th>
+                          <th>Source</th>
+                          <th>Action</th>
+                        </tr>
+                      </thead>
+                    </table>
+                  </div>
+                  <div className="aoUsageHistoryTableBody">
+                    <div
+                      ref={usageHistoryTableWrapRef}
+                      className="aoUsageHistoryTableWrap"
+                      onScroll={() => {
+                        scheduleUsageHistoryScrollbarSync()
+                        activateUsageHistoryScrollbarUi()
+                      }}
+                      onWheel={() => {
+                        scheduleUsageHistoryScrollbarSync()
+                        activateUsageHistoryScrollbarUi()
+                      }}
+                      onTouchMove={activateUsageHistoryScrollbarUi}
+                      onPointerDown={activateUsageHistoryScrollbarUi}
+                    >
+                      <table className="aoUsageHistoryTable">
+                      {renderUsageHistoryColGroup()}
+                      <tbody>
                     {usageHistoryRows.map((row) => {
                       const key = `${row.provider}|${row.day_key}`
                       const baseDraft = historyDraftFromRow(row)
@@ -4258,20 +4515,22 @@ requires_openai_auth = true`}
                               ) : (
                                 <span>{fmtUsdMaybe(perReqDisplay)}</span>
                               )}
-                              <button
-                                className="aoUsageHistoryEditBtn"
-                                title="Edit $/req"
-                                aria-label="Edit $/req"
-                                onClick={() => {
-                                  setUsageHistoryDrafts((prev) => ({ ...prev, [key]: draft }))
-                                  setUsageHistoryEditCell(`${key}|per_req`)
-                                }}
-                              >
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                  <path d="M12 20h9" />
-                                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
-                                </svg>
-                              </button>
+                              {!perReqEditing ? (
+                                <button
+                                  className="aoUsageHistoryEditBtn"
+                                  title="Edit $/req"
+                                  aria-label="Edit $/req"
+                                  onClick={() => {
+                                    setUsageHistoryDrafts((prev) => ({ ...prev, [key]: draft }))
+                                    setUsageHistoryEditCell(`${key}|per_req`)
+                                  }}
+                                >
+                                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="M12 20h9" />
+                                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                                  </svg>
+                                </button>
+                              ) : null}
                             </div>
                           </td>
                           <td>
@@ -4315,20 +4574,22 @@ requires_openai_auth = true`}
                               ) : (
                                 <span>{fmtUsdMaybe(effectiveDisplay)}</span>
                               )}
-                              <button
-                                className="aoUsageHistoryEditBtn"
-                                title="Edit effective"
-                                aria-label="Edit effective"
-                                onClick={() => {
-                                  setUsageHistoryDrafts((prev) => ({ ...prev, [key]: draft }))
-                                  setUsageHistoryEditCell(`${key}|effective`)
-                                }}
-                              >
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                  <path d="M12 20h9" />
-                                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
-                                </svg>
-                              </button>
+                              {!effectiveEditing ? (
+                                <button
+                                  className="aoUsageHistoryEditBtn"
+                                  title="Edit effective"
+                                  aria-label="Edit effective"
+                                  onClick={() => {
+                                    setUsageHistoryDrafts((prev) => ({ ...prev, [key]: draft }))
+                                    setUsageHistoryEditCell(`${key}|effective`)
+                                  }}
+                                >
+                                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="M12 20h9" />
+                                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                                  </svg>
+                                </button>
+                              ) : null}
                             </div>
                           </td>
                           <td>{fmtUsdMaybe(row.scheduled_package_total_usd ?? null)}</td>
@@ -4363,8 +4624,14 @@ requires_openai_auth = true`}
                         </tr>
                       )
                     })}
-                  </tbody>
-                </table>
+                      </tbody>
+                      </table>
+                    </div>
+                    <div ref={usageHistoryScrollbarOverlayRef} className="aoUsageHistoryScrollbarOverlay" aria-hidden="true">
+                      <div ref={usageHistoryScrollbarThumbRef} className="aoUsageHistoryScrollbarThumb" />
+                    </div>
+                  </div>
+                </div>
               ) : (
                 <div className="aoHint">No history yet.</div>
               )}
