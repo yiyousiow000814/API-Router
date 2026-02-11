@@ -651,7 +651,24 @@ pub fn set_target(
         applied.push(h.clone());
     }
 
-    save_switchboard_state(state, &homes, &target, provider_name.as_deref())?;
+    // State persistence should not turn a successful home rewrite into an error.
+    // If we can't persist the state (disk full / permission issues), the switch still
+    // took effect; we log an event so the user can troubleshoot, and future key-sync
+    // may not work until state can be saved.
+    if let Err(e) = save_switchboard_state(state, &homes, &target, provider_name.as_deref()) {
+        state.gateway.store.add_event(
+            "codex",
+            "error",
+            "codex.provider_switchboard.state_save_failed",
+            &format!("Provider switchboard state save failed: {e}"),
+            json!({
+              "target": target,
+              "provider": provider_name,
+              "cli_homes": homes.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+              "updated_at_unix_ms": unix_ms()
+            }),
+        );
+    }
 
     state.gateway.store.add_event(
         "codex",
