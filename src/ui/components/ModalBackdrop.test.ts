@@ -1,8 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { __resetModalBackdropScrollLockForTests, lockBodyScrollForModal } from './ModalBackdrop'
 
 function setupDom(scrollY: number) {
+  const prevWindow = (globalThis as any).window
+  const prevDocument = (globalThis as any).document
   const scrollTo = vi.fn()
   const bodyStyle: Record<string, string> = {}
   const htmlStyle: Record<string, string> = {}
@@ -23,16 +25,29 @@ function setupDom(scrollY: number) {
     },
   }
 
-  return { scrollTo, bodyStyle, htmlStyle, rootStyle, root }
+  return { prevWindow, prevDocument, scrollTo, bodyStyle, htmlStyle, rootStyle, root }
 }
 
 describe('lockBodyScrollForModal', () => {
+  let prevWindow: any
+  let prevDocument: any
+
   beforeEach(() => {
     __resetModalBackdropScrollLockForTests()
   })
 
+  afterEach(() => {
+    if (prevWindow !== undefined) (globalThis as any).window = prevWindow
+    if (prevDocument !== undefined) (globalThis as any).document = prevDocument
+    prevWindow = undefined
+    prevDocument = undefined
+  })
+
   it('locks scroll and restores on unlock', () => {
-    const { scrollTo, bodyStyle, htmlStyle, rootStyle, root } = setupDom(123)
+    const setup = setupDom(123)
+    prevWindow = setup.prevWindow
+    prevDocument = setup.prevDocument
+    const { scrollTo, bodyStyle, htmlStyle, rootStyle, root } = setup
 
     const unlock = lockBodyScrollForModal()
     expect(bodyStyle.position).toBe('fixed')
@@ -56,7 +71,10 @@ describe('lockBodyScrollForModal', () => {
   })
 
   it('ref-counts nested locks', () => {
-    const { bodyStyle } = setupDom(50)
+    const setup = setupDom(50)
+    prevWindow = setup.prevWindow
+    prevDocument = setup.prevDocument
+    const { bodyStyle } = setup
 
     const unlock1 = lockBodyScrollForModal()
     const unlock2 = lockBodyScrollForModal()
