@@ -1,5 +1,5 @@
 use reqwest::Url;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use parking_lot::RwLock;
@@ -53,6 +53,60 @@ impl ProviderHealth {
 pub struct RouterState {
     pub manual_override: RwLock<Option<String>>,
     health: RwLock<HashMap<String, ProviderHealth>>,
+}
+
+pub(crate) fn provider_iteration_order(cfg: &AppConfig) -> Vec<String> {
+    let mut ordered: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for name in &cfg.provider_order {
+        if cfg.providers.contains_key(name) && seen.insert(name.clone()) {
+            ordered.push(name.clone());
+        }
+    }
+
+    for name in cfg.providers.keys() {
+        if seen.insert(name.clone()) {
+            ordered.push(name.clone());
+        }
+    }
+
+    ordered
+}
+
+pub(crate) fn select_fallback_provider<F>(
+    cfg: &AppConfig,
+    preferred: &str,
+    mut is_routable: F,
+) -> String
+where
+    F: FnMut(&str) -> bool,
+{
+    let preferred_group = provider_group(cfg, preferred);
+    let ordered_names = provider_iteration_order(cfg);
+
+    for name in &ordered_names {
+        if name == preferred {
+            continue;
+        }
+        if preferred_group.is_some() && provider_group(cfg, name) == preferred_group {
+            continue;
+        }
+        if is_routable(name) {
+            return name.clone();
+        }
+    }
+
+    for name in &ordered_names {
+        if name == preferred {
+            continue;
+        }
+        if is_routable(name) {
+            return name.clone();
+        }
+    }
+
+    preferred.to_string()
 }
 
 impl RouterState {
@@ -187,34 +241,11 @@ impl RouterState {
     }
 
     pub fn fallback(&self, cfg: &AppConfig, preferred: &str) -> String {
-        let preferred_group = provider_group(cfg, preferred);
-
-        for name in cfg.providers.keys() {
-            if name == preferred {
-                continue;
-            }
-            if preferred_group.is_some() && provider_group(cfg, name) == preferred_group {
-                continue;
-            }
-            if self.is_routable(name) {
-                return name.clone();
-            }
-        }
-
-        for name in cfg.providers.keys() {
-            if name == preferred {
-                continue;
-            }
-            if self.is_routable(name) {
-                return name.clone();
-            }
-        }
-
-        preferred.to_string()
+        select_fallback_provider(cfg, preferred, |name| self.is_routable(name))
     }
 }
 
-fn provider_group(cfg: &AppConfig, name: &str) -> Option<String> {
+pub(crate) fn provider_group(cfg: &AppConfig, name: &str) -> Option<String> {
     let p = cfg.providers.get(name)?;
     let host = Url::parse(&p.base_url)
         .ok()

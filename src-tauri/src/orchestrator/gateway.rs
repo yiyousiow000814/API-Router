@@ -25,7 +25,7 @@ use super::openai::{
     extract_text_from_responses, input_to_items_preserve_tools, input_to_messages,
     messages_to_responses_input, messages_to_simple_input_list, sse_events_for_text,
 };
-use super::router::RouterState;
+use super::router::{select_fallback_provider, RouterState};
 use super::secrets::SecretStore;
 use super::store::{unix_ms, Store};
 use super::upstream::UpstreamClient;
@@ -467,6 +467,44 @@ async fn health() -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
+fn provider_has_remaining_quota(quota_snapshots: &Value, provider: &str) -> bool {
+    let Some(snap) = quota_snapshots.get(provider) else {
+        return true;
+    };
+
+    if let Some(remaining) = snap.get("remaining").and_then(|v| v.as_f64()) {
+        return remaining > 0.0;
+    }
+
+    let today_used = snap.get("today_used").and_then(|v| v.as_f64());
+    let today_added = snap.get("today_added").and_then(|v| v.as_f64());
+    if let (Some(used), Some(added)) = (today_used, today_added) {
+        return used < added;
+    }
+
+    true
+}
+
+fn provider_is_routable_for_selection(
+    st: &GatewayState,
+    quota_snapshots: &Value,
+    provider: &str,
+) -> bool {
+    st.router.is_provider_routable(provider)
+        && provider_has_remaining_quota(quota_snapshots, provider)
+}
+
+fn fallback_with_quota(
+    st: &GatewayState,
+    cfg: &AppConfig,
+    preferred: &str,
+    quota_snapshots: &Value,
+) -> String {
+    select_fallback_provider(cfg, preferred, |name| {
+        provider_is_routable_for_selection(st, quota_snapshots, name)
+    })
+}
+
 pub(crate) fn decide_provider(
     st: &GatewayState,
     cfg: &AppConfig,
@@ -477,6 +515,8 @@ pub(crate) fn decide_provider(
     if st.router.manual_override.read().is_some() {
         return st.router.decide_with_preferred(cfg, preferred);
     }
+
+    let quota_snapshots = st.store.list_quota_snapshots();
 
     if cfg.routing.auto_return_to_preferred {
         let last_provider = st
@@ -493,15 +533,24 @@ pub(crate) fn decide_provider(
                 .should_suppress_preferred(preferred, cfg, unix_ms())
         {
             if let Some(p) = last_provider {
-                if st.router.is_provider_routable(&p) {
+                if provider_is_routable_for_selection(st, &quota_snapshots, &p) {
                     return (p, "preferred_stabilizing");
                 }
             }
-            return (st.router.fallback(cfg, preferred), "preferred_stabilizing");
+            return (
+                fallback_with_quota(st, cfg, preferred, &quota_snapshots),
+                "preferred_stabilizing",
+            );
         }
     }
 
-    st.router.decide_with_preferred(cfg, preferred)
+    if provider_is_routable_for_selection(st, &quota_snapshots, preferred) {
+        return (preferred.to_string(), "preferred_healthy");
+    }
+    (
+        fallback_with_quota(st, cfg, preferred, &quota_snapshots),
+        "preferred_unhealthy",
+    )
 }
 
 // Lightweight HTTP status for gateway health/ops.
