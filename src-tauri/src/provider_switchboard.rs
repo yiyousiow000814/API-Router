@@ -85,6 +85,36 @@ fn swap_state_dir(cli_home: &Path) -> PathBuf {
     cli_home.join(".api-router-swap")
 }
 
+fn switchboard_base_dir_from_config_path(config_path: &Path) -> PathBuf {
+    app_codex_home_from_config_path(config_path).join("provider-switchboard-base")
+}
+
+fn switchboard_base_cfg_path_from_config_path(config_path: &Path, cli_home: &Path) -> PathBuf {
+    // Keep one base config per Codex dir, so swapping back to gateway doesn't lose
+    // user edits made while swapped (without mutating the user's gateway config).
+    let key = dedup_key(cli_home);
+    switchboard_base_dir_from_config_path(config_path).join(format!("{key}.toml"))
+}
+
+fn save_switchboard_base_cfg(
+    config_path: &Path,
+    cli_home: &Path,
+    base_cfg_text: &str,
+) -> Result<(), String> {
+    write_text(
+        &switchboard_base_cfg_path_from_config_path(config_path, cli_home),
+        base_cfg_text,
+    )
+}
+
+fn load_switchboard_base_cfg(config_path: &Path, cli_home: &Path) -> Option<String> {
+    read_text(&switchboard_base_cfg_path_from_config_path(
+        config_path,
+        cli_home,
+    ))
+    .ok()
+}
+
 fn backup_auth_path(cli_home: &Path) -> PathBuf {
     swap_state_dir(cli_home).join("auth.json.bak")
 }
@@ -101,12 +131,15 @@ fn cli_cfg_path(cli_home: &Path) -> PathBuf {
     cli_home.join("config.toml")
 }
 
-fn app_codex_home(state: &tauri::State<'_, AppState>) -> PathBuf {
-    state
-        .config_path
+fn app_codex_home_from_config_path(config_path: &Path) -> PathBuf {
+    config_path
         .parent()
         .unwrap_or(Path::new("."))
         .join("codex-home")
+}
+
+fn app_codex_home(state: &tauri::State<'_, AppState>) -> PathBuf {
+    app_codex_home_from_config_path(&state.config_path)
 }
 
 fn app_auth_path(state: &tauri::State<'_, AppState>) -> PathBuf {
@@ -179,13 +212,7 @@ fn restore_home_original(cli_home: &Path) -> Result<(), String> {
     let cur_auth = read_bytes(&cli_auth)?;
     let cur_cfg = read_bytes(&cli_cfg)?;
     let bak_auth = read_bytes(&backup_auth_path(cli_home))?;
-
-    // Preserve user config edits made while swapped before restoring gateway mode.
-    let cur_cfg_text = read_text(&cli_cfg)?;
-    let normalized_cfg = normalize_cfg_for_switchboard_base(&cur_cfg_text);
-    write_text(&backup_cfg_path(cli_home), &normalized_cfg)
-        .map_err(|e| format!("sync config backup failed: {e}"))?;
-    let bak_cfg = normalized_cfg.into_bytes();
+    let bak_cfg = read_bytes(&backup_cfg_path(cli_home))?;
 
     write_bytes(&cli_auth, &bak_auth).map_err(|e| format!("restore auth.json failed: {e}"))?;
     if let Err(e) =
@@ -206,11 +233,25 @@ fn normalize_cfg_for_switchboard_base(cfg: &str) -> String {
     if let Some(active_provider) = model_provider_id(cfg) {
         base = remove_model_provider_sections(&base, &[active_provider.as_str()]);
     }
+    // Prevent accumulating blank lines due to repeatedly inserting/removing model_provider.
+    // We only trim leading empty lines; comments at the top should remain intact.
+    while base.starts_with("\r\n") {
+        base = base.trim_start_matches("\r\n").to_string();
+    }
+    while base.starts_with('\n') {
+        base = base.trim_start_matches('\n').to_string();
+    }
     base
 }
 
-fn read_cfg_base_text(cli_home: &Path) -> Result<String, String> {
+fn read_cfg_base_text(config_path: &Path, cli_home: &Path) -> Result<String, String> {
     ensure_cli_files_exist(cli_home)?;
+    let state = home_swap_state(cli_home)?;
+    if state == "original" {
+        if let Some(txt) = load_switchboard_base_cfg(config_path, cli_home) {
+            return Ok(txt);
+        }
+    }
     let current = read_text(&cli_cfg_path(cli_home))?;
     Ok(normalize_cfg_for_switchboard_base(&current))
 }
@@ -440,9 +481,18 @@ pub fn set_target(
     let mut applied: Vec<PathBuf> = Vec::new();
     for h in &homes {
         let res = match target.as_str() {
-            "gateway" => restore_home_original(h),
+            "gateway" => (|| {
+                // Persist the latest effective config (minus switchboard wiring) so we can
+                // re-apply user edits when switching back into swapped modes later.
+                if home_swap_state(h)? == "swapped" {
+                    let cur_cfg = read_text(&cli_cfg_path(h))?;
+                    let base_cfg = normalize_cfg_for_switchboard_base(&cur_cfg);
+                    save_switchboard_base_cfg(&state.config_path, h, &base_cfg)?;
+                }
+                restore_home_original(h)
+            })(),
             "official" => (|| {
-                let orig_cfg = read_cfg_base_text(h)?;
+                let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
                 let next_cfg = strip_model_provider_line(&orig_cfg);
                 let auth = app_auth.as_ref().ok_or_else(|| {
                     "Missing app Codex auth.json. Try logging in first.".to_string()
@@ -459,7 +509,7 @@ pub fn set_target(
                 let key = direct_key
                     .as_deref()
                     .ok_or_else(|| "provider key is missing".to_string())?;
-                let orig_cfg = read_cfg_base_text(h)?;
+                let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
                 let next_cfg = build_direct_provider_cfg(&orig_cfg, name, base_url);
                 let next_auth = auth_with_openai_key(key.trim());
                 write_swapped_files(h, &next_auth, &next_cfg)
@@ -525,14 +575,17 @@ mod tests {
     }
 
     #[test]
-    fn restore_home_original_keeps_swapped_config_edits() {
+    fn restore_home_original_restores_gateway_cfg_but_preserves_base_for_next_swap() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let cli_home = tmp.path();
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
 
         // Initial gateway files (will be backed up by ensure_backup_exists).
-        std::fs::write(cli_auth_path(cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
-        std::fs::write(cli_cfg_path(cli_home), "model = \"gpt-5.2\"\n").unwrap();
-        ensure_backup_exists(cli_home).expect("backup");
+        std::fs::write(cli_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+        ensure_backup_exists(&cli_home).expect("backup");
 
         // Simulate swapped state: CLI files reflect a direct provider target, and user edits the model.
         let swapped_cfg = concat!(
@@ -543,14 +596,22 @@ mod tests {
             "name = \"packycode\"\n",
             "base_url = \"https://example.com/v1\"\n",
         );
-        std::fs::write(cli_auth_path(cli_home), r#"{"OPENAI_API_KEY":"sk-test"}"#).unwrap();
-        std::fs::write(cli_cfg_path(cli_home), swapped_cfg).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"OPENAI_API_KEY":"sk-test"}"#).unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), swapped_cfg).unwrap();
 
-        // Restoring should preserve the user edit (model) while removing switchboard wiring.
-        restore_home_original(cli_home).expect("restore");
-        let restored_cfg = std::fs::read_to_string(cli_cfg_path(cli_home)).unwrap();
-        assert!(restored_cfg.contains("model = \"gpt-5.3-codex\""));
-        assert!(!restored_cfg.contains("model_provider ="));
-        assert!(!restored_cfg.contains("[model_providers.\"packycode\"]"));
+        // Persist base (for next swap), then restore gateway config exactly.
+        let base_cfg = normalize_cfg_for_switchboard_base(&swapped_cfg);
+        save_switchboard_base_cfg(&config_path, &cli_home, &base_cfg).expect("save base");
+
+        restore_home_original(&cli_home).expect("restore");
+
+        // Gateway config is the original.
+        let restored_cfg = std::fs::read_to_string(cli_cfg_path(&cli_home)).unwrap();
+        assert!(restored_cfg.contains("model = \"gpt-5.2\""));
+
+        // Switching again should use the preserved base (with the user edit).
+        let base_read = read_cfg_base_text(&config_path, &cli_home).expect("base read");
+        assert!(base_read.contains("model = \"gpt-5.3-codex\""));
+        assert!(!base_read.contains("model_provider ="));
     }
 }
