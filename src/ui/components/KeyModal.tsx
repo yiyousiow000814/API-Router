@@ -15,21 +15,21 @@ export function KeyModal({ open, provider, value, onChange, onCancel, onSave }: 
   if (!open) return null
   return (
     <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={onCancel}>
-      <div className="aoModal">
-        <div className="aoModalTitle">Set API key</div>
-        <div className="aoModalSub">
+      <div className="aoModal w-[min(560px,92vw)] rounded-2xl p-6">
+        <div className="aoModalTitle text-lg font-semibold tracking-tight">Set API key</div>
+        <div className="aoModalSub mt-2 text-sm leading-6">
           Provider: <span style={{ fontFamily: mono }}>{provider}</span>
           <br />
           Stored in ./user-data/secrets.json (gitignored).
         </div>
         <input
-          className="aoInput"
+          className="aoInput mt-3 w-full rounded-xl"
           style={{ width: '100%', height: 36, borderRadius: 12 }}
           placeholder="Paste API key..."
           value={value}
           onChange={(e) => onChange(e.target.value)}
         />
-        <div className="aoModalActions">
+        <div className="aoModalActions mt-4 flex flex-wrap gap-2">
           <button className="aoBtn" onClick={onCancel}>
             Cancel
           </button>

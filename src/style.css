@@ -1,3 +1,7 @@
+﻿@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
   /* Light theme: white base + cyan + gold (match app icon). */
   --ao-bg0: #ffffff;

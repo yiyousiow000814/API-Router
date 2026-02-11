@@ -7,6 +7,23 @@ export type ProviderHealth = {
   last_fail_at_unix_ms: number
 }
 
+export type SpendHistoryRow = {
+  provider: string
+  api_key_ref?: string | null
+  day_key: string
+  req_count: number
+  total_tokens: number
+  tracked_total_usd?: number | null
+  scheduled_total_usd?: number | null
+  scheduled_package_total_usd?: number | null
+  manual_total_usd?: number | null
+  manual_usd_per_req?: number | null
+  effective_total_usd?: number | null
+  effective_usd_per_req?: number | null
+  source?: string | null
+  updated_at_unix_ms?: number
+}
+
 export type Status = {
   listen: { host: string; port: number }
   preferred_provider: string
