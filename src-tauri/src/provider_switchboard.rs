@@ -478,7 +478,7 @@ pub fn sync_active_provider_target_for_key(
     state: &tauri::State<'_, AppState>,
     provider: &str,
 ) -> Result<(), String> {
-    sync_active_provider_target_for_key_impl(&*state, provider)
+    sync_active_provider_target_for_key_impl(state, provider)
 }
 
 pub fn set_target(
