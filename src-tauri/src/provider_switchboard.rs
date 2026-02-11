@@ -179,7 +179,14 @@ fn restore_home_original(cli_home: &Path) -> Result<(), String> {
     let cur_auth = read_bytes(&cli_auth)?;
     let cur_cfg = read_bytes(&cli_cfg)?;
     let bak_auth = read_bytes(&backup_auth_path(cli_home))?;
-    let bak_cfg = read_bytes(&backup_cfg_path(cli_home))?;
+
+    // Preserve user config edits made while swapped before restoring gateway mode.
+    let cur_cfg_text = read_text(&cli_cfg)?;
+    let normalized_cfg = normalize_cfg_for_switchboard_base(&cur_cfg_text);
+    write_text(&backup_cfg_path(cli_home), &normalized_cfg)
+        .map_err(|e| format!("sync config backup failed: {e}"))?;
+    let bak_cfg = normalized_cfg.into_bytes();
+
     write_bytes(&cli_auth, &bak_auth).map_err(|e| format!("restore auth.json failed: {e}"))?;
     if let Err(e) =
         write_bytes(&cli_cfg, &bak_cfg).map_err(|e| format!("restore config.toml failed: {e}"))
@@ -192,13 +199,20 @@ fn restore_home_original(cli_home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn read_original_cfg_text(cli_home: &Path) -> Result<String, String> {
-    ensure_cli_files_exist(cli_home)?;
-    if home_swap_state(cli_home)? == "swapped" {
-        let bytes = read_bytes(&backup_cfg_path(cli_home))?;
-        return String::from_utf8(bytes).map_err(|_| "config.toml is not valid UTF-8".to_string());
+fn normalize_cfg_for_switchboard_base(cfg: &str) -> String {
+    // Keep user edits, but drop switchboard-owned provider wiring so we can rebuild
+    // the next mode from the latest effective config.
+    let mut base = strip_model_provider_line(cfg);
+    if let Some(active_provider) = model_provider_id(cfg) {
+        base = remove_model_provider_sections(&base, &[active_provider.as_str()]);
     }
-    read_text(&cli_cfg_path(cli_home))
+    base
+}
+
+fn read_cfg_base_text(cli_home: &Path) -> Result<String, String> {
+    ensure_cli_files_exist(cli_home)?;
+    let current = read_text(&cli_cfg_path(cli_home))?;
+    Ok(normalize_cfg_for_switchboard_base(&current))
 }
 
 fn strip_model_provider_line(cfg: &str) -> String {
@@ -428,7 +442,7 @@ pub fn set_target(
         let res = match target.as_str() {
             "gateway" => restore_home_original(h),
             "official" => (|| {
-                let orig_cfg = read_original_cfg_text(h)?;
+                let orig_cfg = read_cfg_base_text(h)?;
                 let next_cfg = strip_model_provider_line(&orig_cfg);
                 let auth = app_auth.as_ref().ok_or_else(|| {
                     "Missing app Codex auth.json. Try logging in first.".to_string()
@@ -445,7 +459,7 @@ pub fn set_target(
                 let key = direct_key
                     .as_deref()
                     .ok_or_else(|| "provider key is missing".to_string())?;
-                let orig_cfg = read_original_cfg_text(h)?;
+                let orig_cfg = read_cfg_base_text(h)?;
                 let next_cfg = build_direct_provider_cfg(&orig_cfg, name, base_url);
                 let next_auth = auth_with_openai_key(key.trim());
                 write_swapped_files(h, &next_auth, &next_cfg)
