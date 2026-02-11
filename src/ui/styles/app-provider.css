@@ -1,0 +1,156 @@
+﻿.aoConfigSection {
+  margin-top: 12px;
+}
+
+.aoProviderName {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoProviderNameRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoConfigCard {
+  padding: 12px;
+}
+
+.aoConfigDeck {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+
+.aoConfigPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(13, 18, 32, 0.06);
+  background: rgba(13, 18, 32, 0.02);
+}
+
+.aoProviderConfigList {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 12px;
+  position: relative;
+  overflow-anchor: none;
+  /* Prevent the drag overlay shadow from being clipped by the modal body. */
+  padding-bottom: 48px;
+}
+
+.aoProviderConfigCard {
+  border: 1px solid var(--ao-line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  cursor: default;
+  transition: box-shadow 120ms ease;
+}
+
+.aoProviderConfigDragging {
+  position: relative;
+  z-index: 6;
+  /* Keep the drag overlay fully opaque to avoid blending/double-dark borders when it overlaps other cards. */
+  opacity: 1;
+  background: #fff;
+  pointer-events: none;
+  /* Avoid drop-shadows during drag: they darken underlying card borders (especially when clipped). */
+  border-color: rgba(var(--ao-accent-rgb), 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    0 0 0 3px rgba(var(--ao-accent-rgb), 0.12);
+}
+
+.aoProviderConfigPlaceholder {
+  border-radius: 16px;
+  border: 1px dashed rgba(13, 18, 32, 0.12);
+  background: rgba(13, 18, 32, 0.02);
+}
+
+.aoProviderConfigDragOver {
+  border-color: rgba(var(--ao-accent-rgb), 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    0 0 0 2px rgba(var(--ao-accent-rgb), 0.18);
+}
+
+.aoProviderConfigHeader {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.aoProviderConfigBody {
+  display: grid;
+  grid-template-columns: minmax(320px, 1.4fr) minmax(220px, 0.9fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.aoProviderField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 15px;
+}
+
+.aoProviderLeft {
+  padding-right: 12px;
+}
+
+.aoProviderRight {
+  position: relative;
+  padding-left: 16px;
+  padding-top: 15px;
+}
+
+.aoProviderRight::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 1px;
+  bottom: -22px;
+  width: 1px;
+  background: rgba(13, 18, 32, 0.08);
+}
+
+.aoProviderConfigCollapsed .aoProviderRight::before {
+  bottom: 0;
+}
+
+.aoProviderHeadRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.aoProviderHeadActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aoConfigGrid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(220px, 1fr);
+  gap: 16px;
+}
+
+.aoConfigColumn {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+

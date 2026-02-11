@@ -1,6 +1,6 @@
-@import './styles/app-base.css';
-@import './styles/app-layout.css';
+@import './styles/app-shell.css';
 @import './styles/app-dashboard.css';
+@import './styles/app-provider.css';
 @import './styles/app-usage.css';
 @import './styles/app-modals.css';
 @import './styles/app-switchboard.css';

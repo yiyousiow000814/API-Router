@@ -1,605 +1,1284 @@
-﻿.aoMark {
-  width: 26px;
-  height: 26px;
-  border-radius: 9px;
-  border: 1px solid var(--ao-line);
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 10px 28px rgba(13, 18, 32, 0.12);
-  object-fit: contain;
-}
-
-.aoTitle {
-  font-family:
-    "Segoe UI Variable Display",
-    "Bahnschrift",
-    "Segoe UI Variable Text",
-    "Segoe UI",
-    system-ui,
-    sans-serif;
-  font-weight: 680;
-  letter-spacing: 0.2px;
-  font-size: 18px;
-}
-
-.aoSubtitle {
-  font-size: 12px;
-  color: rgba(13, 18, 32, 0.66);
-  margin-top: 2px;
-}
-
-.aoEventRowError td {
-  /* No tinted backgrounds for error rows; rely on left accent + badge. */
-  background: transparent;
-}
-
-.aoEventRowError td:first-child {
-  box-shadow: inset 3px 0 0 rgba(255, 94, 125, 0.75);
-}
-
-.aoEventRowError td .aoHint {
-  color: rgba(119, 11, 33, 0.78);
-}
-
-.aoLevelBadge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: 0.02em;
-  border: 1px solid rgba(13, 18, 32, 0.12);
-  background: rgba(13, 18, 32, 0.035);
-  color: rgba(13, 18, 32, 0.78);
-}
-
-.aoLevelBadgeInfo {
-  border-color: rgba(40, 199, 217, 0.26);
-  background: rgba(40, 199, 217, 0.07);
-  color: rgba(0, 110, 124, 0.9);
-}
-
-.aoLevelBadgeError {
-  border-color: rgba(255, 94, 125, 0.3);
-  background: rgba(255, 94, 125, 0.1);
-  color: rgba(170, 0, 38, 0.95);
-}
-
-.aoEventMessage {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-}
-
-.aoEventsSection td {
-  padding: 10px 12px 6px;
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: rgba(13, 18, 32, 0.74);
-  background: rgba(13, 18, 32, 0.02);
-}
-
-.aoEventsSectionRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.aoEventsClearBtn {
-  height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 94, 125, 0.26);
-  background: rgba(255, 94, 125, 0.06);
-  color: rgba(145, 12, 43, 0.92);
-  font-size: 11px;
-  font-weight: 670;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
-}
-
-.aoEventsClearBtn:hover {
-  border-color: rgba(255, 94, 125, 0.5);
-  background: rgba(255, 94, 125, 0.09);
-  transform: translateY(-1px);
-}
-
-.aoEventsClearBtn:active {
-  transform: translateY(0);
-}
-
-.aoEventsClearBtn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-  transform: none;
-}
-
-.aoEventsGap td {
-  height: 12px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  border-bottom: none;
-}
-
-.aoCard {
-  border: 1px solid var(--ao-line);
-  border-radius: 16px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.78));
-  padding: 12px 12px 10px;
-}
-
-.aoCardHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.aoCardTitle {
-  font-size: 12px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: rgba(13, 18, 32, 0.74);
-}
-
-.aoKvp {
+﻿.aoUsageStatsPage {
+  min-height: 320px;
   display: grid;
-  grid-template-columns: 110px 1fr;
-  row-gap: 6px;
-  column-gap: 10px;
-  font-size: 13px;
+  gap: 12px;
+  align-content: start;
 }
 
-.aoKvpRight {
+.aoUsageStatsHeader {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoUsageStatsActions {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aoUsageFilterCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+  padding: 8px 10px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.aoUsageFilterSection {
+  display: grid;
+  gap: 6px;
   min-width: 0;
 }
 
-.aoKvpRight .aoVal {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.aoUsageFilterSectionCompact {
+  align-content: start;
 }
 
-.aoKey {
-  color: rgba(13, 18, 32, 0.62);
-}
-
-.aoVal {
-  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-  color: rgba(13, 18, 32, 0.86);
-}
-
-.aoRow {
-  display: flex;
+.aoUsageFilterSectionHead {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
   gap: 8px;
-  align-items: center;
 }
 
-.aoSelect,
-.aoInput {
-  height: 32px;
-  border-radius: 10px;
-  border: 1px solid var(--ao-line);
-  background: rgba(13, 18, 32, 0.03);
-  color: var(--ao-fg);
-  padding: 0 10px;
-  outline: none;
-}
-
-.aoInput::placeholder {
-  color: rgba(13, 18, 32, 0.42);
-}
-
-.aoSelect:focus,
-.aoInput:focus {
-  border-color: rgba(40, 199, 217, 0.55);
-  box-shadow: 0 0 0 3px rgba(40, 199, 217, 0.12);
-}
-
-.aoBtn {
-  height: 32px;
-  border-radius: 11px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(13, 18, 32, 0.04);
-  color: var(--ao-fg);
-  font-weight: 620;
-  letter-spacing: 0.15px;
-  padding: 0 12px;
-  cursor: pointer;
-  transition:
-    transform 140ms ease,
-    background 140ms ease,
-    border-color 140ms ease;
-}
-
-.aoBtn:hover {
-  transform: translateY(-1px);
-  background: rgba(13, 18, 32, 0.06);
-  border-color: rgba(13, 18, 32, 0.18);
-}
-
-.aoBtnPrimary {
-  background: linear-gradient(135deg, rgba(40, 199, 217, 0.3), rgba(242, 193, 77, 0.22));
-  border-color: rgba(40, 199, 217, 0.3);
-}
-
-.aoBtnPrimary:hover {
-  background: linear-gradient(135deg, rgba(40, 199, 217, 0.38), rgba(242, 193, 77, 0.28));
-  border-color: rgba(40, 199, 217, 0.42);
-}
-
-.aoSplitBtn {
-  display: inline-flex;
-  align-items: center;
-  height: 32px;
-  border-radius: 11px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(13, 18, 32, 0.04);
-  overflow: hidden;
-}
-
-.aoSplitBtnPrimary {
-  background: linear-gradient(135deg, rgba(40, 199, 217, 0.3), rgba(242, 193, 77, 0.22));
-  border-color: rgba(40, 199, 217, 0.3);
-}
-
-.aoSplitBtnPrimary:hover {
-  border-color: rgba(40, 199, 217, 0.52);
-  box-shadow: 0 0 0 3px rgba(40, 199, 217, 0.12);
-}
-
-.aoSplitBtnBtn {
-  height: 32px;
-  border: none;
-  background: transparent;
-  color: var(--ao-fg);
-  font-weight: 620;
-  letter-spacing: 0.15px;
-  padding: 0 12px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-}
-
-.aoSplitBtnPrimary .aoSplitBtnBtn:hover {
-  background: rgba(255, 255, 255, 0.26);
-}
-
-.aoSplitBtnBtn:hover {
-  background: rgba(13, 18, 32, 0.06);
-}
-
-.aoSplitBtnDivider {
-  width: 1px;
-  height: 100%;
-  background: rgba(13, 18, 32, 0.22);
-}
-
-.aoSplitBtnArrow {
-  width: 28px;
-  padding: 0;
-  justify-content: center;
-  font-size: 12px;
-  letter-spacing: 0;
-}
-
-.aoBtnTag {
-  display: inline-flex;
+.aoUsageFilterChips {
+  display: flex;
   align-items: center;
   gap: 6px;
-  margin-left: 8px;
-  height: 20px;
-  padding: 0 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.7);
-  color: rgba(13, 18, 32, 0.78);
-  font-size: 11px;
-  font-weight: 650;
-  line-height: 20px;
-}
-
-.aoBtnTagDot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-}
-
-.aoBtnTagDotUser {
-  background: rgba(13, 18, 32, 0.38);
-}
-
-.aoBtnTagDotApp {
-  background: var(--ao-accent);
-}
-
-.aoBtnTagDotMixed {
-  background: rgba(242, 193, 77, 0.95);
-}
-
-.aoBtnTagDotError {
-  background: var(--ao-danger);
-}
-
-.aoBtn:focus-visible,
-.aoIconBtn:focus-visible,
-.aoMenuItem:focus-visible,
-.aoActionBtn:focus-visible {
-  outline: 2px solid rgba(var(--ao-accent-rgb), 0.55);
-  outline-offset: 2px;
-}
-
-.aoBtnDanger {
-  background: rgba(255, 94, 125, 0.12);
-  border-color: rgba(255, 94, 125, 0.26);
-}
-
-.aoBtnDangerSoft {
-  /* Less visually "alarming" than aoBtnDanger; turns red only on hover. */
-  background: rgba(13, 18, 32, 0.04);
-  border-color: rgba(13, 18, 32, 0.14);
-}
-
-.aoBtnDangerSoft:hover {
-  background: rgba(255, 94, 125, 0.08);
-  border-color: rgba(255, 94, 125, 0.32);
-}
-
-.aoSection {
-  margin-top: 12px;
-}
-
-.aoSectionHeader {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin: 10px 2px 8px;
-}
-
-.aoSectionHeaderStack {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-}
-
-.aoSessionsPanel {
-  display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  margin-top: 6px;
 }
 
-.aoSessionChip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: 12px;
-  border: 1px solid rgba(13, 18, 32, 0.08);
-  background: rgba(255, 255, 255, 0.7);
-}
-
-.aoSessionId {
-  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-  font-size: 12px;
-  color: rgba(13, 18, 32, 0.8);
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.aoSessionSelect {
+.aoUsageFilterChip {
   height: 28px;
-  border-radius: 10px;
-  border: 1px solid rgba(13, 18, 32, 0.12);
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
   background: rgba(255, 255, 255, 0.9);
+  color: rgba(13, 18, 32, 0.82);
   padding: 0 10px;
   font-size: 12px;
+  font-weight: 620;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
-.aoConfigSection {
-  margin-top: 12px;
+.aoUsageFilterChip:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.45);
+  background: rgba(var(--ao-accent-rgb), 0.08);
 }
 
-.aoProviderName {
-  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-  font-size: 13px;
+.aoUsageFilterChip.is-active {
+  border-color: rgba(33, 168, 183, 0.58);
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.24), rgba(242, 193, 77, 0.2));
+  color: rgba(13, 18, 32, 0.94);
+}
+
+.aoUsageFilterChip:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.aoUsageAnomalyBanner {
+  border: 1px solid rgba(214, 74, 86, 0.34);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(245, 99, 110, 0.1), rgba(245, 207, 84, 0.08));
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.aoUsageAnomalyText {
+  font-size: 12px;
+  color: rgba(145, 12, 43, 0.9);
+  font-weight: 620;
+}
+
+.aoUsageActionBtn {
+  min-width: 64px;
+  flex: 0 0 auto;
+  line-height: 1;
+  justify-content: center;
+}
+
+.aoUsageActionBtnWindow {
+  width: 46px;
+  padding: 0;
+}
+
+.aoUsageActionBtnRefresh {
+  width: 86px;
+  padding: 0;
+}
+
+.aoUsageActionBtnLoading {
+  opacity: 0.85;
+  cursor: wait;
+}
+
+.aoUsageWindowBtnActive {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.3), rgba(242, 193, 77, 0.24));
+  border-color: rgba(13, 18, 32, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.58);
   color: rgba(13, 18, 32, 0.9);
 }
 
-.aoProviderNameRow {
-  display: flex;
-  align-items: center;
+.aoUsageKpiGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.aoUsageKpiCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
   gap: 6px;
 }
 
-.aoDragHandle {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  border: 0;
-  background: transparent;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(13, 18, 32, 0.7);
-  cursor: grab;
-  user-select: none;
-  touch-action: none;
+.aoUsageKpiValue {
+  font-size: 24px;
+  font-weight: 760;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: rgba(13, 18, 32, 0.92);
 }
 
-.aoDragHandle:hover {
-  color: rgba(var(--ao-accent-rgb), 0.9);
+.aoUsageKpiValueSmall {
+  font-size: 20px;
+}
+
+.aoUsageFactsCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageFactsTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.aoUsageFactsTable th,
+.aoUsageFactsTable td {
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+  padding: 8px 10px;
+  font-size: 12px;
+  text-align: left;
+}
+
+.aoUsageFactsTable th {
+  width: 18%;
+  color: rgba(13, 18, 32, 0.6);
+  letter-spacing: 0.02em;
+  font-weight: 650;
+}
+
+.aoUsageFactsTable td {
+  width: 32%;
+  color: rgba(13, 18, 32, 0.86);
+  font-weight: 620;
+}
+
+.aoUsageChartsGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.aoUsageChartCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.aoUsageTimelineChartWrap {
+  display: grid;
+  gap: 8px;
+  position: relative;
+}
+
+.aoUsageTimelineSvg {
+  width: 100%;
+  height: 170px;
+  border: 1px solid rgba(13, 18, 32, 0.07);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(13, 18, 32, 0.02));
+}
+
+.aoUsageTimelineAxis {
+  stroke: rgba(13, 18, 32, 0.24);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.aoUsageTimelineBarRect {
+  fill: rgba(40, 199, 217, 0.82);
+  pointer-events: none;
+}
+
+.aoUsageTimelineLine {
+  fill: none;
+  stroke: rgba(242, 193, 77, 0.95);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.aoUsageTimelineDot {
+  fill: rgba(242, 193, 77, 0.96);
+  pointer-events: none;
+}
+
+.aoUsageTimelineHoverBand {
+  fill: rgba(0, 0, 0, 0.001);
+  cursor: crosshair;
+}
+
+.aoUsageTimelineLegend {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.aoUsageLegendItem {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.72);
+  letter-spacing: 0.02em;
+}
+
+.aoUsageLegendBars::before,
+.aoUsageLegendLine::before {
+  content: '';
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+
+.aoUsageLegendBars::before {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: rgba(40, 199, 217, 0.85);
+}
+
+.aoUsageLegendLine::before {
+  width: 14px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(242, 193, 77, 0.95);
+}
+
+.aoUsageTimelineTicks {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10px;
+  color: rgba(13, 18, 32, 0.62);
+  letter-spacing: 0.01em;
+}
+
+.aoUsageTooltip {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 28px rgba(13, 18, 32, 0.16);
+  padding: 6px 8px;
+  min-width: 144px;
+}
+
+.aoUsageTooltipTitle {
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.88);
+}
+
+.aoUsageTooltipSub {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.7);
+}
+
+.aoUsageModelList {
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageModelRow {
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.aoUsageModelTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aoUsageModelName {
+  font-size: 14px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoUsageModelMeta {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.62);
+}
+
+.aoUsageModelSub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.72);
+}
+
+.aoUsageModelBarTrack {
+  height: 7px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(13, 18, 32, 0.1);
+}
+
+.aoUsageModelBarFill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(40, 199, 217, 0.92), rgba(242, 193, 77, 0.92));
+}
+
+.aoUsageProviderCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageProviderTable {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.84);
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.aoUsageProviderColProv {
+  width: 176px;
+}
+
+.aoUsageProviderColReq {
+  width: 68px;
+}
+
+.aoUsageProviderColTok {
+  width: 116px;
+}
+
+.aoUsageProviderColTokReq {
+  width: 92px;
+}
+
+.aoUsageProviderColReqUsd {
+  width: 82px;
+}
+
+.aoUsageProviderColMilUsd {
+  width: 94px;
+}
+
+.aoUsageProviderColDay {
+  width: 102px;
+}
+
+.aoUsageProviderColTotal {
+  width: 108px;
+}
+
+.aoUsageProviderColSrc {
+  width: 116px;
+}
+
+.aoUsageProviderTable th,
+.aoUsageProviderTable td {
+  padding: 8px 10px;
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+  white-space: nowrap;
+}
+
+.aoUsageProviderTable th {
+  border-top: none;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.58);
+  background: rgba(13, 18, 32, 0.025);
+  text-align: left;
+}
+
+.aoUsageProviderTable tbody tr:first-child td {
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoUsageProviderTable tbody tr:hover td {
+  background: rgba(13, 18, 32, 0.02);
+}
+
+.aoUsageProviderTable tfoot td {
+  border-top: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(13, 18, 32, 0.03);
+  font-weight: 700;
+}
+
+.aoUsageProviderRowAnomaly td {
+  background: rgba(245, 99, 110, 0.08);
+}
+
+.aoUsageActionsSep {
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.28);
+  margin: 0 -2px;
+}
+
+.aoUsagePricingGrid {
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsagePricingRow {
+  display: grid;
+  grid-template-columns:
+    minmax(132px, 170px)
+    minmax(160px, 1fr)
+    minmax(96px, 108px)
+    72px
+    minmax(96px, 132px);
+  gap: 6px;
+  align-items: center;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 10px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.aoUsagePricingRow.is-scheduled {
+  grid-template-columns:
+    minmax(132px, 170px)
+    minmax(160px, 1fr)
+    minmax(96px, 108px)
+    72px
+    minmax(96px, 132px);
+}
+
+.aoUsagePricingProvider {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoUsagePricingProviderWrap {
+  min-width: 0;
+}
+
+.aoUsagePricingKeyHint {
+  margin-top: 2px;
+  font-size: 11px;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.aoUsagePricingSelect,
+.aoUsagePricingInput {
+  width: 100%;
+}
+
+.aoUsagePricingMode {
+  min-width: 0;
+}
+
+.aoUsagePricingAmount {
+  min-width: 0;
+}
+
+.aoUsagePricingInput[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+  padding-right: 8px;
+}
+
+.aoUsagePricingInput[type="number"]::-webkit-outer-spin-button,
+.aoUsagePricingInput[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.aoUsagePricingCurrencyWrap {
+  position: relative;
+  min-width: 0;
+}
+
+.aoUsagePricingCurrencyBtn {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.aoUsagePricingAutosave {
+  display: inline-block;
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.aoUsagePricingActions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 96px;
+  justify-self: end;
+}
+
+.aoUsagePricingScheduleInline {
+  justify-self: start;
+  white-space: nowrap;
+}
+
+.aoUsagePricingSchedulePlaceholder {
+  min-width: 0;
+}
+
+.aoUsagePricingAutosave-saving {
+  color: rgba(var(--ao-accent-rgb), 0.95);
+}
+
+.aoUsagePricingAutosave-error {
+  color: rgba(205, 58, 74, 0.95);
+}
+
+.aoUsagePricingCurrencyChevron {
+  font-size: 10px;
+  color: rgba(13, 18, 32, 0.7);
+}
+
+.aoUsagePricingCurrencyMenu {
+  position: absolute;
+  top: 34px;
+  right: 0;
+  z-index: 50;
+  width: 100%;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow:
+    0 10px 24px rgba(13, 18, 32, 0.16),
+    0 2px 8px rgba(13, 18, 32, 0.1);
+  max-height: 220px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(13, 18, 32, 0.26) rgba(13, 18, 32, 0.06);
+}
+
+.aoUsagePricingCurrencyMenu::-webkit-scrollbar {
+  width: 8px;
+}
+
+.aoUsagePricingCurrencyMenu::-webkit-scrollbar-track {
+  background: rgba(13, 18, 32, 0.06);
+  border-radius: 999px;
+}
+
+.aoUsagePricingCurrencyMenu::-webkit-scrollbar-thumb {
+  background: rgba(13, 18, 32, 0.26);
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+.aoUsagePricingCurrencyMenu::-webkit-scrollbar-thumb:hover {
+  background: rgba(13, 18, 32, 0.38);
+}
+
+.aoUsagePricingCurrencySearchWrap {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(255, 255, 255, 0.98);
+  padding: 6px 6px 4px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoUsagePricingCurrencySearch {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.aoUsagePricingCurrencyMenuPortal {
+  position: fixed;
+  top: 0;
+  right: auto;
+  z-index: 10120;
+}
+
+.aoUsagePricingCurrencyItem {
+  width: 100%;
+  height: 30px;
+  border: none;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  background: transparent;
+  color: rgba(13, 18, 32, 0.9);
+  font-size: 12px;
+  font-weight: 620;
+  text-align: left;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.aoUsagePricingCurrencyItem:last-child {
+  border-bottom: none;
+}
+
+.aoUsagePricingCurrencyItem:hover {
   background: rgba(var(--ao-accent-rgb), 0.08);
 }
 
-.aoDragHandle:active {
+.aoUsagePricingCurrencyItem.is-active {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.18), rgba(242, 193, 77, 0.14));
+  color: rgba(13, 18, 32, 0.95);
+}
+
+.aoUsagePricingSelect:disabled,
+.aoUsagePricingInput:disabled,
+.aoUsagePricingCurrencyBtn:disabled {
+  background: rgba(13, 18, 32, 0.06);
+  color: rgba(13, 18, 32, 0.45);
+  border-color: rgba(13, 18, 32, 0.12);
+  cursor: not-allowed;
+}
+
+.aoUsageProviderName {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoUsageProviderDetailName {
+  padding-left: 10px;
+}
+
+.aoUsageProviderDetailText {
+  display: inline-block;
+  padding-left: 10px;
+}
+
+.aoUsageProviderTable th:first-child,
+.aoUsageProviderTable td:first-child {
+  padding-right: 4px;
+}
+
+.aoUsageProviderTable th:nth-child(2),
+.aoUsageProviderTable td:nth-child(2) {
+  padding-left: 6px;
+}
+
+.aoUsageHistoryTableSurface {
+  --ao-history-scrollbar-size: 8px;
+  --ao-history-scroll-thumb: rgba(120, 132, 156, 0.44);
+  --ao-history-scroll-thumb-hover: rgba(94, 108, 136, 0.56);
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(248, 250, 253, 0.94);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  overflow: hidden;
+}
+
+.aoUsageHistoryTableHead {
+  flex: 0 0 auto;
+  padding-right: 0;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgb(242, 244, 247);
+}
+
+.aoUsageHistoryTableBody {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.aoUsageHistoryTableWrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: transparent;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.aoUsageHistoryTableWrap::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.aoUsageHistoryScrollbarOverlay {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  bottom: 7px;
+  width: var(--ao-history-scrollbar-size);
+  overflow: hidden;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  touch-action: none;
+  transition: opacity 140ms ease;
+  z-index: 2;
+}
+
+.aoUsageHistoryScrollbarOverlayVisible {
+  opacity: 1;
+}
+
+.aoUsageHistoryTableSurfaceCanScroll .aoUsageHistoryScrollbarOverlay {
+  pointer-events: auto;
+}
+
+.aoUsageHistoryTableSurfaceCanScroll .aoUsageHistoryScrollbarOverlay:hover {
+  opacity: 1;
+}
+
+.aoUsageHistoryTableSurfaceCanScroll .aoUsageHistoryScrollbarOverlay:hover .aoUsageHistoryScrollbarThumb {
+  background: var(--ao-history-scroll-thumb-hover);
+}
+
+.aoUsageHistoryScrollbarThumb {
+  width: 100%;
+  min-height: 24px;
+  border-radius: 999px;
+  background: var(--ao-history-scroll-thumb);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  transition: background-color 120ms ease;
+  will-change: transform;
+  cursor: grab;
+}
+
+.aoUsageHistoryScrollbarOverlay:active .aoUsageHistoryScrollbarThumb {
   cursor: grabbing;
 }
 
-.aoDragHandle svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.3;
-  stroke-linecap: round;
-  shape-rendering: geometricPrecision;
+.aoUsageHistoryTableSurfaceScrollbarVisible .aoUsageHistoryScrollbarThumb {
+  background: var(--ao-history-scroll-thumb-hover);
 }
 
-.aoIconGhost {
-  width: 20px;
-  height: 20px;
-  border: 0;
-  padding: 0;
-  border-radius: 6px;
-  background: transparent;
+.aoUsageHistoryTable {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+}
+
+.aoUsageHistoryColDate {
+  width: 84px;
+}
+
+.aoUsageHistoryColProv {
+  width: 108px;
+}
+
+.aoUsageHistoryColKey {
+  width: 132px;
+}
+
+.aoUsageHistoryColReq {
+  width: 62px;
+}
+
+.aoUsageHistoryColTok {
+  width: 102px;
+}
+
+.aoUsageHistoryColReqUsd {
+  width: 94px;
+}
+
+.aoUsageHistoryColEff {
+  width: 122px;
+}
+
+.aoUsageHistoryColPkg {
+  width: 82px;
+}
+
+.aoUsageHistoryColSrc {
+  width: 104px;
+}
+
+.aoUsageHistoryColAct {
+  width: 102px;
+}
+
+.aoUsageHistoryTable th,
+.aoUsageHistoryTable td {
+  padding: 7px 8px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.aoUsageHistoryTable td {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.aoUsageHistoryDateCell {
+  font-variant-numeric: tabular-nums;
+}
+
+.aoUsageHistoryTable th {
+  background: rgb(242, 244, 247);
+  color: rgba(13, 18, 32, 0.72);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.aoUsageHistoryTable tr:last-child td {
+  border-bottom: none;
+}
+
+.aoUsageHistoryInput {
+  width: 66px;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 6px;
+  font-size: 12px;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.aoUsageHistoryInput::-webkit-outer-spin-button,
+.aoUsageHistoryInput::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.aoUsageHistoryValueCell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.aoUsageHistoryEditBtn {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(255, 255, 255, 0.84);
+  color: rgba(13, 18, 32, 0.8);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  padding: 0;
   cursor: pointer;
-  color: rgba(13, 18, 32, 0.7);
-  transition: color 120ms ease, background 120ms ease;
 }
 
-.aoIconGhost:hover {
-  color: rgba(var(--ao-accent-rgb), 0.9);
-  background: rgba(var(--ao-accent-rgb), 0.08);
+.aoUsageHistoryEditBtn:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.5);
+  background: rgba(var(--ao-accent-rgb), 0.1);
 }
 
-.aoIconGhost svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
+.aoUsageHistoryEditBtn svg {
+  width: 12px;
+  height: 12px;
   stroke: currentColor;
-  stroke-width: 1.7;
+  fill: none;
+  stroke-width: 1.9;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
-.aoIconGhost img {
-  width: 14px;
-  height: 14px;
-  display: block;
+.aoUsageHistoryActions {
+  display: inline-flex;
+  gap: 4px;
 }
 
-.aoNameInput {
-  height: 24px;
-  border-radius: 8px;
-  border: 1px solid rgba(13, 18, 32, 0.18);
-  padding: 0 8px;
-  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+.aoUsageScheduleTable {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 12px;
-  color: rgba(13, 18, 32, 0.92);
-  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  border-radius: 12px;
+  overflow: hidden;
 }
 
-.aoH3 {
-  margin: 0;
-  font-size: 12px;
-  letter-spacing: 0.2em;
+.aoUsageScheduleColStart {
+  width: 200px;
+}
+
+.aoUsageScheduleColExpires {
+  width: 200px;
+}
+
+.aoUsageScheduleColProvider {
+  width: 118px;
+}
+
+.aoUsageScheduleColApiKey {
+  width: 124px;
+}
+
+.aoUsageScheduleColMode {
+  width: 136px;
+}
+
+.aoUsageScheduleColAmount {
+  width: 92px;
+}
+
+.aoUsageScheduleColCurrency {
+  width: 92px;
+}
+
+.aoUsageScheduleColAction {
+  width: 88px;
+}
+
+.aoUsageScheduleTable th,
+.aoUsageScheduleTable td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.aoUsageScheduleTable th {
+  background: rgba(13, 18, 32, 0.04);
+  color: rgba(13, 18, 32, 0.72);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(13, 18, 32, 0.76);
+  font-weight: 700;
 }
 
-.aoHint {
-  font-size: 12px;
-  color: rgba(13, 18, 32, 0.66);
+.aoUsageScheduleTable tr:last-child td {
+  border-bottom: none;
 }
 
-.aoConfigCard {
-  padding: 12px;
+.aoUsageScheduleInput {
+  width: 100%;
+  min-width: 0;
 }
 
-.aoConfigDeck {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 16px;
+.aoUsageScheduleMode {
+  width: 100%;
 }
 
-.aoConfigPanel {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(13, 18, 32, 0.06);
-  background: rgba(13, 18, 32, 0.02);
+.aoUsageScheduleAmount {
+  width: 100%;
+  min-width: 0;
+  appearance: textfield;
+  -moz-appearance: textfield;
+  padding-right: 8px;
 }
 
-.aoAddProviderRow {
-  display: grid;
-  grid-template-columns: minmax(140px, 0.7fr) minmax(240px, 1.3fr) auto;
-  gap: 8px;
+.aoUsageScheduleAmount::-webkit-outer-spin-button,
+.aoUsageScheduleAmount::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.aoUsageScheduleCurrencyWrap {
+  position: relative;
+  min-width: 0;
+}
+
+.aoUsageScheduleCurrencyBtn {
+  width: 100%;
+  min-width: 0;
+  display: inline-flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 6px;
 }
 
-.aoProviderConfigList {
+.aoUsageScheduleActions {
+  margin-top: 10px;
   display: flex;
-  flex-direction: column;
-  gap: 16px;
-  margin-top: 12px;
-  position: relative;
-  overflow-anchor: none;
-  /* Prevent the drag overlay shadow from being clipped by the modal body. */
-  padding-bottom: 48px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.aoProviderConfigCard {
-  border: 1px solid var(--ao-line);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.9);
-  padding: 12px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
-  cursor: default;
-  transition: box-shadow 120ms ease;
+.aoUsageScheduleAutosave {
+  margin-left: 2px;
 }
 
-.aoProviderConfigDragging {
-  position: relative;
-  z-index: 6;
-  /* Keep the drag overlay fully opaque to avoid blending/double-dark borders when it overlaps other cards. */
-  opacity: 1;
-  background: #fff;
-  pointer-events: none;
-  /* Avoid drop-shadows during drag: they darken underlying card borders (especially when clipped). */
-  border-color: rgba(var(--ao-accent-rgb), 0.55);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.75),
-    0 0 0 3px rgba(var(--ao-accent-rgb), 0.12);
+.aoUsageScheduleAutosave-saving {
+  color: rgba(var(--ao-accent-rgb), 0.95);
 }
 
-.aoProviderConfigPlaceholder {
-  border-radius: 16px;
-  border: 1px dashed rgba(13, 18, 32, 0.12);
-  background: rgba(13, 18, 32, 0.02);
+.aoUsageScheduleAutosave-error {
+  color: rgba(205, 58, 74, 0.95);
 }
 
-.aoProviderConfigDragOver {
-  border-color: rgba(var(--ao-accent-rgb), 0.5);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.75),
-    0 0 0 2px rgba(var(--ao-accent-rgb), 0.18);
+.aoUsageScheduleHint {
+  margin-top: 10px;
 }
 
-.aoProviderConfigHeader {
+.aoUsageMini {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) auto;
+  gap: 4px;
+  height: 100%;
+  align-content: center;
+  min-height: 100%;
+  width: 100%;
+}
+
+.aoUsageHeaderRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aoUsageSplit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
-  align-items: center;
-  margin-bottom: 10px;
+  height: 100%;
+  min-height: 100%;
 }
+
+.aoUsageText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.aoUsageControlsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.aoUsageRefreshBtn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(255, 255, 255, 0.9);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  color: rgba(13, 18, 32, 0.78);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.aoUsageRefreshBtn:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.55);
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoUsageRefreshBtnMini {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+}
+
+.aoUsageRefreshBtnMini svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2.1;
+}
+
+.aoUsageRefreshBtnSpin svg {
+  animation: aoSpin 0.9s linear infinite;
+}
+
+.aoUsageRefreshBtn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.aoUsageCell {
+  padding-right: 16px;
+  vertical-align: middle;
+}
+
+.aoUsageCellInner {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  width: 100%;
+}
+
+.aoUsageTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.aoUsageBtns {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoTinyBtn.aoUsageWindowBtnActive {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.3), rgba(242, 193, 77, 0.24));
+  border-color: rgba(13, 18, 32, 0.22);
+  color: rgba(13, 18, 32, 0.9);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62);
+}
+
+.aoTinyBtn.aoUsageWindowBtnActive:hover {
+  border-color: rgba(13, 18, 32, 0.3);
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.34), rgba(242, 193, 77, 0.28));
+}
+
+.aoUsageLine {
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.84);
+}
+
+.aoUsageErr {
+  font-size: 12px;
+  color: rgba(145, 12, 43, 0.92);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+@media (max-width: 1000px) {
+  .aoHero {
+    grid-template-columns: 1fr;
+  }
+  .aoConfigDeck {
+    grid-template-columns: 1fr;
+  }
+  .aoProviderConfigHeader {
+    grid-template-columns: 1fr;
+    align-items: flex-start;
+  }
+  .aoAddProviderRow {
+    grid-template-columns: 1fr;
+  }
+  .aoLimitGrid {
+    grid-template-columns: 1fr;
+  }
+  .aoUsageKpiGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .aoUsageFactsTable th,
+  .aoUsageFactsTable td {
+    display: block;
+    width: auto;
+    padding: 6px 0;
+    border-top: none;
+  }
+  .aoUsageFactsTable tr + tr th {
+    margin-top: 8px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(13, 18, 32, 0.08);
+  }
+  .aoUsageChartsGrid {
+    grid-template-columns: 1fr;
+  }
+  .aoUsageProviderTable {
+    display: block;
+    overflow-x: auto;
+  }
+  .aoUsagePricingRow {
+    grid-template-columns: 1fr 1fr;
+    align-items: stretch;
+  }
+  .aoUsagePricingProvider {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 820px) {
+  .aoProviderConfigBody {
+    grid-template-columns: 1fr;
+  }
+  .aoProviderRight {
+    border-left: none;
+    padding-left: 0;
+  }
+  .aoUsageKpiGrid {
+    grid-template-columns: 1fr;
+  }
+  .aoUsageFilterChips {
+    gap: 6px;
+  }
+  .aoUsageFilterCard {
+    grid-template-columns: 1fr;
+  }
+  .aoUsagePricingRow {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+}
+

@@ -1,600 +1,389 @@
-﻿
-.aoUsageHistoryInput::-webkit-outer-spin-button,
-.aoUsageHistoryInput::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-.aoUsageHistoryValueCell {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-
-.aoUsageHistoryEditBtn {
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  border: 1px solid rgba(13, 18, 32, 0.14);
-  background: rgba(255, 255, 255, 0.84);
-  color: rgba(13, 18, 32, 0.8);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  cursor: pointer;
-}
-
-.aoUsageHistoryEditBtn:hover {
-  border-color: rgba(var(--ao-accent-rgb), 0.5);
-  background: rgba(var(--ao-accent-rgb), 0.1);
-}
-
-.aoUsageHistoryEditBtn svg {
-  width: 12px;
-  height: 12px;
-  stroke: currentColor;
-  fill: none;
-  stroke-width: 1.9;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.aoUsageHistoryActions {
-  display: inline-flex;
-  gap: 4px;
-}
-
-.aoUsageScheduleModal {
-  width: min(1120px, 96vw);
-  max-height: min(82vh, 860px);
-}
-
-.aoUsageScheduleTable {
-  width: 100%;
-  table-layout: fixed;
-  border-collapse: separate;
-  border-spacing: 0;
-  font-size: 12px;
-  border: 1px solid rgba(13, 18, 32, 0.12);
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-.aoUsageScheduleColStart {
-  width: 200px;
-}
-
-.aoUsageScheduleColExpires {
-  width: 200px;
-}
-
-.aoUsageScheduleColProvider {
-  width: 118px;
-}
-
-.aoUsageScheduleColApiKey {
-  width: 124px;
-}
-
-.aoUsageScheduleColMode {
-  width: 136px;
-}
-
-.aoUsageScheduleColAmount {
-  width: 92px;
-}
-
-.aoUsageScheduleColCurrency {
-  width: 92px;
-}
-
-.aoUsageScheduleColAction {
-  width: 88px;
-}
-
-.aoUsageScheduleTable th,
-.aoUsageScheduleTable td {
-  padding: 6px 8px;
-  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
-  text-align: left;
-  vertical-align: middle;
-}
-
-.aoUsageScheduleTable th {
-  background: rgba(13, 18, 32, 0.04);
-  color: rgba(13, 18, 32, 0.72);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  font-weight: 700;
-}
-
-.aoUsageScheduleTable tr:last-child td {
-  border-bottom: none;
-}
-
-.aoUsageScheduleInput {
-  width: 100%;
-  min-width: 0;
-}
-
-.aoUsageScheduleMode {
-  width: 100%;
-}
-
-.aoUsageScheduleAmount {
-  width: 100%;
-  min-width: 0;
-  appearance: textfield;
-  -moz-appearance: textfield;
-  padding-right: 8px;
-}
-
-.aoUsageScheduleAmount::-webkit-outer-spin-button,
-.aoUsageScheduleAmount::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-.aoUsageScheduleCurrencyWrap {
-  position: relative;
-  min-width: 0;
-}
-
-.aoUsageScheduleCurrencyBtn {
-  width: 100%;
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-}
-
-.aoUsageScheduleActions {
-  margin-top: 10px;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.aoUsageScheduleAutosave {
-  margin-left: 2px;
-}
-
-.aoUsageScheduleAutosave-saving {
-  color: rgba(var(--ao-accent-rgb), 0.95);
-}
-
-.aoUsageScheduleAutosave-error {
-  color: rgba(205, 58, 74, 0.95);
-}
-
-.aoUsageScheduleHint {
-  margin-top: 10px;
-}
-
-.aoProviderSwitchboardCard {
-  min-height: 320px;
+﻿.aoHero {
   display: grid;
+  /* Make Routing a bit narrower, and Codex a bit wider so "Reset in ..." fits on one line. */
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.85fr) minmax(0, 1.05fr);
   gap: 12px;
-  align-content: start;
+  align-items: stretch;
 }
 
-.aoProviderSwitchboardHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+.aoHeroStatus {
+  order: 1;
 }
 
-.aoSwitchThemeBand {
-  border: 1px solid rgba(40, 199, 217, 0.15);
-  border-radius: 14px;
-  padding: 10px 12px;
-  background: linear-gradient(130deg, rgba(40, 199, 217, 0.07), rgba(255, 255, 255, 0.95), rgba(242, 193, 77, 0.08));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  display: grid;
-  gap: 10px;
+.aoHeroRouting {
+  order: 2;
 }
 
-.aoSwitchThemeBandHead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.aoHeroCodex {
+  order: 3;
 }
 
-.aoSwitchThemeSummary {
-  border: 1px solid rgba(13, 18, 32, 0.08);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.86);
-  padding: 10px 12px;
-  display: grid;
-  gap: 8px;
-}
-
-.aoSwitchThemeRow {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.aoSwitchThemeKey {
-  font-size: 12px;
-  letter-spacing: 0.02em;
-  text-transform: none;
-  color: rgba(13, 18, 32, 0.62);
-}
-
-.aoSwitchThemeVal {
-  font-size: 15px;
-  font-weight: 620;
-  color: rgba(13, 18, 32, 0.88);
-}
-
-.aoSwitchThemeSep {
-  font-size: 12px;
-  color: rgba(13, 18, 32, 0.28);
-  margin: 0 1px;
-}
-
-.aoSwitchboardBlock {
-  display: grid;
-  gap: 14px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(13, 18, 32, 0.08);
-}
-
-.aoSwitchboardSectionHead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.aoProviderSwitchboardMetaGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0;
-}
-
-.aoSwitchMetaCard {
-  padding: 8px 12px 8px 0;
-  border-right: 1px solid rgba(13, 18, 32, 0.11);
-  min-height: 62px;
+.aoHeroCard {
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  gap: 8px;
+  min-height: 0;
+}
+
+.aoHeroActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.aoStatGrid {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  row-gap: 8px;
+  column-gap: 10px;
+  font-size: 13px;
+}
+
+.aoTokenRow {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: center;
+}
+
+.aoTokenRowRight {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.aoStatStack {
+  display: grid;
+  gap: 8px;
+}
+
+.aoLimitGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.aoLimitCard {
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.06);
+  background: rgba(13, 18, 32, 0.025);
+  display: flex;
+  flex-direction: column;
   gap: 4px;
 }
 
-.aoSwitchMetaCard:last-child {
-  border-right: none;
-  padding-right: 0;
+.aoLimitValue {
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
 }
 
-.aoSwitchMetaValue {
+.aoStatBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(13, 18, 32, 0.03);
+  border: 1px solid rgba(13, 18, 32, 0.06);
+}
+
+.aoStatLabel {
+  color: rgba(13, 18, 32, 0.6);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.aoStatValue {
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
   color: rgba(13, 18, 32, 0.9);
-  font-size: 17px;
-  font-weight: 640;
-  line-height: 1.25;
 }
 
-.aoSwitchMetaDirs {
-  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-  font-size: 13px;
-  font-weight: 560;
-  line-height: 1.25;
-  word-break: break-word;
-}
-
-.aoSwitchQuickGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.aoSwitchSubOptions {
-  margin-top: 2px;
-  padding: 10px 12px;
-  border: 1px solid rgba(13, 18, 32, 0.08);
-  border-radius: 12px;
-  background: rgba(13, 18, 32, 0.02);
+.aoRoutingGrid {
   display: grid;
   gap: 10px;
 }
 
-.aoSwitchQuickBtn {
-  border: 1px solid rgba(13, 18, 32, 0.12);
-  background: rgba(255, 255, 255, 0.9);
-  border-radius: 12px;
-  min-height: 64px;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  align-items: flex-start;
-  justify-content: center;
-  text-align: left;
-  color: rgba(13, 18, 32, 0.86);
-  cursor: pointer;
-  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
-}
-
-.aoSwitchQuickBtn:hover {
-  transform: translateY(-1px);
-  border-color: rgba(var(--ao-accent-rgb), 0.55);
-  background: rgba(var(--ao-accent-rgb), 0.08);
-}
-
-.aoSwitchQuickBtn.is-active {
-  border-color: rgba(40, 199, 217, 0.48);
-  background: linear-gradient(135deg, rgba(40, 199, 217, 0.22), rgba(242, 193, 77, 0.16));
-}
-
-.aoSwitchQuickBtnHint {
-  opacity: 0.9;
-  cursor: default;
-  background: rgba(13, 18, 32, 0.04);
-}
-
-.aoSwitchQuickBtn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  transform: none;
-}
-.aoSwitchQuickBtn.is-active:disabled {
-  opacity: 1;
-}
-
-
-.aoSwitchQuickTitle {
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.aoSwitchQuickSub {
-  font-size: 12px;
-  color: rgba(13, 18, 32, 0.64);
-}
-
-.aoProviderSwitchboardActions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.aoMainArea {
-  display: block;
-}
-
-.aoSwitchDirsInline {
-  display: grid;
-  grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr);
-  gap: 12px;
-  align-items: start;
-}
-
-.aoSwitchDirField {
+.aoRoutingRow {
   display: grid;
   gap: 6px;
 }
 
-.aoSwitchDirLabel {
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: rgba(13, 18, 32, 0.52);
+.aoBrand {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 0 -14px 10px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.48);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  backdrop-filter: blur(14px) saturate(130%);
 }
 
-.aoInputMono {
-  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+.aoBrandLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.aoSwitchDirBoth {
-  min-height: 28px;
+.aoBrandLeft > div {
+  transform: translateY(1px);
+}
+
+.aoBrandRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   align-self: center;
 }
 
-.aoSwitchDirMeta {
+.aoMark {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+  border: 1px solid var(--ao-line);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 10px 28px rgba(13, 18, 32, 0.12);
+  object-fit: contain;
+}
+
+.aoTitle {
+  font-family:
+    "Segoe UI Variable Display",
+    "Bahnschrift",
+    "Segoe UI Variable Text",
+    "Segoe UI",
+    system-ui,
+    sans-serif;
+  font-weight: 680;
+  letter-spacing: 0.2px;
+  font-size: 18px;
+}
+
+.aoSubtitle {
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.66);
+  margin-top: 2px;
+}
+
+.aoEventRowError td {
+  /* No tinted backgrounds for error rows; rely on left accent + badge. */
+  background: transparent;
+}
+
+.aoEventRowError td:first-child {
+  box-shadow: inset 3px 0 0 rgba(255, 94, 125, 0.75);
+}
+
+.aoEventRowError td .aoHint {
+  color: rgba(119, 11, 33, 0.78);
+}
+
+.aoLevelBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(13, 18, 32, 0.035);
+  color: rgba(13, 18, 32, 0.78);
+}
+
+.aoLevelBadgeInfo {
+  border-color: rgba(40, 199, 217, 0.26);
+  background: rgba(40, 199, 217, 0.07);
+  color: rgba(0, 110, 124, 0.9);
+}
+
+.aoLevelBadgeError {
+  border-color: rgba(255, 94, 125, 0.3);
+  background: rgba(255, 94, 125, 0.1);
+  color: rgba(170, 0, 38, 0.95);
+}
+
+.aoEventMessage {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.aoEventsSection td {
+  padding: 10px 12px 6px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.74);
+  background: rgba(13, 18, 32, 0.02);
+}
+
+.aoEventsSectionRow {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.aoSwitchDirHint {
-  margin-left: auto;
-}
-
-.aoSwitchDirHint:empty {
-  display: none;
-}
-
-.aoSwitchProviderGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
-.aoSwitchProviderBtn {
-  border: 1px solid rgba(13, 18, 32, 0.12);
-  background: rgba(255, 255, 255, 0.88);
-  border-radius: 12px;
-  min-height: 164px;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  text-align: left;
-  color: rgba(13, 18, 32, 0.86);
+.aoEventsClearBtn {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 94, 125, 0.26);
+  background: rgba(255, 94, 125, 0.06);
+  color: rgba(145, 12, 43, 0.92);
+  font-size: 11px;
+  font-weight: 670;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   cursor: pointer;
   transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
 }
 
-.aoSwitchProviderBtn:hover {
+.aoEventsClearBtn:hover {
+  border-color: rgba(255, 94, 125, 0.5);
+  background: rgba(255, 94, 125, 0.09);
   transform: translateY(-1px);
-  border-color: rgba(var(--ao-accent-rgb), 0.55);
-  background: rgba(var(--ao-accent-rgb), 0.08);
 }
 
-.aoSwitchProviderBtn.is-active {
-  border-color: rgba(40, 199, 217, 0.48);
-  background: linear-gradient(135deg, rgba(40, 199, 217, 0.22), rgba(242, 193, 77, 0.16));
+.aoEventsClearBtn:active {
+  transform: translateY(0);
 }
 
-.aoSwitchProviderBtn:disabled {
-  opacity: 0.56;
+.aoEventsClearBtn:disabled {
+  opacity: 0.55;
   cursor: not-allowed;
   transform: none;
 }
 
-.aoSwitchProviderHead {
-  width: 100%;
+.aoEventsGap td {
+  height: 12px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-bottom: none;
+}
+
+.aoSessionsPanel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.aoSessionChip {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  font-weight: 700;
-  font-size: 13px;
-  margin-bottom: 2px;
+  padding: 6px 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgba(255, 255, 255, 0.7);
 }
 
-.aoSwitchProviderKey {
-  font-size: 10px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  border-radius: 999px;
-  padding: 2px 7px;
-  border: 1px solid rgba(13, 18, 32, 0.12);
-}
-
-.aoSwitchProviderKey.is-ready {
-  color: rgba(7, 107, 47, 0.9);
-  border-color: rgba(9, 153, 70, 0.3);
-  background: rgba(8, 176, 80, 0.08);
-}
-
-.aoSwitchProviderKey.is-missing {
-  color: rgba(136, 16, 42, 0.92);
-  border-color: rgba(255, 94, 125, 0.34);
-  background: rgba(255, 94, 125, 0.1);
-}
-
-.aoSwitchProviderBase {
-  width: 100%;
+.aoSessionId {
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-  font-size: 11px;
-  color: rgba(13, 18, 32, 0.62);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.aoSwitchProviderUsageBody {
-  width: 100%;
-  display: grid;
-  grid-template-rows: auto auto auto;
-  gap: 2px;
-  margin-top: 8px;
-  min-height: 62px;
-}
-
-.aoSwitchProviderUsageHeadline {
-  font-size: 19px;
-  font-weight: 700;
-  color: rgba(13, 18, 32, 0.92);
-  line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.aoSwitchProviderUsageDetail {
   font-size: 12px;
-  color: rgba(13, 18, 32, 0.72);
-  white-space: nowrap;
+  color: rgba(13, 18, 32, 0.8);
+  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.aoSwitchProviderUsageSub {
+.aoSessionSelect {
+  height: 28px;
+  border-radius: 10px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.aoSessionRowAgent td {
+  background: rgba(40, 199, 217, 0.03) !important;
+}
+
+.aoSessionRowAgent td:first-child {
+  box-shadow: inset 2px 0 0 rgba(40, 199, 217, 0.62);
+}
+
+.aoSessionRowAgent .aoPill {
+  background: rgba(40, 199, 217, 0.09);
+  border-color: rgba(40, 199, 217, 0.22);
+}
+
+.aoSessionRowAgent .aoSelect:disabled {
+  color: rgba(13, 18, 32, 0.44);
+  border-color: rgba(40, 199, 217, 0.2);
+  background: rgba(40, 199, 217, 0.05);
+}
+
+.aoHealthSub {
+  margin-top: 4px;
   font-size: 11px;
-  color: rgba(13, 18, 32, 0.58);
+  color: rgba(13, 18, 32, 0.6);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 120px;
 }
 
-.aoSwitchProviderUsageSubMuted {
-  color: rgba(13, 18, 32, 0.36);
-}
-
-.aoSwitchProviderProgress {
-  width: 100%;
-  height: 8px;
-  border-radius: 999px;
-  background: rgba(13, 18, 32, 0.1);
-  overflow: hidden;
-  margin-top: 8px;
-}
-
-.aoSwitchProviderProgressFill {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, rgba(40, 199, 217, 0.92), rgba(242, 193, 77, 0.92));
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22) inset;
-}
-
-.aoSwitchProviderProgressFill.is-empty {
-  width: 30% !important;
-  opacity: 0.35;
-  background: linear-gradient(90deg, rgba(13, 18, 32, 0.3), rgba(13, 18, 32, 0.22));
-}
-
-@media (max-width: 1000px) {
-  .aoSwitchQuickGrid,
-  .aoSwitchProviderGrid {
-    grid-template-columns: 1fr;
-  }
-
-  .aoSwitchDirsInline {
-    grid-template-columns: 1fr;
-    align-items: start;
-  }
-
-  .aoSwitchDirMeta {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .aoSwitchDirHint {
-    margin-left: 0;
-  }
-
-  .aoSwitchMetaDirs {
-    font-size: 13px;
-  }
-
-  .aoSwitchThemeVal {
-    font-size: 15px;
-  }
-}
-
-.aoInstructionCode {
+.aoEventList {
   margin: 0;
-  white-space: pre;
-  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-  font-size: 13px;
-  color: rgba(13, 18, 32, 0.86);
+  padding: 0 0 0 16px;
+  color: rgba(13, 18, 32, 0.84);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.aoEventList li {
+  margin: 6px 0;
+}
+
+.aoEventsBox {
+  max-height: 180px;
+  overflow: auto;
+  padding-right: 6px;
+}
+
+.aoEventsBox::-webkit-scrollbar {
+  width: 10px;
+}
+
+.aoEventsBox::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.aoEventsBox::-webkit-scrollbar-track {
+  background: rgba(13, 18, 32, 0.05);
+  border-radius: 999px;
+}
+
+.aoEventsBox::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(40, 199, 217, 0.6), rgba(242, 193, 77, 0.55));
+  border-radius: 999px;
+  border: 3px solid rgba(255, 255, 255, 0.7);
+  background-clip: content-box;
+}
+
+.aoEventsBox::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
