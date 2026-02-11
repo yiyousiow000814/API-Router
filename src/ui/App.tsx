@@ -446,6 +446,11 @@ export default function App() {
   const usageHistoryScrollbarThumbRef = useRef<HTMLDivElement | null>(null)
   const usageHistoryScrollbarHideTimerRef = useRef<number | null>(null)
   const usageHistoryScrollbarRafRef = useRef<number | null>(null)
+  const usageHistoryScrollbarDragRef = useRef<{
+    active: boolean
+    pointerId: number
+    pointerOffsetY: number
+  }>({ active: false, pointerId: -1, pointerOffsetY: 0 })
   const codexSwapDir1Ref = useRef<string>('')
   const codexSwapDir2Ref = useRef<string>('')
   const codexSwapApplyBothRef = useRef<boolean>(false)
@@ -1379,6 +1384,10 @@ function newScheduleDraft(
     usageHistoryScrollbarOverlayRef.current?.classList.toggle('aoUsageHistoryScrollbarOverlayVisible', visible)
   }, [])
 
+  const setUsageHistoryScrollbarCanScroll = useCallback((canScroll: boolean) => {
+    usageHistoryTableSurfaceRef.current?.classList.toggle('aoUsageHistoryTableSurfaceCanScroll', canScroll)
+  }, [])
+
   const refreshUsageHistoryScrollbarUi = useCallback(() => {
     const wrap = usageHistoryTableWrapRef.current
     const overlay = usageHistoryScrollbarOverlayRef.current
@@ -1391,15 +1400,17 @@ function newScheduleDraft(
     if (viewportHeight <= 0 || overlayHeight <= 0 || maxScroll <= 0) {
       thumb.style.height = '0px'
       thumb.style.transform = 'translateY(0px)'
+      setUsageHistoryScrollbarCanScroll(false)
       setUsageHistoryScrollbarVisible(false)
       return
     }
+    setUsageHistoryScrollbarCanScroll(true)
     const thumbHeight = Math.max(24, Math.round((viewportHeight / scrollHeight) * overlayHeight))
     const thumbTravel = Math.max(0, overlayHeight - thumbHeight)
     const thumbTop = maxScroll > 0 ? Math.round((wrap.scrollTop / maxScroll) * thumbTravel) : 0
     thumb.style.height = `${thumbHeight}px`
     thumb.style.transform = `translateY(${thumbTop}px)`
-  }, [setUsageHistoryScrollbarVisible])
+  }, [setUsageHistoryScrollbarCanScroll, setUsageHistoryScrollbarVisible])
 
   const scheduleUsageHistoryScrollbarSync = useCallback(() => {
     if (typeof window === 'undefined') return
@@ -1412,7 +1423,22 @@ function newScheduleDraft(
 
   const activateUsageHistoryScrollbarUi = useCallback(() => {
     if (typeof window === 'undefined') return
+    const wrap = usageHistoryTableWrapRef.current
+    if (!wrap) return
+    if (wrap.scrollHeight - wrap.clientHeight <= 1) return
     setUsageHistoryScrollbarVisible(true)
+
+    // Don't auto-hide while the user is actively dragging the thumb. With pointer capture,
+    // pointer events keep firing on the overlay even when the pointer is geometrically outside
+    // the element, so CSS :hover won't reliably keep it visible.
+    if (usageHistoryScrollbarDragRef.current.active) {
+      if (usageHistoryScrollbarHideTimerRef.current != null) {
+        window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
+        usageHistoryScrollbarHideTimerRef.current = null
+      }
+      return
+    }
+
     if (usageHistoryScrollbarHideTimerRef.current != null) {
       window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
     }
@@ -1421,6 +1447,104 @@ function newScheduleDraft(
       usageHistoryScrollbarHideTimerRef.current = null
     }, 700)
   }, [setUsageHistoryScrollbarVisible])
+
+  const scrollUsageHistoryByThumbTop = useCallback((thumbTopPx: number) => {
+    const wrap = usageHistoryTableWrapRef.current
+    const overlay = usageHistoryScrollbarOverlayRef.current
+    const thumb = usageHistoryScrollbarThumbRef.current
+    if (!wrap || !overlay || !thumb) return
+
+    const viewportHeight = wrap.clientHeight
+    const overlayHeight = overlay.clientHeight
+    const scrollHeight = wrap.scrollHeight
+    const maxScroll = Math.max(0, scrollHeight - viewportHeight)
+    if (viewportHeight <= 0 || overlayHeight <= 0 || maxScroll <= 0) return
+
+    const thumbHeight = Math.max(24, Math.round((viewportHeight / scrollHeight) * overlayHeight))
+    const thumbTravel = Math.max(0, overlayHeight - thumbHeight)
+    if (thumbTravel <= 0) return
+
+    const nextThumbTop = Math.max(0, Math.min(thumbTravel, thumbTopPx))
+    const nextScrollTop = Math.round((nextThumbTop / thumbTravel) * maxScroll)
+    wrap.scrollTop = nextScrollTop
+    scheduleUsageHistoryScrollbarSync()
+    activateUsageHistoryScrollbarUi()
+  }, [activateUsageHistoryScrollbarUi, scheduleUsageHistoryScrollbarSync])
+
+  const onUsageHistoryScrollbarPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const wrap = usageHistoryTableWrapRef.current
+    const overlay = usageHistoryScrollbarOverlayRef.current
+    if (!wrap || !overlay) return
+    const viewportHeight = wrap.clientHeight
+    const overlayHeight = overlay.clientHeight
+    const scrollHeight = wrap.scrollHeight
+    const maxScroll = Math.max(0, scrollHeight - viewportHeight)
+    if (viewportHeight <= 0 || overlayHeight <= 0 || maxScroll <= 0) return
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    // Capture the pointer so dragging continues even if the pointer leaves the overlay.
+    try {
+      overlay.setPointerCapture(e.pointerId)
+    } catch {
+      // ignore
+    }
+
+    const thumbHeight = Math.max(24, Math.round((viewportHeight / scrollHeight) * overlayHeight))
+    const thumbTravel = Math.max(0, overlayHeight - thumbHeight)
+    const currentThumbTop = maxScroll > 0 ? Math.round((wrap.scrollTop / maxScroll) * thumbTravel) : 0
+
+    const r = overlay.getBoundingClientRect()
+    const y = e.clientY - r.top
+    const pointerOffsetY = Math.max(0, Math.min(thumbHeight, y - currentThumbTop))
+
+    usageHistoryScrollbarDragRef.current = { active: true, pointerId: e.pointerId, pointerOffsetY }
+    // Clear any pending auto-hide timer so the scrollbar doesn't disappear mid-drag.
+    activateUsageHistoryScrollbarUi()
+
+    // Jump to click location (center-ish) before starting drag.
+    scrollUsageHistoryByThumbTop(y - pointerOffsetY)
+  }, [activateUsageHistoryScrollbarUi, scrollUsageHistoryByThumbTop])
+
+  const onUsageHistoryScrollbarPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = usageHistoryScrollbarDragRef.current
+    if (!drag.active || drag.pointerId !== e.pointerId) return
+    const overlay = usageHistoryScrollbarOverlayRef.current
+    if (!overlay) return
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    const r = overlay.getBoundingClientRect()
+    const y = e.clientY - r.top
+    scrollUsageHistoryByThumbTop(y - drag.pointerOffsetY)
+  }, [scrollUsageHistoryByThumbTop])
+
+  const onUsageHistoryScrollbarPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = usageHistoryScrollbarDragRef.current
+    if (!drag.active || drag.pointerId !== e.pointerId) return
+    const overlay = usageHistoryScrollbarOverlayRef.current
+    if (!overlay) return
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    usageHistoryScrollbarDragRef.current = { active: false, pointerId: -1, pointerOffsetY: 0 }
+    try {
+      overlay.releasePointerCapture(e.pointerId)
+    } catch {
+      // ignore
+    }
+    activateUsageHistoryScrollbarUi()
+  }, [activateUsageHistoryScrollbarUi])
+
+  const onUsageHistoryScrollbarLostPointerCapture = useCallback(() => {
+    const drag = usageHistoryScrollbarDragRef.current
+    if (!drag.active) return
+    usageHistoryScrollbarDragRef.current = { active: false, pointerId: -1, pointerOffsetY: 0 }
+    activateUsageHistoryScrollbarUi()
+  }, [activateUsageHistoryScrollbarUi])
 
   function renderUsageHistoryColGroup() {
     return (
@@ -3156,6 +3280,7 @@ function newScheduleDraft(
   useEffect(() => {
     if (!usageHistoryModalOpen) {
       clearAutoSaveTimer('history:edit')
+      usageHistoryScrollbarDragRef.current = { active: false, pointerId: -1, pointerOffsetY: 0 }
       if (typeof window !== 'undefined') {
         if (usageHistoryScrollbarHideTimerRef.current != null) {
           window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
@@ -4454,7 +4579,6 @@ requires_openai_auth = true`}
                         activateUsageHistoryScrollbarUi()
                       }}
                       onTouchMove={activateUsageHistoryScrollbarUi}
-                      onPointerDown={activateUsageHistoryScrollbarUi}
                     >
                       <table className="aoUsageHistoryTable">
                       {renderUsageHistoryColGroup()}
@@ -4627,7 +4751,16 @@ requires_openai_auth = true`}
                       </tbody>
                       </table>
                     </div>
-                    <div ref={usageHistoryScrollbarOverlayRef} className="aoUsageHistoryScrollbarOverlay" aria-hidden="true">
+                    <div
+                      ref={usageHistoryScrollbarOverlayRef}
+                      className="aoUsageHistoryScrollbarOverlay"
+                      aria-hidden="true"
+                      onPointerDown={onUsageHistoryScrollbarPointerDown}
+                      onPointerMove={onUsageHistoryScrollbarPointerMove}
+                      onPointerUp={onUsageHistoryScrollbarPointerUp}
+                      onPointerCancel={onUsageHistoryScrollbarPointerUp}
+                      onLostPointerCapture={onUsageHistoryScrollbarLostPointerCapture}
+                    >
                       <div ref={usageHistoryScrollbarThumbRef} className="aoUsageHistoryScrollbarThumb" />
                     </div>
                   </div>

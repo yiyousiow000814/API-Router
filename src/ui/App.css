@@ -1075,12 +1075,25 @@
   border-radius: 999px;
   opacity: 0;
   pointer-events: none;
+  touch-action: none;
   transition: opacity 140ms ease;
   z-index: 2;
 }
 
 .aoUsageHistoryScrollbarOverlayVisible {
   opacity: 1;
+}
+
+.aoUsageHistoryTableSurfaceCanScroll .aoUsageHistoryScrollbarOverlay {
+  pointer-events: auto;
+}
+
+.aoUsageHistoryTableSurfaceCanScroll .aoUsageHistoryScrollbarOverlay:hover {
+  opacity: 1;
+}
+
+.aoUsageHistoryTableSurfaceCanScroll .aoUsageHistoryScrollbarOverlay:hover .aoUsageHistoryScrollbarThumb {
+  background: var(--ao-history-scroll-thumb-hover);
 }
 
 .aoUsageHistoryScrollbarThumb {
@@ -1091,6 +1104,11 @@
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
   transition: background-color 120ms ease;
   will-change: transform;
+  cursor: grab;
+}
+
+.aoUsageHistoryScrollbarOverlay:active .aoUsageHistoryScrollbarThumb {
+  cursor: grabbing;
 }
 
 
