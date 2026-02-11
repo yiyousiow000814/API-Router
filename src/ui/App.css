@@ -3237,6 +3237,7 @@
   justify-content: center;
   padding: 40px;
   z-index: 9999;
+  overscroll-behavior: contain;
 }
 
 .aoModalBackdropTop {
