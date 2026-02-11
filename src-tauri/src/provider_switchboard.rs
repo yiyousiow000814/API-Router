@@ -89,15 +89,31 @@ fn switchboard_base_dir_from_config_path(config_path: &Path) -> PathBuf {
     app_codex_home_from_config_path(config_path).join("provider-switchboard-base")
 }
 
+fn switchboard_base_key(cli_home: &Path) -> String {
+    // Must be safe as a single filename component on Windows and Linux.
+    // We use a short stable hash to avoid path-separator / drive-prefix edge cases.
+    fn fnv1a64(s: &str) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in s.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+
+    let canon = dedup_key(cli_home);
+    format!("cli_home_{:016x}", fnv1a64(&canon))
+}
+
 fn switchboard_base_cfg_path_from_config_path(config_path: &Path, cli_home: &Path) -> PathBuf {
     // Keep one base config per Codex dir, so swapping back to gateway doesn't lose
     // user edits made while swapped (without mutating the user's gateway config).
-    let key = dedup_key(cli_home).replace(['/', '\\'], "_");
+    let key = switchboard_base_key(cli_home);
     switchboard_base_dir_from_config_path(config_path).join(format!("{key}.toml"))
 }
 
 fn switchboard_base_meta_path_from_config_path(config_path: &Path, cli_home: &Path) -> PathBuf {
-    let key = dedup_key(cli_home).replace(['/', '\\'], "_");
+    let key = switchboard_base_key(cli_home);
     switchboard_base_dir_from_config_path(config_path).join(format!("{key}.meta.json"))
 }
 
@@ -547,13 +563,55 @@ fn write_swapped_files(
 }
 
 fn model_provider_id(cfg_txt: &str) -> Option<String> {
-    let v = toml::from_str::<toml::Value>(cfg_txt).ok()?;
-    let t = v.as_table()?;
-    t.get("model_provider")
-        .or_else(|| t.get("model_provider_id"))
-        .and_then(|x| x.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    // Avoid TOML parsing so we can still detect model_provider even if the config is currently
+    // syntactically invalid (e.g., an unclosed quote elsewhere).
+    //
+    // We intentionally keep this simple: read the first matching assignment line.
+    for line in cfg_txt.lines() {
+        let t = line.trim_start();
+        let key = if t.starts_with("model_provider") {
+            "model_provider"
+        } else if t.starts_with("model_provider_id") {
+            "model_provider_id"
+        } else {
+            continue;
+        };
+        let mut rest = t.strip_prefix(key)?;
+        rest = rest.trim_start();
+        if !rest.starts_with('=') {
+            continue;
+        }
+        rest = rest[1..].trim_start();
+        if rest.is_empty() {
+            continue;
+        }
+        // Trim trailing comments first.
+        let rest = rest.split('#').next().unwrap_or(rest).trim();
+        if let Some(stripped) = rest.strip_prefix('"') {
+            let mut out = String::new();
+            for c in stripped.chars() {
+                if c == '"' {
+                    break;
+                }
+                out.push(c);
+            }
+            let out = out.trim().to_string();
+            if !out.is_empty() {
+                return Some(out);
+            }
+        } else {
+            let val = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches('"')
+                .trim();
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn home_mode(cli_home: &Path) -> Result<(String, Option<String>), String> {
@@ -910,11 +968,21 @@ mod tests {
 
     #[test]
     fn switchboard_base_cfg_path_is_under_app_dir_even_with_absolute_home() {
-        let config_path = PathBuf::from("/tmp/user-data/config.toml");
-        let cli_home = PathBuf::from("/home/user/.codex");
+        let (config_path, cli_home) = if cfg!(windows) {
+            (
+                PathBuf::from(r"C:\Temp\user-data\config.toml"),
+                PathBuf::from(r"C:\Users\user\.codex"),
+            )
+        } else {
+            (
+                PathBuf::from("/tmp/user-data/config.toml"),
+                PathBuf::from("/home/user/.codex"),
+            )
+        };
         let p = switchboard_base_cfg_path_from_config_path(&config_path, &cli_home);
+        let base_dir = switchboard_base_dir_from_config_path(&config_path);
         assert!(
-            p.to_string_lossy().contains("provider-switchboard-base"),
+            p.starts_with(&base_dir),
             "path should stay under provider-switchboard-base; got: {}",
             p.display()
         );
@@ -988,6 +1056,19 @@ mod tests {
         let restored_cfg = std::fs::read_to_string(cli_cfg_path(&cli_home)).unwrap();
         assert!(restored_cfg.contains("model = \"gpt-5.2\""));
         assert!(!swap_state_dir(&cli_home).exists());
+    }
+
+    #[test]
+    fn model_provider_id_detects_value_even_if_toml_is_invalid() {
+        let cfg = concat!(
+            "model_provider = \"packycode\"\n",
+            "model = \"gpt-5.2\"\n",
+            "\n",
+            "[tui]\n",
+            // invalid TOML: missing closing quote
+            "alternate_screen = \"never\n",
+        );
+        assert_eq!(model_provider_id(cfg).as_deref(), Some("packycode"));
     }
 
     #[test]
