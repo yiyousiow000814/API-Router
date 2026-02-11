@@ -569,14 +569,21 @@ fn model_provider_id(cfg_txt: &str) -> Option<String> {
     // We intentionally keep this simple: read the first matching assignment line.
     for line in cfg_txt.lines() {
         let t = line.trim_start();
-        let key = if t.starts_with("model_provider") {
-            "model_provider"
-        } else if t.starts_with("model_provider_id") {
-            "model_provider_id"
+        // Note: "model_provider_id" starts with "model_provider", so we must check the longer key
+        // first (or validate a delimiter).
+        let after_key = if let Some(rest) = t.strip_prefix("model_provider_id") {
+            rest
+        } else if let Some(rest) = t.strip_prefix("model_provider") {
+            rest
         } else {
             continue;
         };
-        let mut rest = t.strip_prefix(key)?;
+        // Ensure the match is a whole key, not a prefix of another identifier.
+        let rest = match after_key.chars().next() {
+            Some('=') | Some(' ') | Some('\t') => after_key,
+            _ => continue,
+        };
+        let mut rest = rest;
         rest = rest.trim_start();
         if !rest.starts_with('=') {
             continue;
