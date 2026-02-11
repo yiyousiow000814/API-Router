@@ -92,7 +92,7 @@ fn switchboard_base_dir_from_config_path(config_path: &Path) -> PathBuf {
 fn switchboard_base_cfg_path_from_config_path(config_path: &Path, cli_home: &Path) -> PathBuf {
     // Keep one base config per Codex dir, so swapping back to gateway doesn't lose
     // user edits made while swapped (without mutating the user's gateway config).
-    let key = dedup_key(cli_home);
+    let key = dedup_key(cli_home).replace(['/', '\\'], "_");
     switchboard_base_dir_from_config_path(config_path).join(format!("{key}.toml"))
 }
 
@@ -813,6 +813,18 @@ pub fn set_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_base_cfg_path_is_under_app_dir_even_with_absolute_home() {
+        let config_path = PathBuf::from("/tmp/user-data/config.toml");
+        let cli_home = PathBuf::from("/home/user/.codex");
+        let p = switchboard_base_cfg_path_from_config_path(&config_path, &cli_home);
+        assert!(
+            p.to_string_lossy().contains("provider-switchboard-base"),
+            "path should stay under provider-switchboard-base; got: {}",
+            p.display()
+        );
+    }
 
     #[test]
     fn normalize_cfg_for_switchboard_base_preserves_user_fields() {
