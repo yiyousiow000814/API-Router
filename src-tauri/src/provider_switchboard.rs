@@ -527,6 +527,12 @@ fn on_provider_renamed_impl(state: &AppState, old: &str, new: &str) -> Result<()
     };
     let base_url = cfg.base_url.trim().to_string();
     if base_url.is_empty() {
+        if touched_state {
+            write_json(
+                &switchboard_state_path_from_config_path(&state.config_path),
+                &sw,
+            )?;
+        }
         return Err(format!("provider base_url is empty: {new}"));
     }
     let Some(key) = state.secrets.get_provider_key(new) else {
@@ -539,6 +545,12 @@ fn on_provider_renamed_impl(state: &AppState, old: &str, new: &str) -> Result<()
         return Ok(());
     };
     if key.trim().is_empty() {
+        if touched_state {
+            write_json(
+                &switchboard_state_path_from_config_path(&state.config_path),
+                &sw,
+            )?;
+        }
         return Err(format!("provider key is empty: {new}"));
     }
 
@@ -816,5 +828,116 @@ mod tests {
 
         let cfg_txt = read_text(&cli_cfg_path(&cli_home)).expect("cfg");
         assert_eq!(model_provider_id(&cfg_txt).as_deref(), Some("provider_x"));
+    }
+
+    #[test]
+    fn on_provider_renamed_persists_state_even_if_base_url_is_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+
+        // Provider was renamed, but new provider config is invalid (empty base_url).
+        {
+            let mut cfg = state.gateway.cfg.write();
+            let p1 = cfg.providers.remove("provider_1").unwrap();
+            cfg.providers.insert("provider_x".to_string(), p1);
+            cfg.providers.get_mut("provider_x").unwrap().base_url = "".to_string();
+        }
+        state
+            .secrets
+            .set_provider_key("provider_x", "sk-new")
+            .expect("set key");
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"OPENAI_API_KEY":"sk-old"}"#).unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+        let state_dir = swap_state_dir(&cli_home);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(backup_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+        std::fs::write(backup_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        // Persist switchboard state (still pointing at provider_1).
+        let sw_path = switchboard_state_path_from_config_path(&state.config_path);
+        std::fs::create_dir_all(sw_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &sw_path,
+            serde_json::to_string_pretty(&json!({
+              "target": "provider",
+              "provider": "provider_1",
+              "cli_homes": [cli_home.to_string_lossy().to_string()]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let err = on_provider_renamed_impl(&state, "provider_1", "provider_x").unwrap_err();
+        assert!(err.contains("base_url"));
+
+        // Even though we error, the state file should be updated to the new provider name.
+        let sw = read_json(&sw_path).expect("sw json");
+        assert_eq!(
+            sw.get("provider").and_then(|v| v.as_str()),
+            Some("provider_x")
+        );
+    }
+
+    #[test]
+    fn on_provider_renamed_persists_state_even_if_key_is_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+
+        // Provider was renamed, but new provider key is invalid (empty string).
+        {
+            let mut cfg = state.gateway.cfg.write();
+            let p1 = cfg.providers.remove("provider_1").unwrap();
+            cfg.providers.insert("provider_x".to_string(), p1);
+            cfg.providers.get_mut("provider_x").unwrap().base_url =
+                "https://example.com/v1".to_string();
+        }
+        state
+            .secrets
+            .set_provider_key("provider_x", "")
+            .expect("set key");
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"OPENAI_API_KEY":"sk-old"}"#).unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+        let state_dir = swap_state_dir(&cli_home);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(backup_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+        std::fs::write(backup_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        // Persist switchboard state (still pointing at provider_1).
+        let sw_path = switchboard_state_path_from_config_path(&state.config_path);
+        std::fs::create_dir_all(sw_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &sw_path,
+            serde_json::to_string_pretty(&json!({
+              "target": "provider",
+              "provider": "provider_1",
+              "cli_homes": [cli_home.to_string_lossy().to_string()]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let err = on_provider_renamed_impl(&state, "provider_1", "provider_x").unwrap_err();
+        assert!(err.contains("key is empty"));
+
+        // Even though we error, the state file should be updated to the new provider name.
+        let sw = read_json(&sw_path).expect("sw json");
+        assert_eq!(
+            sw.get("provider").and_then(|v| v.as_str()),
+            Some("provider_x")
+        );
     }
 }
