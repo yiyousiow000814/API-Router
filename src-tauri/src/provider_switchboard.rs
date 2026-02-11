@@ -113,6 +113,28 @@ fn app_auth_path(state: &tauri::State<'_, AppState>) -> PathBuf {
     app_codex_home(state).join("auth.json")
 }
 
+fn switchboard_state_path(state: &tauri::State<'_, AppState>) -> PathBuf {
+    app_codex_home(state).join("provider-switchboard-state.json")
+}
+
+fn save_switchboard_state(
+    state: &tauri::State<'_, AppState>,
+    homes: &[PathBuf],
+    target: &str,
+    provider: Option<&str>,
+) -> Result<(), String> {
+    let v = json!({
+      "target": target,
+      "provider": provider,
+      "cli_homes": homes.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()
+    });
+    write_json(&switchboard_state_path(state), &v)
+}
+
+fn load_switchboard_state(state: &tauri::State<'_, AppState>) -> Option<serde_json::Value> {
+    read_json(&switchboard_state_path(state)).ok()
+}
+
 fn ensure_cli_files_exist(cli_home: &Path) -> Result<(), String> {
     if !cli_home.exists() {
         return Err(format!("Codex dir does not exist: {}", cli_home.display()));
@@ -374,6 +396,72 @@ pub fn get_status(
     }))
 }
 
+pub fn sync_active_provider_target_for_key(
+    state: &tauri::State<'_, AppState>,
+    provider: &str,
+) -> Result<(), String> {
+    let Some(sw) = load_switchboard_state(state) else {
+        return Ok(());
+    };
+    if sw
+        .get("target")
+        .and_then(|v| v.as_str())
+        .map(|v| v != "provider")
+        .unwrap_or(true)
+    {
+        return Ok(());
+    }
+    let active_provider = sw
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or("");
+    if active_provider != provider {
+        return Ok(());
+    }
+
+    let homes = sw
+        .get("cli_homes")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let homes = resolve_cli_homes(homes)?;
+
+    let app_cfg = state.gateway.cfg.read().clone();
+    let cfg = app_cfg
+        .providers
+        .get(provider)
+        .ok_or_else(|| format!("unknown provider: {provider}"))?;
+    let base_url = cfg.base_url.trim().to_string();
+    if base_url.is_empty() {
+        return Err(format!("provider base_url is empty: {provider}"));
+    }
+    let key = state
+        .secrets
+        .get_provider_key(provider)
+        .ok_or_else(|| format!("provider key is missing: {provider}"))?;
+    if key.trim().is_empty() {
+        return Err(format!("provider key is empty: {provider}"));
+    }
+
+    for h in &homes {
+        let (mode, mp) = home_mode(h)?;
+        if mode != "provider" || mp.as_deref() != Some(provider) {
+            continue;
+        }
+        let orig_cfg = read_original_cfg_text(h)?;
+        let next_cfg = build_direct_provider_cfg(&orig_cfg, provider, &base_url);
+        let next_auth = auth_with_openai_key(key.trim());
+        write_swapped_files(h, &next_auth, &next_cfg)?;
+    }
+
+    Ok(())
+}
+
 pub fn set_target(
     state: &tauri::State<'_, AppState>,
     cli_homes: Vec<String>,
@@ -462,6 +550,8 @@ pub fn set_target(
         }
         applied.push(h.clone());
     }
+
+    save_switchboard_state(state, &homes, &target, provider_name.as_deref())?;
 
     state.gateway.store.add_event(
         "codex",

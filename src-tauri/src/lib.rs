@@ -2575,6 +2575,19 @@ fn set_provider_key(
         return Err(format!("unknown provider: {provider}"));
     }
     state.secrets.set_provider_key(&provider, &key)?;
+    if let Err(e) =
+        crate::provider_switchboard::sync_active_provider_target_for_key(&state, &provider)
+    {
+        state.gateway.store.add_event(
+            &provider,
+            "error",
+            "codex.provider_switchboard.sync_failed",
+            &format!("provider key sync to active switchboard target failed: {e}"),
+            serde_json::json!({
+                "provider": provider,
+            }),
+        );
+    }
     state.gateway.store.add_event(
         &provider,
         "info",
