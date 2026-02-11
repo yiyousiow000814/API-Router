@@ -1,3 +1,5 @@
+import { ModalBackdrop } from './ModalBackdrop'
+
 type Props = {
   open: boolean
   provider: string
@@ -12,7 +14,7 @@ const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
 export function KeyModal({ open, provider, value, onChange, onCancel, onSave }: Props) {
   if (!open) return null
   return (
-    <div className="aoModalBackdrop aoModalBackdropTop" role="dialog" aria-modal="true">
+    <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={onCancel}>
       <div className="aoModal">
         <div className="aoModalTitle">Set API key</div>
         <div className="aoModalSub">
@@ -36,6 +38,6 @@ export function KeyModal({ open, provider, value, onChange, onCancel, onSave }: 
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   )
 }

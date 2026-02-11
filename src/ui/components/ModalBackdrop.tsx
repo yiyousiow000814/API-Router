@@ -24,6 +24,12 @@ type ScrollLockSnapshot = {
 let scrollLockCount = 0
 let scrollLockSnapshot: ScrollLockSnapshot | null = null
 
+// Exposed for tests only. Avoid using in production code.
+export function __resetModalBackdropScrollLockForTests() {
+  scrollLockCount = 0
+  scrollLockSnapshot = null
+}
+
 export function lockBodyScrollForModal(): () => void {
   // SSR / tests can run without a DOM; treat lock as a no-op.
   if (typeof window === 'undefined' || typeof document === 'undefined' || !document.body) {

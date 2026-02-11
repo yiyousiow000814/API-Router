@@ -1,3 +1,5 @@
+import { ModalBackdrop } from './ModalBackdrop'
+
 type Props = {
   open: boolean
   provider: string
@@ -23,7 +25,7 @@ export function UsageBaseModal({
 }: Props) {
   if (!open) return null
   return (
-    <div className="aoModalBackdrop aoModalBackdropTop" role="dialog" aria-modal="true">
+    <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={onCancel}>
       <div className="aoModal">
         <div className="aoModalTitle">Usage base URL</div>
         <div className="aoModalSub">
@@ -50,6 +52,6 @@ export function UsageBaseModal({
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   )
 }

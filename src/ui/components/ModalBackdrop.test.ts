@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { lockBodyScrollForModal } from './ModalBackdrop'
+import { __resetModalBackdropScrollLockForTests, lockBodyScrollForModal } from './ModalBackdrop'
 
 function setupDom(scrollY: number) {
   const scrollTo = vi.fn()
@@ -27,6 +27,10 @@ function setupDom(scrollY: number) {
 }
 
 describe('lockBodyScrollForModal', () => {
+  beforeEach(() => {
+    __resetModalBackdropScrollLockForTests()
+  })
+
   it('locks scroll and restores on unlock', () => {
     const { scrollTo, bodyStyle, htmlStyle, rootStyle, root } = setupDom(123)
 
