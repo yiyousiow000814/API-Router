@@ -446,6 +446,11 @@ export default function App() {
   const usageHistoryScrollbarThumbRef = useRef<HTMLDivElement | null>(null)
   const usageHistoryScrollbarHideTimerRef = useRef<number | null>(null)
   const usageHistoryScrollbarRafRef = useRef<number | null>(null)
+  const usageHistoryScrollbarDragRef = useRef<{
+    active: boolean
+    pointerId: number
+    pointerOffsetY: number
+  }>({ active: false, pointerId: -1, pointerOffsetY: 0 })
   const codexSwapDir1Ref = useRef<string>('')
   const codexSwapDir2Ref = useRef<string>('')
   const codexSwapApplyBothRef = useRef<boolean>(false)
@@ -1430,6 +1435,95 @@ function newScheduleDraft(
       usageHistoryScrollbarHideTimerRef.current = null
     }, 700)
   }, [setUsageHistoryScrollbarVisible])
+
+  const scrollUsageHistoryByThumbTop = useCallback((thumbTopPx: number) => {
+    const wrap = usageHistoryTableWrapRef.current
+    const overlay = usageHistoryScrollbarOverlayRef.current
+    const thumb = usageHistoryScrollbarThumbRef.current
+    if (!wrap || !overlay || !thumb) return
+
+    const viewportHeight = wrap.clientHeight
+    const overlayHeight = overlay.clientHeight
+    const scrollHeight = wrap.scrollHeight
+    const maxScroll = Math.max(0, scrollHeight - viewportHeight)
+    if (viewportHeight <= 0 || overlayHeight <= 0 || maxScroll <= 0) return
+
+    const thumbHeight = Math.max(24, Math.round((viewportHeight / scrollHeight) * overlayHeight))
+    const thumbTravel = Math.max(0, overlayHeight - thumbHeight)
+    if (thumbTravel <= 0) return
+
+    const nextThumbTop = Math.max(0, Math.min(thumbTravel, thumbTopPx))
+    const nextScrollTop = Math.round((nextThumbTop / thumbTravel) * maxScroll)
+    wrap.scrollTop = nextScrollTop
+    scheduleUsageHistoryScrollbarSync()
+    activateUsageHistoryScrollbarUi()
+  }, [activateUsageHistoryScrollbarUi, scheduleUsageHistoryScrollbarSync])
+
+  const onUsageHistoryScrollbarPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const wrap = usageHistoryTableWrapRef.current
+    const overlay = usageHistoryScrollbarOverlayRef.current
+    if (!wrap || !overlay) return
+    const viewportHeight = wrap.clientHeight
+    const overlayHeight = overlay.clientHeight
+    const scrollHeight = wrap.scrollHeight
+    const maxScroll = Math.max(0, scrollHeight - viewportHeight)
+    if (viewportHeight <= 0 || overlayHeight <= 0 || maxScroll <= 0) return
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    // Capture the pointer so dragging continues even if the pointer leaves the overlay.
+    try {
+      overlay.setPointerCapture(e.pointerId)
+    } catch {
+      // ignore
+    }
+
+    const thumbHeight = Math.max(24, Math.round((viewportHeight / scrollHeight) * overlayHeight))
+    const thumbTravel = Math.max(0, overlayHeight - thumbHeight)
+    const currentThumbTop = maxScroll > 0 ? Math.round((wrap.scrollTop / maxScroll) * thumbTravel) : 0
+
+    const r = overlay.getBoundingClientRect()
+    const y = e.clientY - r.top
+    const pointerOffsetY = Math.max(0, Math.min(thumbHeight, y - currentThumbTop))
+
+    usageHistoryScrollbarDragRef.current = { active: true, pointerId: e.pointerId, pointerOffsetY }
+
+    // Jump to click location (center-ish) before starting drag.
+    scrollUsageHistoryByThumbTop(y - pointerOffsetY)
+  }, [scrollUsageHistoryByThumbTop])
+
+  const onUsageHistoryScrollbarPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = usageHistoryScrollbarDragRef.current
+    if (!drag.active || drag.pointerId !== e.pointerId) return
+    const overlay = usageHistoryScrollbarOverlayRef.current
+    if (!overlay) return
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    const r = overlay.getBoundingClientRect()
+    const y = e.clientY - r.top
+    scrollUsageHistoryByThumbTop(y - drag.pointerOffsetY)
+  }, [scrollUsageHistoryByThumbTop])
+
+  const onUsageHistoryScrollbarPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = usageHistoryScrollbarDragRef.current
+    if (!drag.active || drag.pointerId !== e.pointerId) return
+    const overlay = usageHistoryScrollbarOverlayRef.current
+    if (!overlay) return
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    usageHistoryScrollbarDragRef.current = { active: false, pointerId: -1, pointerOffsetY: 0 }
+    try {
+      overlay.releasePointerCapture(e.pointerId)
+    } catch {
+      // ignore
+    }
+    activateUsageHistoryScrollbarUi()
+  }, [activateUsageHistoryScrollbarUi])
 
   function renderUsageHistoryColGroup() {
     return (
@@ -4635,7 +4729,15 @@ requires_openai_auth = true`}
                       </tbody>
                       </table>
                     </div>
-                    <div ref={usageHistoryScrollbarOverlayRef} className="aoUsageHistoryScrollbarOverlay" aria-hidden="true">
+                    <div
+                      ref={usageHistoryScrollbarOverlayRef}
+                      className="aoUsageHistoryScrollbarOverlay"
+                      aria-hidden="true"
+                      onPointerDown={onUsageHistoryScrollbarPointerDown}
+                      onPointerMove={onUsageHistoryScrollbarPointerMove}
+                      onPointerUp={onUsageHistoryScrollbarPointerUp}
+                      onPointerCancel={onUsageHistoryScrollbarPointerUp}
+                    >
                       <div ref={usageHistoryScrollbarThumbRef} className="aoUsageHistoryScrollbarThumb" />
                     </div>
                   </div>
