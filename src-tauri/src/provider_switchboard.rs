@@ -101,24 +101,27 @@ fn cli_cfg_path(cli_home: &Path) -> PathBuf {
     cli_home.join("config.toml")
 }
 
-fn app_codex_home(state: &tauri::State<'_, AppState>) -> PathBuf {
-    state
-        .config_path
+fn app_codex_home_from_config_path(config_path: &Path) -> PathBuf {
+    config_path
         .parent()
         .unwrap_or(Path::new("."))
         .join("codex-home")
+}
+
+fn app_codex_home(state: &tauri::State<'_, AppState>) -> PathBuf {
+    app_codex_home_from_config_path(&state.config_path)
 }
 
 fn app_auth_path(state: &tauri::State<'_, AppState>) -> PathBuf {
     app_codex_home(state).join("auth.json")
 }
 
-fn switchboard_state_path(state: &tauri::State<'_, AppState>) -> PathBuf {
-    app_codex_home(state).join("provider-switchboard-state.json")
+fn switchboard_state_path_from_config_path(config_path: &Path) -> PathBuf {
+    app_codex_home_from_config_path(config_path).join("provider-switchboard-state.json")
 }
 
-fn save_switchboard_state(
-    state: &tauri::State<'_, AppState>,
+fn save_switchboard_state_to_config_path(
+    config_path: &Path,
     homes: &[PathBuf],
     target: &str,
     provider: Option<&str>,
@@ -128,11 +131,20 @@ fn save_switchboard_state(
       "provider": provider,
       "cli_homes": homes.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()
     });
-    write_json(&switchboard_state_path(state), &v)
+    write_json(&switchboard_state_path_from_config_path(config_path), &v)
 }
 
-fn load_switchboard_state(state: &tauri::State<'_, AppState>) -> Option<serde_json::Value> {
-    read_json(&switchboard_state_path(state)).ok()
+fn save_switchboard_state(
+    state: &tauri::State<'_, AppState>,
+    homes: &[PathBuf],
+    target: &str,
+    provider: Option<&str>,
+) -> Result<(), String> {
+    save_switchboard_state_to_config_path(&state.config_path, homes, target, provider)
+}
+
+fn load_switchboard_state_from_config_path(config_path: &Path) -> Option<serde_json::Value> {
+    read_json(&switchboard_state_path_from_config_path(config_path)).ok()
 }
 
 fn ensure_cli_files_exist(cli_home: &Path) -> Result<(), String> {
@@ -396,11 +408,11 @@ pub fn get_status(
     }))
 }
 
-pub fn sync_active_provider_target_for_key(
-    state: &tauri::State<'_, AppState>,
+fn sync_active_provider_target_for_key_impl(
+    state: &AppState,
     provider: &str,
 ) -> Result<(), String> {
-    let Some(sw) = load_switchboard_state(state) else {
+    let Some(sw) = load_switchboard_state_from_config_path(&state.config_path) else {
         return Ok(());
     };
     if sw
@@ -460,6 +472,13 @@ pub fn sync_active_provider_target_for_key(
     }
 
     Ok(())
+}
+
+pub fn sync_active_provider_target_for_key(
+    state: &tauri::State<'_, AppState>,
+    provider: &str,
+) -> Result<(), String> {
+    sync_active_provider_target_for_key_impl(&*state, provider)
 }
 
 pub fn set_target(
@@ -573,4 +592,73 @@ pub fn set_target(
             .map(|p| p.to_string_lossy().to_string())
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_active_provider_target_updates_auth_for_active_provider() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+
+        // Configure a real provider entry and key in the app state.
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.providers.get_mut("provider_1").unwrap().base_url =
+                "https://example.com/v1".to_string();
+        }
+        state
+            .secrets
+            .set_provider_key("provider_1", "sk-new")
+            .expect("set key");
+
+        // Simulate a swapped Codex CLI home already targeting provider_1.
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"OPENAI_API_KEY":"sk-old"}"#).unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        // Mark as swapped by creating backups.
+        let state_dir = swap_state_dir(&cli_home);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(backup_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+        std::fs::write(backup_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        // Current swapped config: direct provider wiring.
+        let current_cfg = build_direct_provider_cfg(
+            "model = \"gpt-5.2\"\n",
+            "provider_1",
+            "https://example.com/v1",
+        );
+        std::fs::write(cli_cfg_path(&cli_home), current_cfg).unwrap();
+
+        // Persist switchboard state so sync knows where to write.
+        let sw_path = switchboard_state_path_from_config_path(&state.config_path);
+        std::fs::create_dir_all(sw_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            sw_path,
+            serde_json::to_string_pretty(&json!({
+              "target": "provider",
+              "provider": "provider_1",
+              "cli_homes": [cli_home.to_string_lossy().to_string()]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        sync_active_provider_target_for_key_impl(&state, "provider_1").expect("sync");
+        let auth: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(cli_auth_path(&cli_home)).unwrap())
+                .unwrap();
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
+            Some("sk-new")
+        );
+    }
 }
