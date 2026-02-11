@@ -1500,10 +1500,12 @@ function newScheduleDraft(
     const pointerOffsetY = Math.max(0, Math.min(thumbHeight, y - currentThumbTop))
 
     usageHistoryScrollbarDragRef.current = { active: true, pointerId: e.pointerId, pointerOffsetY }
+    // Clear any pending auto-hide timer so the scrollbar doesn't disappear mid-drag.
+    activateUsageHistoryScrollbarUi()
 
     // Jump to click location (center-ish) before starting drag.
     scrollUsageHistoryByThumbTop(y - pointerOffsetY)
-  }, [scrollUsageHistoryByThumbTop])
+  }, [activateUsageHistoryScrollbarUi, scrollUsageHistoryByThumbTop])
 
   const onUsageHistoryScrollbarPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const drag = usageHistoryScrollbarDragRef.current
@@ -3271,6 +3273,7 @@ function newScheduleDraft(
   useEffect(() => {
     if (!usageHistoryModalOpen) {
       clearAutoSaveTimer('history:edit')
+      usageHistoryScrollbarDragRef.current = { active: false, pointerId: -1, pointerOffsetY: 0 }
       if (typeof window !== 'undefined') {
         if (usageHistoryScrollbarHideTimerRef.current != null) {
           window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
