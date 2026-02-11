@@ -329,12 +329,65 @@ fn read_cfg_base_text(config_path: &Path, cli_home: &Path) -> Result<String, Str
                     save_switchboard_base_meta(config_path, cli_home, &current_norm)?;
                     return Ok(current_norm);
                 }
+            } else {
+                // Base exists but meta is missing/corrupted. Prefer the current gateway config so we
+                // don't silently override user edits with a potentially stale saved base.
+                let current = read_text(&cli_cfg_path(cli_home))?;
+                let current_norm = normalize_cfg_for_switchboard_base(&current);
+                save_switchboard_base_cfg(config_path, cli_home, &current_norm)?;
+                save_switchboard_base_meta(config_path, cli_home, &current_norm)?;
+                return Ok(current_norm);
             }
             return Ok(base_txt);
         }
     }
     let current = read_text(&cli_cfg_path(cli_home))?;
     Ok(normalize_cfg_for_switchboard_base(&current))
+}
+
+fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), String> {
+    // Persist the latest effective config (minus switchboard wiring) so we can re-apply user
+    // edits when switching back into swapped modes later. This is best-effort bookkeeping and
+    // must never prevent restoring the Codex dir back to its original gateway config.
+    if home_swap_state(cli_home)? == "swapped" {
+        let cur_cfg = read_text(&cli_cfg_path(cli_home))?;
+        let base_cfg = normalize_cfg_for_switchboard_base(&cur_cfg);
+        if let Err(e) = save_switchboard_base_cfg(&state.config_path, cli_home, &base_cfg) {
+            state.gateway.store.add_event(
+                "codex",
+                "error",
+                "codex.provider_switchboard.base_save_failed",
+                &format!("Provider switchboard base save failed: {e}"),
+                json!({
+                  "cli_home": cli_home.to_string_lossy(),
+                  "updated_at_unix_ms": unix_ms(),
+                }),
+            );
+        }
+
+        // Record the gateway config baseline (normalized) that we restore to. If the user later
+        // edits gateway config, we can detect it and prefer their latest edits over a stale base.
+        match read_backup_cfg_text(cli_home)
+            .map(|txt| normalize_cfg_for_switchboard_base(&txt))
+            .and_then(|gateway_norm_cfg| {
+                save_switchboard_base_meta(&state.config_path, cli_home, &gateway_norm_cfg)
+            }) {
+            Ok(()) => {}
+            Err(e) => {
+                state.gateway.store.add_event(
+                    "codex",
+                    "error",
+                    "codex.provider_switchboard.base_meta_save_failed",
+                    &format!("Provider switchboard base meta save failed: {e}"),
+                    json!({
+                      "cli_home": cli_home.to_string_lossy(),
+                      "updated_at_unix_ms": unix_ms(),
+                    }),
+                );
+            }
+        }
+    }
+    restore_home_original(cli_home)
 }
 
 fn strip_model_provider_line(cfg: &str) -> String {
@@ -773,23 +826,7 @@ pub fn set_target(
     let mut applied: Vec<PathBuf> = Vec::new();
     for h in &homes {
         let res = match target.as_str() {
-            "gateway" => (|| {
-                // Persist the latest effective config (minus switchboard wiring) so we can
-                // re-apply user edits when switching back into swapped modes later.
-                if home_swap_state(h)? == "swapped" {
-                    let cur_cfg = read_text(&cli_cfg_path(h))?;
-                    let base_cfg = normalize_cfg_for_switchboard_base(&cur_cfg);
-                    save_switchboard_base_cfg(&state.config_path, h, &base_cfg)?;
-
-                    // Record the gateway config baseline (normalized) that we restore to. If the user
-                    // later edits gateway config, we can detect it and prefer their latest edits over
-                    // a stale saved base.
-                    let gateway_backup_cfg = read_backup_cfg_text(h)?;
-                    let gateway_norm_cfg = normalize_cfg_for_switchboard_base(&gateway_backup_cfg);
-                    save_switchboard_base_meta(&state.config_path, h, &gateway_norm_cfg)?;
-                }
-                restore_home_original(h)
-            })(),
+            "gateway" => switch_to_gateway_home_impl(state, h),
             "official" => (|| {
                 let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
                 let next_cfg = strip_model_provider_line(&orig_cfg);
@@ -918,6 +955,42 @@ mod tests {
     }
 
     #[test]
+    fn switch_to_gateway_home_restores_even_if_base_save_fails() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+
+        // Make base dir path a file so save_switchboard_base_cfg/meta fails.
+        let base_dir = super::switchboard_base_dir_from_config_path(&config_path);
+        std::fs::create_dir_all(base_dir.parent().unwrap()).unwrap();
+        std::fs::write(&base_dir, "not a dir").unwrap();
+
+        // Swapped CLI home: backups are the gateway config; current is provider mode.
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"OPENAI_API_KEY":"sk-test"}"#).unwrap();
+        std::fs::write(
+            cli_cfg_path(&cli_home),
+            "model_provider = \"x\"\nmodel = \"gpt-5.2\"\n",
+        )
+        .unwrap();
+
+        let state_dir = swap_state_dir(&cli_home);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(backup_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+        std::fs::write(backup_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        switch_to_gateway_home_impl(&state, &cli_home).expect("switch gateway");
+
+        let restored_cfg = std::fs::read_to_string(cli_cfg_path(&cli_home)).unwrap();
+        assert!(restored_cfg.contains("model = \"gpt-5.2\""));
+        assert!(!swap_state_dir(&cli_home).exists());
+    }
+
+    #[test]
     fn normalize_cfg_for_switchboard_base_preserves_user_fields() {
         let cfg = concat!(
             "model_provider = \"packycode\"\n",
@@ -997,6 +1070,8 @@ mod tests {
         // Persist base (for next swap), then restore gateway config exactly.
         let base_cfg = normalize_cfg_for_switchboard_base(&swapped_cfg);
         save_switchboard_base_cfg(&config_path, &cli_home, &base_cfg).expect("save base");
+        let gateway_norm = normalize_cfg_for_switchboard_base("model = \"gpt-5.2\"\n");
+        save_switchboard_base_meta(&config_path, &cli_home, &gateway_norm).expect("save meta");
 
         restore_home_original(&cli_home).expect("restore");
 
