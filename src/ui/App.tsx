@@ -1427,6 +1427,18 @@ function newScheduleDraft(
     if (!wrap) return
     if (wrap.scrollHeight - wrap.clientHeight <= 1) return
     setUsageHistoryScrollbarVisible(true)
+
+    // Don't auto-hide while the user is actively dragging the thumb. With pointer capture,
+    // pointer events keep firing on the overlay even when the pointer is geometrically outside
+    // the element, so CSS :hover won't reliably keep it visible.
+    if (usageHistoryScrollbarDragRef.current.active) {
+      if (usageHistoryScrollbarHideTimerRef.current != null) {
+        window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
+        usageHistoryScrollbarHideTimerRef.current = null
+      }
+      return
+    }
+
     if (usageHistoryScrollbarHideTimerRef.current != null) {
       window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
     }
