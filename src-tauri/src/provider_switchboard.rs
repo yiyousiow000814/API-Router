@@ -592,8 +592,7 @@ fn model_provider_id(cfg_txt: &str) -> Option<String> {
         if rest.is_empty() {
             continue;
         }
-        // Trim trailing comments first.
-        let rest = rest.split('#').next().unwrap_or(rest).trim();
+        let rest = rest.trim();
         if let Some(stripped) = rest.strip_prefix('"') {
             let mut out = String::new();
             for c in stripped.chars() {
@@ -606,12 +605,26 @@ fn model_provider_id(cfg_txt: &str) -> Option<String> {
             if !out.is_empty() {
                 return Some(out);
             }
+        } else if let Some(stripped) = rest.strip_prefix('\'') {
+            let mut out = String::new();
+            for c in stripped.chars() {
+                if c == '\'' {
+                    break;
+                }
+                out.push(c);
+            }
+            let out = out.trim().to_string();
+            if !out.is_empty() {
+                return Some(out);
+            }
         } else {
+            // Only treat '#' as a comment delimiter for unquoted values.
+            let rest = rest.split('#').next().unwrap_or(rest).trim();
             let val = rest
                 .split_whitespace()
                 .next()
                 .unwrap_or("")
-                .trim_matches('"')
+                .trim_matches(&['"', '\''][..])
                 .trim();
             if !val.is_empty() {
                 return Some(val.to_string());
@@ -1075,6 +1088,18 @@ mod tests {
             // invalid TOML: missing closing quote
             "alternate_screen = \"never\n",
         );
+        assert_eq!(model_provider_id(cfg).as_deref(), Some("packycode"));
+    }
+
+    #[test]
+    fn model_provider_id_allows_hash_inside_quotes() {
+        let cfg = "model_provider = \"my#provider\"\n";
+        assert_eq!(model_provider_id(cfg).as_deref(), Some("my#provider"));
+    }
+
+    #[test]
+    fn model_provider_id_supports_single_quoted_values() {
+        let cfg = "model_provider = 'packycode'\n";
         assert_eq!(model_provider_id(cfg).as_deref(), Some("packycode"));
     }
 
