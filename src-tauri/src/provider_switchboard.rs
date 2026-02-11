@@ -96,6 +96,11 @@ fn switchboard_base_cfg_path_from_config_path(config_path: &Path, cli_home: &Pat
     switchboard_base_dir_from_config_path(config_path).join(format!("{key}.toml"))
 }
 
+fn switchboard_base_meta_path_from_config_path(config_path: &Path, cli_home: &Path) -> PathBuf {
+    let key = dedup_key(cli_home).replace(['/', '\\'], "_");
+    switchboard_base_dir_from_config_path(config_path).join(format!("{key}.meta.json"))
+}
+
 fn save_switchboard_base_cfg(
     config_path: &Path,
     cli_home: &Path,
@@ -107,12 +112,39 @@ fn save_switchboard_base_cfg(
     )
 }
 
+fn save_switchboard_base_meta(
+    config_path: &Path,
+    cli_home: &Path,
+    gateway_norm_cfg: &str,
+) -> Result<(), String> {
+    write_json(
+        &switchboard_base_meta_path_from_config_path(config_path, cli_home),
+        &json!({
+          "gateway_norm_cfg": gateway_norm_cfg,
+          "updated_at_unix_ms": unix_ms(),
+        }),
+    )
+}
+
 fn load_switchboard_base_cfg(config_path: &Path, cli_home: &Path) -> Option<String> {
     read_text(&switchboard_base_cfg_path_from_config_path(
         config_path,
         cli_home,
     ))
     .ok()
+}
+
+fn load_switchboard_base_gateway_norm_cfg(config_path: &Path, cli_home: &Path) -> Option<String> {
+    read_json(&switchboard_base_meta_path_from_config_path(
+        config_path,
+        cli_home,
+    ))
+    .ok()
+    .and_then(|v| {
+        v.get("gateway_norm_cfg")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string())
+    })
 }
 
 fn backup_auth_path(cli_home: &Path) -> PathBuf {
@@ -129,6 +161,11 @@ fn cli_auth_path(cli_home: &Path) -> PathBuf {
 
 fn cli_cfg_path(cli_home: &Path) -> PathBuf {
     cli_home.join("config.toml")
+}
+
+fn read_backup_cfg_text(cli_home: &Path) -> Result<String, String> {
+    let bytes = read_bytes(&backup_cfg_path(cli_home))?;
+    String::from_utf8(bytes).map_err(|_| "backup config.toml is not valid UTF-8".to_string())
 }
 
 fn app_codex_home_from_config_path(config_path: &Path) -> PathBuf {
@@ -279,8 +316,21 @@ fn read_cfg_base_text(config_path: &Path, cli_home: &Path) -> Result<String, Str
     ensure_cli_files_exist(cli_home)?;
     let state = home_swap_state(cli_home)?;
     if state == "original" {
-        if let Some(txt) = load_switchboard_base_cfg(config_path, cli_home) {
-            return Ok(txt);
+        if let Some(base_txt) = load_switchboard_base_cfg(config_path, cli_home) {
+            if let Some(baseline_gateway_norm) =
+                load_switchboard_base_gateway_norm_cfg(config_path, cli_home)
+            {
+                let current = read_text(&cli_cfg_path(cli_home))?;
+                let current_norm = normalize_cfg_for_switchboard_base(&current);
+                if current_norm != baseline_gateway_norm {
+                    // The user edited the gateway config after we restored it. Prefer the latest
+                    // gateway config and refresh the saved base to match.
+                    save_switchboard_base_cfg(config_path, cli_home, &current_norm)?;
+                    save_switchboard_base_meta(config_path, cli_home, &current_norm)?;
+                    return Ok(current_norm);
+                }
+            }
+            return Ok(base_txt);
         }
     }
     let current = read_text(&cli_cfg_path(cli_home))?;
@@ -730,6 +780,13 @@ pub fn set_target(
                     let cur_cfg = read_text(&cli_cfg_path(h))?;
                     let base_cfg = normalize_cfg_for_switchboard_base(&cur_cfg);
                     save_switchboard_base_cfg(&state.config_path, h, &base_cfg)?;
+
+                    // Record the gateway config baseline (normalized) that we restore to. If the user
+                    // later edits gateway config, we can detect it and prefer their latest edits over
+                    // a stale saved base.
+                    let gateway_backup_cfg = read_backup_cfg_text(h)?;
+                    let gateway_norm_cfg = normalize_cfg_for_switchboard_base(&gateway_backup_cfg);
+                    save_switchboard_base_meta(&state.config_path, h, &gateway_norm_cfg)?;
                 }
                 restore_home_original(h)
             })(),
@@ -824,6 +881,40 @@ mod tests {
             "path should stay under provider-switchboard-base; got: {}",
             p.display()
         );
+    }
+
+    #[test]
+    fn read_cfg_base_text_prefers_gateway_edits_made_after_restore() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+
+        // This is the gateway config after restore.
+        let gateway_cfg = "model = \"gpt-5.2\"\n[notice]\nhide_full_access_warning = true\n";
+        std::fs::write(cli_cfg_path(&cli_home), gateway_cfg).unwrap();
+
+        // Saved base config from a prior swapped session.
+        let saved_base = "model = \"gpt-5.3-codex\"\n[notice]\nhide_full_access_warning = true\n";
+        save_switchboard_base_cfg(&config_path, &cli_home, saved_base).expect("save base");
+
+        // Baseline is the normalized gateway config we restored to.
+        let gateway_norm = normalize_cfg_for_switchboard_base(gateway_cfg);
+        save_switchboard_base_meta(&config_path, &cli_home, &gateway_norm).expect("save meta");
+
+        // User edits the gateway config after restore.
+        let gateway_cfg_edited = "model = \"gpt-5.4\"\n[notice]\nhide_full_access_warning = true\n";
+        std::fs::write(cli_cfg_path(&cli_home), gateway_cfg_edited).unwrap();
+
+        let out = read_cfg_base_text(&config_path, &cli_home).expect("read base");
+        assert!(out.contains("model = \"gpt-5.4\""));
+
+        // The base file is refreshed to match the latest gateway edits.
+        let refreshed = load_switchboard_base_cfg(&config_path, &cli_home).expect("load base");
+        assert!(refreshed.contains("model = \"gpt-5.4\""));
     }
 
     #[test]
