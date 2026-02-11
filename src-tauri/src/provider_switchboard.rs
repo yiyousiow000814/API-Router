@@ -310,23 +310,80 @@ fn escape_toml(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+fn insert_provider_section_near_top(base_cfg: &str, provider_section: &str) -> String {
+    let eol = if base_cfg.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut lines = base_cfg.lines().map(|s| s.to_string()).collect::<Vec<_>>();
+
+    // Insert before the first section header (e.g. [notice]) so the overall order
+    // matches the typical gateway config layout (top-level keys, then model_providers,
+    // then the remaining sections).
+    let mut insert_at = lines.len();
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        let is_header = t.starts_with('[') && t.ends_with(']');
+        if is_header {
+            insert_at = i;
+            break;
+        }
+    }
+
+    // Avoid accumulating blank lines around the insertion point across repeated switches.
+    while insert_at > 0 && lines[insert_at - 1].trim().is_empty() {
+        lines.remove(insert_at - 1);
+        insert_at -= 1;
+    }
+    while insert_at < lines.len() && lines[insert_at].trim().is_empty() {
+        lines.remove(insert_at);
+    }
+
+    let mut snippet_lines = provider_section
+        .lines()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+    if !snippet_lines.is_empty() {
+        // Ensure a single empty line before and after the snippet.
+        if insert_at > 0 {
+            lines.insert(insert_at, String::new());
+            insert_at += 1;
+        }
+        for (off, l) in snippet_lines.drain(..).enumerate() {
+            lines.insert(insert_at + off, l);
+        }
+        insert_at += provider_section.lines().count();
+        lines.insert(insert_at, String::new());
+    }
+
+    lines.join(eol) + eol
+}
+
 fn build_direct_provider_cfg(orig_cfg: &str, provider: &str, base_url: &str) -> String {
-    let mut base = strip_model_provider_line(orig_cfg);
+    // Use the switchboard base shape to avoid accumulating whitespace while switching.
+    let mut base = normalize_cfg_for_switchboard_base(orig_cfg);
     base = remove_model_provider_sections(&base, &["api_router", provider]);
     let eol = if base.contains("\r\n") { "\r\n" } else { "\n" };
     let provider_esc = escape_toml(provider);
     let base_url_esc = escape_toml(base_url);
+    let provider_section = format!(
+        "[model_providers.\"{provider}\"]{eol}name = \"{provider}\"{eol}base_url = \"{base_url}\"{eol}wire_api = \"responses\"{eol}requires_openai_auth = true{eol}",
+        provider = provider_esc,
+        base_url = base_url_esc,
+        eol = eol
+    );
+    let base_with_section = insert_provider_section_near_top(&base, &provider_section);
+
     let mut out = String::new();
     out.push_str(&format!("model_provider = \"{}\"{}", provider_esc, eol));
+    // Keep model_provider tight to the next line (model = ...), matching the gateway config layout.
+    out.push_str(
+        base_with_section
+            .trim_start_matches(&['\r', '\n'][..])
+            .trim_end(),
+    );
     out.push_str(eol);
-    out.push_str(base.trim_end());
-    out.push_str(eol);
-    out.push_str(eol);
-    out.push_str(&format!("[model_providers.\"{}\"]{}", provider_esc, eol));
-    out.push_str(&format!("name = \"{}\"{}", provider_esc, eol));
-    out.push_str(&format!("base_url = \"{}\"{}", base_url_esc, eol));
-    out.push_str(&format!("wire_api = \"responses\"{}", eol));
-    out.push_str(&format!("requires_openai_auth = true{}", eol));
     out
 }
 
@@ -572,6 +629,37 @@ mod tests {
         assert!(out.contains("model = \"gpt-5.3-codex\""));
         assert!(!out.contains("[model_providers.\"packycode\"]"));
         assert!(out.contains("[model_providers.\"keep_me\"]"));
+    }
+
+    #[test]
+    fn build_direct_provider_cfg_keeps_compact_header_and_preserves_section_order() {
+        let cfg = concat!(
+            "model_provider = \"api_router\"\n",
+            "model = \"gpt-5.2\"\n",
+            "model_reasoning_effort = \"medium\"\n",
+            "\n",
+            "[model_providers.api_router]\n",
+            "name = \"API Router\"\n",
+            "base_url = \"http://127.0.0.1:4000\"\n",
+            "wire_api = \"responses\"\n",
+            "requires_openai_auth = true\n",
+            "\n",
+            "[notice]\n",
+            "hide_full_access_warning = true\n",
+            "\n",
+            "[tui]\n",
+            "alternate_screen = \"never\"\n",
+        );
+
+        let out = build_direct_provider_cfg(cfg, "ppchat", "https://code.ppchat.vip/v1");
+
+        // No extra blank line between model_provider and the next setting.
+        assert!(out.contains("model_provider = \"ppchat\"\nmodel = \"gpt-5.2\""));
+
+        // Provider section stays near the top, before [notice], matching the gateway ordering.
+        let idx_provider = out.find("[model_providers.\"ppchat\"]").unwrap();
+        let idx_notice = out.find("[notice]").unwrap();
+        assert!(idx_provider < idx_notice);
     }
 
     #[test]
