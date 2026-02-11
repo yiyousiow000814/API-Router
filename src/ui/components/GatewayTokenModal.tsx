@@ -1,3 +1,5 @@
+import { ModalBackdrop } from './ModalBackdrop'
+
 type Props = {
   open: boolean
   tokenPreview: string
@@ -12,7 +14,7 @@ const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
 export function GatewayTokenModal({ open, tokenPreview, tokenReveal, onClose, onReveal, onRotate }: Props) {
   if (!open) return null
   return (
-    <div className="aoModalBackdrop" role="dialog" aria-modal="true">
+    <ModalBackdrop onClose={onClose}>
       <div className="aoModal">
         <div className="aoModalTitle">Codex gateway token</div>
         <div className="aoModalSub">
@@ -40,6 +42,6 @@ export function GatewayTokenModal({ open, tokenPreview, tokenReveal, onClose, on
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   )
 }
