@@ -498,7 +498,7 @@ fn on_provider_renamed_impl(state: &AppState, old: &str, new: &str) -> Result<()
     let homes = resolve_cli_homes(homes)?;
 
     // Update the persisted switchboard state (if it references the renamed provider).
-    let mut touched_state = false;
+    let mut updated_state = false;
     let state_target = sw
         .get("target")
         .and_then(|v| v.as_str())
@@ -511,46 +511,32 @@ fn on_provider_renamed_impl(state: &AppState, old: &str, new: &str) -> Result<()
         .unwrap_or("");
     if state_target == "provider" && state_provider == old {
         sw["provider"] = json!(new);
-        touched_state = true;
+        updated_state = true;
+    }
+
+    // Persist the state update immediately. A provider rename in the app config can succeed
+    // even if syncing the swapped Codex home fails; in that case we still want future
+    // key updates to match the renamed provider instead of a stale old name.
+    if updated_state {
+        write_json(
+            &switchboard_state_path_from_config_path(&state.config_path),
+            &sw,
+        )?;
     }
 
     // If any swapped Codex homes still point at the old provider id, rewrite them.
     let app_cfg = state.gateway.cfg.read().clone();
     let Some(cfg) = app_cfg.providers.get(new) else {
-        if touched_state {
-            write_json(
-                &switchboard_state_path_from_config_path(&state.config_path),
-                &sw,
-            )?;
-        }
         return Ok(());
     };
     let base_url = cfg.base_url.trim().to_string();
     if base_url.is_empty() {
-        if touched_state {
-            write_json(
-                &switchboard_state_path_from_config_path(&state.config_path),
-                &sw,
-            )?;
-        }
         return Err(format!("provider base_url is empty: {new}"));
     }
     let Some(key) = state.secrets.get_provider_key(new) else {
-        if touched_state {
-            write_json(
-                &switchboard_state_path_from_config_path(&state.config_path),
-                &sw,
-            )?;
-        }
         return Ok(());
     };
     if key.trim().is_empty() {
-        if touched_state {
-            write_json(
-                &switchboard_state_path_from_config_path(&state.config_path),
-                &sw,
-            )?;
-        }
         return Err(format!("provider key is empty: {new}"));
     }
 
@@ -563,13 +549,6 @@ fn on_provider_renamed_impl(state: &AppState, old: &str, new: &str) -> Result<()
         let next_cfg = build_direct_provider_cfg(&orig_cfg, new, &base_url);
         let next_auth = auth_with_openai_key(key.trim());
         write_swapped_files(h, &next_auth, &next_cfg)?;
-    }
-
-    if touched_state {
-        write_json(
-            &switchboard_state_path_from_config_path(&state.config_path),
-            &sw,
-        )?;
     }
 
     Ok(())
@@ -934,6 +913,69 @@ mod tests {
         assert!(err.contains("key is empty"));
 
         // Even though we error, the state file should be updated to the new provider name.
+        let sw = read_json(&sw_path).expect("sw json");
+        assert_eq!(
+            sw.get("provider").and_then(|v| v.as_str()),
+            Some("provider_x")
+        );
+    }
+
+    #[test]
+    fn on_provider_renamed_persists_state_even_if_cli_home_sync_fails() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+
+        // Provider was renamed; new config is valid.
+        {
+            let mut cfg = state.gateway.cfg.write();
+            let p1 = cfg.providers.remove("provider_1").unwrap();
+            cfg.providers.insert("provider_x".to_string(), p1);
+            cfg.providers.get_mut("provider_x").unwrap().base_url =
+                "https://example.com/v1".to_string();
+        }
+        state
+            .secrets
+            .set_provider_key("provider_x", "sk-new")
+            .expect("set key");
+
+        // Create a swapped CLI home that *looks* like it's targeting provider_1, but is missing
+        // auth.json so syncing will fail inside the rewrite loop.
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(
+            cli_cfg_path(&cli_home),
+            build_direct_provider_cfg("model = \"gpt-5.2\"\n", "provider_1", "https://x.invalid"),
+        )
+        .unwrap();
+
+        let state_dir = swap_state_dir(&cli_home);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        // Backups exist so home_mode treats it as swapped.
+        std::fs::write(backup_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+        std::fs::write(backup_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        // Persist switchboard state (still pointing at provider_1).
+        let sw_path = switchboard_state_path_from_config_path(&state.config_path);
+        std::fs::create_dir_all(sw_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &sw_path,
+            serde_json::to_string_pretty(&json!({
+              "target": "provider",
+              "provider": "provider_1",
+              "cli_homes": [cli_home.to_string_lossy().to_string()]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let err = on_provider_renamed_impl(&state, "provider_1", "provider_x").unwrap_err();
+        assert!(err.contains("Missing auth.json") || err.contains("Missing auth.json in"));
+
+        // Even though syncing the CLI home failed, the state should still be updated.
         let sw = read_json(&sw_path).expect("sw json");
         assert_eq!(
             sw.get("provider").and_then(|v| v.as_str()),
