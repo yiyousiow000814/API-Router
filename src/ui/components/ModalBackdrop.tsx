@@ -16,6 +16,9 @@ type ScrollLockSnapshot = {
   bodyWidth: string
   bodyPaddingRight: string
   htmlOverflow: string
+  rootOverflowY: string
+  rootOverflowX: string
+  rootScrollTop: number
 }
 
 let scrollLockCount = 0
@@ -30,6 +33,8 @@ export function lockBodyScrollForModal(): () => void {
   if (scrollLockCount === 0) {
     const bodyStyle = document.body.style
     const htmlStyle = document.documentElement?.style
+    const root = document.querySelector('.aoRoot') as HTMLElement | null
+    const rootStyle = root?.style
 
     scrollLockSnapshot = {
       scrollY: window.scrollY ?? 0,
@@ -41,6 +46,9 @@ export function lockBodyScrollForModal(): () => void {
       bodyWidth: bodyStyle.width || '',
       bodyPaddingRight: bodyStyle.paddingRight || '',
       htmlOverflow: htmlStyle?.overflow || '',
+      rootOverflowY: rootStyle?.overflowY || '',
+      rootOverflowX: rootStyle?.overflowX || '',
+      rootScrollTop: root?.scrollTop ?? 0,
     }
 
     // Compensate for the missing scrollbar so layout doesn't shift when locking.
@@ -58,6 +66,13 @@ export function lockBodyScrollForModal(): () => void {
     bodyStyle.right = '0'
     bodyStyle.width = '100%'
     if (htmlStyle) htmlStyle.overflow = 'hidden'
+
+    // The app uses `.aoRoot` as the primary scroll container, not `body`.
+    // Lock it too, otherwise wheel events on the backdrop can still scroll the page.
+    if (rootStyle) {
+      rootStyle.overflowY = 'hidden'
+      rootStyle.overflowX = 'hidden'
+    }
   }
 
   scrollLockCount += 1
@@ -75,6 +90,8 @@ export function lockBodyScrollForModal(): () => void {
 
     const bodyStyle = document.body.style
     const htmlStyle = document.documentElement?.style
+    const root = document.querySelector('.aoRoot') as HTMLElement | null
+    const rootStyle = root?.style
 
     bodyStyle.overflow = snap.bodyOverflow
     bodyStyle.position = snap.bodyPosition
@@ -84,6 +101,14 @@ export function lockBodyScrollForModal(): () => void {
     bodyStyle.width = snap.bodyWidth
     bodyStyle.paddingRight = snap.bodyPaddingRight
     if (htmlStyle) htmlStyle.overflow = snap.htmlOverflow
+
+    if (rootStyle) {
+      rootStyle.overflowY = snap.rootOverflowY
+      rootStyle.overflowX = snap.rootOverflowX
+    }
+    if (root) {
+      root.scrollTop = snap.rootScrollTop
+    }
 
     window.scrollTo?.(0, snap.scrollY)
   }
@@ -104,6 +129,19 @@ export function ModalBackdrop({ className = 'aoModalBackdrop', onClose, children
       className={className}
       role="dialog"
       aria-modal="true"
+      onWheelCapture={(e) => {
+        // Prevent scroll chaining to the app root when the user scrolls on the blurred backdrop.
+        if (e.target === e.currentTarget) {
+          e.preventDefault()
+          e.stopPropagation()
+        }
+      }}
+      onTouchMoveCapture={(e) => {
+        if (e.target === e.currentTarget) {
+          e.preventDefault()
+          e.stopPropagation()
+        }
+      }}
       onPointerDown={(e) => {
         pressedOnBackdropRef.current = e.target === e.currentTarget
       }}
