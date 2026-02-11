@@ -498,3 +498,59 @@ pub fn set_target(
             .collect(),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_cfg_for_switchboard_base_preserves_user_fields() {
+        let cfg = concat!(
+            "model_provider = \"packycode\"\n",
+            "model = \"gpt-5.3-codex\"\n",
+            "\n",
+            "[model_providers.\"packycode\"]\n",
+            "name = \"packycode\"\n",
+            "base_url = \"https://example.com/v1\"\n",
+            "\n",
+            "[model_providers.\"keep_me\"]\n",
+            "name = \"keep_me\"\n",
+            "base_url = \"https://keep.me/v1\"\n",
+        );
+        let out = normalize_cfg_for_switchboard_base(cfg);
+        assert!(!out.contains("model_provider ="));
+        assert!(out.contains("model = \"gpt-5.3-codex\""));
+        assert!(!out.contains("[model_providers.\"packycode\"]"));
+        assert!(out.contains("[model_providers.\"keep_me\"]"));
+    }
+
+    #[test]
+    fn restore_home_original_keeps_swapped_config_edits() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cli_home = tmp.path();
+
+        // Initial gateway files (will be backed up by ensure_backup_exists).
+        std::fs::write(cli_auth_path(cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+        std::fs::write(cli_cfg_path(cli_home), "model = \"gpt-5.2\"\n").unwrap();
+        ensure_backup_exists(cli_home).expect("backup");
+
+        // Simulate swapped state: CLI files reflect a direct provider target, and user edits the model.
+        let swapped_cfg = concat!(
+            "model_provider = \"packycode\"\n",
+            "model = \"gpt-5.3-codex\"\n",
+            "\n",
+            "[model_providers.\"packycode\"]\n",
+            "name = \"packycode\"\n",
+            "base_url = \"https://example.com/v1\"\n",
+        );
+        std::fs::write(cli_auth_path(cli_home), r#"{"OPENAI_API_KEY":"sk-test"}"#).unwrap();
+        std::fs::write(cli_cfg_path(cli_home), swapped_cfg).unwrap();
+
+        // Restoring should preserve the user edit (model) while removing switchboard wiring.
+        restore_home_original(cli_home).expect("restore");
+        let restored_cfg = std::fs::read_to_string(cli_cfg_path(cli_home)).unwrap();
+        assert!(restored_cfg.contains("model = \"gpt-5.3-codex\""));
+        assert!(!restored_cfg.contains("model_provider ="));
+        assert!(!restored_cfg.contains("[model_providers.\"packycode\"]"));
+    }
+}
