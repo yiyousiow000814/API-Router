@@ -1539,6 +1539,13 @@ function newScheduleDraft(
     activateUsageHistoryScrollbarUi()
   }, [activateUsageHistoryScrollbarUi])
 
+  const onUsageHistoryScrollbarLostPointerCapture = useCallback(() => {
+    const drag = usageHistoryScrollbarDragRef.current
+    if (!drag.active) return
+    usageHistoryScrollbarDragRef.current = { active: false, pointerId: -1, pointerOffsetY: 0 }
+    activateUsageHistoryScrollbarUi()
+  }, [activateUsageHistoryScrollbarUi])
+
   function renderUsageHistoryColGroup() {
     return (
       <colgroup>
@@ -4752,6 +4759,7 @@ requires_openai_auth = true`}
                       onPointerMove={onUsageHistoryScrollbarPointerMove}
                       onPointerUp={onUsageHistoryScrollbarPointerUp}
                       onPointerCancel={onUsageHistoryScrollbarPointerUp}
+                      onLostPointerCapture={onUsageHistoryScrollbarLostPointerCapture}
                     >
                       <div ref={usageHistoryScrollbarThumbRef} className="aoUsageHistoryScrollbarThumb" />
                     </div>
