@@ -1379,6 +1379,10 @@ function newScheduleDraft(
     usageHistoryScrollbarOverlayRef.current?.classList.toggle('aoUsageHistoryScrollbarOverlayVisible', visible)
   }, [])
 
+  const setUsageHistoryScrollbarCanScroll = useCallback((canScroll: boolean) => {
+    usageHistoryTableSurfaceRef.current?.classList.toggle('aoUsageHistoryTableSurfaceCanScroll', canScroll)
+  }, [])
+
   const refreshUsageHistoryScrollbarUi = useCallback(() => {
     const wrap = usageHistoryTableWrapRef.current
     const overlay = usageHistoryScrollbarOverlayRef.current
@@ -1391,15 +1395,17 @@ function newScheduleDraft(
     if (viewportHeight <= 0 || overlayHeight <= 0 || maxScroll <= 0) {
       thumb.style.height = '0px'
       thumb.style.transform = 'translateY(0px)'
+      setUsageHistoryScrollbarCanScroll(false)
       setUsageHistoryScrollbarVisible(false)
       return
     }
+    setUsageHistoryScrollbarCanScroll(true)
     const thumbHeight = Math.max(24, Math.round((viewportHeight / scrollHeight) * overlayHeight))
     const thumbTravel = Math.max(0, overlayHeight - thumbHeight)
     const thumbTop = maxScroll > 0 ? Math.round((wrap.scrollTop / maxScroll) * thumbTravel) : 0
     thumb.style.height = `${thumbHeight}px`
     thumb.style.transform = `translateY(${thumbTop}px)`
-  }, [setUsageHistoryScrollbarVisible])
+  }, [setUsageHistoryScrollbarCanScroll, setUsageHistoryScrollbarVisible])
 
   const scheduleUsageHistoryScrollbarSync = useCallback(() => {
     if (typeof window === 'undefined') return
@@ -1412,6 +1418,9 @@ function newScheduleDraft(
 
   const activateUsageHistoryScrollbarUi = useCallback(() => {
     if (typeof window === 'undefined') return
+    const wrap = usageHistoryTableWrapRef.current
+    if (!wrap) return
+    if (wrap.scrollHeight - wrap.clientHeight <= 1) return
     setUsageHistoryScrollbarVisible(true)
     if (usageHistoryScrollbarHideTimerRef.current != null) {
       window.clearTimeout(usageHistoryScrollbarHideTimerRef.current)
@@ -4454,7 +4463,6 @@ requires_openai_auth = true`}
                         activateUsageHistoryScrollbarUi()
                       }}
                       onTouchMove={activateUsageHistoryScrollbarUi}
-                      onPointerDown={activateUsageHistoryScrollbarUi}
                     >
                       <table className="aoUsageHistoryTable">
                       {renderUsageHistoryColGroup()}

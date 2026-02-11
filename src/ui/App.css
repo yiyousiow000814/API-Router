@@ -1083,6 +1083,18 @@
   opacity: 1;
 }
 
+.aoUsageHistoryTableSurfaceCanScroll .aoUsageHistoryScrollbarOverlay {
+  pointer-events: auto;
+}
+
+.aoUsageHistoryTableSurfaceCanScroll .aoUsageHistoryScrollbarOverlay:hover {
+  opacity: 1;
+}
+
+.aoUsageHistoryTableSurfaceCanScroll .aoUsageHistoryScrollbarOverlay:hover .aoUsageHistoryScrollbarThumb {
+  background: var(--ao-history-scroll-thumb-hover);
+}
+
 .aoUsageHistoryScrollbarThumb {
   width: 100%;
   min-height: 24px;
