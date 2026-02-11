@@ -2555,6 +2555,19 @@ fn rename_provider(
         .gateway
         .router
         .sync_with_config(&state.gateway.cfg.read(), unix_ms());
+
+    if let Err(e) = crate::provider_switchboard::on_provider_renamed(&state, old, new) {
+        state.gateway.store.add_event(
+            new,
+            "error",
+            "codex.provider_switchboard.rename_sync_failed",
+            &format!("provider rename sync to active switchboard target failed: {e}"),
+            serde_json::json!({
+                "old": old,
+                "new": new,
+            }),
+        );
+    }
     state.gateway.store.add_event(
         new,
         "info",
