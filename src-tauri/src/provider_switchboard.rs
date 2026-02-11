@@ -85,6 +85,84 @@ fn swap_state_dir(cli_home: &Path) -> PathBuf {
     cli_home.join(".api-router-swap")
 }
 
+fn switchboard_base_dir_from_config_path(config_path: &Path) -> PathBuf {
+    app_codex_home_from_config_path(config_path).join("provider-switchboard-base")
+}
+
+fn switchboard_base_key(cli_home: &Path) -> String {
+    // Must be safe as a single filename component on Windows and Linux.
+    // We use a short stable hash to avoid path-separator / drive-prefix edge cases.
+    fn fnv1a64(s: &str) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in s.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+
+    let canon = dedup_key(cli_home);
+    format!("cli_home_{:016x}", fnv1a64(&canon))
+}
+
+fn switchboard_base_cfg_path_from_config_path(config_path: &Path, cli_home: &Path) -> PathBuf {
+    // Keep one base config per Codex dir, so swapping back to gateway doesn't lose
+    // user edits made while swapped (without mutating the user's gateway config).
+    let key = switchboard_base_key(cli_home);
+    switchboard_base_dir_from_config_path(config_path).join(format!("{key}.toml"))
+}
+
+fn switchboard_base_meta_path_from_config_path(config_path: &Path, cli_home: &Path) -> PathBuf {
+    let key = switchboard_base_key(cli_home);
+    switchboard_base_dir_from_config_path(config_path).join(format!("{key}.meta.json"))
+}
+
+fn save_switchboard_base_cfg(
+    config_path: &Path,
+    cli_home: &Path,
+    base_cfg_text: &str,
+) -> Result<(), String> {
+    write_text(
+        &switchboard_base_cfg_path_from_config_path(config_path, cli_home),
+        base_cfg_text,
+    )
+}
+
+fn save_switchboard_base_meta(
+    config_path: &Path,
+    cli_home: &Path,
+    gateway_norm_cfg: &str,
+) -> Result<(), String> {
+    write_json(
+        &switchboard_base_meta_path_from_config_path(config_path, cli_home),
+        &json!({
+          "gateway_norm_cfg": gateway_norm_cfg,
+          "updated_at_unix_ms": unix_ms(),
+        }),
+    )
+}
+
+fn load_switchboard_base_cfg(config_path: &Path, cli_home: &Path) -> Option<String> {
+    read_text(&switchboard_base_cfg_path_from_config_path(
+        config_path,
+        cli_home,
+    ))
+    .ok()
+}
+
+fn load_switchboard_base_gateway_norm_cfg(config_path: &Path, cli_home: &Path) -> Option<String> {
+    read_json(&switchboard_base_meta_path_from_config_path(
+        config_path,
+        cli_home,
+    ))
+    .ok()
+    .and_then(|v| {
+        v.get("gateway_norm_cfg")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string())
+    })
+}
+
 fn backup_auth_path(cli_home: &Path) -> PathBuf {
     swap_state_dir(cli_home).join("auth.json.bak")
 }
@@ -99,6 +177,11 @@ fn cli_auth_path(cli_home: &Path) -> PathBuf {
 
 fn cli_cfg_path(cli_home: &Path) -> PathBuf {
     cli_home.join("config.toml")
+}
+
+fn read_backup_cfg_text(cli_home: &Path) -> Result<String, String> {
+    let bytes = read_bytes(&backup_cfg_path(cli_home))?;
+    String::from_utf8(bytes).map_err(|_| "backup config.toml is not valid UTF-8".to_string())
 }
 
 fn app_codex_home_from_config_path(config_path: &Path) -> PathBuf {
@@ -214,6 +297,7 @@ fn restore_home_original(cli_home: &Path) -> Result<(), String> {
     let cur_cfg = read_bytes(&cli_cfg)?;
     let bak_auth = read_bytes(&backup_auth_path(cli_home))?;
     let bak_cfg = read_bytes(&backup_cfg_path(cli_home))?;
+
     write_bytes(&cli_auth, &bak_auth).map_err(|e| format!("restore auth.json failed: {e}"))?;
     if let Err(e) =
         write_bytes(&cli_cfg, &bak_cfg).map_err(|e| format!("restore config.toml failed: {e}"))
@@ -226,13 +310,100 @@ fn restore_home_original(cli_home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn read_original_cfg_text(cli_home: &Path) -> Result<String, String> {
-    ensure_cli_files_exist(cli_home)?;
-    if home_swap_state(cli_home)? == "swapped" {
-        let bytes = read_bytes(&backup_cfg_path(cli_home))?;
-        return String::from_utf8(bytes).map_err(|_| "config.toml is not valid UTF-8".to_string());
+fn normalize_cfg_for_switchboard_base(cfg: &str) -> String {
+    // Keep user edits, but drop switchboard-owned provider wiring so we can rebuild
+    // the next mode from the latest effective config.
+    let mut base = strip_model_provider_line(cfg);
+    if let Some(active_provider) = model_provider_id(cfg) {
+        base = remove_model_provider_sections(&base, &[active_provider.as_str()]);
     }
-    read_text(&cli_cfg_path(cli_home))
+    // Prevent accumulating blank lines due to repeatedly inserting/removing model_provider.
+    // We only trim leading empty lines; comments at the top should remain intact.
+    while base.starts_with("\r\n") {
+        base = base.trim_start_matches("\r\n").to_string();
+    }
+    while base.starts_with('\n') {
+        base = base.trim_start_matches('\n').to_string();
+    }
+    base
+}
+
+fn read_cfg_base_text(config_path: &Path, cli_home: &Path) -> Result<String, String> {
+    ensure_cli_files_exist(cli_home)?;
+    let state = home_swap_state(cli_home)?;
+    if state == "original" {
+        if let Some(base_txt) = load_switchboard_base_cfg(config_path, cli_home) {
+            if let Some(baseline_gateway_norm) =
+                load_switchboard_base_gateway_norm_cfg(config_path, cli_home)
+            {
+                let current = read_text(&cli_cfg_path(cli_home))?;
+                let current_norm = normalize_cfg_for_switchboard_base(&current);
+                if current_norm != baseline_gateway_norm {
+                    // The user edited the gateway config after we restored it. Prefer the latest
+                    // gateway config and refresh the saved base to match.
+                    save_switchboard_base_cfg(config_path, cli_home, &current_norm)?;
+                    save_switchboard_base_meta(config_path, cli_home, &current_norm)?;
+                    return Ok(current_norm);
+                }
+            } else {
+                // Base exists but meta is missing/corrupted. Prefer the current gateway config so we
+                // don't silently override user edits with a potentially stale saved base.
+                let current = read_text(&cli_cfg_path(cli_home))?;
+                let current_norm = normalize_cfg_for_switchboard_base(&current);
+                save_switchboard_base_cfg(config_path, cli_home, &current_norm)?;
+                save_switchboard_base_meta(config_path, cli_home, &current_norm)?;
+                return Ok(current_norm);
+            }
+            return Ok(base_txt);
+        }
+    }
+    let current = read_text(&cli_cfg_path(cli_home))?;
+    Ok(normalize_cfg_for_switchboard_base(&current))
+}
+
+fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), String> {
+    // Persist the latest effective config (minus switchboard wiring) so we can re-apply user
+    // edits when switching back into swapped modes later. This is best-effort bookkeeping and
+    // must never prevent restoring the Codex dir back to its original gateway config.
+    if home_swap_state(cli_home)? == "swapped" {
+        let cur_cfg = read_text(&cli_cfg_path(cli_home))?;
+        let base_cfg = normalize_cfg_for_switchboard_base(&cur_cfg);
+        if let Err(e) = save_switchboard_base_cfg(&state.config_path, cli_home, &base_cfg) {
+            state.gateway.store.add_event(
+                "codex",
+                "error",
+                "codex.provider_switchboard.base_save_failed",
+                &format!("Provider switchboard base save failed: {e}"),
+                json!({
+                  "cli_home": cli_home.to_string_lossy(),
+                  "updated_at_unix_ms": unix_ms(),
+                }),
+            );
+        }
+
+        // Record the gateway config baseline (normalized) that we restore to. If the user later
+        // edits gateway config, we can detect it and prefer their latest edits over a stale base.
+        match read_backup_cfg_text(cli_home)
+            .map(|txt| normalize_cfg_for_switchboard_base(&txt))
+            .and_then(|gateway_norm_cfg| {
+                save_switchboard_base_meta(&state.config_path, cli_home, &gateway_norm_cfg)
+            }) {
+            Ok(()) => {}
+            Err(e) => {
+                state.gateway.store.add_event(
+                    "codex",
+                    "error",
+                    "codex.provider_switchboard.base_meta_save_failed",
+                    &format!("Provider switchboard base meta save failed: {e}"),
+                    json!({
+                      "cli_home": cli_home.to_string_lossy(),
+                      "updated_at_unix_ms": unix_ms(),
+                    }),
+                );
+            }
+        }
+    }
+    restore_home_original(cli_home)
 }
 
 fn strip_model_provider_line(cfg: &str) -> String {
@@ -289,23 +460,80 @@ fn escape_toml(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+fn insert_provider_section_near_top(base_cfg: &str, provider_section: &str) -> String {
+    let eol = if base_cfg.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut lines = base_cfg.lines().map(|s| s.to_string()).collect::<Vec<_>>();
+
+    // Insert before the first section header (e.g. [notice]) so the overall order
+    // matches the typical gateway config layout (top-level keys, then model_providers,
+    // then the remaining sections).
+    let mut insert_at = lines.len();
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        let is_header = t.starts_with('[') && t.ends_with(']');
+        if is_header {
+            insert_at = i;
+            break;
+        }
+    }
+
+    // Avoid accumulating blank lines around the insertion point across repeated switches.
+    while insert_at > 0 && lines[insert_at - 1].trim().is_empty() {
+        lines.remove(insert_at - 1);
+        insert_at -= 1;
+    }
+    while insert_at < lines.len() && lines[insert_at].trim().is_empty() {
+        lines.remove(insert_at);
+    }
+
+    let mut snippet_lines = provider_section
+        .lines()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+    if !snippet_lines.is_empty() {
+        // Ensure a single empty line before and after the snippet.
+        if insert_at > 0 {
+            lines.insert(insert_at, String::new());
+            insert_at += 1;
+        }
+        for (off, l) in snippet_lines.drain(..).enumerate() {
+            lines.insert(insert_at + off, l);
+        }
+        insert_at += provider_section.lines().count();
+        lines.insert(insert_at, String::new());
+    }
+
+    lines.join(eol) + eol
+}
+
 fn build_direct_provider_cfg(orig_cfg: &str, provider: &str, base_url: &str) -> String {
-    let mut base = strip_model_provider_line(orig_cfg);
+    // Use the switchboard base shape to avoid accumulating whitespace while switching.
+    let mut base = normalize_cfg_for_switchboard_base(orig_cfg);
     base = remove_model_provider_sections(&base, &["api_router", provider]);
     let eol = if base.contains("\r\n") { "\r\n" } else { "\n" };
     let provider_esc = escape_toml(provider);
     let base_url_esc = escape_toml(base_url);
+    let provider_section = format!(
+        "[model_providers.\"{provider}\"]{eol}name = \"{provider}\"{eol}base_url = \"{base_url}\"{eol}wire_api = \"responses\"{eol}requires_openai_auth = true{eol}",
+        provider = provider_esc,
+        base_url = base_url_esc,
+        eol = eol
+    );
+    let base_with_section = insert_provider_section_near_top(&base, &provider_section);
+
     let mut out = String::new();
     out.push_str(&format!("model_provider = \"{}\"{}", provider_esc, eol));
+    // Keep model_provider tight to the next line (model = ...), matching the gateway config layout.
+    out.push_str(
+        base_with_section
+            .trim_start_matches(&['\r', '\n'][..])
+            .trim_end(),
+    );
     out.push_str(eol);
-    out.push_str(base.trim_end());
-    out.push_str(eol);
-    out.push_str(eol);
-    out.push_str(&format!("[model_providers.\"{}\"]{}", provider_esc, eol));
-    out.push_str(&format!("name = \"{}\"{}", provider_esc, eol));
-    out.push_str(&format!("base_url = \"{}\"{}", base_url_esc, eol));
-    out.push_str(&format!("wire_api = \"responses\"{}", eol));
-    out.push_str(&format!("requires_openai_auth = true{}", eol));
     out
 }
 
@@ -335,13 +563,75 @@ fn write_swapped_files(
 }
 
 fn model_provider_id(cfg_txt: &str) -> Option<String> {
-    let v = toml::from_str::<toml::Value>(cfg_txt).ok()?;
-    let t = v.as_table()?;
-    t.get("model_provider")
-        .or_else(|| t.get("model_provider_id"))
-        .and_then(|x| x.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    // Avoid TOML parsing so we can still detect model_provider even if the config is currently
+    // syntactically invalid (e.g., an unclosed quote elsewhere).
+    //
+    // We intentionally keep this simple: read the first matching assignment line.
+    for line in cfg_txt.lines() {
+        let t = line.trim_start();
+        // Note: "model_provider_id" starts with "model_provider", so we must check the longer key
+        // first (or validate a delimiter).
+        let after_key = if let Some(rest) = t.strip_prefix("model_provider_id") {
+            rest
+        } else if let Some(rest) = t.strip_prefix("model_provider") {
+            rest
+        } else {
+            continue;
+        };
+        // Ensure the match is a whole key, not a prefix of another identifier.
+        let rest = match after_key.chars().next() {
+            Some('=') | Some(' ') | Some('\t') => after_key,
+            _ => continue,
+        };
+        let mut rest = rest;
+        rest = rest.trim_start();
+        if !rest.starts_with('=') {
+            continue;
+        }
+        rest = rest[1..].trim_start();
+        if rest.is_empty() {
+            continue;
+        }
+        let rest = rest.trim();
+        if let Some(stripped) = rest.strip_prefix('"') {
+            let mut out = String::new();
+            for c in stripped.chars() {
+                if c == '"' {
+                    break;
+                }
+                out.push(c);
+            }
+            let out = out.trim().to_string();
+            if !out.is_empty() {
+                return Some(out);
+            }
+        } else if let Some(stripped) = rest.strip_prefix('\'') {
+            let mut out = String::new();
+            for c in stripped.chars() {
+                if c == '\'' {
+                    break;
+                }
+                out.push(c);
+            }
+            let out = out.trim().to_string();
+            if !out.is_empty() {
+                return Some(out);
+            }
+        } else {
+            // Only treat '#' as a comment delimiter for unquoted values.
+            let rest = rest.split('#').next().unwrap_or(rest).trim();
+            let val = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(&['"', '\''][..])
+                .trim();
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn home_mode(cli_home: &Path) -> Result<(String, Option<String>), String> {
@@ -465,7 +755,7 @@ fn sync_active_provider_target_for_key_impl(
         if mode != "provider" || mp.as_deref() != Some(provider) {
             continue;
         }
-        let orig_cfg = read_original_cfg_text(h)?;
+        let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
         let next_cfg = build_direct_provider_cfg(&orig_cfg, provider, &base_url);
         let next_auth = auth_with_openai_key(key.trim());
         write_swapped_files(h, &next_auth, &next_cfg)?;
@@ -545,7 +835,7 @@ fn on_provider_renamed_impl(state: &AppState, old: &str, new: &str) -> Result<()
         if mode != "provider" || mp.as_deref() != Some(old) {
             continue;
         }
-        let orig_cfg = read_original_cfg_text(h)?;
+        let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
         let next_cfg = build_direct_provider_cfg(&orig_cfg, new, &base_url);
         let next_auth = auth_with_openai_key(key.trim());
         write_swapped_files(h, &next_auth, &next_cfg)?;
@@ -614,9 +904,9 @@ pub fn set_target(
     let mut applied: Vec<PathBuf> = Vec::new();
     for h in &homes {
         let res = match target.as_str() {
-            "gateway" => restore_home_original(h),
+            "gateway" => switch_to_gateway_home_impl(state, h),
             "official" => (|| {
-                let orig_cfg = read_original_cfg_text(h)?;
+                let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
                 let next_cfg = strip_model_provider_line(&orig_cfg);
                 let auth = app_auth.as_ref().ok_or_else(|| {
                     "Missing app Codex auth.json. Try logging in first.".to_string()
@@ -633,7 +923,7 @@ pub fn set_target(
                 let key = direct_key
                     .as_deref()
                     .ok_or_else(|| "provider key is missing".to_string())?;
-                let orig_cfg = read_original_cfg_text(h)?;
+                let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
                 let next_cfg = build_direct_provider_cfg(&orig_cfg, name, base_url);
                 let next_auth = auth_with_openai_key(key.trim());
                 write_swapped_files(h, &next_auth, &next_cfg)
@@ -695,6 +985,218 @@ pub fn set_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switchboard_base_cfg_path_is_under_app_dir_even_with_absolute_home() {
+        let (config_path, cli_home) = if cfg!(windows) {
+            (
+                PathBuf::from(r"C:\Temp\user-data\config.toml"),
+                PathBuf::from(r"C:\Users\user\.codex"),
+            )
+        } else {
+            (
+                PathBuf::from("/tmp/user-data/config.toml"),
+                PathBuf::from("/home/user/.codex"),
+            )
+        };
+        let p = switchboard_base_cfg_path_from_config_path(&config_path, &cli_home);
+        let base_dir = switchboard_base_dir_from_config_path(&config_path);
+        assert!(
+            p.starts_with(&base_dir),
+            "path should stay under provider-switchboard-base; got: {}",
+            p.display()
+        );
+    }
+
+    #[test]
+    fn read_cfg_base_text_prefers_gateway_edits_made_after_restore() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+
+        // This is the gateway config after restore.
+        let gateway_cfg = "model = \"gpt-5.2\"\n[notice]\nhide_full_access_warning = true\n";
+        std::fs::write(cli_cfg_path(&cli_home), gateway_cfg).unwrap();
+
+        // Saved base config from a prior swapped session.
+        let saved_base = "model = \"gpt-5.3-codex\"\n[notice]\nhide_full_access_warning = true\n";
+        save_switchboard_base_cfg(&config_path, &cli_home, saved_base).expect("save base");
+
+        // Baseline is the normalized gateway config we restored to.
+        let gateway_norm = normalize_cfg_for_switchboard_base(gateway_cfg);
+        save_switchboard_base_meta(&config_path, &cli_home, &gateway_norm).expect("save meta");
+
+        // User edits the gateway config after restore.
+        let gateway_cfg_edited = "model = \"gpt-5.4\"\n[notice]\nhide_full_access_warning = true\n";
+        std::fs::write(cli_cfg_path(&cli_home), gateway_cfg_edited).unwrap();
+
+        let out = read_cfg_base_text(&config_path, &cli_home).expect("read base");
+        assert!(out.contains("model = \"gpt-5.4\""));
+
+        // The base file is refreshed to match the latest gateway edits.
+        let refreshed = load_switchboard_base_cfg(&config_path, &cli_home).expect("load base");
+        assert!(refreshed.contains("model = \"gpt-5.4\""));
+    }
+
+    #[test]
+    fn switch_to_gateway_home_restores_even_if_base_save_fails() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+
+        // Make base dir path a file so save_switchboard_base_cfg/meta fails.
+        let base_dir = super::switchboard_base_dir_from_config_path(&config_path);
+        std::fs::create_dir_all(base_dir.parent().unwrap()).unwrap();
+        std::fs::write(&base_dir, "not a dir").unwrap();
+
+        // Swapped CLI home: backups are the gateway config; current is provider mode.
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"OPENAI_API_KEY":"sk-test"}"#).unwrap();
+        std::fs::write(
+            cli_cfg_path(&cli_home),
+            "model_provider = \"x\"\nmodel = \"gpt-5.2\"\n",
+        )
+        .unwrap();
+
+        let state_dir = swap_state_dir(&cli_home);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(backup_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+        std::fs::write(backup_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        switch_to_gateway_home_impl(&state, &cli_home).expect("switch gateway");
+
+        let restored_cfg = std::fs::read_to_string(cli_cfg_path(&cli_home)).unwrap();
+        assert!(restored_cfg.contains("model = \"gpt-5.2\""));
+        assert!(!swap_state_dir(&cli_home).exists());
+    }
+
+    #[test]
+    fn model_provider_id_detects_value_even_if_toml_is_invalid() {
+        let cfg = concat!(
+            "model_provider = \"packycode\"\n",
+            "model = \"gpt-5.2\"\n",
+            "\n",
+            "[tui]\n",
+            // invalid TOML: missing closing quote
+            "alternate_screen = \"never\n",
+        );
+        assert_eq!(model_provider_id(cfg).as_deref(), Some("packycode"));
+    }
+
+    #[test]
+    fn model_provider_id_allows_hash_inside_quotes() {
+        let cfg = "model_provider = \"my#provider\"\n";
+        assert_eq!(model_provider_id(cfg).as_deref(), Some("my#provider"));
+    }
+
+    #[test]
+    fn model_provider_id_supports_single_quoted_values() {
+        let cfg = "model_provider = 'packycode'\n";
+        assert_eq!(model_provider_id(cfg).as_deref(), Some("packycode"));
+    }
+
+    #[test]
+    fn normalize_cfg_for_switchboard_base_preserves_user_fields() {
+        let cfg = concat!(
+            "model_provider = \"packycode\"\n",
+            "model = \"gpt-5.3-codex\"\n",
+            "\n",
+            "[model_providers.\"packycode\"]\n",
+            "name = \"packycode\"\n",
+            "base_url = \"https://example.com/v1\"\n",
+            "\n",
+            "[model_providers.\"keep_me\"]\n",
+            "name = \"keep_me\"\n",
+            "base_url = \"https://keep.me/v1\"\n",
+        );
+        let out = normalize_cfg_for_switchboard_base(cfg);
+        assert!(!out.contains("model_provider ="));
+        assert!(out.contains("model = \"gpt-5.3-codex\""));
+        assert!(!out.contains("[model_providers.\"packycode\"]"));
+        assert!(out.contains("[model_providers.\"keep_me\"]"));
+    }
+
+    #[test]
+    fn build_direct_provider_cfg_keeps_compact_header_and_preserves_section_order() {
+        let cfg = concat!(
+            "model_provider = \"api_router\"\n",
+            "model = \"gpt-5.2\"\n",
+            "model_reasoning_effort = \"medium\"\n",
+            "\n",
+            "[model_providers.api_router]\n",
+            "name = \"API Router\"\n",
+            "base_url = \"http://127.0.0.1:4000\"\n",
+            "wire_api = \"responses\"\n",
+            "requires_openai_auth = true\n",
+            "\n",
+            "[notice]\n",
+            "hide_full_access_warning = true\n",
+            "\n",
+            "[tui]\n",
+            "alternate_screen = \"never\"\n",
+        );
+
+        let out = build_direct_provider_cfg(cfg, "ppchat", "https://code.ppchat.vip/v1");
+
+        // No extra blank line between model_provider and the next setting.
+        assert!(out.contains("model_provider = \"ppchat\"\nmodel = \"gpt-5.2\""));
+
+        // Provider section stays near the top, before [notice], matching the gateway ordering.
+        let idx_provider = out.find("[model_providers.\"ppchat\"]").unwrap();
+        let idx_notice = out.find("[notice]").unwrap();
+        assert!(idx_provider < idx_notice);
+    }
+
+    #[test]
+    fn restore_home_original_restores_gateway_cfg_but_preserves_base_for_next_swap() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        // Initial gateway files (will be backed up by ensure_backup_exists).
+        std::fs::write(cli_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+        ensure_backup_exists(&cli_home).expect("backup");
+
+        // Simulate swapped state: CLI files reflect a direct provider target, and user edits the model.
+        let swapped_cfg = concat!(
+            "model_provider = \"packycode\"\n",
+            "model = \"gpt-5.3-codex\"\n",
+            "\n",
+            "[model_providers.\"packycode\"]\n",
+            "name = \"packycode\"\n",
+            "base_url = \"https://example.com/v1\"\n",
+        );
+        std::fs::write(cli_auth_path(&cli_home), r#"{"OPENAI_API_KEY":"sk-test"}"#).unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), swapped_cfg).unwrap();
+
+        // Persist base (for next swap), then restore gateway config exactly.
+        let base_cfg = normalize_cfg_for_switchboard_base(&swapped_cfg);
+        save_switchboard_base_cfg(&config_path, &cli_home, &base_cfg).expect("save base");
+        let gateway_norm = normalize_cfg_for_switchboard_base("model = \"gpt-5.2\"\n");
+        save_switchboard_base_meta(&config_path, &cli_home, &gateway_norm).expect("save meta");
+
+        restore_home_original(&cli_home).expect("restore");
+
+        // Gateway config is the original.
+        let restored_cfg = std::fs::read_to_string(cli_cfg_path(&cli_home)).unwrap();
+        assert!(restored_cfg.contains("model = \"gpt-5.2\""));
+
+        // Switching again should use the preserved base (with the user edit).
+        let base_read = read_cfg_base_text(&config_path, &cli_home).expect("base read");
+        assert!(base_read.contains("model = \"gpt-5.3-codex\""));
+        assert!(!base_read.contains("model_provider ="));
+    }
 
     #[test]
     fn sync_active_provider_target_updates_auth_for_active_provider() {
