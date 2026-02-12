@@ -29,6 +29,7 @@ use super::router::{select_fallback_provider, RouterState};
 use super::secrets::SecretStore;
 use super::store::{unix_ms, Store};
 use super::upstream::UpstreamClient;
+use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
 use crate::platform::windows_terminal;
 
 #[derive(Clone, Copy, Debug)]
@@ -738,6 +739,8 @@ async fn responses(
         if agent_request {
             entry.is_agent = true;
         }
+        // Keep codex provider deterministic once the session is proven to route through gateway.
+        entry.last_reported_model_provider = Some(GATEWAY_MODEL_PROVIDER_ID.to_string());
         if let Some(model) = reported_model.as_ref() {
             entry.last_reported_model = Some(model.clone());
         }

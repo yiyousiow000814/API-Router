@@ -957,6 +957,7 @@ pub fn is_pid_alive(pid: u32) -> bool {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use std::collections::BTreeMap;
     use std::io::Write;
     use std::path::PathBuf;
@@ -964,33 +965,45 @@ mod tests {
 
     #[test]
     fn parse_rollout_session_meta_extracts_fields() {
-        let line = r#"{"timestamp":"2026-02-01T17:54:58.654Z","type":"session_meta","payload":{"id":"00000000-0000-0000-0000-000000000000","cwd":"C:\\work\\example-project","model_provider":"api_router"}}"#;
-        let m = parse_rollout_session_meta(line).expect("parse");
+        let line = format!(
+            r#"{{"timestamp":"2026-02-01T17:54:58.654Z","type":"session_meta","payload":{{"id":"00000000-0000-0000-0000-000000000000","cwd":"C:\\work\\example-project","model_provider":"{provider}"}}}}"#,
+            provider = GATEWAY_MODEL_PROVIDER_ID
+        );
+        let m = parse_rollout_session_meta(&line).expect("parse");
         assert_eq!(m.id, "00000000-0000-0000-0000-000000000000");
         assert_eq!(m.cwd, "C:\\work\\example-project");
-        assert_eq!(m.model_provider.as_deref(), Some("api_router"));
+        assert_eq!(m.model_provider.as_deref(), Some(GATEWAY_MODEL_PROVIDER_ID));
         assert!(m.base_url.is_none());
         assert!(!m.is_agent);
     }
 
     #[test]
     fn parse_rollout_session_meta_detects_subagent_source() {
-        let line = r#"{"type":"session_meta","payload":{"id":"x","cwd":"C:\\x","model_provider":"api_router","source":{"subagent":{"thread_spawn":{"parent_thread_id":"p","depth":1}}}}}"#;
-        let m = parse_rollout_session_meta(line).expect("parse");
+        let line = format!(
+            r#"{{"type":"session_meta","payload":{{"id":"x","cwd":"C:\\x","model_provider":"{provider}","source":{{"subagent":{{"thread_spawn":{{"parent_thread_id":"p","depth":1}}}}}}}}}}"#,
+            provider = GATEWAY_MODEL_PROVIDER_ID
+        );
+        let m = parse_rollout_session_meta(&line).expect("parse");
         assert!(m.is_agent);
     }
 
     #[test]
     fn rollout_base_url_matches_router_prefers_base_url_when_present() {
-        let line = r#"{"type":"session_meta","payload":{"id":"x","cwd":"C:\\x","model_provider":"api_router","base_url":"https://example.com/v1"}}"#;
-        let m = parse_rollout_session_meta(line).expect("parse");
+        let line = format!(
+            r#"{{"type":"session_meta","payload":{{"id":"x","cwd":"C:\\x","model_provider":"{provider}","base_url":"https://example.com/v1"}}}}"#,
+            provider = GATEWAY_MODEL_PROVIDER_ID
+        );
+        let m = parse_rollout_session_meta(&line).expect("parse");
         assert_eq!(rollout_base_url_matches_router(&m, 4000), Some(false));
     }
 
     #[test]
     fn rollout_base_url_matches_router_is_none_when_base_url_missing() {
-        let good = r#"{"type":"session_meta","payload":{"id":"x","cwd":"C:\\x","model_provider":"api_router"}}"#;
-        let mg = parse_rollout_session_meta(good).expect("parse");
+        let good = format!(
+            r#"{{"type":"session_meta","payload":{{"id":"x","cwd":"C:\\x","model_provider":"{provider}"}}}}"#,
+            provider = GATEWAY_MODEL_PROVIDER_ID
+        );
+        let mg = parse_rollout_session_meta(&good).expect("parse");
         assert_eq!(rollout_base_url_matches_router(&mg, 4000), None);
     }
 
@@ -1025,7 +1038,8 @@ mod tests {
             let mut f = std::fs::File::create(&good).expect("create good");
             writeln!(
                 f,
-                r#"{{"type":"session_meta","payload":{{"id":"{good_id}","cwd":"C:\\work\\proj\\","model_provider":"api_router"}}}}"#
+                r#"{{"type":"session_meta","payload":{{"id":"{good_id}","cwd":"C:\\work\\proj\\","model_provider":"{provider}"}}}}"#,
+                provider = GATEWAY_MODEL_PROVIDER_ID
             )
             .unwrap();
         }
@@ -1059,7 +1073,8 @@ mod tests {
             let mut f = std::fs::File::create(&good).expect("create");
             writeln!(
                 f,
-                r#"{{"type":"session_meta","payload":{{"id":"{id}","cwd":"C:\\work\\proj\\","model_provider":"api_router"}}}}"#
+                r#"{{"type":"session_meta","payload":{{"id":"{id}","cwd":"C:\\work\\proj\\","model_provider":"{provider}"}}}}"#,
+                provider = GATEWAY_MODEL_PROVIDER_ID
             )
             .unwrap();
         }

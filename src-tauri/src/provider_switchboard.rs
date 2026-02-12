@@ -1,4 +1,5 @@
 use crate::app_state::AppState;
+use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
 use crate::orchestrator::store::unix_ms;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -435,13 +436,18 @@ fn remove_model_provider_sections(cfg: &str, names: &[&str]) -> String {
             ]
         })
         .collect::<Vec<_>>();
+    let targets_lower = targets
+        .iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect::<Vec<_>>();
     let mut out: Vec<String> = Vec::new();
     let mut skipping = false;
     for line in cfg.lines() {
         let t = line.trim();
+        let t_lower = t.to_ascii_lowercase();
         let is_section = t.starts_with('[') && t.ends_with(']');
         if is_section {
-            if targets.iter().any(|x| x == t) {
+            if targets.iter().any(|x| x == t) || targets_lower.iter().any(|x| x == &t_lower) {
                 skipping = true;
                 continue;
             }
@@ -513,7 +519,7 @@ fn insert_provider_section_near_top(base_cfg: &str, provider_section: &str) -> S
 fn build_direct_provider_cfg(orig_cfg: &str, provider: &str, base_url: &str) -> String {
     // Use the switchboard base shape to avoid accumulating whitespace while switching.
     let mut base = normalize_cfg_for_switchboard_base(orig_cfg);
-    base = remove_model_provider_sections(&base, &["api_router", provider]);
+    base = remove_model_provider_sections(&base, &[GATEWAY_MODEL_PROVIDER_ID, provider]);
     let eol = if base.contains("\r\n") { "\r\n" } else { "\n" };
     let provider_esc = escape_toml(provider);
     let base_url_esc = escape_toml(base_url);
@@ -985,6 +991,7 @@ pub fn set_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
 
     #[test]
     fn switchboard_base_cfg_path_is_under_app_dir_even_with_absolute_home() {
@@ -1126,25 +1133,28 @@ mod tests {
 
     #[test]
     fn build_direct_provider_cfg_keeps_compact_header_and_preserves_section_order() {
-        let cfg = concat!(
-            "model_provider = \"api_router\"\n",
-            "model = \"gpt-5.2\"\n",
-            "model_reasoning_effort = \"medium\"\n",
-            "\n",
-            "[model_providers.api_router]\n",
-            "name = \"API Router\"\n",
-            "base_url = \"http://127.0.0.1:4000\"\n",
-            "wire_api = \"responses\"\n",
-            "requires_openai_auth = true\n",
-            "\n",
-            "[notice]\n",
-            "hide_full_access_warning = true\n",
-            "\n",
-            "[tui]\n",
-            "alternate_screen = \"never\"\n",
+        let cfg = format!(
+            concat!(
+                "model_provider = \"{provider}\"\n",
+                "model = \"gpt-5.2\"\n",
+                "model_reasoning_effort = \"medium\"\n",
+                "\n",
+                "[model_providers.{provider}]\n",
+                "name = \"API Router\"\n",
+                "base_url = \"http://127.0.0.1:4000\"\n",
+                "wire_api = \"responses\"\n",
+                "requires_openai_auth = true\n",
+                "\n",
+                "[notice]\n",
+                "hide_full_access_warning = true\n",
+                "\n",
+                "[tui]\n",
+                "alternate_screen = \"never\"\n"
+            ),
+            provider = GATEWAY_MODEL_PROVIDER_ID
         );
 
-        let out = build_direct_provider_cfg(cfg, "ppchat", "https://code.ppchat.vip/v1");
+        let out = build_direct_provider_cfg(&cfg, "ppchat", "https://code.ppchat.vip/v1");
 
         // No extra blank line between model_provider and the next setting.
         assert!(out.contains("model_provider = \"ppchat\"\nmodel = \"gpt-5.2\""));
@@ -1153,6 +1163,23 @@ mod tests {
         let idx_provider = out.find("[model_providers.\"ppchat\"]").unwrap();
         let idx_notice = out.find("[notice]").unwrap();
         assert!(idx_provider < idx_notice);
+    }
+
+    #[test]
+    fn build_direct_provider_cfg_removes_gateway_section_case_insensitive() {
+        let cfg = concat!(
+            "model_provider = \"API_Router\"\n",
+            "model = \"gpt-5.2\"\n",
+            "\n",
+            "[model_providers.API_Router]\n",
+            "name = \"API Router\"\n",
+            "base_url = \"http://127.0.0.1:4000\"\n",
+            "wire_api = \"responses\"\n",
+            "requires_openai_auth = true\n",
+        );
+        let out = build_direct_provider_cfg(cfg, "ppchat", "https://code.ppchat.vip/v1");
+        assert!(!out.contains("[model_providers.API_Router]"));
+        assert!(!out.contains("[model_providers.api_router]"));
     }
 
     #[test]
