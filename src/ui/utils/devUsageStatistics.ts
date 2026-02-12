@@ -55,6 +55,7 @@ export function buildDevUsageStatistics(params: {
       by_provider: [
         {
           provider: 'provider_1',
+          api_key_ref: 'sk-dev********a11',
           requests: 210,
           total_tokens: 128400,
           estimated_total_cost_usd: 8.51,
@@ -63,6 +64,7 @@ export function buildDevUsageStatistics(params: {
         },
         {
           provider: 'provider_2',
+          api_key_ref: 'sk-dev********b22',
           requests: 12,
           total_tokens: 3400,
           estimated_total_cost_usd: 0.73,

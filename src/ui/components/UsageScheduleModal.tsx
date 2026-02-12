@@ -12,6 +12,7 @@ import {
 } from './UsageScheduleCurrencyMenuPortal'
 import { UsageScheduleModalHeader } from './UsageScheduleModalHeader'
 import { UsageScheduleTable } from './UsageScheduleTable'
+import './UsageScheduleModal.css'
 
 type UsageScheduleModalProps = {
   open: boolean

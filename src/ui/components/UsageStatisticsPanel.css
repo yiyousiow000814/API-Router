@@ -479,9 +479,13 @@
   padding-left: 10px;
 }
 
-.aoUsageProviderDetailText {
+.aoUsageProviderDetailKey {
   display: inline-block;
   padding-left: 10px;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  font-weight: 400;
+  color: rgba(13, 18, 32, 0.78);
 }
 
 .aoUsageProviderTable th:first-child,

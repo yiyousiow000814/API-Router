@@ -81,8 +81,8 @@ export function UsageProviderStatsTable({
               </td>
             </tr>,
             <tr key={`detail-${group.id}`} className={hasAnomaly ? 'aoUsageProviderRowAnomaly' : ''}>
-              <td className="aoUsageProviderName aoUsageProviderDetailName" title={group.detailLabel}>
-                <span className="aoUsageProviderDetailText">{group.detailLabel}</span>
+              <td className="aoUsageProviderDetailName" title={group.detailLabel}>
+                <span className="aoUsageProviderDetailKey">{group.detailLabel}</span>
               </td>
               <td>{group.requests.toLocaleString()}</td>
               <td>{group.totalTokens.toLocaleString()}</td>
