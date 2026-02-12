@@ -89,9 +89,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                 if s.router_confirmed {
                     entry.confirmed_router = true;
                 }
-                if let Some(mp) = s.reported_model_provider.as_deref() {
-                    entry.last_reported_model_provider = Some(mp.to_string());
-                }
+                merge_discovered_model_provider(entry, s.reported_model_provider.as_deref());
                 if let Some(bu) = s.reported_base_url.as_deref() {
                     entry.last_reported_base_url = Some(bu.to_string());
                 }
@@ -185,10 +183,69 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
     })
 }
 
+fn merge_discovered_model_provider(
+    entry: &mut crate::orchestrator::gateway::ClientSessionRuntime,
+    discovered_model_provider: Option<&str>,
+) {
+    let Some(mp) = discovered_model_provider else {
+        return;
+    };
+    if entry.confirmed_router {
+        return;
+    }
+    entry.last_reported_model_provider = Some(mp.to_string());
+}
+
 fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
     let ts = i64::try_from(ts_unix_ms).ok()?;
     let dt = Local.timestamp_millis_opt(ts).single()?;
     Some(dt.format("%Y-%m-%d").to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_discovered_model_provider;
+    use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
+    use crate::orchestrator::gateway::ClientSessionRuntime;
+
+    #[test]
+    fn discovered_provider_does_not_override_confirmed_gateway_session() {
+        let mut entry = ClientSessionRuntime {
+            codex_session_id: "s1".to_string(),
+            pid: 1,
+            wt_session: None,
+            last_request_unix_ms: 1,
+            last_discovered_unix_ms: 1,
+            last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+            last_reported_model: None,
+            last_reported_base_url: None,
+            is_agent: false,
+            confirmed_router: true,
+        };
+        merge_discovered_model_provider(&mut entry, Some("openai"));
+        assert_eq!(
+            entry.last_reported_model_provider.as_deref(),
+            Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
+    }
+
+    #[test]
+    fn discovered_provider_sets_value_when_session_not_confirmed() {
+        let mut entry = ClientSessionRuntime {
+            codex_session_id: "s2".to_string(),
+            pid: 1,
+            wt_session: None,
+            last_request_unix_ms: 0,
+            last_discovered_unix_ms: 1,
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            is_agent: false,
+            confirmed_router: false,
+        };
+        merge_discovered_model_provider(&mut entry, Some("openai"));
+        assert_eq!(entry.last_reported_model_provider.as_deref(), Some("openai"));
+    }
 }
 
 fn local_day_range_from_key(day_key: &str) -> Option<(u64, u64)> {

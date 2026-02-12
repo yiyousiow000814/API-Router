@@ -723,8 +723,7 @@ async fn responses(
                 wt_session: client_session.as_ref().map(|s| s.wt_session.clone()),
                 last_request_unix_ms: 0,
                 last_discovered_unix_ms: 0,
-                // If a request reaches this gateway for a real Codex session, provider is gateway.
-                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
                 is_agent: agent_request || client_session.as_ref().is_some_and(|s| s.is_agent),
