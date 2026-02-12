@@ -12,7 +12,7 @@ const rustMatch = rustText.match(
   /pub const GATEWAY_MODEL_PROVIDER_ID:\s*&str\s*=\s*"([^"]+)"/
 )
 const uiMatch = uiText.match(
-  /export const GATEWAY_MODEL_PROVIDER_ID\s*=\s*'([^']+)'/
+  /export const GATEWAY_MODEL_PROVIDER_ID(?:\s*:\s*[^=]+)?\s*=\s*["']([^"']+)["']/
 )
 
 if (!rustMatch) {

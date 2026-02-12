@@ -436,13 +436,18 @@ fn remove_model_provider_sections(cfg: &str, names: &[&str]) -> String {
             ]
         })
         .collect::<Vec<_>>();
+    let targets_lower = targets
+        .iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect::<Vec<_>>();
     let mut out: Vec<String> = Vec::new();
     let mut skipping = false;
     for line in cfg.lines() {
         let t = line.trim();
+        let t_lower = t.to_ascii_lowercase();
         let is_section = t.starts_with('[') && t.ends_with(']');
         if is_section {
-            if targets.iter().any(|x| x == t) {
+            if targets.iter().any(|x| x == t) || targets_lower.iter().any(|x| x == &t_lower) {
                 skipping = true;
                 continue;
             }
@@ -1158,6 +1163,23 @@ mod tests {
         let idx_provider = out.find("[model_providers.\"ppchat\"]").unwrap();
         let idx_notice = out.find("[notice]").unwrap();
         assert!(idx_provider < idx_notice);
+    }
+
+    #[test]
+    fn build_direct_provider_cfg_removes_gateway_section_case_insensitive() {
+        let cfg = concat!(
+            "model_provider = \"API_Router\"\n",
+            "model = \"gpt-5.2\"\n",
+            "\n",
+            "[model_providers.API_Router]\n",
+            "name = \"API Router\"\n",
+            "base_url = \"http://127.0.0.1:4000\"\n",
+            "wire_api = \"responses\"\n",
+            "requires_openai_auth = true\n",
+        );
+        let out = build_direct_provider_cfg(cfg, "ppchat", "https://code.ppchat.vip/v1");
+        assert!(!out.contains("[model_providers.API_Router]"));
+        assert!(!out.contains("[model_providers.api_router]"));
     }
 
     #[test]
