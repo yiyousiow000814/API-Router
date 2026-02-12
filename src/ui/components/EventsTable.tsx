@@ -12,6 +12,7 @@ type Props = {
 export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
   const allEvents = events ?? []
 
+  // Infos are displayed directly, so cap them here. Errors/warnings are merged/sorted and capped later.
   const errors = allEvents.filter((e) => e.level === 'error')
   const warnings = allEvents.filter((e) => e.level === 'warning')
   const infos = allEvents.filter((e) => e.level !== 'error' && e.level !== 'warning').slice(0, 5)
