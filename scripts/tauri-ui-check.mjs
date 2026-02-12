@@ -619,6 +619,285 @@ async function openModalAndCloseOptional(driver, triggerLabel, modalTitle, close
   }
 }
 
+function dayKeyFromOffset(daysAgo) {
+  const d = new Date()
+  d.setHours(12, 0, 0, 0)
+  d.setDate(d.getDate() - daysAgo)
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+function normalizeText(s) {
+  return String(s ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function parsePx(value) {
+  const n = Number.parseFloat(String(value ?? '').replace('px', '').trim())
+  return Number.isFinite(n) ? n : null
+}
+
+function assertPxClose(actual, expected, tolerance, label) {
+  const a = parsePx(actual)
+  const e = parsePx(expected)
+  if (a == null || e == null || Math.abs(a - e) > tolerance) {
+    throw new Error(`Font baseline mismatch (${label}): expected ${expected}, got ${actual}`)
+  }
+}
+
+async function tauriInvoke(driver, cmd, args = {}) {
+  const out = await driver.executeAsyncScript(
+    `
+      const command = arguments[0];
+      const payload = arguments[1] || {};
+      const done = arguments[arguments.length - 1];
+      (async () => {
+        try {
+          const invokeFn =
+            (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) ||
+            (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke);
+          if (typeof invokeFn !== 'function') {
+            throw new Error('tauri invoke unavailable in window globals');
+          }
+          const res = await invokeFn(command, payload);
+          done({ ok: true, res });
+        } catch (e) {
+          done({ ok: false, err: String(e && (e.message || e)) });
+        }
+      })();
+    `,
+    cmd,
+    args,
+  )
+  if (!out || !out.ok) {
+    throw new Error(`tauri invoke failed: ${cmd} (${out && out.err ? out.err : 'unknown error'})`)
+  }
+  return out.res
+}
+
+async function pickDirectProvider(driver) {
+  const cfg = await tauriInvoke(driver, 'get_config', {})
+  const names = Object.keys((cfg && cfg.providers) || {})
+  const nonOfficial = names.find((name) => name !== 'official')
+  return nonOfficial || names[0] || 'official'
+}
+
+async function seedHistoryRows(driver, provider, rowCount = 40) {
+  for (let i = 0; i < rowCount; i++) {
+    const dayKey = dayKeyFromOffset(i)
+    await tauriInvoke(driver, 'set_spend_history_entry', {
+      provider,
+      dayKey,
+      totalUsedUsd: 1 + (i % 7) * 0.13,
+      usdPerReq: 0.01 + (i % 5) * 0.002,
+    })
+  }
+}
+
+async function ensureCodexAuthForSwitchboard(uiProfileDir) {
+  const appAuthPath = path.join(uiProfileDir, 'codex-home', 'auth.json')
+  fs.mkdirSync(path.dirname(appAuthPath), { recursive: true })
+  let current = {}
+  if (fs.existsSync(appAuthPath)) {
+    try {
+      current = JSON.parse(fs.readFileSync(appAuthPath, 'utf-8'))
+    } catch {}
+  }
+  const next = {
+    ...current,
+    OPENAI_API_KEY: current?.OPENAI_API_KEY || 'sk-ui-check-auth',
+    tokens:
+      current?.tokens && typeof current.tokens === 'object' && Object.keys(current.tokens).length
+        ? current.tokens
+        : { ui_check: 'token' },
+  }
+  fs.writeFileSync(appAuthPath, `${JSON.stringify(next, null, 2)}\n`, 'utf-8')
+}
+
+async function runUsageHistoryScrollCase(driver, screenshotPath) {
+  await clickButtonByText(driver, 'Daily History', 12000)
+  const modal = await waitVisible(
+    driver,
+    By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Daily History']]`),
+    15000,
+  )
+  await waitVisible(driver, By.css('.aoUsageHistoryTableWrap'), 12000)
+
+  const scrollState = await driver.executeScript(`
+    const wrap = document.querySelector('.aoUsageHistoryTableWrap');
+    const head = document.querySelector('.aoUsageHistoryTableHead');
+    const rows = document.querySelectorAll('.aoUsageHistoryTableBody tbody tr').length;
+    if (!wrap || !head) return null;
+    return {
+      rows,
+      maxScroll: Math.max(0, wrap.scrollHeight - wrap.clientHeight),
+      wrapTop: wrap.getBoundingClientRect().top,
+      headTop: head.getBoundingClientRect().top
+    };
+  `)
+  if (!scrollState) throw new Error('Daily History elements missing.')
+  if (scrollState.rows < 20) throw new Error(`Daily History rows too few for scroll test: ${scrollState.rows}`)
+  if (!(scrollState.maxScroll > 40)) throw new Error('Daily History list is not scrollable after seeding.')
+
+  await driver.executeScript(`
+    const wrap = document.querySelector('.aoUsageHistoryTableWrap');
+    if (!wrap) return;
+    const next = Math.floor((wrap.scrollHeight - wrap.clientHeight) * 0.58);
+    wrap.scrollTop = Math.max(0, next);
+    wrap.dispatchEvent(new Event('scroll', { bubbles: true }));
+  `)
+  await new Promise((r) => setTimeout(r, 120))
+
+  const afterScroll = await driver.executeScript(`
+    const wrap = document.querySelector('.aoUsageHistoryTableWrap');
+    const head = document.querySelector('.aoUsageHistoryTableHead');
+    const overlay = document.querySelector('.aoUsageHistoryScrollbarOverlay');
+    if (!wrap || !head || !overlay) return null;
+    return {
+      scrollTop: wrap.scrollTop,
+      headTop: head.getBoundingClientRect().top,
+      overlayVisible: overlay.classList.contains('aoUsageHistoryScrollbarOverlayVisible')
+    };
+  `)
+  if (!afterScroll) throw new Error('Daily History scroll state unavailable after scroll.')
+  if (!(afterScroll.scrollTop > 0)) throw new Error('Daily History did not scroll.')
+  if (Math.abs(afterScroll.headTop - scrollState.headTop) > 1.5) {
+    const b64 = await driver.takeScreenshot()
+    fs.writeFileSync(screenshotPath.replace('.png', '-history-head-drift.png'), Buffer.from(b64, 'base64'))
+    throw new Error(`Daily History header drifted while body scrolled (before=${scrollState.headTop}, after=${afterScroll.headTop})`)
+  }
+  if (!afterScroll.overlayVisible) {
+    throw new Error('Daily History overlay scrollbar did not show during scroll.')
+  }
+
+  await driver.actions({ async: true }).move({ origin: 'viewport', x: 24, y: 24 }).perform()
+  await new Promise((r) => setTimeout(r, 1350))
+  const overlayLater = await driver.executeScript(`
+    const overlay = document.querySelector('.aoUsageHistoryScrollbarOverlay');
+    return overlay ? overlay.classList.contains('aoUsageHistoryScrollbarOverlayVisible') : null;
+  `)
+  if (overlayLater !== false) throw new Error('Daily History overlay scrollbar did not auto-hide.')
+
+  const closeBtn = await modal.findElement(By.xpath(`.//button[normalize-space()='Close']`))
+  await closeBtn.click()
+  await driver.wait(
+    async () => {
+      const found = await driver.findElements(
+        By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Daily History']]`),
+      )
+      return found.length === 0
+    },
+    10000,
+    'Daily History modal should close after scroll contract check',
+  )
+}
+
+async function runSwitchboardSwitchCase(driver, directProvider, uiProfileDir) {
+  await ensureCodexAuthForSwitchboard(uiProfileDir)
+  const cfg = await tauriInvoke(driver, 'get_config', {})
+  const providerCfg = cfg?.providers?.[directProvider]
+  if (!providerCfg || !String(providerCfg.base_url || '').trim()) {
+    await tauriInvoke(driver, 'upsert_provider', {
+      name: directProvider,
+      displayName: String(providerCfg?.display_name || directProvider),
+      baseUrl: 'https://example.com/v1',
+    })
+  }
+  await tauriInvoke(driver, 'set_provider_key', { provider: directProvider, key: 'sk-ui-check-direct-provider-key' })
+
+  await clickTopNav(driver, 'Provider Switchboard')
+  await waitPageTitle(driver, 'Provider Switchboard')
+  const cliHomes = await driver.executeScript(`
+    const raw = (document.querySelector('.aoSwitchMetaDirs')?.textContent || '').trim();
+    if (!raw || raw === '-') return null;
+    const homes = raw
+      .split('|')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return homes.length ? homes : null;
+  `)
+  const statusProvider = await tauriInvoke(driver, 'provider_switchboard_set_target', {
+    cliHomes,
+    target: 'provider',
+    provider: directProvider,
+  })
+  if (!statusProvider || String(statusProvider?.mode || '').trim() === '') {
+    throw new Error('Switchboard provider target did not return status.')
+  }
+
+  const statusGateway = await tauriInvoke(driver, 'provider_switchboard_set_target', {
+    cliHomes,
+    target: 'gateway',
+    provider: null,
+  })
+  if (String(statusGateway?.mode || '').toLowerCase() !== 'gateway') {
+    throw new Error(`Switchboard gateway target failed, got mode=${statusGateway?.mode ?? 'unknown'}`)
+  }
+}
+
+async function runFontBaselineCase(driver, baselinePath, screenshotPath) {
+  const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'))
+  const checks = Array.isArray(baseline?.checks) ? baseline.checks : []
+  if (!checks.length) throw new Error(`Font baseline has no checks: ${baselinePath}`)
+
+  for (const check of checks) {
+    const shot = await driver.executeScript(
+      `
+        const cfg = arguments[0];
+        const selector = cfg.selector;
+        const expectedText = cfg.text ? String(cfg.text).trim() : '';
+        const nodes = Array.from(document.querySelectorAll(selector));
+        let target = nodes[0] || null;
+        if (expectedText) {
+          target = nodes.find((n) => ((n.innerText || n.textContent || '').replace(/\\s+/g, ' ').trim()) === expectedText) || target;
+        }
+        if (!target) return { missing: true };
+        const cs = getComputedStyle(target);
+        return {
+          missing: false,
+          fontFamily: cs.fontFamily,
+          fontSize: cs.fontSize,
+          fontWeight: cs.fontWeight,
+          letterSpacing: cs.letterSpacing
+        };
+      `,
+      check,
+    )
+
+    if (!shot || shot.missing) {
+      const b64 = await driver.takeScreenshot()
+      fs.writeFileSync(screenshotPath.replace('.png', `-font-missing-${check.name}.png`), Buffer.from(b64, 'base64'))
+      throw new Error(`Font baseline target missing: ${check.name} (${check.selector})`)
+    }
+
+    const expect = check.expect || {}
+    if (expect.fontSize) assertPxClose(shot.fontSize, expect.fontSize, 0.15, `${check.name}.fontSize`)
+    if (expect.letterSpacing) assertPxClose(shot.letterSpacing, expect.letterSpacing, 0.2, `${check.name}.letterSpacing`)
+    if (expect.fontWeight && String(shot.fontWeight) !== String(expect.fontWeight)) {
+      throw new Error(`Font baseline mismatch (${check.name}.fontWeight): expected ${expect.fontWeight}, got ${shot.fontWeight}`)
+    }
+    if (Array.isArray(expect.fontFamilyIncludesAny) && expect.fontFamilyIncludesAny.length) {
+      const actual = String(shot.fontFamily || '')
+      const matched = expect.fontFamilyIncludesAny.some((needle) => actual.includes(String(needle)))
+      if (!matched) {
+        throw new Error(
+          `Font baseline mismatch (${check.name}.fontFamily): expected contains one of "${expect.fontFamilyIncludesAny.join(', ')}", got "${actual}"`,
+        )
+      }
+    } else if (expect.fontFamilyIncludes) {
+      const actual = String(shot.fontFamily || '')
+      if (!actual.includes(expect.fontFamilyIncludes)) {
+        throw new Error(
+          `Font baseline mismatch (${check.name}.fontFamily): expected contains "${expect.fontFamilyIncludes}", got "${actual}"`,
+        )
+      }
+    }
+  }
+}
+
 function centerY(r) {
   return r.top + r.height / 2
 }
@@ -666,6 +945,7 @@ async function main() {
   const artifactsDir = path.join(repoRoot, 'user-data', 'ui-artifacts', 'tauri')
   ensureDir(artifactsDir)
   const screenshotPath = path.join(artifactsDir, `drag-border-${Date.now()}.png`)
+  const fontBaselinePath = path.join(repoRoot, 'scripts', 'ui-baselines', 'font-baseline.json')
   const uiRuntimeRoot = path.join(repoRoot, 'user-data', 'ui-check-runtime')
   ensureDir(uiRuntimeRoot)
   pruneUiCheckRuntimeDirs(uiRuntimeRoot)
@@ -762,6 +1042,7 @@ async function main() {
     // === Subtest A: main page contracts and key modals ===
     {
       console.log('[ui:tauri] Subtest A: contracts start')
+      const directProvider = await pickDirectProvider(driver)
       const bodyTextLen = Number(await driver.executeScript('return (document.body && document.body.innerText ? document.body.innerText.trim().length : 0)'))
       if (!Number.isFinite(bodyTextLen) || bodyTextLen < 40) {
         throw new Error(`UI appears blank (document body text length=${bodyTextLen})`)
@@ -780,7 +1061,9 @@ async function main() {
       await clickTopNav(driver, 'Usage Statistics')
       await waitPageTitle(driver, 'Usage Statistics')
       await waitVisible(driver, By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Provider Statistics']`), 12000)
-      await openModalAndCloseOptional(driver, 'Daily History', 'Daily History', 'Close', 'Daily History modal check')
+      console.log('[ui:tauri] Subtest A1: usage history scroll contract')
+      await seedHistoryRows(driver, directProvider, 44)
+      await runUsageHistoryScrollCase(driver, screenshotPath)
       await openModalAndCloseOptional(driver, 'Base Pricing', 'Base Pricing', 'Close', 'Base Pricing modal check')
       await openModalAndCloseOptional(driver, 'Pricing Timeline', 'Pricing Timeline', 'Close', 'Pricing Timeline modal check')
 
@@ -791,10 +1074,14 @@ async function main() {
       await waitVisible(driver, By.xpath(`//span[contains(@class,'aoSwitchQuickTitle') and normalize-space()='Official']`), 12000)
       await waitVisible(driver, By.xpath(`//span[contains(@class,'aoSwitchQuickTitle') and normalize-space()='Direct Provider']`), 12000)
       await openModalAndClose(driver, 'Configure Dirs', 'Codex CLI dirs', 'Cancel')
+      console.log('[ui:tauri] Subtest A2: switchboard switch contract')
+      await runSwitchboardSwitchCase(driver, directProvider, uiProfileDir)
 
       console.log('[ui:tauri] Subtest A: back to dashboard')
       await clickTopNav(driver, 'Dashboard')
       await waitSectionHeading(driver, 'Providers')
+      console.log('[ui:tauri] Subtest A3: font baseline snapshot contract')
+      await runFontBaselineCase(driver, fontBaselinePath, screenshotPath)
       console.log('[ui:tauri] Subtest A: contracts pass')
     }
 

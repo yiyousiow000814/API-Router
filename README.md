@@ -91,6 +91,34 @@ After this, you switch providers inside the app.
 - Config: `./user-data/config.toml`
 - Secrets: `./user-data/secrets.json` (gitignored)
 
+### Test profile (isolated app data)
+
+If your main app is running and you want safe manual testing without touching production data,
+you can use either approach:
+
+1) Set profile env var:
+
+```powershell
+$env:API_ROUTER_PROFILE='test'
+.\API Router.exe
+```
+
+2) Or rename/copy EXE to include `[TEST]` (for example `API Router [TEST].exe`) and run it directly.
+   When the executable name contains `[TEST]`, API Router auto-uses `test` profile.
+
+Behavior:
+- Uses isolated data directory: `%APPDATA%/com.api-router.app/user-data-test`
+- Uses isolated Codex home under that profile directory
+- Allows running alongside your default profile instance
+- Starts from a clean test dataset every launch (safe for repeated manual test cycles)
+- Auto-seeds mock providers/history/events on launch so Usage and Daily History are immediately testable
+
+Reset to normal mode:
+
+```powershell
+Remove-Item Env:API_ROUTER_PROFILE
+```
+
 ## Build EXE (local)
 
 ```powershell
