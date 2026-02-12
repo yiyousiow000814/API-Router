@@ -79,6 +79,10 @@ fn profile_data_dir_name(profile: &str) -> String {
     }
 }
 
+fn should_reset_profile_data(profile: &str, is_ui_tauri: bool) -> bool {
+    !is_ui_tauri && profile == "test"
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
@@ -155,6 +159,13 @@ pub fn run() {
                 })()
                 .unwrap_or(app.path().app_data_dir()?)
             };
+
+            if should_reset_profile_data(&app_profile, is_ui_tauri) {
+                if user_data_dir.exists() {
+                    let _ = std::fs::remove_dir_all(&user_data_dir);
+                }
+                let _ = std::fs::create_dir_all(&user_data_dir);
+            }
 
             // Isolate Codex auth/session from the default ~/.codex directory to avoid overwrites.
             // This keeps the app's login independent from CLI logins.
@@ -3631,7 +3642,7 @@ fn parse_number(v: &Value) -> Option<f64> {
 mod tests {
     use super::{
         app_profile_name, apply_delete_provider, infer_profile_from_exe_stem,
-        normalize_profile_name, profile_data_dir_name,
+        normalize_profile_name, profile_data_dir_name, should_reset_profile_data,
     };
     use crate::orchestrator::config::{AppConfig, ProviderConfig};
 
@@ -3726,5 +3737,12 @@ mod tests {
     fn normalize_profile_name_default() {
         assert_eq!(normalize_profile_name(""), "default");
         assert_eq!(normalize_profile_name(" default "), "default");
+    }
+
+    #[test]
+    fn should_reset_only_for_test_profile_runtime() {
+        assert!(should_reset_profile_data("test", false));
+        assert!(!should_reset_profile_data("default", false));
+        assert!(!should_reset_profile_data("test", true));
     }
 }

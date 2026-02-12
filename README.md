@@ -110,6 +110,7 @@ Behavior:
 - Uses isolated data directory: `%APPDATA%/com.api-router.app/user-data-test`
 - Uses isolated Codex home under that profile directory
 - Allows running alongside your default profile instance
+- Starts from a clean test dataset every launch (safe for repeated manual test cycles)
 
 Reset to normal mode:
 
