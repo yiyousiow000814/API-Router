@@ -1,5 +1,3 @@
-import './AppShared.css'
-
 type TopPage = 'dashboard' | 'usage_statistics' | 'provider_switchboard'
 
 type AppTopNavProps = {
