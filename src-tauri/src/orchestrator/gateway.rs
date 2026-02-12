@@ -90,7 +90,7 @@ pub struct ClientSessionRuntime {
     // Timestamp of last time we saw the process in a discovery scan.
     pub last_discovered_unix_ms: u64,
     pub last_reported_model_provider: Option<String>,
-    // Last requested model from request body (best-effort).
+    // Last model observed from upstream response payload/events.
     pub last_reported_model: Option<String>,
     pub last_reported_base_url: Option<String>,
     // Mark sessions spawned from Codex subagent flows.
@@ -99,6 +99,60 @@ pub struct ClientSessionRuntime {
     // the user edits Codex config files while Codex is running (the process keeps the old config
     // in memory, but we may no longer be able to prove it from disk).
     pub confirmed_router: bool,
+}
+
+fn extract_response_model(response_obj: &Value) -> Option<String> {
+    response_obj
+        .get("model")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            response_obj
+                .pointer("/response/model")
+                .and_then(|v| v.as_str())
+        })
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+fn update_session_response_model(st: &GatewayState, session_key: &str, response_model: &str) {
+    let model = response_model.trim();
+    if model.is_empty() {
+        return;
+    }
+    let mut sessions = st.client_sessions.write();
+    if let Some(entry) = sessions.get_mut(session_key) {
+        entry.last_reported_model = Some(model.to_string());
+    }
+}
+
+fn maybe_record_model_mismatch(
+    st: &GatewayState,
+    provider_name: &str,
+    session_key: &str,
+    requested_model: Option<&str>,
+    response_model: &str,
+    stream: bool,
+) {
+    let Some(req) = requested_model.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let resp = response_model.trim();
+    if resp.is_empty() || req.eq_ignore_ascii_case(resp) {
+        return;
+    }
+    st.store.add_event(
+        provider_name,
+        "warning",
+        "routing.model_mismatch",
+        &format!("requested model {req}, upstream returned {resp}"),
+        json!({
+            "requested_model": req,
+            "response_model": resp,
+            "session": session_key,
+            "stream": stream,
+        }),
+    );
 }
 
 #[derive(Clone, Debug)]
@@ -685,7 +739,7 @@ async fn responses(
 
     let codex_session_key = session_key_from_request(&headers, &body);
     let codex_session_display = codex_session_id_for_display(&headers, &body);
-    let reported_model = body
+    let requested_model = body
         .get("model")
         .and_then(|v| v.as_str())
         .map(str::trim)
@@ -741,9 +795,6 @@ async fn responses(
         }
         // Keep codex provider deterministic once the session is proven to route through gateway.
         entry.last_reported_model_provider = Some(GATEWAY_MODEL_PROVIDER_ID.to_string());
-        if let Some(model) = reported_model.as_ref() {
-            entry.last_reported_model = Some(model.clone());
-        }
         entry.last_request_unix_ms = unix_ms();
         entry.confirmed_router = true;
     }
@@ -947,6 +998,8 @@ async fn responses(
                             provider_name,
                             api_key_ref_from_raw(api_key.as_deref()),
                             timeout,
+                            session_key.clone(),
+                            requested_model.clone(),
                         );
                     }
                     Ok(resp) => {
@@ -1042,6 +1095,17 @@ async fn responses(
                         .to_string();
                     let text = extract_text_from_responses(&upstream_json);
                     let response_obj = upstream_json;
+                    if let Some(response_model) = extract_response_model(&response_obj) {
+                        update_session_response_model(&st, &session_key, &response_model);
+                        maybe_record_model_mismatch(
+                            &st,
+                            &provider_name,
+                            &session_key,
+                            requested_model.as_deref(),
+                            &response_model,
+                            false,
+                        );
+                    }
                     let api_key_ref = api_key_ref_from_raw(api_key.as_deref());
 
                     // Persist the exchange so we can keep continuity if provider changes later.
@@ -1317,6 +1381,8 @@ fn passthrough_sse_and_persist(
     provider_name: String,
     api_key_ref: String,
     idle_timeout_seconds: u64,
+    session_key: String,
+    requested_model: Option<String>,
 ) -> Response {
     use futures_util::StreamExt;
 
@@ -1333,9 +1399,12 @@ fn passthrough_sse_and_persist(
     let st2 = st.clone();
     let provider2 = provider_name.clone();
     let api_key_ref2 = api_key_ref.clone();
+    let session_key2 = session_key.clone();
+    let requested_model2 = requested_model.clone();
     let tap3 = tap.clone();
     let stream = async_stream::stream! {
         let mut forwarded_bytes: u64 = 0;
+        let mut mismatch_logged = false;
         loop {
             let item = match tokio::time::timeout(
                 std::time::Duration::from_secs(idle_timeout_seconds),
@@ -1377,6 +1446,23 @@ fn passthrough_sse_and_persist(
             match item {
                 Ok(b) => {
                     tap.lock().feed(&b);
+                    if let Some(model) = tap.lock().take_created_model() {
+                        update_session_response_model(&st2, &session_key2, &model);
+                        if !mismatch_logged {
+                            let req = requested_model2.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                            if req.is_some_and(|r| !r.eq_ignore_ascii_case(model.trim())) {
+                                maybe_record_model_mismatch(
+                                    &st2,
+                                    &provider2,
+                                    &session_key2,
+                                    requested_model2.as_deref(),
+                                    &model,
+                                    true,
+                                );
+                                mismatch_logged = true;
+                            }
+                        }
+                    }
                     forwarded_bytes = forwarded_bytes.saturating_add(b.len() as u64);
                     yield Ok::<Bytes, std::convert::Infallible>(b);
                 }
@@ -1425,6 +1511,22 @@ fn passthrough_sse_and_persist(
             }
         }
         if let Some((_rid, resp_obj)) = tap3.lock().take_completed() {
+            if let Some(model) = extract_response_model(&resp_obj) {
+                update_session_response_model(&st2, &session_key2, &model);
+                if !mismatch_logged {
+                    let req = requested_model2.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                    if req.is_some_and(|r| !r.eq_ignore_ascii_case(model.trim())) {
+                        maybe_record_model_mismatch(
+                            &st2,
+                            &provider2,
+                            &session_key2,
+                            requested_model2.as_deref(),
+                            &model,
+                            true,
+                        );
+                    }
+                }
+            }
             st2.store
                 .record_success(&provider2, &resp_obj, Some(&api_key_ref2));
         }
@@ -1451,6 +1553,7 @@ fn passthrough_sse_and_persist(
 
 struct SseTap {
     buf: String,
+    created_model: Option<String>,
     completed: Option<(String, Value)>,
 }
 
@@ -1458,6 +1561,7 @@ impl SseTap {
     fn new() -> Self {
         Self {
             buf: String::new(),
+            created_model: None,
             completed: None,
         }
     }
@@ -1491,6 +1595,13 @@ impl SseTap {
             let Ok(v) = serde_json::from_str::<Value>(data) else {
                 continue;
             };
+            if v.get("type").and_then(|x| x.as_str()) == Some("response.created") {
+                if let Some(resp) = v.get("response") {
+                    if let Some(model) = extract_response_model(resp) {
+                        self.created_model = Some(model);
+                    }
+                }
+            }
             if v.get("type").and_then(|x| x.as_str()) == Some("response.completed") {
                 if let Some(resp) = v.get("response") {
                     if let Some(id) = resp.get("id").and_then(|x| x.as_str()) {
@@ -1504,6 +1615,10 @@ impl SseTap {
 
     fn take_completed(&mut self) -> Option<(String, Value)> {
         self.completed.take()
+    }
+
+    fn take_created_model(&mut self) -> Option<String> {
+        self.created_model.take()
     }
 
     fn is_completed(&self) -> bool {

@@ -1471,6 +1471,7 @@ mod tests {
                         StatusCode::OK,
                         Json(json!({
                             "id": "resp_ok",
+                            "model": "gpt-5.2-2025-12-11",
                             "output": [{"content": [{"type": "output_text", "text": "ok"}]}]
                         })),
                     )
@@ -1561,6 +1562,10 @@ mod tests {
         assert_eq!(
             item.last_reported_model_provider.as_deref(),
             Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
+        assert_eq!(
+            item.last_reported_model.as_deref(),
+            Some("gpt-5.2-2025-12-11")
         );
     }
 }
