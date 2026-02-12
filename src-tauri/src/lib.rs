@@ -10,7 +10,7 @@ use tauri::Manager;
 use crate::app_state::build_state;
 use crate::orchestrator::gateway::serve_in_background;
 use crate::orchestrator::store::unix_ms;
-use chrono::{Local, LocalResult, NaiveDate, TimeZone, Timelike};
+use chrono::{Duration as ChronoDuration, Local, LocalResult, NaiveDate, TimeZone, Timelike};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -81,6 +81,76 @@ fn profile_data_dir_name(profile: &str) -> String {
 
 fn should_reset_profile_data(profile: &str, is_ui_tauri: bool) -> bool {
     !is_ui_tauri && profile == "test"
+}
+
+fn should_seed_mock_data(profile: &str, is_ui_tauri: bool) -> bool {
+    !is_ui_tauri && profile == "test"
+}
+
+fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
+    {
+        let mut cfg = state.gateway.cfg.write();
+        if let Some(p1) = cfg.providers.get_mut("provider_1") {
+            p1.display_name = "Provider 1".to_string();
+            p1.base_url = "https://provider1.mock.local/v1".to_string();
+        }
+        if let Some(p2) = cfg.providers.get_mut("provider_2") {
+            p2.display_name = "Provider 2".to_string();
+            p2.base_url = "https://provider2.mock.local/v1".to_string();
+        }
+        cfg.routing.preferred_provider = "provider_1".to_string();
+        app_state::normalize_provider_order(&mut cfg);
+        std::fs::write(&state.config_path, toml::to_string_pretty(&*cfg)?)?;
+    }
+
+    let _ = state
+        .secrets
+        .set_provider_key("provider_1", "sk-test-provider-1-key");
+    let _ = state
+        .secrets
+        .set_provider_key("provider_2", "sk-test-provider-2-key");
+
+    let now = unix_ms();
+    for i in 0..45 {
+        let day = (Local::now() - ChronoDuration::days(i)).format("%Y-%m-%d");
+        let day_key = day.to_string();
+        let total_1 = 1.2 + (i as f64 * 0.11);
+        let total_2 = 0.9 + (i as f64 * 0.08);
+        state.gateway.store.put_spend_manual_day(
+            "provider_1",
+            &day_key,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "day_key": day_key,
+                "manual_total_usd": total_1,
+                "manual_usd_per_req": 0.022,
+                "updated_at_unix_ms": now.saturating_sub((i as u64) * 3_600_000),
+            }),
+        );
+        state.gateway.store.put_spend_manual_day(
+            "provider_2",
+            &day_key,
+            &serde_json::json!({
+                "provider": "provider_2",
+                "day_key": day_key,
+                "manual_total_usd": total_2,
+                "manual_usd_per_req": 0.018,
+                "updated_at_unix_ms": now.saturating_sub((i as u64) * 4_200_000),
+            }),
+        );
+    }
+
+    state.gateway.store.add_event(
+        "gateway",
+        "info",
+        "test_profile.mock_seeded",
+        "test profile mock data seeded",
+        serde_json::json!({
+            "providers": ["provider_1", "provider_2"],
+            "history_days": 45,
+        }),
+    );
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -177,6 +247,11 @@ pub fn run() {
                 user_data_dir.join("config.toml"),
                 user_data_dir.join("data"),
             )?;
+            if should_seed_mock_data(&app_profile, is_ui_tauri) {
+                if let Err(e) = seed_test_profile_data(&state) {
+                    eprintln!("failed to seed test profile mock data: {e}");
+                }
+            }
             app.manage(state);
 
             if !is_ui_tauri {
@@ -197,25 +272,25 @@ pub fn run() {
                 });
             }
 
-            // Tray menu so the app is usable even when the main window starts hidden.
-            let show = tauri::menu::MenuItemBuilder::with_id("show", "Show").build(app)?;
-            let quit = tauri::menu::MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let menu = tauri::menu::MenuBuilder::new(app)
-                .items(&[&show, &quit])
-                .build()?;
+            if app_profile == "default" {
+                // Tray menu so the app is usable even when the main window starts hidden.
+                let show = tauri::menu::MenuItemBuilder::with_id("show", "Show").build(app)?;
+                let quit = tauri::menu::MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+                let menu = tauri::menu::MenuBuilder::new(app)
+                    .items(&[&show, &quit])
+                    .build()?;
 
-            // Ensure the tray icon has an actual image on Windows; otherwise it can appear as "blank".
-            // We always provide an explicit tray icon (rather than relying on default_window_icon)
-            // because on Windows the "default" can still render as an empty square.
-            let icon = (|| {
-                let bytes = include_bytes!("../icons/32x32.png");
-                let img = image::load_from_memory(bytes).ok()?.to_rgba8();
-                let (w, h) = img.dimensions();
-                Some(tauri::image::Image::new_owned(img.into_raw(), w, h))
-            })();
+                // Ensure the tray icon has an actual image on Windows; otherwise it can appear as "blank".
+                // We always provide an explicit tray icon (rather than relying on default_window_icon)
+                // because on Windows the "default" can still render as an empty square.
+                let icon = (|| {
+                    let bytes = include_bytes!("../icons/32x32.png");
+                    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+                    let (w, h) = img.dimensions();
+                    Some(tauri::image::Image::new_owned(img.into_raw(), w, h))
+                })();
 
-            let mut tray_builder =
-                tauri::tray::TrayIconBuilder::new()
+                let mut tray_builder = tauri::tray::TrayIconBuilder::new()
                     .menu(&menu)
                     .on_menu_event(|app: &tauri::AppHandle, event: tauri::menu::MenuEvent| {
                         match event.id().as_ref() {
@@ -232,11 +307,12 @@ pub fn run() {
                         }
                     });
 
-            if let Some(icon) = icon {
-                tray_builder = tray_builder.icon(icon);
-            }
+                if let Some(icon) = icon {
+                    tray_builder = tray_builder.icon(icon);
+                }
 
-            let _tray = tray_builder.build(app)?;
+                let _tray = tray_builder.build(app)?;
+            }
 
             // Closing the window should minimize to tray instead of exiting (background mode).
             if let Some(w) = app.get_webview_window("main") {
@@ -246,13 +322,15 @@ pub fn run() {
                         app_profile.to_ascii_uppercase()
                     ));
                 }
-                let w2 = w.clone();
-                w.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = w2.hide();
-                    }
-                });
+                if app_profile == "default" {
+                    let w2 = w.clone();
+                    w.on_window_event(move |event| {
+                        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                            api.prevent_close();
+                            let _ = w2.hide();
+                        }
+                    });
+                }
             }
 
             Ok(())
@@ -3643,6 +3721,7 @@ mod tests {
     use super::{
         app_profile_name, apply_delete_provider, infer_profile_from_exe_stem,
         normalize_profile_name, profile_data_dir_name, should_reset_profile_data,
+        should_seed_mock_data,
     };
     use crate::orchestrator::config::{AppConfig, ProviderConfig};
 
@@ -3744,5 +3823,12 @@ mod tests {
         assert!(should_reset_profile_data("test", false));
         assert!(!should_reset_profile_data("default", false));
         assert!(!should_reset_profile_data("test", true));
+    }
+
+    #[test]
+    fn should_seed_mock_only_for_test_profile_runtime() {
+        assert!(should_seed_mock_data("test", false));
+        assert!(!should_seed_mock_data("default", false));
+        assert!(!should_seed_mock_data("test", true));
     }
 }

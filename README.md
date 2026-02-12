@@ -111,6 +111,7 @@ Behavior:
 - Uses isolated Codex home under that profile directory
 - Allows running alongside your default profile instance
 - Starts from a clean test dataset every launch (safe for repeated manual test cycles)
+- Auto-seeds mock providers/history/events on launch so Usage and Daily History are immediately testable
 
 Reset to normal mode:
 
