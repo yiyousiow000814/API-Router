@@ -6,6 +6,7 @@ import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status, UsageS
 import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from './utils/format'
 import { normalizePathForCompare } from './utils/path'
 import { computeActiveRefreshDelayMs, computeIdleRefreshDelayMs } from './utils/usageRefresh'
+import { GATEWAY_MODEL_PROVIDER_ID } from './constants'
 import { ProvidersTable } from './components/ProvidersTable'
 import { SessionsTable } from './components/SessionsTable'
 import { EventsTable } from './components/EventsTable'
@@ -852,7 +853,7 @@ export default function App() {
       setProviderSwitchStatus({
         ok: true,
         mode: 'gateway',
-        model_provider: 'api_router',
+        model_provider: GATEWAY_MODEL_PROVIDER_ID,
         dirs: homes.map((h) => ({ cli_home: h, mode: 'gateway', model_provider: null })),
         provider_options: (devConfig.provider_order ?? []).filter((n) => n !== 'official'),
       })
@@ -2327,7 +2328,7 @@ function newScheduleDraft(
   const switchboardModelProviderLabel = useMemo(() => {
     const mode = providerSwitchStatus?.mode
     const raw = (providerSwitchStatus?.model_provider ?? '').trim()
-    if (mode === 'gateway') return 'api_router'
+    if (mode === 'gateway') return GATEWAY_MODEL_PROVIDER_ID
     if (mode === 'official') return 'official default'
     if (mode === 'provider') return raw || '-'
     if (mode === 'mixed') return raw ? `mixed (${raw})` : 'mixed'
@@ -4477,9 +4478,9 @@ function newScheduleDraft(
       <InstructionModal
         open={instructionModalOpen}
         onClose={() => setInstructionModalOpen(false)}
-        codeText={`model_provider = "api_router"
+        codeText={`model_provider = "${GATEWAY_MODEL_PROVIDER_ID}"
 
-[model_providers.api_router]
+[model_providers.${GATEWAY_MODEL_PROVIDER_ID}]
 name = "API Router"
 base_url = "http://127.0.0.1:4000/v1"
 wire_api = "responses"

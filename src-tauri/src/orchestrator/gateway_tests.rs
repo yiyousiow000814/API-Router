@@ -12,6 +12,7 @@ mod tests {
     use parking_lot::RwLock;
     use tower::ServiceExt;
 
+    use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
     use crate::orchestrator::gateway::{
         build_router, build_router_with_body_limit, decide_provider, open_store_dir, GatewayState,
@@ -1559,7 +1560,7 @@ mod tests {
         let item = sessions.get(session_id).expect("session runtime");
         assert_eq!(
             item.last_reported_model_provider.as_deref(),
-            Some("api_router")
+            Some(GATEWAY_MODEL_PROVIDER_ID)
         );
     }
 }

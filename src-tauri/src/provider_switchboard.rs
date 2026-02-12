@@ -1,4 +1,5 @@
 use crate::app_state::AppState;
+use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
 use crate::orchestrator::store::unix_ms;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -513,7 +514,7 @@ fn insert_provider_section_near_top(base_cfg: &str, provider_section: &str) -> S
 fn build_direct_provider_cfg(orig_cfg: &str, provider: &str, base_url: &str) -> String {
     // Use the switchboard base shape to avoid accumulating whitespace while switching.
     let mut base = normalize_cfg_for_switchboard_base(orig_cfg);
-    base = remove_model_provider_sections(&base, &["api_router", provider]);
+    base = remove_model_provider_sections(&base, &[GATEWAY_MODEL_PROVIDER_ID, provider]);
     let eol = if base.contains("\r\n") { "\r\n" } else { "\n" };
     let provider_esc = escape_toml(provider);
     let base_url_esc = escape_toml(base_url);
