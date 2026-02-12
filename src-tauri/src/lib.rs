@@ -50,25 +50,31 @@ fn infer_profile_from_exe_stem(stem: &str) -> Option<String> {
     if s.is_empty() {
         return None;
     }
-    if s.contains("[test]") || s.contains("_test") || s.contains("-test") || s.ends_with(" test") {
+    if s.contains("[test]") {
         return Some("test".to_string());
     }
     None
 }
 
-fn infer_profile_from_exe_name() -> Option<String> {
-    let exe = std::env::current_exe().ok()?;
-    let stem = exe.file_stem()?.to_str()?;
-    infer_profile_from_exe_stem(stem)
+fn app_profile_name_from_inputs(raw_profile: Option<&str>, exe_stem: Option<&str>) -> String {
+    let raw = raw_profile.unwrap_or_default();
+    let normalized = normalize_profile_name(raw);
+    if !raw.trim().is_empty() {
+        return normalized;
+    }
+    exe_stem
+        .and_then(infer_profile_from_exe_stem)
+        .unwrap_or(normalized)
 }
 
 fn app_profile_name() -> String {
     let raw = std::env::var("API_ROUTER_PROFILE").unwrap_or_default();
-    let normalized = normalize_profile_name(&raw);
-    if !raw.trim().is_empty() {
-        return normalized;
-    }
-    infer_profile_from_exe_name().unwrap_or(normalized)
+    let exe_stem = std::env::current_exe().ok().and_then(|p| {
+        p.file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+    });
+    app_profile_name_from_inputs(Some(raw.as_str()), exe_stem.as_deref())
 }
 
 fn profile_data_dir_name(profile: &str) -> String {
@@ -158,7 +164,7 @@ pub fn run() {
     let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
     let app_profile = app_profile_name();
     let mut builder = tauri::Builder::default();
-    if !is_ui_tauri && app_profile == "default" {
+    if !is_ui_tauri && app_profile != "test" {
         // Ensure clicking the EXE again focuses the existing instance instead of launching a second one.
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
@@ -2647,6 +2653,10 @@ fn apply_delete_provider(
     cfg: &mut crate::orchestrator::config::AppConfig,
     name: &str,
 ) -> Result<Option<String>, String> {
+    if !cfg.providers.contains_key(name) {
+        return Err(format!("unknown provider: {name}"));
+    }
+
     if cfg.providers.len() == 1 && cfg.providers.contains_key(name) {
         return Err("cannot delete the last provider".to_string());
     }
@@ -2665,6 +2675,10 @@ fn apply_delete_provider(
             .find(|p| cfg.providers.contains_key(*p))
             .cloned()
             .or_else(|| cfg.providers.keys().next().cloned());
+        debug_assert!(
+            next.is_some(),
+            "preferred provider deleted but no fallback provider available"
+        );
         if let Some(p) = next.clone() {
             cfg.routing.preferred_provider = p;
         }
@@ -3719,7 +3733,7 @@ fn parse_number(v: &Value) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        app_profile_name, apply_delete_provider, infer_profile_from_exe_stem,
+        app_profile_name_from_inputs, apply_delete_provider, infer_profile_from_exe_stem,
         normalize_profile_name, profile_data_dir_name, should_reset_profile_data,
         should_seed_mock_data,
     };
@@ -3786,6 +3800,24 @@ mod tests {
     }
 
     #[test]
+    fn delete_unknown_provider_returns_error_without_mutation() {
+        let mut cfg = AppConfig::default_config();
+        let before = cfg.clone();
+        let err = apply_delete_provider(&mut cfg, "provider_not_found")
+            .expect_err("expected unknown provider to fail");
+        assert_eq!(err, "unknown provider: provider_not_found");
+        assert_eq!(cfg.providers.len(), before.providers.len());
+        for name in before.providers.keys() {
+            assert!(cfg.providers.contains_key(name));
+        }
+        assert_eq!(cfg.provider_order, before.provider_order);
+        assert_eq!(
+            cfg.routing.preferred_provider,
+            before.routing.preferred_provider
+        );
+    }
+
+    #[test]
     fn profile_data_dir_name_default_and_test() {
         assert_eq!(profile_data_dir_name("default"), "user-data");
         assert_eq!(profile_data_dir_name("test"), "user-data-test");
@@ -3793,10 +3825,15 @@ mod tests {
 
     #[test]
     fn app_profile_name_normalizes_invalid_chars() {
-        std::env::set_var("API_ROUTER_PROFILE", "  TeSt Profile!!  ");
-        assert_eq!(app_profile_name(), "test-profile");
-        std::env::remove_var("API_ROUTER_PROFILE");
-        assert_eq!(app_profile_name(), "default");
+        assert_eq!(
+            app_profile_name_from_inputs(Some("  TeSt Profile!!  "), None),
+            "test-profile"
+        );
+        assert_eq!(app_profile_name_from_inputs(Some(""), None), "default");
+        assert_eq!(
+            app_profile_name_from_inputs(None, Some("API Router [TEST]")),
+            "test"
+        );
     }
 
     #[test]
@@ -3805,10 +3842,7 @@ mod tests {
             infer_profile_from_exe_stem("API Router [TEST]"),
             Some("test".to_string())
         );
-        assert_eq!(
-            infer_profile_from_exe_stem("api_router-test"),
-            Some("test".to_string())
-        );
+        assert_eq!(infer_profile_from_exe_stem("api_router-test"), None);
         assert_eq!(infer_profile_from_exe_stem("API Router"), None);
     }
 
