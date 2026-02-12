@@ -17,8 +17,7 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-fn app_profile_name() -> String {
-    let raw = std::env::var("API_ROUTER_PROFILE").unwrap_or_default();
+fn normalize_profile_name(raw: &str) -> String {
     let trimmed = raw.trim().to_ascii_lowercase();
     if trimmed.is_empty() || trimmed == "default" {
         return "default".to_string();
@@ -44,6 +43,32 @@ fn app_profile_name() -> String {
     } else {
         collapsed
     }
+}
+
+fn infer_profile_from_exe_stem(stem: &str) -> Option<String> {
+    let s = stem.trim().to_ascii_lowercase();
+    if s.is_empty() {
+        return None;
+    }
+    if s.contains("[test]") || s.contains("_test") || s.contains("-test") || s.ends_with(" test") {
+        return Some("test".to_string());
+    }
+    None
+}
+
+fn infer_profile_from_exe_name() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let stem = exe.file_stem()?.to_str()?;
+    infer_profile_from_exe_stem(stem)
+}
+
+fn app_profile_name() -> String {
+    let raw = std::env::var("API_ROUTER_PROFILE").unwrap_or_default();
+    let normalized = normalize_profile_name(&raw);
+    if !raw.trim().is_empty() {
+        return normalized;
+    }
+    infer_profile_from_exe_name().unwrap_or(normalized)
 }
 
 fn profile_data_dir_name(profile: &str) -> String {
@@ -3604,7 +3629,10 @@ fn parse_number(v: &Value) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{app_profile_name, apply_delete_provider, profile_data_dir_name};
+    use super::{
+        app_profile_name, apply_delete_provider, infer_profile_from_exe_stem,
+        normalize_profile_name, profile_data_dir_name,
+    };
     use crate::orchestrator::config::{AppConfig, ProviderConfig};
 
     #[test]
@@ -3679,5 +3707,24 @@ mod tests {
         assert_eq!(app_profile_name(), "test-profile");
         std::env::remove_var("API_ROUTER_PROFILE");
         assert_eq!(app_profile_name(), "default");
+    }
+
+    #[test]
+    fn infer_profile_from_test_exe_name() {
+        assert_eq!(
+            infer_profile_from_exe_stem("API Router [TEST]"),
+            Some("test".to_string())
+        );
+        assert_eq!(
+            infer_profile_from_exe_stem("api_router-test"),
+            Some("test".to_string())
+        );
+        assert_eq!(infer_profile_from_exe_stem("API Router"), None);
+    }
+
+    #[test]
+    fn normalize_profile_name_default() {
+        assert_eq!(normalize_profile_name(""), "default");
+        assert_eq!(normalize_profile_name(" default "), "default");
     }
 }
