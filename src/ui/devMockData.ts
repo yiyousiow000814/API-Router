@@ -65,9 +65,9 @@ export const devStatus: Status = {
   ],
   client_sessions: [
     {
-      id: 'session_wt_main',
+      id: '019c4578-0f3c-7f82-a4f9-b41a1e65e242',
       wt_session: 'wt-8f42f1',
-      codex_session_id: 'codex-main-001',
+      codex_session_id: '019c4578-0f3c-7f82-a4f9-b41a1e65e242',
       reported_model_provider: 'provider_1',
       reported_model: 'gpt-5.2',
       reported_base_url: 'https://code.ppchat.vip/v1',
@@ -78,9 +78,9 @@ export const devStatus: Status = {
       is_agent: false,
     },
     {
-      id: 'session_agent_01',
+      id: '019c1ec0-9df8-7fa1-bd65-0ee087195cf4',
       wt_session: 'wt-agent-12',
-      codex_session_id: 'codex-agent-991',
+      codex_session_id: '019c1ec0-9df8-7fa1-bd65-0ee087195cf4',
       reported_model_provider: 'agents',
       reported_model: 'gpt-5.2',
       reported_base_url: 'http://127.0.0.1:4000/v1',
