@@ -520,6 +520,7 @@ export default function App() {
     clearUsageBaseUrl,
     editingProviderName,
   })
+  const clearUsageScheduleRowsAutoSave = () => clearAutoSaveTimer('schedule:rows')
   return (
     <div className="aoRoot" ref={containerRef}>
       <div className="aoScale">
@@ -745,7 +746,7 @@ export default function App() {
         usageScheduleCurrencyMenuRef={usageScheduleCurrencyMenuRef}
         updateUsageScheduleCurrency={updateUsageScheduleCurrency}
         closeUsageScheduleCurrencyMenu={closeUsageScheduleCurrencyMenu}
-        clearUsageScheduleRowsAutoSave={() => clearAutoSaveTimer('schedule:rows')}
+        clearUsageScheduleRowsAutoSave={clearUsageScheduleRowsAutoSave}
         setUsageScheduleSaveError={setUsageScheduleSaveError}
         setUsageScheduleModalOpen={setUsageScheduleModalOpen}
         codexSwapModalOpen={codexSwapModalOpen}
