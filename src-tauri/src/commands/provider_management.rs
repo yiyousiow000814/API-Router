@@ -285,7 +285,16 @@ pub(crate) fn delete_provider(
         app_state::normalize_provider_order(&mut cfg);
 
         if cfg.routing.preferred_provider == name {
-            next_preferred = cfg.providers.keys().next().cloned();
+            next_preferred = cfg
+                .provider_order
+                .iter()
+                .find(|provider| cfg.providers.contains_key(*provider))
+                .cloned()
+                .or_else(|| cfg.providers.keys().next().cloned());
+            debug_assert!(
+                next_preferred.is_some(),
+                "preferred provider deleted but no fallback provider available"
+            );
             if let Some(p) = next_preferred.clone() {
                 cfg.routing.preferred_provider = p;
             }
