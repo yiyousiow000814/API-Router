@@ -204,8 +204,8 @@ fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::merge_discovered_model_provider;
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
+    use crate::commands::merge_discovered_model_provider;
     use crate::orchestrator::gateway::ClientSessionRuntime;
 
     #[test]

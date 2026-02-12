@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "node scripts/check-gateway-provider-id.mjs && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "build:root-exe": "tauri build && node scripts/copy-root-exe.mjs && node scripts/open-root-exe.mjs",

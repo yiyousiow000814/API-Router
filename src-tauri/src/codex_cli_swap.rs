@@ -386,21 +386,21 @@ pub fn cli_auth_config_swap_status(cli_homes: Vec<String>) -> Result<serde_json:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
 
     #[test]
     fn strip_model_provider_removes_top_level_keys_only() {
-        let cfg = r#"
-model_provider = "api_router"
-model_provider_id="api_router"
-model = "gpt-5.2"
-
-[model_providers.api_router]
-base_url = "http://127.0.0.1:4000/v1"
-"#;
-        let out = strip_model_provider_line(cfg);
+        let cfg = format!(
+            "\nmodel_provider = \"{provider}\"\nmodel_provider_id=\"{provider}\"\nmodel = \"gpt-5.2\"\n\n[model_providers.{provider}]\nbase_url = \"http://127.0.0.1:4000/v1\"\n",
+            provider = GATEWAY_MODEL_PROVIDER_ID
+        );
+        let out = strip_model_provider_line(&cfg);
         assert!(!out.contains("model_provider ="));
         assert!(!out.contains("model_provider_id="));
         assert!(out.contains("model = \"gpt-5.2\""));
-        assert!(out.contains("[model_providers.api_router]"));
+        assert!(out.contains(&format!(
+            "[model_providers.{provider}]",
+            provider = GATEWAY_MODEL_PROVIDER_ID
+        )));
     }
 }

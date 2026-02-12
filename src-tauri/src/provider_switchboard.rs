@@ -986,6 +986,7 @@ pub fn set_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
 
     #[test]
     fn switchboard_base_cfg_path_is_under_app_dir_even_with_absolute_home() {
@@ -1127,25 +1128,28 @@ mod tests {
 
     #[test]
     fn build_direct_provider_cfg_keeps_compact_header_and_preserves_section_order() {
-        let cfg = concat!(
-            "model_provider = \"api_router\"\n",
-            "model = \"gpt-5.2\"\n",
-            "model_reasoning_effort = \"medium\"\n",
-            "\n",
-            "[model_providers.api_router]\n",
-            "name = \"API Router\"\n",
-            "base_url = \"http://127.0.0.1:4000\"\n",
-            "wire_api = \"responses\"\n",
-            "requires_openai_auth = true\n",
-            "\n",
-            "[notice]\n",
-            "hide_full_access_warning = true\n",
-            "\n",
-            "[tui]\n",
-            "alternate_screen = \"never\"\n",
+        let cfg = format!(
+            concat!(
+                "model_provider = \"{provider}\"\n",
+                "model = \"gpt-5.2\"\n",
+                "model_reasoning_effort = \"medium\"\n",
+                "\n",
+                "[model_providers.{provider}]\n",
+                "name = \"API Router\"\n",
+                "base_url = \"http://127.0.0.1:4000\"\n",
+                "wire_api = \"responses\"\n",
+                "requires_openai_auth = true\n",
+                "\n",
+                "[notice]\n",
+                "hide_full_access_warning = true\n",
+                "\n",
+                "[tui]\n",
+                "alternate_screen = \"never\"\n"
+            ),
+            provider = GATEWAY_MODEL_PROVIDER_ID
         );
 
-        let out = build_direct_provider_cfg(cfg, "ppchat", "https://code.ppchat.vip/v1");
+        let out = build_direct_provider_cfg(&cfg, "ppchat", "https://code.ppchat.vip/v1");
 
         // No extra blank line between model_provider and the next setting.
         assert!(out.contains("model_provider = \"ppchat\"\nmodel = \"gpt-5.2\""));
