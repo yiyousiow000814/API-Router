@@ -29,6 +29,8 @@
 ## Engineering Constraints
 - **Cross-platform**: Keep the gateway and tooling compatible with Windows + Linux (WSL2) at minimum.
 - **Evidence requirement**: Back conclusions with reproducible commands or steps (state A → change → state B).
+- **File length limit**: Keep source files under 800 lines where practical. If a non-lock source file exceeds 800 lines, split it into coherent modules/files to preserve maintainability.
+- **Lockfile exception**: Lock files are excluded from the 800-line limit (for example `Cargo.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`).
 
 
 ## Canonical Implementation Policy (Breaking Changes Allowed)
