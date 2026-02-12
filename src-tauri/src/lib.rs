@@ -2445,27 +2445,10 @@ fn delete_provider(
     state: tauri::State<'_, app_state::AppState>,
     name: String,
 ) -> Result<(), String> {
-    let mut next_preferred: Option<String> = None;
-    {
+    let next_preferred: Option<String> = {
         let mut cfg = state.gateway.cfg.write();
-        cfg.providers.remove(&name);
-        cfg.provider_order.retain(|p| p != &name);
-        cfg.routing
-            .session_preferred_providers
-            .retain(|_, pref| pref != &name);
-        app_state::normalize_provider_order(&mut cfg);
-
-        if cfg.providers.is_empty() {
-            return Err("cannot delete the last provider".to_string());
-        }
-
-        if cfg.routing.preferred_provider == name {
-            next_preferred = cfg.providers.keys().next().cloned();
-            if let Some(p) = next_preferred.clone() {
-                cfg.routing.preferred_provider = p;
-            }
-        }
-    }
+        apply_delete_provider(&mut cfg, &name)?
+    };
 
     // If the deleted provider was manually locked, return to auto.
     {
@@ -2494,6 +2477,37 @@ fn delete_provider(
         );
     }
     Ok(())
+}
+
+fn apply_delete_provider(
+    cfg: &mut crate::orchestrator::config::AppConfig,
+    name: &str,
+) -> Result<Option<String>, String> {
+    if cfg.providers.len() == 1 && cfg.providers.contains_key(name) {
+        return Err("cannot delete the last provider".to_string());
+    }
+
+    cfg.providers.remove(name);
+    cfg.provider_order.retain(|p| p != name);
+    cfg.routing
+        .session_preferred_providers
+        .retain(|_, pref| pref != name);
+    app_state::normalize_provider_order(cfg);
+
+    if cfg.routing.preferred_provider == name {
+        let next = cfg
+            .provider_order
+            .iter()
+            .find(|p| cfg.providers.contains_key(*p))
+            .cloned()
+            .or_else(|| cfg.providers.keys().next().cloned());
+        if let Some(p) = next.clone() {
+            cfg.routing.preferred_provider = p;
+        }
+        return Ok(next);
+    }
+
+    Ok(None)
 }
 
 #[tauri::command]
@@ -3536,4 +3550,70 @@ fn parse_number(v: &Value) -> Option<f64> {
                 }
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_delete_provider;
+    use crate::orchestrator::config::{AppConfig, ProviderConfig};
+
+    #[test]
+    fn delete_last_provider_does_not_mutate_config() {
+        let mut cfg = AppConfig::default_config();
+        cfg.providers.retain(|name, _| name == "official");
+        cfg.provider_order.retain(|name| name == "official");
+        cfg.routing.preferred_provider = "official".to_string();
+
+        let before = cfg.clone();
+        let err = apply_delete_provider(&mut cfg, "official")
+            .expect_err("expected deleting last provider to fail");
+        assert_eq!(err, "cannot delete the last provider");
+        assert_eq!(cfg.providers.len(), 1);
+        assert_eq!(
+            cfg.providers.get("official").map(|p| p.base_url.as_str()),
+            Some("https://api.openai.com")
+        );
+        assert_eq!(cfg.provider_order, before.provider_order);
+        assert_eq!(
+            cfg.routing.preferred_provider,
+            before.routing.preferred_provider
+        );
+        assert_eq!(
+            cfg.routing.session_preferred_providers,
+            before.routing.session_preferred_providers
+        );
+    }
+
+    #[test]
+    fn delete_preferred_provider_switches_to_next_ordered_provider() {
+        let mut cfg = AppConfig::default_config();
+        cfg.providers.insert(
+            "packycode".to_string(),
+            ProviderConfig {
+                display_name: "packycode".to_string(),
+                base_url: "https://codex-api.packycode.com/v1".to_string(),
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        cfg.provider_order = vec![
+            "official".to_string(),
+            "packycode".to_string(),
+            "provider_1".to_string(),
+            "provider_2".to_string(),
+        ];
+        cfg.routing.preferred_provider = "packycode".to_string();
+        cfg.routing
+            .session_preferred_providers
+            .insert("session-a".to_string(), "packycode".to_string());
+
+        let next = apply_delete_provider(&mut cfg, "packycode").expect("delete should succeed");
+
+        assert_eq!(next.as_deref(), Some("official"));
+        assert!(!cfg.providers.contains_key("packycode"));
+        assert!(cfg.provider_order.iter().all(|name| name != "packycode"));
+        assert_eq!(cfg.routing.preferred_provider, "official");
+        assert!(cfg.routing.session_preferred_providers.is_empty());
+    }
 }
