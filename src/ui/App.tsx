@@ -401,6 +401,7 @@ export default function App() {
     setUsageFilterModels,
     usageWindowHours,
     setUsageChartHover,
+    formatUsdMaybe,
   })
   const { providerDisplayName, usageScheduleSaveStatusText } = useUsageUiDerived({
     providerGroupLabelByName,

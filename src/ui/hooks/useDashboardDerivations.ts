@@ -45,7 +45,7 @@ type Params = {
       subtitle: string
     } | null>
   >
-  formatUsdMaybe?: (value: number | null | undefined) => string
+  formatUsdMaybe: (value: number | null | undefined) => string
 }
 
 export function useDashboardDerivations(params: Params) {
@@ -194,7 +194,7 @@ export function useDashboardDerivations(params: Params) {
         usageByProvider,
         usageStatistics?.window_hours ?? 24,
         usageProviderRowKey,
-        formatUsdMaybe ?? ((value) => (value == null ? '-' : String(value))),
+        formatUsdMaybe,
       ),
     [usageTimeline, usageByProvider, usageStatistics?.window_hours],
   )
