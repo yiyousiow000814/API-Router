@@ -1,0 +1,46 @@
+{
+  "checks": [
+    {
+      "name": "swap_main_button",
+      "selector": ".aoSplitBtnBtn",
+      "text": "Swap",
+      "expect": {
+        "fontSize": "13.3333px",
+        "fontWeight": "620",
+        "letterSpacing": "0.125px",
+        "fontFamilyIncludesAny": ["Segoe", "Arial"]
+      }
+    },
+    {
+      "name": "show_rotate_button",
+      "selector": ".aoHeroStatus .aoBtn",
+      "text": "Show / Rotate",
+      "expect": {
+        "fontSize": "13.3333px",
+        "fontWeight": "620",
+        "letterSpacing": "0.125px",
+        "fontFamilyIncludesAny": ["Segoe", "Arial"]
+      }
+    },
+    {
+      "name": "dashboard_section_heading",
+      "selector": ".aoH3",
+      "text": "Providers",
+      "expect": {
+        "fontSize": "12px",
+        "fontWeight": "700",
+        "letterSpacing": "2.4px",
+        "fontFamilyIncludesAny": ["Segoe", "Arial"]
+      }
+    },
+    {
+      "name": "routing_pill",
+      "selector": ".aoHeroRouting .aoPill",
+      "expect": {
+        "fontSize": "12px",
+        "fontWeight": "650",
+        "fontFamilyIncludesAny": ["Segoe", "Arial"]
+      }
+    }
+  ]
+}

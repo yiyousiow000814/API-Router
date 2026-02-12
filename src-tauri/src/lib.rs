@@ -10,18 +10,161 @@ use tauri::Manager;
 use crate::app_state::build_state;
 use crate::orchestrator::gateway::serve_in_background;
 use crate::orchestrator::store::unix_ms;
-use chrono::{Local, LocalResult, NaiveDate, TimeZone, Timelike};
+use chrono::{Duration as ChronoDuration, Local, LocalResult, NaiveDate, TimeZone, Timelike};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+fn normalize_profile_name(raw: &str) -> String {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if trimmed.is_empty() || trimmed == "default" {
+        return "default".to_string();
+    }
+    let normalized: String = trimmed
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let collapsed = normalized
+        .trim_matches('-')
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if collapsed.is_empty() {
+        "default".to_string()
+    } else {
+        collapsed
+    }
+}
+
+fn infer_profile_from_exe_stem(stem: &str) -> Option<String> {
+    let s = stem.trim().to_ascii_lowercase();
+    if s.is_empty() {
+        return None;
+    }
+    if s.contains("[test]") {
+        return Some("test".to_string());
+    }
+    None
+}
+
+fn app_profile_name_from_inputs(raw_profile: Option<&str>, exe_stem: Option<&str>) -> String {
+    let raw = raw_profile.unwrap_or_default();
+    let normalized = normalize_profile_name(raw);
+    if !raw.trim().is_empty() {
+        return normalized;
+    }
+    exe_stem
+        .and_then(infer_profile_from_exe_stem)
+        .unwrap_or(normalized)
+}
+
+fn app_profile_name() -> String {
+    let raw = std::env::var("API_ROUTER_PROFILE").unwrap_or_default();
+    let exe_stem = std::env::current_exe().ok().and_then(|p| {
+        p.file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+    });
+    app_profile_name_from_inputs(Some(raw.as_str()), exe_stem.as_deref())
+}
+
+fn profile_data_dir_name(profile: &str) -> String {
+    if profile == "default" {
+        "user-data".to_string()
+    } else {
+        format!("user-data-{profile}")
+    }
+}
+
+fn should_reset_profile_data(profile: &str, is_ui_tauri: bool) -> bool {
+    !is_ui_tauri && profile == "test"
+}
+
+fn should_seed_mock_data(profile: &str, is_ui_tauri: bool) -> bool {
+    !is_ui_tauri && profile == "test"
+}
+
+fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
+    {
+        let mut cfg = state.gateway.cfg.write();
+        if let Some(p1) = cfg.providers.get_mut("provider_1") {
+            p1.display_name = "Provider 1".to_string();
+            p1.base_url = "https://provider1.mock.local/v1".to_string();
+        }
+        if let Some(p2) = cfg.providers.get_mut("provider_2") {
+            p2.display_name = "Provider 2".to_string();
+            p2.base_url = "https://provider2.mock.local/v1".to_string();
+        }
+        cfg.routing.preferred_provider = "provider_1".to_string();
+        app_state::normalize_provider_order(&mut cfg);
+        std::fs::write(&state.config_path, toml::to_string_pretty(&*cfg)?)?;
+    }
+
+    let _ = state
+        .secrets
+        .set_provider_key("provider_1", "sk-test-provider-1-key");
+    let _ = state
+        .secrets
+        .set_provider_key("provider_2", "sk-test-provider-2-key");
+
+    let now = unix_ms();
+    for i in 0..45 {
+        let day = (Local::now() - ChronoDuration::days(i)).format("%Y-%m-%d");
+        let day_key = day.to_string();
+        let total_1 = 1.2 + (i as f64 * 0.11);
+        let total_2 = 0.9 + (i as f64 * 0.08);
+        state.gateway.store.put_spend_manual_day(
+            "provider_1",
+            &day_key,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "day_key": day_key,
+                "manual_total_usd": total_1,
+                "manual_usd_per_req": 0.022,
+                "updated_at_unix_ms": now.saturating_sub((i as u64) * 3_600_000),
+            }),
+        );
+        state.gateway.store.put_spend_manual_day(
+            "provider_2",
+            &day_key,
+            &serde_json::json!({
+                "provider": "provider_2",
+                "day_key": day_key,
+                "manual_total_usd": total_2,
+                "manual_usd_per_req": 0.018,
+                "updated_at_unix_ms": now.saturating_sub((i as u64) * 4_200_000),
+            }),
+        );
+    }
+
+    state.gateway.store.add_event(
+        "gateway",
+        "info",
+        "test_profile.mock_seeded",
+        "test profile mock data seeded",
+        serde_json::json!({
+            "providers": ["provider_1", "provider_2"],
+            "history_days": 45,
+        }),
+    );
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
+    let app_profile = app_profile_name();
     let mut builder = tauri::Builder::default();
-    if !is_ui_tauri {
+    if !is_ui_tauri && app_profile != "test" {
         // Ensure clicking the EXE again focuses the existing instance instead of launching a second one.
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
@@ -30,8 +173,9 @@ pub fn run() {
             }
         }));
     }
+    let app_profile_for_setup = app_profile.clone();
     builder
-        .setup(|app| {
+        .setup(move |app| {
             // UI automation should not steal focus or visibly pop up windows.
             // The WebView still needs a real window on Windows/WebView2, so we move it far off-screen
             // and hide it from the taskbar (best-effort).
@@ -62,6 +206,7 @@ pub fn run() {
             // - user-data/secrets.json
             // - user-data/data/* (sled store, metrics, events)
             let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
+            let app_profile = app_profile_for_setup.clone();
             let user_data_dir = if is_ui_tauri {
                 if let Ok(p) = std::env::var("UI_TAURI_PROFILE_DIR") {
                     let p = PathBuf::from(p);
@@ -74,6 +219,11 @@ pub fn run() {
                     let _ = std::fs::create_dir_all(&p);
                     p
                 }
+            } else if app_profile != "default" {
+                let base = app.path().app_data_dir()?;
+                let p = base.join(profile_data_dir_name(&app_profile));
+                let _ = std::fs::create_dir_all(&p);
+                p
             } else {
                 (|| -> Option<std::path::PathBuf> {
                     let exe = std::env::current_exe().ok()?;
@@ -87,6 +237,13 @@ pub fn run() {
                 .unwrap_or(app.path().app_data_dir()?)
             };
 
+            if should_reset_profile_data(&app_profile, is_ui_tauri) {
+                if user_data_dir.exists() {
+                    let _ = std::fs::remove_dir_all(&user_data_dir);
+                }
+                let _ = std::fs::create_dir_all(&user_data_dir);
+            }
+
             // Isolate Codex auth/session from the default ~/.codex directory to avoid overwrites.
             // This keeps the app's login independent from CLI logins.
             let codex_home = user_data_dir.join("codex-home");
@@ -97,6 +254,11 @@ pub fn run() {
                 user_data_dir.join("config.toml"),
                 user_data_dir.join("data"),
             )?;
+            if should_seed_mock_data(&app_profile, is_ui_tauri) {
+                if let Err(e) = seed_test_profile_data(&state) {
+                    eprintln!("failed to seed test profile mock data: {e}");
+                }
+            }
             app.manage(state);
 
             if !is_ui_tauri {
@@ -117,25 +279,25 @@ pub fn run() {
                 });
             }
 
-            // Tray menu so the app is usable even when the main window starts hidden.
-            let show = tauri::menu::MenuItemBuilder::with_id("show", "Show").build(app)?;
-            let quit = tauri::menu::MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let menu = tauri::menu::MenuBuilder::new(app)
-                .items(&[&show, &quit])
-                .build()?;
+            if app_profile == "default" {
+                // Tray menu so the app is usable even when the main window starts hidden.
+                let show = tauri::menu::MenuItemBuilder::with_id("show", "Show").build(app)?;
+                let quit = tauri::menu::MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+                let menu = tauri::menu::MenuBuilder::new(app)
+                    .items(&[&show, &quit])
+                    .build()?;
 
-            // Ensure the tray icon has an actual image on Windows; otherwise it can appear as "blank".
-            // We always provide an explicit tray icon (rather than relying on default_window_icon)
-            // because on Windows the "default" can still render as an empty square.
-            let icon = (|| {
-                let bytes = include_bytes!("../icons/32x32.png");
-                let img = image::load_from_memory(bytes).ok()?.to_rgba8();
-                let (w, h) = img.dimensions();
-                Some(tauri::image::Image::new_owned(img.into_raw(), w, h))
-            })();
+                // Ensure the tray icon has an actual image on Windows; otherwise it can appear as "blank".
+                // We always provide an explicit tray icon (rather than relying on default_window_icon)
+                // because on Windows the "default" can still render as an empty square.
+                let icon = (|| {
+                    let bytes = include_bytes!("../icons/32x32.png");
+                    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+                    let (w, h) = img.dimensions();
+                    Some(tauri::image::Image::new_owned(img.into_raw(), w, h))
+                })();
 
-            let mut tray_builder =
-                tauri::tray::TrayIconBuilder::new()
+                let mut tray_builder = tauri::tray::TrayIconBuilder::new()
                     .menu(&menu)
                     .on_menu_event(|app: &tauri::AppHandle, event: tauri::menu::MenuEvent| {
                         match event.id().as_ref() {
@@ -152,21 +314,30 @@ pub fn run() {
                         }
                     });
 
-            if let Some(icon) = icon {
-                tray_builder = tray_builder.icon(icon);
-            }
+                if let Some(icon) = icon {
+                    tray_builder = tray_builder.icon(icon);
+                }
 
-            let _tray = tray_builder.build(app)?;
+                let _tray = tray_builder.build(app)?;
+            }
 
             // Closing the window should minimize to tray instead of exiting (background mode).
             if let Some(w) = app.get_webview_window("main") {
-                let w2 = w.clone();
-                w.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = w2.hide();
-                    }
-                });
+                if !is_ui_tauri && app_profile != "default" {
+                    let _ = w.set_title(&format!(
+                        "API Router [{}]",
+                        app_profile.to_ascii_uppercase()
+                    ));
+                }
+                if app_profile == "default" {
+                    let w2 = w.clone();
+                    w.on_window_event(move |event| {
+                        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                            api.prevent_close();
+                            let _ = w2.hide();
+                        }
+                    });
+                }
             }
 
             Ok(())
@@ -2445,27 +2616,10 @@ fn delete_provider(
     state: tauri::State<'_, app_state::AppState>,
     name: String,
 ) -> Result<(), String> {
-    let mut next_preferred: Option<String> = None;
-    {
+    let next_preferred: Option<String> = {
         let mut cfg = state.gateway.cfg.write();
-        cfg.providers.remove(&name);
-        cfg.provider_order.retain(|p| p != &name);
-        cfg.routing
-            .session_preferred_providers
-            .retain(|_, pref| pref != &name);
-        app_state::normalize_provider_order(&mut cfg);
-
-        if cfg.providers.is_empty() {
-            return Err("cannot delete the last provider".to_string());
-        }
-
-        if cfg.routing.preferred_provider == name {
-            next_preferred = cfg.providers.keys().next().cloned();
-            if let Some(p) = next_preferred.clone() {
-                cfg.routing.preferred_provider = p;
-            }
-        }
-    }
+        apply_delete_provider(&mut cfg, &name)?
+    };
 
     // If the deleted provider was manually locked, return to auto.
     {
@@ -2494,6 +2648,45 @@ fn delete_provider(
         );
     }
     Ok(())
+}
+
+fn apply_delete_provider(
+    cfg: &mut crate::orchestrator::config::AppConfig,
+    name: &str,
+) -> Result<Option<String>, String> {
+    if !cfg.providers.contains_key(name) {
+        return Err(format!("unknown provider: {name}"));
+    }
+
+    if cfg.providers.len() == 1 {
+        return Err("cannot delete the last provider".to_string());
+    }
+
+    cfg.providers.remove(name);
+    cfg.provider_order.retain(|p| p != name);
+    cfg.routing
+        .session_preferred_providers
+        .retain(|_, pref| pref != name);
+    app_state::normalize_provider_order(cfg);
+
+    if cfg.routing.preferred_provider == name {
+        let next = cfg
+            .provider_order
+            .iter()
+            .find(|p| cfg.providers.contains_key(*p))
+            .cloned()
+            .or_else(|| cfg.providers.keys().next().cloned());
+        debug_assert!(
+            next.is_some(),
+            "preferred provider deleted but no fallback provider available"
+        );
+        if let Some(p) = next.clone() {
+            cfg.routing.preferred_provider = p;
+        }
+        return Ok(next);
+    }
+
+    Ok(None)
 }
 
 #[tauri::command]
@@ -3536,4 +3729,141 @@ fn parse_number(v: &Value) -> Option<f64> {
                 }
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        app_profile_name_from_inputs, apply_delete_provider, infer_profile_from_exe_stem,
+        normalize_profile_name, profile_data_dir_name, should_reset_profile_data,
+        should_seed_mock_data,
+    };
+    use crate::orchestrator::config::{AppConfig, ProviderConfig};
+
+    #[test]
+    fn delete_last_provider_does_not_mutate_config() {
+        let mut cfg = AppConfig::default_config();
+        cfg.providers.retain(|name, _| name == "official");
+        cfg.provider_order.retain(|name| name == "official");
+        cfg.routing.preferred_provider = "official".to_string();
+
+        let before = cfg.clone();
+        let err = apply_delete_provider(&mut cfg, "official")
+            .expect_err("expected deleting last provider to fail");
+        assert_eq!(err, "cannot delete the last provider");
+        assert_eq!(cfg.providers.len(), 1);
+        assert_eq!(
+            cfg.providers.get("official").map(|p| p.base_url.as_str()),
+            Some("https://api.openai.com")
+        );
+        assert_eq!(cfg.provider_order, before.provider_order);
+        assert_eq!(
+            cfg.routing.preferred_provider,
+            before.routing.preferred_provider
+        );
+        assert_eq!(
+            cfg.routing.session_preferred_providers,
+            before.routing.session_preferred_providers
+        );
+    }
+
+    #[test]
+    fn delete_preferred_provider_switches_to_next_ordered_provider() {
+        let mut cfg = AppConfig::default_config();
+        cfg.providers.insert(
+            "packycode".to_string(),
+            ProviderConfig {
+                display_name: "packycode".to_string(),
+                base_url: "https://codex-api.packycode.com/v1".to_string(),
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        cfg.provider_order = vec![
+            "official".to_string(),
+            "packycode".to_string(),
+            "provider_1".to_string(),
+            "provider_2".to_string(),
+        ];
+        cfg.routing.preferred_provider = "packycode".to_string();
+        cfg.routing
+            .session_preferred_providers
+            .insert("session-a".to_string(), "packycode".to_string());
+
+        let next = apply_delete_provider(&mut cfg, "packycode").expect("delete should succeed");
+
+        assert_eq!(next.as_deref(), Some("official"));
+        assert!(!cfg.providers.contains_key("packycode"));
+        assert!(cfg.provider_order.iter().all(|name| name != "packycode"));
+        assert_eq!(cfg.routing.preferred_provider, "official");
+        assert!(cfg.routing.session_preferred_providers.is_empty());
+    }
+
+    #[test]
+    fn delete_unknown_provider_returns_error_without_mutation() {
+        let mut cfg = AppConfig::default_config();
+        let before = cfg.clone();
+        let err = apply_delete_provider(&mut cfg, "provider_not_found")
+            .expect_err("expected unknown provider to fail");
+        assert_eq!(err, "unknown provider: provider_not_found");
+        assert_eq!(cfg.providers.len(), before.providers.len());
+        for name in before.providers.keys() {
+            assert!(cfg.providers.contains_key(name));
+        }
+        assert_eq!(cfg.provider_order, before.provider_order);
+        assert_eq!(
+            cfg.routing.preferred_provider,
+            before.routing.preferred_provider
+        );
+    }
+
+    #[test]
+    fn profile_data_dir_name_default_and_test() {
+        assert_eq!(profile_data_dir_name("default"), "user-data");
+        assert_eq!(profile_data_dir_name("test"), "user-data-test");
+    }
+
+    #[test]
+    fn app_profile_name_normalizes_invalid_chars() {
+        assert_eq!(
+            app_profile_name_from_inputs(Some("  TeSt Profile!!  "), None),
+            "test-profile"
+        );
+        assert_eq!(app_profile_name_from_inputs(Some(""), None), "default");
+        assert_eq!(
+            app_profile_name_from_inputs(None, Some("API Router [TEST]")),
+            "test"
+        );
+    }
+
+    #[test]
+    fn infer_profile_from_test_exe_name() {
+        assert_eq!(
+            infer_profile_from_exe_stem("API Router [TEST]"),
+            Some("test".to_string())
+        );
+        assert_eq!(infer_profile_from_exe_stem("api_router-test"), None);
+        assert_eq!(infer_profile_from_exe_stem("API Router"), None);
+    }
+
+    #[test]
+    fn normalize_profile_name_default() {
+        assert_eq!(normalize_profile_name(""), "default");
+        assert_eq!(normalize_profile_name(" default "), "default");
+    }
+
+    #[test]
+    fn should_reset_only_for_test_profile_runtime() {
+        assert!(should_reset_profile_data("test", false));
+        assert!(!should_reset_profile_data("default", false));
+        assert!(!should_reset_profile_data("test", true));
+    }
+
+    #[test]
+    fn should_seed_mock_only_for_test_profile_runtime() {
+        assert!(should_seed_mock_data("test", false));
+        assert!(!should_seed_mock_data("default", false));
+        assert!(!should_seed_mock_data("test", true));
+    }
 }

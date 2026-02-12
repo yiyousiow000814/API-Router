@@ -4,7 +4,8 @@ import { spawnSync } from 'node:child_process'
 
 const root = path.resolve(process.cwd())
 const src = path.join(root, 'src-tauri', 'target', 'release', 'api_router.exe')
-const dst = path.join(root, 'API Router.exe')
+const dstMain = path.join(root, 'API Router.exe')
+const dstTest = path.join(root, 'API Router [TEST].exe')
 
 if (!fs.existsSync(src)) {
   console.error(`Missing built exe: ${src}`)
@@ -20,6 +21,7 @@ function tryKillRunningExe() {
   // Best-effort: if the root EXE is running, replacing it will fail with EPERM.
   // This is a local convenience helper; we never commit the EXE.
   spawnSync('taskkill', ['/F', '/IM', 'API Router.exe'], { stdio: 'ignore' })
+  spawnSync('taskkill', ['/F', '/IM', 'API Router [TEST].exe'], { stdio: 'ignore' })
   spawnSync('taskkill', ['/F', '/IM', 'api_router.exe'], { stdio: 'ignore' })
 }
 
@@ -27,15 +29,17 @@ function copyOverwriting(srcPath, dstPath) {
   fs.copyFileSync(srcPath, dstPath)
 }
 
-try {
-  copyOverwriting(src, dst)
-} catch (e) {
-  if (e && (e.code === 'EPERM' || e.code === 'EBUSY')) {
-    tryKillRunningExe()
-    sleep(500)
+for (const dst of [dstMain, dstTest]) {
+  try {
     copyOverwriting(src, dst)
-  } else {
-    throw e
+  } catch (e) {
+    if (e && (e.code === 'EPERM' || e.code === 'EBUSY')) {
+      tryKillRunningExe()
+      sleep(500)
+      copyOverwriting(src, dst)
+    } else {
+      throw e
+    }
   }
+  console.log(`Wrote: ${dst}`)
 }
-console.log(`Wrote: ${dst}`)
