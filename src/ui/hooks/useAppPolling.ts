@@ -130,10 +130,16 @@ export function useAppPolling({
       }
       schedule()
     }
-    return () => {
-      clearActiveTimer()
-    }
   }, [isDevPreview, statusLastActivityUnixMs])
+
+  useEffect(() => {
+    return () => {
+      if (activeUsageTimerRef.current) {
+        window.clearTimeout(activeUsageTimerRef.current)
+        activeUsageTimerRef.current = null
+      }
+    }
+  }, [])
 
   useEffect(() => {
     if (!providerSwitchDirWatcherPrimedRef.current) {
