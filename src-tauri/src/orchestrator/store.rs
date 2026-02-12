@@ -21,6 +21,20 @@ struct UsageTokenIncrements {
     cache_read_input_tokens: u64,
 }
 
+pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<String> {
+    response_obj
+        .get("model")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            response_obj
+                .pointer("/response/model")
+                .and_then(|v| v.as_str())
+        })
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
 impl Store {
     const MAX_EVENTS: usize = 200;
     const MAX_USAGE_REQUESTS: usize = 500_000;
@@ -822,18 +836,7 @@ impl Store {
     }
 
     fn extract_model(response_obj: &Value) -> String {
-        response_obj
-            .get("model")
-            .and_then(|v| v.as_str())
-            .or_else(|| {
-                response_obj
-                    .pointer("/response/model")
-                    .and_then(|v| v.as_str())
-            })
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("unknown")
-            .to_string()
+        extract_response_model_option(response_obj).unwrap_or_else(|| "unknown".to_string())
     }
 
     fn model_for_usage(response_obj: &Value, model_override: Option<&str>) -> String {

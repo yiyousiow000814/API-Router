@@ -27,7 +27,7 @@ use super::openai::{
 };
 use super::router::{select_fallback_provider, RouterState};
 use super::secrets::SecretStore;
-use super::store::{unix_ms, Store};
+use super::store::{extract_response_model_option, unix_ms, Store};
 use super::upstream::UpstreamClient;
 use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
 use crate::platform::windows_terminal;
@@ -99,20 +99,6 @@ pub struct ClientSessionRuntime {
     // the user edits Codex config files while Codex is running (the process keeps the old config
     // in memory, but we may no longer be able to prove it from disk).
     pub confirmed_router: bool,
-}
-
-fn extract_response_model(response_obj: &Value) -> Option<String> {
-    response_obj
-        .get("model")
-        .and_then(|v| v.as_str())
-        .or_else(|| {
-            response_obj
-                .pointer("/response/model")
-                .and_then(|v| v.as_str())
-        })
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
 }
 
 fn update_session_response_model(st: &GatewayState, session_key: &str, response_model: &str) {
@@ -1095,7 +1081,7 @@ async fn responses(
                         .to_string();
                     let text = extract_text_from_responses(&upstream_json);
                     let response_obj = upstream_json;
-                    if let Some(response_model) = extract_response_model(&response_obj) {
+                    if let Some(response_model) = extract_response_model_option(&response_obj) {
                         update_session_response_model(&st, &session_key, &response_model);
                         maybe_record_model_mismatch(
                             &st,
@@ -1513,19 +1499,22 @@ fn passthrough_sse_and_persist(
             }
         }
         if let Some((_rid, resp_obj)) = tap3.lock().take_completed() {
-            if let Some(model) = extract_response_model(&resp_obj) {
-                update_session_response_model(&st2, &session_key2, &model);
-                if !mismatch_logged {
-                    let req = requested_model2.as_deref().map(str::trim).filter(|s| !s.is_empty());
-                    if req.is_some_and(|r| !r.eq_ignore_ascii_case(model.trim())) {
-                        maybe_record_model_mismatch(
-                            &st2,
-                            &provider2,
-                            &session_key2,
-                            requested_model2.as_deref(),
-                            &model,
-                            true,
-                        );
+            if created_model_for_usage.is_none() {
+                if let Some(model) = extract_response_model_option(&resp_obj) {
+                    created_model_for_usage = Some(model.clone());
+                    update_session_response_model(&st2, &session_key2, &model);
+                    if !mismatch_logged {
+                        let req = requested_model2.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                        if req.is_some_and(|r| !r.eq_ignore_ascii_case(model.trim())) {
+                            maybe_record_model_mismatch(
+                                &st2,
+                                &provider2,
+                                &session_key2,
+                                requested_model2.as_deref(),
+                                &model,
+                                true,
+                            );
+                        }
                     }
                 }
             }
@@ -1604,7 +1593,7 @@ impl SseTap {
             };
             if v.get("type").and_then(|x| x.as_str()) == Some("response.created") {
                 if let Some(resp) = v.get("response") {
-                    if let Some(model) = extract_response_model(resp) {
+                    if let Some(model) = extract_response_model_option(resp) {
                         self.created_model = Some(model);
                     }
                 }
@@ -1621,7 +1610,11 @@ impl SseTap {
     }
 
     fn take_completed(&mut self) -> Option<(String, Value)> {
-        self.completed.take()
+        let out = self.completed.take();
+        if out.is_some() {
+            self.created_model = None;
+        }
+        out
     }
 
     fn take_created_model(&mut self) -> Option<String> {

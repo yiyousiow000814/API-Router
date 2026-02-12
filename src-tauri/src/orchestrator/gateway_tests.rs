@@ -1631,6 +1631,7 @@ mod tests {
         let store = open_store_dir(tmp.path().join("data")).expect("store");
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+        let client_sessions = Arc::new(RwLock::new(HashMap::new()));
         let state = GatewayState {
             cfg: Arc::new(RwLock::new(cfg)),
             router,
@@ -1641,7 +1642,7 @@ mod tests {
             last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
             usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
-            client_sessions: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: client_sessions.clone(),
         };
 
         let app = build_router(state);
@@ -1684,5 +1685,12 @@ mod tests {
             Some("gpt-5.2-2025-12-11")
         );
         assert_ne!(row.get("model").and_then(|x| x.as_str()), Some("unknown"));
+
+        let sessions = client_sessions.read();
+        let session = sessions.get("session-stream-model").expect("session row");
+        assert_eq!(
+            session.last_reported_model.as_deref(),
+            Some("gpt-5.2-2025-12-11")
+        );
     }
 }

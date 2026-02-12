@@ -110,12 +110,12 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
               <div>
                 <span>Errors / Warning</span>
               </div>
-              {errors.length && onClearErrors ? (
+              {(errors.length || warnings.length) && onClearErrors ? (
                 <button
                   className="aoEventsClearBtn"
                   onClick={onClearErrors}
                   disabled={!canClearErrors}
-                  title="Clear visible errors (UI only)"
+                  title="Clear visible errors/warnings (UI only)"
                 >
                   Clear
                 </button>
