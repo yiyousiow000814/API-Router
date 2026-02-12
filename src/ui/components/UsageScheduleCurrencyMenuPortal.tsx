@@ -1,4 +1,4 @@
-﻿import type { Dispatch, RefObject, SetStateAction } from 'react'
+import type { Dispatch, RefObject, SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 import type { ProviderScheduleDraft } from '../types/usage'
 

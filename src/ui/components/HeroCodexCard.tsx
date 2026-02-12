@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Status } from '../types'
 import { fmtResetIn, fmtWhen } from '../utils/format'
 

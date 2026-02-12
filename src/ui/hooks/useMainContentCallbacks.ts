@@ -1,7 +1,24 @@
+import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import type { Status } from '../types'
 import { resolveCliHomes } from '../utils/switchboard'
 
-type Params = Record<string, any>
+type Params = {
+  status: Status | null
+  flashToast: (msg: string, kind?: 'info' | 'error') => void
+  setGatewayModalOpen: Dispatch<SetStateAction<boolean>>
+  setGatewayTokenReveal: Dispatch<SetStateAction<string>>
+  setCodexRefreshing: Dispatch<SetStateAction<boolean>>
+  refreshStatus: () => Promise<void>
+  codexSwapDir1: string
+  codexSwapDir2: string
+  codexSwapApplyBoth: boolean
+  toggleCodexSwap: (homes: string[]) => Promise<void>
+  setCodexSwapModalOpen: Dispatch<SetStateAction<boolean>>
+  setOverride: Dispatch<SetStateAction<string>>
+  overrideDirtyRef: MutableRefObject<boolean>
+  applyOverride: (next: string) => Promise<void>
+}
 
 export function useMainContentCallbacks(params: Params) {
   const {

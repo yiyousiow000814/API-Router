@@ -1,4 +1,4 @@
-﻿import { EventsTable } from './EventsTable'
+import { EventsTable } from './EventsTable'
 import type { Status } from '../types'
 
 type Props = {

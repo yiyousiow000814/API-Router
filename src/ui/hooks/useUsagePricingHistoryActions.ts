@@ -1,10 +1,63 @@
+import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import type { SpendHistoryRow } from '../devMockData'
+import type { Config } from '../types'
+import type { UsageHistoryDraft, UsagePricingDraft, UsagePricingSaveState } from '../types/usage'
 import { formatDraftAmount, parsePositiveAmount } from '../utils/currency'
 import { resolvePricingAmountUsd as computePricingAmountUsd } from '../utils/usagePricing'
 import { historyDraftFromRow as buildHistoryDraftFromRow } from '../utils/usageSchedule'
 import { buildDevMockHistoryRows } from '../devMockData'
 
-type Params = Record<string, any>
+type TimelinePeriod = {
+  id: string
+  mode?: 'per_request' | 'package_total'
+  amount_usd: number
+  api_key_ref?: string | null
+  started_at_unix_ms: number
+  ended_at_unix_ms?: number | null
+}
+
+type SavePricingRowOptions = {
+  silent?: boolean
+  skipRefresh?: boolean
+  draftOverride?: UsagePricingDraft
+}
+
+type ActivatePackageOptions = {
+  skipRefresh?: boolean
+  silentError?: boolean
+}
+
+type Params = {
+  config: Config | null
+  fxRatesByCurrency: Record<string, number>
+  convertCurrencyToUsd: (rates: Record<string, number>, amount: number, currency: string) => number
+  convertUsdToCurrency: (rates: Record<string, number>, amount: number, currency: string) => number
+  providerApiKeyLabel: (providerName: string) => string
+  setUsagePricingSaveState: Dispatch<SetStateAction<Record<string, UsagePricingSaveState>>>
+  usagePricingLastSavedSigRef: MutableRefObject<Record<string, string>>
+  pricingDraftSignature: (draft: UsagePricingDraft) => string
+  refreshConfig: () => Promise<void>
+  refreshUsageStatistics: (options?: { silent?: boolean }) => Promise<void>
+  flashToast: (msg: string, kind?: 'info' | 'error') => void
+  usagePricingModalOpen: boolean
+  clearAutoSaveTimer: (key: string) => void
+  queueAutoSaveTimer: (key: string, callback: () => void, delayMs?: number) => void
+  usagePricingDrafts: Record<string, UsagePricingDraft>
+  openUsageScheduleModal: (providerName: string, seedCurrency?: string, options?: { keepVisible?: boolean }) => Promise<void>
+  setUsageHistoryLoading: Dispatch<SetStateAction<boolean>>
+  devMockHistoryEnabled: boolean
+  isDevPreview: boolean
+  setUsageHistoryRows: Dispatch<SetStateAction<SpendHistoryRow[]>>
+  usageHistoryLoadedRef: MutableRefObject<boolean>
+  setUsageHistoryDrafts: Dispatch<SetStateAction<Record<string, UsageHistoryDraft>>>
+  setUsageHistoryEditCell: Dispatch<SetStateAction<string | null>>
+  usageHistoryModalOpen: boolean
+  usageHistoryDrafts: Record<string, UsageHistoryDraft>
+  historyDraftFromRow: (row: SpendHistoryRow) => UsageHistoryDraft
+  historyEffectiveDisplayValue: (row: SpendHistoryRow) => number | null
+  historyPerReqDisplayValue: (row: SpendHistoryRow) => number | null
+}
 
 export function useUsagePricingHistoryActions(params: Params) {
   const {
@@ -38,7 +91,7 @@ export function useUsagePricingHistoryActions(params: Params) {
     historyPerReqDisplayValue,
   } = params
 
-  function resolvePricingAmountUsd(draft: any, fallbackAmountUsd?: number | null): number | null {
+  function resolvePricingAmountUsd(draft: UsagePricingDraft, fallbackAmountUsd?: number | null): number | null {
     return computePricingAmountUsd(
       draft,
       fallbackAmountUsd,
@@ -46,8 +99,8 @@ export function useUsagePricingHistoryActions(params: Params) {
     )
   }
 
-  function setUsagePricingSaveStateForProviders(providerNames: string[], state: any) {
-    setUsagePricingSaveState((prev: Record<string, any>) => {
+  function setUsagePricingSaveStateForProviders(providerNames: string[], state: UsagePricingSaveState) {
+    setUsagePricingSaveState((prev) => {
       const next = { ...prev }
       providerNames.forEach((providerName) => {
         next[providerName] = state
@@ -56,15 +109,15 @@ export function useUsagePricingHistoryActions(params: Params) {
     })
   }
 
-  async function activatePackageTotalMode(providerName: string, draft: any, options?: any): Promise<boolean> {
+  async function activatePackageTotalMode(providerName: string, draft: UsagePricingDraft, options?: ActivatePackageOptions): Promise<boolean> {
     const skipRefresh = options?.skipRefresh === true
     const silentError = options?.silentError === true
     const providerCfg = config?.providers?.[providerName]
     if (!providerCfg) return false
     const now = Date.now()
-    let timelinePeriods: any[] = []
+    let timelinePeriods: TimelinePeriod[] = []
     try {
-      const res = await invoke<{ ok: boolean; periods?: any[] }>('get_provider_timeline', { provider: providerName })
+      const res = await invoke<{ ok: boolean; periods?: TimelinePeriod[] }>('get_provider_timeline', { provider: providerName })
       timelinePeriods = Array.isArray(res?.periods) ? res.periods : []
     } catch {
       timelinePeriods = []
@@ -84,10 +137,10 @@ export function useUsagePricingHistoryActions(params: Params) {
     let amountUsd = resolvePricingAmountUsd(draft, providerCfg.manual_pricing_amount_usd ?? null)
     if (amountUsd == null && packagePeriods.length > 0) amountUsd = packagePeriods[0].amount_usd
     if (amountUsd == null) {
-      setUsagePricingSaveState((prev: Record<string, any>) => ({ ...prev, [providerName]: 'idle' }))
+      setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'idle' }))
       return false
     }
-    setUsagePricingSaveState((prev: Record<string, any>) => ({ ...prev, [providerName]: 'saving' }))
+    setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saving' }))
     try {
       if (activePackage || upcomingPackage) {
         const rewrittenPeriods = timelinePeriods.map((period) => {
@@ -120,20 +173,20 @@ export function useUsagePricingHistoryActions(params: Params) {
         ...draft,
         amountText: formatDraftAmount(convertUsdToCurrency(fxRatesByCurrency, amountUsd, draft.currency)),
       })
-      setUsagePricingSaveState((prev: Record<string, any>) => ({ ...prev, [providerName]: 'saved' }))
+      setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'saved' }))
       if (!skipRefresh) {
         await refreshConfig()
         await refreshUsageStatistics({ silent: true })
       }
       return true
     } catch (e) {
-      setUsagePricingSaveState((prev: Record<string, any>) => ({ ...prev, [providerName]: 'error' }))
+      setUsagePricingSaveState((prev) => ({ ...prev, [providerName]: 'error' }))
       if (!silentError) flashToast(String(e), 'error')
       return false
     }
   }
 
-  async function saveUsagePricingRow(providerName: string, options?: any): Promise<boolean> {
+  async function saveUsagePricingRow(providerName: string, options?: SavePricingRowOptions): Promise<boolean> {
     const silent = options?.silent === true
     const skipRefresh = options?.skipRefresh === true
     const draft = options?.draftOverride ?? usagePricingDrafts[providerName]
@@ -170,7 +223,11 @@ export function useUsagePricingHistoryActions(params: Params) {
     }
   }
 
-  async function saveUsagePricingForProviders(providerNames: string[], draft: any, options?: any): Promise<boolean> {
+  async function saveUsagePricingForProviders(
+    providerNames: string[],
+    draft: UsagePricingDraft,
+    options?: { silent?: boolean },
+  ): Promise<boolean> {
     const silent = options?.silent === true
     const targets = providerNames.filter((providerName) => Boolean(config?.providers?.[providerName]))
     if (!targets.length) return false
@@ -180,7 +237,7 @@ export function useUsagePricingHistoryActions(params: Params) {
       if (sharedAmountUsd == null) {
         for (const providerName of targets) {
           try {
-            const res = await invoke<{ ok: boolean; periods?: any[] }>('get_provider_timeline', { provider: providerName })
+            const res = await invoke<{ ok: boolean; periods?: TimelinePeriod[] }>('get_provider_timeline', { provider: providerName })
             const periods = Array.isArray(res?.periods) ? res.periods : []
             const latest = periods
               .filter((period) => (period.mode ?? 'package_total') === 'package_total')
@@ -214,7 +271,7 @@ export function useUsagePricingHistoryActions(params: Params) {
     return false
   }
 
-  function queueUsagePricingAutoSaveForProviders(providerNames: string[], draft: any) {
+  function queueUsagePricingAutoSaveForProviders(providerNames: string[], draft: UsagePricingDraft) {
     if (!usagePricingModalOpen) return
     const targets = providerNames.filter((providerName) => Boolean(config?.providers?.[providerName]))
     if (!targets.length) return
@@ -251,17 +308,17 @@ export function useUsagePricingHistoryActions(params: Params) {
     const keepEditCell = options?.keepEditCell === true
     if (!silent) setUsageHistoryLoading(true)
     try {
-      let rows: any[] = []
+      let rows: SpendHistoryRow[] = []
       if (devMockHistoryEnabled) rows = buildDevMockHistoryRows(120)
       else if (isDevPreview) rows = []
       else {
-        const res = await invoke<{ ok: boolean; rows: any[] }>('get_spend_history', { provider: null, days: 180, compactOnly: true })
+        const res = await invoke<{ ok: boolean; rows: SpendHistoryRow[] }>('get_spend_history', { provider: null, days: 180, compactOnly: true })
         rows = Array.isArray(res?.rows) ? res.rows : []
       }
       setUsageHistoryRows(rows)
       usageHistoryLoadedRef.current = true
       setUsageHistoryDrafts(() => {
-        const next: Record<string, any> = {}
+        const next: Record<string, UsageHistoryDraft> = {}
         for (const row of rows) {
           const key = `${row.provider}|${row.day_key}`
           next[key] = buildHistoryDraftFromRow(row, formatDraftAmount)
@@ -276,14 +333,17 @@ export function useUsagePricingHistoryActions(params: Params) {
     }
   }
 
-  function queueUsageHistoryAutoSave(row: any, field: 'effective' | 'per_req') {
+  function queueUsageHistoryAutoSave(row: SpendHistoryRow, field: 'effective' | 'per_req') {
     if (!usageHistoryModalOpen) return
     queueAutoSaveTimer('history:edit', () => {
       void saveUsageHistoryRow(row, { silent: true, keepEditCell: true, field })
     })
   }
 
-  async function saveUsageHistoryRow(row: any, options?: { silent?: boolean; keepEditCell?: boolean; field?: 'effective' | 'per_req' }) {
+  async function saveUsageHistoryRow(
+    row: SpendHistoryRow,
+    options?: { silent?: boolean; keepEditCell?: boolean; field?: 'effective' | 'per_req' },
+  ) {
     const silent = options?.silent === true
     const keepEditCell = options?.keepEditCell === true
     const field = options?.field ?? 'effective'

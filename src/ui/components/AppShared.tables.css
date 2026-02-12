@@ -1,4 +1,4 @@
-﻿.aoTinyBtn:hover {
+.aoTinyBtn:hover {
   border-color: rgba(var(--ao-accent-rgb), 0.55);
   background: rgba(var(--ao-accent-rgb), 0.06);
 }

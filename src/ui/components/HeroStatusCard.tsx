@@ -1,4 +1,4 @@
-﻿import type { Status } from '../types'
+import type { Status } from '../types'
 
 type HeroStatusProps = {
   status: Status

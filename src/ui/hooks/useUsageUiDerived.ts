@@ -1,7 +1,17 @@
+import type { Dispatch, SetStateAction } from 'react'
 import { useEffect, useMemo } from 'react'
+import type { UsageScheduleSaveState } from '../types/usage'
 import { sanitizeSelectedFilterValues } from '../utils/usageStatisticsView'
 
-type Params = Record<string, any>
+type Params = {
+  providerGroupLabelByName: Record<string, string>
+  usageScheduleSaveState: UsageScheduleSaveState
+  usageScheduleSaveError: string
+  setUsageFilterProviders: Dispatch<SetStateAction<string[]>>
+  usageProviderFilterOptions: string[]
+  setUsageFilterModels: Dispatch<SetStateAction<string[]>>
+  usageModelFilterOptions: string[]
+}
 
 export function useUsageUiDerived(params: Params) {
   const {

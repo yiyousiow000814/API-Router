@@ -1,4 +1,4 @@
-﻿type UsageScheduleModalHeaderProps = {
+type UsageScheduleModalHeaderProps = {
   onClose: () => void
 }
 

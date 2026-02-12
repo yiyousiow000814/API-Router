@@ -1,4 +1,4 @@
-﻿import { HeroCodexCard, HeroRoutingCard, HeroStatusCard } from './HeroCards'
+import { HeroCodexCard, HeroRoutingCard, HeroStatusCard } from './HeroCards'
 import { DashboardProvidersSection } from './DashboardProvidersSection'
 import { DashboardSessionsSection } from './DashboardSessionsSection'
 import { DashboardEventsSection } from './DashboardEventsSection'

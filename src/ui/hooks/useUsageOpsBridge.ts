@@ -1,13 +1,72 @@
+import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { useMemo, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import type { UsageStatistics } from '../types'
-import type { UsagePricingDraft } from '../types/usage'
+import type { SpendHistoryRow } from '../devMockData'
+import type { Config, UsageStatistics } from '../types'
+import type { ProviderScheduleDraft, UsageHistoryDraft, UsagePricingDraft, UsagePricingSaveState, UsageScheduleSaveState } from '../types/usage'
 import { buildUsageCurrencyOptions, convertCurrencyToUsd, convertUsdToCurrency } from '../utils/currency'
 import { buildDevUsageStatistics } from '../utils/devUsageStatistics'
 import { useUsageScheduleCore } from './useUsageScheduleCore'
 import { useUsagePricingHistoryActions } from './useUsagePricingHistoryActions'
 
-type Params = Record<string, any>
+type UsagePricingCurrencyMenuState = {
+  provider: string
+  providers: string[]
+  left: number
+  top: number
+  width: number
+} | null
+
+type UsageScheduleCurrencyMenuState = {
+  rowIndex: number
+  left: number
+  top: number
+  width: number
+} | null
+
+type Params = {
+  isDevPreview: boolean
+  usageWindowHours: number
+  usageFilterProviders: string[]
+  usageFilterModels: string[]
+  setUsageStatistics: Dispatch<SetStateAction<UsageStatistics | null>>
+  setUsageStatisticsLoading: Dispatch<SetStateAction<boolean>>
+  flashToast: (msg: string, kind?: 'info' | 'error') => void
+  autoSaveTimersRef: MutableRefObject<Record<string, number>>
+  fxRatesByCurrency: Record<string, number>
+  setFxRatesByCurrency: Dispatch<SetStateAction<Record<string, number>>>
+  setFxRatesDate: Dispatch<SetStateAction<string>>
+  config: Config | null
+  setUsagePricingDrafts: Dispatch<SetStateAction<Record<string, UsagePricingDraft>>>
+  usageScheduleRows: ProviderScheduleDraft[]
+  setUsageScheduleRows: Dispatch<SetStateAction<ProviderScheduleDraft[]>>
+  setUsageScheduleCurrencyMenu: Dispatch<SetStateAction<UsageScheduleCurrencyMenuState>>
+  setUsageScheduleCurrencyQuery: Dispatch<SetStateAction<string>>
+  setUsageScheduleProvider: Dispatch<SetStateAction<string>>
+  setUsageScheduleModalOpen: Dispatch<SetStateAction<boolean>>
+  setUsageScheduleLoading: Dispatch<SetStateAction<boolean>>
+  setUsageScheduleSaveState: Dispatch<SetStateAction<UsageScheduleSaveState>>
+  setUsageScheduleSaveError: Dispatch<SetStateAction<string>>
+  setUsageScheduleSaving: Dispatch<SetStateAction<boolean>>
+  usageScheduleModalOpen: boolean
+  usageScheduleLastSavedSigRef: MutableRefObject<string>
+  usageScheduleLastSavedByProviderRef: MutableRefObject<Record<string, string>>
+  setUsagePricingCurrencyMenu: Dispatch<SetStateAction<UsagePricingCurrencyMenuState>>
+  setUsagePricingCurrencyQuery: Dispatch<SetStateAction<string>>
+  refreshConfig: () => Promise<void>
+  usageHistoryModalOpen: boolean
+  usagePricingModalOpen: boolean
+  setUsagePricingSaveState: Dispatch<SetStateAction<Record<string, UsagePricingSaveState>>>
+  usagePricingLastSavedSigRef: MutableRefObject<Record<string, string>>
+  usagePricingDrafts: Record<string, UsagePricingDraft>
+  setUsageHistoryLoading: Dispatch<SetStateAction<boolean>>
+  devMockHistoryEnabled: boolean
+  setUsageHistoryRows: Dispatch<SetStateAction<SpendHistoryRow[]>>
+  usageHistoryLoadedRef: MutableRefObject<boolean>
+  setUsageHistoryDrafts: Dispatch<SetStateAction<Record<string, UsageHistoryDraft>>>
+  setUsageHistoryEditCell: Dispatch<SetStateAction<string | null>>
+  usageHistoryDrafts: Record<string, UsageHistoryDraft>
+}
 
 export function useUsageOpsBridge(params: Params) {
   const {

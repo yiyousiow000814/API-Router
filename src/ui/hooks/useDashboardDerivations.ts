@@ -1,4 +1,6 @@
+import type { Dispatch, SetStateAction } from 'react'
 import { useCallback, useMemo } from 'react'
+import type { Config, ProviderSwitchboardStatus, Status, UsageStatistics } from '../types'
 import { computeUsageAnomalies } from '../utils/usageAnomalies'
 import { buildUsageChartModel, fmtUsageBucketLabel } from '../utils/usageDisplay'
 import {
@@ -19,7 +21,32 @@ import {
   usageProviderRowKey,
 } from '../utils/usageStatisticsView'
 
-type Params = Record<string, any>
+type Params = {
+  config: Config | null
+  orderedConfigProviders: string[]
+  providerSwitchStatus: ProviderSwitchboardStatus | null
+  status: Status | null
+  providerApiKeyLabel: (providerName: string) => string
+  fmtPct: (value: number | null) => string
+  fmtAmount: (value: number | null | undefined) => string
+  fmtUsd: (value: number | null | undefined) => string
+  pctOf: (part?: number | null, total?: number | null) => number | null
+  usageStatistics: UsageStatistics | null
+  usageFilterProviders: string[]
+  setUsageFilterProviders: Dispatch<SetStateAction<string[]>>
+  usageFilterModels: string[]
+  setUsageFilterModels: Dispatch<SetStateAction<string[]>>
+  usageWindowHours: number
+  setUsageChartHover: Dispatch<
+    SetStateAction<{
+      x: number
+      y: number
+      title: string
+      subtitle: string
+    } | null>
+  >
+  formatUsdMaybe?: (value: number | null | undefined) => string
+}
 
 export function useDashboardDerivations(params: Params) {
   const {
@@ -74,20 +101,20 @@ export function useDashboardDerivations(params: Params) {
     [providerSwitchStatus],
   )
   const switchboardTargetDirsLabel =
-    providerSwitchStatus?.dirs?.map((d: any) => d.cli_home).join(' | ') || '-'
+    providerSwitchStatus?.dirs?.map((d) => d.cli_home).join(' | ') || '-'
 
   const usageSummary = usageStatistics?.summary ?? null
   const usageTimelineRaw = usageSummary?.timeline ?? []
   const usageTimeline = useMemo(
-    () => [...usageTimelineRaw].sort((a: any, b: any) => a.bucket_unix_ms - b.bucket_unix_ms),
+    () => [...usageTimelineRaw].sort((a, b) => a.bucket_unix_ms - b.bucket_unix_ms),
     [usageTimelineRaw],
   )
   const usageByModel = usageSummary?.by_model ?? []
   const usageByProvider = usageSummary?.by_provider ?? []
-  const usageMaxTimelineRequests = Math.max(1, ...usageTimeline.map((x: any) => x.requests ?? 0))
-  const usageMaxTimelineTokens = Math.max(1, ...usageTimeline.map((x: any) => x.total_tokens ?? 0))
-  const usageTotalInputTokens = usageByModel.reduce((sum: number, x: any) => sum + (x.input_tokens ?? 0), 0)
-  const usageTotalOutputTokens = usageByModel.reduce((sum: number, x: any) => sum + (x.output_tokens ?? 0), 0)
+  const usageMaxTimelineRequests = Math.max(1, ...usageTimeline.map((x) => x.requests ?? 0))
+  const usageMaxTimelineTokens = Math.max(1, ...usageTimeline.map((x) => x.total_tokens ?? 0))
+  const usageTotalInputTokens = usageByModel.reduce((sum: number, x) => sum + (x.input_tokens ?? 0), 0)
+  const usageTotalOutputTokens = usageByModel.reduce((sum: number, x) => sum + (x.output_tokens ?? 0), 0)
   const usageAvgTokensPerRequest =
     (usageSummary?.total_requests ?? 0) > 0
       ? Math.round((usageSummary?.total_tokens ?? 0) / (usageSummary?.total_requests ?? 1))
@@ -108,12 +135,12 @@ export function useDashboardDerivations(params: Params) {
     () => buildUsageProviderDisplayGroups(usageByProvider, usageSharedCostView),
     [usageByProvider, usageSharedCostView],
   )
-  const usagePricedRequestCount = usageByProvider.reduce((sum: number, row: any) => {
+  const usagePricedRequestCount = usageByProvider.reduce((sum: number, row) => {
     const total = usageSharedCostView.effectiveTotalByRowKey.get(usageProviderRowKey(row))
     if (total == null || !Number.isFinite(total) || total <= 0) return sum
     return sum + (row.requests ?? 0)
   }, 0)
-  const usageDedupedTotalUsedUsd = usageByProvider.reduce((sum: number, row: any) => {
+  const usageDedupedTotalUsedUsd = usageByProvider.reduce((sum: number, row) => {
     const total = usageSharedCostView.effectiveTotalByRowKey.get(usageProviderRowKey(row))
     if (total != null && Number.isFinite(total) && total > 0) return sum + total
     return sum
@@ -130,7 +157,7 @@ export function useDashboardDerivations(params: Params) {
     const bucketSeconds = usageStatistics?.bucket_seconds ?? 0
     if (bucketSeconds <= 0) return 0
     const activeBucketCount = usageTimeline.reduce(
-      (sum: number, point: any) => sum + ((point.requests ?? 0) > 0 ? 1 : 0),
+      (sum: number, point) => sum + ((point.requests ?? 0) > 0 ? 1 : 0),
       0,
     )
     if (activeBucketCount <= 0) return 0
@@ -167,7 +194,7 @@ export function useDashboardDerivations(params: Params) {
         usageByProvider,
         usageStatistics?.window_hours ?? 24,
         usageProviderRowKey,
-        formatUsdMaybe,
+        formatUsdMaybe ?? ((value) => (value == null ? '-' : String(value))),
       ),
     [usageTimeline, usageByProvider, usageStatistics?.window_hours],
   )

@@ -1,7 +1,23 @@
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import type { Config, Status } from '../types'
 
-type Params = Record<string, any>
+type Params = {
+  status: Status | null
+  config: Config | null
+  setConfig: Dispatch<SetStateAction<Config | null>>
+  setUpdatingSessionPref: Dispatch<SetStateAction<Record<string, boolean>>>
+  refreshStatus: () => Promise<void>
+  refreshConfig: () => Promise<void>
+  overrideDirtyRef: MutableRefObject<boolean>
+  flashToast: (msg: string, kind?: 'info' | 'error') => void
+  setStatus: Dispatch<SetStateAction<Status | null>>
+  setOverride?: Dispatch<SetStateAction<string>>
+  setBaselineBaseUrls: Dispatch<SetStateAction<Record<string, string>>>
+  setGatewayTokenPreview: Dispatch<SetStateAction<string>>
+  devStatus: Status
+  devConfig: Config
+}
 
 export function useAppActions(params: Params) {
   const {
@@ -21,9 +37,9 @@ export function useAppActions(params: Params) {
   } = params
 
   async function setSessionPreferred(sessionId: string, provider: string | null) {
-    setUpdatingSessionPref((m: Record<string, boolean>) => ({ ...m, [sessionId]: true }))
+    setUpdatingSessionPref((m) => ({ ...m, [sessionId]: true }))
     try {
-      const row = (status?.client_sessions ?? []).find((s: any) => s.id === sessionId)
+      const row = (status?.client_sessions ?? []).find((s) => s.id === sessionId)
       const codexSessionId = row?.codex_session_id ?? null
       if (!codexSessionId) {
         throw new Error('This session has no Codex session id yet. Send one request through the gateway first.')
@@ -38,7 +54,7 @@ export function useAppActions(params: Params) {
       const msg = e instanceof Error ? e.message : 'Failed to set session preference'
       flashToast(msg, 'error')
     } finally {
-      setUpdatingSessionPref((m: Record<string, boolean>) => ({ ...m, [sessionId]: false }))
+      setUpdatingSessionPref((m) => ({ ...m, [sessionId]: false }))
     }
   }
 
@@ -89,7 +105,7 @@ export function useAppActions(params: Params) {
 
   async function applyProviderOrder(next: string[]) {
     if (!config) return
-    setConfig((c: any) => (c ? { ...c, provider_order: next } : c))
+    setConfig((c) => (c ? { ...c, provider_order: next } : c))
     try {
       await invoke('set_provider_order', { order: next })
       await refreshConfig()
@@ -103,10 +119,10 @@ export function useAppActions(params: Params) {
     setStatus(devStatus)
     setConfig(devConfig)
     setBaselineBaseUrls(
-      Object.fromEntries(Object.entries(devConfig.providers).map(([name, p]: [string, any]) => [name, p.base_url])),
+      Object.fromEntries(Object.entries(devConfig.providers).map(([name, provider]) => [name, provider.base_url])),
     )
     setGatewayTokenPreview('ao_dev********7f2a')
-  }, [])
+  }, [devConfig, devStatus, setBaselineBaseUrls, setConfig, setGatewayTokenPreview, setStatus])
 
   return {
     setSessionPreferred,

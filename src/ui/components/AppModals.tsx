@@ -1,6 +1,26 @@
+import type {
+  Dispatch,
+  MutableRefObject,
+  PointerEvent as ReactPointerEvent,
+  ReactElement,
+  RefObject,
+  SetStateAction,
+} from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import type { SpendHistoryRow } from '../devMockData'
 import { normalizePathForCompare } from '../utils/path'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
+import type { Config } from '../types'
+import type {
+  PricingTimelineMode,
+  ProviderScheduleDraft,
+  UsageHistoryDraft,
+  UsagePricingDraft,
+  UsagePricingGroup,
+  UsagePricingSaveState,
+  UsageScheduleSaveState,
+} from '../types/usage'
+import type { KeyModalState, UsageBaseModalState } from '../hooks/providerActions/types'
 import { KeyModal } from './KeyModal'
 import { UsageBaseModal } from './UsageBaseModal'
 import { UsageHistoryModal } from './UsageHistoryModal'
@@ -11,7 +31,159 @@ import { GatewayTokenModal } from './GatewayTokenModal'
 import { ConfigModal } from './ConfigModal'
 import { CodexSwapModal } from './CodexSwapModal'
 
-type Props = Record<string, any>
+type CurrencyMenuState = {
+  provider: string
+  providers: string[]
+  left: number
+  top: number
+  width: number
+} | null
+
+type ScheduleCurrencyMenuState = {
+  rowIndex: number
+  left: number
+  top: number
+  width: number
+} | null
+
+type Props = {
+  keyModal: KeyModalState
+  setKeyModal: Dispatch<SetStateAction<KeyModalState>>
+  saveKey: () => Promise<void>
+  usageBaseModal: UsageBaseModalState
+  setUsageBaseModal: Dispatch<SetStateAction<UsageBaseModalState>>
+  clearUsageBaseUrl: (name: string) => Promise<void>
+  saveUsageBaseUrl: () => Promise<void>
+  instructionModalOpen: boolean
+  setInstructionModalOpen: Dispatch<SetStateAction<boolean>>
+  configModalOpen: boolean
+  config: Config | null
+  allProviderPanelsOpen: boolean
+  setAllProviderPanels: (open: boolean) => void
+  newProviderName: string
+  newProviderBaseUrl: string
+  nextProviderPlaceholder: string
+  setNewProviderName: Dispatch<SetStateAction<string>>
+  setNewProviderBaseUrl: Dispatch<SetStateAction<string>>
+  addProvider: () => Promise<void>
+  setConfigModalOpen: Dispatch<SetStateAction<boolean>>
+  providerListRef: RefObject<HTMLDivElement | null>
+  orderedConfigProviders: string[]
+  dragPreviewOrder: string[] | null
+  draggingProvider: string | null
+  dragCardHeight: number
+  renderProviderCard: (name: string, overlay?: boolean) => ReactElement | null
+  gatewayModalOpen: boolean
+  gatewayTokenPreview: string
+  gatewayTokenReveal: string
+  setGatewayModalOpen: Dispatch<SetStateAction<boolean>>
+  setGatewayTokenReveal: Dispatch<SetStateAction<string>>
+  setGatewayTokenPreview: Dispatch<SetStateAction<string>>
+  flashToast: (msg: string, kind?: 'info' | 'error') => void
+  usageHistoryModalOpen: boolean
+  setUsageHistoryModalOpen: Dispatch<SetStateAction<boolean>>
+  usageHistoryLoading: boolean
+  usageHistoryRows: SpendHistoryRow[]
+  usageHistoryDrafts: Record<string, UsageHistoryDraft>
+  usageHistoryEditCell: string | null
+  setUsageHistoryDrafts: Dispatch<SetStateAction<Record<string, UsageHistoryDraft>>>
+  setUsageHistoryEditCell: Dispatch<SetStateAction<string | null>>
+  historyDraftFromRow: (row: SpendHistoryRow) => UsageHistoryDraft
+  historyPerReqDisplayValue: (row: SpendHistoryRow) => number | null
+  historyEffectiveDisplayValue: (row: SpendHistoryRow) => number | null
+  formatUsdMaybe: (value: number | null | undefined) => string
+  fmtHistorySource: (source?: string | null) => string
+  queueUsageHistoryAutoSave: (row: SpendHistoryRow, field: 'effective' | 'per_req') => void
+  clearAutoSaveTimer: (key: string) => void
+  saveUsageHistoryRow: (
+    row: SpendHistoryRow,
+    options?: { silent?: boolean; keepEditCell?: boolean; field?: 'effective' | 'per_req' },
+  ) => Promise<void>
+  refreshUsageHistory: (options?: { silent?: boolean; keepEditCell?: boolean }) => Promise<void>
+  refreshUsageStatistics: (options?: { silent?: boolean }) => Promise<void>
+  usageHistoryTableSurfaceRef: RefObject<HTMLDivElement | null>
+  usageHistoryTableWrapRef: RefObject<HTMLDivElement | null>
+  usageHistoryScrollbarOverlayRef: RefObject<HTMLDivElement | null>
+  usageHistoryScrollbarThumbRef: RefObject<HTMLDivElement | null>
+  scheduleUsageHistoryScrollbarSync: () => void
+  activateUsageHistoryScrollbarUi: () => void
+  onUsageHistoryScrollbarPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onUsageHistoryScrollbarPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onUsageHistoryScrollbarPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onUsageHistoryScrollbarLostPointerCapture: () => void
+  usagePricingModalOpen: boolean
+  setUsagePricingModalOpen: Dispatch<SetStateAction<boolean>>
+  fxRatesDate: string
+  usagePricingGroups: UsagePricingGroup[]
+  usagePricingProviderNames: string[]
+  usagePricingDrafts: Record<string, UsagePricingDraft>
+  usagePricingSaveState: Record<string, UsagePricingSaveState>
+  setUsagePricingDrafts: Dispatch<SetStateAction<Record<string, UsagePricingDraft>>>
+  buildUsagePricingDraft: (providerName: string, providerCfg?: Config['providers'][string]) => UsagePricingDraft
+  queueUsagePricingAutoSaveForProviders: (providerNames: string[], draft: UsagePricingDraft) => void
+  setUsagePricingSaveStateForProviders: (providerNames: string[], state: UsagePricingSaveState) => void
+  saveUsagePricingForProviders: (
+    providerNames: string[],
+    draft: UsagePricingDraft,
+    options?: { silent?: boolean },
+  ) => Promise<boolean>
+  openUsageScheduleModal: (providerName: string, seedCurrency?: string, options?: { keepVisible?: boolean }) => Promise<void>
+  providerPreferredCurrency: (providerName: string) => string
+  pricingDraftSignature: (draft: UsagePricingDraft) => string
+  usagePricingLastSavedSigRef: MutableRefObject<Record<string, string>>
+  usagePricingCurrencyMenu: CurrencyMenuState
+  setUsagePricingCurrencyMenu: Dispatch<SetStateAction<CurrencyMenuState>>
+  usagePricingCurrencyQuery: string
+  setUsagePricingCurrencyQuery: Dispatch<SetStateAction<string>>
+  usageCurrencyOptions: string[]
+  normalizeCurrencyCode: (code: string) => string
+  currencyLabel: (code: string) => string
+  usagePricingCurrencyMenuRef: RefObject<HTMLDivElement | null>
+  updateUsagePricingCurrency: (providerNames: string[], draft: UsagePricingDraft, nextCurrency: string) => void
+  closeUsagePricingCurrencyMenu: () => void
+  usageScheduleModalOpen: boolean
+  usageScheduleLoading: boolean
+  usageScheduleRows: ProviderScheduleDraft[]
+  providerDisplayName: (providerName: string) => string
+  providerApiKeyLabel: (providerName: string) => string
+  usageScheduleCurrencyMenu: ScheduleCurrencyMenuState
+  setUsageScheduleCurrencyMenu: Dispatch<SetStateAction<ScheduleCurrencyMenuState>>
+  usageScheduleCurrencyQuery: string
+  setUsageScheduleCurrencyQuery: Dispatch<SetStateAction<string>>
+  setUsageScheduleSaveState: Dispatch<SetStateAction<UsageScheduleSaveState>>
+  setUsageScheduleRows: Dispatch<SetStateAction<ProviderScheduleDraft[]>>
+  usageScheduleProviderOptions: string[]
+  usageScheduleProvider: string
+  parsePositiveAmount: (value: string) => number | null
+  fxRatesByCurrency: Record<string, number>
+  convertCurrencyToUsd: (rates: Record<string, number>, amount: number, currency: string) => number
+  linkedProvidersForApiKey: (apiKeyRef: string, fallbackProvider: string) => string[]
+  newScheduleDraft: (
+    providerName: string,
+    seedAmountUsd?: number | null,
+    seedCurrency?: string,
+    seedMode?: PricingTimelineMode,
+    groupProviders?: string[],
+  ) => ProviderScheduleDraft
+  usageScheduleSaveState: UsageScheduleSaveState
+  usageScheduleSaveStatusText: string
+  usageScheduleCurrencyMenuRef: RefObject<HTMLDivElement | null>
+  updateUsageScheduleCurrency: (rowIndex: number, nextCurrency: string) => void
+  closeUsageScheduleCurrencyMenu: () => void
+  clearUsageScheduleRowsAutoSave: () => void
+  setUsageScheduleSaveError: Dispatch<SetStateAction<string>>
+  setUsageScheduleModalOpen: Dispatch<SetStateAction<boolean>>
+  codexSwapModalOpen: boolean
+  codexSwapDir1: string
+  codexSwapDir2: string
+  codexSwapApplyBoth: boolean
+  setCodexSwapDir1: Dispatch<SetStateAction<string>>
+  setCodexSwapDir2: Dispatch<SetStateAction<string>>
+  setCodexSwapApplyBoth: Dispatch<SetStateAction<boolean>>
+  setCodexSwapModalOpen: Dispatch<SetStateAction<boolean>>
+  toggleCodexSwap: (homes: string[]) => Promise<void>
+  resolveCliHomes: (dir1: string, dir2: string, applyBoth: boolean) => string[]
+}
 
 export function AppModals(props: Props) {
   const {
@@ -146,7 +318,7 @@ export function AppModals(props: Props) {
         open={keyModal.open}
         provider={keyModal.provider}
         value={keyModal.value}
-        onChange={(value) => setKeyModal((m: any) => ({ ...m, value }))}
+        onChange={(value) => setKeyModal((m) => ({ ...m, value }))}
         onCancel={() => setKeyModal({ open: false, provider: '', value: '' })}
         onSave={() => void saveKey()}
       />
@@ -157,7 +329,7 @@ export function AppModals(props: Props) {
         value={usageBaseModal.value}
         explicitValue={usageBaseModal.explicitValue}
         onChange={(value) =>
-          setUsageBaseModal((m: any) => ({
+          setUsageBaseModal((m) => ({
             ...m,
             value,
             auto: false,

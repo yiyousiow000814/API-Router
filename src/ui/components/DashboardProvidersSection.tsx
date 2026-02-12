@@ -1,4 +1,4 @@
-﻿import { ProvidersTable } from './ProvidersTable'
+import { ProvidersTable } from './ProvidersTable'
 import type { Status } from '../types'
 
 type Props = {

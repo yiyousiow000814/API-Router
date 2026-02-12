@@ -1,4 +1,4 @@
-﻿.aoBtnDangerSoft {
+.aoBtnDangerSoft {
   /* Less visually "alarming" than aoBtnDanger; turns red only on hover. */
   background: rgba(13, 18, 32, 0.04);
   border-color: rgba(13, 18, 32, 0.14);

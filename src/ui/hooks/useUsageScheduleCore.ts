@@ -1,5 +1,7 @@
+import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import type { SpendHistoryRow } from '../devMockData'
 import type { Config } from '../types'
 import type {
   PricingTimelineMode,
@@ -43,7 +45,50 @@ import {
 const FX_RATES_CACHE_KEY = 'ao.fx.usd.daily.v1'
 const FX_CURRENCY_PREF_KEY_PREFIX = 'ao.usagePricing.currency.'
 
-type Params = Record<string, any>
+type UsagePricingCurrencyMenuState = {
+  provider: string
+  providers: string[]
+  left: number
+  top: number
+  width: number
+} | null
+
+type UsageScheduleCurrencyMenuState = {
+  rowIndex: number
+  left: number
+  top: number
+  width: number
+} | null
+
+type Params = {
+  config: Config | null
+  fxRatesByCurrency: Record<string, number>
+  setFxRatesByCurrency: Dispatch<SetStateAction<Record<string, number>>>
+  setFxRatesDate: Dispatch<SetStateAction<string>>
+  setUsagePricingDrafts: Dispatch<SetStateAction<Record<string, UsagePricingDraft>>>
+  queueUsagePricingAutoSaveForProviders: (providerNames: string[], draft: UsagePricingDraft) => void
+  usageScheduleRows: ProviderScheduleDraft[]
+  setUsageScheduleRows: Dispatch<SetStateAction<ProviderScheduleDraft[]>>
+  setUsageScheduleCurrencyMenu: Dispatch<SetStateAction<UsageScheduleCurrencyMenuState>>
+  setUsageScheduleCurrencyQuery: Dispatch<SetStateAction<string>>
+  setUsageScheduleProvider: Dispatch<SetStateAction<string>>
+  setUsageScheduleModalOpen: Dispatch<SetStateAction<boolean>>
+  setUsageScheduleLoading: Dispatch<SetStateAction<boolean>>
+  setUsageScheduleSaveState: Dispatch<SetStateAction<'idle' | 'saving' | 'saved' | 'invalid' | 'error'>>
+  setUsageScheduleSaveError: Dispatch<SetStateAction<string>>
+  setUsageScheduleSaving: Dispatch<SetStateAction<boolean>>
+  usageScheduleModalOpen: boolean
+  usageScheduleProviderOptions: string[]
+  usageScheduleLastSavedSigRef: MutableRefObject<string>
+  usageScheduleLastSavedByProviderRef: MutableRefObject<Record<string, string>>
+  setUsagePricingCurrencyMenu: Dispatch<SetStateAction<UsagePricingCurrencyMenuState>>
+  setUsagePricingCurrencyQuery: Dispatch<SetStateAction<string>>
+  flashToast: (msg: string, kind?: 'info' | 'error') => void
+  refreshConfig: () => Promise<void>
+  refreshUsageStatistics: (options?: { silent?: boolean }) => Promise<void>
+  usageHistoryModalOpen: boolean
+  refreshUsageHistory: (options?: { silent?: boolean; keepEditCell?: boolean }) => Promise<void>
+}
 
 export function useUsageScheduleCore(params: Params) {
   const {
@@ -105,7 +150,7 @@ export function useUsageScheduleCore(params: Params) {
 
   function linkedProvidersForApiKey(apiKeyRef: string, fallbackProvider: string): string[] {
     const normalized = String(apiKeyRef ?? '').trim()
-    if (!normalized || normalized === '-') return [fallbackProvider]
+    if (!normalized || normalized === '-' || normalized === 'set') return [fallbackProvider]
     const names = Object.keys(config?.providers ?? {}).filter((name) => providerApiKeyLabel(name) === normalized)
     if (!names.length) return [fallbackProvider]
     names.sort((a, b) => a.localeCompare(b))
@@ -223,15 +268,15 @@ export function useUsageScheduleCore(params: Params) {
     )
   }
 
-  function historyEffectiveDisplayValue(row: any): number | null {
+  function historyEffectiveDisplayValue(row: SpendHistoryRow): number | null {
     return computeHistoryEffectiveDisplayValue(row)
   }
 
-  function historyPerReqDisplayValue(row: any): number | null {
+  function historyPerReqDisplayValue(row: SpendHistoryRow): number | null {
     return computeHistoryPerReqDisplayValue(row)
   }
 
-  function historyDraftFromRow(row: any): UsageHistoryDraft {
+  function historyDraftFromRow(row: SpendHistoryRow): UsageHistoryDraft {
     return buildHistoryDraftFromRow(row, formatDraftAmount)
   }
 

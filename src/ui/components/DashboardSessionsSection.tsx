@@ -1,4 +1,4 @@
-﻿import { SessionsTable } from './SessionsTable'
+import { SessionsTable } from './SessionsTable'
 import type { Status } from '../types'
 
 type Props = {

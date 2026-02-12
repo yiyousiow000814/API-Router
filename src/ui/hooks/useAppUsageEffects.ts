@@ -1,6 +1,74 @@
+import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
 import { useEffect } from 'react'
+import type { Config } from '../types'
+import type {
+  ProviderScheduleDraft,
+  UsagePricingDraft,
+  UsagePricingSaveState,
+  UsageScheduleSaveState,
+} from '../types/usage'
+import type { SpendHistoryRow } from '../devMockData'
 
-type Params = Record<string, any>
+type PricingCurrencyMenuState = {
+  provider: string
+  providers: string[]
+  left: number
+  top: number
+  width: number
+} | null
+
+type ScheduleCurrencyMenuState = {
+  rowIndex: number
+  left: number
+  top: number
+  width: number
+} | null
+
+type Params = {
+  activePage: 'dashboard' | 'usage_statistics' | 'provider_switchboard'
+  refreshUsageStatistics: (options?: { silent?: boolean }) => Promise<void>
+  usageWindowHours: number
+  usageFilterProviders: string[]
+  usageFilterModels: string[]
+  isDevPreview: boolean
+  refreshFxRatesDaily: (force?: boolean) => Promise<void>
+  usagePricingModalOpen: boolean
+  usagePricingDraftsPrimedRef: MutableRefObject<boolean>
+  closeUsagePricingCurrencyMenu: () => void
+  clearAutoSaveTimersByPrefix: (prefix: string) => void
+  usagePricingLastSavedSigRef: MutableRefObject<Record<string, string>>
+  setUsagePricingSaveState: Dispatch<SetStateAction<Record<string, UsagePricingSaveState>>>
+  config: Config | null
+  usagePricingProviderNames: string[]
+  setUsagePricingDrafts: Dispatch<SetStateAction<Record<string, UsagePricingDraft>>>
+  buildUsagePricingDraft: (providerName: string, providerCfg?: Config['providers'][string]) => UsagePricingDraft
+  pricingDraftSignature: (draft: UsagePricingDraft) => string
+  usageHistoryModalOpen: boolean
+  clearAutoSaveTimer: (key: string) => void
+  resetUsageHistoryScrollbarState: () => void
+  clearUsageHistoryScrollbarTimers: () => void
+  usageHistoryLoadedRef: MutableRefObject<boolean>
+  refreshUsageHistory: (options?: { silent?: boolean; keepEditCell?: boolean }) => Promise<void>
+  refreshUsageHistoryScrollbarUi: () => void
+  usageHistoryRows: SpendHistoryRow[]
+  scheduleUsageHistoryScrollbarSync: () => void
+  usagePricingCurrencyMenu: PricingCurrencyMenuState
+  usagePricingCurrencyMenuRef: RefObject<HTMLDivElement | null>
+  usageScheduleCurrencyMenu: ScheduleCurrencyMenuState
+  usageScheduleCurrencyMenuRef: RefObject<HTMLDivElement | null>
+  closeUsageScheduleCurrencyMenu: () => void
+  usageScheduleModalOpen: boolean
+  usageScheduleLoading: boolean
+  usageScheduleSaving: boolean
+  scheduleRowsSignature: (rows: ProviderScheduleDraft[]) => string
+  usageScheduleRows: ProviderScheduleDraft[]
+  usageScheduleLastSavedSigRef: MutableRefObject<string>
+  usageScheduleSaveState: UsageScheduleSaveState
+  setUsageScheduleSaveState: Dispatch<SetStateAction<UsageScheduleSaveState>>
+  setUsageScheduleSaveError: Dispatch<SetStateAction<string>>
+  queueAutoSaveTimer: (key: string, callback: () => void, delayMs?: number) => void
+  autoSaveUsageScheduleRows: (rows: ProviderScheduleDraft[], signature: string) => Promise<void>
+}
 
 export function useAppUsageEffects(params: Params) {
   const {
@@ -74,8 +142,8 @@ export function useAppUsageEffects(params: Params) {
     void refreshFxRatesDaily(false)
     if (usagePricingDraftsPrimedRef.current) return
     setUsagePricingDrafts(() => {
-      const next: Record<string, any> = {}
-      usagePricingProviderNames.forEach((providerName: string) => {
+      const next: Record<string, UsagePricingDraft> = {}
+      usagePricingProviderNames.forEach((providerName) => {
         const providerCfg = config?.providers?.[providerName]
         next[providerName] = buildUsagePricingDraft(providerName, providerCfg)
         usagePricingLastSavedSigRef.current[providerName] = pricingDraftSignature(next[providerName])
@@ -83,8 +151,8 @@ export function useAppUsageEffects(params: Params) {
       return next
     })
     setUsagePricingSaveState(() => {
-      const next: Record<string, any> = {}
-      usagePricingProviderNames.forEach((providerName: string) => {
+      const next: Record<string, UsagePricingSaveState> = {}
+      usagePricingProviderNames.forEach((providerName) => {
         next[providerName] = 'saved'
       })
       return next
@@ -95,10 +163,10 @@ export function useAppUsageEffects(params: Params) {
   useEffect(() => {
     if (!usagePricingModalOpen || !config || !usagePricingDraftsPrimedRef.current) return
     const providerSet = new Set(usagePricingProviderNames)
-    setUsagePricingDrafts((prev: Record<string, any>) => {
-      const next: Record<string, any> = { ...prev }
+    setUsagePricingDrafts((prev) => {
+      const next: Record<string, UsagePricingDraft> = { ...prev }
       let changed = false
-      usagePricingProviderNames.forEach((providerName: string) => {
+      usagePricingProviderNames.forEach((providerName) => {
         if (next[providerName]) return
         const providerCfg = config.providers?.[providerName]
         next[providerName] = buildUsagePricingDraft(providerName, providerCfg)
@@ -113,10 +181,10 @@ export function useAppUsageEffects(params: Params) {
       })
       return changed ? next : prev
     })
-    setUsagePricingSaveState((prev: Record<string, any>) => {
-      const next: Record<string, any> = { ...prev }
+    setUsagePricingSaveState((prev) => {
+      const next: Record<string, UsagePricingSaveState> = { ...prev }
       let changed = false
-      usagePricingProviderNames.forEach((providerName: string) => {
+      usagePricingProviderNames.forEach((providerName) => {
         if (next[providerName]) return
         next[providerName] = 'saved'
         changed = true
