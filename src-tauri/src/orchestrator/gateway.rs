@@ -1405,6 +1405,7 @@ fn passthrough_sse_and_persist(
     let stream = async_stream::stream! {
         let mut forwarded_bytes: u64 = 0;
         let mut mismatch_logged = false;
+        let mut created_model_for_usage: Option<String> = None;
         loop {
             let item = match tokio::time::timeout(
                 std::time::Duration::from_secs(idle_timeout_seconds),
@@ -1447,6 +1448,7 @@ fn passthrough_sse_and_persist(
                 Ok(b) => {
                     tap.lock().feed(&b);
                     if let Some(model) = tap.lock().take_created_model() {
+                        created_model_for_usage = Some(model.clone());
                         update_session_response_model(&st2, &session_key2, &model);
                         if !mismatch_logged {
                             let req = requested_model2.as_deref().map(str::trim).filter(|s| !s.is_empty());
@@ -1528,7 +1530,12 @@ fn passthrough_sse_and_persist(
                 }
             }
             st2.store
-                .record_success(&provider2, &resp_obj, Some(&api_key_ref2));
+                .record_success_with_model(
+                    &provider2,
+                    &resp_obj,
+                    Some(&api_key_ref2),
+                    created_model_for_usage.as_deref(),
+                );
         }
     };
 
