@@ -45,7 +45,7 @@ export function SessionsTable({
           <th className="aoSessionsCellCenter" style={{ width: 110 }}>
             State
           </th>
-          <th style={{ width: 170 }}>Last seen</th>
+          <th style={{ width: 150 }}>Last seen</th>
           <th style={{ width: 160 }}>Codex provider</th>
           <th style={{ width: 130 }}>Model</th>
           <th>Routing provider</th>
