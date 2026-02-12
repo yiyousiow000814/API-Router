@@ -173,8 +173,9 @@ pub fn run() {
             }
         }));
     }
+    let app_profile_for_setup = app_profile.clone();
     builder
-        .setup(|app| {
+        .setup(move |app| {
             // UI automation should not steal focus or visibly pop up windows.
             // The WebView still needs a real window on Windows/WebView2, so we move it far off-screen
             // and hide it from the taskbar (best-effort).
@@ -205,7 +206,7 @@ pub fn run() {
             // - user-data/secrets.json
             // - user-data/data/* (sled store, metrics, events)
             let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
-            let app_profile = app_profile_name();
+            let app_profile = app_profile_for_setup.clone();
             let user_data_dir = if is_ui_tauri {
                 if let Ok(p) = std::env::var("UI_TAURI_PROFILE_DIR") {
                     let p = PathBuf::from(p);
@@ -2657,7 +2658,7 @@ fn apply_delete_provider(
         return Err(format!("unknown provider: {name}"));
     }
 
-    if cfg.providers.len() == 1 && cfg.providers.contains_key(name) {
+    if cfg.providers.len() == 1 {
         return Err("cannot delete the last provider".to_string());
     }
 
