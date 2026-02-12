@@ -1,4 +1,5 @@
-.aoSessionsCellCenter {
+.aoTable th.aoSessionsCellCenter,
+.aoTable td.aoSessionsCellCenter {
   text-align: center;
 }
 

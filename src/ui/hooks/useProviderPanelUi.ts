@@ -112,7 +112,7 @@ export function useProviderPanelUi(params: Params) {
       await refreshStatus()
       await refreshConfig()
     },
-    [providerNameDrafts, refreshConfig, refreshStatus],
+    [providerNameDrafts, refreshConfig, refreshStatus, flashToast],
   )
 
   const renderProviderCard = useMemo(
