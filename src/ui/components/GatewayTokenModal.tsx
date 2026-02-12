@@ -15,7 +15,7 @@ export function GatewayTokenModal({ open, tokenPreview, tokenReveal, onClose, on
   if (!open) return null
   return (
     <ModalBackdrop onClose={onClose}>
-      <div className="aoModal w-[min(560px,92vw)] rounded-2xl p-6">
+      <div className="aoModal !w-[min(560px,92vw)] !rounded-2xl !p-6">
         <div className="aoModalTitle text-lg font-semibold tracking-tight">Codex gateway token</div>
         <div className="aoModalSub mt-2 text-sm leading-6">
           Set <span style={{ fontFamily: mono }}>OPENAI_API_KEY</span> in{' '}

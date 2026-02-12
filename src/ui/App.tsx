@@ -387,6 +387,7 @@ export default function App() {
     setProviderSwitchBusy,
     setUsageStatistics,
     setUsageStatisticsLoading,
+    setUpdatingSessionPref,
     flashToast,
     resolveCliHomes,
     devConfig,
@@ -395,7 +396,7 @@ export default function App() {
   const setProviderSwitchTarget = backendActions.setProviderSwitchTarget, refreshStatus = backendActions.refreshStatus, refreshConfig = backendActions.refreshConfig
   const setSessionPreferred = useCallback(
     async (sessionId: string, provider: string | null) => {
-      await backendActions.setSessionPreferred(sessionId, provider, setUpdatingSessionPref)
+      await backendActions.setSessionPreferred(sessionId, provider)
     },
     [backendActions],
   )

@@ -28,6 +28,7 @@ type Args = {
   setProviderSwitchBusy: Dispatch<SetStateAction<boolean>>
   setUsageStatistics: Dispatch<SetStateAction<UsageStatistics | null>>
   setUsageStatisticsLoading: Dispatch<SetStateAction<boolean>>
+  setUpdatingSessionPref: Dispatch<SetStateAction<Record<string, boolean>>>
   flashToast: (msg: string, kind?: 'info' | 'error') => void
   resolveCliHomes: (dir1: string, dir2: string, applyBoth: boolean) => string[]
   devConfig: Config
@@ -227,12 +228,8 @@ export function useAppBackendActions(args: Args) {
   )
 
   const setSessionPreferred = useCallback(
-    async (
-      sessionId: string,
-      provider: string | null,
-      setUpdatingSessionPref: Dispatch<SetStateAction<Record<string, boolean>>>,
-    ) => {
-      setUpdatingSessionPref((map) => ({ ...map, [sessionId]: true }))
+    async (sessionId: string, provider: string | null) => {
+      args.setUpdatingSessionPref((map) => ({ ...map, [sessionId]: true }))
       try {
         const row = (args.status?.client_sessions ?? []).find((session) => session.id === sessionId)
         const codexSessionId = row?.codex_session_id ?? null
@@ -249,7 +246,7 @@ export function useAppBackendActions(args: Args) {
         const msg = error instanceof Error ? error.message : 'Failed to set session preference'
         args.flashToast(msg, 'error')
       } finally {
-        setUpdatingSessionPref((map) => ({ ...map, [sessionId]: false }))
+        args.setUpdatingSessionPref((map) => ({ ...map, [sessionId]: false }))
       }
     },
     [args, refreshStatus],

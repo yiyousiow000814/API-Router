@@ -327,7 +327,7 @@ export function useAppEffects(params: Params) {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('resize', onViewportChange)
     }
-  }, [params.usageScheduleCurrencyMenu])
+  }, [params.usageScheduleCurrencyMenu, params.closeUsageScheduleCurrencyMenu])
 
   useEffect(() => {
     if (!params.usageScheduleModalOpen || params.usageScheduleLoading || params.usageScheduleSaving) return

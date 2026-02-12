@@ -26,7 +26,7 @@ export function UsageBaseModal({
   if (!open) return null
   return (
     <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={onCancel}>
-      <div className="aoModal w-[min(560px,92vw)] rounded-2xl p-6">
+      <div className="aoModal !w-[min(560px,92vw)] !rounded-2xl !p-6">
         <div className="aoModalTitle text-lg font-semibold tracking-tight">Usage base URL</div>
         <div className="aoModalSub mt-2 text-sm leading-6">
           Provider: <span style={{ fontFamily: mono }}>{provider}</span>
