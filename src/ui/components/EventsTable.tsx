@@ -12,8 +12,8 @@ type Props = {
 export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
   const allEvents = events ?? []
 
-  const errors = allEvents.filter((e) => e.level === 'error').slice(0, 5)
-  const warnings = allEvents.filter((e) => e.level === 'warning').slice(0, 5)
+  const errors = allEvents.filter((e) => e.level === 'error')
+  const warnings = allEvents.filter((e) => e.level === 'warning')
   const infos = allEvents.filter((e) => e.level !== 'error' && e.level !== 'warning').slice(0, 5)
 
   const renderRow = (e: Status['recent_events'][number], key: string) => {
