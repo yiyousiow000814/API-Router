@@ -17,11 +17,49 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+fn app_profile_name() -> String {
+    let raw = std::env::var("API_ROUTER_PROFILE").unwrap_or_default();
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if trimmed.is_empty() || trimmed == "default" {
+        return "default".to_string();
+    }
+    let normalized: String = trimmed
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let collapsed = normalized
+        .trim_matches('-')
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if collapsed.is_empty() {
+        "default".to_string()
+    } else {
+        collapsed
+    }
+}
+
+fn profile_data_dir_name(profile: &str) -> String {
+    if profile == "default" {
+        "user-data".to_string()
+    } else {
+        format!("user-data-{profile}")
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
+    let app_profile = app_profile_name();
     let mut builder = tauri::Builder::default();
-    if !is_ui_tauri {
+    if !is_ui_tauri && app_profile == "default" {
         // Ensure clicking the EXE again focuses the existing instance instead of launching a second one.
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
@@ -62,6 +100,7 @@ pub fn run() {
             // - user-data/secrets.json
             // - user-data/data/* (sled store, metrics, events)
             let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
+            let app_profile = app_profile_name();
             let user_data_dir = if is_ui_tauri {
                 if let Ok(p) = std::env::var("UI_TAURI_PROFILE_DIR") {
                     let p = PathBuf::from(p);
@@ -74,6 +113,11 @@ pub fn run() {
                     let _ = std::fs::create_dir_all(&p);
                     p
                 }
+            } else if app_profile != "default" {
+                let base = app.path().app_data_dir()?;
+                let p = base.join(profile_data_dir_name(&app_profile));
+                let _ = std::fs::create_dir_all(&p);
+                p
             } else {
                 (|| -> Option<std::path::PathBuf> {
                     let exe = std::env::current_exe().ok()?;
@@ -160,6 +204,12 @@ pub fn run() {
 
             // Closing the window should minimize to tray instead of exiting (background mode).
             if let Some(w) = app.get_webview_window("main") {
+                if !is_ui_tauri && app_profile != "default" {
+                    let _ = w.set_title(&format!(
+                        "API Router [{}]",
+                        app_profile.to_ascii_uppercase()
+                    ));
+                }
                 let w2 = w.clone();
                 w.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -3554,7 +3604,7 @@ fn parse_number(v: &Value) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::apply_delete_provider;
+    use super::{app_profile_name, apply_delete_provider, profile_data_dir_name};
     use crate::orchestrator::config::{AppConfig, ProviderConfig};
 
     #[test]
@@ -3615,5 +3665,19 @@ mod tests {
         assert!(cfg.provider_order.iter().all(|name| name != "packycode"));
         assert_eq!(cfg.routing.preferred_provider, "official");
         assert!(cfg.routing.session_preferred_providers.is_empty());
+    }
+
+    #[test]
+    fn profile_data_dir_name_default_and_test() {
+        assert_eq!(profile_data_dir_name("default"), "user-data");
+        assert_eq!(profile_data_dir_name("test"), "user-data-test");
+    }
+
+    #[test]
+    fn app_profile_name_normalizes_invalid_chars() {
+        std::env::set_var("API_ROUTER_PROFILE", "  TeSt Profile!!  ");
+        assert_eq!(app_profile_name(), "test-profile");
+        std::env::remove_var("API_ROUTER_PROFILE");
+        assert_eq!(app_profile_name(), "default");
     }
 }
