@@ -123,7 +123,7 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
             </div>
           </td>
         </tr>
-        {errors.length || warnings.length ? (
+        {(errors.length || warnings.length) ? (
           [...warnings, ...errors]
             .sort((a, b) => b.unix_ms - a.unix_ms)
             .slice(0, 5)
