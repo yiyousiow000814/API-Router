@@ -547,10 +547,6 @@
   outline: none;
 }
 
-.aoInput::placeholder {
-  color: rgba(13, 18, 32, 0.42);
-}
-
 .aoSelect:focus,
 .aoInput:focus {
   border-color: rgba(40, 199, 217, 0.55);
