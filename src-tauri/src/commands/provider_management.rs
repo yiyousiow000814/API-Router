@@ -270,16 +270,19 @@ pub(crate) fn delete_provider(
     let mut next_preferred: Option<String> = None;
     {
         let mut cfg = state.gateway.cfg.write();
+        if !cfg.providers.contains_key(&name) {
+            return Err(format!("unknown provider: {name}"));
+        }
+        if cfg.providers.len() == 1 {
+            return Err("cannot delete the last provider".to_string());
+        }
+
         cfg.providers.remove(&name);
         cfg.provider_order.retain(|p| p != &name);
         cfg.routing
             .session_preferred_providers
             .retain(|_, pref| pref != &name);
         app_state::normalize_provider_order(&mut cfg);
-
-        if cfg.providers.is_empty() {
-            return Err("cannot delete the last provider".to_string());
-        }
 
         if cfg.routing.preferred_provider == name {
             next_preferred = cfg.providers.keys().next().cloned();
