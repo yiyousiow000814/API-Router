@@ -108,7 +108,7 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
           <td colSpan={5}>
             <div className="aoEventsSectionRow">
               <div>
-                <span>Errors / Warning</span>
+                <span>Errors / Warnings</span>
               </div>
               {(errors.length || warnings.length) && onClearErrors ? (
                 <button
