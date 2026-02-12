@@ -1459,4 +1459,107 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
+
+    #[tokio::test]
+    async fn gateway_request_sets_session_model_provider_to_api_router() {
+        let app = Router::new().route(
+            "/v1/responses",
+            post(
+                move |_body: axum::extract::Json<serde_json::Value>| async move {
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "id": "resp_ok",
+                            "output": [{"content": [{"type": "output_text", "text": "ok"}]}]
+                        })),
+                    )
+                },
+            ),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            },
+            routing: RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 1,
+                failure_threshold: 1,
+                cooldown_seconds: 1,
+                request_timeout_seconds: 5,
+            },
+            providers: std::collections::BTreeMap::from([(
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            )]),
+            provider_order: vec!["p1".to_string()],
+        };
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+        let client_sessions = Arc::new(RwLock::new(HashMap::new()));
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg)),
+            router,
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: client_sessions.clone(),
+        };
+
+        let app = build_router(state);
+        let body = json!({
+            "model": "gpt-test",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}]
+            }],
+            "stream": false
+        });
+        let session_id = "session-provider-check";
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/responses")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("session_id", session_id)
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let sessions = client_sessions.read();
+        let item = sessions.get(session_id).expect("session runtime");
+        assert_eq!(
+            item.last_reported_model_provider.as_deref(),
+            Some("api_router")
+        );
+    }
 }
