@@ -1,6 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, RefObject } from 'react'
 
+import {
+  clampDragTopToList,
+  computeAutoScrollVelocity,
+  isAtScrollBoundary,
+  shouldStopForVisibleRows,
+} from './useReorderDrag.constraints'
+import { findInsertIndex, findTouchTarget, resolveDragDirection } from './useReorderDrag.pointerMath'
+import {
+  animateReorderFlip,
+  buildNextOrder,
+  captureRects,
+  findScrollableParent,
+  hasOrderChanged,
+  pruneItemRefs,
+} from './useReorderDrag.stateHelpers'
+
 type ReorderDragParams<T extends string> = {
   items: T[]
   onReorder: (next: T[]) => void
@@ -57,158 +73,66 @@ export function useReorderDrag<T extends string>({
   const onScrollDuringDragRef = useRef<((this: HTMLElement, ev: Event) => void) | null>(null)
 
   const recomputeFromClientY = useCallback((clientY: number, opts?: { updateDirection?: boolean }) => {
-      const dragging = dragHandleIdRef.current
-      if (!dragging) return
+    const dragging = dragHandleIdRef.current
+    if (!dragging) return
 
-      const updateDirection = opts?.updateDirection ?? false
+    const updateDirection = opts?.updateDirection ?? false
+    if (updateDirection) {
+      const dyFromStart = clientY - dragStartYRef.current
+      const dyEvent = clientY - dragLastYRef.current
+      dragMovingDownRef.current = resolveDragDirection(dragMovingDownRef.current, dyFromStart, dyEvent)
+      dragLastYRef.current = clientY
+    }
 
-      if (updateDirection) {
-        const dyFromStart = clientY - dragStartYRef.current
-        const dyEvent = clientY - dragLastYRef.current
-        let movingDown = dragMovingDownRef.current
-        if (movingDown === null) {
-          if (dyFromStart > 1) movingDown = true
-          else if (dyFromStart < -1) movingDown = false
-        } else {
-          if (dyEvent > 1.5) movingDown = true
-          else if (dyEvent < -1.5) movingDown = false
-        }
-        dragMovingDownRef.current = movingDown
-        dragLastYRef.current = clientY
-      }
+    const dragTopRaw = clientY - dragPointerOffsetRef.current
+    const listNode = listRef.current
+    const listRect = listNode?.getBoundingClientRect()
+    let dragTop = dragTopRaw
 
-      // Keep the overlay positioned in list-local coordinates so it stays clipped inside the modal/list.
-      const listNode = listRef.current
-      const listRect = listNode?.getBoundingClientRect()
-      const dragTopRaw = clientY - dragPointerOffsetRef.current
-
-      // Clamp the overlay to the list's content bounds. Without this, the absolute-positioned overlay
-      // can extend the scrollHeight and allow "infinite" scrolling into blank space when dragging
-      // from the very top to the very bottom.
-      let dragTop = dragTopRaw
-      if (listNode && listRect) {
-        const dragHeight = dragCardHeightRef.current || 0
-        let maxBottomInList = 0
-
-        // Cards currently in the list (excluding the dragged card which is rendered as the overlay).
-        const current = dragOrderRef.current.length ? dragOrderRef.current : itemsRef.current
-        for (const id of current) {
-          if (id === dragging) continue
-          const node = itemRefs.current[id]
-          if (!node) continue
-          const rect = node.getBoundingClientRect()
-          maxBottomInList = Math.max(maxBottomInList, rect.bottom - listRect.top)
-        }
-
-        // Placeholder represents the dragged slot; include it in bounds so you can drag to the end.
-        const ph = listNode.querySelector('.aoProviderConfigPlaceholder') as HTMLElement | null
-        if (ph) {
-          const rect = ph.getBoundingClientRect()
-          maxBottomInList = Math.max(maxBottomInList, rect.bottom - listRect.top)
-        }
-
-        const maxTopInList = Math.max(0, maxBottomInList - dragHeight)
-        const dragTopInListRaw = dragTopRaw - listRect.top
-        const dragTopInList = Math.max(0, Math.min(maxTopInList, dragTopInListRaw))
-        dragTop = dragTopInList + listRect.top
-
-        setDragOffsetY(dragTopInList - dragStartTopInListRef.current)
-      } else {
-        setDragOffsetY(dragTopRaw - dragStartTopRef.current)
-      }
-
-      const current = dragOrderRef.current.length ? dragOrderRef.current : itemsRef.current
-      const rest = current.filter((id) => id !== dragging)
-      if (!rest.length) return
-
-      const dragHeight = dragCardHeightRef.current || 0
-      const dragBottom = dragTop + dragHeight
-      const movingDown = dragMovingDownRef.current
-
-      // Touch highlight: only when the dragged card overlaps a card in the current direction.
-      if (movingDown === null) {
-        setDragOverId(null)
-      } else {
-        const touchEps = 0.5
-        let touchTarget: T | null = null
-        let bestGap = Number.NEGATIVE_INFINITY
-
-        for (const id of rest) {
-          const node = itemRefs.current[id]
-          if (!node) continue
-          const rect = node.getBoundingClientRect()
-
-          if (movingDown) {
-            // Only consider cards below.
-            if (rect.top < dragTop + touchEps) continue
-            const gap = rect.top - dragBottom
-            if (gap <= -touchEps && gap > bestGap) {
-              bestGap = gap
-              touchTarget = id
-            }
-          } else {
-            // Only consider cards above.
-            if (rect.bottom > dragBottom - touchEps) continue
-            const gap = dragTop - rect.bottom
-            if (gap <= -touchEps && gap > bestGap) {
-              bestGap = gap
-              touchTarget = id
-            }
-          }
-        }
-
-        setDragOverId(touchTarget)
-      }
-
-      if (movingDown === null) return
-
-      // Reorder hysteresis (kept from the tuned behavior in App.tsx).
-      const dragProbe = dragTop + dragHeight * (movingDown ? 0.82 : 0.22)
-      let insertIdx = rest.length
-      for (let i = 0; i < rest.length; i += 1) {
-        const id = rest[i]
-        const node = itemRefs.current[id]
-        if (!node) continue
-        const rect = node.getBoundingClientRect()
-        const midpoint = rect.top + rect.height / 2
-        if (dragProbe < midpoint) {
-          insertIdx = i
-          break
-        }
-      }
-
-      const next = [...rest]
-      next.splice(insertIdx, 0, dragging)
-      if (next.join('|') === current.join('|')) return
-      dragOrderRef.current = next
-      const first = new Map<T, DOMRect>()
-      for (const id of current) {
-        if (id === dragging) continue
-        const node = itemRefs.current[id]
-        if (node) first.set(id, node.getBoundingClientRect())
-      }
-      setDragPreviewOrder(next)
-      requestAnimationFrame(() => {
-        for (const id of next) {
-          if (id === dragging) continue
-          const node = itemRefs.current[id]
-          const before = first.get(id)
-          if (!node || !before) continue
-          const after = node.getBoundingClientRect()
-          const dx = before.left - after.left
-          const dy = before.top - after.top
-          if (dx === 0 && dy === 0) continue
-          node.getAnimations().forEach((anim) => anim.cancel())
-          node.animate(
-            [
-              { transform: `translate(${dx}px, ${dy}px)` },
-              { transform: 'translate(0, 0)' },
-            ],
-            { duration: 200, easing: 'cubic-bezier(0.2, 0.6, 0.2, 1)' },
-          )
-        }
+    if (listNode && listRect) {
+      const currentOrder = dragOrderRef.current.length ? dragOrderRef.current : itemsRef.current
+      const { dragTop: clampedTop, dragTopInList } = clampDragTopToList({
+        listNode,
+        listRect,
+        currentOrder,
+        draggingId: dragging,
+        itemRefs: itemRefs.current,
+        dragTopRaw,
+        dragHeight: dragCardHeightRef.current || 0,
       })
-    }, [])
+      dragTop = clampedTop
+      setDragOffsetY(dragTopInList - dragStartTopInListRef.current)
+    } else {
+      setDragOffsetY(dragTopRaw - dragStartTopRef.current)
+    }
+
+    const current = dragOrderRef.current.length ? dragOrderRef.current : itemsRef.current
+    const rest = current.filter((id) => id !== dragging)
+    if (!rest.length) return
+
+    const dragHeight = dragCardHeightRef.current || 0
+    const dragBottom = dragTop + dragHeight
+    const movingDown = dragMovingDownRef.current
+
+    if (movingDown === null) {
+      setDragOverId(null)
+    } else {
+      setDragOverId(findTouchTarget(rest, itemRefs.current, dragTop, dragBottom, movingDown))
+    }
+
+    if (movingDown === null) return
+
+    const insertIdx = findInsertIndex(rest, itemRefs.current, dragTop, dragHeight, movingDown)
+    const next = buildNextOrder(rest, dragging, insertIdx)
+    if (next.join('|') === current.join('|')) return
+
+    dragOrderRef.current = next
+    const firstRects = captureRects(current, dragging, itemRefs.current)
+    setDragPreviewOrder(next)
+    requestAnimationFrame(() => {
+      animateReorderFlip(next, dragging, firstRects, itemRefs.current)
+    })
+  }, [])
 
   const stopAutoScroll = useCallback(() => {
     autoScrollVelRef.current = 0
@@ -225,73 +149,21 @@ export function useReorderDrag<T extends string>({
       if (!sp) return
       if (sp.scrollHeight <= sp.clientHeight + 1) return
 
-      const r = sp.getBoundingClientRect()
-      // Bigger edge makes it easier to trigger; easing + time-based speed keeps it smooth.
-      const edge = 72 // px
-      // Allow auto-scroll to keep running even if the pointer drifts slightly outside the scroll container.
-      // (Helps when the modal is near the window edge and you keep dragging past it.)
-      const outside = 1000 // px
-      // Faster by default, but still time-based to avoid "teleporting" on high refresh rates.
-      const maxSpeedDown = 820 // px/sec
-      const maxSpeedUp = 520 // px/sec
-      const minSpeed = 120 // px/sec (so it can still progress when just inside the edge)
+      const scrollRect = sp.getBoundingClientRect()
+      const velocity = computeAutoScrollVelocity(clientY, scrollRect)
 
-      let v = 0
-      const distTopRaw = clientY - r.top
-      const distBottomRaw = r.bottom - clientY
-      // Autoscroll direction is determined by proximity to the container edges (not drag direction),
-      // otherwise tiny pointer jitters can make it feel "hard to trigger".
-      if (distTopRaw < edge && distTopRaw > -outside) {
-        // Clamp: outside the container counts as "max trigger".
-        const distTop = Math.max(0, distTopRaw)
-        const t = (edge - distTop) / edge
-        const eased = t * t
-        v = -Math.round(minSpeed + (maxSpeedUp - minSpeed) * eased)
-      } else if (distBottomRaw < edge && distBottomRaw > -outside) {
-        const distBottom = Math.max(0, distBottomRaw)
-        const t = (edge - distBottom) / edge
-        const eased = t * t
-        v = Math.round(minSpeed + (maxSpeedDown - minSpeed) * eased)
-      }
-
-      // Don't scroll into blank space: once the first/last real row is fully visible, stop scrolling
-      // further in that direction (even if the dragged item hasn't reached idx 0/last yet).
-      if (v !== 0) {
-        const listNode = listRef.current
-        if (listNode) {
-          const kids = Array.from(listNode.children) as HTMLElement[]
-          const visibleKids = kids.filter((el) => !el.classList.contains('aoProviderConfigDragging'))
-          const firstEl = visibleKids[0] ?? null
-          const lastEl = visibleKids.length ? visibleKids[visibleKids.length - 1] : null
-          const pad = 2
-
-          if (v < 0 && firstEl) {
-            const fr = firstEl.getBoundingClientRect()
-            if (fr.top >= r.top + pad) {
-              stopAutoScroll()
-              return
-            }
-          }
-
-          if (v > 0 && lastEl) {
-            const lr = lastEl.getBoundingClientRect()
-            if (lr.bottom <= r.bottom - pad) {
-              stopAutoScroll()
-              return
-            }
-          }
-        }
-      }
-
-      // Stop at scroll bounds.
-      const maxScrollTop = Math.max(0, sp.scrollHeight - sp.clientHeight)
-      if ((v < 0 && sp.scrollTop <= 0) || (v > 0 && sp.scrollTop >= maxScrollTop - 0.5)) {
+      if (velocity !== 0 && shouldStopForVisibleRows(velocity, listRef.current, scrollRect)) {
         stopAutoScroll()
         return
       }
 
-      autoScrollVelRef.current = v
-      if (v === 0) {
+      if (isAtScrollBoundary(sp, velocity)) {
+        stopAutoScroll()
+        return
+      }
+
+      autoScrollVelRef.current = velocity
+      if (velocity === 0) {
         stopAutoScroll()
         return
       }
@@ -309,7 +181,6 @@ export function useReorderDrag<T extends string>({
         const now = performance.now()
         const last = autoScrollLastTsRef.current || now
         autoScrollLastTsRef.current = now
-        // Clamp dt so background/tab-switch doesn't cause a giant jump.
         const dt = Math.min(0.05, Math.max(0, (now - last) / 1000))
         if (dt === 0) {
           autoScrollRafRef.current = requestAnimationFrame(tick)
@@ -322,16 +193,15 @@ export function useReorderDrag<T extends string>({
           autoScrollRafRef.current = null
           return
         }
+
         const before = sp2.scrollTop
         sp2.scrollTop = Math.max(0, Math.min(maxScrollTop2, sp2.scrollTop + vel * dt))
-        // Some platforms clamp scrollTop without firing a scroll event; detect it and stop.
         if (sp2.scrollTop === before) {
           stopAutoScroll()
           autoScrollRafRef.current = null
           return
         }
 
-        // Keep highlight/reorder in sync while scrolling even if the pointer doesn't move.
         recomputeFromClientY(dragLastYRef.current, { updateDirection: false })
         autoScrollRafRef.current = requestAnimationFrame(tick)
       }
@@ -350,7 +220,6 @@ export function useReorderDrag<T extends string>({
   const onDragMove = useCallback(
     (e: PointerEvent) => {
       recomputeFromClientY(e.clientY, { updateDirection: true })
-      // Allow reaching offscreen slots by auto-scrolling the modal body near its edges.
       updateAutoScrollFromClientY(e.clientY)
     },
     [recomputeFromClientY, updateAutoScrollFromClientY],
@@ -371,6 +240,7 @@ export function useReorderDrag<T extends string>({
     dragStartTopInListRef.current = 0
     autoScrollVelRef.current = 0
     autoScrollLastTsRef.current = 0
+
     const sp = scrollParentRef.current
     if (sp && onScrollDuringDragRef.current) {
       sp.removeEventListener('scroll', onScrollDuringDragRef.current as EventListener)
@@ -384,14 +254,13 @@ export function useReorderDrag<T extends string>({
     if (!dragging) return
     const start = dragStartOrderRef.current
     const finalOrder = dragOrderRef.current.length ? dragOrderRef.current : itemsRef.current
-    const changed = start.length !== finalOrder.length || start.some((id, idx) => id !== finalOrder[idx])
+    const changed = hasOrderChanged(start, finalOrder)
     dragStartOrderRef.current = []
     dragOrderRef.current = []
     if (changed) onReorder(finalOrder)
   }, [onDragMove, onReorder, stopAutoScroll])
 
   const cancelDrag = useCallback(() => {
-    // Same cleanup as pointerup, but without committing a reorder.
     dragHandleIdRef.current = null
     stopAutoScroll()
 
@@ -443,22 +312,10 @@ export function useReorderDrag<T extends string>({
       dragCardHeightRef.current = h
       setDragCardHeight(h)
 
-      // Find the nearest scrollable parent (the Config modal body).
-      let sp: HTMLElement | null = listNode
-      while (sp) {
-        const style = window.getComputedStyle(sp)
-        const oy = style.overflowY
-        const scrollable = (oy === 'auto' || oy === 'scroll') && sp.scrollHeight > sp.clientHeight + 1
-        if (scrollable) break
-        sp = sp.parentElement
-      }
-      scrollParentRef.current = sp
-
-      // Keep overlay within the list's clipping context.
+      scrollParentRef.current = findScrollableParent(listNode)
       setDragBaseTop(dragStartTopInListRef.current)
 
-      // If the container scrolls (wheel / trackpad / programmatic), keep the overlay and
-      // drag-over calculations pinned to the pointer even if the pointer doesn't move.
+      const sp = scrollParentRef.current
       if (sp) {
         const onScroll = () => {
           recomputeFromClientY(dragLastYRef.current, { updateDirection: false })
@@ -478,16 +335,11 @@ export function useReorderDrag<T extends string>({
     [enabled, onDragMove, onDragUp, recomputeFromClientY, stopAutoScroll],
   )
 
-  // Ensure the item ref map doesn't grow unbounded if items are removed/renamed.
   useEffect(() => {
     itemsRef.current = items
-    const alive = new Set(items)
-    for (const k of Object.keys(itemRefs.current)) {
-      if (!alive.has(k as T)) delete itemRefs.current[k]
-    }
+    pruneItemRefs(itemRefs.current, items)
   }, [items])
 
-  // If the list UI is disabled/hidden (e.g. config modal closed) while dragging, clean up listeners and timers.
   useEffect(() => {
     if (enabled) return
     if (!dragHandleIdRef.current) return

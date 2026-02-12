@@ -1,0 +1,345 @@
+.aoProviderSwitchboardCard {
+  min-height: 320px;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.aoProviderSwitchboardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoSwitchThemeBand {
+  border: 1px solid rgba(40, 199, 217, 0.15);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: linear-gradient(130deg, rgba(40, 199, 217, 0.07), rgba(255, 255, 255, 0.95), rgba(242, 193, 77, 0.08));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  display: grid;
+  gap: 10px;
+}
+
+.aoSwitchThemeBandHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.aoSwitchThemeSummary {
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.aoSwitchThemeRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aoSwitchThemeKey {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: rgba(13, 18, 32, 0.62);
+}
+
+.aoSwitchThemeVal {
+  font-size: 15px;
+  font-weight: 620;
+  color: rgba(13, 18, 32, 0.88);
+}
+
+.aoSwitchThemeSep {
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.28);
+  margin: 0 1px;
+}
+
+.aoSwitchboardBlock {
+  display: grid;
+  gap: 14px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoSwitchboardSectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.aoProviderSwitchboardMetaGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+}
+
+.aoSwitchMetaCard {
+  padding: 8px 12px 8px 0;
+  border-right: 1px solid rgba(13, 18, 32, 0.11);
+  min-height: 62px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+}
+
+.aoSwitchMetaCard:last-child {
+  border-right: none;
+  padding-right: 0;
+}
+
+.aoSwitchMetaValue {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  color: rgba(13, 18, 32, 0.9);
+  font-size: 17px;
+  font-weight: 640;
+  line-height: 1.25;
+}
+
+.aoSwitchMetaDirs {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  font-weight: 560;
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+.aoSwitchQuickGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.aoSwitchSubOptions {
+  margin-top: 2px;
+  padding: 10px 12px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 12px;
+  background: rgba(13, 18, 32, 0.02);
+  display: grid;
+  gap: 10px;
+}
+
+.aoSwitchQuickBtn {
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 12px;
+  min-height: 64px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+  justify-content: center;
+  text-align: left;
+  color: rgba(13, 18, 32, 0.86);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.aoSwitchQuickBtn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(var(--ao-accent-rgb), 0.55);
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoSwitchQuickBtn.is-active {
+  border-color: rgba(40, 199, 217, 0.48);
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.22), rgba(242, 193, 77, 0.16));
+}
+
+.aoSwitchQuickBtnHint {
+  opacity: 0.9;
+  cursor: default;
+  background: rgba(13, 18, 32, 0.04);
+}
+
+.aoSwitchQuickBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+.aoSwitchQuickBtn.is-active:disabled {
+  opacity: 1;
+}
+
+
+.aoSwitchQuickTitle {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.aoSwitchQuickSub {
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.64);
+}
+
+.aoSwitchProviderGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.aoSwitchProviderBtn {
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(255, 255, 255, 0.88);
+  border-radius: 12px;
+  min-height: 164px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+  color: rgba(13, 18, 32, 0.86);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.aoSwitchProviderBtn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(var(--ao-accent-rgb), 0.55);
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoSwitchProviderBtn.is-active {
+  border-color: rgba(40, 199, 217, 0.48);
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.22), rgba(242, 193, 77, 0.16));
+}
+
+.aoSwitchProviderBtn:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.aoSwitchProviderHead {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+.aoSwitchProviderKey {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 2px 7px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+}
+
+.aoSwitchProviderKey.is-ready {
+  color: rgba(7, 107, 47, 0.9);
+  border-color: rgba(9, 153, 70, 0.3);
+  background: rgba(8, 176, 80, 0.08);
+}
+
+.aoSwitchProviderKey.is-missing {
+  color: rgba(136, 16, 42, 0.92);
+  border-color: rgba(255, 94, 125, 0.34);
+  background: rgba(255, 94, 125, 0.1);
+}
+
+.aoSwitchProviderBase {
+  width: 100%;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.62);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aoSwitchProviderUsageBody {
+  width: 100%;
+  display: grid;
+  grid-template-rows: auto auto auto;
+  gap: 2px;
+  margin-top: 8px;
+  min-height: 62px;
+}
+
+.aoSwitchProviderUsageHeadline {
+  font-size: 19px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.92);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aoSwitchProviderUsageDetail {
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.72);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aoSwitchProviderUsageSub {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.58);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aoSwitchProviderUsageSubMuted {
+  color: rgba(13, 18, 32, 0.36);
+}
+
+.aoSwitchProviderProgress {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(13, 18, 32, 0.1);
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.aoSwitchProviderProgressFill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(40, 199, 217, 0.92), rgba(242, 193, 77, 0.92));
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22) inset;
+}
+
+.aoSwitchProviderProgressFill.is-empty {
+  width: 30% !important;
+  opacity: 0.35;
+  background: linear-gradient(90deg, rgba(13, 18, 32, 0.3), rgba(13, 18, 32, 0.22));
+}
+
+@media (max-width: 1000px) {
+  .aoSwitchQuickGrid,
+  .aoSwitchProviderGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .aoSwitchMetaDirs {
+    font-size: 13px;
+  }
+
+  .aoSwitchThemeVal {
+    font-size: 15px;
+  }
+}

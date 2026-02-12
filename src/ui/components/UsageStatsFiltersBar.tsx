@@ -1,0 +1,114 @@
+type Props = {
+  usageWindowHours: number
+  setUsageWindowHours: (hours: number) => void
+  usageStatisticsLoading: boolean
+  usageFilterProviders: string[]
+  setUsageFilterProviders: (providers: string[]) => void
+  usageProviderFilterOptions: string[]
+  toggleUsageProviderFilter: (providerName: string) => void
+  usageFilterModels: string[]
+  setUsageFilterModels: (models: string[]) => void
+  usageModelFilterOptions: string[]
+  toggleUsageModelFilter: (modelName: string) => void
+}
+
+export function UsageStatsFiltersBar({
+  usageWindowHours,
+  setUsageWindowHours,
+  usageStatisticsLoading,
+  usageFilterProviders,
+  setUsageFilterProviders,
+  usageProviderFilterOptions,
+  toggleUsageProviderFilter,
+  usageFilterModels,
+  setUsageFilterModels,
+  usageModelFilterOptions,
+  toggleUsageModelFilter,
+}: Props) {
+  return (
+    <>
+      <div className="aoUsageStatsHeader">
+        <div>
+          <div className="aoPagePlaceholderTitle">Usage Statistics</div>
+          <div className="aoHint">Requests, tokens, model mix, and provider-aware estimated request pricing.</div>
+        </div>
+        <div className="aoUsageStatsActions">
+          <button
+            className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 24 ? ' aoUsageWindowBtnActive' : ''}`}
+            onClick={() => setUsageWindowHours(24)}
+            disabled={usageStatisticsLoading}
+            aria-pressed={usageWindowHours === 24}
+          >
+            24h
+          </button>
+          <button
+            className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 7 * 24 ? ' aoUsageWindowBtnActive' : ''}`}
+            onClick={() => setUsageWindowHours(7 * 24)}
+            disabled={usageStatisticsLoading}
+            aria-pressed={usageWindowHours === 7 * 24}
+          >
+            7d
+          </button>
+          <button
+            className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 30 * 24 ? ' aoUsageWindowBtnActive' : ''}`}
+            onClick={() => setUsageWindowHours(30 * 24)}
+            disabled={usageStatisticsLoading}
+            aria-pressed={usageWindowHours === 30 * 24}
+          >
+            1M
+          </button>
+        </div>
+      </div>
+      <div className="aoUsageFilterCard">
+        <div className="aoUsageFilterSection aoUsageFilterSectionCompact">
+          <div className="aoUsageFilterSectionHead">
+            <span className="aoMiniLabel">Providers</span>
+          </div>
+          <div className="aoUsageFilterChips">
+            <button
+              className={`aoUsageFilterChip${usageFilterProviders.length === 0 ? ' is-active' : ''}`}
+              disabled={usageStatisticsLoading}
+              onClick={() => setUsageFilterProviders([])}
+            >
+              All providers
+            </button>
+            {usageProviderFilterOptions.map((providerName) => (
+              <button
+                key={providerName}
+                className={`aoUsageFilterChip${usageFilterProviders.includes(providerName) ? ' is-active' : ''}`}
+                disabled={usageStatisticsLoading}
+                onClick={() => toggleUsageProviderFilter(providerName)}
+              >
+                {providerName}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="aoUsageFilterSection aoUsageFilterSectionCompact">
+          <div className="aoUsageFilterSectionHead">
+            <span className="aoMiniLabel">Models</span>
+          </div>
+          <div className="aoUsageFilterChips">
+            <button
+              className={`aoUsageFilterChip${usageFilterModels.length === 0 ? ' is-active' : ''}`}
+              disabled={usageStatisticsLoading}
+              onClick={() => setUsageFilterModels([])}
+            >
+              All models
+            </button>
+            {usageModelFilterOptions.map((modelName) => (
+              <button
+                key={modelName}
+                className={`aoUsageFilterChip${usageFilterModels.includes(modelName) ? ' is-active' : ''}`}
+                disabled={usageStatisticsLoading}
+                onClick={() => toggleUsageModelFilter(modelName)}
+              >
+                {modelName}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}

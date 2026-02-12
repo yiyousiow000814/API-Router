@@ -1,0 +1,698 @@
+﻿.aoBtnDangerSoft {
+  /* Less visually "alarming" than aoBtnDanger; turns red only on hover. */
+  background: rgba(13, 18, 32, 0.04);
+  border-color: rgba(13, 18, 32, 0.14);
+}
+
+.aoBtnDangerSoft:hover {
+  background: rgba(255, 94, 125, 0.08);
+  border-color: rgba(255, 94, 125, 0.32);
+}
+
+.aoConfigSection {
+  margin-top: 12px;
+}
+
+.aoProviderName {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoProviderNameRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoDragHandle {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(13, 18, 32, 0.7);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.aoDragHandle:hover {
+  color: rgba(var(--ao-accent-rgb), 0.9);
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoDragHandle:active {
+  cursor: grabbing;
+}
+
+.aoDragHandle svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.3;
+  stroke-linecap: round;
+  shape-rendering: geometricPrecision;
+}
+
+.aoIconGhost {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: rgba(13, 18, 32, 0.7);
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.aoIconGhost:hover {
+  color: rgba(var(--ao-accent-rgb), 0.9);
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoIconGhost svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.aoIconGhost img {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.aoNameInput {
+  height: 24px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 18, 32, 0.18);
+  padding: 0 8px;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.92);
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.aoH3 {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.76);
+}
+
+.aoHint {
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.66);
+}
+
+.aoConfigCard {
+  padding: 12px;
+}
+
+.aoConfigDeck {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+
+.aoConfigPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(13, 18, 32, 0.06);
+  background: rgba(13, 18, 32, 0.02);
+}
+
+.aoAddProviderRow {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.7fr) minmax(240px, 1.3fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.aoProviderConfigList {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 12px;
+  position: relative;
+  overflow-anchor: none;
+  /* Prevent the drag overlay shadow from being clipped by the modal body. */
+  padding-bottom: 48px;
+}
+
+.aoProviderConfigCard {
+  border: 1px solid var(--ao-line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  cursor: default;
+  transition: box-shadow 120ms ease;
+}
+
+.aoProviderConfigDragging {
+  position: relative;
+  z-index: 6;
+  /* Keep the drag overlay fully opaque to avoid blending/double-dark borders when it overlaps other cards. */
+  opacity: 1;
+  background: #fff;
+  pointer-events: none;
+  /* Avoid drop-shadows during drag: they darken underlying card borders (especially when clipped). */
+  border-color: rgba(var(--ao-accent-rgb), 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    0 0 0 3px rgba(var(--ao-accent-rgb), 0.12);
+}
+
+.aoProviderConfigPlaceholder {
+  border-radius: 16px;
+  border: 1px dashed rgba(13, 18, 32, 0.12);
+  background: rgba(13, 18, 32, 0.02);
+}
+
+.aoProviderConfigDragOver {
+  border-color: rgba(var(--ao-accent-rgb), 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    0 0 0 2px rgba(var(--ao-accent-rgb), 0.18);
+}
+
+.aoProviderConfigHeader {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.aoKeyValue {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  color: rgba(13, 18, 32, 0.86);
+  font-size: 12px;
+}
+
+.aoProviderConfigBody {
+  display: grid;
+  grid-template-columns: minmax(320px, 1.4fr) minmax(220px, 0.9fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.aoProviderField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 15px;
+}
+
+.aoProviderLeft {
+  padding-right: 12px;
+}
+
+.aoProviderRight {
+  position: relative;
+  padding-left: 16px;
+  padding-top: 15px;
+}
+
+.aoProviderRight::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 1px;
+  bottom: -22px;
+  width: 1px;
+  background: rgba(13, 18, 32, 0.08);
+}
+
+.aoProviderConfigCollapsed .aoProviderRight::before {
+  bottom: 0;
+}
+
+.aoProviderHeadRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.aoProviderHeadActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aoToggleBtn {
+  height: 24px;
+  letter-spacing: 0.04em;
+}
+
+.aoKeyRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.aoKeyActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aoUsageHeaderRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aoUsageControlsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.aoTable {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid var(--ao-line);
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.aoTable th,
+.aoTable td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.06);
+  vertical-align: middle;
+}
+
+.aoTable th {
+  text-align: left;
+  color: rgba(13, 18, 32, 0.7);
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(13, 18, 32, 0.03);
+}
+
+.aoTable tr:last-child td {
+  border-bottom: none;
+}
+
+.aoTable tr:nth-child(even) td {
+  background: rgba(13, 18, 32, 0.02);
+}
+
+.aoPill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(13, 18, 32, 0.035);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 24px;
+}
+
+.aoDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--ao-accent);
+  box-shadow: 0 0 0 3px rgba(40, 199, 217, 0.14);
+}
+
+.aoDotBad {
+  background: var(--ao-danger);
+  box-shadow: 0 0 0 3px rgba(255, 61, 102, 0.16);
+}
+
+.aoDotMuted {
+  background: rgba(13, 18, 32, 0.38);
+  box-shadow: 0 0 0 3px rgba(13, 18, 32, 0.08);
+}
+
+.aoPillText {
+  position: relative;
+  top: -0.5px; /* optical centering for Segoe UI on Windows */
+}
+
+@keyframes aoPulse {
+  0% {
+    box-shadow:
+      0 0 0 3px rgb(var(--ao-accent-rgb) / 0.16),
+      0 0 0 0 rgb(var(--ao-accent-rgb) / 0);
+    transform: translateZ(0);
+  }
+  50% {
+    box-shadow:
+      0 0 0 5px rgb(var(--ao-accent-rgb) / 0.1),
+      0 0 0 10px rgb(var(--ao-accent-rgb) / 0.04);
+  }
+  100% {
+    box-shadow:
+      0 0 0 3px rgb(var(--ao-accent-rgb) / 0.16),
+      0 0 0 0 rgb(var(--ao-accent-rgb) / 0);
+  }
+}
+
+.aoPulse .aoDot {
+  animation: aoPulse 1s ease-in-out infinite;
+}
+
+.aoPulse {
+  /* subtle synced breathing so the state reads as "alive" */
+  animation: aoPillBreath 1s ease-in-out infinite;
+}
+
+@keyframes aoPillBreath {
+  0% {
+    border-color: rgb(var(--ao-accent-rgb) / 0.22);
+    background: rgb(13 18 32 / 0.035);
+  }
+  50% {
+    border-color: rgb(var(--ao-accent2-rgb) / 0.28);
+    background: rgb(13 18 32 / 0.045);
+  }
+  100% {
+    border-color: rgb(var(--ao-accent-rgb) / 0.22);
+    background: rgb(13 18 32 / 0.035);
+  }
+}
+
+.aoActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.aoActionBtn {
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(13, 18, 32, 0.84);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  cursor: pointer;
+  font-weight: 670;
+  letter-spacing: 0.1px;
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+  background-clip: padding-box;
+}
+
+.aoActionBtn:hover {
+  border-color: rgba(13, 18, 32, 0.4);
+  background: rgba(var(--ao-accent-rgb), 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.aoActionBtn:active {
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoActionBtn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: rgba(13, 18, 32, 0.74);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  shape-rendering: geometricPrecision;
+}
+
+.aoActionBtnDanger {
+  border-color: rgba(255, 94, 125, 0.24);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  background: rgba(255, 94, 125, 0.06);
+  color: rgba(145, 12, 43, 0.92);
+}
+
+.aoActionBtnDanger:hover {
+  border-color: rgba(255, 94, 125, 0.52);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 0 0 1px rgba(13, 18, 32, 0.04);
+  background: rgba(255, 94, 125, 0.1);
+}
+
+.aoActionBtnDanger svg {
+  stroke: rgba(145, 12, 43, 0.92);
+}
+
+.aoActionBtn:disabled,
+.aoActionBtnDanger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.aoActionBtn:disabled:hover,
+.aoActionBtnDanger:disabled:hover {
+  border-color: rgba(13, 18, 32, 0.18);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+.aoIconBtn {
+  width: 34px;
+  height: 30px;
+  border-radius: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(255, 255, 255, 0.86);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: rgba(13, 18, 32, 0.5);
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+  outline: none;
+}
+
+.aoIconBtn:hover {
+  border-color: rgba(13, 18, 32, 0.4);
+  background: rgba(255, 255, 255, 0.96);
+  color: rgba(var(--ao-accent-rgb), 0.9);
+}
+
+.aoIconBtn:active {
+  transform: none;
+}
+
+.aoIconBtn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  shape-rendering: geometricPrecision;
+}
+
+.aoIconBtnMini {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+}
+
+.aoIconBtnMini svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2.1;
+}
+
+.aoIconBtnDanger:hover {
+  border-color: rgba(255, 94, 125, 0.45);
+}
+
+.aoIconBtnDanger svg {
+  stroke: rgba(145, 12, 43, 0.9);
+}
+
+.aoIconBtnDangerSoft:hover {
+  border-color: rgba(255, 94, 125, 0.45);
+  background: rgba(255, 94, 125, 0.08);
+  color: rgba(145, 12, 43, 0.9);
+}
+
+.aoActionsMenuWrap {
+  position: relative;
+  display: inline-flex;
+  justify-content: flex-end;
+  width: max-content;
+}
+
+.aoMenu {
+  position: absolute;
+  right: 0;
+  top: 36px;
+  z-index: 5;
+  width: 172px;
+  border-radius: 14px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow:
+    0 10px 28px rgba(13, 18, 32, 0.14),
+    0 2px 8px rgba(13, 18, 32, 0.08);
+  padding: 6px;
+}
+
+.aoMenuCompact {
+  top: 34px;
+  /* Match the split button width so the option feels proportional. */
+  width: 100%;
+  min-width: 0;
+  border-radius: 11px;
+  padding: 2px;
+  box-sizing: border-box;
+}
+
+.aoMenuCompact .aoMenuItem {
+  height: 32px;
+  border-radius: 12px;
+  gap: 9px;
+  padding: 0 10px;
+  font-size: 12px;
+  letter-spacing: 0.05px;
+}
+
+.aoMenuCompact .aoMenuIcon {
+  width: 16px;
+  height: 16px;
+}
+
+.aoMenuCompact .aoMenuIcon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.aoMenuCompact .aoMenuItem:hover {
+  background: rgba(13, 18, 32, 0.06);
+  border-color: rgba(13, 18, 32, 0.12);
+}
+
+.aoMenuItem {
+  width: 100%;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(13, 18, 32, 0.86);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  cursor: pointer;
+  font-weight: 650;
+  letter-spacing: 0.1px;
+}
+
+.aoMenuItem:hover {
+  background: rgba(13, 18, 32, 0.04);
+  border-color: rgba(13, 18, 32, 0.08);
+}
+
+.aoMenuIcon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.aoMenuIcon svg {
+  width: 18px;
+  height: 18px;
+  fill: rgba(13, 18, 32, 0.78);
+  shape-rendering: geometricPrecision;
+}
+
+.aoMenuItemDanger {
+  color: rgba(145, 12, 43, 0.92);
+}
+
+.aoMenuItemDanger:hover {
+  background: rgba(255, 94, 125, 0.08);
+  border-color: rgba(255, 94, 125, 0.18);
+}
+
+.aoMenuItemDanger .aoMenuIcon svg {
+  fill: rgba(145, 12, 43, 0.92);
+}
+
+.aoTableAuto {
+  /* For narrow tables (like Sessions) avoid stretching columns across the full card width. */
+  width: auto;
+  max-width: 100%;
+}
+
+.aoUrlInput {
+  width: 100%;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.aoUsageTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.aoUsageBtns {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoTinyBtn {
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(255, 255, 255, 0.86);
+  color: rgba(13, 18, 32, 0.82);
+  padding: 0 10px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+

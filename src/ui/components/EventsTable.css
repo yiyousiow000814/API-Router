@@ -1,0 +1,7 @@
+.aoEventsMono {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+}
+
+.aoEventsCellWrap {
+  word-break: break-word;
+}
