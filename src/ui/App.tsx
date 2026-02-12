@@ -621,21 +621,24 @@ export default function App() {
   const visibleEvents = useMemo(() => {
     const events = status?.recent_events ?? []
     if (!clearErrorsBeforeMs) return events
-    // UI-only clear: hide errors at or before the last cleared timestamp.
-    return events.filter((e) => e.level !== 'error' || e.unix_ms > clearErrorsBeforeMs)
+    // UI-only clear: hide errors/warnings at or before the last cleared timestamp.
+    return events.filter((e) => (e.level !== 'error' && e.level !== 'warning') || e.unix_ms > clearErrorsBeforeMs)
   }, [status, clearErrorsBeforeMs])
 
-  const canClearErrors = useMemo(() => visibleEvents.some((e) => e.level === 'error'), [visibleEvents])
+  const canClearErrors = useMemo(
+    () => visibleEvents.some((e) => e.level === 'error' || e.level === 'warning'),
+    [visibleEvents]
+  )
 
   const clearErrors = useCallback(() => {
     const events = status?.recent_events ?? []
-    let maxErrorUnixMs = 0
+    let maxIssueUnixMs = 0
     for (const e of events) {
-      if (e.level !== 'error') continue
-      if (e.unix_ms > maxErrorUnixMs) maxErrorUnixMs = e.unix_ms
+      if (e.level !== 'error' && e.level !== 'warning') continue
+      if (e.unix_ms > maxIssueUnixMs) maxIssueUnixMs = e.unix_ms
     }
-    if (!maxErrorUnixMs) return
-    setClearErrorsBeforeMs((prev) => Math.max(prev, maxErrorUnixMs))
+    if (!maxIssueUnixMs) return
+    setClearErrorsBeforeMs((prev) => Math.max(prev, maxIssueUnixMs))
   }, [status])
 
   // Keep a stable UI ordering for sessions across status polls so rows don't "jump" just because

@@ -13,9 +13,12 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
   const allEvents = events ?? []
 
   const errors = allEvents.filter((e) => e.level === 'error').slice(0, 5)
-  const infos = allEvents.filter((e) => e.level !== 'error').slice(0, 5)
+  const warnings = allEvents.filter((e) => e.level === 'warning').slice(0, 5)
+  const infos = allEvents.filter((e) => e.level !== 'error' && e.level !== 'warning').slice(0, 5)
 
-  const renderRow = (e: Status['recent_events'][number], key: string, isError: boolean) => {
+  const renderRow = (e: Status['recent_events'][number], key: string) => {
+    const isError = e.level === 'error'
+    const isWarning = e.level === 'warning'
     const f: Record<string, unknown> = e.fields ?? {}
     const isSessionPref =
       e.code === 'config.session_preferred_provider_updated' || e.code === 'config.session_preferred_provider_cleared'
@@ -44,14 +47,20 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
       : ''
 
     return (
-      <tr key={key} className={isError ? 'aoEventRowError' : undefined}>
+      <tr key={key} className={isError ? 'aoEventRowError' : isWarning ? 'aoEventRowWarning' : undefined}>
         <td title={fmtWhen(e.unix_ms)}>{fmtAgo(e.unix_ms)}</td>
         <td style={{ fontFamily: mono }} title={sessionTitle}>
           {sessionCell}
         </td>
         <td style={{ fontFamily: mono }}>{e.provider}</td>
         <td>
-          <span className={`aoLevelBadge ${isError ? 'aoLevelBadgeError' : 'aoLevelBadgeInfo'}`}>{e.level}</span>
+          <span
+            className={`aoLevelBadge ${
+              isError ? 'aoLevelBadgeError' : isWarning ? 'aoLevelBadgeWarning' : 'aoLevelBadgeInfo'
+            }`}
+          >
+            {e.level}
+          </span>
         </td>
         <td className="aoCellWrap">
           <span className="aoEventMessage" title={e.code ? `${e.code}: ${e.message}` : e.message}>
@@ -80,7 +89,7 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
           </td>
         </tr>
         {infos.length ? (
-          infos.map((e, idx) => renderRow(e, `${e.unix_ms}-info-${idx}`, false))
+          infos.map((e, idx) => renderRow(e, `${e.unix_ms}-info-${idx}`))
         ) : (
           <tr>
             <td colSpan={5} className="aoHint">
@@ -99,14 +108,14 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
           <td colSpan={5}>
             <div className="aoEventsSectionRow">
               <div>
-                <span>Errors</span>
+                <span>Errors / Warnings</span>
               </div>
-              {errors.length && onClearErrors ? (
+              {(errors.length || warnings.length) && onClearErrors ? (
                 <button
                   className="aoEventsClearBtn"
                   onClick={onClearErrors}
                   disabled={!canClearErrors}
-                  title="Clear visible errors (UI only)"
+                  title="Clear visible errors/warnings (UI only)"
                 >
                   Clear
                 </button>
@@ -114,12 +123,15 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
             </div>
           </td>
         </tr>
-        {errors.length ? (
-          errors.map((e, idx) => renderRow(e, `${e.unix_ms}-err-${idx}`, true))
+        {errors.length || warnings.length ? (
+          [...warnings, ...errors]
+            .sort((a, b) => b.unix_ms - a.unix_ms)
+            .slice(0, 5)
+            .map((e, idx) => renderRow(e, `${e.unix_ms}-issue-${idx}`))
         ) : (
           <tr>
             <td colSpan={5} className="aoHint">
-              No errors
+              No errors or warnings
             </td>
           </tr>
         )}

@@ -21,6 +21,20 @@ struct UsageTokenIncrements {
     cache_read_input_tokens: u64,
 }
 
+pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<String> {
+    response_obj
+        .get("model")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            response_obj
+                .pointer("/response/model")
+                .and_then(|v| v.as_str())
+        })
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
 impl Store {
     const MAX_EVENTS: usize = 200;
     const MAX_USAGE_REQUESTS: usize = 500_000;
@@ -260,6 +274,16 @@ impl Store {
     }
 
     pub fn record_success(&self, provider: &str, response_obj: &Value, api_key_ref: Option<&str>) {
+        self.record_success_with_model(provider, response_obj, api_key_ref, None);
+    }
+
+    pub fn record_success_with_model(
+        &self,
+        provider: &str,
+        response_obj: &Value,
+        api_key_ref: Option<&str>,
+        model_override: Option<&str>,
+    ) {
         let (
             input_tokens,
             output_tokens,
@@ -280,7 +304,7 @@ impl Store {
         self.bump_ledger(provider, input_tokens, output_tokens, total_tokens, false);
         self.add_usage_request(
             provider,
-            &Self::extract_model(response_obj),
+            &Self::model_for_usage(response_obj, model_override),
             increments,
             api_key_ref,
             true,
@@ -812,18 +836,14 @@ impl Store {
     }
 
     fn extract_model(response_obj: &Value) -> String {
-        response_obj
-            .get("model")
-            .and_then(|v| v.as_str())
-            .or_else(|| {
-                response_obj
-                    .pointer("/response/model")
-                    .and_then(|v| v.as_str())
-            })
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("unknown")
-            .to_string()
+        extract_response_model_option(response_obj).unwrap_or_else(|| "unknown".to_string())
+    }
+
+    fn model_for_usage(response_obj: &Value, model_override: Option<&str>) -> String {
+        if let Some(model) = model_override.map(str::trim).filter(|s| !s.is_empty()) {
+            return model.to_string();
+        }
+        Self::extract_model(response_obj)
     }
 
     fn add_usage_request(
@@ -1118,5 +1138,20 @@ mod tests {
         assert!(db.get(b"event:1:a").unwrap().is_some());
         assert!(db.get(b"metrics:p1").unwrap().is_some());
         assert!(db.get(b"resp:resp_test").unwrap().is_none());
+    }
+
+    #[test]
+    fn model_for_usage_prefers_non_empty_override() {
+        let response = serde_json::json!({
+            "model": "gpt-5.3-codex"
+        });
+        assert_eq!(
+            Store::model_for_usage(&response, Some("gpt-5.2-2025-12-11")),
+            "gpt-5.2-2025-12-11"
+        );
+        assert_eq!(
+            Store::model_for_usage(&response, Some("   ")),
+            "gpt-5.3-codex"
+        );
     }
 }
