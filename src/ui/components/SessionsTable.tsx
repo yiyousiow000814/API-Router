@@ -41,7 +41,7 @@ export function SessionsTable({
     <table className="aoTable aoTableFixed">
       <thead>
         <tr>
-          <th style={{ width: 220 }}>Codex session</th>
+          <th style={{ width: 200 }}>Codex session</th>
           <th className="aoSessionsCellCenter" style={{ width: 110 }}>
             State
           </th>
