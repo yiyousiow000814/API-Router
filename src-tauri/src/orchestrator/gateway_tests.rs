@@ -1568,4 +1568,121 @@ mod tests {
             Some("gpt-5.2-2025-12-11")
         );
     }
+
+    #[tokio::test]
+    async fn stream_usage_prefers_response_created_model_not_unknown() {
+        let app = Router::new().route(
+            "/v1/responses",
+            post(move |_body: axum::extract::Json<serde_json::Value>| async move {
+                let sse = concat!(
+                    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream_1\",\"model\":\"gpt-5.2-2025-12-11\"}}\n\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream_1\",\"model\":\"gpt-5.3-codex\",\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}}\n\n",
+                    "data: [DONE]\n\n"
+                );
+                let stream = futures_util::stream::iter(vec![Ok::<_, std::convert::Infallible>(
+                    bytes::Bytes::from(sse.as_bytes().to_vec()),
+                )]);
+                let body = Body::from_stream(stream);
+                let mut resp = axum::response::Response::new(body);
+                *resp.status_mut() = StatusCode::OK;
+                resp.headers_mut().insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("text/event-stream"),
+                );
+                resp
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            },
+            routing: RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 1,
+                failure_threshold: 1,
+                cooldown_seconds: 1,
+                request_timeout_seconds: 5,
+            },
+            providers: std::collections::BTreeMap::from([(
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            )]),
+            provider_order: vec!["p1".to_string()],
+        };
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg)),
+            router,
+            store: store.clone(),
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+        let app = build_router(state);
+        let body = json!({
+            "model": "gpt-5.3-codex",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}]
+            }],
+            "stream": true
+        });
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/responses")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("session_id", "session-stream-model")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Consume stream so persistence callback runs.
+        let _ = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        let usage = store.list_usage_requests(20);
+        let row = usage
+            .iter()
+            .find(|v| v.get("provider").and_then(|x| x.as_str()) == Some("p1"))
+            .expect("usage row");
+        assert_eq!(
+            row.get("model").and_then(|x| x.as_str()),
+            Some("gpt-5.2-2025-12-11")
+        );
+        assert_ne!(row.get("model").and_then(|x| x.as_str()), Some("unknown"));
+    }
 }
