@@ -191,7 +191,7 @@ export function useUsageOpsBridge(params: Params) {
     setUsageScheduleSaveError,
     setUsageScheduleSaving,
     usageScheduleModalOpen,
-    usageScheduleProviderOptions: Object.keys(config?.providers ?? {}),
+    usageScheduleProviderOptions: Object.keys(config?.providers ?? {}).filter((name) => name !== 'official'),
     usageScheduleLastSavedSigRef,
     usageScheduleLastSavedByProviderRef,
     setUsagePricingCurrencyMenu,
