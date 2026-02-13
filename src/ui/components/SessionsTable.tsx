@@ -14,6 +14,7 @@ type SessionRow = {
   preferred_provider?: string | null
   verified?: boolean
   is_agent?: boolean
+  is_review?: boolean
 }
 
 type Props = {
@@ -62,7 +63,7 @@ export function SessionsTable({
                 const codexSession = s.codex_session_id ?? null
                 const wt = s.wt_session ?? '-'
                 const isAgent = s.is_agent === true
-                const isReview = isAgent && s.reported_model_provider === 'review'
+                const isReview = isAgent && s.is_review === true
                 const codexProvider = isReview
                   ? 'review'
                   : (isAgent ? 'agents' : (s.reported_model_provider ?? '-'))
@@ -160,7 +161,7 @@ export function SessionsTable({
                   const codexSession = s.codex_session_id ?? null
                   const wt = s.wt_session ?? '-'
                   const isAgent = s.is_agent === true
-                  const isReview = isAgent && s.reported_model_provider === 'review'
+                  const isReview = isAgent && s.is_review === true
                   const codexProvider = isReview
                     ? 'review'
                     : (isAgent ? 'agents' : (s.reported_model_provider ?? '-'))
