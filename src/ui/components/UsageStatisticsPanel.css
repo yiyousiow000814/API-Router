@@ -102,14 +102,30 @@
 
 .aoUsageAnomalyRow {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
 }
 
 .aoUsageAnomalyDismissBtn {
   flex: 0 0 auto;
-  min-width: 52px;
+  border: 0;
+  background: rgba(13, 18, 32, 0.04);
+  color: rgba(13, 18, 32, 0.68);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  border-radius: 999px;
+  line-height: 1.1;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.aoUsageAnomalyDismissBtn:hover {
+  background: rgba(13, 18, 32, 0.1);
+  color: rgba(13, 18, 32, 0.82);
 }
 
 .aoUsageActionBtn {

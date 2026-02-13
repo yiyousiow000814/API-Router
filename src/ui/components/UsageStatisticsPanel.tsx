@@ -174,7 +174,7 @@ export function UsageStatisticsPanel({
               <div className="aoUsageAnomalyText">{message}</div>
               <button
                 type="button"
-                className="aoTinyBtn aoUsageAnomalyDismissBtn"
+                className="aoUsageAnomalyDismissBtn"
                 onClick={() =>
                   setDismissedAnomalyMessages((prev) => {
                     if (prev.has(message)) return prev
@@ -185,7 +185,7 @@ export function UsageStatisticsPanel({
                 }
                 aria-label="Dismiss anomaly notice"
               >
-                Close
+                Dismiss
               </button>
             </div>
           ))}
