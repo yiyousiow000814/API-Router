@@ -100,6 +100,7 @@ export default function App() {
   const [rawConfigText, setRawConfigText] = useState<string>('')
   const [rawConfigLoading, setRawConfigLoading] = useState<boolean>(false)
   const [rawConfigSaving, setRawConfigSaving] = useState<boolean>(false)
+  const [rawConfigCanSave, setRawConfigCanSave] = useState<boolean>(false)
   const [rawConfigTargetHome, setRawConfigTargetHome] = useState<string>('')
   const [rawConfigHomeOptions, setRawConfigHomeOptions] = useState<string[]>([])
   const [instructionModalOpen, setInstructionModalOpen] = useState<boolean>(false)
@@ -227,6 +228,7 @@ export default function App() {
   }
 
   async function reloadRawConfigModal(targetHome?: string) {
+    setRawConfigCanSave(false)
     setRawConfigLoading(true)
     try {
       const home = (targetHome ?? rawConfigTargetHome).trim()
@@ -234,8 +236,10 @@ export default function App() {
         cliHome: home || null,
       })
       setRawConfigText(txt)
+      setRawConfigCanSave(true)
     } catch (e) {
       flashToast(String(e), 'error')
+      setRawConfigText('')
     } finally {
       setRawConfigLoading(false)
     }
@@ -251,6 +255,8 @@ export default function App() {
       }
       setRawConfigHomeOptions(options)
       setRawConfigTargetHome(options[0] ?? '')
+      setRawConfigText('')
+      setRawConfigCanSave(false)
       setRawConfigModalOpen(true)
       await reloadRawConfigModal(options[0] ?? '')
     } catch (e) {
@@ -716,6 +722,7 @@ export default function App() {
         rawConfigText={rawConfigText}
         rawConfigLoading={rawConfigLoading}
         rawConfigSaving={rawConfigSaving}
+        rawConfigCanSave={rawConfigCanSave}
         rawConfigTargetHome={rawConfigTargetHome}
         rawConfigHomeOptions={rawConfigHomeOptions}
         setRawConfigText={setRawConfigText}
@@ -822,6 +829,7 @@ export default function App() {
         setUsageScheduleSaveError={setUsageScheduleSaveError}
         setUsageScheduleModalOpen={setUsageScheduleModalOpen}
         codexSwapModalOpen={codexSwapModalOpen}
+        codexSwapStatus={codexSwapStatus}
         codexSwapDir1={codexSwapDir1}
         codexSwapDir2={codexSwapDir2}
         codexSwapApplyBoth={codexSwapApplyBoth}

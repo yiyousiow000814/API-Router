@@ -4,6 +4,7 @@ type Props = {
   open: boolean
   loading: boolean
   saving: boolean
+  canSave: boolean
   targetHome: string
   homeOptions: string[]
   onTargetHomeChange: (next: string) => void
@@ -11,6 +12,7 @@ type Props = {
   onChange: (next: string) => void
   onReload: () => void
   onSave: () => void
+  warningText?: string | null
   onClose: () => void
 }
 
@@ -18,6 +20,7 @@ export function RawConfigModal({
   open,
   loading,
   saving,
+  canSave,
   targetHome,
   homeOptions,
   onTargetHomeChange,
@@ -25,6 +28,7 @@ export function RawConfigModal({
   onChange,
   onReload,
   onSave,
+  warningText,
   onClose,
 }: Props) {
   if (!open) return null
@@ -55,7 +59,7 @@ export function RawConfigModal({
             <button className="aoBtn" onClick={onReload} disabled={loading || saving}>
               Reload
             </button>
-            <button className="aoBtn aoBtnPrimary" onClick={onSave} disabled={loading || saving}>
+            <button className="aoBtn aoBtnPrimary" onClick={onSave} disabled={loading || saving || !canSave}>
               {saving ? 'Saving...' : 'Save'}
             </button>
             <button className="aoBtn" onClick={onClose} disabled={saving}>
@@ -65,6 +69,7 @@ export function RawConfigModal({
         </div>
         <div className="aoModalBody">
           <div className="aoModalSub">Target: {targetHome || '-'}</div>
+          {warningText ? <div className="aoModalSub">{warningText}</div> : null}
           <textarea
             className="aoRawConfigEditor"
             value={value}
