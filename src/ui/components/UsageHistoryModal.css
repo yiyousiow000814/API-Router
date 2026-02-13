@@ -1,0 +1,252 @@
+.aoUsageHistoryModal {
+  width: min(1100px, 96vw);
+  max-height: min(82vh, 880px);
+}
+
+.aoUsageHistoryTableSurface {
+  --ao-history-scrollbar-size: 8px;
+  --ao-history-scroll-thumb: rgba(120, 132, 156, 0.44);
+  --ao-history-scroll-thumb-hover: rgba(94, 108, 136, 0.56);
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(248, 250, 253, 0.94);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  overflow: hidden;
+}
+
+.aoUsageHistoryTableHead {
+  flex: 0 0 auto;
+  padding-right: 0;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgb(242, 244, 247);
+}
+
+.aoUsageHistoryTableBody {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.aoUsageHistoryTableWrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: transparent;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.aoUsageHistoryTableWrap::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.aoUsageHistoryTableWrap::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.aoUsageHistoryScrollbarOverlay {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  bottom: 7px;
+  width: var(--ao-history-scrollbar-size);
+  overflow: hidden;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  touch-action: none;
+  transition: opacity 140ms ease;
+  z-index: 2;
+}
+
+.aoUsageHistoryScrollbarOverlayVisible {
+  opacity: 1;
+}
+
+.aoUsageHistoryTableSurfaceCanScroll .aoUsageHistoryScrollbarOverlay {
+  pointer-events: auto;
+}
+
+.aoUsageHistoryTableSurfaceCanScroll .aoUsageHistoryScrollbarOverlay:hover {
+  opacity: 1;
+}
+
+.aoUsageHistoryTableSurfaceCanScroll .aoUsageHistoryScrollbarOverlay:hover .aoUsageHistoryScrollbarThumb {
+  background: var(--ao-history-scroll-thumb-hover);
+}
+
+.aoUsageHistoryScrollbarThumb {
+  width: 100%;
+  min-height: 24px;
+  border-radius: 999px;
+  background: var(--ao-history-scroll-thumb);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  transition: background-color 120ms ease;
+  will-change: transform;
+  cursor: grab;
+}
+
+.aoUsageHistoryScrollbarOverlay:active .aoUsageHistoryScrollbarThumb {
+  cursor: grabbing;
+}
+
+.aoUsageHistoryTableSurfaceScrollbarVisible .aoUsageHistoryScrollbarThumb {
+  background: var(--ao-history-scroll-thumb-hover);
+}
+
+.aoUsageHistoryTable {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+}
+
+.aoUsageHistoryColDate {
+  width: 84px;
+}
+
+.aoUsageHistoryColProv {
+  width: 108px;
+}
+
+.aoUsageHistoryColKey {
+  width: 132px;
+}
+
+.aoUsageHistoryColReq {
+  width: 62px;
+}
+
+.aoUsageHistoryColTok {
+  width: 102px;
+}
+
+.aoUsageHistoryColReqUsd {
+  width: 94px;
+}
+
+.aoUsageHistoryColEff {
+  width: 122px;
+}
+
+.aoUsageHistoryColPkg {
+  width: 82px;
+}
+
+.aoUsageHistoryColSrc {
+  width: 104px;
+}
+
+.aoUsageHistoryColAct {
+  width: 102px;
+}
+
+.aoUsageHistoryTable th,
+.aoUsageHistoryTable td {
+  padding: 7px 8px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.aoUsageHistoryTable td {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.aoUsageHistoryDateCell {
+  font-variant-numeric: tabular-nums;
+}
+
+.aoUsageHistoryTable th {
+  background: rgb(242, 244, 247);
+  color: rgba(13, 18, 32, 0.72);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.aoUsageHistoryTable tr:last-child td {
+  border-bottom: none;
+}
+
+.aoUsageHistoryInput {
+  width: 66px;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 6px;
+  font-size: 12px;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.aoUsageHistoryInput::-webkit-outer-spin-button,
+.aoUsageHistoryInput::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.aoUsageHistoryValueCell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.aoUsageHistoryEditBtn {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(255, 255, 255, 0.84);
+  color: rgba(13, 18, 32, 0.8);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.aoUsageHistoryEditBtn:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.5);
+  background: rgba(var(--ao-accent-rgb), 0.1);
+}
+
+.aoUsageHistoryEditBtn svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.aoUsageHistoryActions {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.aoModalWide.aoUsageHistoryModal {
+  width: min(1500px, 99vw);
+  max-height: min(82vh, 880px);
+}
+
+/* Daily History keeps header fixed while only rows scroll inside the table area. */
+.aoUsageHistoryModal .aoModalBody {
+  overflow: hidden;
+  padding-right: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}

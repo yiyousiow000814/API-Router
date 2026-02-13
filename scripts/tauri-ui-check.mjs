@@ -795,6 +795,115 @@ async function runUsageHistoryScrollCase(driver, screenshotPath) {
   )
 }
 
+async function runProviderStatisticsKeyStyleCase(driver, screenshotPath) {
+  const showButtons = await driver.findElements(
+    By.xpath(`//button[contains(@class,'aoTinyBtn') and normalize-space()='Show']`),
+  )
+  if (showButtons.length > 0) {
+    await showButtons[0].click()
+    await driver.wait(
+      async () => {
+        const detailRows = await driver.findElements(By.css('.aoUsageProviderDetailName .aoUsageProviderDetailKey'))
+        if (detailRows.length > 0) return true
+        const hideButtons = await driver.findElements(
+          By.xpath(`//button[contains(@class,'aoTinyBtn') and normalize-space()='Hide']`),
+        )
+        return hideButtons.length > 0
+      },
+      4000,
+      'Provider Statistics did not switch to details mode after clicking Show',
+    )
+  }
+
+  const hasProviderRows = await driver.executeScript(`
+    const rows = document.querySelectorAll('.aoUsageProviderTable tbody tr');
+    return rows.length > 0;
+  `)
+
+  const probe = await driver.executeScript(`
+    const keyCell = document.querySelector('.aoUsageProviderDetailName .aoUsageProviderDetailKey');
+    if (!keyCell) return null;
+    const cs = window.getComputedStyle(keyCell);
+    return { text: keyCell.textContent || '', weight: cs.fontWeight || '' };
+  `)
+  if (!probe) {
+    if (hasProviderRows) {
+      const b64 = await driver.takeScreenshot()
+      fs.writeFileSync(screenshotPath.replace('.png', '-provider-key-missing.png'), Buffer.from(b64, 'base64'))
+      throw new Error('Provider Statistics has data but detail key row is missing.')
+    }
+    return
+  }
+  const weight = Number.parseInt(String(probe.weight), 10)
+  if (Number.isFinite(weight) && weight >= 600) {
+    const b64 = await driver.takeScreenshot()
+    fs.writeFileSync(screenshotPath.replace('.png', '-provider-key-bold.png'), Buffer.from(b64, 'base64'))
+    throw new Error(`Provider Statistics key should not be bold (weight=${probe.weight}, text="${probe.text}").`)
+  }
+}
+
+async function runPricingTimelineModalCase(driver, screenshotPath) {
+  await clickButtonByText(driver, 'Pricing Timeline', 12000)
+  const modal = await waitVisible(
+    driver,
+    By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Pricing Timeline']]`),
+    15000,
+  )
+  const probe = await driver.executeScript(
+    `
+      const root = arguments[0];
+      const table = root.querySelector('.aoUsageScheduleTable');
+      const headers = table ? Array.from(table.querySelectorAll('thead th')).map((th) => (th.textContent || '').trim()) : [];
+      const addBtn = root.querySelector('button');
+      if (!table) return null;
+      const cs = window.getComputedStyle(table);
+      return {
+        headers,
+        tableLayout: cs.tableLayout || '',
+        borderRadius: cs.borderTopLeftRadius || '',
+        addText: addBtn ? (addBtn.textContent || '').trim() : '',
+      };
+    `,
+    modal,
+  )
+  if (!probe) {
+    throw new Error('Pricing Timeline table not found (.aoUsageScheduleTable).')
+  }
+  const expectedHeaders = ['Provider', 'API Key', 'Mode', 'Start', 'Expires', 'Amount', 'Currency', 'Action']
+  if (probe.headers.length !== expectedHeaders.length) {
+    const b64 = await driver.takeScreenshot()
+    fs.writeFileSync(screenshotPath.replace('.png', '-pricing-timeline-missing-headers.png'), Buffer.from(b64, 'base64'))
+    throw new Error(`Pricing Timeline header count mismatch: expected ${expectedHeaders.length}, got ${probe.headers.length}.`)
+  }
+  const headerOk = expectedHeaders.every((name, idx) => normalizeText(probe.headers[idx]) === name)
+  if (!headerOk) {
+    const b64 = await driver.takeScreenshot()
+    fs.writeFileSync(screenshotPath.replace('.png', '-pricing-timeline-header-text.png'), Buffer.from(b64, 'base64'))
+    throw new Error(`Pricing Timeline headers mismatch: ${JSON.stringify(probe.headers)}`)
+  }
+  if (normalizeText(probe.tableLayout) !== 'fixed') {
+    const b64 = await driver.takeScreenshot()
+    fs.writeFileSync(screenshotPath.replace('.png', '-pricing-timeline-style.png'), Buffer.from(b64, 'base64'))
+    throw new Error(`Pricing Timeline table layout should be fixed, got "${probe.tableLayout}".`)
+  }
+  if (!(parsePx(probe.borderRadius) > 0)) {
+    const b64 = await driver.takeScreenshot()
+    fs.writeFileSync(screenshotPath.replace('.png', '-pricing-timeline-radius.png'), Buffer.from(b64, 'base64'))
+    throw new Error(`Pricing Timeline table border radius missing (got "${probe.borderRadius}").`)
+  }
+  await clickButtonByText(driver, 'Close', 12000)
+  await driver.wait(
+    async () => {
+      const found = await driver.findElements(
+        By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Pricing Timeline']]`),
+      )
+      return found.length === 0
+    },
+    10000,
+    'Pricing Timeline modal should close after clicking Close',
+  )
+}
+
 async function runSwitchboardSwitchCase(driver, directProvider, uiProfileDir) {
   await ensureCodexAuthForSwitchboard(uiProfileDir)
   const cfg = await tauriInvoke(driver, 'get_config', {})
@@ -1061,11 +1170,12 @@ async function main() {
       await clickTopNav(driver, 'Usage Statistics')
       await waitPageTitle(driver, 'Usage Statistics')
       await waitVisible(driver, By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Provider Statistics']`), 12000)
+      await runProviderStatisticsKeyStyleCase(driver, screenshotPath)
       console.log('[ui:tauri] Subtest A1: usage history scroll contract')
       await seedHistoryRows(driver, directProvider, 44)
       await runUsageHistoryScrollCase(driver, screenshotPath)
       await openModalAndCloseOptional(driver, 'Base Pricing', 'Base Pricing', 'Close', 'Base Pricing modal check')
-      await openModalAndCloseOptional(driver, 'Pricing Timeline', 'Pricing Timeline', 'Close', 'Pricing Timeline modal check')
+      await runPricingTimelineModalCase(driver, screenshotPath)
 
       console.log('[ui:tauri] Subtest A: provider switchboard page')
       await clickTopNav(driver, 'Provider Switchboard')

@@ -1,0 +1,138 @@
+.aoUsageScheduleModal {
+  width: min(1120px, 96vw);
+  max-height: min(82vh, 860px);
+}
+
+.aoUsageScheduleTable {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.aoUsageScheduleColStart {
+  width: 200px;
+}
+
+.aoUsageScheduleColExpires {
+  width: 200px;
+}
+
+.aoUsageScheduleColProvider {
+  width: 118px;
+}
+
+.aoUsageScheduleColApiKey {
+  width: 124px;
+}
+
+.aoUsageScheduleColMode {
+  width: 136px;
+}
+
+.aoUsageScheduleColAmount {
+  width: 92px;
+}
+
+.aoUsageScheduleColCurrency {
+  width: 92px;
+}
+
+.aoUsageScheduleColAction {
+  width: 88px;
+}
+
+.aoUsageScheduleTable th,
+.aoUsageScheduleTable td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.aoUsageScheduleTable th {
+  background: rgba(13, 18, 32, 0.04);
+  color: rgba(13, 18, 32, 0.72);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.aoUsageScheduleTable tr:last-child td {
+  border-bottom: none;
+}
+
+.aoUsageScheduleInput {
+  width: 100%;
+  min-width: 0;
+}
+
+.aoUsageScheduleMode {
+  width: 100%;
+}
+
+.aoUsageScheduleAmount {
+  width: 100%;
+  min-width: 0;
+  appearance: textfield;
+  -moz-appearance: textfield;
+  padding-right: 8px;
+}
+
+.aoUsageScheduleAmount::-webkit-outer-spin-button,
+.aoUsageScheduleAmount::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.aoUsageScheduleCurrencyWrap {
+  position: relative;
+  min-width: 0;
+}
+
+.aoUsageScheduleCurrencyBtn {
+  width: 100%;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.aoUsageScheduleActions {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.aoUsageScheduleAutosave {
+  margin-left: 2px;
+}
+
+.aoUsageScheduleAutosave-saving {
+  color: rgba(var(--ao-accent-rgb), 0.95);
+}
+
+.aoUsageScheduleAutosave-error {
+  color: rgba(205, 58, 74, 0.95);
+}
+
+.aoUsageScheduleHint {
+  margin-top: 10px;
+}
+
+.aoModalWide.aoUsageScheduleModal {
+  width: min(1120px, 96vw);
+  max-height: min(82vh, 860px);
+}
+
+.aoUsageScheduleModal .aoModalBody {
+  overflow-x: hidden;
+  padding-right: 0;
+}

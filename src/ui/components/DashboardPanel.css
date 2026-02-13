@@ -1,0 +1,437 @@
+.aoHero {
+  display: grid;
+  /* Make Routing a bit narrower, and Codex a bit wider so "Reset in ..." fits on one line. */
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.85fr) minmax(0, 1.05fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.aoHeroStatus {
+  order: 1;
+}
+
+.aoHeroRouting {
+  order: 2;
+}
+
+.aoHeroCodex {
+  order: 3;
+}
+
+.aoHeroCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.aoHeroActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.aoStatGrid {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  row-gap: 8px;
+  column-gap: 10px;
+  font-size: 13px;
+}
+
+.aoTokenRow {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: center;
+}
+
+.aoTokenRowRight {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.aoResetHint {
+  white-space: nowrap;
+}
+
+.aoStatStack {
+  display: grid;
+  gap: 8px;
+}
+
+.aoLimitGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.aoLimitCard {
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.06);
+  background: rgba(13, 18, 32, 0.025);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.aoLimitValue {
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoValSmall {
+  font-size: 12px;
+}
+
+.aoDivider {
+  height: 1px;
+  background: rgba(13, 18, 32, 0.08);
+  border-radius: 999px;
+  margin: 4px 0 2px;
+}
+
+.aoDividerSoft {
+  background: rgba(13, 18, 32, 0.06);
+  margin: 8px 0 6px;
+}
+
+.aoRowWrap {
+  flex-wrap: wrap;
+}
+
+.aoStatBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(13, 18, 32, 0.03);
+  border: 1px solid rgba(13, 18, 32, 0.06);
+}
+
+.aoStatLabel {
+  color: rgba(13, 18, 32, 0.6);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.aoStatValue {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoRoutingGrid {
+  display: grid;
+  gap: 10px;
+}
+
+.aoRoutingRow {
+  display: grid;
+  gap: 6px;
+}
+
+.aoTableFixed {
+  table-layout: fixed;
+}
+
+.aoCellWrap {
+  word-break: break-word;
+}
+
+.aoTable th.aoCellCenter,
+.aoTable td.aoCellCenter {
+  text-align: center;
+}
+
+.aoCellCenterInner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.aoMiniLabel {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.52);
+}
+
+.aoUsageMini {
+  display: grid;
+  gap: 4px;
+  height: 100%;
+  align-content: center;
+  min-height: 100%;
+  width: 100%;
+}
+
+.aoUsageSplit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: 100%;
+  min-height: 100%;
+}
+
+.aoUsageText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.aoUsageLine {
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.84);
+}
+
+.aoUsageCell {
+  padding-right: 16px;
+  vertical-align: middle;
+}
+
+.aoUsageCellInner {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  width: 100%;
+}
+
+.aoUsageRefreshBtn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(255, 255, 255, 0.9);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  color: rgba(13, 18, 32, 0.78);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.aoUsageRefreshBtn:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.55);
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoUsageRefreshBtnMini {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+}
+
+.aoUsageRefreshBtnMini svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2.1;
+}
+
+.aoUsageRefreshBtnSpin svg {
+  animation: aoSpin 0.9s linear infinite;
+}
+
+.aoUsageRefreshBtn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@keyframes aoSpin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.aoEventRowError td {
+  /* No tinted backgrounds for error rows; rely on left accent + badge. */
+  background: transparent;
+}
+
+.aoEventRowError td:first-child {
+  box-shadow: inset 3px 0 0 rgba(255, 94, 125, 0.75);
+}
+
+.aoEventRowWarning td:first-child {
+  box-shadow: inset 3px 0 0 rgba(255, 182, 72, 0.82);
+}
+
+.aoEventRowError td .aoHint {
+  color: rgba(119, 11, 33, 0.78);
+}
+
+.aoLevelBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(13, 18, 32, 0.035);
+  color: rgba(13, 18, 32, 0.78);
+}
+
+.aoLevelBadgeInfo {
+  border-color: rgba(40, 199, 217, 0.26);
+  background: rgba(40, 199, 217, 0.07);
+  color: rgba(0, 110, 124, 0.9);
+}
+
+.aoLevelBadgeError {
+  border-color: rgba(255, 94, 125, 0.3);
+  background: rgba(255, 94, 125, 0.1);
+  color: rgba(170, 0, 38, 0.95);
+}
+
+.aoLevelBadgeWarning {
+  border-color: rgba(255, 182, 72, 0.3);
+  background: rgba(255, 182, 72, 0.12);
+  color: rgba(138, 85, 0, 0.95);
+}
+
+.aoEventMessage {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.aoEventsSection td {
+  padding: 10px 12px 6px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.74);
+  background: rgba(13, 18, 32, 0.02);
+}
+
+.aoEventsSectionRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.aoEventsClearBtn {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 94, 125, 0.26);
+  background: rgba(255, 94, 125, 0.06);
+  color: rgba(145, 12, 43, 0.92);
+  font-size: 11px;
+  font-weight: 670;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.aoEventsClearBtn:hover {
+  border-color: rgba(255, 94, 125, 0.5);
+  background: rgba(255, 94, 125, 0.09);
+  transform: translateY(-1px);
+}
+
+.aoEventsClearBtn:active {
+  transform: translateY(0);
+}
+
+.aoEventsClearBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.aoEventsGap td {
+  height: 12px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-bottom: none;
+}
+
+.aoSection {
+  margin-top: 12px;
+}
+
+.aoSectionHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 10px 2px 8px;
+}
+
+.aoSectionHeaderStack {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.aoSessionsPanel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.aoSessionChip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.aoSessionId {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.8);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aoSessionSelect {
+  height: 28px;
+  border-radius: 10px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+@media (max-width: 1000px) {
+  .aoHero {
+    grid-template-columns: 1fr;
+  }
+
+  .aoLimitGrid {
+    grid-template-columns: 1fr;
+  }
+}

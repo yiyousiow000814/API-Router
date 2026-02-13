@@ -1,7 +1,6 @@
 import type { Status } from '../types'
 import { fmtAgo, fmtWhen } from '../utils/format'
-
-const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
+import './EventsTable.css'
 
 type Props = {
   events: Status['recent_events']
@@ -50,10 +49,10 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
     return (
       <tr key={key} className={isError ? 'aoEventRowError' : isWarning ? 'aoEventRowWarning' : undefined}>
         <td title={fmtWhen(e.unix_ms)}>{fmtAgo(e.unix_ms)}</td>
-        <td style={{ fontFamily: mono }} title={sessionTitle}>
+        <td className="aoEventsMono" title={sessionTitle}>
           {sessionCell}
         </td>
-        <td style={{ fontFamily: mono }}>{e.provider}</td>
+        <td className="aoEventsMono">{e.provider}</td>
         <td>
           <span
             className={`aoLevelBadge ${
@@ -63,7 +62,7 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
             {e.level}
           </span>
         </td>
-        <td className="aoCellWrap">
+        <td className="aoEventsCellWrap">
           <span className="aoEventMessage" title={e.code ? `${e.code}: ${e.message}` : e.message}>
             {e.message}
           </span>

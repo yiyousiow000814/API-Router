@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { fmtWhen } from '../utils/format'
+import './SessionsTable.css'
 
 type SessionRow = {
   id: string
@@ -40,11 +41,11 @@ export function SessionsTable({
     <table className="aoTable aoTableFixed">
       <thead>
         <tr>
-          <th style={{ width: 220 }}>Codex session</th>
-          <th className="aoCellCenter" style={{ width: 110 }}>
+          <th style={{ width: 200 }}>Codex session</th>
+          <th className="aoSessionsCellCenter" style={{ width: 110 }}>
             State
           </th>
-          <th style={{ width: 170 }}>Last seen</th>
+          <th style={{ width: 150 }}>Last seen</th>
           <th style={{ width: 160 }}>Codex provider</th>
           <th style={{ width: 130 }}>Model</th>
           <th>Routing provider</th>
@@ -65,15 +66,15 @@ export function SessionsTable({
                 const modelName = s.reported_model ?? '-'
                 return (
                   <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
-                    <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>
+                    <td className="aoSessionsMono">
                       {codexSession ? (
                         <div title={`WT_SESSION: ${wt}`}>{codexSession}</div>
                       ) : (
                         <div title={`WT_SESSION: ${wt}`}>-</div>
                       )}
                     </td>
-                    <td className="aoCellCenter">
-                      <div className="aoCellCenterInner">
+                    <td className="aoSessionsCellCenter">
+                      <div className="aoSessionsCellCenterInner">
                         <span className="aoPill">
                           <span className={verified && s.active ? 'aoDot' : 'aoDot aoDotMuted'} />
                           <span className="aoPillText">{verified ? (s.active ? 'active' : 'idle') : 'unverified'}</span>
@@ -81,9 +82,9 @@ export function SessionsTable({
                       </div>
                     </td>
                     <td>{fmtWhen(s.last_seen_unix_ms)}</td>
-                    <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{codexProvider}</td>
-                    <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{modelName}</td>
-                    <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{routingTarget}</td>
+                    <td className="aoSessionsMono">{codexProvider}</td>
+                    <td className="aoSessionsMono">{modelName}</td>
+                    <td className="aoSessionsMono">{routingTarget}</td>
                     <td>
                       <select
                         className="aoSelect"
@@ -160,15 +161,15 @@ export function SessionsTable({
                   const modelName = s.reported_model ?? '-'
                   return (
                     <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
-                      <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>
+                      <td className="aoSessionsMono">
                         {codexSession ? (
                           <div title={`WT_SESSION: ${wt}`}>{codexSession}</div>
                         ) : (
                           <div title={`WT_SESSION: ${wt}`}>-</div>
                         )}
                       </td>
-                      <td className="aoCellCenter">
-                        <div className="aoCellCenterInner">
+                      <td className="aoSessionsCellCenter">
+                        <div className="aoSessionsCellCenterInner">
                           <span className="aoPill">
                             <span className={verified && s.active ? 'aoDot' : 'aoDot aoDotMuted'} />
                             <span className="aoPillText">{verified ? (s.active ? 'active' : 'idle') : 'unverified'}</span>
@@ -176,9 +177,9 @@ export function SessionsTable({
                         </div>
                       </td>
                       <td>{fmtWhen(s.last_seen_unix_ms)}</td>
-                      <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{codexProvider}</td>
-                      <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{modelName}</td>
-                      <td style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>{routingTarget}</td>
+                      <td className="aoSessionsMono">{codexProvider}</td>
+                      <td className="aoSessionsMono">{modelName}</td>
+                      <td className="aoSessionsMono">{routingTarget}</td>
                       <td>
                         <select
                           className="aoSelect"

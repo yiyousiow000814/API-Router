@@ -1,0 +1,34 @@
+.aoTable th.aoSessionsCellCenter,
+.aoTable td.aoSessionsCellCenter {
+  text-align: center;
+}
+
+.aoSessionsCellCenterInner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.aoSessionsMono {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+}
+
+.aoSessionRowAgent td {
+  background: rgba(40, 199, 217, 0.03) !important;
+}
+
+.aoSessionRowAgent td:first-child {
+  box-shadow: inset 2px 0 0 rgba(40, 199, 217, 0.62);
+}
+
+.aoSessionRowAgent .aoPill {
+  background: rgba(40, 199, 217, 0.09);
+  border-color: rgba(40, 199, 217, 0.22);
+}
+
+.aoSessionRowAgent .aoSelect:disabled {
+  color: rgba(13, 18, 32, 0.44);
+  border-color: rgba(40, 199, 217, 0.2);
+  background: rgba(40, 199, 217, 0.05);
+}
