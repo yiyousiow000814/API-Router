@@ -86,9 +86,9 @@
 }
 
 .aoUsageAnomalyBanner {
-  border: 1px solid rgba(214, 74, 86, 0.34);
+  border: 1px solid rgba(198, 36, 70, 0.24);
   border-radius: 12px;
-  background: linear-gradient(135deg, rgba(245, 99, 110, 0.1), rgba(245, 207, 84, 0.08));
+  background: rgba(255, 244, 246, 0.72);
   padding: 10px 12px;
   display: grid;
   gap: 8px;
@@ -96,7 +96,7 @@
 
 .aoUsageAnomalyText {
   font-size: 12px;
-  color: rgba(145, 12, 43, 0.9);
+  color: rgba(109, 27, 49, 0.94);
   font-weight: 620;
   min-width: 0;
 }
@@ -108,8 +108,14 @@
   gap: 8px;
   padding: 6px 8px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.42);
-  border: 1px solid rgba(145, 12, 43, 0.12);
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(145, 12, 43, 0.1);
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.aoUsageAnomalyItem:hover {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(145, 12, 43, 0.18);
 }
 
 .aoUsageAnomalyDot {
@@ -129,25 +135,35 @@
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
-  border: 1px solid rgba(145, 12, 43, 0.22);
-  background: rgba(255, 255, 255, 0.68);
-  color: rgba(95, 23, 42, 0.9);
+  border: 1px solid rgba(145, 12, 43, 0.2);
+  background: rgba(255, 255, 255, 0.82);
+  color: rgba(109, 27, 49, 0.86);
   font-size: 15px;
   font-weight: 700;
   border-radius: 999px;
   line-height: 1;
   cursor: pointer;
+  opacity: 0.82;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: background 120ms ease, color 120ms ease, border-color 120ms ease, transform 120ms ease;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease, transform 120ms ease, opacity 120ms ease;
+}
+
+.aoUsageAnomalyItem:hover .aoUsageAnomalyDismissIcon {
+  opacity: 1;
 }
 
 .aoUsageAnomalyDismissIcon:hover {
-  background: rgba(255, 255, 255, 0.95);
-  border-color: rgba(145, 12, 43, 0.4);
-  color: rgba(95, 23, 42, 0.98);
+  background: rgba(255, 255, 255, 0.98);
+  border-color: rgba(145, 12, 43, 0.34);
+  color: rgba(109, 27, 49, 0.98);
   transform: scale(1.05);
+}
+
+.aoUsageAnomalyDismissIcon:focus-visible {
+  outline: 2px solid rgba(198, 36, 70, 0.35);
+  outline-offset: 1px;
 }
 
 .aoUsageActionBtn {
