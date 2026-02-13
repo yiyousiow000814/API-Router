@@ -796,12 +796,29 @@ async function runUsageHistoryScrollCase(driver, screenshotPath) {
 }
 
 async function runProviderStatisticsKeyStyleCase(driver, screenshotPath) {
-  try {
-    const showBtn = await driver.findElement(
-      By.xpath(`//button[contains(@class,'aoTinyBtn') and normalize-space()='Show']`),
+  const showButtons = await driver.findElements(
+    By.xpath(`//button[contains(@class,'aoTinyBtn') and normalize-space()='Show']`),
+  )
+  if (showButtons.length > 0) {
+    await showButtons[0].click()
+    await driver.wait(
+      async () => {
+        const detailRows = await driver.findElements(By.css('.aoUsageProviderDetailName .aoUsageProviderDetailKey'))
+        if (detailRows.length > 0) return true
+        const hideButtons = await driver.findElements(
+          By.xpath(`//button[contains(@class,'aoTinyBtn') and normalize-space()='Hide']`),
+        )
+        return hideButtons.length > 0
+      },
+      4000,
+      'Provider Statistics did not switch to details mode after clicking Show',
     )
-    await showBtn.click()
-  } catch {}
+  }
+
+  const hasProviderRows = await driver.executeScript(`
+    const rows = document.querySelectorAll('.aoUsageProviderTable tbody tr');
+    return rows.length > 0;
+  `)
 
   const probe = await driver.executeScript(`
     const keyCell = document.querySelector('.aoUsageProviderDetailName .aoUsageProviderDetailKey');
@@ -810,22 +827,10 @@ async function runProviderStatisticsKeyStyleCase(driver, screenshotPath) {
     return { text: keyCell.textContent || '', weight: cs.fontWeight || '' };
   `)
   if (!probe) {
-    const cssRuleFound = await driver.executeScript(`
-      for (const sheet of Array.from(document.styleSheets || [])) {
-        let rules;
-        try { rules = sheet.cssRules || sheet.rules; } catch { continue; }
-        if (!rules) continue;
-        for (const rule of Array.from(rules)) {
-          if (rule.selectorText && rule.selectorText.includes('.aoUsageProviderDetailKey')) {
-            const fw = String(rule.style && rule.style.fontWeight ? rule.style.fontWeight : '');
-            if (fw === '400') return true;
-          }
-        }
-      }
-      return false;
-    `)
-    if (!cssRuleFound) {
-      throw new Error('Provider Statistics key row missing and key-style rule (.aoUsageProviderDetailKey { font-weight: 400; }) not found.')
+    if (hasProviderRows) {
+      const b64 = await driver.takeScreenshot()
+      fs.writeFileSync(screenshotPath.replace('.png', '-provider-key-missing.png'), Buffer.from(b64, 'base64'))
+      throw new Error('Provider Statistics has data but detail key row is missing.')
     }
     return
   }
