@@ -67,7 +67,6 @@ type Props = {
   setNewProviderName: Dispatch<SetStateAction<string>>
   setNewProviderBaseUrl: Dispatch<SetStateAction<string>>
   addProvider: () => Promise<void>
-  onOpenRawConfigModal: () => void
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
   rawConfigModalOpen: boolean
   rawConfigText: string
@@ -216,7 +215,6 @@ export function AppModals(props: Props) {
     setNewProviderName,
     setNewProviderBaseUrl,
     addProvider,
-    onOpenRawConfigModal,
     setConfigModalOpen,
     rawConfigModalOpen,
     rawConfigText,
@@ -392,7 +390,6 @@ requires_openai_auth = true`}
         setNewProviderName={setNewProviderName}
         setNewProviderBaseUrl={setNewProviderBaseUrl}
         onAddProvider={() => void addProvider()}
-        onOpenRawConfig={onOpenRawConfigModal}
         onClose={() => setConfigModalOpen(false)}
         providerListRef={providerListRef}
         orderedConfigProviders={orderedConfigProviders}

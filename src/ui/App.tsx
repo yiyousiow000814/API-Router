@@ -669,6 +669,7 @@ export default function App() {
                 switchboardProviderCards,
                 onSetProviderSwitchTarget: setProviderSwitchTarget,
                 onOpenConfigureDirs: () => setCodexSwapModalOpen(true),
+                onOpenRawConfig: () => void openRawConfigModal(),
               }}
             />
           </div>
@@ -694,7 +695,6 @@ export default function App() {
         setNewProviderName={setNewProviderName}
         setNewProviderBaseUrl={setNewProviderBaseUrl}
         addProvider={addProvider}
-        onOpenRawConfigModal={() => void openRawConfigModal()}
         setConfigModalOpen={setConfigModalOpen}
         rawConfigModalOpen={rawConfigModalOpen}
         rawConfigText={rawConfigText}
