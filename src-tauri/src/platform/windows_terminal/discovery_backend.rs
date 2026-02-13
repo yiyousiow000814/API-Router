@@ -513,6 +513,7 @@ fn discover_sessions_using_router_uncached(
                     codex_session_id: Some(codex_session_id),
                     router_confirmed: matched,
                     is_agent: rollout_meta.as_ref().map(|m| m.is_agent).unwrap_or(false),
+                    is_review: rollout_meta.as_ref().map(|m| m.is_review).unwrap_or(false),
                 });
             }
         }

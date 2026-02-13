@@ -80,6 +80,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                         last_reported_model: None,
                         last_reported_base_url: None,
                         is_agent: s.is_agent,
+                        is_review: s.is_review,
                         confirmed_router: s.router_confirmed,
                     }
                 });
@@ -92,6 +93,10 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     entry.last_reported_base_url = Some(bu.to_string());
                 }
                 if s.is_agent {
+                    entry.is_agent = true;
+                }
+                if s.is_review {
+                    entry.is_review = true;
                     entry.is_agent = true;
                 }
             }
@@ -156,7 +161,8 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     "active": active,
                     "preferred_provider": pref,
                     "verified": v.confirmed_router,
-                    "is_agent": v.is_agent
+                    "is_agent": v.is_agent,
+                    "is_review": v.is_review
                 })
             })
             .collect::<Vec<_>>();
@@ -234,6 +240,7 @@ mod tests {
             last_reported_model: None,
             last_reported_base_url: None,
             is_agent: false,
+            is_review: false,
             confirmed_router: true,
         };
         merge_discovered_model_provider(&mut entry, Some("openai"));
@@ -255,6 +262,7 @@ mod tests {
             last_reported_model: None,
             last_reported_base_url: None,
             is_agent: false,
+            is_review: false,
             confirmed_router: false,
         };
         merge_discovered_model_provider(&mut entry, Some("openai"));
@@ -273,6 +281,7 @@ mod tests {
             last_reported_model: None,
             last_reported_base_url: None,
             is_agent: false,
+            is_review: false,
             confirmed_router: false,
         };
         apply_discovered_router_confirmation(&mut entry, true, false);
@@ -295,6 +304,7 @@ mod tests {
             last_reported_model: None,
             last_reported_base_url: None,
             is_agent: true,
+            is_review: false,
             confirmed_router: false,
         };
         apply_discovered_router_confirmation(&mut entry, true, true);

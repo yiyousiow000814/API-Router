@@ -95,7 +95,28 @@ fn body_session_source_is_agent(body: &Value) -> bool {
     };
     match source {
         Value::Object(map) => map.contains_key("subagent") || map.contains_key("subAgent"),
-        Value::String(v) => v.to_ascii_lowercase().contains("subagent"),
+        Value::String(v) => {
+            let v = v.to_ascii_lowercase();
+            v.contains("subagent") || v.contains("review")
+        }
+        _ => false,
+    }
+}
+
+fn body_session_source_is_review(body: &Value) -> bool {
+    let source = body
+        .get("session_source")
+        .or_else(|| body.get("sessionSource"));
+    let Some(source) = source else {
+        return false;
+    };
+    match source {
+        Value::Object(map) => map
+            .get("subagent")
+            .or_else(|| map.get("subAgent"))
+            .and_then(|v| v.as_str())
+            .is_some_and(|v| v.eq_ignore_ascii_case("review")),
+        Value::String(v) => v.to_ascii_lowercase().contains("review"),
         _ => false,
     }
 }
@@ -109,6 +130,17 @@ fn request_is_agent(headers: &HeaderMap, body: &Value) -> bool {
         return true;
     }
     body_session_source_is_agent(body)
+}
+
+fn request_is_review(headers: &HeaderMap, body: &Value) -> bool {
+    if headers
+        .get("x-openai-subagent")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("review"))
+    {
+        return true;
+    }
+    body_session_source_is_review(body)
 }
 
 fn is_prev_id_unsupported_error(message: &str) -> bool {

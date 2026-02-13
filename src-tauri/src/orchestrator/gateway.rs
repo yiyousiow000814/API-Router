@@ -95,6 +95,8 @@ pub struct ClientSessionRuntime {
     pub last_reported_base_url: Option<String>,
     // Mark sessions spawned from Codex subagent flows.
     pub is_agent: bool,
+    // Subagent subtype marker (currently only review is surfaced in UI).
+    pub is_review: bool,
     // Sticky "this session uses our gateway" marker. This prevents sessions from disappearing if
     // the user edits Codex config files while Codex is running (the process keeps the old config
     // in memory, but we may no longer be able to prove it from disk).
@@ -285,6 +287,7 @@ async fn responses(
                 last_reported_model: None,
                 last_reported_base_url: None,
                 is_agent: agent_request || client_session.as_ref().is_some_and(|s| s.is_agent),
+                is_review: false,
                 confirmed_router: true,
             });
         if let Some(inferred) = client_session.as_ref() {
@@ -293,8 +296,15 @@ async fn responses(
             if inferred.is_agent {
                 entry.is_agent = true;
             }
+            if inferred.is_review {
+                entry.is_review = true;
+            }
         }
         if agent_request {
+            entry.is_agent = true;
+        }
+        if request_is_review(&headers, &body) {
+            entry.is_review = true;
             entry.is_agent = true;
         }
         // Keep codex provider deterministic once the session is proven to route through gateway.

@@ -21,6 +21,7 @@ pub struct InferredWtSession {
     pub reported_base_url: Option<String>,
     pub router_confirmed: bool,
     pub is_agent: bool,
+    pub is_review: bool,
 }
 
 #[cfg(windows)]
@@ -109,6 +110,7 @@ struct RolloutSessionMeta {
     model_provider: Option<String>,
     base_url: Option<String>,
     is_agent: bool,
+    is_review: bool,
 }
 
 #[cfg(windows)]
@@ -121,7 +123,26 @@ fn rollout_source_is_agent(source: Option<&serde_json::Value>) -> bool {
         serde_json::Value::Object(map) => {
             map.contains_key("subagent") || map.contains_key("subAgent")
         }
-        serde_json::Value::String(s) => s.to_ascii_lowercase().contains("subagent"),
+        serde_json::Value::String(s) => {
+            let s = s.to_ascii_lowercase();
+            s.contains("subagent") || s.contains("review")
+        }
+        _ => false,
+    }
+}
+
+#[cfg(windows)]
+fn rollout_source_is_review(source: Option<&serde_json::Value>) -> bool {
+    let Some(source) = source else {
+        return false;
+    };
+    match source {
+        serde_json::Value::Object(map) => map
+            .get("subagent")
+            .or_else(|| map.get("subAgent"))
+            .and_then(|v| v.as_str())
+            .is_some_and(|v| v.eq_ignore_ascii_case("review")),
+        serde_json::Value::String(s) => s.to_ascii_lowercase().contains("review"),
         _ => false,
     }
 }
@@ -147,13 +168,16 @@ fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
         .or_else(|| payload.get("model_provider_base_url"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let is_agent = rollout_source_is_agent(payload.get("source"));
+    let source = payload.get("source");
+    let is_agent = rollout_source_is_agent(source);
+    let is_review = rollout_source_is_review(source);
     Some(RolloutSessionMeta {
         id,
         cwd,
         model_provider,
         base_url,
         is_agent,
+        is_review,
     })
 }
 
@@ -420,6 +444,7 @@ pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWt
             reported_base_url: None,
             router_confirmed: true,
             is_agent: false,
+            is_review: false,
         })
     }
 }
