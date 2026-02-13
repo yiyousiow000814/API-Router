@@ -7,6 +7,24 @@ export function buildDevUsageStatistics(params: {
   usageFilterModels: string[]
 }): UsageStatistics {
   const { now, usageWindowHours, usageFilterProviders, usageFilterModels } = params
+  const timelineCount = usageWindowHours <= 48 ? 24 : 7
+  const timeline = Array.from({ length: timelineCount }).map((_, index) => {
+    const requests = Math.max(1, Math.round(6 + Math.sin(index / 2) * 4))
+    return {
+      bucket_unix_ms:
+        now -
+        (usageWindowHours <= 48 ? (timelineCount - 1 - index) * 60 * 60 * 1000 : (timelineCount - 1 - index) * 24 * 60 * 60 * 1000),
+      requests,
+      total_tokens: Math.max(100, Math.round(3200 + Math.cos(index / 2.2) * 1600)),
+      cache_creation_tokens: 0,
+      cache_read_tokens: 0,
+    }
+  })
+  // Ensure dev preview always has at least one clear anomaly candidate.
+  const spikeIndex = Math.max(0, timelineCount - 3)
+  timeline[spikeIndex].requests = 72
+  timeline[spikeIndex].total_tokens = 21500
+
   return {
     ok: true,
     generated_at_unix_ms: now,
@@ -58,29 +76,33 @@ export function buildDevUsageStatistics(params: {
           api_key_ref: 'sk-dev********a11',
           requests: 210,
           total_tokens: 128400,
-          estimated_total_cost_usd: 8.51,
-          estimated_avg_request_cost_usd: 0.041,
+          estimated_total_cost_usd: 46.2,
+          estimated_avg_request_cost_usd: 0.22,
           estimated_cost_request_count: 210,
+          pricing_source: 'manual_per_request',
         },
         {
           provider: 'provider_2',
           api_key_ref: 'sk-dev********b22',
           requests: 12,
           total_tokens: 3400,
-          estimated_total_cost_usd: 0.73,
-          estimated_avg_request_cost_usd: 0.061,
+          estimated_total_cost_usd: 0.36,
+          estimated_avg_request_cost_usd: 0.03,
           estimated_cost_request_count: 12,
+          pricing_source: 'manual_per_request',
+        },
+        {
+          provider: 'official',
+          api_key_ref: 'sk-dev********c33',
+          requests: 26,
+          total_tokens: 9100,
+          estimated_total_cost_usd: 0.52,
+          estimated_avg_request_cost_usd: 0.02,
+          estimated_cost_request_count: 26,
+          pricing_source: 'manual_per_request',
         },
       ],
-      timeline: Array.from({ length: usageWindowHours <= 48 ? 24 : 7 }).map((_, index) => ({
-        bucket_unix_ms:
-          now -
-          (usageWindowHours <= 48 ? (23 - index) * 60 * 60 * 1000 : (6 - index) * 24 * 60 * 60 * 1000),
-        requests: Math.max(1, Math.round(6 + Math.sin(index / 2) * 4)),
-        total_tokens: Math.max(100, Math.round(3200 + Math.cos(index / 2.2) * 1600)),
-        cache_creation_tokens: 0,
-        cache_read_tokens: 0,
-      })),
+      timeline,
     },
   }
 }

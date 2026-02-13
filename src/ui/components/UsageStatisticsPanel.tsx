@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from 'react'
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
 import type { Config, UsageStatistics } from '../types'
 import './UsageStatisticsPanel.css'
 import {
@@ -130,6 +130,37 @@ export function UsageStatisticsPanel({
   formatPricingSource,
   usageProviderTotalsAndAverages,
 }: Props) {
+  const [dismissedAnomalyIds, setDismissedAnomalyIds] = useState<Set<string>>(new Set())
+  const anomalyEntries = useMemo(
+    () => {
+      const messageCounts = new Map<string, number>()
+      return usageAnomalies.messages
+        .map((message) => message.trim())
+        .filter((message) => message.length > 0)
+        .map((message) => {
+          const nextCount = (messageCounts.get(message) ?? 0) + 1
+          messageCounts.set(message, nextCount)
+          return { id: `${message}::${nextCount}`, message }
+        })
+    },
+    [usageAnomalies.messages],
+  )
+  useEffect(() => {
+    setDismissedAnomalyIds((prev) => {
+      if (!prev.size) return prev
+      const idSet = new Set(anomalyEntries.map((entry) => entry.id))
+      const next = new Set<string>()
+      for (const id of prev) {
+        if (idSet.has(id)) next.add(id)
+      }
+      return next.size === prev.size ? prev : next
+    })
+  }, [anomalyEntries])
+  const visibleAnomalyEntries = useMemo(
+    () => anomalyEntries.filter((entry) => !dismissedAnomalyIds.has(entry.id)),
+    [anomalyEntries, dismissedAnomalyIds],
+  )
+
   return (
     <div className="aoCard aoUsageStatsPage">
       <UsageStatsFiltersBar
@@ -145,12 +176,28 @@ export function UsageStatisticsPanel({
         usageModelFilterOptions={usageModelFilterOptions}
         toggleUsageModelFilter={toggleUsageModelFilter}
       />
-      {usageAnomalies.messages.length ? (
+      {visibleAnomalyEntries.length ? (
         <div className="aoUsageAnomalyBanner" role="status" aria-live="polite">
           <div className="aoMiniLabel">Anomaly Watch</div>
-          {usageAnomalies.messages.map((message, index) => (
-            <div key={`usage-anomaly-${index}`} className="aoUsageAnomalyText">
-              {message}
+          {visibleAnomalyEntries.map((entry) => (
+            <div key={`usage-anomaly-${entry.id}`} className="aoUsageAnomalyItem">
+              <div className="aoUsageAnomalyDot" aria-hidden="true" />
+              <div className="aoUsageAnomalyText">{entry.message}</div>
+              <button
+                type="button"
+                className="aoUsageAnomalyDismissIcon"
+                onClick={() =>
+                  setDismissedAnomalyIds((prev) => {
+                    if (prev.has(entry.id)) return prev
+                    const next = new Set(prev)
+                    next.add(entry.id)
+                    return next
+                  })
+                }
+                aria-label="Dismiss anomaly notice"
+              >
+                ✕
+              </button>
             </div>
           ))}
         </div>
