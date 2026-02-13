@@ -100,6 +100,8 @@ export default function App() {
   const [rawConfigText, setRawConfigText] = useState<string>('')
   const [rawConfigLoading, setRawConfigLoading] = useState<boolean>(false)
   const [rawConfigSaving, setRawConfigSaving] = useState<boolean>(false)
+  const [rawConfigTargetHome, setRawConfigTargetHome] = useState<string>('')
+  const [rawConfigHomeOptions, setRawConfigHomeOptions] = useState<string[]>([])
   const [instructionModalOpen, setInstructionModalOpen] = useState<boolean>(false)
   const [codexSwapModalOpen, setCodexSwapModalOpen] = useState<boolean>(false)
   const [codexSwapDir1, setCodexSwapDir1] = useState<string>('')
@@ -224,10 +226,13 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
   }
 
-  async function reloadRawConfigModal() {
+  async function reloadRawConfigModal(targetHome?: string) {
     setRawConfigLoading(true)
     try {
-      const txt = await invoke<string>('get_config_toml')
+      const home = (targetHome ?? rawConfigTargetHome).trim()
+      const txt = await invoke<string>('get_codex_cli_config_toml', {
+        cliHome: home || null,
+      })
       setRawConfigText(txt)
     } catch (e) {
       flashToast(String(e), 'error')
@@ -237,19 +242,30 @@ export default function App() {
   }
 
   async function openRawConfigModal() {
-    setRawConfigModalOpen(true)
-    await reloadRawConfigModal()
+    try {
+      const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapApplyBoth)
+      let options = homes
+      if (!options.length) {
+        const defaultHome = await invoke<string>('codex_cli_default_home')
+        options = [defaultHome]
+      }
+      setRawConfigHomeOptions(options)
+      setRawConfigTargetHome(options[0] ?? '')
+      setRawConfigModalOpen(true)
+      await reloadRawConfigModal(options[0] ?? '')
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
   }
 
   async function saveRawConfigModal() {
     setRawConfigSaving(true)
     try {
-      await invoke('set_config_toml', { tomlText: rawConfigText })
-      await Promise.all([
-        refreshConfig({ refreshProviderSwitchStatus: false }),
-        refreshStatus({ refreshSwapStatus: false }),
-      ])
-      flashToast('config.toml saved and applied')
+      await invoke('set_codex_cli_config_toml', {
+        cliHome: rawConfigTargetHome || null,
+        tomlText: rawConfigText,
+      })
+      flashToast('Codex config.toml saved')
     } catch (e) {
       flashToast(String(e), 'error')
     } finally {
@@ -700,8 +716,16 @@ export default function App() {
         rawConfigText={rawConfigText}
         rawConfigLoading={rawConfigLoading}
         rawConfigSaving={rawConfigSaving}
+        rawConfigTargetHome={rawConfigTargetHome}
+        rawConfigHomeOptions={rawConfigHomeOptions}
         setRawConfigText={setRawConfigText}
-        reloadRawConfigModal={reloadRawConfigModal}
+        onRawConfigTargetHomeChange={(next) => {
+          setRawConfigTargetHome(next)
+          void reloadRawConfigModal(next)
+        }}
+        reloadRawConfigModal={async () => {
+          await reloadRawConfigModal()
+        }}
         saveRawConfigModal={saveRawConfigModal}
         setRawConfigModalOpen={setRawConfigModalOpen}
         providerListRef={providerListRef}

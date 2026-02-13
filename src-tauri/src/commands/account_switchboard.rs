@@ -89,6 +89,19 @@ pub(crate) fn codex_cli_swap_status(
 }
 
 #[tauri::command]
+pub(crate) fn get_codex_cli_config_toml(cli_home: Option<String>) -> Result<String, String> {
+    crate::codex_cli_swap::get_cli_config_toml(cli_home.as_deref())
+}
+
+#[tauri::command]
+pub(crate) fn set_codex_cli_config_toml(
+    cli_home: Option<String>,
+    toml_text: String,
+) -> Result<(), String> {
+    crate::codex_cli_swap::set_cli_config_toml(cli_home.as_deref(), &toml_text)
+}
+
+#[tauri::command]
 pub(crate) fn provider_switchboard_status(
     state: tauri::State<'_, app_state::AppState>,
     cli_homes: Option<Vec<String>>,

@@ -149,6 +149,40 @@ fn ensure_cli_files_exist(cli_home: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn ensure_cli_config_exists(cli_home: &Path) -> Result<(), String> {
+    if !cli_home.exists() {
+        return Err(format!("Codex dir does not exist: {}", cli_home.display()));
+    }
+    let cfg = cli_home.join("config.toml");
+    if !cfg.exists() {
+        return Err(format!("Missing config.toml in: {}", cli_home.display()));
+    }
+    Ok(())
+}
+
+fn resolve_cli_home(cli_home: Option<&str>) -> Result<PathBuf, String> {
+    let home = cli_home
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(default_cli_codex_home)
+        .ok_or_else(|| "missing HOME/USERPROFILE".to_string())?;
+    Ok(home)
+}
+
+pub fn get_cli_config_toml(cli_home: Option<&str>) -> Result<String, String> {
+    let home = resolve_cli_home(cli_home)?;
+    ensure_cli_config_exists(&home)?;
+    std::fs::read_to_string(home.join("config.toml")).map_err(|e| e.to_string())
+}
+
+pub fn set_cli_config_toml(cli_home: Option<&str>, toml_text: &str) -> Result<(), String> {
+    let home = resolve_cli_home(cli_home)?;
+    ensure_cli_config_exists(&home)?;
+    let _: toml::Value = toml::from_str(toml_text).map_err(|e| format!("invalid config.toml: {e}"))?;
+    write_text(&home.join("config.toml"), toml_text)
+}
+
 fn restore_dir(cli_home: &Path) -> Result<(), String> {
     ensure_cli_files_exist(cli_home)?;
 

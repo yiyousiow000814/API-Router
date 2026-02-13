@@ -72,7 +72,10 @@ type Props = {
   rawConfigText: string
   rawConfigLoading: boolean
   rawConfigSaving: boolean
+  rawConfigTargetHome: string
+  rawConfigHomeOptions: string[]
   setRawConfigText: Dispatch<SetStateAction<string>>
+  onRawConfigTargetHomeChange: (next: string) => void
   reloadRawConfigModal: () => Promise<void>
   saveRawConfigModal: () => Promise<void>
   setRawConfigModalOpen: Dispatch<SetStateAction<boolean>>
@@ -220,7 +223,10 @@ export function AppModals(props: Props) {
     rawConfigText,
     rawConfigLoading,
     rawConfigSaving,
+    rawConfigTargetHome,
+    rawConfigHomeOptions,
     setRawConfigText,
+    onRawConfigTargetHomeChange,
     reloadRawConfigModal,
     saveRawConfigModal,
     setRawConfigModalOpen,
@@ -403,6 +409,9 @@ requires_openai_auth = true`}
         open={rawConfigModalOpen}
         loading={rawConfigLoading}
         saving={rawConfigSaving}
+        targetHome={rawConfigTargetHome}
+        homeOptions={rawConfigHomeOptions}
+        onTargetHomeChange={onRawConfigTargetHomeChange}
         value={rawConfigText}
         onChange={setRawConfigText}
         onReload={() => void reloadRawConfigModal()}
