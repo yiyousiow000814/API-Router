@@ -276,14 +276,27 @@ fn discover_sessions_using_router_uncached(
         homes
     }
 
-    fn live_session_ids_from_logs(
+    #[derive(Clone, Debug)]
+    struct LiveSessionCandidate {
+        id: String,
+        last_ts_iso: String,
+        opened_at_unix_ms: Option<u64>,
+    }
+
+    fn parse_unix_ms_from_log_ts(ts: &str) -> Option<u64> {
+        chrono::DateTime::parse_from_rfc3339(ts)
+            .ok()
+            .and_then(|dt| u64::try_from(dt.timestamp_millis()).ok())
+    }
+
+    fn live_sessions_from_logs(
         codex_homes: &[std::path::PathBuf],
         max_ids: usize,
-    ) -> Vec<String> {
+    ) -> Vec<LiveSessionCandidate> {
         if max_ids == 0 {
             return Vec::new();
         }
-        let mut state: std::collections::HashMap<String, (bool, String)> =
+        let mut state: std::collections::HashMap<String, (bool, String, Option<u64>)> =
             std::collections::HashMap::new();
 
         for codex_home in codex_homes {
@@ -312,11 +325,14 @@ fn discover_sessions_using_router_uncached(
                 }
                 let entry = state
                     .entry(id.to_string())
-                    .or_insert_with(|| (true, ts.clone()));
+                    .or_insert_with(|| (true, ts.clone(), None));
                 entry.1 = ts;
                 let new_marker = format!("session_loop{{thread_id={id}}}: codex_core::codex: new");
                 if line.contains(&new_marker) {
                     entry.0 = true;
+                    if entry.2.is_none() {
+                        entry.2 = parse_unix_ms_from_log_ts(&entry.1);
+                    }
                 }
                 let close_marker =
                     format!("session_loop{{thread_id={id}}}: codex_core::codex: close");
@@ -325,13 +341,23 @@ fn discover_sessions_using_router_uncached(
                 }
             }
         }
-        let mut open_items: Vec<(String, String)> = state
+        let mut open_items: Vec<LiveSessionCandidate> = state
             .into_iter()
-            .filter_map(|(id, (open, ts))| if open { Some((id, ts)) } else { None })
+            .filter_map(|(id, (open, ts, opened_at_unix_ms))| {
+                if open {
+                    Some(LiveSessionCandidate {
+                        id,
+                        last_ts_iso: ts,
+                        opened_at_unix_ms,
+                    })
+                } else {
+                    None
+                }
+            })
             .collect();
-        open_items.sort_by(|a, b| b.1.cmp(&a.1));
+        open_items.sort_by(|a, b| b.last_ts_iso.cmp(&a.last_ts_iso));
         open_items.truncate(max_ids);
-        open_items.into_iter().map(|(id, _)| id).collect()
+        open_items
     }
 
     fn codex_base_url_value(pid: u32) -> Option<String> {
@@ -560,8 +586,10 @@ fn discover_sessions_using_router_uncached(
         }
     }
 
-    let live_log_ids = live_session_ids_from_logs(&codex_homes, codex_pid_count.max(4));
-    let mut next_live_idx = 0usize;
+    let live_sessions =
+        live_sessions_from_logs(&codex_homes, codex_pid_count.saturating_mul(16).max(64));
+    let live_session_ids: std::collections::HashSet<String> =
+        live_sessions.iter().map(|s| s.id.clone()).collect();
     let mut used_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
@@ -589,17 +617,46 @@ fn discover_sessions_using_router_uncached(
                     continue;
                 }
 
-                // Only map to active session ids from Codex logs; no fallback inference.
-                let mut codex_session_id = None;
-                while next_live_idx < live_log_ids.len() {
-                    let cand = live_log_ids[next_live_idx].clone();
-                    next_live_idx += 1;
-                    if used_ids.contains(&cand) {
-                        continue;
+                // Prefer process-tied inference first, then pick the nearest open log session by
+                // process creation time. This prevents cross-process drift in multi-Codex setups.
+                let pid_started_at_unix_ms =
+                    process_create_time(pid).and_then(systemtime_to_unix_ms);
+                let explicit_id = read_process_codex_session_id_explicit(pid, cmd.as_deref())
+                    .filter(|id| live_session_ids.contains(id))
+                    .filter(|id| !used_ids.contains(id));
+
+                let nearest_live = || -> Option<String> {
+                    if let Some(started) = pid_started_at_unix_ms {
+                        let mut best: Option<(&LiveSessionCandidate, u64)> = None;
+                        for cand in &live_sessions {
+                            if used_ids.contains(&cand.id) {
+                                continue;
+                            }
+                            let Some(opened) = cand.opened_at_unix_ms else {
+                                continue;
+                            };
+                            let delta = opened.abs_diff(started);
+                            if best.map(|(_, d)| delta < d).unwrap_or(true) {
+                                best = Some((cand, delta));
+                            }
+                        }
+                        if let Some((cand, _)) = best {
+                            return Some(cand.id.clone());
+                        }
                     }
-                    codex_session_id = Some(cand);
-                    break;
-                }
+                    live_sessions
+                        .iter()
+                        .find(|cand| !used_ids.contains(&cand.id))
+                        .map(|cand| cand.id.clone())
+                };
+
+                let frozen_id = || {
+                    frozen_codex_session_id(pid, cmd.as_deref(), server_port)
+                        .filter(|id| live_session_ids.contains(id))
+                        .filter(|id| !used_ids.contains(id))
+                };
+
+                let codex_session_id = explicit_id.or_else(nearest_live).or_else(frozen_id);
                 let Some(codex_session_id) = codex_session_id else {
                     ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
                     continue;
