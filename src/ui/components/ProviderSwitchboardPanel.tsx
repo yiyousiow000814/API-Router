@@ -75,7 +75,7 @@ export function ProviderSwitchboardPanel({
             <div className="aoMiniLabel">Switch Options</div>
             <div className="aoRow">
               <button type="button" className="aoTinyBtn" onClick={onOpenRawConfig}>
-                Raw config.toml
+                Edit config.toml
               </button>
               <button type="button" className="aoTinyBtn" onClick={onOpenConfigureDirs}>
                 Configure Dirs
