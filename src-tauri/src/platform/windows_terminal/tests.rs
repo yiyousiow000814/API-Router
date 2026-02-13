@@ -52,13 +52,6 @@ mod tests {
     }
 
     #[test]
-    fn auth_status_is_stable() {
-        assert_eq!(auth_status("t", Some("t")), "match");
-        assert_eq!(auth_status("t", Some("x")), "mismatch");
-        assert_eq!(auth_status("t", None), "unknown");
-    }
-
-    #[test]
     fn norm_cwd_for_match_trims_trailing_slashes() {
         assert_eq!(norm_cwd_for_match("C:\\Work\\Proj\\"), "c:/work/proj");
         assert_eq!(norm_cwd_for_match("C:/Work/Proj"), "c:/work/proj");
@@ -126,6 +119,113 @@ mod tests {
         let cwd = std::path::PathBuf::from("C:\\work\\proj");
         let start = std::time::SystemTime::now() + Duration::from_secs(3600);
         let got = infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, 4000, Some(start));
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn infer_session_id_prefers_cli_over_subagent_when_both_exist() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let codex_home = tmp.path().join(".codex");
+        let sessions_dir = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("02")
+            .join("13");
+        std::fs::create_dir_all(&sessions_dir).expect("mkdir");
+
+        let cli_id = "019c572b-d089-7750-b15e-9f52851852e6";
+        let agent_id = "019c572b-ea60-7251-b36b-e4fd30695ddb";
+
+        let cli = sessions_dir.join(format!("rollout-cli-{cli_id}.jsonl"));
+        {
+            let mut f = std::fs::File::create(&cli).expect("create cli");
+            writeln!(
+                f,
+                r#"{{"type":"session_meta","payload":{{"id":"{cli_id}","cwd":"C:\\work\\proj\\","source":"cli","model_provider":"{provider}"}}}}"#,
+                provider = GATEWAY_MODEL_PROVIDER_ID
+            )
+            .unwrap();
+        }
+
+        std::thread::sleep(Duration::from_millis(20));
+
+        let agent = sessions_dir.join(format!("rollout-agent-{agent_id}.jsonl"));
+        {
+            let mut f = std::fs::File::create(&agent).expect("create agent");
+            writeln!(
+                f,
+                r#"{{"type":"session_meta","payload":{{"id":"{agent_id}","cwd":"C:\\work\\proj\\","source":{{"subagent":"review"}},"model_provider":"{provider}"}}}}"#,
+                provider = GATEWAY_MODEL_PROVIDER_ID
+            )
+            .unwrap();
+        }
+
+        let cwd = std::path::PathBuf::from("C:\\work\\proj");
+        let start = std::fs::metadata(&agent)
+            .and_then(|m| m.created().or_else(|_| m.modified()))
+            .unwrap();
+        let got = infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, 4000, Some(start));
+        assert_eq!(got.as_deref(), Some(cli_id));
+    }
+
+    #[test]
+    fn parse_tui_log_session_line_extracts_timestamp_and_thread_id() {
+        let line = "2026-02-13T15:05:34.191451Z  INFO session_loop{thread_id=019c5789-2ee7-72a3-9fd7-69a2f10aa7bc}: codex_core::codex: new";
+        let (ts, id) = parse_tui_log_session_line(line).expect("parse");
+        assert_eq!(id, "019c5789-2ee7-72a3-9fd7-69a2f10aa7bc");
+        assert!(ts.duration_since(std::time::SystemTime::UNIX_EPOCH).is_ok());
+    }
+
+    #[test]
+    fn infer_session_id_from_tui_log_prefers_closest_to_start_time() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let codex_home = tmp.path().join(".codex");
+        let log_dir = codex_home.join("log");
+        std::fs::create_dir_all(&log_dir).expect("mkdir");
+        let log_path = log_dir.join("codex-tui.log");
+        let mut f = std::fs::File::create(&log_path).expect("create");
+        writeln!(
+            f,
+            "2026-02-13T15:05:32.100000Z  INFO session_loop{{thread_id=019c5789-2ee7-72a3-9fd7-69a2f10aa7bc}}: codex_core::codex: new"
+        )
+        .unwrap();
+        writeln!(
+            f,
+            "2026-02-13T15:05:34.100000Z  INFO session_loop{{thread_id=019c57aa-2ee7-72a3-9fd7-69a2f10aa7bc}}: codex_core::codex: new"
+        )
+        .unwrap();
+        let start_ms = u64::try_from(
+            chrono::DateTime::parse_from_rfc3339("2026-02-13T15:05:34Z")
+                .unwrap()
+                .timestamp_millis(),
+        )
+        .unwrap();
+        let start = std::time::UNIX_EPOCH + Duration::from_millis(start_ms);
+        let got = infer_codex_session_id_from_tui_log(&codex_home, start);
+        assert_eq!(got.as_deref(), Some("019c57aa-2ee7-72a3-9fd7-69a2f10aa7bc"));
+    }
+
+    #[test]
+    fn infer_session_id_from_tui_log_respects_time_window() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let codex_home = tmp.path().join(".codex");
+        let log_dir = codex_home.join("log");
+        std::fs::create_dir_all(&log_dir).expect("mkdir");
+        let log_path = log_dir.join("codex-tui.log");
+        let mut f = std::fs::File::create(&log_path).expect("create");
+        writeln!(
+            f,
+            "2026-02-13T15:05:00.000000Z  INFO session_loop{{thread_id=019c5789-2ee7-72a3-9fd7-69a2f10aa7bc}}: codex_core::codex: new"
+        )
+        .unwrap();
+        let start_ms = u64::try_from(
+            chrono::DateTime::parse_from_rfc3339("2026-02-13T15:05:34Z")
+                .unwrap()
+                .timestamp_millis(),
+        )
+        .unwrap();
+        let start = std::time::UNIX_EPOCH + Duration::from_millis(start_ms);
+        let got = infer_codex_session_id_from_tui_log(&codex_home, start);
         assert!(got.is_none());
     }
 

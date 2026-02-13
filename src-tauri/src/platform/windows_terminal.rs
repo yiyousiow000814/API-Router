@@ -222,6 +222,7 @@ fn infer_codex_session_id_from_rollouts_dir(
         id: String,
         created: SystemTime,
         base_url_matches_router: Option<bool>,
+        is_agent: bool,
     }
 
     let mut candidates: Vec<Candidate> = Vec::new();
@@ -252,12 +253,25 @@ fn infer_codex_session_id_from_rollouts_dir(
             id: m.id,
             created,
             base_url_matches_router,
+            is_agent: m.is_agent,
         });
     }
 
     if candidates.is_empty() {
         return None;
     }
+
+    // Prefer primary CLI sessions over subagent/review sessions when both exist for the same
+    // process window. Subagent sessions are derived from a main CLI session and should follow it.
+    let preferred_candidates: Vec<Candidate> = if candidates.iter().any(|c| !c.is_agent) {
+        candidates
+            .iter()
+            .filter(|&c| !c.is_agent)
+            .cloned()
+            .collect()
+    } else {
+        candidates.clone()
+    };
 
     // Pick the candidate whose rollout time is closest to the process start time (helps avoid
     // misattributing multiple running Codex processes in the same CWD to the newest session).
@@ -284,7 +298,7 @@ fn infer_codex_session_id_from_rollouts_dir(
     };
 
     // 1) If any candidate recorded a base_url matching this router, prefer those.
-    let router_matches: Vec<Candidate> = candidates
+    let router_matches: Vec<Candidate> = preferred_candidates
         .iter()
         .filter(|&c| c.base_url_matches_router == Some(true))
         .cloned()
@@ -303,18 +317,80 @@ fn infer_codex_session_id_from_rollouts_dir(
     if let Some(start) = process_start {
         // If we can't find a rollout close to process start, do not guess. Guessing causes
         // "session id flips" and duplicate/merged rows when multiple Codex processes share a CWD.
-        return pick_closest(&candidates, start);
+        return pick_closest(&preferred_candidates, start);
     }
-    Some(candidates[0].id.clone())
+    Some(preferred_candidates[0].id.clone())
 }
 
 #[cfg(windows)]
-fn auth_status(expected: &str, actual: Option<&str>) -> &'static str {
-    match actual {
-        Some(a) if a == expected => "match",
-        Some(_) => "mismatch",
-        None => "unknown",
+fn parse_tui_log_session_line(line: &str) -> Option<(SystemTime, String)> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
     }
+    let ts = line.split_whitespace().next()?;
+    let dt = chrono::DateTime::parse_from_rfc3339(ts).ok()?;
+    let mut idx = line.find("thread_id=")?;
+    idx += "thread_id=".len();
+    let rest = &line[idx..];
+    let end = rest
+        .find(|c: char| c == '}' || c == ':' || c.is_whitespace())
+        .unwrap_or(rest.len());
+    let id = rest[..end].trim();
+    if uuid::Uuid::parse_str(id).is_err() {
+        return None;
+    }
+    let ts_ms = u64::try_from(dt.timestamp_millis()).ok()?;
+    let sys = SystemTime::UNIX_EPOCH + Duration::from_millis(ts_ms);
+    Some((sys, id.to_string()))
+}
+
+#[cfg(windows)]
+fn infer_codex_session_id_from_tui_log(
+    codex_home: &std::path::Path,
+    start: SystemTime,
+) -> Option<String> {
+    // Codex writes runtime thread ids into `log/codex-tui.log` at session init. This is a useful
+    // fallback for processes started as plain `codex.exe` without a session id in argv.
+    const LOG_SCAN_MAX_BYTES: u64 = 4 * 1024 * 1024;
+    const MAX_WINDOW: Duration = Duration::from_secs(8);
+
+    let log_path = codex_home.join("log").join("codex-tui.log");
+    let file = std::fs::File::open(&log_path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let len = reader.get_ref().metadata().ok()?.len();
+    if len > LOG_SCAN_MAX_BYTES {
+        let _ = std::io::Seek::seek(
+            &mut reader,
+            std::io::SeekFrom::Start(len - LOG_SCAN_MAX_BYTES),
+        );
+    }
+
+    let mut line = String::new();
+    let mut best: Option<(String, Duration)> = None;
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).ok().unwrap_or(0) == 0 {
+            break;
+        }
+        let Some((ts, id)) = parse_tui_log_session_line(&line) else {
+            continue;
+        };
+        let Some(dt) = (if ts >= start {
+            ts.duration_since(start).ok()
+        } else {
+            start.duration_since(ts).ok()
+        }) else {
+            continue;
+        };
+        if dt > MAX_WINDOW {
+            continue;
+        }
+        if best.as_ref().map(|(_, b)| dt < *b).unwrap_or(true) {
+            best = Some((id, dt));
+        }
+    }
+    best.map(|(id, _)| id)
 }
 
 pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWtSession> {
