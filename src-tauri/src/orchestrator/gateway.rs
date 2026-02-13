@@ -93,8 +93,10 @@ pub struct ClientSessionRuntime {
     // Last model observed from upstream response payload/events.
     pub last_reported_model: Option<String>,
     pub last_reported_base_url: Option<String>,
-    // Mark sessions spawned from Codex subagent flows.
+    // Whether the latest observed session signal indicates subagent activity.
     pub is_agent: bool,
+    // Sticky "ever seen as subagent" marker for diagnostics/audit.
+    pub is_agent_ever: bool,
     // Sticky "this session uses our gateway" marker. This prevents sessions from disappearing if
     // the user edits Codex config files while Codex is running (the process keeps the old config
     // in memory, but we may no longer be able to prove it from disk).
@@ -273,6 +275,8 @@ async fn responses(
     // be owned by helper processes.
     if !session_key.starts_with("peer:") {
         let mut map = st.client_sessions.write();
+        let inferred_is_agent = client_session.as_ref().is_some_and(|s| s.is_agent);
+        let current_agent = agent_request || inferred_is_agent;
         let entry = map
             .entry(session_key.clone())
             .or_insert_with(|| ClientSessionRuntime {
@@ -284,18 +288,17 @@ async fn responses(
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
-                is_agent: agent_request || client_session.as_ref().is_some_and(|s| s.is_agent),
+                is_agent: current_agent,
+                is_agent_ever: current_agent,
                 confirmed_router: true,
             });
         if let Some(inferred) = client_session.as_ref() {
             entry.pid = inferred.pid;
             entry.wt_session = Some(inferred.wt_session.clone());
-            if inferred.is_agent {
-                entry.is_agent = true;
-            }
         }
-        if agent_request {
-            entry.is_agent = true;
+        entry.is_agent = current_agent;
+        if current_agent {
+            entry.is_agent_ever = true;
         }
         // Keep codex provider deterministic once the session is proven to route through gateway.
         entry.last_reported_model_provider = Some(GATEWAY_MODEL_PROVIDER_ID.to_string());

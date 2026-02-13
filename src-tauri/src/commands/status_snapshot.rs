@@ -80,6 +80,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                         last_reported_model: None,
                         last_reported_base_url: None,
                         is_agent: s.is_agent,
+                        is_agent_ever: s.is_agent,
                         confirmed_router: s.router_confirmed,
                     }
                 });
@@ -93,8 +94,15 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                 if let Some(bu) = s.reported_base_url.as_deref() {
                     entry.last_reported_base_url = Some(bu.to_string());
                 }
+                let active_by_request = entry.last_request_unix_ms > 0
+                    && now.saturating_sub(entry.last_request_unix_ms) < 60_000;
                 if s.is_agent {
                     entry.is_agent = true;
+                    entry.is_agent_ever = true;
+                } else if !active_by_request {
+                    // Only clear current-agent state when the session is not actively making requests.
+                    // This avoids discovery lag from flapping an in-flight agent row.
+                    entry.is_agent = false;
                 }
             }
         }
@@ -158,7 +166,8 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     "active": active,
                     "preferred_provider": pref,
                     "verified": v.confirmed_router,
-                    "is_agent": v.is_agent
+                    "is_agent": v.is_agent,
+                    "is_agent_ever": v.is_agent_ever
                 })
             })
             .collect::<Vec<_>>();
@@ -204,8 +213,8 @@ fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::commands::merge_discovered_model_provider;
+    use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::orchestrator::gateway::ClientSessionRuntime;
 
     #[test]
@@ -220,6 +229,7 @@ mod tests {
             last_reported_model: None,
             last_reported_base_url: None,
             is_agent: false,
+            is_agent_ever: false,
             confirmed_router: true,
         };
         merge_discovered_model_provider(&mut entry, Some("openai"));
@@ -241,10 +251,14 @@ mod tests {
             last_reported_model: None,
             last_reported_base_url: None,
             is_agent: false,
+            is_agent_ever: false,
             confirmed_router: false,
         };
         merge_discovered_model_provider(&mut entry, Some("openai"));
-        assert_eq!(entry.last_reported_model_provider.as_deref(), Some("openai"));
+        assert_eq!(
+            entry.last_reported_model_provider.as_deref(),
+            Some("openai")
+        );
     }
 }
 
