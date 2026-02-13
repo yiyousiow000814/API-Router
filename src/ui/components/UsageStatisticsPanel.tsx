@@ -185,27 +185,10 @@ export function UsageStatisticsPanel({
                 }
                 aria-label="Dismiss anomaly notice"
               >
-                Dismiss
+                Close
               </button>
             </div>
           ))}
-          {visibleAnomalyMessages.length > 1 ? (
-            <div className="aoUsageAnomalyFooter">
-              <button
-                type="button"
-                className="aoUsageAnomalyCloseAllBtn"
-                onClick={() =>
-                  setDismissedAnomalyMessages((prev) => {
-                    const next = new Set(prev)
-                    for (const item of visibleAnomalyMessages) next.add(item)
-                    return next
-                  })
-                }
-              >
-                Dismiss all
-              </button>
-            </div>
-          ) : null}
         </div>
       ) : null}
 

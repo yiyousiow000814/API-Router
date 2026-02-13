@@ -100,25 +100,18 @@
   font-weight: 620;
 }
 
-.aoUsageAnomalyHead {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
-}
-
 .aoUsageAnomalyRow {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
+  padding-top: 2px;
 }
 
 .aoUsageAnomalyText {
   min-width: 0;
 }
 
-.aoUsageAnomalyCloseAllBtn,
 .aoUsageAnomalyDismissBtn {
   flex: 0 0 auto;
   border: 1px solid rgba(145, 12, 43, 0.24);
@@ -134,32 +127,10 @@
   transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 
-.aoUsageAnomalyCloseAllBtn {
-  text-transform: none;
-  border: 0;
-  background: transparent;
-  padding: 0;
-  border-radius: 0;
-  font-weight: 650;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
 .aoUsageAnomalyDismissBtn:hover {
   background: rgba(255, 255, 255, 0.94);
   border-color: rgba(145, 12, 43, 0.38);
   color: rgba(95, 23, 42, 0.98);
-}
-
-.aoUsageAnomalyCloseAllBtn:hover {
-  background: transparent;
-  border-color: transparent;
-  color: rgba(95, 23, 42, 0.98);
-}
-
-.aoUsageAnomalyFooter {
-  display: flex;
-  justify-content: flex-end;
 }
 
 .aoUsageActionBtn {
