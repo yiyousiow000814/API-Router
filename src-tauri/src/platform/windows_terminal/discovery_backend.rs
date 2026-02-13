@@ -189,8 +189,6 @@ fn discover_sessions_using_router_uncached(
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum BaseUrlEvidenceKind {
         Env,
-        ConfigTrusted,
-        ConfigUntrusted,
         None,
     }
 
@@ -201,10 +199,11 @@ fn discover_sessions_using_router_uncached(
         created_at_unix_ms: u64,
     }
 
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Debug)]
     struct FrozenBaseUrlEvidence {
         kind: BaseUrlEvidenceKind,
         matches_router: bool,
+        base_url: Option<String>,
     }
 
     fn systemtime_to_unix_ms(t: SystemTime) -> Option<u64> {
@@ -258,8 +257,85 @@ fn discover_sessions_using_router_uncached(
         None
     }
 
-    fn codex_base_url_evidence(pid: u32, port: u16) -> (BaseUrlEvidenceKind, bool) {
-        // 1) Fast path: process env vars (strong signal).
+    fn read_process_codex_session_id_explicit(pid: u32, cmd: Option<&str>) -> Option<String> {
+        cmd.and_then(parse_codex_session_id_from_cmdline)
+            .or_else(|| read_process_codex_session_id(pid))
+    }
+
+    fn fallback_codex_homes() -> Vec<std::path::PathBuf> {
+        let mut homes = Vec::new();
+        if let Some(v) = std::env::var_os("CODEX_HOME") {
+            homes.push(std::path::PathBuf::from(v));
+        }
+        if let Some(v) = std::env::var_os("HOME") {
+            homes.push(std::path::PathBuf::from(v).join(".codex"));
+        }
+        if let Some(v) = std::env::var_os("USERPROFILE") {
+            homes.push(std::path::PathBuf::from(v).join(".codex"));
+        }
+        homes
+    }
+
+    fn live_session_ids_from_logs(
+        codex_homes: &[std::path::PathBuf],
+        max_ids: usize,
+    ) -> Vec<String> {
+        if max_ids == 0 {
+            return Vec::new();
+        }
+        let mut state: std::collections::HashMap<String, (bool, String)> =
+            std::collections::HashMap::new();
+
+        for codex_home in codex_homes {
+            let log_path = codex_home.join("log").join("codex-tui.log");
+            let file = match std::fs::File::open(&log_path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            let reader = std::io::BufReader::new(file);
+            for line in reader.lines().map_while(Result::ok) {
+                let Some(ts_end) = line.find('Z') else {
+                    continue;
+                };
+                let ts = line[..=ts_end].to_string();
+                let marker = "session_loop{thread_id=";
+                let Some(pos) = line.find(marker) else {
+                    continue;
+                };
+                let start = pos + marker.len();
+                let Some(end_rel) = line[start..].find('}') else {
+                    continue;
+                };
+                let id = &line[start..start + end_rel];
+                if uuid::Uuid::parse_str(id).is_err() {
+                    continue;
+                }
+                let entry = state
+                    .entry(id.to_string())
+                    .or_insert_with(|| (true, ts.clone()));
+                entry.1 = ts;
+                let new_marker = format!("session_loop{{thread_id={id}}}: codex_core::codex: new");
+                if line.contains(&new_marker) {
+                    entry.0 = true;
+                }
+                let close_marker =
+                    format!("session_loop{{thread_id={id}}}: codex_core::codex: close");
+                if line.contains(&close_marker) {
+                    entry.0 = false;
+                }
+            }
+        }
+        let mut open_items: Vec<(String, String)> = state
+            .into_iter()
+            .filter_map(|(id, (open, ts))| if open { Some((id, ts)) } else { None })
+            .collect();
+        open_items.sort_by(|a, b| b.1.cmp(&a.1));
+        open_items.truncate(max_ids);
+        open_items.into_iter().map(|(id, _)| id).collect()
+    }
+
+    fn codex_base_url_value(pid: u32) -> Option<String> {
+        // Trusted source only: running process env vars.
         let keys = [
             "OPENAI_BASE_URL",
             "OPENAI_API_BASE",
@@ -272,43 +348,20 @@ fn discover_sessions_using_router_uncached(
                 if v.is_empty() {
                     continue;
                 }
-                return (BaseUrlEvidenceKind::Env, looks_like_router_base(v, port));
+                return Some(v.to_string());
             }
         }
+        None
+    }
 
-        // 2) Config path: determine the selected model_provider, then resolve its base_url.
-        let start = process_create_time(pid);
-        let cfg = read_effective_codex_config_with_mtime(pid);
-        let Some((cfg, cfg_mtime)) = cfg else {
-            return (BaseUrlEvidenceKind::None, false);
-        };
-
-        let provider_id = get_model_provider_id(&cfg);
-        let Some(provider_id) = provider_id else {
-            return (BaseUrlEvidenceKind::None, false);
-        };
-        let base_url = get_provider_base_url(&cfg, &provider_id);
+    fn codex_base_url_evidence(pid: u32, port: u16) -> (BaseUrlEvidenceKind, bool, Option<String>) {
+        let base_url = codex_base_url_value(pid);
         let Some(base_url) = base_url else {
-            return (BaseUrlEvidenceKind::None, false);
+            return (BaseUrlEvidenceKind::None, false, None);
         };
 
         let matches = looks_like_router_base(&base_url, port);
-
-        // If config was modified after the process started, it's an untrusted hint (the running
-        // process keeps the old config in memory). Still useful as a fallback when combined with
-        // rollout metadata to reduce false positives.
-        let trusted = match start {
-            Some(start) => cfg_mtime <= start + Duration::from_secs(2),
-            None => true,
-        };
-        (
-            if trusted {
-                BaseUrlEvidenceKind::ConfigTrusted
-            } else {
-                BaseUrlEvidenceKind::ConfigUntrusted
-            },
-            matches,
-        )
+        (BaseUrlEvidenceKind::Env, matches, Some(base_url))
     }
 
     fn frozen_codex_base_url_evidence(pid: u32, port: u16) -> FrozenBaseUrlEvidence {
@@ -330,23 +383,25 @@ fn discover_sessions_using_router_uncached(
             // Prune dead PIDs opportunistically to keep the map bounded.
             guard.retain(|k, _| crate::platform::windows_loopback_peer::is_pid_alive(k.pid));
             if let Some(v) = guard.get(&key) {
-                return *v;
+                return v.clone();
             }
 
-            let (kind, matches_router) = codex_base_url_evidence(pid, port);
+            let (kind, matches_router, base_url) = codex_base_url_evidence(pid, port);
             let v = FrozenBaseUrlEvidence {
                 kind,
                 matches_router,
+                base_url,
             };
-            guard.insert(key, v);
+            guard.insert(key, v.clone());
             return v;
         }
 
         // If locking fails, fall back to a non-frozen read.
-        let (kind, matches_router) = codex_base_url_evidence(pid, port);
+        let (kind, matches_router, base_url) = codex_base_url_evidence(pid, port);
         FrozenBaseUrlEvidence {
             kind,
             matches_router,
+            base_url,
         }
     }
     fn infer_codex_session_id_from_rollouts(pid: u32, router_port: u16) -> Option<String> {
@@ -461,6 +516,8 @@ fn discover_sessions_using_router_uncached(
     }
 
     let mut out: Vec<InferredWtSession> = Vec::new();
+    let mut codex_pid_count = 0usize;
+    let mut codex_pids: Vec<u32> = Vec::new();
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         return out;
@@ -476,6 +533,38 @@ fn discover_sessions_using_router_uncached(
     let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
 
+    let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while ok {
+        let exe = wide_cstr_to_string(&entry.szExeFile);
+        let exe_lc = exe.to_ascii_lowercase();
+        if candidates.iter().any(|n| *n == exe_lc) {
+            codex_pid_count += 1;
+            codex_pids.push(entry.th32ProcessID);
+        }
+        ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+
+    let mut codex_homes = Vec::new();
+    let mut seen_homes: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
+    for pid in &codex_pids {
+        if let Some(home) = process_codex_home(*pid) {
+            if seen_homes.insert(home.clone()) {
+                codex_homes.push(home);
+            }
+        }
+    }
+    for home in fallback_codex_homes() {
+        if seen_homes.insert(home.clone()) {
+            codex_homes.push(home);
+        }
+    }
+
+    let live_log_ids = live_session_ids_from_logs(&codex_homes, codex_pid_count.max(4));
+    let mut next_live_idx = 0usize;
+    let mut used_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
     let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
     while ok {
         let exe = wide_cstr_to_string(&entry.szExeFile);
@@ -500,12 +589,22 @@ fn discover_sessions_using_router_uncached(
                     continue;
                 }
 
-                // Infer session id early; this must be a real Codex session id.
-                let codex_session_id = frozen_codex_session_id(pid, cmd.as_deref(), server_port);
+                // Only map to active session ids from Codex logs; no fallback inference.
+                let mut codex_session_id = None;
+                while next_live_idx < live_log_ids.len() {
+                    let cand = live_log_ids[next_live_idx].clone();
+                    next_live_idx += 1;
+                    if used_ids.contains(&cand) {
+                        continue;
+                    }
+                    codex_session_id = Some(cand);
+                    break;
+                }
                 let Some(codex_session_id) = codex_session_id else {
                     ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
                     continue;
                 };
+                used_ids.insert(codex_session_id.clone());
 
                 // Token: exclude on explicit mismatch; allow unknown (e.g. keyring).
                 if let Some(expected) = expected_gateway_token {
@@ -529,32 +628,34 @@ fn discover_sessions_using_router_uncached(
                     parse_rollout_session_meta(&first)
                 });
 
+                let base_url_evidence = frozen_codex_base_url_evidence(pid, server_port);
+                let rollout_provider_is_router = rollout_meta
+                    .as_ref()
+                    .and_then(|m| m.model_provider.as_deref())
+                    .is_some_and(|p| p.eq_ignore_ascii_case("api_router"));
                 let matched = match rollout_meta
                     .as_ref()
                     .and_then(|m| rollout_base_url_matches_router(m, server_port))
                 {
                     Some(v) => v,
                     None => {
-                        // Only accept env vars or a config file that we consider "trusted" for this
-                        // specific process lifetime. If the config has been edited after the
-                        // process started, it is not evidence of the *running* base_url.
-                        let ev = frozen_codex_base_url_evidence(pid, server_port);
-                        ev.matches_router
-                            && matches!(
-                                ev.kind,
-                                BaseUrlEvidenceKind::Env | BaseUrlEvidenceKind::ConfigTrusted
-                            )
+                        rollout_provider_is_router
+                            || (base_url_evidence.matches_router
+                                && matches!(base_url_evidence.kind, BaseUrlEvidenceKind::Env))
                     }
                 };
+                let reported_base_url = rollout_meta
+                    .as_ref()
+                    .and_then(|m| m.base_url.clone())
+                    .or_else(|| base_url_evidence.base_url.clone());
                 out.push(InferredWtSession {
                     wt_session: wt,
                     pid,
                     reported_model_provider: rollout_meta
                         .as_ref()
                         .and_then(|m| m.model_provider.clone())
-                        .or_else(|| frozen_codex_model_provider(pid))
-                        .or_else(|| Some("unknown".to_string())),
-                    reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
+                        .or_else(|| Some("api_router".to_string())),
+                    reported_base_url,
                     codex_session_id: Some(codex_session_id),
                     router_confirmed: matched,
                     is_agent: rollout_meta.as_ref().map(|m| m.is_agent).unwrap_or(false),
