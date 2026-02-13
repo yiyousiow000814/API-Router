@@ -155,14 +155,18 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     .cloned()
                     .filter(|p| cfg.providers.contains_key(p));
                 let last_seen_unix_ms = v.last_request_unix_ms.max(v.last_discovered_unix_ms);
+                let reported_model_provider = if v.is_agent {
+                    Some("agents".to_string())
+                } else {
+                    v.last_reported_model_provider
+                        .clone()
+                        .or_else(|| Some("api_router".to_string()))
+                };
                 serde_json::json!({
                     "id": codex_id,
                     "wt_session": v.wt_session,
                     "codex_session_id": v.codex_session_id,
-                    "reported_model_provider": v
-                        .last_reported_model_provider
-                        .clone()
-                        .or_else(|| Some("unknown".to_string())),
+                    "reported_model_provider": reported_model_provider,
                     "reported_model": v.last_reported_model,
                     "reported_base_url": v.last_reported_base_url,
                     "last_seen_unix_ms": last_seen_unix_ms,
@@ -202,7 +206,7 @@ fn merge_discovered_model_provider(
     let Some(mp) = discovered_model_provider else {
         return;
     };
-    if entry.confirmed_router {
+    if entry.confirmed_router && entry.last_reported_model_provider.is_some() {
         return;
     }
     entry.last_reported_model_provider = Some(mp.to_string());
@@ -261,6 +265,28 @@ mod tests {
         assert_eq!(
             entry.last_reported_model_provider.as_deref(),
             Some("openai")
+        );
+    }
+
+    #[test]
+    fn discovered_provider_sets_value_when_confirmed_but_empty() {
+        let mut entry = ClientSessionRuntime {
+            codex_session_id: "s3".to_string(),
+            pid: 1,
+            wt_session: None,
+            last_request_unix_ms: 0,
+            last_discovered_unix_ms: 1,
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            is_agent: false,
+            is_agent_ever: false,
+            confirmed_router: true,
+        };
+        merge_discovered_model_provider(&mut entry, Some("api_router"));
+        assert_eq!(
+            entry.last_reported_model_provider.as_deref(),
+            Some("api_router")
         );
     }
 }
