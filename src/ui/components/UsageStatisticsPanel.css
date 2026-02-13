@@ -101,36 +101,38 @@
 }
 
 .aoUsageAnomalyRow {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-start;
+  gap: 6px;
   padding-top: 2px;
 }
 
 .aoUsageAnomalyText {
   min-width: 0;
+  flex: 0 1 auto;
 }
 
 .aoUsageAnomalyDismissBtn {
   flex: 0 0 auto;
-  border: 1px solid rgba(145, 12, 43, 0.24);
-  background: rgba(255, 255, 255, 0.72);
-  color: rgba(95, 23, 42, 0.88);
+  border: 0;
+  background: transparent;
+  color: rgba(95, 23, 42, 0.8);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 650;
   letter-spacing: 0.02em;
-  padding: 3px 8px;
-  border-radius: 999px;
+  padding: 0 2px;
+  border-radius: 4px;
   line-height: 1;
   cursor: pointer;
-  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  transition: background 120ms ease, color 120ms ease;
 }
 
 .aoUsageAnomalyDismissBtn:hover {
-  background: rgba(255, 255, 255, 0.94);
-  border-color: rgba(145, 12, 43, 0.38);
+  background: rgba(95, 23, 42, 0.08);
   color: rgba(95, 23, 42, 0.98);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .aoUsageActionBtn {
