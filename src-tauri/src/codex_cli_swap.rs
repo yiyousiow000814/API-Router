@@ -160,14 +160,37 @@ fn ensure_cli_config_exists(cli_home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn resolve_cli_home(cli_home: Option<&str>) -> Result<PathBuf, String> {
-    let home = cli_home
+fn resolve_cli_homes_or_default(
+    cli_homes: Vec<String>,
+    max_homes: usize,
+) -> Result<Vec<PathBuf>, String> {
+    let mut homes: Vec<(String, PathBuf)> = cli_homes
+        .into_iter()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(default_cli_codex_home)
-        .ok_or_else(|| "missing HOME/USERPROFILE".to_string())?;
-    Ok(home)
+        .map(|p| (dedup_key(&p), p))
+        .collect();
+
+    homes.sort_by(|a, b| a.0.cmp(&b.0));
+    homes.dedup_by(|a, b| a.0 == b.0);
+    let mut homes: Vec<PathBuf> = homes.into_iter().map(|(_, p)| p).collect();
+    if homes.is_empty() {
+        homes.push(default_cli_codex_home().ok_or_else(|| "missing HOME/USERPROFILE".to_string())?);
+    }
+    if homes.len() > max_homes {
+        return Err(format!("At most {max_homes} Codex dirs are supported."));
+    }
+    Ok(homes)
+}
+
+fn resolve_cli_home(cli_home: Option<&str>) -> Result<PathBuf, String> {
+    let homes =
+        resolve_cli_homes_or_default(cli_home.into_iter().map(str::to_string).collect(), 1)?;
+    homes
+        .into_iter()
+        .next()
+        .ok_or_else(|| "missing HOME/USERPROFILE".to_string())
 }
 
 pub fn get_cli_config_toml(cli_home: Option<&str>) -> Result<String, String> {
@@ -261,23 +284,7 @@ pub fn toggle_cli_auth_config_swap(
     state: &tauri::State<'_, AppState>,
     cli_homes: Vec<String>,
 ) -> Result<serde_json::Value, String> {
-    let mut homes: Vec<(String, PathBuf)> = cli_homes
-        .into_iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .map(|p| (dedup_key(&p), p))
-        .collect();
-
-    homes.sort_by(|a, b| a.0.cmp(&b.0));
-    homes.dedup_by(|a, b| a.0 == b.0);
-    let mut homes: Vec<PathBuf> = homes.into_iter().map(|(_, p)| p).collect();
-    if homes.is_empty() {
-        homes.push(default_cli_codex_home().ok_or_else(|| "missing HOME/USERPROFILE".to_string())?);
-    }
-    if homes.len() > 2 {
-        return Err("At most 2 Codex dirs are supported.".to_string());
-    }
+    let homes = resolve_cli_homes_or_default(cli_homes, 2)?;
 
     // Determine action based on current states.
     // If dirs are in a mixed state, we always "restore" (restore only the swapped dirs).
@@ -353,23 +360,7 @@ pub fn toggle_cli_auth_config_swap(
 }
 
 pub fn cli_auth_config_swap_status(cli_homes: Vec<String>) -> Result<serde_json::Value, String> {
-    let mut homes: Vec<(String, PathBuf)> = cli_homes
-        .into_iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .map(|p| (dedup_key(&p), p))
-        .collect();
-
-    homes.sort_by(|a, b| a.0.cmp(&b.0));
-    homes.dedup_by(|a, b| a.0 == b.0);
-    let mut homes: Vec<PathBuf> = homes.into_iter().map(|(_, p)| p).collect();
-    if homes.is_empty() {
-        homes.push(default_cli_codex_home().ok_or_else(|| "missing HOME/USERPROFILE".to_string())?);
-    }
-    if homes.len() > 2 {
-        return Err("At most 2 Codex dirs are supported.".to_string());
-    }
+    let homes = resolve_cli_homes_or_default(cli_homes, 2)?;
 
     let mut dirs: Vec<serde_json::Value> = Vec::new();
     for h in &homes {

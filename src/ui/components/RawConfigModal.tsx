@@ -70,6 +70,9 @@ export function RawConfigModal({
         <div className="aoModalBody">
           <div className="aoModalSub">Target: {targetHome || '-'}</div>
           {warningText ? <div className="aoModalSub">{warningText}</div> : null}
+          {!loading && !canSave ? (
+            <div className="aoModalSub">Save is disabled until config.toml loads successfully for this target.</div>
+          ) : null}
           <textarea
             className="aoRawConfigEditor"
             value={value}
