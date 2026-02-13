@@ -186,7 +186,7 @@ export function UsageStatisticsPanel({
                 }
                 aria-label="Dismiss anomaly notice"
               >
-                ×
+                ✕
               </button>
             </div>
           ))}
