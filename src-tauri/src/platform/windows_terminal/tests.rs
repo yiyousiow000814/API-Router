@@ -19,6 +19,7 @@ mod tests {
         assert_eq!(m.model_provider.as_deref(), Some(GATEWAY_MODEL_PROVIDER_ID));
         assert!(m.base_url.is_none());
         assert!(!m.is_agent);
+        assert!(!m.is_review);
     }
 
     #[test]
@@ -29,6 +30,18 @@ mod tests {
         );
         let m = parse_rollout_session_meta(&line).expect("parse");
         assert!(m.is_agent);
+        assert!(!m.is_review);
+    }
+
+    #[test]
+    fn parse_rollout_session_meta_detects_review_subagent() {
+        let line = format!(
+            r#"{{"type":"session_meta","payload":{{"id":"x","cwd":"C:\\x","model_provider":"{provider}","source":{{"subagent":"review"}}}}}}"#,
+            provider = GATEWAY_MODEL_PROVIDER_ID
+        );
+        let m = parse_rollout_session_meta(&line).expect("parse");
+        assert!(m.is_agent);
+        assert!(m.is_review);
     }
 
     #[test]

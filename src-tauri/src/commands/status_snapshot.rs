@@ -87,6 +87,9 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                 entry.wt_session = Some(s.wt_session.clone());
                 entry.last_discovered_unix_ms = now;
                 apply_discovered_router_confirmation(entry, s.router_confirmed, s.is_agent);
+                if s.is_review {
+                    entry.last_reported_model_provider = Some("review".to_string());
+                }
                 merge_discovered_model_provider(entry, s.reported_model_provider.as_deref());
                 if let Some(bu) = s.reported_base_url.as_deref() {
                     entry.last_reported_base_url = Some(bu.to_string());

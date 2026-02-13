@@ -62,7 +62,10 @@ export function SessionsTable({
                 const codexSession = s.codex_session_id ?? null
                 const wt = s.wt_session ?? '-'
                 const isAgent = s.is_agent === true
-                const codexProvider = isAgent ? 'agents' : (s.reported_model_provider ?? '-')
+                const isReview = isAgent && s.reported_model_provider === 'review'
+                const codexProvider = isReview
+                  ? 'review'
+                  : (isAgent ? 'agents' : (s.reported_model_provider ?? '-'))
                 const modelName = s.reported_model ?? '-'
                 return (
                   <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
@@ -157,7 +160,10 @@ export function SessionsTable({
                   const codexSession = s.codex_session_id ?? null
                   const wt = s.wt_session ?? '-'
                   const isAgent = s.is_agent === true
-                  const codexProvider = isAgent ? 'agents' : (s.reported_model_provider ?? '-')
+                  const isReview = isAgent && s.reported_model_provider === 'review'
+                  const codexProvider = isReview
+                    ? 'review'
+                    : (isAgent ? 'agents' : (s.reported_model_provider ?? '-'))
                   const modelName = s.reported_model ?? '-'
                   return (
                     <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
@@ -215,4 +221,3 @@ export function SessionsTable({
     </table>
   )
 }
-
