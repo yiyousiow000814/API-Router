@@ -110,10 +110,61 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
 
     let _ = state
         .secrets
+        .set_provider_key("official", "sk-test-official-key");
+    let _ = state
+        .secrets
         .set_provider_key("provider_1", "sk-test-provider-1-key");
     let _ = state
         .secrets
         .set_provider_key("provider_2", "sk-test-provider-2-key");
+
+    // Seed deterministic per-request pricing so Usage Statistics can render anomaly rows in test mode.
+    let _ = state.secrets.set_provider_pricing(
+        "official",
+        "per_request",
+        0.02,
+        None,
+        Some("-".to_string()),
+    );
+    let _ = state.secrets.set_provider_pricing(
+        "provider_2",
+        "per_request",
+        0.03,
+        None,
+        Some("-".to_string()),
+    );
+    let _ = state.secrets.set_provider_pricing(
+        "provider_1",
+        "per_request",
+        0.22,
+        None,
+        Some("-".to_string()),
+    );
+
+    let seed_usage_requests =
+        |provider: &str, model: &str, count: usize, input_tokens: u64, output_tokens: u64| {
+            for i in 0..count {
+                let total = input_tokens.saturating_add(output_tokens);
+                state.gateway.store.record_success_with_model(
+                    provider,
+                    &json!({
+                        "id": format!("test-seed-{provider}-{i}"),
+                        "model": model,
+                        "usage": {
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": total,
+                        }
+                    }),
+                    Some("test"),
+                    None,
+                );
+            }
+        };
+    // Keep totals uneven so provider_1 appears as a clear outlier in anomaly watch.
+    seed_usage_requests("official", "gpt-5.2", 8, 620, 180);
+    seed_usage_requests("provider_2", "gpt-5.2", 9, 700, 210);
+    seed_usage_requests("provider_1", "gpt-5.2", 10, 980, 320);
 
     let now = unix_ms();
     for i in 0..45 {
