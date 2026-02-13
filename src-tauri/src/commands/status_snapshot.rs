@@ -86,9 +86,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                 entry.pid = s.pid;
                 entry.wt_session = Some(s.wt_session.clone());
                 entry.last_discovered_unix_ms = now;
-                if s.router_confirmed {
-                    entry.confirmed_router = true;
-                }
+                apply_discovered_router_confirmation(entry, s.router_confirmed, s.is_agent);
                 merge_discovered_model_provider(entry, s.reported_model_provider.as_deref());
                 if let Some(bu) = s.reported_base_url.as_deref() {
                     entry.last_reported_base_url = Some(bu.to_string());
@@ -196,6 +194,22 @@ fn merge_discovered_model_provider(
     entry.last_reported_model_provider = Some(mp.to_string());
 }
 
+fn apply_discovered_router_confirmation(
+    entry: &mut crate::orchestrator::gateway::ClientSessionRuntime,
+    router_confirmed: bool,
+    discovered_is_agent: bool,
+) {
+    if !router_confirmed {
+        return;
+    }
+    entry.confirmed_router = true;
+    // For verified non-agent sessions discovered before first request, show codex provider as
+    // API Router instead of blank to match gateway ownership semantics.
+    if !(discovered_is_agent || entry.is_agent) {
+        entry.last_reported_model_provider = Some(crate::constants::GATEWAY_MODEL_PROVIDER_ID.to_string());
+    }
+}
+
 fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
     let ts = i64::try_from(ts_unix_ms).ok()?;
     let dt = Local.timestamp_millis_opt(ts).single()?;
@@ -205,7 +219,7 @@ fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
-    use crate::commands::merge_discovered_model_provider;
+    use crate::commands::{apply_discovered_router_confirmation, merge_discovered_model_provider};
     use crate::orchestrator::gateway::ClientSessionRuntime;
 
     #[test]
@@ -245,6 +259,47 @@ mod tests {
         };
         merge_discovered_model_provider(&mut entry, Some("openai"));
         assert_eq!(entry.last_reported_model_provider.as_deref(), Some("openai"));
+    }
+
+    #[test]
+    fn confirmed_non_agent_discovery_sets_gateway_provider() {
+        let mut entry = ClientSessionRuntime {
+            codex_session_id: "s3".to_string(),
+            pid: 1,
+            wt_session: None,
+            last_request_unix_ms: 0,
+            last_discovered_unix_ms: 1,
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            is_agent: false,
+            confirmed_router: false,
+        };
+        apply_discovered_router_confirmation(&mut entry, true, false);
+        assert!(entry.confirmed_router);
+        assert_eq!(
+            entry.last_reported_model_provider.as_deref(),
+            Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
+    }
+
+    #[test]
+    fn confirmed_agent_discovery_keeps_provider_unset() {
+        let mut entry = ClientSessionRuntime {
+            codex_session_id: "s4".to_string(),
+            pid: 1,
+            wt_session: None,
+            last_request_unix_ms: 0,
+            last_discovered_unix_ms: 1,
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            is_agent: true,
+            confirmed_router: false,
+        };
+        apply_discovered_router_confirmation(&mut entry, true, true);
+        assert!(entry.confirmed_router);
+        assert_eq!(entry.last_reported_model_provider.as_deref(), None);
     }
 }
 

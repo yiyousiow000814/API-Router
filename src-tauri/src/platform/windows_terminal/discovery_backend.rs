@@ -1,6 +1,6 @@
 fn discover_sessions_using_router_uncached(
     server_port: u16,
-    expected_gateway_token: Option<&str>,
+    _expected_gateway_token: Option<&str>,
 ) -> Vec<InferredWtSession> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -22,14 +22,6 @@ fn discover_sessions_using_router_uncached(
         let cfg = read_config(path)?;
         let mtime = std::fs::metadata(path).ok()?.modified().ok()?;
         Some((cfg, mtime))
-    }
-
-    fn read_auth_token(path: &std::path::Path) -> Option<String> {
-        let s = std::fs::read_to_string(path).ok()?;
-        let v: serde_json::Value = serde_json::from_str(&s).ok()?;
-        v.get("OPENAI_API_KEY")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
     }
 
     fn find_project_codex_config(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -91,21 +83,6 @@ fn discover_sessions_using_router_uncached(
             })
     }
 
-    fn find_project_auth_json(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
-        // Walk up from cwd looking for `.codex/auth.json`.
-        // Keep it bounded to avoid pathological traversals on deep paths.
-        let mut cur = Some(cwd);
-        for _ in 0..32 {
-            let dir = cur?;
-            let p = dir.join(".codex").join("auth.json");
-            if p.exists() {
-                return Some(p);
-            }
-            cur = dir.parent();
-        }
-        None
-    }
-
     fn filetime_to_systemtime(ft: windows_sys::Win32::Foundation::FILETIME) -> Option<SystemTime> {
         // FILETIME is 100ns ticks since 1601-01-01 UTC.
         let ticks = ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64);
@@ -152,24 +129,6 @@ fn discover_sessions_using_router_uncached(
             return None;
         }
         filetime_to_systemtime(creation)
-    }
-
-    fn read_effective_codex_gateway_token_info(pid: u32) -> (Option<String>, Option<String>) {
-        // (token, source)
-        let cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid);
-        if let Some(cwd) = cwd.as_deref() {
-            if let Some(p) = find_project_auth_json(cwd) {
-                if let Some(tok) = read_auth_token(&p) {
-                    return (Some(tok), Some("project_auth".to_string()));
-                }
-            }
-        }
-        if let Some(codex_home) = process_codex_home(pid) {
-            if let Some(tok) = read_auth_token(&codex_home.join("auth.json")) {
-                return (Some(tok), Some("codex_home_auth".to_string()));
-            }
-        }
-        (None, None)
     }
 
     fn read_effective_codex_config_with_mtime(pid: u32) -> Option<(toml::Value, SystemTime)> {
@@ -231,6 +190,12 @@ fn discover_sessions_using_router_uncached(
             }
         }
         None
+    }
+
+    fn infer_codex_session_id_from_tui_log_for_pid(pid: u32) -> Option<String> {
+        let codex_home = process_codex_home(pid)?;
+        let start = process_create_time(pid)?;
+        infer_codex_session_id_from_tui_log(&codex_home, start)
     }
 
     fn codex_base_url_evidence(pid: u32, port: u16) -> (BaseUrlEvidenceKind, bool) {
@@ -353,6 +318,7 @@ fn discover_sessions_using_router_uncached(
                 .and_then(parse_codex_session_id_from_cmdline)
                 .or_else(|| read_process_codex_session_id(pid))
                 .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port));
+            let inferred = inferred.or_else(|| infer_codex_session_id_from_tui_log_for_pid(pid));
             if let Some(id) = inferred.as_ref() {
                 guard.insert(key, id.clone());
             }
@@ -363,10 +329,16 @@ fn discover_sessions_using_router_uncached(
         cmd.and_then(parse_codex_session_id_from_cmdline)
             .or_else(|| read_process_codex_session_id(pid))
             .or_else(|| infer_codex_session_id_from_rollouts(pid, router_port))
+            .or_else(|| infer_codex_session_id_from_tui_log_for_pid(pid))
     }
 
-    fn frozen_codex_model_provider(pid: u32) -> Option<String> {
-        // Codex config is effectively frozen at process start; keep model_provider stable too.
+    fn frozen_codex_model_provider(pid: u32, allow_config_infer: bool) -> Option<String> {
+        // Do not infer provider for historical/old processes from current config. This avoids
+        // rewriting history when users edit config while the process is still alive.
+        if !allow_config_infer {
+            return None;
+        }
+        // For new processes opened while app is running, config is treated as startup snapshot.
         static FROZEN: OnceLock<Mutex<std::collections::HashMap<PidKey, String>>> = OnceLock::new();
         let frozen = FROZEN.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
 
@@ -436,6 +408,11 @@ fn discover_sessions_using_router_uncached(
     }
 
     let mut out: Vec<InferredWtSession> = Vec::new();
+    // Processes created after this app starts are safe to classify from their startup config
+    // snapshot (frozen per pid/create_time) even if config mtime appears untrusted.
+    static DISCOVERY_APP_STARTED_UNIX_MS: OnceLock<u64> = OnceLock::new();
+    let app_started_unix_ms = *DISCOVERY_APP_STARTED_UNIX_MS
+        .get_or_init(|| systemtime_to_unix_ms(SystemTime::now()).unwrap_or(0));
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         return out;
@@ -457,6 +434,11 @@ fn discover_sessions_using_router_uncached(
         let exe_lc = exe.to_ascii_lowercase();
         if candidates.iter().any(|n| *n == exe_lc) {
             let pid = entry.th32ProcessID;
+            let pid_created_unix_ms = process_create_time(pid)
+                .and_then(systemtime_to_unix_ms)
+                .unwrap_or(0);
+            let is_new_since_app_started = app_started_unix_ms > 0
+                && pid_created_unix_ms >= app_started_unix_ms.saturating_sub(5_000);
 
             // Must be inside Windows Terminal so we can map to a stable tab identity.
             let wt =
@@ -482,15 +464,6 @@ fn discover_sessions_using_router_uncached(
                     continue;
                 };
 
-                // Token: exclude on explicit mismatch; allow unknown (e.g. keyring).
-                if let Some(expected) = expected_gateway_token {
-                    let (actual, _src) = read_effective_codex_gateway_token_info(pid);
-                    if auth_status(expected, actual.as_deref()) == "mismatch" {
-                        ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
-                        continue;
-                    }
-                }
-
                 // The rollout meta reflects what the process actually launched/resumed with.
                 let codex_home = process_codex_home(pid);
                 let rollout_meta = codex_home.as_deref().and_then(|h| {
@@ -510,15 +483,21 @@ fn discover_sessions_using_router_uncached(
                 {
                     Some(v) => v,
                     None => {
-                        // Only accept env vars or a config file that we consider "trusted" for this
-                        // specific process lifetime. If the config has been edited after the
-                        // process started, it is not evidence of the *running* base_url.
+                        // For new processes started while this app is running, freeze startup
+                        // config hints even when mtime appears "untrusted". For older processes,
+                        // keep conservative behavior (env/config-trusted only).
                         let ev = frozen_codex_base_url_evidence(pid, server_port);
-                        ev.matches_router
-                            && matches!(
-                                ev.kind,
-                                BaseUrlEvidenceKind::Env | BaseUrlEvidenceKind::ConfigTrusted
-                            )
+                        if !ev.matches_router {
+                            false
+                        } else {
+                            match ev.kind {
+                                BaseUrlEvidenceKind::Env | BaseUrlEvidenceKind::ConfigTrusted => {
+                                    true
+                                }
+                                BaseUrlEvidenceKind::ConfigUntrusted => is_new_since_app_started,
+                                BaseUrlEvidenceKind::None => false,
+                            }
+                        }
                     }
                 };
                 out.push(InferredWtSession {
@@ -527,7 +506,9 @@ fn discover_sessions_using_router_uncached(
                     reported_model_provider: rollout_meta
                         .as_ref()
                         .and_then(|m| m.model_provider.clone())
-                        .or_else(|| frozen_codex_model_provider(pid)),
+                        .or_else(|| {
+                            frozen_codex_model_provider(pid, is_new_since_app_started)
+                        }),
                     reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
                     codex_session_id: Some(codex_session_id),
                     router_confirmed: matched,
@@ -542,4 +523,3 @@ fn discover_sessions_using_router_uncached(
     let _ = unsafe { CloseHandle(snapshot) };
     out
 }
-
