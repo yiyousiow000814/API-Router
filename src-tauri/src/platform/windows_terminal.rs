@@ -301,9 +301,12 @@ fn infer_codex_session_id_from_rollouts_dir(
 
     // 2) Otherwise fall back to the closest-by-time cwd match, else newest.
     if let Some(start) = process_start {
-        // If we can't find a rollout close to process start, do not guess. Guessing causes
-        // "session id flips" and duplicate/merged rows when multiple Codex processes share a CWD.
-        return pick_closest(&candidates, start);
+        // Prefer time-close matches to avoid cross-process confusion, but if none are close enough
+        // still return the newest cwd match so sessions keep a real Codex session id.
+        if let Some(id) = pick_closest(&candidates, start) {
+            return Some(id);
+        }
+        return Some(candidates[0].id.clone());
     }
     Some(candidates[0].id.clone())
 }

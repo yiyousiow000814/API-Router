@@ -159,7 +159,10 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     "id": codex_id,
                     "wt_session": v.wt_session,
                     "codex_session_id": v.codex_session_id,
-                    "reported_model_provider": v.last_reported_model_provider,
+                    "reported_model_provider": v
+                        .last_reported_model_provider
+                        .clone()
+                        .or_else(|| Some("unknown".to_string())),
                     "reported_model": v.last_reported_model,
                     "reported_base_url": v.last_reported_base_url,
                     "last_seen_unix_ms": last_seen_unix_ms,

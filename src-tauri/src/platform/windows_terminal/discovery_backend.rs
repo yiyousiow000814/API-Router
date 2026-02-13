@@ -13,10 +13,6 @@ fn discover_sessions_using_router_uncached(
         String::from_utf16_lossy(&buf[..end])
     }
 
-    fn provisional_session_id(pid: u32) -> String {
-        format!("pid:{pid}")
-    }
-
     fn read_config(path: &std::path::Path) -> Option<toml::Value> {
         let s = std::fs::read_to_string(path).ok()?;
         toml::from_str::<toml::Value>(&s).ok()
@@ -232,6 +228,31 @@ fn discover_sessions_using_router_uncached(
             }
             if uuid::Uuid::parse_str(v).is_ok() {
                 return Some(v.to_string());
+            }
+        }
+        // Fallback: scan all env vars so we can survive key-name changes on Codex side.
+        for (k, v) in crate::platform::windows_loopback_peer::read_process_env_vars(pid) {
+            let key = k.to_ascii_uppercase();
+            if !(key.contains("SESSION")
+                || key.contains("THREAD")
+                || key.contains("RESUME")
+                || key.contains("CONVERSATION"))
+            {
+                continue;
+            }
+            if !(key.contains("CODEX")
+                || key.contains("OPENAI")
+                || key.contains("GPT")
+                || key.contains("AGENT"))
+            {
+                continue;
+            }
+            let value = v.trim();
+            if value.is_empty() {
+                continue;
+            }
+            if uuid::Uuid::parse_str(value).is_ok() {
+                return Some(value.to_string());
             }
         }
         None
@@ -479,10 +500,12 @@ fn discover_sessions_using_router_uncached(
                     continue;
                 }
 
-                // Infer session id early; if unavailable, keep a stable provisional id so the
-                // session still appears as unverified instead of being dropped.
-                let codex_session_id = frozen_codex_session_id(pid, cmd.as_deref(), server_port)
-                    .unwrap_or_else(|| provisional_session_id(pid));
+                // Infer session id early; this must be a real Codex session id.
+                let codex_session_id = frozen_codex_session_id(pid, cmd.as_deref(), server_port);
+                let Some(codex_session_id) = codex_session_id else {
+                    ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+                    continue;
+                };
 
                 // Token: exclude on explicit mismatch; allow unknown (e.g. keyring).
                 if let Some(expected) = expected_gateway_token {

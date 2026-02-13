@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn infer_session_id_does_not_guess_when_start_time_far() {
+    fn infer_session_id_falls_back_to_newest_when_start_time_far() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let codex_home = tmp.path().join(".codex");
         let sessions_dir = codex_home
@@ -126,7 +126,7 @@ mod tests {
         let cwd = std::path::PathBuf::from("C:\\work\\proj");
         let start = std::time::SystemTime::now() + Duration::from_secs(3600);
         let got = infer_codex_session_id_from_rollouts_dir(&codex_home, &cwd, 4000, Some(start));
-        assert!(got.is_none());
+        assert_eq!(got.as_deref(), Some(id));
     }
 
     #[test]

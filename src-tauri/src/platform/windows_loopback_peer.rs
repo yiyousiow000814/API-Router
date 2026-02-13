@@ -25,6 +25,12 @@ pub fn read_process_env_var(_pid: u32, _key: &str) -> Option<String> {
 
 #[cfg(not(windows))]
 #[allow(dead_code)]
+pub fn read_process_env_vars(_pid: u32) -> Vec<(String, String)> {
+    Vec::new()
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn read_process_command_line(_pid: u32) -> Option<String> {
     None
 }
@@ -138,6 +144,18 @@ mod windows_impl {
                 return None;
             }
             let out = read_process_env_var_handle(h, key);
+            let _ = CloseHandle(h);
+            out
+        }
+    }
+
+    pub fn read_process_env_vars(pid: u32) -> Vec<(String, String)> {
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
+            if h == 0 {
+                return Vec::new();
+            }
+            let out = read_process_env_vars_handle(h);
             let _ = CloseHandle(h);
             out
         }
@@ -348,6 +366,29 @@ mod windows_impl {
         find_env_var(&env_u16, key)
     }
 
+    fn read_process_env_vars_handle(h: HANDLE) -> Vec<(String, String)> {
+        let Some(peb_addr) = peb_base_address(h) else {
+            return Vec::new();
+        };
+        let Some(peb) = read_struct::<Peb>(h, peb_addr) else {
+            return Vec::new();
+        };
+        if peb.process_parameters == 0 {
+            return Vec::new();
+        }
+        let Some(params) = read_struct::<RtlUserProcessParameters>(h, peb.process_parameters)
+        else {
+            return Vec::new();
+        };
+        if params.environment == 0 {
+            return Vec::new();
+        }
+        let Some(env_u16) = read_utf16_env_block(h, params.environment) else {
+            return Vec::new();
+        };
+        parse_env_vars(&env_u16)
+    }
+
     fn read_process_command_line_handle(h: HANDLE) -> Option<String> {
         let peb_addr = peb_base_address(h)?;
 
@@ -464,6 +505,16 @@ mod windows_impl {
     }
 
     fn find_env_var(env: &[u16], key: &str) -> Option<String> {
+        for (k, v) in parse_env_vars(env) {
+            if k == key {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    fn parse_env_vars(env: &[u16]) -> Vec<(String, String)> {
+        let mut out = Vec::new();
         let mut start = 0usize;
         while start < env.len() {
             let mut end = start;
@@ -477,20 +528,18 @@ mod windows_impl {
                 .to_string_lossy()
                 .to_string();
             if let Some((k, v)) = line.split_once('=') {
-                if k == key {
-                    return Some(v.to_string());
-                }
+                out.push((k.to_string(), v.to_string()));
             }
             start = end + 1;
         }
-        None
+        out
     }
 }
 
 #[cfg(windows)]
 pub use windows_impl::{
     infer_loopback_peer_pid, is_pid_alive, read_process_command_line, read_process_cwd,
-    read_process_env_var,
+    read_process_env_var, read_process_env_vars,
 };
 
 #[cfg(all(test, windows))]
