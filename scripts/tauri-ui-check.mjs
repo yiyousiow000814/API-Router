@@ -18,11 +18,15 @@ import {
 } from './ui-check/runtime-utils.mjs'
 import {
   assertPxClose,
+  clickButtonByText,
+  clickTopNav,
   centerX,
   centerY,
   dayKeyFromOffset,
   ensureCodexAuthForSwitchboard,
   normalizeText,
+  openModalAndClose,
+  openModalAndCloseOptional,
   parsePx,
   pickDirectProvider,
   runFontBaselineCase,
@@ -30,7 +34,11 @@ import {
   runProviderStatisticsKeyStyleCase,
   runSwitchboardSwitchCase,
   runUsageHistoryScrollCase,
+  seedHistoryRows,
   tauriInvoke,
+  waitPageTitle,
+  waitSectionHeading,
+  waitVisible,
 } from './ui-check/cases.mjs'
 
 import { Builder, By, until } from 'selenium-webdriver'
