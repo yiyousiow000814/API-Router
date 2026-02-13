@@ -179,7 +179,8 @@ pub fn get_cli_config_toml(cli_home: Option<&str>) -> Result<String, String> {
 pub fn set_cli_config_toml(cli_home: Option<&str>, toml_text: &str) -> Result<(), String> {
     let home = resolve_cli_home(cli_home)?;
     ensure_cli_config_exists(&home)?;
-    let _: toml::Value = toml::from_str(toml_text).map_err(|e| format!("invalid config.toml: {e}"))?;
+    let _: toml::Value =
+        toml::from_str(toml_text).map_err(|e| format!("invalid config.toml: {e}"))?;
     write_text(&home.join("config.toml"), toml_text)
 }
 
