@@ -168,7 +168,22 @@ export function UsageStatisticsPanel({
       />
       {visibleAnomalyMessages.length ? (
         <div className="aoUsageAnomalyBanner" role="status" aria-live="polite">
-          <div className="aoMiniLabel">Anomaly Watch</div>
+          <div className="aoUsageAnomalyHead">
+            <div className="aoMiniLabel">Anomaly Watch</div>
+            <button
+              type="button"
+              className="aoUsageAnomalyCloseAllBtn"
+              onClick={() =>
+                setDismissedAnomalyMessages((prev) => {
+                  const next = new Set(prev)
+                  for (const item of visibleAnomalyMessages) next.add(item)
+                  return next
+                })
+              }
+            >
+              Close all
+            </button>
+          </div>
           {visibleAnomalyMessages.map((message) => (
             <div key={`usage-anomaly-${message}`} className="aoUsageAnomalyRow">
               <div className="aoUsageAnomalyText">{message}</div>
@@ -185,7 +200,7 @@ export function UsageStatisticsPanel({
                 }
                 aria-label="Dismiss anomaly notice"
               >
-                Dismiss
+                x
               </button>
             </div>
           ))}
