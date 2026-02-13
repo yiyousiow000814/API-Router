@@ -12,6 +12,7 @@ type Props = {
   setNewProviderName: (next: string) => void
   setNewProviderBaseUrl: (next: string) => void
   onAddProvider: () => void
+  onOpenRawConfig: () => void
   onClose: () => void
   providerListRef: React.RefObject<HTMLDivElement | null>
   orderedConfigProviders: string[]
@@ -32,6 +33,7 @@ export function ConfigModal({
   setNewProviderName,
   setNewProviderBaseUrl,
   onAddProvider,
+  onOpenRawConfig,
   onClose,
   providerListRef,
   orderedConfigProviders,
@@ -49,6 +51,9 @@ export function ConfigModal({
           <div className="aoRow">
             <button className="aoBtn" onClick={() => setAllProviderPanels(!allProviderPanelsOpen)}>
               {allProviderPanelsOpen ? 'Hide all' : 'Show all'}
+            </button>
+            <button className="aoBtn" onClick={onOpenRawConfig}>
+              Raw TOML
             </button>
             <button className="aoBtn" onClick={onClose}>
               Close

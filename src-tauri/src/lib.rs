@@ -396,6 +396,8 @@ pub fn run() {
             commands::get_status,
             commands::set_manual_override,
             commands::get_config,
+            commands::get_config_toml,
+            commands::set_config_toml,
             commands::get_gateway_token_preview,
             commands::get_gateway_token,
             commands::rotate_gateway_token,

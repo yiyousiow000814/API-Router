@@ -266,3 +266,23 @@
 .aoModalBody::-webkit-scrollbar-thumb:hover {
   background: rgba(13, 18, 32, 0.5);
 }
+
+.aoRawConfigEditor {
+  width: 100%;
+  min-height: min(56vh, 620px);
+  border-radius: 12px;
+  border: 1px solid var(--ao-line);
+  background: rgba(13, 18, 32, 0.03);
+  color: var(--ao-fg);
+  padding: 12px;
+  resize: vertical;
+  outline: none;
+  line-height: 1.45;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+}
+
+.aoRawConfigEditor:focus {
+  border-color: rgba(40, 199, 217, 0.55);
+  box-shadow: 0 0 0 3px rgba(40, 199, 217, 0.12);
+}

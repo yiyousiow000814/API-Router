@@ -29,6 +29,7 @@ import { UsageScheduleModal } from './UsageScheduleModal'
 import { InstructionModal } from './InstructionModal'
 import { GatewayTokenModal } from './GatewayTokenModal'
 import { ConfigModal } from './ConfigModal'
+import { RawConfigModal } from './RawConfigModal'
 import { CodexSwapModal } from './CodexSwapModal'
 
 type CurrencyMenuState = {
@@ -66,7 +67,16 @@ type Props = {
   setNewProviderName: Dispatch<SetStateAction<string>>
   setNewProviderBaseUrl: Dispatch<SetStateAction<string>>
   addProvider: () => Promise<void>
+  onOpenRawConfigModal: () => void
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
+  rawConfigModalOpen: boolean
+  rawConfigText: string
+  rawConfigLoading: boolean
+  rawConfigSaving: boolean
+  setRawConfigText: Dispatch<SetStateAction<string>>
+  reloadRawConfigModal: () => Promise<void>
+  saveRawConfigModal: () => Promise<void>
+  setRawConfigModalOpen: Dispatch<SetStateAction<boolean>>
   providerListRef: RefObject<HTMLDivElement | null>
   orderedConfigProviders: string[]
   dragPreviewOrder: string[] | null
@@ -206,7 +216,16 @@ export function AppModals(props: Props) {
     setNewProviderName,
     setNewProviderBaseUrl,
     addProvider,
+    onOpenRawConfigModal,
     setConfigModalOpen,
+    rawConfigModalOpen,
+    rawConfigText,
+    rawConfigLoading,
+    rawConfigSaving,
+    setRawConfigText,
+    reloadRawConfigModal,
+    saveRawConfigModal,
+    setRawConfigModalOpen,
     providerListRef,
     orderedConfigProviders,
     dragPreviewOrder,
@@ -373,6 +392,7 @@ requires_openai_auth = true`}
         setNewProviderName={setNewProviderName}
         setNewProviderBaseUrl={setNewProviderBaseUrl}
         onAddProvider={() => void addProvider()}
+        onOpenRawConfig={onOpenRawConfigModal}
         onClose={() => setConfigModalOpen(false)}
         providerListRef={providerListRef}
         orderedConfigProviders={orderedConfigProviders}
@@ -380,6 +400,17 @@ requires_openai_auth = true`}
         draggingProvider={draggingProvider}
         dragCardHeight={dragCardHeight}
         renderProviderCard={renderProviderCard}
+      />
+
+      <RawConfigModal
+        open={rawConfigModalOpen}
+        loading={rawConfigLoading}
+        saving={rawConfigSaving}
+        value={rawConfigText}
+        onChange={setRawConfigText}
+        onReload={() => void reloadRawConfigModal()}
+        onSave={() => void saveRawConfigModal()}
+        onClose={() => setRawConfigModalOpen(false)}
       />
 
       <GatewayTokenModal

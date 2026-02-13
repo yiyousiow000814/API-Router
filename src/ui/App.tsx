@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import './components/AppShared.css'
 import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status, UsageStatistics } from './types'
@@ -95,6 +96,10 @@ export default function App() {
   const [gatewayTokenReveal, setGatewayTokenReveal] = useState<string>('')
   const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
   const [configModalOpen, setConfigModalOpen] = useState<boolean>(false)
+  const [rawConfigModalOpen, setRawConfigModalOpen] = useState<boolean>(false)
+  const [rawConfigText, setRawConfigText] = useState<string>('')
+  const [rawConfigLoading, setRawConfigLoading] = useState<boolean>(false)
+  const [rawConfigSaving, setRawConfigSaving] = useState<boolean>(false)
   const [instructionModalOpen, setInstructionModalOpen] = useState<boolean>(false)
   const [codexSwapModalOpen, setCodexSwapModalOpen] = useState<boolean>(false)
   const [codexSwapDir1, setCodexSwapDir1] = useState<string>('')
@@ -217,6 +222,39 @@ export default function App() {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current)
     const ms = kind === 'error' ? 5200 : 2400
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
+  }
+
+  async function reloadRawConfigModal() {
+    setRawConfigLoading(true)
+    try {
+      const txt = await invoke<string>('get_config_toml')
+      setRawConfigText(txt)
+    } catch (e) {
+      flashToast(String(e), 'error')
+    } finally {
+      setRawConfigLoading(false)
+    }
+  }
+
+  async function openRawConfigModal() {
+    setRawConfigModalOpen(true)
+    await reloadRawConfigModal()
+  }
+
+  async function saveRawConfigModal() {
+    setRawConfigSaving(true)
+    try {
+      await invoke('set_config_toml', { tomlText: rawConfigText })
+      await Promise.all([
+        refreshConfig({ refreshProviderSwitchStatus: false }),
+        refreshStatus({ refreshSwapStatus: false }),
+      ])
+      flashToast('config.toml saved and applied')
+    } catch (e) {
+      flashToast(String(e), 'error')
+    } finally {
+      setRawConfigSaving(false)
+    }
   }
   const {
     providerSwitchBusy,
@@ -656,7 +694,16 @@ export default function App() {
         setNewProviderName={setNewProviderName}
         setNewProviderBaseUrl={setNewProviderBaseUrl}
         addProvider={addProvider}
+        onOpenRawConfigModal={() => void openRawConfigModal()}
         setConfigModalOpen={setConfigModalOpen}
+        rawConfigModalOpen={rawConfigModalOpen}
+        rawConfigText={rawConfigText}
+        rawConfigLoading={rawConfigLoading}
+        rawConfigSaving={rawConfigSaving}
+        setRawConfigText={setRawConfigText}
+        reloadRawConfigModal={reloadRawConfigModal}
+        saveRawConfigModal={saveRawConfigModal}
+        setRawConfigModalOpen={setRawConfigModalOpen}
         providerListRef={providerListRef}
         orderedConfigProviders={orderedConfigProviders}
         dragPreviewOrder={dragPreviewOrder}
