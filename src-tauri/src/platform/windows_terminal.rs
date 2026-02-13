@@ -404,6 +404,19 @@ pub fn discover_sessions_using_router(
     }
 }
 
+pub fn is_pid_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        crate::platform::windows_loopback_peer::is_pid_alive(pid)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 #[cfg(windows)]
 include!("windows_terminal/discovery_backend.rs");
 include!("windows_terminal/tests.rs");

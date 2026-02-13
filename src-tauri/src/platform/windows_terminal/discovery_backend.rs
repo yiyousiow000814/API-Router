@@ -543,6 +543,3 @@ fn discover_sessions_using_router_uncached(
     out
 }
 
-pub fn is_pid_alive(pid: u32) -> bool {
-    crate::platform::windows_loopback_peer::is_pid_alive(pid)
-}
