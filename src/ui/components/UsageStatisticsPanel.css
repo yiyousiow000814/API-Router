@@ -91,48 +91,63 @@
   background: linear-gradient(135deg, rgba(245, 99, 110, 0.1), rgba(245, 207, 84, 0.08));
   padding: 10px 12px;
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
 .aoUsageAnomalyText {
   font-size: 12px;
   color: rgba(145, 12, 43, 0.9);
   font-weight: 620;
+  min-width: 0;
 }
 
-.aoUsageAnomalyRow {
+.aoUsageAnomalyItem {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 6px;
-  padding-top: 2px;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(145, 12, 43, 0.12);
 }
 
-.aoUsageAnomalyText {
-  min-width: 0;
-  flex: 0 1 auto;
-}
-
-.aoUsageAnomalyDismissBtn {
+.aoUsageAnomalyDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(198, 36, 70, 0.9);
+  box-shadow: 0 0 0 3px rgba(198, 36, 70, 0.12);
   flex: 0 0 auto;
-  border: 0;
-  background: transparent;
-  color: rgba(95, 23, 42, 0.8);
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.02em;
-  padding: 0 2px;
-  border-radius: 4px;
+}
+
+.aoUsageAnomalyItem .aoUsageAnomalyText {
+  flex: 1 1 auto;
+}
+
+.aoUsageAnomalyDismissIcon {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(145, 12, 43, 0.22);
+  background: rgba(255, 255, 255, 0.68);
+  color: rgba(95, 23, 42, 0.9);
+  font-size: 15px;
+  font-weight: 700;
+  border-radius: 999px;
   line-height: 1;
   cursor: pointer;
-  transition: background 120ms ease, color 120ms ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease, transform 120ms ease;
 }
 
-.aoUsageAnomalyDismissBtn:hover {
-  background: rgba(95, 23, 42, 0.08);
+.aoUsageAnomalyDismissIcon:hover {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(145, 12, 43, 0.4);
   color: rgba(95, 23, 42, 0.98);
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  transform: scale(1.05);
 }
 
 .aoUsageActionBtn {

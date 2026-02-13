@@ -170,11 +170,12 @@ export function UsageStatisticsPanel({
         <div className="aoUsageAnomalyBanner" role="status" aria-live="polite">
           <div className="aoMiniLabel">Anomaly Watch</div>
           {visibleAnomalyMessages.map((message) => (
-            <div key={`usage-anomaly-${message}`} className="aoUsageAnomalyRow">
+            <div key={`usage-anomaly-${message}`} className="aoUsageAnomalyItem">
+              <div className="aoUsageAnomalyDot" aria-hidden="true" />
               <div className="aoUsageAnomalyText">{message}</div>
               <button
                 type="button"
-                className="aoUsageAnomalyDismissBtn"
+                className="aoUsageAnomalyDismissIcon"
                 onClick={() =>
                   setDismissedAnomalyMessages((prev) => {
                     if (prev.has(message)) return prev
@@ -185,7 +186,7 @@ export function UsageStatisticsPanel({
                 }
                 aria-label="Dismiss anomaly notice"
               >
-                Close
+                ×
               </button>
             </div>
           ))}
