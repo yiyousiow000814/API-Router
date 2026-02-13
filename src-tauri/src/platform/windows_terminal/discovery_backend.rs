@@ -13,6 +13,10 @@ fn discover_sessions_using_router_uncached(
         String::from_utf16_lossy(&buf[..end])
     }
 
+    fn provisional_session_id(pid: u32) -> String {
+        format!("pid:{pid}")
+    }
+
     fn read_config(path: &std::path::Path) -> Option<toml::Value> {
         let s = std::fs::read_to_string(path).ok()?;
         toml::from_str::<toml::Value>(&s).ok()
@@ -475,12 +479,10 @@ fn discover_sessions_using_router_uncached(
                     continue;
                 }
 
-                // Infer session id early; we can use it as a stronger signal than the current on-disk config.
-                let codex_session_id = frozen_codex_session_id(pid, cmd.as_deref(), server_port);
-                let Some(codex_session_id) = codex_session_id else {
-                    ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
-                    continue;
-                };
+                // Infer session id early; if unavailable, keep a stable provisional id so the
+                // session still appears as unverified instead of being dropped.
+                let codex_session_id = frozen_codex_session_id(pid, cmd.as_deref(), server_port)
+                    .unwrap_or_else(|| provisional_session_id(pid));
 
                 // Token: exclude on explicit mismatch; allow unknown (e.g. keyring).
                 if let Some(expected) = expected_gateway_token {
@@ -527,7 +529,8 @@ fn discover_sessions_using_router_uncached(
                     reported_model_provider: rollout_meta
                         .as_ref()
                         .and_then(|m| m.model_provider.clone())
-                        .or_else(|| frozen_codex_model_provider(pid)),
+                        .or_else(|| frozen_codex_model_provider(pid))
+                        .or_else(|| Some("unknown".to_string())),
                     reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
                     codex_session_id: Some(codex_session_id),
                     router_confirmed: matched,
@@ -542,4 +545,3 @@ fn discover_sessions_using_router_uncached(
     let _ = unsafe { CloseHandle(snapshot) };
     out
 }
-
