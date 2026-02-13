@@ -100,6 +100,18 @@
   font-weight: 620;
 }
 
+.aoUsageAnomalyRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aoUsageAnomalyDismissBtn {
+  flex: 0 0 auto;
+  min-width: 52px;
+}
+
 .aoUsageActionBtn {
   min-width: 64px;
   flex: 0 0 auto;

@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from 'react'
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
 import type { Config, UsageStatistics } from '../types'
 import './UsageStatisticsPanel.css'
 import {
@@ -130,6 +130,27 @@ export function UsageStatisticsPanel({
   formatPricingSource,
   usageProviderTotalsAndAverages,
 }: Props) {
+  const [dismissedAnomalyMessages, setDismissedAnomalyMessages] = useState<Set<string>>(new Set())
+  const anomalyMessages = useMemo(
+    () => usageAnomalies.messages.map((message) => message.trim()).filter((message) => message.length > 0),
+    [usageAnomalies.messages],
+  )
+  useEffect(() => {
+    setDismissedAnomalyMessages((prev) => {
+      if (!prev.size) return prev
+      const messageSet = new Set(anomalyMessages)
+      const next = new Set<string>()
+      for (const message of prev) {
+        if (messageSet.has(message)) next.add(message)
+      }
+      return next.size === prev.size ? prev : next
+    })
+  }, [anomalyMessages])
+  const visibleAnomalyMessages = useMemo(
+    () => anomalyMessages.filter((message) => !dismissedAnomalyMessages.has(message)),
+    [anomalyMessages, dismissedAnomalyMessages],
+  )
+
   return (
     <div className="aoCard aoUsageStatsPage">
       <UsageStatsFiltersBar
@@ -145,12 +166,27 @@ export function UsageStatisticsPanel({
         usageModelFilterOptions={usageModelFilterOptions}
         toggleUsageModelFilter={toggleUsageModelFilter}
       />
-      {usageAnomalies.messages.length ? (
+      {visibleAnomalyMessages.length ? (
         <div className="aoUsageAnomalyBanner" role="status" aria-live="polite">
           <div className="aoMiniLabel">Anomaly Watch</div>
-          {usageAnomalies.messages.map((message, index) => (
-            <div key={`usage-anomaly-${index}`} className="aoUsageAnomalyText">
-              {message}
+          {visibleAnomalyMessages.map((message) => (
+            <div key={`usage-anomaly-${message}`} className="aoUsageAnomalyRow">
+              <div className="aoUsageAnomalyText">{message}</div>
+              <button
+                type="button"
+                className="aoTinyBtn aoUsageAnomalyDismissBtn"
+                onClick={() =>
+                  setDismissedAnomalyMessages((prev) => {
+                    if (prev.has(message)) return prev
+                    const next = new Set(prev)
+                    next.add(message)
+                    return next
+                  })
+                }
+                aria-label="Dismiss anomaly notice"
+              >
+                Close
+              </button>
             </div>
           ))}
         </div>
