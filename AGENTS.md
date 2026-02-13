@@ -5,6 +5,7 @@
 - **Replies**: Default to Simplified Chinese. If a request is prefixed with `[EN]`, respond in English.
 - **Terminology**: Do not translate proper nouns such as `Tauri`, `Rust`, `Codex`, `OpenAI`, or provider names.
 - **Date/Time format**: Always use day-month-year ordering; never use month-day-year in outputs or docs.
+- **Agent capacity fallback**: If spawning a new agent fails because capacity is full, first clean up agents that are not actively in progress/in use, then retry spawning.
 
 ## Git / GitHub Workflow
 - **Branch-first**: Never commit directly to `main`. Use branches such as `feat/*`, `fix/*`, `docs/*`, `chore/*`.
