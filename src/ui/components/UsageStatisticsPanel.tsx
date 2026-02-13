@@ -130,25 +130,35 @@ export function UsageStatisticsPanel({
   formatPricingSource,
   usageProviderTotalsAndAverages,
 }: Props) {
-  const [dismissedAnomalyMessages, setDismissedAnomalyMessages] = useState<Set<string>>(new Set())
-  const anomalyMessages = useMemo(
-    () => usageAnomalies.messages.map((message) => message.trim()).filter((message) => message.length > 0),
+  const [dismissedAnomalyIds, setDismissedAnomalyIds] = useState<Set<string>>(new Set())
+  const anomalyEntries = useMemo(
+    () => {
+      const messageCounts = new Map<string, number>()
+      return usageAnomalies.messages
+        .map((message) => message.trim())
+        .filter((message) => message.length > 0)
+        .map((message) => {
+          const nextCount = (messageCounts.get(message) ?? 0) + 1
+          messageCounts.set(message, nextCount)
+          return { id: `${message}::${nextCount}`, message }
+        })
+    },
     [usageAnomalies.messages],
   )
   useEffect(() => {
-    setDismissedAnomalyMessages((prev) => {
+    setDismissedAnomalyIds((prev) => {
       if (!prev.size) return prev
-      const messageSet = new Set(anomalyMessages)
+      const idSet = new Set(anomalyEntries.map((entry) => entry.id))
       const next = new Set<string>()
-      for (const message of prev) {
-        if (messageSet.has(message)) next.add(message)
+      for (const id of prev) {
+        if (idSet.has(id)) next.add(id)
       }
       return next.size === prev.size ? prev : next
     })
-  }, [anomalyMessages])
-  const visibleAnomalyMessages = useMemo(
-    () => anomalyMessages.filter((message) => !dismissedAnomalyMessages.has(message)),
-    [anomalyMessages, dismissedAnomalyMessages],
+  }, [anomalyEntries])
+  const visibleAnomalyEntries = useMemo(
+    () => anomalyEntries.filter((entry) => !dismissedAnomalyIds.has(entry.id)),
+    [anomalyEntries, dismissedAnomalyIds],
   )
 
   return (
@@ -166,21 +176,21 @@ export function UsageStatisticsPanel({
         usageModelFilterOptions={usageModelFilterOptions}
         toggleUsageModelFilter={toggleUsageModelFilter}
       />
-      {visibleAnomalyMessages.length ? (
+      {visibleAnomalyEntries.length ? (
         <div className="aoUsageAnomalyBanner" role="status" aria-live="polite">
           <div className="aoMiniLabel">Anomaly Watch</div>
-          {visibleAnomalyMessages.map((message) => (
-            <div key={`usage-anomaly-${message}`} className="aoUsageAnomalyItem">
+          {visibleAnomalyEntries.map((entry) => (
+            <div key={`usage-anomaly-${entry.id}`} className="aoUsageAnomalyItem">
               <div className="aoUsageAnomalyDot" aria-hidden="true" />
-              <div className="aoUsageAnomalyText">{message}</div>
+              <div className="aoUsageAnomalyText">{entry.message}</div>
               <button
                 type="button"
                 className="aoUsageAnomalyDismissIcon"
                 onClick={() =>
-                  setDismissedAnomalyMessages((prev) => {
-                    if (prev.has(message)) return prev
+                  setDismissedAnomalyIds((prev) => {
+                    if (prev.has(entry.id)) return prev
                     const next = new Set(prev)
-                    next.add(message)
+                    next.add(entry.id)
                     return next
                   })
                 }
