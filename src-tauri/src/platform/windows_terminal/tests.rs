@@ -45,6 +45,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_rollout_session_meta_string_review_implies_agent() {
+        let line = format!(
+            r#"{{"type":"session_meta","payload":{{"id":"x","cwd":"C:\\x","model_provider":"{provider}","source":"review"}}}}"#,
+            provider = GATEWAY_MODEL_PROVIDER_ID
+        );
+        let m = parse_rollout_session_meta(&line).expect("parse");
+        assert!(m.is_agent);
+        assert!(m.is_review);
+    }
+
+    #[test]
     fn rollout_base_url_matches_router_prefers_base_url_when_present() {
         let line = format!(
             r#"{{"type":"session_meta","payload":{{"id":"x","cwd":"C:\\x","model_provider":"{provider}","base_url":"https://example.com/v1"}}}}"#,

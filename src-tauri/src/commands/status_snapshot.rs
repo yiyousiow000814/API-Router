@@ -97,6 +97,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                 }
                 if s.is_review {
                     entry.is_review = true;
+                    entry.is_agent = true;
                 }
             }
         }

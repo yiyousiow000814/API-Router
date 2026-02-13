@@ -123,7 +123,10 @@ fn rollout_source_is_agent(source: Option<&serde_json::Value>) -> bool {
         serde_json::Value::Object(map) => {
             map.contains_key("subagent") || map.contains_key("subAgent")
         }
-        serde_json::Value::String(s) => s.to_ascii_lowercase().contains("subagent"),
+        serde_json::Value::String(s) => {
+            let s = s.to_ascii_lowercase();
+            s.contains("subagent") || s.contains("review")
+        }
         _ => false,
     }
 }

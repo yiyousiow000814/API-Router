@@ -95,7 +95,10 @@ fn body_session_source_is_agent(body: &Value) -> bool {
     };
     match source {
         Value::Object(map) => map.contains_key("subagent") || map.contains_key("subAgent"),
-        Value::String(v) => v.to_ascii_lowercase().contains("subagent"),
+        Value::String(v) => {
+            let v = v.to_ascii_lowercase();
+            v.contains("subagent") || v.contains("review")
+        }
         _ => false,
     }
 }
