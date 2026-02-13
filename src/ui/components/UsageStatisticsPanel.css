@@ -108,14 +108,14 @@
 }
 
 .aoUsageAnomalyRow {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: flex-start;
   gap: 8px;
 }
 
 .aoUsageAnomalyText {
-  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .aoUsageAnomalyCloseAllBtn,
@@ -136,6 +136,13 @@
 
 .aoUsageAnomalyCloseAllBtn {
   text-transform: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .aoUsageAnomalyDismissBtn:hover {
@@ -145,9 +152,14 @@
 }
 
 .aoUsageAnomalyCloseAllBtn:hover {
-  background: rgba(255, 255, 255, 0.94);
-  border-color: rgba(145, 12, 43, 0.38);
+  background: transparent;
+  border-color: transparent;
   color: rgba(95, 23, 42, 0.98);
+}
+
+.aoUsageAnomalyFooter {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .aoUsageActionBtn {
