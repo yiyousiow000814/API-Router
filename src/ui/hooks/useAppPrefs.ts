@@ -85,6 +85,16 @@ export function useAppPrefs({
         useWindowsRaw == null ? Boolean(d1.trim()) : useWindowsRaw === '1'
       const useWsl =
         useWslRaw == null ? (legacyApplyBoth || Boolean(d2.trim())) : useWslRaw === '1'
+      const shouldAutoEnableWindows = useWindowsRaw == null && !d1.trim()
+      const shouldAutoEnableWsl = useWslRaw == null && !d2.trim()
+      let discoveredWindowsHome = d1.trim()
+      let discoveredWslHome = ''
+      let windowsDiscoveryResolved = Boolean(d1.trim())
+      const applyAutoEnableWsl = () => {
+        if (!shouldAutoEnableWsl) return
+        if (!windowsDiscoveryResolved) return
+        setCodexSwapUseWsl(!discoveredWindowsHome && Boolean(discoveredWslHome))
+      }
       setCodexSwapDir1(d1)
       setCodexSwapDir2(d2)
       setCodexSwapUseWindows(useWindows)
@@ -92,16 +102,24 @@ export function useAppPrefs({
       if (!d1.trim()) {
         invoke<string>('codex_cli_default_home')
           .then((p) => {
+            discoveredWindowsHome = p.trim()
+            windowsDiscoveryResolved = true
             setCodexSwapDir1((prev) => (prev.trim() ? prev : p))
-            if (useWindowsRaw == null && p.trim()) setCodexSwapUseWindows(true)
+            if (shouldAutoEnableWindows) setCodexSwapUseWindows(Boolean(discoveredWindowsHome))
+            applyAutoEnableWsl()
           })
-          .catch(() => {})
+          .catch(() => {
+            windowsDiscoveryResolved = true
+            applyAutoEnableWsl()
+          })
       }
       if (!d2.trim()) {
         invoke<string>('codex_cli_default_wsl_home')
           .then((p) => {
             const resolved = normalizePathForCompare(p) === normalizePathForCompare(d1) ? '' : p
+            discoveredWslHome = resolved.trim()
             setCodexSwapDir2(resolved)
+            applyAutoEnableWsl()
           })
           .catch(() => {})
       }
