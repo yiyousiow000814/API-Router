@@ -184,7 +184,7 @@ export function useDashboardDerivations(params: Params) {
   const usagePricingProviderNames = managedProviderNames
   const usagePricingGroups = useMemo(
     () => buildUsagePricingGroups(usagePricingProviderNames, config, providerApiKeyLabel),
-    [usagePricingProviderNames, config],
+    [usagePricingProviderNames, config, providerApiKeyLabel],
   )
   const usageScheduleProviderOptions = managedProviderNames
   const usageAnomalies = useMemo(
