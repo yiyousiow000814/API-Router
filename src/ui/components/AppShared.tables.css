@@ -281,21 +281,35 @@
 
 .aoRawConfigModalBody {
   overflow: visible;
+  padding-right: 0;
+}
+
+.aoRawConfigCloseBtn {
+  margin-right: 0;
 }
 
 .aoRawConfigEditor {
+  box-sizing: border-box;
   width: 100%;
+  max-width: 100%;
   min-height: min(56vh, 620px);
   border-radius: 12px;
   border: 1px solid var(--ao-line);
   background: rgba(13, 18, 32, 0.03);
   color: var(--ao-fg);
   padding: 12px;
-  resize: vertical;
+  resize: none;
   outline: none;
   line-height: 1.45;
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
   font-size: 12px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.aoRawConfigEditor::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .aoRawConfigEditor:focus {
@@ -305,26 +319,38 @@
 
 .aoRawConfigDual {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 10px;
 }
 
 .aoRawConfigPane {
+  box-sizing: border-box;
   min-width: 0;
+}
+
+.aoRawConfigEditorShell {
+  position: relative;
 }
 
 .aoRawConfigPaneHead {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
-  align-items: start;
+  align-items: center;
   margin-bottom: 6px;
 }
 
 .aoRawConfigPaneMeta {
   display: grid;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
+}
+
+.aoRawConfigPaneTopline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .aoRawConfigPaneKind {
@@ -346,12 +372,9 @@
 }
 
 .aoRawConfigPaneActions {
-  display: inline-flex;
-  justify-content: flex-end;
+  display: flex;
+  justify-content: flex-start;
   align-items: center;
-  flex-wrap: nowrap;
-  flex: 0 0 auto;
-  min-width: max-content;
 }
 
 .aoRawConfigPaneHead .aoRow {
@@ -362,14 +385,101 @@
   flex: 0 0 auto;
 }
 
-.aoRawConfigPlaceholder {
-  min-height: min(56vh, 620px);
-  border-radius: 12px;
-  border: 1px dashed rgba(13, 18, 32, 0.2);
-  background: rgba(13, 18, 32, 0.02);
-  color: rgba(13, 18, 32, 0.58);
-  padding: 12px;
-  font-size: 12px;
+.aoRawConfigState {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  background: transparent;
+  letter-spacing: 0.02em;
+}
+
+.aoRawConfigState::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+}
+
+.aoRawConfigStateInfo {
+  color: rgba(13, 18, 32, 0.7);
+}
+
+.aoRawConfigStateInfo::before {
+  background: rgba(13, 18, 32, 0.35);
+}
+
+.aoRawConfigStateWarn {
+  color: rgba(120, 90, 12, 0.95);
+}
+
+.aoRawConfigStateWarn::before {
+  background: rgba(242, 193, 77, 0.95);
+}
+
+.aoRawConfigStateOk {
+  color: rgba(5, 97, 108, 0.95);
+}
+
+.aoRawConfigStateOk::before {
+  background: rgba(40, 199, 217, 0.95);
+}
+
+.aoRawConfigNotice {
+  margin-bottom: 6px;
+  border: 1px solid rgba(242, 193, 77, 0.42);
+  background: rgba(242, 193, 77, 0.12);
+  border-radius: 10px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: rgba(92, 66, 6, 0.92);
+}
+
+.aoRawConfigScrollbarOverlay {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  bottom: 10px;
+  width: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+  z-index: 2;
+}
+
+.aoRawConfigScrollSurfaceCanScroll .aoRawConfigScrollbarOverlay {
+  pointer-events: auto;
+}
+
+.aoRawConfigScrollSurfaceCanScroll .aoRawConfigScrollbarOverlay:hover {
+  opacity: 1;
+}
+
+.aoRawConfigScrollSurfaceScrollbarVisible .aoRawConfigScrollbarOverlay {
+  opacity: 1;
+}
+
+.aoRawConfigScrollbarThumb {
+  width: 100%;
+  min-height: 24px;
+  border-radius: 999px;
+  background: rgba(120, 132, 156, 0.44);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  transition: background-color 120ms ease;
+  will-change: transform;
+  cursor: grab;
+}
+
+.aoRawConfigScrollbarOverlay:active .aoRawConfigScrollbarThumb {
+  cursor: grabbing;
+}
+
+.aoRawConfigScrollSurfaceCanScroll .aoRawConfigScrollbarOverlay:hover .aoRawConfigScrollbarThumb,
+.aoRawConfigScrollSurfaceScrollbarVisible .aoRawConfigScrollbarThumb {
+  background: rgba(94, 108, 136, 0.56);
 }
 
 @media (max-width: 1200px) {

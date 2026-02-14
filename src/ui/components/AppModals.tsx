@@ -72,17 +72,14 @@ type Props = {
   addProvider: () => Promise<void>
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
   rawConfigModalOpen: boolean
-  rawConfigText: string
-  rawConfigLoading: boolean
-  rawConfigSaving: boolean
-  rawConfigCanSave: boolean
-  rawConfigTargetHome: string
   rawConfigHomeOptions: string[]
   rawConfigHomeLabels: Record<string, string>
-  setRawConfigText: Dispatch<SetStateAction<string>>
-  onRawConfigTargetHomeChange: (next: string) => void
-  reloadRawConfigModal: () => Promise<void>
-  saveRawConfigModal: () => Promise<void>
+  rawConfigTexts: Record<string, string>
+  rawConfigLoadingByHome: Record<string, boolean>
+  rawConfigSavingByHome: Record<string, boolean>
+  rawConfigDirtyByHome: Record<string, boolean>
+  onRawConfigTextChange: (home: string, next: string) => void
+  saveRawConfigHome: (home: string) => Promise<void>
   setRawConfigModalOpen: Dispatch<SetStateAction<boolean>>
   providerListRef: RefObject<HTMLDivElement | null>
   orderedConfigProviders: string[]
@@ -230,17 +227,14 @@ export function AppModals(props: Props) {
     addProvider,
     setConfigModalOpen,
     rawConfigModalOpen,
-    rawConfigText,
-    rawConfigLoading,
-    rawConfigSaving,
-    rawConfigCanSave,
-    rawConfigTargetHome,
     rawConfigHomeOptions,
     rawConfigHomeLabels,
-    setRawConfigText,
-    onRawConfigTargetHomeChange,
-    reloadRawConfigModal,
-    saveRawConfigModal,
+    rawConfigTexts,
+    rawConfigLoadingByHome,
+    rawConfigSavingByHome,
+    rawConfigDirtyByHome,
+    onRawConfigTextChange,
+    saveRawConfigHome,
     setRawConfigModalOpen,
     providerListRef,
     orderedConfigProviders,
@@ -349,13 +343,14 @@ export function AppModals(props: Props) {
     toggleCodexSwap,
     resolveCliHomes,
   } = props
-  const rawConfigTargetNorm = normalizePathForCompare(rawConfigTargetHome)
-  const rawConfigTargetSwapped = Boolean(
-    rawConfigTargetNorm &&
-      codexSwapStatus?.dirs?.some(
-        (dir) => dir.state === 'swapped' && normalizePathForCompare(dir.cli_home) === rawConfigTargetNorm,
-      ),
-  )
+  const rawConfigSwappedByHome = rawConfigHomeOptions.reduce<Record<string, boolean>>((acc, home) => {
+    const norm = normalizePathForCompare(home)
+    acc[home] = Boolean(
+      norm &&
+        codexSwapStatus?.dirs?.some((dir) => dir.state === 'swapped' && normalizePathForCompare(dir.cli_home) === norm),
+    )
+    return acc
+  }, {})
 
   return (
     <>
@@ -438,22 +433,15 @@ requires_openai_auth = true`}
 
       <RawConfigModal
         open={rawConfigModalOpen}
-        loading={rawConfigLoading}
-        saving={rawConfigSaving}
-        canSave={rawConfigCanSave}
-        targetHome={rawConfigTargetHome}
         homeOptions={rawConfigHomeOptions}
         homeLabels={rawConfigHomeLabels}
-        onTargetHomeChange={onRawConfigTargetHomeChange}
-        value={rawConfigText}
-        onChange={setRawConfigText}
-        onReload={() => void reloadRawConfigModal()}
-        onSave={() => void saveRawConfigModal()}
-        warningText={
-          rawConfigTargetSwapped
-            ? 'This Codex home is currently swapped. Restore may overwrite raw edits to config.toml.'
-            : null
-        }
+        valuesByHome={rawConfigTexts}
+        loadingByHome={rawConfigLoadingByHome}
+        savingByHome={rawConfigSavingByHome}
+        dirtyByHome={rawConfigDirtyByHome}
+        swappedByHome={rawConfigSwappedByHome}
+        onChangeHome={onRawConfigTextChange}
+        onSaveHome={(home) => void saveRawConfigHome(home)}
         onClose={() => setRawConfigModalOpen(false)}
       />
 

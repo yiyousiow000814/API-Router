@@ -99,11 +99,10 @@ export default function App() {
   const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
   const [configModalOpen, setConfigModalOpen] = useState<boolean>(false)
   const [rawConfigModalOpen, setRawConfigModalOpen] = useState<boolean>(false)
-  const [rawConfigText, setRawConfigText] = useState<string>('')
-  const [rawConfigLoading, setRawConfigLoading] = useState<boolean>(false)
-  const [rawConfigSaving, setRawConfigSaving] = useState<boolean>(false)
-  const [rawConfigCanSave, setRawConfigCanSave] = useState<boolean>(false)
-  const [rawConfigTargetHome, setRawConfigTargetHome] = useState<string>('')
+  const [rawConfigTexts, setRawConfigTexts] = useState<Record<string, string>>({})
+  const [rawConfigLoadingByHome, setRawConfigLoadingByHome] = useState<Record<string, boolean>>({})
+  const [rawConfigSavingByHome, setRawConfigSavingByHome] = useState<Record<string, boolean>>({})
+  const [rawConfigDirtyByHome, setRawConfigDirtyByHome] = useState<Record<string, boolean>>({})
   const [rawConfigHomeOptions, setRawConfigHomeOptions] = useState<string[]>([])
   const [rawConfigHomeLabels, setRawConfigHomeLabels] = useState<Record<string, string>>({})
   const [instructionModalOpen, setInstructionModalOpen] = useState<boolean>(false)
@@ -235,30 +234,33 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
   }
 
-  async function reloadRawConfigModal(targetHome?: string) {
-    if (rawConfigTestMode || isDevPreview) {
-      setRawConfigLoading(false)
-      setRawConfigCanSave(true)
-      if (!rawConfigText.trim()) {
-        setRawConfigText('# [TEST] Raw config sandbox\nmodel_provider = \"api_router\"\n')
-      }
-      return
-    }
-    setRawConfigCanSave(false)
-    setRawConfigLoading(true)
+  async function loadRawConfigHome(home: string) {
+    const target = home.trim()
+    if (!target) return
+    setRawConfigLoadingByHome((prev) => ({ ...prev, [target]: true }))
     try {
-      const home = (targetHome ?? rawConfigTargetHome).trim()
+      if (rawConfigTestMode || isDevPreview) {
+        const mockToml = Array.from({ length: 64 }, (_, idx) => {
+          const n = String(idx + 1).padStart(2, '0')
+          return `# [TEST] sample line ${n}\nmodel_provider = "api_router"\n`
+        }).join('\n')
+        setRawConfigTexts((prev) => ({
+          ...prev,
+          [target]: prev[target] || mockToml,
+        }))
+        setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
+        return
+      }
       const txt = await invoke<string>('get_codex_cli_config_toml', {
-        cliHome: home || null,
+        cliHome: target,
       })
-      setRawConfigText(txt)
-      setRawConfigCanSave(true)
+      setRawConfigTexts((prev) => ({ ...prev, [target]: txt }))
+      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
     } catch (e) {
-      const msg = String(e)
-      setRawConfigText('')
-      flashToast(msg, 'error')
+      setRawConfigTexts((prev) => ({ ...prev, [target]: '' }))
+      flashToast(String(e), 'error')
     } finally {
-      setRawConfigLoading(false)
+      setRawConfigLoadingByHome((prev) => ({ ...prev, [target]: false }))
     }
   }
 
@@ -272,11 +274,13 @@ export default function App() {
         [mockWindowsHome]: `Windows: ${mockWindowsHome}`,
         [mockWslHome]: `WSL2: ${mockWslHome}`,
       })
-      setRawConfigTargetHome(mockWindowsHome)
-      setRawConfigText('')
-      setRawConfigCanSave(true)
+      const homeOptions = [mockWindowsHome, mockWslHome]
+      setRawConfigTexts(Object.fromEntries(homeOptions.map((home) => [home, ''])))
+      setRawConfigDirtyByHome({})
+      setRawConfigSavingByHome({})
+      setRawConfigLoadingByHome({})
       setRawConfigModalOpen(true)
-      await reloadRawConfigModal(mockWindowsHome)
+      await Promise.all(homeOptions.map((home) => loadRawConfigHome(home)))
       return
     }
     try {
@@ -297,11 +301,12 @@ export default function App() {
       }
       setRawConfigHomeOptions(homeOptions)
       setRawConfigHomeLabels(labels)
-      setRawConfigTargetHome(homeOptions[0] ?? '')
-      setRawConfigText('')
-      setRawConfigCanSave(false)
+      setRawConfigTexts(Object.fromEntries(homeOptions.map((home) => [home, ''])))
+      setRawConfigDirtyByHome({})
+      setRawConfigSavingByHome({})
+      setRawConfigLoadingByHome({})
       setRawConfigModalOpen(true)
-      await reloadRawConfigModal(homeOptions[0] ?? '')
+      await Promise.all(homeOptions.map((home) => loadRawConfigHome(home)))
     } catch (e) {
       const msg = String(e)
       flashToast(msg, 'error')
@@ -309,22 +314,32 @@ export default function App() {
     }
   }
 
-  async function saveRawConfigModal() {
+  function updateRawConfigText(home: string, next: string) {
+    setRawConfigTexts((prev) => ({ ...prev, [home]: next }))
+    setRawConfigDirtyByHome((prev) => ({ ...prev, [home]: true }))
+  }
+
+  async function saveRawConfigHome(home: string) {
+    const target = home.trim()
+    if (!target) return
+    if (rawConfigSavingByHome[target]) return
     if (rawConfigTestMode || isDevPreview) {
+      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
       flashToast('[TEST] Saved in sandbox only (no real files changed).')
       return
     }
-    setRawConfigSaving(true)
+    setRawConfigSavingByHome((prev) => ({ ...prev, [target]: true }))
     try {
       await invoke('set_codex_cli_config_toml', {
-        cliHome: rawConfigTargetHome || null,
-        tomlText: rawConfigText,
+        cliHome: target,
+        tomlText: rawConfigTexts[target] ?? '',
       })
-      flashToast('Codex config.toml saved')
+      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
+      flashToast(`Saved: ${target}`)
     } catch (e) {
       flashToast(String(e), 'error')
     } finally {
-      setRawConfigSaving(false)
+      setRawConfigSavingByHome((prev) => ({ ...prev, [target]: false }))
     }
   }
   const {
@@ -773,22 +788,14 @@ export default function App() {
         addProvider={addProvider}
         setConfigModalOpen={setConfigModalOpen}
         rawConfigModalOpen={rawConfigModalOpen}
-        rawConfigText={rawConfigText}
-        rawConfigLoading={rawConfigLoading}
-        rawConfigSaving={rawConfigSaving}
-        rawConfigCanSave={rawConfigCanSave}
-        rawConfigTargetHome={rawConfigTargetHome}
         rawConfigHomeOptions={rawConfigHomeOptions}
         rawConfigHomeLabels={rawConfigHomeLabels}
-        setRawConfigText={setRawConfigText}
-        onRawConfigTargetHomeChange={(next) => {
-          setRawConfigTargetHome(next)
-          void reloadRawConfigModal(next)
-        }}
-        reloadRawConfigModal={async () => {
-          await reloadRawConfigModal()
-        }}
-        saveRawConfigModal={saveRawConfigModal}
+        rawConfigTexts={rawConfigTexts}
+        rawConfigLoadingByHome={rawConfigLoadingByHome}
+        rawConfigSavingByHome={rawConfigSavingByHome}
+        rawConfigDirtyByHome={rawConfigDirtyByHome}
+        onRawConfigTextChange={updateRawConfigText}
+        saveRawConfigHome={saveRawConfigHome}
         setRawConfigModalOpen={setRawConfigModalOpen}
         providerListRef={providerListRef}
         orderedConfigProviders={orderedConfigProviders}

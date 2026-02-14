@@ -1,146 +1,321 @@
+import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { ModalBackdrop } from './ModalBackdrop'
+
+type DragState = {
+  active: boolean
+  pointerId: number
+  pointerOffsetY: number
+}
+
+const IDLE_DRAG_STATE: DragState = { active: false, pointerId: -1, pointerOffsetY: 0 }
 
 type Props = {
   open: boolean
-  loading: boolean
-  saving: boolean
-  canSave: boolean
-  targetHome: string
   homeOptions: string[]
   homeLabels?: Record<string, string>
-  onTargetHomeChange: (next: string) => void
-  value: string
-  onChange: (next: string) => void
-  onReload: () => void
-  onSave: () => void
-  warningText?: string | null
+  valuesByHome: Record<string, string>
+  loadingByHome: Record<string, boolean>
+  savingByHome: Record<string, boolean>
+  dirtyByHome: Record<string, boolean>
+  swappedByHome?: Record<string, boolean>
+  onChangeHome: (home: string, next: string) => void
+  onSaveHome: (home: string) => void
   onClose: () => void
 }
 
 export function RawConfigModal({
   open,
-  loading,
-  saving,
-  canSave,
-  targetHome,
   homeOptions,
   homeLabels,
-  onTargetHomeChange,
-  value,
-  onChange,
-  onReload,
-  onSave,
-  warningText,
+  valuesByHome,
+  loadingByHome,
+  savingByHome,
+  dirtyByHome,
+  swappedByHome,
+  onChangeHome,
+  onSaveHome,
   onClose,
 }: Props) {
-  if (!open) return null
-  const dualMode = homeOptions.length > 1
-  const primaryHome = homeOptions[0] ?? ''
-  const secondaryHome = homeOptions[1] ?? ''
+  const editorRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
+  const surfaceRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const overlayRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const thumbRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const hideTimerRefs = useRef<Record<string, number | null>>({})
+  const rafRefs = useRef<Record<string, number | null>>({})
+  const dragRefs = useRef<Record<string, DragState>>({})
+
+  const setVisible = (home: string, visible: boolean) => {
+    surfaceRefs.current[home]?.classList.toggle('aoRawConfigScrollSurfaceScrollbarVisible', visible)
+    overlayRefs.current[home]?.classList.toggle('aoRawConfigScrollbarOverlayVisible', visible)
+  }
+
+  const setCanScroll = (home: string, canScroll: boolean) => {
+    surfaceRefs.current[home]?.classList.toggle('aoRawConfigScrollSurfaceCanScroll', canScroll)
+  }
+
+  const refreshScrollbar = (home: string) => {
+    const editor = editorRefs.current[home]
+    const overlay = overlayRefs.current[home]
+    const thumb = thumbRefs.current[home]
+    if (!editor || !overlay || !thumb) return
+    const viewportHeight = editor.clientHeight
+    const overlayHeight = overlay.clientHeight
+    const scrollHeight = editor.scrollHeight
+    const maxScroll = Math.max(0, scrollHeight - viewportHeight)
+    if (viewportHeight <= 0 || overlayHeight <= 0 || maxScroll <= 0) {
+      thumb.style.height = '0px'
+      thumb.style.transform = 'translateY(0px)'
+      setCanScroll(home, false)
+      setVisible(home, false)
+      return
+    }
+    setCanScroll(home, true)
+    const thumbHeight = Math.max(24, Math.round((viewportHeight / scrollHeight) * overlayHeight))
+    const thumbTravel = Math.max(0, overlayHeight - thumbHeight)
+    const thumbTop = maxScroll > 0 ? Math.round((editor.scrollTop / maxScroll) * thumbTravel) : 0
+    thumb.style.height = `${thumbHeight}px`
+    thumb.style.transform = `translateY(${thumbTop}px)`
+  }
+
+  const scheduleSync = (home: string) => {
+    if (typeof window === 'undefined') return
+    if (rafRefs.current[home] != null) return
+    rafRefs.current[home] = window.requestAnimationFrame(() => {
+      rafRefs.current[home] = null
+      refreshScrollbar(home)
+    })
+  }
+
+  const activateScrollbar = (home: string) => {
+    if (typeof window === 'undefined') return
+    const editor = editorRefs.current[home]
+    if (!editor) return
+    if (editor.scrollHeight - editor.clientHeight <= 1) return
+    setVisible(home, true)
+    if (dragRefs.current[home]?.active) {
+      const existing = hideTimerRefs.current[home]
+      if (existing != null) {
+        window.clearTimeout(existing)
+        hideTimerRefs.current[home] = null
+      }
+      return
+    }
+    const timer = hideTimerRefs.current[home]
+    if (timer != null) window.clearTimeout(timer)
+    hideTimerRefs.current[home] = window.setTimeout(() => {
+      setVisible(home, false)
+      hideTimerRefs.current[home] = null
+    }, 700)
+  }
+
+  const scrollByThumbTop = (home: string, thumbTopPx: number) => {
+    const editor = editorRefs.current[home]
+    const overlay = overlayRefs.current[home]
+    const thumb = thumbRefs.current[home]
+    if (!editor || !overlay || !thumb) return
+    const viewportHeight = editor.clientHeight
+    const overlayHeight = overlay.clientHeight
+    const scrollHeight = editor.scrollHeight
+    const maxScroll = Math.max(0, scrollHeight - viewportHeight)
+    if (viewportHeight <= 0 || overlayHeight <= 0 || maxScroll <= 0) return
+    const thumbHeight = Math.max(24, Math.round((viewportHeight / scrollHeight) * overlayHeight))
+    const thumbTravel = Math.max(0, overlayHeight - thumbHeight)
+    if (thumbTravel <= 0) return
+    const nextThumbTop = Math.max(0, Math.min(thumbTravel, thumbTopPx))
+    const nextScrollTop = Math.round((nextThumbTop / thumbTravel) * maxScroll)
+    editor.scrollTop = nextScrollTop
+    scheduleSync(home)
+    activateScrollbar(home)
+  }
+
+  const onScrollbarPointerDown = (home: string, e: ReactPointerEvent<HTMLDivElement>) => {
+    const editor = editorRefs.current[home]
+    const overlay = overlayRefs.current[home]
+    if (!editor || !overlay) return
+    const viewportHeight = editor.clientHeight
+    const overlayHeight = overlay.clientHeight
+    const scrollHeight = editor.scrollHeight
+    const maxScroll = Math.max(0, scrollHeight - viewportHeight)
+    if (viewportHeight <= 0 || overlayHeight <= 0 || maxScroll <= 0) return
+
+    e.preventDefault()
+    e.stopPropagation()
+    try {
+      overlay.setPointerCapture(e.pointerId)
+    } catch {
+      // ignore
+    }
+
+    const thumbHeight = Math.max(24, Math.round((viewportHeight / scrollHeight) * overlayHeight))
+    const thumbTravel = Math.max(0, overlayHeight - thumbHeight)
+    const currentThumbTop = maxScroll > 0 ? Math.round((editor.scrollTop / maxScroll) * thumbTravel) : 0
+    const rect = overlay.getBoundingClientRect()
+    const y = e.clientY - rect.top
+    const pointerOffsetY = Math.max(0, Math.min(thumbHeight, y - currentThumbTop))
+    dragRefs.current[home] = { active: true, pointerId: e.pointerId, pointerOffsetY }
+    activateScrollbar(home)
+    scrollByThumbTop(home, y - pointerOffsetY)
+  }
+
+  const onScrollbarPointerMove = (home: string, e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRefs.current[home] ?? IDLE_DRAG_STATE
+    if (!drag.active || drag.pointerId !== e.pointerId) return
+    const overlay = overlayRefs.current[home]
+    if (!overlay) return
+    e.preventDefault()
+    e.stopPropagation()
+    const rect = overlay.getBoundingClientRect()
+    const y = e.clientY - rect.top
+    scrollByThumbTop(home, y - drag.pointerOffsetY)
+  }
+
+  const onScrollbarPointerUp = (home: string, e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRefs.current[home] ?? IDLE_DRAG_STATE
+    if (!drag.active || drag.pointerId !== e.pointerId) return
+    const overlay = overlayRefs.current[home]
+    if (!overlay) return
+    e.preventDefault()
+    e.stopPropagation()
+    dragRefs.current[home] = IDLE_DRAG_STATE
+    try {
+      overlay.releasePointerCapture(e.pointerId)
+    } catch {
+      // ignore
+    }
+    activateScrollbar(home)
+  }
+
+  const onScrollbarLostPointerCapture = (home: string) => {
+    const drag = dragRefs.current[home] ?? IDLE_DRAG_STATE
+    if (!drag.active) return
+    dragRefs.current[home] = IDLE_DRAG_STATE
+    activateScrollbar(home)
+  }
+
+  useEffect(() => {
+    homeOptions.forEach((home) => {
+      scheduleSync(home)
+    })
+  }, [homeOptions, valuesByHome, loadingByHome])
+
+  useEffect(() => {
+    return () => {
+      if (typeof window === 'undefined') return
+      Object.values(hideTimerRefs.current).forEach((timer) => {
+        if (timer != null) window.clearTimeout(timer)
+      })
+      Object.values(rafRefs.current).forEach((raf) => {
+        if (raf != null) window.cancelAnimationFrame(raf)
+      })
+    }
+  }, [])
+
   const parseHomeLabel = (home: string) => {
     const raw = homeLabels?.[home] ?? home
     const idx = raw.indexOf(': ')
     if (idx <= 0) return { kind: 'Target', path: raw }
     return { kind: raw.slice(0, idx), path: raw.slice(idx + 2) }
   }
+  const statusText = (home: string) => {
+    if (savingByHome[home]) return 'Saving'
+    if (loadingByHome[home]) return 'Loading'
+    if (dirtyByHome[home]) return 'Not Saved'
+    return 'Saved'
+  }
+  const statusClass = (home: string) => {
+    if (savingByHome[home]) return 'aoRawConfigState aoRawConfigStateInfo'
+    if (loadingByHome[home]) return 'aoRawConfigState aoRawConfigStateInfo'
+    if (dirtyByHome[home]) return 'aoRawConfigState aoRawConfigStateWarn'
+    return 'aoRawConfigState aoRawConfigStateOk'
+  }
+  if (!open) return null
   return (
     <ModalBackdrop onClose={onClose}>
       <div className="aoModal aoModalWide" onClick={(e) => e.stopPropagation()}>
         <div className="aoModalHeader">
           <div>
             <div className="aoModalTitle">Raw Codex config.toml</div>
-            <div className="aoModalSub">Edits are validated and saved to selected Codex CLI home.</div>
+            <div className="aoModalSub">Edit both Windows/WSL2 configs directly. Save applies per side.</div>
           </div>
-          <div className="aoRow">
-            {!dualMode ? (
-              <select
-                className="aoSelect"
-                value={targetHome}
-                onChange={(e) => onTargetHomeChange(e.target.value)}
-                disabled={loading || saving}
-                style={{ maxWidth: 360 }}
-              >
-                {homeOptions.map((home) => (
-                  <option key={home} value={home}>
-                    {homeLabels?.[home] ?? home}
-                  </option>
-                ))}
-              </select>
-            ) : null}
-            {!dualMode ? (
-              <button className="aoBtn" onClick={onReload} disabled={loading || saving}>
-                Reload
-              </button>
-            ) : null}
-            {!dualMode ? (
-              <button className="aoBtn aoBtnPrimary" onClick={onSave} disabled={loading || saving || !canSave}>
-                {saving ? 'Saving...' : 'Save'}
-              </button>
-            ) : null}
-            <button className="aoBtn" onClick={onClose} disabled={saving}>
-              Close
-            </button>
-          </div>
+          <button className="aoBtn aoRawConfigCloseBtn" onClick={onClose}>
+            Close
+          </button>
         </div>
         <div className="aoModalBody aoRawConfigModalBody">
-          {!dualMode ? <div className="aoModalSub">Target: {targetHome || '-'}</div> : null}
-          {warningText ? <div className="aoModalSub">{warningText}</div> : null}
-          {!loading && !canSave ? (
-            <div className="aoModalSub">Save is disabled until config.toml loads successfully for this target.</div>
-          ) : null}
-          {dualMode ? (
-            <div className="aoRawConfigDual">
-              {[primaryHome, secondaryHome].map((home) => {
-                const selected = home === targetHome
-                const parsed = parseHomeLabel(home)
-                return (
-                  <section key={home} className="aoRawConfigPane">
-                    <div className="aoRawConfigPaneHead">
-                      <div className="aoRawConfigPaneMeta">
+          <div className="aoRawConfigDual">
+            {homeOptions.map((home) => {
+              const parsed = parseHomeLabel(home)
+              const disabled = Boolean(loadingByHome[home] || savingByHome[home])
+              return (
+                <section key={home} className="aoRawConfigPane">
+                  <div className="aoRawConfigPaneHead">
+                    <div className="aoRawConfigPaneMeta">
+                      <div className="aoRawConfigPaneTopline">
                         <span className="aoRawConfigPaneKind">{parsed.kind}</span>
-                        <span className="aoRawConfigPanePath" title={parsed.path}>
-                          {parsed.path}
-                        </span>
+                        <span className={statusClass(home)}>{statusText(home)}</span>
                       </div>
-                      <div className="aoRow aoRawConfigPaneActions">
-                        <button className="aoBtn" disabled={loading || saving} onClick={() => onTargetHomeChange(home)}>
-                          Reload
-                        </button>
-                        <button
-                          className="aoBtn aoBtnPrimary"
-                          disabled={!selected || loading || saving || !canSave}
-                          onClick={onSave}
-                        >
-                          {saving && selected ? 'Saving...' : 'Save'}
-                        </button>
-                      </div>
+                      <span className="aoRawConfigPanePath" title={parsed.path}>
+                        {parsed.path}
+                      </span>
                     </div>
-                    {selected ? (
-                      <textarea
-                        className="aoRawConfigEditor"
-                        value={value}
-                        onChange={(e) => onChange(e.target.value)}
-                        spellCheck={false}
-                        placeholder={loading ? 'Loading config.toml...' : 'config.toml is empty'}
-                        disabled={loading}
+                    <div className="aoRawConfigPaneActions">
+                      <button className="aoBtn aoBtnPrimary" disabled={disabled} onClick={() => onSaveHome(home)}>
+                        {savingByHome[home] ? 'Saving...' : 'Save'}
+                      </button>
+                    </div>
+                  </div>
+                  {swappedByHome?.[home] ? (
+                    <div className="aoRawConfigNotice">Swapped now. Restore may overwrite edits.</div>
+                  ) : null}
+                  <div
+                    className="aoRawConfigEditorShell"
+                    ref={(el) => {
+                      surfaceRefs.current[home] = el
+                    }}
+                  >
+                    <textarea
+                      className="aoRawConfigEditor"
+                      ref={(el) => {
+                        editorRefs.current[home] = el
+                      }}
+                      value={valuesByHome[home] ?? ''}
+                      onChange={(e) => onChangeHome(home, e.target.value)}
+                      onScroll={() => {
+                        scheduleSync(home)
+                        activateScrollbar(home)
+                      }}
+                      onWheel={() => {
+                        scheduleSync(home)
+                        activateScrollbar(home)
+                      }}
+                      onTouchMove={() => activateScrollbar(home)}
+                      spellCheck={false}
+                      placeholder={loadingByHome[home] ? 'Loading config.toml...' : 'config.toml is empty'}
+                      disabled={disabled}
+                    />
+                    <div
+                      className="aoRawConfigScrollbarOverlay"
+                      ref={(el) => {
+                        overlayRefs.current[home] = el
+                      }}
+                      onPointerDown={(e) => onScrollbarPointerDown(home, e)}
+                      onPointerMove={(e) => onScrollbarPointerMove(home, e)}
+                      onPointerUp={(e) => onScrollbarPointerUp(home, e)}
+                      onPointerCancel={(e) => onScrollbarPointerUp(home, e)}
+                      onLostPointerCapture={() => onScrollbarLostPointerCapture(home)}
+                    >
+                      <div
+                        className="aoRawConfigScrollbarThumb"
+                        ref={(el) => {
+                          thumbRefs.current[home] = el
+                        }}
                       />
-                    ) : (
-                      <div className="aoRawConfigPlaceholder">Select Reload on this side to switch target.</div>
-                    )}
-                  </section>
-                )
-              })}
-            </div>
-          ) : (
-            <textarea
-              className="aoRawConfigEditor"
-              value={value}
-              onChange={(e) => onChange(e.target.value)}
-              spellCheck={false}
-              placeholder={loading ? 'Loading config.toml...' : 'config.toml is empty'}
-              disabled={loading}
-            />
-          )}
+                    </div>
+                  </div>
+                </section>
+              )
+            })}
+          </div>
         </div>
       </div>
     </ModalBackdrop>
