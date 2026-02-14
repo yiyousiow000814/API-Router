@@ -288,10 +288,10 @@ export default function App() {
       }
       const labels: Record<string, string> = {}
       if (homeOptions.length > 1) {
-        homeOptions.forEach((home, idx) => {
+        homeOptions.forEach((home) => {
           const lower = home.toLowerCase()
           const isWsl = lower.startsWith('\\\\wsl.localhost\\') || lower.startsWith('\\\\wsl$\\')
-          const kind = isWsl ? 'WSL2' : idx === 0 ? 'Windows' : 'WSL2'
+          const kind = isWsl ? 'WSL2' : 'Windows'
           labels[home] = `${kind}: ${home}`
         })
       }
