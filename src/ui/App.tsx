@@ -247,7 +247,7 @@ export default function App() {
   }
 
   async function reloadRawConfigModal(targetHome?: string) {
-    if (rawConfigTestMode) {
+    if (rawConfigTestMode || isDevPreview) {
       setRawConfigLoading(false)
       setRawConfigCanSave(true)
       if (!rawConfigText.trim()) {
@@ -279,9 +279,19 @@ export default function App() {
 
   async function openRawConfigModal(options?: { reopenGettingStartedOnFail?: boolean }) {
     const reopenGettingStartedOnFail = Boolean(options?.reopenGettingStartedOnFail)
-    if (rawConfigTestMode) {
-      flashToast('[TEST] Simulated missing Codex home.')
-      if (reopenGettingStartedOnFail) setInstructionModalOpen(true)
+    if (rawConfigTestMode || isDevPreview) {
+      const mockWindowsHome = 'C:\\Users\\<user>\\.codex'
+      const mockWslHome = '\\\\wsl.localhost\\Ubuntu\\home\\<user>\\.codex'
+      setRawConfigHomeOptions([mockWindowsHome, mockWslHome])
+      setRawConfigHomeLabels({
+        [mockWindowsHome]: `Windows: ${mockWindowsHome}`,
+        [mockWslHome]: `WSL2: ${mockWslHome}`,
+      })
+      setRawConfigTargetHome(mockWindowsHome)
+      setRawConfigText('')
+      setRawConfigCanSave(true)
+      setRawConfigModalOpen(true)
+      await reloadRawConfigModal(mockWindowsHome)
       return
     }
     try {
@@ -319,7 +329,7 @@ export default function App() {
   }
 
   async function saveRawConfigModal() {
-    if (rawConfigTestMode) {
+    if (rawConfigTestMode || isDevPreview) {
       flashToast('[TEST] Saved in sandbox only (no real files changed).')
       return
     }
