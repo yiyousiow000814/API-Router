@@ -12,7 +12,8 @@ type Params = {
   refreshStatus: () => Promise<void>
   codexSwapDir1: string
   codexSwapDir2: string
-  codexSwapApplyBoth: boolean
+  codexSwapUseWindows: boolean
+  codexSwapUseWsl: boolean
   toggleCodexSwap: (homes: string[]) => Promise<void>
   setCodexSwapModalOpen: Dispatch<SetStateAction<boolean>>
   setOverride: Dispatch<SetStateAction<string>>
@@ -30,7 +31,8 @@ export function useMainContentCallbacks(params: Params) {
     refreshStatus,
     codexSwapDir1,
     codexSwapDir2,
-    codexSwapApplyBoth,
+    codexSwapUseWindows,
+    codexSwapUseWsl,
     toggleCodexSwap,
     setCodexSwapModalOpen,
     setOverride,
@@ -89,7 +91,7 @@ export function useMainContentCallbacks(params: Params) {
   const onCodexSwapAuthConfig = () => {
     void (async () => {
       try {
-        const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapApplyBoth)
+        const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
         await toggleCodexSwap(homes)
       } catch (e) {
         flashToast(String(e), 'error')

@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, type MutableRefObject } from 'react'
+import { normalizePathForCompare } from '../utils/path'
 
 type UseAppPrefsOptions = {
   devAutoOpenHistory: boolean
@@ -11,13 +12,16 @@ type UseAppPrefsOptions = {
   setClearErrorsBeforeMs: (value: number) => void
   codexSwapDir1: string
   codexSwapDir2: string
-  codexSwapApplyBoth: boolean
+  codexSwapUseWindows: boolean
+  codexSwapUseWsl: boolean
   setCodexSwapDir1: (value: string | ((prev: string) => string)) => void
   setCodexSwapDir2: (value: string) => void
-  setCodexSwapApplyBoth: (value: boolean) => void
+  setCodexSwapUseWindows: (value: boolean) => void
+  setCodexSwapUseWsl: (value: boolean) => void
   codexSwapDir1Ref: MutableRefObject<string>
   codexSwapDir2Ref: MutableRefObject<string>
-  codexSwapApplyBothRef: MutableRefObject<boolean>
+  codexSwapUseWindowsRef: MutableRefObject<boolean>
+  codexSwapUseWslRef: MutableRefObject<boolean>
   swapPrefsLoadedRef: MutableRefObject<boolean>
 }
 
@@ -31,13 +35,16 @@ export function useAppPrefs({
   setClearErrorsBeforeMs,
   codexSwapDir1,
   codexSwapDir2,
-  codexSwapApplyBoth,
+  codexSwapUseWindows,
+  codexSwapUseWsl,
   setCodexSwapDir1,
   setCodexSwapDir2,
-  setCodexSwapApplyBoth,
+  setCodexSwapUseWindows,
+  setCodexSwapUseWsl,
   codexSwapDir1Ref,
   codexSwapDir2Ref,
-  codexSwapApplyBothRef,
+  codexSwapUseWindowsRef,
+  codexSwapUseWslRef,
   swapPrefsLoadedRef,
 }: UseAppPrefsOptions) {
   useEffect(() => {
@@ -71,13 +78,32 @@ export function useAppPrefs({
     try {
       const d1 = window.localStorage.getItem('ao.codexSwap.dir1') ?? ''
       const d2 = window.localStorage.getItem('ao.codexSwap.dir2') ?? ''
-      const both = (window.localStorage.getItem('ao.codexSwap.applyBoth') ?? '') === '1'
+      const legacyApplyBoth = (window.localStorage.getItem('ao.codexSwap.applyBoth') ?? '') === '1'
+      const useWindowsRaw = window.localStorage.getItem('ao.codexSwap.useWindows')
+      const useWslRaw = window.localStorage.getItem('ao.codexSwap.useWsl')
+      const useWindows =
+        useWindowsRaw == null ? Boolean(d1.trim()) : useWindowsRaw === '1'
+      const useWsl =
+        useWslRaw == null ? (legacyApplyBoth || Boolean(d2.trim())) : useWslRaw === '1'
       setCodexSwapDir1(d1)
       setCodexSwapDir2(d2)
-      setCodexSwapApplyBoth(both)
+      setCodexSwapUseWindows(useWindows)
+      setCodexSwapUseWsl(useWsl)
       if (!d1.trim()) {
         invoke<string>('codex_cli_default_home')
-          .then((p) => setCodexSwapDir1((prev) => (prev.trim() ? prev : p)))
+          .then((p) => {
+            setCodexSwapDir1((prev) => (prev.trim() ? prev : p))
+            if (useWindowsRaw == null && p.trim()) setCodexSwapUseWindows(true)
+          })
+          .catch(() => {})
+      }
+      if (!d2.trim()) {
+        invoke<string>('codex_cli_default_wsl_home')
+          .then((p) => {
+            const resolved = normalizePathForCompare(p) === normalizePathForCompare(d1) ? '' : p
+            setCodexSwapDir2(resolved)
+            if (useWslRaw == null && resolved.trim()) setCodexSwapUseWsl(true)
+          })
           .catch(() => {})
       }
       swapPrefsLoadedRef.current = true
@@ -85,7 +111,7 @@ export function useAppPrefs({
       console.warn('Failed to load Codex swap prefs', e)
       swapPrefsLoadedRef.current = true
     }
-  }, [setCodexSwapApplyBoth, setCodexSwapDir1, setCodexSwapDir2, swapPrefsLoadedRef])
+  }, [setCodexSwapDir1, setCodexSwapDir2, setCodexSwapUseWindows, setCodexSwapUseWsl, swapPrefsLoadedRef])
 
   useEffect(() => {
     codexSwapDir1Ref.current = codexSwapDir1
@@ -94,8 +120,11 @@ export function useAppPrefs({
     codexSwapDir2Ref.current = codexSwapDir2
   }, [codexSwapDir2, codexSwapDir2Ref])
   useEffect(() => {
-    codexSwapApplyBothRef.current = codexSwapApplyBoth
-  }, [codexSwapApplyBoth, codexSwapApplyBothRef])
+    codexSwapUseWindowsRef.current = codexSwapUseWindows
+  }, [codexSwapUseWindows, codexSwapUseWindowsRef])
+  useEffect(() => {
+    codexSwapUseWslRef.current = codexSwapUseWsl
+  }, [codexSwapUseWsl, codexSwapUseWslRef])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -103,11 +132,12 @@ export function useAppPrefs({
     try {
       window.localStorage.setItem('ao.codexSwap.dir1', codexSwapDir1)
       window.localStorage.setItem('ao.codexSwap.dir2', codexSwapDir2)
-      window.localStorage.setItem('ao.codexSwap.applyBoth', codexSwapApplyBoth ? '1' : '0')
+      window.localStorage.setItem('ao.codexSwap.useWindows', codexSwapUseWindows ? '1' : '0')
+      window.localStorage.setItem('ao.codexSwap.useWsl', codexSwapUseWsl ? '1' : '0')
     } catch (e) {
       console.warn('Failed to save Codex swap prefs', e)
     }
-  }, [codexSwapApplyBoth, codexSwapDir1, codexSwapDir2, swapPrefsLoadedRef])
+  }, [codexSwapUseWindows, codexSwapUseWsl, codexSwapDir1, codexSwapDir2, swapPrefsLoadedRef])
 
   useEffect(() => {
     if (typeof window === 'undefined') return

@@ -2,13 +2,31 @@ import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status } from 
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
 import { normalizePathForCompare } from './path'
 
-export function resolveCliHomes(dir1: string, dir2: string, applyBoth: boolean): string[] {
-  const first = dir1.trim()
-  const second = dir2.trim()
-  if (!first) return []
-  if (!applyBoth || !second) return [first]
-  if (normalizePathForCompare(first) === normalizePathForCompare(second)) return [first]
-  return [first, second]
+export function resolveCliHomes(
+  windowsDir: string,
+  wslDir: string,
+  useWindows: boolean,
+  useWsl: boolean,
+): string[] {
+  const windows = windowsDir.trim()
+  const wsl = wslDir.trim()
+  const homes: string[] = []
+  if (useWindows && windows) homes.push(windows)
+  if (useWsl && wsl) {
+    if (!homes.some((h) => normalizePathForCompare(h) === normalizePathForCompare(wsl))) {
+      homes.push(wsl)
+    }
+  }
+  return homes
+}
+
+export function resolveConfigEditorHomes(windowsDir: string, wslDir: string): string[] {
+  const windows = windowsDir.trim()
+  const wsl = wslDir.trim()
+  if (!windows) return wsl ? [wsl] : []
+  if (!wsl) return [windows]
+  if (normalizePathForCompare(windows) === normalizePathForCompare(wsl)) return [windows]
+  return [windows, wsl]
 }
 
 export function buildCodexSwapBadge(

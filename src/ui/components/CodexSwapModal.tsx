@@ -3,78 +3,125 @@ import { normalizePathForCompare } from '../utils/path'
 
 type Props = {
   open: boolean
-  dir1: string
-  dir2: string
-  applyBoth: boolean
-  onChangeDir1: (v: string) => void
-  onChangeDir2: (v: string) => void
-  onChangeApplyBoth: (v: boolean) => void
+  windowsDir: string
+  wslDir: string
+  useWindows: boolean
+  useWsl: boolean
+  onChangeWindowsDir: (v: string) => void
+  onChangeWslDir: (v: string) => void
+  onChangeUseWindows: (v: boolean) => void
+  onChangeUseWsl: (v: boolean) => void
   onCancel: () => void
   onApply: () => void
 }
 
 export function CodexSwapModal({
   open,
-  dir1,
-  dir2,
-  applyBoth,
-  onChangeDir1,
-  onChangeDir2,
-  onChangeApplyBoth,
+  windowsDir,
+  wslDir,
+  useWindows,
+  useWsl,
+  onChangeWindowsDir,
+  onChangeWslDir,
+  onChangeUseWindows,
+  onChangeUseWsl,
   onCancel,
   onApply,
 }: Props) {
   if (!open) return null
 
-  const hasDir2 = dir2.trim().length > 0
+  const normalize = (v: string) => v.trim().replace(/\//g, '\\')
+  const isWslPrefix = (v: string) => {
+    const lower = normalize(v).toLowerCase()
+    return lower.startsWith('\\\\wsl.localhost\\') || lower.startsWith('\\\\wsl$\\')
+  }
+  const isValidWindowsCodexPath = (v: string) => {
+    const n = normalize(v)
+    return /^[a-zA-Z]:\\/.test(n) && !isWslPrefix(n) && n.toLowerCase().endsWith('\\.codex')
+  }
+  const isValidWslCodexPath = (v: string) => {
+    const n = normalize(v)
+    return isWslPrefix(n) && n.toLowerCase().endsWith('\\.codex')
+  }
+
+  const hasWindowsDir = windowsDir.trim().length > 0
+  const hasWslDir = wslDir.trim().length > 0
+  const windowsPathValid = isValidWindowsCodexPath(windowsDir)
+  const wslPathValid = isValidWslCodexPath(wslDir)
   const duplicateDirs =
-    dir1.trim().length > 0 && hasDir2 && normalizePathForCompare(dir1) === normalizePathForCompare(dir2)
-  const canApplyBoth = hasDir2 && !duplicateDirs
-  const applyDisabled = dir1.trim().length === 0 || (applyBoth && (!hasDir2 || duplicateDirs))
+    hasWindowsDir && hasWslDir && normalizePathForCompare(windowsDir) === normalizePathForCompare(wslDir)
+  const applyDisabled =
+    (!useWindows && !useWsl) ||
+    (useWindows && !windowsPathValid) ||
+    (useWsl && !wslPathValid) ||
+    (useWindows && useWsl && duplicateDirs)
 
   return (
     <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={onCancel}>
       <div className="aoModal" onClick={(e) => e.stopPropagation()}>
-        <div className="aoModalTitle">Codex CLI dirs</div>
-        <div className="aoModalSub">Defaults to %USERPROFILE%\\.codex. Supports up to 2 dirs.</div>
+        <div className="aoModalTitle">Codex CLI directories</div>
+        <div className="aoModalSub">
+          Windows defaults to %USERPROFILE%\\.codex. WSL2 defaults to WSL2 home (if available).
+        </div>
         <div style={{ display: 'grid', gap: 12, marginTop: 10 }}>
-          <label className="aoRoutingRow">
-            <span className="aoMiniLabel">Dir 1</span>
+          <div className="aoCardInset" style={{ border: '1px solid rgba(13, 18, 32, 0.1)', borderRadius: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span className="aoMiniLabel">Windows</span>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={useWindows}
+                  disabled={!useWindows && !windowsPathValid}
+                  onChange={(e) => onChangeUseWindows(e.target.checked)}
+                />
+                <span style={{ color: 'rgba(13, 18, 32, 0.82)', fontWeight: 500, fontSize: 13 }}>Enable</span>
+              </label>
+            </div>
             <input
               className="aoInput"
               style={{ width: '100%', height: 36, borderRadius: 12 }}
-              value={dir1}
-              onChange={(e) => onChangeDir1(e.target.value)}
+              value={windowsDir}
+              placeholder="C:\\Users\\<user>\\.codex"
+              onChange={(e) => onChangeWindowsDir(e.target.value)}
+              disabled={!useWindows}
             />
-          </label>
+            {hasWindowsDir && !windowsPathValid ? (
+              <div className="aoHint" style={{ marginTop: 6 }}>Use a Windows path ending with `\\.codex`.</div>
+            ) : null}
+          </div>
 
-          <label className="aoRoutingRow">
-            <span className="aoMiniLabel">Dir 2 (optional)</span>
+          <div className="aoCardInset" style={{ border: '1px solid rgba(13, 18, 32, 0.1)', borderRadius: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span className="aoMiniLabel">WSL2</span>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={useWsl}
+                  disabled={!useWsl && !wslPathValid}
+                  onChange={(e) => onChangeUseWsl(e.target.checked)}
+                />
+                <span style={{ color: 'rgba(13, 18, 32, 0.82)', fontWeight: 500, fontSize: 13 }}>Enable</span>
+              </label>
+            </div>
             <input
               className="aoInput"
               style={{ width: '100%', height: 36, borderRadius: 12 }}
-              value={dir2}
-              placeholder="Second Codex home"
-              onChange={(e) => onChangeDir2(e.target.value)}
+              value={wslDir}
+              placeholder="\\\\wsl.localhost\\Ubuntu\\home\\<user>\\.codex"
+              onChange={(e) => onChangeWslDir(e.target.value)}
+              disabled={!useWsl}
             />
-          </label>
-
-          <label style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <input
-              type="checkbox"
-              checked={applyBoth}
-              disabled={!canApplyBoth}
-              onChange={(e) => onChangeApplyBoth(e.target.checked)}
-            />
-            <span style={{ color: 'rgba(13, 18, 32, 0.82)', fontWeight: 500, fontSize: 13 }}>
-              Apply to both directories
-            </span>
-          </label>
+            {hasWslDir && !wslPathValid ? (
+              <div className="aoHint" style={{ marginTop: 6 }}>
+                Use a WSL2 UNC path like `\\\\wsl.localhost\\Distro\\home\\user\\.codex`.
+              </div>
+            ) : null}
+          </div>
 
           <div className="aoHint">
             {duplicateDirs
-              ? 'Dir 2 matches Dir 1. Use a different second directory.'
-              : "Each dir must contain auth.json and config.toml, otherwise you'll get an error."}
+              ? 'Windows and WSL2 paths are the same. Use different paths.'
+              : 'Enable at least one target. Each enabled path must contain auth.json and config.toml.'}
           </div>
         </div>
 

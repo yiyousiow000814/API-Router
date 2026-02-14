@@ -44,6 +44,7 @@ import { useUsageUiDerived } from './hooks/useUsageUiDerived'
 import { useMainContentCallbacks } from './hooks/useMainContentCallbacks'
 import {
   buildCodexSwapBadge,
+  resolveConfigEditorHomes,
   resolveCliHomes,
 } from './utils/switchboard'
 import { usageProviderRowKey } from './utils/usageStatisticsView'
@@ -62,6 +63,7 @@ export default function App() {
   }, [])
   const devMockHistoryEnabled = useMemo(() => parseDevFlag(devFlags.get('mockHistory')), [devFlags])
   const devAutoOpenHistory = useMemo(() => parseDevFlag(devFlags.get('openHistory')), [devFlags])
+  const rawConfigTestMode = useMemo(() => parseDevFlag(devFlags.get('test')), [devFlags])
   const [status, setStatus] = useState<Status | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
   const [baselineBaseUrls, setBaselineBaseUrls] = useState<Record<string, string>>({})
@@ -103,11 +105,13 @@ export default function App() {
   const [rawConfigCanSave, setRawConfigCanSave] = useState<boolean>(false)
   const [rawConfigTargetHome, setRawConfigTargetHome] = useState<string>('')
   const [rawConfigHomeOptions, setRawConfigHomeOptions] = useState<string[]>([])
+  const [rawConfigHomeLabels, setRawConfigHomeLabels] = useState<Record<string, string>>({})
   const [instructionModalOpen, setInstructionModalOpen] = useState<boolean>(false)
   const [codexSwapModalOpen, setCodexSwapModalOpen] = useState<boolean>(false)
   const [codexSwapDir1, setCodexSwapDir1] = useState<string>('')
   const [codexSwapDir2, setCodexSwapDir2] = useState<string>('')
-  const [codexSwapApplyBoth, setCodexSwapApplyBoth] = useState<boolean>(false)
+  const [codexSwapUseWindows, setCodexSwapUseWindows] = useState<boolean>(false)
+  const [codexSwapUseWsl, setCodexSwapUseWsl] = useState<boolean>(false)
   const [codexSwapStatus, setCodexSwapStatus] = useState<CodexSwapStatus | null>(null)
   const [editingProviderName, setEditingProviderName] = useState<string | null>(null)
   const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
@@ -182,7 +186,8 @@ export default function App() {
   } = useUsageHistoryScrollbar()
   const codexSwapDir1Ref = useRef<string>('')
   const codexSwapDir2Ref = useRef<string>('')
-  const codexSwapApplyBothRef = useRef<boolean>(false)
+  const codexSwapUseWindowsRef = useRef<boolean>(false)
+  const codexSwapUseWslRef = useRef<boolean>(false)
   const swapPrefsLoadedRef = useRef<boolean>(false)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -205,13 +210,16 @@ export default function App() {
     setClearErrorsBeforeMs,
     codexSwapDir1,
     codexSwapDir2,
-    codexSwapApplyBoth,
+    codexSwapUseWindows,
+    codexSwapUseWsl,
     setCodexSwapDir1,
     setCodexSwapDir2,
-    setCodexSwapApplyBoth,
+    setCodexSwapUseWindows,
+    setCodexSwapUseWsl,
     codexSwapDir1Ref,
     codexSwapDir2Ref,
-    codexSwapApplyBothRef,
+    codexSwapUseWindowsRef,
+    codexSwapUseWslRef,
     swapPrefsLoadedRef,
   })
   const { providers, visibleEvents, canClearErrors, clearErrors, clientSessions } = useStatusDerivations({
@@ -227,7 +235,26 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
   }
 
+  function isCodexHomeMissingError(message: string): boolean {
+    const m = message.toLowerCase()
+    return (
+      m.includes('codex dir does not exist') ||
+      m.includes('missing config.toml') ||
+      m.includes('missing auth.json') ||
+      m.includes('missing home/userprofile') ||
+      m.includes('missing wsl distro/home')
+    )
+  }
+
   async function reloadRawConfigModal(targetHome?: string) {
+    if (rawConfigTestMode) {
+      setRawConfigLoading(false)
+      setRawConfigCanSave(true)
+      if (!rawConfigText.trim()) {
+        setRawConfigText('# [TEST] Raw config sandbox\\nmodel_provider = \"api_router\"\\n')
+      }
+      return
+    }
     setRawConfigCanSave(false)
     setRawConfigLoading(true)
     try {
@@ -238,33 +265,64 @@ export default function App() {
       setRawConfigText(txt)
       setRawConfigCanSave(true)
     } catch (e) {
-      flashToast(String(e), 'error')
+      const msg = String(e)
       setRawConfigText('')
+      if (isCodexHomeMissingError(msg)) {
+        flashToast(msg, 'error')
+      } else {
+        flashToast(msg, 'error')
+      }
     } finally {
       setRawConfigLoading(false)
     }
   }
 
-  async function openRawConfigModal() {
+  async function openRawConfigModal(options?: { reopenGettingStartedOnFail?: boolean }) {
+    const reopenGettingStartedOnFail = Boolean(options?.reopenGettingStartedOnFail)
+    if (rawConfigTestMode) {
+      flashToast('[TEST] Simulated missing Codex home.')
+      if (reopenGettingStartedOnFail) setInstructionModalOpen(true)
+      return
+    }
     try {
-      const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapApplyBoth)
+      const homes = resolveConfigEditorHomes(codexSwapDir1, codexSwapDir2)
       let options = homes
       if (!options.length) {
         const defaultHome = await invoke<string>('codex_cli_default_home')
         options = [defaultHome]
       }
+      const labels: Record<string, string> = {}
+      if (options.length > 1) {
+        options.forEach((home, idx) => {
+          const lower = home.toLowerCase()
+          const isWsl = lower.startsWith('\\\\wsl.localhost\\') || lower.startsWith('\\\\wsl$\\')
+          const kind = isWsl ? 'WSL2' : idx === 0 ? 'Windows' : 'WSL2'
+          labels[home] = `${kind}: ${home}`
+        })
+      }
       setRawConfigHomeOptions(options)
+      setRawConfigHomeLabels(labels)
       setRawConfigTargetHome(options[0] ?? '')
       setRawConfigText('')
       setRawConfigCanSave(false)
       setRawConfigModalOpen(true)
       await reloadRawConfigModal(options[0] ?? '')
     } catch (e) {
-      flashToast(String(e), 'error')
+      const msg = String(e)
+      if (isCodexHomeMissingError(msg)) {
+        flashToast(msg, 'error')
+      } else {
+        flashToast(msg, 'error')
+      }
+      if (reopenGettingStartedOnFail) setInstructionModalOpen(true)
     }
   }
 
   async function saveRawConfigModal() {
+    if (rawConfigTestMode) {
+      flashToast('[TEST] Saved in sandbox only (no real files changed).')
+      return
+    }
     setRawConfigSaving(true)
     try {
       await invoke('set_codex_cli_config_toml', {
@@ -291,10 +349,12 @@ export default function App() {
     devConfig,
     codexSwapDir1,
     codexSwapDir2,
-    codexSwapApplyBoth,
+    codexSwapUseWindows,
+    codexSwapUseWsl,
     codexSwapDir1Ref,
     codexSwapDir2Ref,
-    codexSwapApplyBothRef,
+    codexSwapUseWindowsRef,
+    codexSwapUseWslRef,
     overrideDirtyRef,
     setStatus,
     setOverride,
@@ -358,7 +418,8 @@ export default function App() {
     refreshStatus,
     codexSwapDir1,
     codexSwapDir2,
-    codexSwapApplyBoth,
+    codexSwapUseWindows,
+    codexSwapUseWsl,
     toggleCodexSwap,
     setCodexSwapModalOpen,
     setOverride,
@@ -498,7 +559,8 @@ export default function App() {
     statusLastActivityUnixMs: status?.last_activity_unix_ms,
     codexSwapDir1,
     codexSwapDir2,
-    codexSwapApplyBoth,
+    codexSwapUseWindows,
+    codexSwapUseWsl,
     refreshStatus,
     refreshConfig,
     refreshProviderSwitchStatus,
@@ -707,6 +769,7 @@ export default function App() {
         saveUsageBaseUrl={saveUsageBaseUrl}
         instructionModalOpen={instructionModalOpen}
         setInstructionModalOpen={setInstructionModalOpen}
+        openRawConfigModal={openRawConfigModal}
         configModalOpen={configModalOpen}
         config={config}
         allProviderPanelsOpen={allProviderPanelsOpen}
@@ -725,6 +788,7 @@ export default function App() {
         rawConfigCanSave={rawConfigCanSave}
         rawConfigTargetHome={rawConfigTargetHome}
         rawConfigHomeOptions={rawConfigHomeOptions}
+        rawConfigHomeLabels={rawConfigHomeLabels}
         setRawConfigText={setRawConfigText}
         onRawConfigTargetHomeChange={(next) => {
           setRawConfigTargetHome(next)
@@ -832,10 +896,12 @@ export default function App() {
         codexSwapStatus={codexSwapStatus}
         codexSwapDir1={codexSwapDir1}
         codexSwapDir2={codexSwapDir2}
-        codexSwapApplyBoth={codexSwapApplyBoth}
+        codexSwapUseWindows={codexSwapUseWindows}
+        codexSwapUseWsl={codexSwapUseWsl}
         setCodexSwapDir1={setCodexSwapDir1}
         setCodexSwapDir2={setCodexSwapDir2}
-        setCodexSwapApplyBoth={setCodexSwapApplyBoth}
+        setCodexSwapUseWindows={setCodexSwapUseWindows}
+        setCodexSwapUseWsl={setCodexSwapUseWsl}
         setCodexSwapModalOpen={setCodexSwapModalOpen}
         toggleCodexSwap={toggleCodexSwap}
         resolveCliHomes={resolveCliHomes}

@@ -10,10 +10,12 @@ type UseSwitchboardStatusActionsOptions = {
   devConfig: Config
   codexSwapDir1: string
   codexSwapDir2: string
-  codexSwapApplyBoth: boolean
+  codexSwapUseWindows: boolean
+  codexSwapUseWsl: boolean
   codexSwapDir1Ref: MutableRefObject<string>
   codexSwapDir2Ref: MutableRefObject<string>
-  codexSwapApplyBothRef: MutableRefObject<boolean>
+  codexSwapUseWindowsRef: MutableRefObject<boolean>
+  codexSwapUseWslRef: MutableRefObject<boolean>
   overrideDirtyRef: MutableRefObject<boolean>
   setStatus: (next: Status) => void
   setOverride: (next: string) => void
@@ -31,10 +33,12 @@ export function useSwitchboardStatusActions({
   devConfig,
   codexSwapDir1,
   codexSwapDir2,
-  codexSwapApplyBoth,
+  codexSwapUseWindows,
+  codexSwapUseWsl,
   codexSwapDir1Ref,
   codexSwapDir2Ref,
-  codexSwapApplyBothRef,
+  codexSwapUseWindowsRef,
+  codexSwapUseWslRef,
   overrideDirtyRef,
   setStatus,
   setOverride,
@@ -53,7 +57,12 @@ export function useSwitchboardStatusActions({
       const homes =
         cliHomes && cliHomes.length
           ? cliHomes
-          : resolveCliHomes(codexSwapDir1Ref.current, codexSwapDir2Ref.current, codexSwapApplyBothRef.current)
+          : resolveCliHomes(
+              codexSwapDir1Ref.current,
+              codexSwapDir2Ref.current,
+              codexSwapUseWindowsRef.current,
+              codexSwapUseWslRef.current,
+            )
       const res = await invoke<CodexSwapStatus>('codex_cli_swap_status', {
         cli_homes: homes,
       })
@@ -67,7 +76,12 @@ export function useSwitchboardStatusActions({
     const homes =
       cliHomes && cliHomes.length
         ? cliHomes
-        : resolveCliHomes(codexSwapDir1Ref.current, codexSwapDir2Ref.current, codexSwapApplyBothRef.current)
+        : resolveCliHomes(
+            codexSwapDir1Ref.current,
+            codexSwapDir2Ref.current,
+            codexSwapUseWindowsRef.current,
+            codexSwapUseWslRef.current,
+          )
     if (isDevPreview) {
       setProviderSwitchStatus({
         ok: true,
@@ -126,7 +140,12 @@ export function useSwitchboardStatusActions({
       setBaselineBaseUrls(Object.fromEntries(Object.entries(c.providers).map(([name, p]) => [name, p.base_url])))
       const p = await invoke<string>('get_gateway_token_preview')
       setGatewayTokenPreview(p)
-      const homes = resolveCliHomes(codexSwapDir1Ref.current, codexSwapDir2Ref.current, codexSwapApplyBothRef.current)
+      const homes = resolveCliHomes(
+        codexSwapDir1Ref.current,
+        codexSwapDir2Ref.current,
+        codexSwapUseWindowsRef.current,
+        codexSwapUseWslRef.current,
+      )
       if (homes.length > 0 && shouldRefreshProviderSwitchStatus) {
         void refreshProviderSwitchStatus(homes)
       }
@@ -151,7 +170,7 @@ export function useSwitchboardStatusActions({
   }
 
   async function setProviderSwitchTarget(target: 'gateway' | 'official' | 'provider', provider?: string) {
-    const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapApplyBoth)
+    const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
     setProviderSwitchBusy(true)
     try {
       const res = await invoke<ProviderSwitchboardStatus>('provider_switchboard_set_target', {

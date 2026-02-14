@@ -78,7 +78,7 @@ export function ProviderSwitchboardPanel({
                 Edit config.toml
               </button>
               <button type="button" className="aoTinyBtn" onClick={onOpenConfigureDirs}>
-                Configure Dirs
+                Configure Directories
               </button>
             </div>
           </div>

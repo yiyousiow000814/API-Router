@@ -7,6 +7,7 @@ type Props = {
   canSave: boolean
   targetHome: string
   homeOptions: string[]
+  homeLabels?: Record<string, string>
   onTargetHomeChange: (next: string) => void
   value: string
   onChange: (next: string) => void
@@ -23,6 +24,7 @@ export function RawConfigModal({
   canSave,
   targetHome,
   homeOptions,
+  homeLabels,
   onTargetHomeChange,
   value,
   onChange,
@@ -51,7 +53,7 @@ export function RawConfigModal({
               >
                 {homeOptions.map((home) => (
                   <option key={home} value={home}>
-                    {home}
+                    {homeLabels?.[home] ?? home}
                   </option>
                 ))}
               </select>
