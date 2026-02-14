@@ -12,7 +12,7 @@ import type { SpendHistoryRow } from '../devMockData'
 import { normalizePathForCompare } from '../utils/path'
 import { isValidWindowsCodexPath, isValidWslCodexPath } from '../utils/codexPathValidation'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
-import type { CodexSwapStatus, Config } from '../types'
+import type { Config } from '../types'
 import type {
   PricingTimelineMode,
   ProviderScheduleDraft,
@@ -78,6 +78,7 @@ type Props = {
   rawConfigLoadingByHome: Record<string, boolean>
   rawConfigSavingByHome: Record<string, boolean>
   rawConfigDirtyByHome: Record<string, boolean>
+  rawConfigLoadedByHome: Record<string, boolean>
   onRawConfigTextChange: (home: string, next: string) => void
   saveRawConfigHome: (home: string) => Promise<void>
   setRawConfigModalOpen: Dispatch<SetStateAction<boolean>>
@@ -188,7 +189,6 @@ type Props = {
   setUsageScheduleSaveError: Dispatch<SetStateAction<string>>
   setUsageScheduleModalOpen: Dispatch<SetStateAction<boolean>>
   codexSwapModalOpen: boolean
-  codexSwapStatus: CodexSwapStatus | null
   codexSwapDir1: string
   codexSwapDir2: string
   codexSwapUseWindows: boolean
@@ -233,6 +233,7 @@ export function AppModals(props: Props) {
     rawConfigLoadingByHome,
     rawConfigSavingByHome,
     rawConfigDirtyByHome,
+    rawConfigLoadedByHome,
     onRawConfigTextChange,
     saveRawConfigHome,
     setRawConfigModalOpen,
@@ -330,7 +331,6 @@ export function AppModals(props: Props) {
     setUsageScheduleSaveError,
     setUsageScheduleModalOpen,
     codexSwapModalOpen,
-    codexSwapStatus,
     codexSwapDir1,
     codexSwapDir2,
     codexSwapUseWindows,
@@ -343,15 +343,6 @@ export function AppModals(props: Props) {
     toggleCodexSwap,
     resolveCliHomes,
   } = props
-  const rawConfigSwappedByHome = rawConfigHomeOptions.reduce<Record<string, boolean>>((acc, home) => {
-    const norm = normalizePathForCompare(home)
-    acc[home] = Boolean(
-      norm &&
-        codexSwapStatus?.dirs?.some((dir) => dir.state === 'swapped' && normalizePathForCompare(dir.cli_home) === norm),
-    )
-    return acc
-  }, {})
-
   return (
     <>
       <KeyModal
@@ -439,7 +430,7 @@ requires_openai_auth = true`}
         loadingByHome={rawConfigLoadingByHome}
         savingByHome={rawConfigSavingByHome}
         dirtyByHome={rawConfigDirtyByHome}
-        swappedByHome={rawConfigSwappedByHome}
+        loadedByHome={rawConfigLoadedByHome}
         onChangeHome={onRawConfigTextChange}
         onSaveHome={(home) => void saveRawConfigHome(home)}
         onClose={() => setRawConfigModalOpen(false)}

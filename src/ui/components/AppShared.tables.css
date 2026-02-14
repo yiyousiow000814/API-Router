@@ -418,22 +418,20 @@
   background: rgba(242, 193, 77, 0.95);
 }
 
+.aoRawConfigStateError {
+  color: rgba(145, 12, 43, 0.92);
+}
+
+.aoRawConfigStateError::before {
+  background: rgba(255, 94, 125, 0.95);
+}
+
 .aoRawConfigStateOk {
   color: rgba(5, 97, 108, 0.95);
 }
 
 .aoRawConfigStateOk::before {
   background: rgba(40, 199, 217, 0.95);
-}
-
-.aoRawConfigNotice {
-  margin-bottom: 6px;
-  border: 1px solid rgba(242, 193, 77, 0.42);
-  background: rgba(242, 193, 77, 0.12);
-  border-radius: 10px;
-  padding: 6px 8px;
-  font-size: 11px;
-  color: rgba(92, 66, 6, 0.92);
 }
 
 .aoRawConfigScrollbarOverlay {

@@ -17,7 +17,7 @@ type Props = {
   loadingByHome: Record<string, boolean>
   savingByHome: Record<string, boolean>
   dirtyByHome: Record<string, boolean>
-  swappedByHome?: Record<string, boolean>
+  loadedByHome: Record<string, boolean>
   onChangeHome: (home: string, next: string) => void
   onSaveHome: (home: string) => void
   onClose: () => void
@@ -31,7 +31,7 @@ export function RawConfigModal({
   loadingByHome,
   savingByHome,
   dirtyByHome,
-  swappedByHome,
+  loadedByHome,
   onChangeHome,
   onSaveHome,
   onClose,
@@ -219,12 +219,14 @@ export function RawConfigModal({
   const statusText = (home: string) => {
     if (savingByHome[home]) return 'Saving'
     if (loadingByHome[home]) return 'Loading'
+    if (!loadedByHome[home]) return 'Load Failed'
     if (dirtyByHome[home]) return 'Not Saved'
     return 'Saved'
   }
   const statusClass = (home: string) => {
     if (savingByHome[home]) return 'aoRawConfigState aoRawConfigStateInfo'
     if (loadingByHome[home]) return 'aoRawConfigState aoRawConfigStateInfo'
+    if (!loadedByHome[home]) return 'aoRawConfigState aoRawConfigStateError'
     if (dirtyByHome[home]) return 'aoRawConfigState aoRawConfigStateWarn'
     return 'aoRawConfigState aoRawConfigStateOk'
   }
@@ -245,7 +247,7 @@ export function RawConfigModal({
           <div className="aoRawConfigDual">
             {homeOptions.map((home) => {
               const parsed = parseHomeLabel(home)
-              const disabled = Boolean(loadingByHome[home] || savingByHome[home])
+              const disabled = Boolean(loadingByHome[home] || savingByHome[home] || !loadedByHome[home])
               return (
                 <section key={home} className="aoRawConfigPane">
                   <div className="aoRawConfigPaneHead">
@@ -264,9 +266,6 @@ export function RawConfigModal({
                       </button>
                     </div>
                   </div>
-                  {swappedByHome?.[home] ? (
-                    <div className="aoRawConfigNotice">Swapped now. Restore may overwrite edits.</div>
-                  ) : null}
                   <div
                     className="aoRawConfigEditorShell"
                     ref={(el) => {

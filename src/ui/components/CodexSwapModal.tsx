@@ -58,6 +58,7 @@ export function CodexSwapModal({
                 <input
                   type="checkbox"
                   checked={useWindows}
+                  disabled={!useWindows && !windowsPathValid}
                   onChange={(e) => onChangeUseWindows(e.target.checked)}
                 />
                 <span style={{ color: 'rgba(13, 18, 32, 0.82)', fontWeight: 500, fontSize: 13 }}>Enable</span>
@@ -69,7 +70,6 @@ export function CodexSwapModal({
               value={windowsDir}
               placeholder="C:\\Users\\<user>\\.codex"
               onChange={(e) => onChangeWindowsDir(e.target.value)}
-              disabled={!useWindows}
             />
             {hasWindowsDir && !windowsPathValid ? (
               <div className="aoHint" style={{ marginTop: 6 }}>Use a Windows path ending with `\\.codex`.</div>
@@ -83,6 +83,7 @@ export function CodexSwapModal({
                 <input
                   type="checkbox"
                   checked={useWsl}
+                  disabled={!useWsl && !wslPathValid}
                   onChange={(e) => onChangeUseWsl(e.target.checked)}
                 />
                 <span style={{ color: 'rgba(13, 18, 32, 0.82)', fontWeight: 500, fontSize: 13 }}>Enable</span>
@@ -94,7 +95,6 @@ export function CodexSwapModal({
               value={wslDir}
               placeholder="\\\\wsl.localhost\\Ubuntu\\home\\<user>\\.codex"
               onChange={(e) => onChangeWslDir(e.target.value)}
-              disabled={!useWsl}
             />
             {hasWslDir && !wslPathValid ? (
               <div className="aoHint" style={{ marginTop: 6 }}>

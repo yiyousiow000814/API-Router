@@ -103,6 +103,7 @@ export default function App() {
   const [rawConfigLoadingByHome, setRawConfigLoadingByHome] = useState<Record<string, boolean>>({})
   const [rawConfigSavingByHome, setRawConfigSavingByHome] = useState<Record<string, boolean>>({})
   const [rawConfigDirtyByHome, setRawConfigDirtyByHome] = useState<Record<string, boolean>>({})
+  const [rawConfigLoadedByHome, setRawConfigLoadedByHome] = useState<Record<string, boolean>>({})
   const [rawConfigHomeOptions, setRawConfigHomeOptions] = useState<string[]>([])
   const [rawConfigHomeLabels, setRawConfigHomeLabels] = useState<Record<string, string>>({})
   const [instructionModalOpen, setInstructionModalOpen] = useState<boolean>(false)
@@ -249,6 +250,7 @@ export default function App() {
           [target]: prev[target] || mockToml,
         }))
         setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
+        setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: true }))
         return
       }
       const txt = await invoke<string>('get_codex_cli_config_toml', {
@@ -256,8 +258,10 @@ export default function App() {
       })
       setRawConfigTexts((prev) => ({ ...prev, [target]: txt }))
       setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
+      setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: true }))
     } catch (e) {
       setRawConfigTexts((prev) => ({ ...prev, [target]: '' }))
+      setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: false }))
       flashToast(String(e), 'error')
     } finally {
       setRawConfigLoadingByHome((prev) => ({ ...prev, [target]: false }))
@@ -277,6 +281,7 @@ export default function App() {
       const homeOptions = [mockWindowsHome, mockWslHome]
       setRawConfigTexts(Object.fromEntries(homeOptions.map((home) => [home, ''])))
       setRawConfigDirtyByHome({})
+      setRawConfigLoadedByHome({})
       setRawConfigSavingByHome({})
       setRawConfigLoadingByHome({})
       setRawConfigModalOpen(true)
@@ -303,6 +308,7 @@ export default function App() {
       setRawConfigHomeLabels(labels)
       setRawConfigTexts(Object.fromEntries(homeOptions.map((home) => [home, ''])))
       setRawConfigDirtyByHome({})
+      setRawConfigLoadedByHome({})
       setRawConfigSavingByHome({})
       setRawConfigLoadingByHome({})
       setRawConfigModalOpen(true)
@@ -323,6 +329,7 @@ export default function App() {
     const target = home.trim()
     if (!target) return
     if (rawConfigSavingByHome[target]) return
+    if (!rawConfigLoadedByHome[target]) return
     if (rawConfigTestMode || isDevPreview) {
       setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
       flashToast('[TEST] Saved in sandbox only (no real files changed).')
@@ -794,6 +801,7 @@ export default function App() {
         rawConfigLoadingByHome={rawConfigLoadingByHome}
         rawConfigSavingByHome={rawConfigSavingByHome}
         rawConfigDirtyByHome={rawConfigDirtyByHome}
+        rawConfigLoadedByHome={rawConfigLoadedByHome}
         onRawConfigTextChange={updateRawConfigText}
         saveRawConfigHome={saveRawConfigHome}
         setRawConfigModalOpen={setRawConfigModalOpen}
@@ -891,7 +899,6 @@ export default function App() {
         setUsageScheduleSaveError={setUsageScheduleSaveError}
         setUsageScheduleModalOpen={setUsageScheduleModalOpen}
         codexSwapModalOpen={codexSwapModalOpen}
-        codexSwapStatus={codexSwapStatus}
         codexSwapDir1={codexSwapDir1}
         codexSwapDir2={codexSwapDir2}
         codexSwapUseWindows={codexSwapUseWindows}
