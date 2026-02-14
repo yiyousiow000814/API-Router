@@ -495,4 +495,3 @@ pub(crate) fn clear_provider_key(
     );
     Ok(())
 }
-

@@ -10,7 +10,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { SpendHistoryRow } from '../devMockData'
 import { normalizePathForCompare } from '../utils/path'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
-import type { Config } from '../types'
+import type { CodexSwapStatus, Config } from '../types'
 import type {
   PricingTimelineMode,
   ProviderScheduleDraft,
@@ -29,6 +29,7 @@ import { UsageScheduleModal } from './UsageScheduleModal'
 import { InstructionModal } from './InstructionModal'
 import { GatewayTokenModal } from './GatewayTokenModal'
 import { ConfigModal } from './ConfigModal'
+import { RawConfigModal } from './RawConfigModal'
 import { CodexSwapModal } from './CodexSwapModal'
 
 type CurrencyMenuState = {
@@ -67,6 +68,18 @@ type Props = {
   setNewProviderBaseUrl: Dispatch<SetStateAction<string>>
   addProvider: () => Promise<void>
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
+  rawConfigModalOpen: boolean
+  rawConfigText: string
+  rawConfigLoading: boolean
+  rawConfigSaving: boolean
+  rawConfigCanSave: boolean
+  rawConfigTargetHome: string
+  rawConfigHomeOptions: string[]
+  setRawConfigText: Dispatch<SetStateAction<string>>
+  onRawConfigTargetHomeChange: (next: string) => void
+  reloadRawConfigModal: () => Promise<void>
+  saveRawConfigModal: () => Promise<void>
+  setRawConfigModalOpen: Dispatch<SetStateAction<boolean>>
   providerListRef: RefObject<HTMLDivElement | null>
   orderedConfigProviders: string[]
   dragPreviewOrder: string[] | null
@@ -174,6 +187,7 @@ type Props = {
   setUsageScheduleSaveError: Dispatch<SetStateAction<string>>
   setUsageScheduleModalOpen: Dispatch<SetStateAction<boolean>>
   codexSwapModalOpen: boolean
+  codexSwapStatus: CodexSwapStatus | null
   codexSwapDir1: string
   codexSwapDir2: string
   codexSwapApplyBoth: boolean
@@ -207,6 +221,18 @@ export function AppModals(props: Props) {
     setNewProviderBaseUrl,
     addProvider,
     setConfigModalOpen,
+    rawConfigModalOpen,
+    rawConfigText,
+    rawConfigLoading,
+    rawConfigSaving,
+    rawConfigCanSave,
+    rawConfigTargetHome,
+    rawConfigHomeOptions,
+    setRawConfigText,
+    onRawConfigTargetHomeChange,
+    reloadRawConfigModal,
+    saveRawConfigModal,
+    setRawConfigModalOpen,
     providerListRef,
     orderedConfigProviders,
     dragPreviewOrder,
@@ -301,6 +327,7 @@ export function AppModals(props: Props) {
     setUsageScheduleSaveError,
     setUsageScheduleModalOpen,
     codexSwapModalOpen,
+    codexSwapStatus,
     codexSwapDir1,
     codexSwapDir2,
     codexSwapApplyBoth,
@@ -311,6 +338,13 @@ export function AppModals(props: Props) {
     toggleCodexSwap,
     resolveCliHomes,
   } = props
+  const rawConfigTargetNorm = normalizePathForCompare(rawConfigTargetHome)
+  const rawConfigTargetSwapped = Boolean(
+    rawConfigTargetNorm &&
+      codexSwapStatus?.dirs?.some(
+        (dir) => dir.state === 'swapped' && normalizePathForCompare(dir.cli_home) === rawConfigTargetNorm,
+      ),
+  )
 
   return (
     <>
@@ -380,6 +414,26 @@ requires_openai_auth = true`}
         draggingProvider={draggingProvider}
         dragCardHeight={dragCardHeight}
         renderProviderCard={renderProviderCard}
+      />
+
+      <RawConfigModal
+        open={rawConfigModalOpen}
+        loading={rawConfigLoading}
+        saving={rawConfigSaving}
+        canSave={rawConfigCanSave}
+        targetHome={rawConfigTargetHome}
+        homeOptions={rawConfigHomeOptions}
+        onTargetHomeChange={onRawConfigTargetHomeChange}
+        value={rawConfigText}
+        onChange={setRawConfigText}
+        onReload={() => void reloadRawConfigModal()}
+        onSave={() => void saveRawConfigModal()}
+        warningText={
+          rawConfigTargetSwapped
+            ? 'This Codex home is currently swapped. Restore may overwrite raw edits to config.toml.'
+            : null
+        }
+        onClose={() => setRawConfigModalOpen(false)}
       />
 
       <GatewayTokenModal

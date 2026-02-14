@@ -12,6 +12,7 @@ type ProviderSwitchboardPanelProps = {
   switchboardProviderCards: SwitchboardProviderCard[]
   onSetProviderSwitchTarget: (target: 'gateway' | 'official' | 'provider', provider?: string) => Promise<void>
   onOpenConfigureDirs: () => void
+  onOpenRawConfig: () => void
 }
 
 export function ProviderSwitchboardPanel({
@@ -23,6 +24,7 @@ export function ProviderSwitchboardPanel({
   switchboardProviderCards,
   onSetProviderSwitchTarget,
   onOpenConfigureDirs,
+  onOpenRawConfig,
 }: ProviderSwitchboardPanelProps) {
   return (
     <div className="aoCard aoProviderSwitchboardCard">
@@ -71,9 +73,14 @@ export function ProviderSwitchboardPanel({
         <div className="aoSwitchSubOptions">
           <div className="aoSwitchboardSectionHead">
             <div className="aoMiniLabel">Switch Options</div>
-            <button type="button" className="aoTinyBtn" onClick={onOpenConfigureDirs}>
-              Configure Dirs
-            </button>
+            <div className="aoRow">
+              <button type="button" className="aoTinyBtn" onClick={onOpenRawConfig}>
+                Edit config.toml
+              </button>
+              <button type="button" className="aoTinyBtn" onClick={onOpenConfigureDirs}>
+                Configure Dirs
+              </button>
+            </div>
           </div>
           <div className="aoHint">
             Shared with Dashboard Swap settings. Gateway, Official, and Direct Provider switches all use

@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import './components/AppShared.css'
 import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status, UsageStatistics } from './types'
@@ -95,6 +96,13 @@ export default function App() {
   const [gatewayTokenReveal, setGatewayTokenReveal] = useState<string>('')
   const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
   const [configModalOpen, setConfigModalOpen] = useState<boolean>(false)
+  const [rawConfigModalOpen, setRawConfigModalOpen] = useState<boolean>(false)
+  const [rawConfigText, setRawConfigText] = useState<string>('')
+  const [rawConfigLoading, setRawConfigLoading] = useState<boolean>(false)
+  const [rawConfigSaving, setRawConfigSaving] = useState<boolean>(false)
+  const [rawConfigCanSave, setRawConfigCanSave] = useState<boolean>(false)
+  const [rawConfigTargetHome, setRawConfigTargetHome] = useState<string>('')
+  const [rawConfigHomeOptions, setRawConfigHomeOptions] = useState<string[]>([])
   const [instructionModalOpen, setInstructionModalOpen] = useState<boolean>(false)
   const [codexSwapModalOpen, setCodexSwapModalOpen] = useState<boolean>(false)
   const [codexSwapDir1, setCodexSwapDir1] = useState<string>('')
@@ -217,6 +225,58 @@ export default function App() {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current)
     const ms = kind === 'error' ? 5200 : 2400
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
+  }
+
+  async function reloadRawConfigModal(targetHome?: string) {
+    setRawConfigCanSave(false)
+    setRawConfigLoading(true)
+    try {
+      const home = (targetHome ?? rawConfigTargetHome).trim()
+      const txt = await invoke<string>('get_codex_cli_config_toml', {
+        cliHome: home || null,
+      })
+      setRawConfigText(txt)
+      setRawConfigCanSave(true)
+    } catch (e) {
+      flashToast(String(e), 'error')
+      setRawConfigText('')
+    } finally {
+      setRawConfigLoading(false)
+    }
+  }
+
+  async function openRawConfigModal() {
+    try {
+      const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapApplyBoth)
+      let options = homes
+      if (!options.length) {
+        const defaultHome = await invoke<string>('codex_cli_default_home')
+        options = [defaultHome]
+      }
+      setRawConfigHomeOptions(options)
+      setRawConfigTargetHome(options[0] ?? '')
+      setRawConfigText('')
+      setRawConfigCanSave(false)
+      setRawConfigModalOpen(true)
+      await reloadRawConfigModal(options[0] ?? '')
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }
+
+  async function saveRawConfigModal() {
+    setRawConfigSaving(true)
+    try {
+      await invoke('set_codex_cli_config_toml', {
+        cliHome: rawConfigTargetHome || null,
+        tomlText: rawConfigText,
+      })
+      flashToast('Codex config.toml saved')
+    } catch (e) {
+      flashToast(String(e), 'error')
+    } finally {
+      setRawConfigSaving(false)
+    }
   }
   const {
     providerSwitchBusy,
@@ -631,6 +691,7 @@ export default function App() {
                 switchboardProviderCards,
                 onSetProviderSwitchTarget: setProviderSwitchTarget,
                 onOpenConfigureDirs: () => setCodexSwapModalOpen(true),
+                onOpenRawConfig: () => void openRawConfigModal(),
               }}
             />
           </div>
@@ -657,6 +718,23 @@ export default function App() {
         setNewProviderBaseUrl={setNewProviderBaseUrl}
         addProvider={addProvider}
         setConfigModalOpen={setConfigModalOpen}
+        rawConfigModalOpen={rawConfigModalOpen}
+        rawConfigText={rawConfigText}
+        rawConfigLoading={rawConfigLoading}
+        rawConfigSaving={rawConfigSaving}
+        rawConfigCanSave={rawConfigCanSave}
+        rawConfigTargetHome={rawConfigTargetHome}
+        rawConfigHomeOptions={rawConfigHomeOptions}
+        setRawConfigText={setRawConfigText}
+        onRawConfigTargetHomeChange={(next) => {
+          setRawConfigTargetHome(next)
+          void reloadRawConfigModal(next)
+        }}
+        reloadRawConfigModal={async () => {
+          await reloadRawConfigModal()
+        }}
+        saveRawConfigModal={saveRawConfigModal}
+        setRawConfigModalOpen={setRawConfigModalOpen}
         providerListRef={providerListRef}
         orderedConfigProviders={orderedConfigProviders}
         dragPreviewOrder={dragPreviewOrder}
@@ -751,6 +829,7 @@ export default function App() {
         setUsageScheduleSaveError={setUsageScheduleSaveError}
         setUsageScheduleModalOpen={setUsageScheduleModalOpen}
         codexSwapModalOpen={codexSwapModalOpen}
+        codexSwapStatus={codexSwapStatus}
         codexSwapDir1={codexSwapDir1}
         codexSwapDir2={codexSwapDir2}
         codexSwapApplyBoth={codexSwapApplyBoth}
