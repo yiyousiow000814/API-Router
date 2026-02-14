@@ -199,6 +199,7 @@ export default function App() {
   const usageScheduleLastSavedSigRef = useRef<string>('')
   const usageScheduleLastSavedByProviderRef = useRef<Record<string, string>>({})
   const toastTimerRef = useRef<number | null>(null)
+  const rawConfigTestFailOnceRef = useRef<Record<string, boolean>>({})
   const { switchPage } = usePageScroll({ containerRef, mainAreaRef, activePage, setActivePage: (next) => setActivePage(next as TopPage) })
   useAppPrefs({
     devAutoOpenHistory,
@@ -241,6 +242,18 @@ export default function App() {
     setRawConfigLoadingByHome((prev) => ({ ...prev, [target]: true }))
     try {
       if (rawConfigTestMode || isDevPreview) {
+        if (rawConfigTestMode || isDevPreview) {
+          const lower = target.toLowerCase()
+          const shouldFailOnce = (lower.includes('\\wsl.localhost\\') || lower.includes('\\wsl$\\')) && !rawConfigTestFailOnceRef.current[target]
+          if (shouldFailOnce) {
+            rawConfigTestFailOnceRef.current[target] = true
+            setRawConfigTexts((prev) => ({ ...prev, [target]: '' }))
+            setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
+            setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: false }))
+            flashToast('[TEST] Simulated load failure for WSL2 target.', 'error')
+            return
+          }
+        }
         const mockToml = Array.from({ length: 64 }, (_, idx) => {
           const n = String(idx + 1).padStart(2, '0')
           return `# [TEST] sample line ${n}\nmodel_provider = "api_router"\n`
@@ -284,6 +297,7 @@ export default function App() {
       setRawConfigLoadedByHome({})
       setRawConfigSavingByHome({})
       setRawConfigLoadingByHome({})
+      rawConfigTestFailOnceRef.current = {}
       setRawConfigModalOpen(true)
       await Promise.all(homeOptions.map((home) => loadRawConfigHome(home)))
       return
@@ -804,6 +818,7 @@ export default function App() {
         rawConfigLoadedByHome={rawConfigLoadedByHome}
         onRawConfigTextChange={updateRawConfigText}
         saveRawConfigHome={saveRawConfigHome}
+        retryRawConfigHome={loadRawConfigHome}
         setRawConfigModalOpen={setRawConfigModalOpen}
         providerListRef={providerListRef}
         orderedConfigProviders={orderedConfigProviders}

@@ -20,6 +20,7 @@ type Props = {
   loadedByHome: Record<string, boolean>
   onChangeHome: (home: string, next: string) => void
   onSaveHome: (home: string) => void
+  onRetryHome: (home: string) => void
   onClose: () => void
 }
 
@@ -34,6 +35,7 @@ export function RawConfigModal({
   loadedByHome,
   onChangeHome,
   onSaveHome,
+  onRetryHome,
   onClose,
 }: Props) {
   const editorRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
@@ -261,6 +263,11 @@ export function RawConfigModal({
                       </span>
                     </div>
                     <div className="aoRawConfigPaneActions">
+                      {!loadedByHome[home] && !loadingByHome[home] ? (
+                        <button className="aoBtn" disabled={savingByHome[home]} onClick={() => onRetryHome(home)}>
+                          Retry
+                        </button>
+                      ) : null}
                       <button className="aoBtn aoBtnPrimary" disabled={disabled} onClick={() => onSaveHome(home)}>
                         {savingByHome[home] ? 'Saving...' : 'Save'}
                       </button>

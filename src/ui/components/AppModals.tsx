@@ -81,6 +81,7 @@ type Props = {
   rawConfigLoadedByHome: Record<string, boolean>
   onRawConfigTextChange: (home: string, next: string) => void
   saveRawConfigHome: (home: string) => Promise<void>
+  retryRawConfigHome: (home: string) => Promise<void>
   setRawConfigModalOpen: Dispatch<SetStateAction<boolean>>
   providerListRef: RefObject<HTMLDivElement | null>
   orderedConfigProviders: string[]
@@ -236,6 +237,7 @@ export function AppModals(props: Props) {
     rawConfigLoadedByHome,
     onRawConfigTextChange,
     saveRawConfigHome,
+    retryRawConfigHome,
     setRawConfigModalOpen,
     providerListRef,
     orderedConfigProviders,
@@ -433,6 +435,7 @@ requires_openai_auth = true`}
         loadedByHome={rawConfigLoadedByHome}
         onChangeHome={onRawConfigTextChange}
         onSaveHome={(home) => void saveRawConfigHome(home)}
+        onRetryHome={(home) => void retryRawConfigHome(home)}
         onClose={() => setRawConfigModalOpen(false)}
       />
 
