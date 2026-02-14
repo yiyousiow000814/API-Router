@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import './components/AppShared.css'
@@ -200,7 +200,20 @@ export default function App() {
   const usageScheduleLastSavedByProviderRef = useRef<Record<string, string>>({})
   const toastTimerRef = useRef<number | null>(null)
   const rawConfigTestFailOnceRef = useRef<Record<string, boolean>>({})
+  const rawConfigTextsRef = useRef<Record<string, string>>({})
+  const setRawConfigTextsSync = (
+    updater: Record<string, string> | ((prev: Record<string, string>) => Record<string, string>),
+  ) => {
+    setRawConfigTexts((prev) => {
+      const next = typeof updater === 'function' ? (updater as (p: Record<string, string>) => Record<string, string>)(prev) : updater
+      rawConfigTextsRef.current = next
+      return next
+    })
+  }
   const { switchPage } = usePageScroll({ containerRef, mainAreaRef, activePage, setActivePage: (next) => setActivePage(next as TopPage) })
+  useEffect(() => {
+    rawConfigTextsRef.current = rawConfigTexts
+  }, [rawConfigTexts])
   useAppPrefs({
     isDevPreview,
     devAutoOpenHistory,
@@ -247,7 +260,7 @@ export default function App() {
         const shouldFailOnce = (lower.includes('\\wsl.localhost\\') || lower.includes('\\wsl$\\')) && !rawConfigTestFailOnceRef.current[target]
         if (shouldFailOnce) {
           rawConfigTestFailOnceRef.current[target] = true
-          setRawConfigTexts((prev) => ({ ...prev, [target]: '' }))
+          setRawConfigTextsSync((prev) => ({ ...prev, [target]: '' }))
           setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
           setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: false }))
           flashToast('[TEST] Simulated load failure for WSL2 target.', 'error')
@@ -257,7 +270,7 @@ export default function App() {
           const n = String(idx + 1).padStart(2, '0')
           return `# [TEST] sample line ${n}\nmodel_provider = "api_router"\n`
         }).join('\n')
-        setRawConfigTexts((prev) => ({
+        setRawConfigTextsSync((prev) => ({
           ...prev,
           [target]: prev[target] || mockToml,
         }))
@@ -268,11 +281,11 @@ export default function App() {
       const txt = await invoke<string>('get_codex_cli_config_toml', {
         cliHome: target,
       })
-      setRawConfigTexts((prev) => ({ ...prev, [target]: txt }))
+      setRawConfigTextsSync((prev) => ({ ...prev, [target]: txt }))
       setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
       setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: true }))
     } catch (e) {
-      setRawConfigTexts((prev) => ({ ...prev, [target]: '' }))
+      setRawConfigTextsSync((prev) => ({ ...prev, [target]: '' }))
       setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: false }))
       flashToast(String(e), 'error')
     } finally {
@@ -291,7 +304,7 @@ export default function App() {
         [mockWslHome]: `WSL2: ${mockWslHome}`,
       })
       const homeOptions = [mockWindowsHome, mockWslHome]
-      setRawConfigTexts(Object.fromEntries(homeOptions.map((home) => [home, ''])))
+      setRawConfigTextsSync(Object.fromEntries(homeOptions.map((home) => [home, ''])))
       setRawConfigDirtyByHome({})
       setRawConfigLoadedByHome({})
       setRawConfigSavingByHome({})
@@ -319,7 +332,7 @@ export default function App() {
       }
       setRawConfigHomeOptions(homeOptions)
       setRawConfigHomeLabels(labels)
-      setRawConfigTexts(Object.fromEntries(homeOptions.map((home) => [home, ''])))
+      setRawConfigTextsSync(Object.fromEntries(homeOptions.map((home) => [home, ''])))
       setRawConfigDirtyByHome({})
       setRawConfigLoadedByHome({})
       setRawConfigSavingByHome({})
@@ -334,7 +347,7 @@ export default function App() {
   }
 
   function updateRawConfigText(home: string, next: string) {
-    setRawConfigTexts((prev) => ({ ...prev, [home]: next }))
+    setRawConfigTextsSync((prev) => ({ ...prev, [home]: next }))
     setRawConfigDirtyByHome((prev) => ({ ...prev, [home]: true }))
   }
 
@@ -352,7 +365,7 @@ export default function App() {
     try {
       await invoke('set_codex_cli_config_toml', {
         cliHome: target,
-        tomlText: rawConfigTexts[target] ?? '',
+        tomlText: rawConfigTextsRef.current[target] ?? '',
       })
       setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
       flashToast(`Saved: ${target}`)

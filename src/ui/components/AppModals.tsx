@@ -6,7 +6,7 @@ import type {
   RefObject,
   SetStateAction,
 } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { SpendHistoryRow } from '../devMockData'
 import { normalizePathForCompare } from '../utils/path'
@@ -210,6 +210,7 @@ export function AppModals(props: Props) {
   const [draftCodexSwapDir2, setDraftCodexSwapDir2] = useState('')
   const [draftCodexSwapUseWindows, setDraftCodexSwapUseWindows] = useState(false)
   const [draftCodexSwapUseWsl, setDraftCodexSwapUseWsl] = useState(false)
+  const codexSwapModalWasOpenRef = useRef(false)
   const {
     keyModal,
     setKeyModal,
@@ -353,7 +354,9 @@ export function AppModals(props: Props) {
   } = props
 
   useEffect(() => {
-    if (!codexSwapModalOpen) return
+    const justOpened = codexSwapModalOpen && !codexSwapModalWasOpenRef.current
+    codexSwapModalWasOpenRef.current = codexSwapModalOpen
+    if (!justOpened) return
     setDraftCodexSwapDir1(codexSwapDir1)
     setDraftCodexSwapDir2(codexSwapDir2)
     setDraftCodexSwapUseWindows(codexSwapUseWindows)
