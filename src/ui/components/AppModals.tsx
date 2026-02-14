@@ -6,7 +6,7 @@ import type {
   RefObject,
   SetStateAction,
 } from 'react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { SpendHistoryRow } from '../devMockData'
 import { normalizePathForCompare } from '../utils/path'
@@ -189,6 +189,7 @@ type Props = {
   clearUsageScheduleRowsAutoSave: () => void
   setUsageScheduleSaveError: Dispatch<SetStateAction<string>>
   setUsageScheduleModalOpen: Dispatch<SetStateAction<boolean>>
+  isDevPreview: boolean
   codexSwapModalOpen: boolean
   codexSwapDir1: string
   codexSwapDir2: string
@@ -205,6 +206,10 @@ type Props = {
 
 export function AppModals(props: Props) {
   const [reopenGettingStartedAfterDirs, setReopenGettingStartedAfterDirs] = useState(false)
+  const [draftCodexSwapDir1, setDraftCodexSwapDir1] = useState('')
+  const [draftCodexSwapDir2, setDraftCodexSwapDir2] = useState('')
+  const [draftCodexSwapUseWindows, setDraftCodexSwapUseWindows] = useState(false)
+  const [draftCodexSwapUseWsl, setDraftCodexSwapUseWsl] = useState(false)
   const {
     keyModal,
     setKeyModal,
@@ -332,6 +337,7 @@ export function AppModals(props: Props) {
     clearUsageScheduleRowsAutoSave,
     setUsageScheduleSaveError,
     setUsageScheduleModalOpen,
+    isDevPreview,
     codexSwapModalOpen,
     codexSwapDir1,
     codexSwapDir2,
@@ -345,6 +351,15 @@ export function AppModals(props: Props) {
     toggleCodexSwap,
     resolveCliHomes,
   } = props
+
+  useEffect(() => {
+    if (!codexSwapModalOpen) return
+    setDraftCodexSwapDir1(codexSwapDir1)
+    setDraftCodexSwapDir2(codexSwapDir2)
+    setDraftCodexSwapUseWindows(codexSwapUseWindows)
+    setDraftCodexSwapUseWsl(codexSwapUseWsl)
+  }, [codexSwapModalOpen, codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl])
+
   return (
     <>
       <KeyModal
@@ -580,14 +595,14 @@ requires_openai_auth = true`}
 
       <CodexSwapModal
         open={codexSwapModalOpen}
-        windowsDir={codexSwapDir1}
-        wslDir={codexSwapDir2}
-        useWindows={codexSwapUseWindows}
-        useWsl={codexSwapUseWsl}
-        onChangeWindowsDir={setCodexSwapDir1}
-        onChangeWslDir={setCodexSwapDir2}
-        onChangeUseWindows={setCodexSwapUseWindows}
-        onChangeUseWsl={setCodexSwapUseWsl}
+        windowsDir={draftCodexSwapDir1}
+        wslDir={draftCodexSwapDir2}
+        useWindows={draftCodexSwapUseWindows}
+        useWsl={draftCodexSwapUseWsl}
+        onChangeWindowsDir={setDraftCodexSwapDir1}
+        onChangeWslDir={setDraftCodexSwapDir2}
+        onChangeUseWindows={setDraftCodexSwapUseWindows}
+        onChangeUseWsl={setDraftCodexSwapUseWsl}
         onCancel={() => {
           setCodexSwapModalOpen(false)
           if (reopenGettingStartedAfterDirs) {
@@ -598,29 +613,41 @@ requires_openai_auth = true`}
         onApply={() => {
           void (async () => {
             try {
-              const windowsDir = codexSwapDir1.trim()
-              const wslDir = codexSwapDir2.trim()
-              if (!codexSwapUseWindows && !codexSwapUseWsl) {
+              const windowsDir = draftCodexSwapDir1.trim()
+              const wslDir = draftCodexSwapDir2.trim()
+              if (!draftCodexSwapUseWindows && !draftCodexSwapUseWsl) {
                 throw new Error('Enable Windows and/or WSL2.')
               }
-              if (codexSwapUseWindows && !isValidWindowsCodexPath(windowsDir)) {
+              if (draftCodexSwapUseWindows && !isValidWindowsCodexPath(windowsDir)) {
                 throw new Error('Windows path is invalid. Use an absolute Windows path ending with \\.codex')
               }
-              if (codexSwapUseWsl && !isValidWslCodexPath(wslDir)) {
+              if (draftCodexSwapUseWsl && !isValidWslCodexPath(wslDir)) {
                 throw new Error('WSL2 path is invalid. Use \\\\wsl.localhost\\...\\.codex')
               }
               if (
-                codexSwapUseWindows &&
-                codexSwapUseWsl &&
+                draftCodexSwapUseWindows &&
+                draftCodexSwapUseWsl &&
                 windowsDir &&
                 wslDir &&
                 normalizePathForCompare(windowsDir) === normalizePathForCompare(wslDir)
               ) {
                 throw new Error('Windows and WSL2 paths must be different')
               }
-
-              const homes = resolveCliHomes(windowsDir, wslDir, codexSwapUseWindows, codexSwapUseWsl)
-              await toggleCodexSwap(homes)
+              setCodexSwapDir1(windowsDir)
+              setCodexSwapDir2(wslDir)
+              setCodexSwapUseWindows(draftCodexSwapUseWindows)
+              setCodexSwapUseWsl(draftCodexSwapUseWsl)
+              if (!isDevPreview) {
+                const homes = resolveCliHomes(
+                  windowsDir,
+                  wslDir,
+                  draftCodexSwapUseWindows,
+                  draftCodexSwapUseWsl,
+                )
+                await toggleCodexSwap(homes)
+              } else {
+                flashToast('[TEST] Applied directories in preview mode.')
+              }
               setCodexSwapModalOpen(false)
               if (reopenGettingStartedAfterDirs) {
                 setInstructionModalOpen(true)

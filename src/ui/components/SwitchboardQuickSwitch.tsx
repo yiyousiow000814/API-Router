@@ -1,20 +1,20 @@
-import type { ProviderSwitchboardStatus } from '../types'
-
 type SwitchboardQuickSwitchProps = {
-  providerSwitchStatus: ProviderSwitchboardStatus | null
+  activeMode: string | null
+  activeModelProvider?: string | null
   providerSwitchBusy: boolean
   onSetProviderSwitchTarget: (target: 'gateway' | 'official' | 'provider', provider?: string) => Promise<void>
 }
 
 export function SwitchboardQuickSwitch({
-  providerSwitchStatus,
+  activeMode,
+  activeModelProvider,
   providerSwitchBusy,
   onSetProviderSwitchTarget,
 }: SwitchboardQuickSwitchProps) {
   return (
     <div className="aoSwitchQuickGrid">
       <button
-        className={`aoSwitchQuickBtn${providerSwitchStatus?.mode === 'gateway' ? ' is-active' : ''}`}
+        className={`aoSwitchQuickBtn${activeMode === 'gateway' ? ' is-active' : ''}`}
         disabled={providerSwitchBusy}
         onClick={() => void onSetProviderSwitchTarget('gateway')}
       >
@@ -22,7 +22,7 @@ export function SwitchboardQuickSwitch({
         <span className="aoSwitchQuickSub">Use local API Router</span>
       </button>
       <button
-        className={`aoSwitchQuickBtn${providerSwitchStatus?.mode === 'official' ? ' is-active' : ''}`}
+        className={`aoSwitchQuickBtn${activeMode === 'official' ? ' is-active' : ''}`}
         disabled={providerSwitchBusy}
         onClick={() => void onSetProviderSwitchTarget('official')}
       >
@@ -32,14 +32,14 @@ export function SwitchboardQuickSwitch({
       <button
         className={
           'aoSwitchQuickBtn aoSwitchQuickBtnHint' +
-          (providerSwitchStatus?.mode === 'provider' ? ' is-active' : '')
+          (activeMode === 'provider' ? ' is-active' : '')
         }
         disabled
       >
         <span className="aoSwitchQuickTitle">Direct Provider</span>
         <span className="aoSwitchQuickSub">
-          {providerSwitchStatus?.mode === 'provider' && providerSwitchStatus?.model_provider
-            ? 'Active: ' + providerSwitchStatus.model_provider
+          {activeMode === 'provider' && activeModelProvider
+            ? 'Active: ' + activeModelProvider
             : 'Use selected provider below'}
         </span>
       </button>

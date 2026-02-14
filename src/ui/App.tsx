@@ -202,6 +202,7 @@ export default function App() {
   const rawConfigTestFailOnceRef = useRef<Record<string, boolean>>({})
   const { switchPage } = usePageScroll({ containerRef, mainAreaRef, activePage, setActivePage: (next) => setActivePage(next as TopPage) })
   useAppPrefs({
+    isDevPreview,
     devAutoOpenHistory,
     setUsageHistoryModalOpen,
     autoSaveTimersRef,
@@ -389,6 +390,7 @@ export default function App() {
     setBaselineBaseUrls,
     setGatewayTokenPreview,
     setCodexSwapStatus,
+    providerSwitchStatus,
     setProviderSwitchStatus,
     flashToast,
   })
@@ -774,6 +776,10 @@ export default function App() {
               switchboardProps={{
                 providerSwitchStatus,
                 providerSwitchBusy,
+                codexSwapDir1,
+                codexSwapDir2,
+                codexSwapUseWindows,
+                codexSwapUseWsl,
                 switchboardModeLabel,
                 switchboardModelProviderLabel,
                 switchboardTargetDirsLabel,
@@ -913,6 +919,7 @@ export default function App() {
         clearUsageScheduleRowsAutoSave={clearUsageScheduleRowsAutoSave}
         setUsageScheduleSaveError={setUsageScheduleSaveError}
         setUsageScheduleModalOpen={setUsageScheduleModalOpen}
+        isDevPreview={isDevPreview}
         codexSwapModalOpen={codexSwapModalOpen}
         codexSwapDir1={codexSwapDir1}
         codexSwapDir2={codexSwapDir2}

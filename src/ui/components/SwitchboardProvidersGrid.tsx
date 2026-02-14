@@ -1,5 +1,3 @@
-import type { ProviderSwitchboardStatus } from '../types'
-
 export type SwitchboardProviderCard = {
   name: string
   baseUrl: string
@@ -11,14 +9,16 @@ export type SwitchboardProviderCard = {
 }
 
 type SwitchboardProvidersGridProps = {
-  providerSwitchStatus: ProviderSwitchboardStatus | null
+  activeMode: string | null
+  activeModelProvider?: string | null
   providerSwitchBusy: boolean
   switchboardProviderCards: SwitchboardProviderCard[]
   onSetProviderSwitchTarget: (target: 'gateway' | 'official' | 'provider', provider?: string) => Promise<void>
 }
 
 export function SwitchboardProvidersGrid({
-  providerSwitchStatus,
+  activeMode,
+  activeModelProvider,
   providerSwitchBusy,
   switchboardProviderCards,
   onSetProviderSwitchTarget,
@@ -29,7 +29,7 @@ export function SwitchboardProvidersGrid({
         switchboardProviderCards.map((providerItem) => (
           <button
             key={providerItem.name}
-            className={`aoSwitchProviderBtn${providerSwitchStatus?.mode === 'provider' && providerSwitchStatus?.model_provider === providerItem.name ? ' is-active' : ''}`}
+            className={`aoSwitchProviderBtn${activeMode === 'provider' && activeModelProvider === providerItem.name ? ' is-active' : ''}`}
             disabled={providerSwitchBusy || !providerItem.hasKey}
             onClick={() => void onSetProviderSwitchTarget('provider', providerItem.name)}
           >

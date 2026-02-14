@@ -3,6 +3,7 @@ import { useEffect, type MutableRefObject } from 'react'
 import { normalizePathForCompare } from '../utils/path'
 
 type UseAppPrefsOptions = {
+  isDevPreview: boolean
   devAutoOpenHistory: boolean
   setUsageHistoryModalOpen: (next: boolean) => void
   autoSaveTimersRef: MutableRefObject<Record<string, number>>
@@ -26,6 +27,7 @@ type UseAppPrefsOptions = {
 }
 
 export function useAppPrefs({
+  isDevPreview,
   devAutoOpenHistory,
   setUsageHistoryModalOpen,
   autoSaveTimersRef,
@@ -78,6 +80,16 @@ export function useAppPrefs({
     try {
       const d1 = window.localStorage.getItem('ao.codexSwap.dir1') ?? ''
       const d2 = window.localStorage.getItem('ao.codexSwap.dir2') ?? ''
+      if (isDevPreview) {
+        const mockWindowsHome = 'C:\\Users\\<user>\\.codex'
+        const mockWslHome = '\\\\wsl.localhost\\Ubuntu\\home\\<user>\\.codex'
+        setCodexSwapDir1(d1.trim() ? d1 : mockWindowsHome)
+        setCodexSwapDir2(d2.trim() ? d2 : mockWslHome)
+        setCodexSwapUseWindows(true)
+        setCodexSwapUseWsl(true)
+        swapPrefsLoadedRef.current = true
+        return
+      }
       const legacyApplyBoth = (window.localStorage.getItem('ao.codexSwap.applyBoth') ?? '') === '1'
       const useWindowsRaw = window.localStorage.getItem('ao.codexSwap.useWindows')
       const useWslRaw = window.localStorage.getItem('ao.codexSwap.useWsl')
@@ -128,7 +140,7 @@ export function useAppPrefs({
       console.warn('Failed to load Codex swap prefs', e)
       swapPrefsLoadedRef.current = true
     }
-  }, [setCodexSwapDir1, setCodexSwapDir2, setCodexSwapUseWindows, setCodexSwapUseWsl, swapPrefsLoadedRef])
+  }, [isDevPreview, setCodexSwapDir1, setCodexSwapDir2, setCodexSwapUseWindows, setCodexSwapUseWsl, swapPrefsLoadedRef])
 
   useEffect(() => {
     codexSwapDir1Ref.current = codexSwapDir1

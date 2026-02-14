@@ -23,6 +23,7 @@ type UseSwitchboardStatusActionsOptions = {
   setBaselineBaseUrls: (next: Record<string, string>) => void
   setGatewayTokenPreview: (next: string) => void
   setCodexSwapStatus: (next: CodexSwapStatus) => void
+  providerSwitchStatus: ProviderSwitchboardStatus | null
   setProviderSwitchStatus: (next: ProviderSwitchboardStatus) => void
   flashToast: (msg: string, kind?: 'info' | 'error') => void
 }
@@ -46,6 +47,7 @@ export function useSwitchboardStatusActions({
   setBaselineBaseUrls,
   setGatewayTokenPreview,
   setCodexSwapStatus,
+  providerSwitchStatus,
   setProviderSwitchStatus,
   flashToast,
 }: UseSwitchboardStatusActionsOptions) {
@@ -169,10 +171,53 @@ export function useSwitchboardStatusActions({
     ])
   }
 
-  async function setProviderSwitchTarget(target: 'gateway' | 'official' | 'provider', provider?: string) {
-    const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
+  async function setProviderSwitchTarget(
+    target: 'gateway' | 'official' | 'provider',
+    provider?: string,
+    cliHomes?: string[],
+  ) {
+    const homes =
+      cliHomes && cliHomes.length
+        ? cliHomes
+        : resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
     setProviderSwitchBusy(true)
     try {
+      if (isDevPreview) {
+        const targetProvider = target === 'provider' ? provider ?? null : null
+        const existingDirs =
+          providerSwitchStatus?.dirs ??
+          homes.map((home) => ({ cli_home: home, mode: 'gateway', model_provider: null }))
+        const updatedDirs = existingDirs.map((dir) =>
+          homes.includes(dir.cli_home)
+            ? { ...dir, mode: target, model_provider: targetProvider }
+            : dir,
+        )
+        const modes = Array.from(new Set(updatedDirs.map((dir) => dir.mode)))
+        const providerModes = updatedDirs
+          .filter((dir) => dir.mode === 'provider')
+          .map((dir) => dir.model_provider ?? '')
+        const providerValues = Array.from(new Set(providerModes))
+        const mode =
+          modes.length === 1 && (modes[0] !== 'provider' || providerValues.length <= 1)
+            ? (modes[0] as 'gateway' | 'official' | 'provider')
+            : 'mixed'
+        const modelProvider = mode === 'provider' ? providerValues[0] ?? null : null
+        setProviderSwitchStatus({
+          ok: true,
+          mode,
+          model_provider: modelProvider,
+          dirs: updatedDirs,
+          provider_options: (devConfig.provider_order ?? []).filter((n) => n !== 'official'),
+        })
+        const msg =
+          target === 'provider'
+            ? 'Switched to provider: ' + provider
+            : target === 'gateway'
+              ? 'Switched to gateway'
+              : 'Switched to official'
+        flashToast(msg)
+        return
+      }
       const res = await invoke<ProviderSwitchboardStatus>('provider_switchboard_set_target', {
         cli_homes: homes,
         target,
