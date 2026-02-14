@@ -19,18 +19,39 @@ function gitLines(args) {
   }
 }
 
+function gitLinesChecked(args) {
+  try {
+    const lines = execFileSync('git', args, { encoding: 'utf8' })
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    return { ok: true, lines }
+  } catch {
+    return { ok: false, lines: [] }
+  }
+}
+
 function unique(items) {
   return [...new Set(items)]
 }
 
 const baseRef = process.env.LINE_ENDINGS_BASE || 'origin/main'
-let files = gitLines(['diff', '--name-only', '--diff-filter=ACMRTUXB', `${baseRef}...HEAD`])
+const primary = gitLinesChecked(['diff', '--name-only', '--diff-filter=ACMRTUXB', `${baseRef}...HEAD`])
+let files = primary.lines
 if (files.length === 0) {
   files = unique([
     ...gitLines(['diff', '--name-only', '--diff-filter=ACMRTUXB', 'HEAD']),
     ...gitLines(['diff', '--cached', '--name-only', '--diff-filter=ACMRTUXB']),
     ...gitLines(['ls-files', '--others', '--exclude-standard']),
   ])
+}
+
+if (!primary.ok && files.length === 0) {
+  console.error(
+    `Line ending check could not determine changed files (base ref "${baseRef}" not reachable and fallback empty).`,
+  )
+  console.error('Ensure CI fetches a base branch (for example checkout with fetch-depth: 0).')
+  process.exit(2)
 }
 
 const offenders = []
