@@ -121,12 +121,12 @@ export function useUsageScheduleCore(params: Params) {
     refreshUsageHistory,
   } = params
 
-  function providerApiKeyLabel(providerName: string): string {
+  const providerApiKeyLabel = useCallback((providerName: string): string => {
     const keyPreview = config?.providers?.[providerName]?.key_preview?.trim()
     if (keyPreview) return keyPreview
     if (config?.providers?.[providerName]?.has_key) return 'set'
     return '-'
-  }
+  }, [config])
 
   function readPreferredCurrency(providerName: string, apiKeyRef?: string): string {
     return loadPreferredCurrency(providerName, apiKeyRef, {
