@@ -71,7 +71,6 @@ export function CodexSwapModal({
                 <input
                   type="checkbox"
                   checked={useWindows}
-                  disabled={!useWindows && !windowsPathValid}
                   onChange={(e) => onChangeUseWindows(e.target.checked)}
                 />
                 <span style={{ color: 'rgba(13, 18, 32, 0.82)', fontWeight: 500, fontSize: 13 }}>Enable</span>
@@ -97,7 +96,6 @@ export function CodexSwapModal({
                 <input
                   type="checkbox"
                   checked={useWsl}
-                  disabled={!useWsl && !wslPathValid}
                   onChange={(e) => onChangeUseWsl(e.target.checked)}
                 />
                 <span style={{ color: 'rgba(13, 18, 32, 0.82)', fontWeight: 500, fontSize: 13 }}>Enable</span>

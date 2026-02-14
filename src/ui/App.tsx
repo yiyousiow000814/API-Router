@@ -235,17 +235,6 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
   }
 
-  function isCodexHomeMissingError(message: string): boolean {
-    const m = message.toLowerCase()
-    return (
-      m.includes('codex dir does not exist') ||
-      m.includes('missing config.toml') ||
-      m.includes('missing auth.json') ||
-      m.includes('missing home/userprofile') ||
-      m.includes('missing wsl distro/home')
-    )
-  }
-
   async function reloadRawConfigModal(targetHome?: string) {
     if (rawConfigTestMode || isDevPreview) {
       setRawConfigLoading(false)
@@ -267,11 +256,7 @@ export default function App() {
     } catch (e) {
       const msg = String(e)
       setRawConfigText('')
-      if (isCodexHomeMissingError(msg)) {
-        flashToast(msg, 'error')
-      } else {
-        flashToast(msg, 'error')
-      }
+      flashToast(msg, 'error')
     } finally {
       setRawConfigLoading(false)
     }
@@ -296,34 +281,30 @@ export default function App() {
     }
     try {
       const homes = resolveConfigEditorHomes(codexSwapDir1, codexSwapDir2)
-      let options = homes
-      if (!options.length) {
+      let homeOptions = homes
+      if (!homeOptions.length) {
         const defaultHome = await invoke<string>('codex_cli_default_home')
-        options = [defaultHome]
+        homeOptions = [defaultHome]
       }
       const labels: Record<string, string> = {}
-      if (options.length > 1) {
-        options.forEach((home, idx) => {
+      if (homeOptions.length > 1) {
+        homeOptions.forEach((home, idx) => {
           const lower = home.toLowerCase()
           const isWsl = lower.startsWith('\\\\wsl.localhost\\') || lower.startsWith('\\\\wsl$\\')
           const kind = isWsl ? 'WSL2' : idx === 0 ? 'Windows' : 'WSL2'
           labels[home] = `${kind}: ${home}`
         })
       }
-      setRawConfigHomeOptions(options)
+      setRawConfigHomeOptions(homeOptions)
       setRawConfigHomeLabels(labels)
-      setRawConfigTargetHome(options[0] ?? '')
+      setRawConfigTargetHome(homeOptions[0] ?? '')
       setRawConfigText('')
       setRawConfigCanSave(false)
       setRawConfigModalOpen(true)
-      await reloadRawConfigModal(options[0] ?? '')
+      await reloadRawConfigModal(homeOptions[0] ?? '')
     } catch (e) {
       const msg = String(e)
-      if (isCodexHomeMissingError(msg)) {
-        flashToast(msg, 'error')
-      } else {
-        flashToast(msg, 'error')
-      }
+      flashToast(msg, 'error')
       if (reopenGettingStartedOnFail) setInstructionModalOpen(true)
     }
   }
