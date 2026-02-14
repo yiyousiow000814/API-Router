@@ -81,6 +81,9 @@ jobs:
       - name: Node install
         run: npm ci
 
+      - name: Line endings (LF policy)
+        run: npm run check:line-endings
+
       - name: Web build
         run: npm run build
 

@@ -6,15 +6,16 @@
   "type": "module",
   "scripts": {
     "check:gateway-provider-id": "node scripts/check-gateway-provider-id.mjs",
+    "check:line-endings": "node scripts/check-line-endings.mjs",
     "dev": "npm run check:gateway-provider-id && vite",
-    "build": "npm run check:gateway-provider-id && tsc && vite build",
+    "build": "npm run check:gateway-provider-id && npm run check:line-endings && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "build:root-exe": "tauri build && node scripts/copy-root-exe.mjs && node scripts/open-root-exe.mjs",
     "ui:tauri": "node scripts/tauri-ui-check.mjs",
     "ui:check": "node scripts/run-ui-tauri-if-windows.mjs",
     "backend:check": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
-    "check:all": "npm run test && npm run backend:check && npm run ui:check",
+    "check:all": "npm run test && npm run check:line-endings && npm run backend:check && npm run ui:check",
     "build:root-exe:checked": "node scripts/run-ui-tauri-if-windows.mjs && npm run build:root-exe",
     "test": "npm run check:gateway-provider-id && vitest run"
   },
