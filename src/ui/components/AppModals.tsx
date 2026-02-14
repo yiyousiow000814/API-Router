@@ -10,6 +10,7 @@ import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { SpendHistoryRow } from '../devMockData'
 import { normalizePathForCompare } from '../utils/path'
+import { isValidWindowsCodexPath, isValidWslCodexPath } from '../utils/codexPathValidation'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
 import type { CodexSwapStatus, Config } from '../types'
 import type {
@@ -617,19 +618,6 @@ requires_openai_auth = true`}
             try {
               const windowsDir = codexSwapDir1.trim()
               const wslDir = codexSwapDir2.trim()
-              const normalize = (v: string) => v.trim().replace(/\//g, '\\')
-              const isWslPrefix = (v: string) => {
-                const lower = normalize(v).toLowerCase()
-                return lower.startsWith('\\\\wsl.localhost\\') || lower.startsWith('\\\\wsl$\\')
-              }
-              const isValidWindowsCodexPath = (v: string) => {
-                const n = normalize(v)
-                return /^[a-zA-Z]:\\/.test(n) && !isWslPrefix(n) && n.toLowerCase().endsWith('\\.codex')
-              }
-              const isValidWslCodexPath = (v: string) => {
-                const n = normalize(v)
-                return isWslPrefix(n) && n.toLowerCase().endsWith('\\.codex')
-              }
               if (!codexSwapUseWindows && !codexSwapUseWsl) {
                 throw new Error('Enable Windows and/or WSL2.')
               }

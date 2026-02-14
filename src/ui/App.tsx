@@ -240,7 +240,7 @@ export default function App() {
       setRawConfigLoading(false)
       setRawConfigCanSave(true)
       if (!rawConfigText.trim()) {
-        setRawConfigText('# [TEST] Raw config sandbox\\nmodel_provider = \"api_router\"\\n')
+        setRawConfigText('# [TEST] Raw config sandbox\nmodel_provider = \"api_router\"\n')
       }
       return
     }

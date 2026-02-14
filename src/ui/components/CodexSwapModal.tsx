@@ -1,5 +1,6 @@
 import { ModalBackdrop } from './ModalBackdrop'
 import { normalizePathForCompare } from '../utils/path'
+import { isValidWindowsCodexPath, isValidWslCodexPath } from '../utils/codexPathValidation'
 
 type Props = {
   open: boolean
@@ -29,20 +30,6 @@ export function CodexSwapModal({
   onApply,
 }: Props) {
   if (!open) return null
-
-  const normalize = (v: string) => v.trim().replace(/\//g, '\\')
-  const isWslPrefix = (v: string) => {
-    const lower = normalize(v).toLowerCase()
-    return lower.startsWith('\\\\wsl.localhost\\') || lower.startsWith('\\\\wsl$\\')
-  }
-  const isValidWindowsCodexPath = (v: string) => {
-    const n = normalize(v)
-    return /^[a-zA-Z]:\\/.test(n) && !isWslPrefix(n) && n.toLowerCase().endsWith('\\.codex')
-  }
-  const isValidWslCodexPath = (v: string) => {
-    const n = normalize(v)
-    return isWslPrefix(n) && n.toLowerCase().endsWith('\\.codex')
-  }
 
   const hasWindowsDir = windowsDir.trim().length > 0
   const hasWslDir = wslDir.trim().length > 0
