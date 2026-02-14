@@ -243,17 +243,15 @@ export default function App() {
     setRawConfigLoadingByHome((prev) => ({ ...prev, [target]: true }))
     try {
       if (rawConfigTestMode || isDevPreview) {
-        if (rawConfigTestMode || isDevPreview) {
-          const lower = target.toLowerCase()
-          const shouldFailOnce = (lower.includes('\\wsl.localhost\\') || lower.includes('\\wsl$\\')) && !rawConfigTestFailOnceRef.current[target]
-          if (shouldFailOnce) {
-            rawConfigTestFailOnceRef.current[target] = true
-            setRawConfigTexts((prev) => ({ ...prev, [target]: '' }))
-            setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
-            setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: false }))
-            flashToast('[TEST] Simulated load failure for WSL2 target.', 'error')
-            return
-          }
+        const lower = target.toLowerCase()
+        const shouldFailOnce = (lower.includes('\\wsl.localhost\\') || lower.includes('\\wsl$\\')) && !rawConfigTestFailOnceRef.current[target]
+        if (shouldFailOnce) {
+          rawConfigTestFailOnceRef.current[target] = true
+          setRawConfigTexts((prev) => ({ ...prev, [target]: '' }))
+          setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
+          setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: false }))
+          flashToast('[TEST] Simulated load failure for WSL2 target.', 'error')
+          return
         }
         const mockToml = Array.from({ length: 64 }, (_, idx) => {
           const n = String(idx + 1).padStart(2, '0')
