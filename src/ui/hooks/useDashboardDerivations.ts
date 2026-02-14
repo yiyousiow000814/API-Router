@@ -73,11 +73,11 @@ export function useDashboardDerivations(params: Params) {
   )
   const providerGroupLabelByName = useMemo(
     () => buildProviderGroupLabelByName(managedProviderNames, providerApiKeyLabel),
-    [managedProviderNames, config],
+    [managedProviderNames, providerApiKeyLabel],
   )
   const providerNamesByKeyLabel = useMemo(
     () => buildProviderNamesByKeyLabel(managedProviderNames, providerApiKeyLabel),
-    [managedProviderNames, config],
+    [managedProviderNames, providerApiKeyLabel],
   )
   const linkedProvidersForApiKey = useCallback(
     (apiKeyRef: string, fallbackProvider: string): string[] =>
@@ -215,7 +215,8 @@ export function useDashboardDerivations(params: Params) {
     [usageTimeline, usageMaxTimelineRequests, usageMaxTimelineTokens],
   )
 
-  function showUsageChartHover(
+  const showUsageChartHover = useCallback(
+    (
     event: {
       clientX: number
       clientY: number
@@ -224,7 +225,7 @@ export function useDashboardDerivations(params: Params) {
     bucketUnixMs: number,
     requests: number,
     totalTokens: number,
-  ) {
+  ) => {
     const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect()
     if (!rect) return
     const rawX = event.clientX - rect.left
@@ -237,7 +238,9 @@ export function useDashboardDerivations(params: Params) {
       title: fmtUsageBucketLabel(bucketUnixMs, usageStatistics?.window_hours ?? 24),
       subtitle: `Requests ${requests} | Tokens ${totalTokens.toLocaleString()}`,
     })
-  }
+    },
+    [setUsageChartHover, usageStatistics?.window_hours],
+  )
 
   return {
     managedProviderNames,
