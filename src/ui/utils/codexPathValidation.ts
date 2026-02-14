@@ -1,5 +1,6 @@
 export function normalizeCodexPath(v: string): string {
-  return v.trim().replace(/\//g, '\\')
+  const normalized = v.trim().replace(/\//g, '\\')
+  return normalized.replace(/\\+$/g, '')
 }
 
 export function isWslCodexPrefix(v: string): boolean {
