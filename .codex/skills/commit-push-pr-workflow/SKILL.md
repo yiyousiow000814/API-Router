@@ -10,6 +10,7 @@ Applies to this repo's conventions:
 - PR/issue titles: English. PR bodies/comments: Simplified Chinese by default (unless the request starts with `[EN]`).
 - PR titles must start with one of: `feat:`, `fix:`, `docs:`, `chore:`.
 - PR bodies must include `## What`, `## Why`, `## Changes`, `## Verify`. If the PR is long, add `## TL;DR` at the very top.
+- Line endings policy: repository files must use LF; CRLF is only allowed for `.bat`, `.cmd`, and `.ps1`.
 - Avoid GitHub CLI `--body` with escaped newlines; prefer `--body-file` or stdin to prevent literal `\\n`.
 - PowerShell gotcha: backtick (`` ` ``) is an escape character. Avoid putting Markdown inline code (backticks) inside PowerShell double-quoted strings passed to `gh` (it can be swallowed/rewritten). Prefer single quotes, or use `--body-file -` with a here-string.
 
@@ -26,6 +27,7 @@ This skill is written to work well on Windows (PowerShell 5.1+). Bash examples a
 ## Commit
 
 - Confirm required checks have run for the current change scope before committing (record the exact commands).
+- Run the LF policy check (`npm run check:line-endings`) before commit.
 - Stage intended files only (prefer `git add -p`).
 - Write commit messages using a file (avoid multi-`-m` formatting pitfalls).
 - Commit title: `prefix: subject` or `prefix(scope): subject`, English only, ideally <= 50 chars (hard wrap <= 72), no trailing period.

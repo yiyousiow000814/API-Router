@@ -30,6 +30,7 @@
 ## Engineering Constraints
 - **Cross-platform**: Keep the gateway and tooling compatible with Windows + Linux (WSL2) at minimum.
 - **Evidence requirement**: Back conclusions with reproducible commands or steps (state A → change → state B).
+- **Line endings**: Use LF as the repository standard. CRLF is only allowed for Windows script files (`.bat`, `.cmd`, `.ps1`).
 - **File size guideline (industry style)**: Prefer small, focused files (roughly 200-500 lines) when practical.
 - **Hard cap**: For non-lock source files, 800 lines is the maximum. If a file goes over 800 lines, split it into coherent modules/files in the same PR unless there is a clear, documented reason not to.
 - **Exceptions**: Lock/generated files are excluded from this rule (for example `Cargo.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`).
