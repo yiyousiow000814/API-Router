@@ -48,7 +48,7 @@ jobs:
           run_ci=false
           for file in $CHANGED_FILES; do
             case "$file" in
-              .github/*|.github/**|src-tauri/*|src-tauri/**|src/*|src/**|package.json|package-lock.json)
+              .github/*|.github/**|scripts/*|scripts/**|src-tauri/*|src-tauri/**|src/*|src/**|package.json|package-lock.json|.gitattributes|.editorconfig)
                 run_ci=true
                 break
                 ;;
@@ -63,6 +63,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
