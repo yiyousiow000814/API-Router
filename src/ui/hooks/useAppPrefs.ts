@@ -102,7 +102,6 @@ export function useAppPrefs({
           .then((p) => {
             const resolved = normalizePathForCompare(p) === normalizePathForCompare(d1) ? '' : p
             setCodexSwapDir2(resolved)
-            if (useWslRaw == null && resolved.trim()) setCodexSwapUseWsl(true)
           })
           .catch(() => {})
       }
