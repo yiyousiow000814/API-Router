@@ -180,11 +180,6 @@ fn cli_cfg_path(cli_home: &Path) -> PathBuf {
     cli_home.join("config.toml")
 }
 
-fn read_backup_cfg_text(cli_home: &Path) -> Result<String, String> {
-    let bytes = read_bytes(&backup_cfg_path(cli_home))?;
-    String::from_utf8(bytes).map_err(|_| "backup config.toml is not valid UTF-8".to_string())
-}
-
 fn app_codex_home_from_config_path(config_path: &Path) -> PathBuf {
     config_path
         .parent()
@@ -192,12 +187,12 @@ fn app_codex_home_from_config_path(config_path: &Path) -> PathBuf {
         .join("codex-home")
 }
 
-fn app_codex_home(state: &tauri::State<'_, AppState>) -> PathBuf {
-    app_codex_home_from_config_path(&state.config_path)
+fn app_auth_path_from_config_path(config_path: &Path) -> PathBuf {
+    app_codex_home_from_config_path(config_path).join("auth.json")
 }
 
 fn app_auth_path(state: &tauri::State<'_, AppState>) -> PathBuf {
-    app_codex_home(state).join("auth.json")
+    app_auth_path_from_config_path(&state.config_path)
 }
 
 fn switchboard_state_path_from_config_path(config_path: &Path) -> PathBuf {
@@ -363,48 +358,43 @@ fn read_cfg_base_text(config_path: &Path, cli_home: &Path) -> Result<String, Str
 }
 
 fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), String> {
-    // Persist the latest effective config (minus switchboard wiring) so we can re-apply user
-    // edits when switching back into swapped modes later. This is best-effort bookkeeping and
-    // must never prevent restoring the Codex dir back to its original gateway config.
-    if home_swap_state(cli_home)? == "swapped" {
-        let cur_cfg = read_text(&cli_cfg_path(cli_home))?;
-        let base_cfg = normalize_cfg_for_switchboard_base(&cur_cfg);
-        if let Err(e) = save_switchboard_base_cfg(&state.config_path, cli_home, &base_cfg) {
-            state.gateway.store.add_event(
-                "codex",
-                "error",
-                "codex.provider_switchboard.base_save_failed",
-                &format!("Provider switchboard base save failed: {e}"),
-                json!({
-                  "cli_home": cli_home.to_string_lossy(),
-                  "updated_at_unix_ms": unix_ms(),
-                }),
-            );
-        }
-
-        // Record the gateway config baseline (normalized) that we restore to. If the user later
-        // edits gateway config, we can detect it and prefer their latest edits over a stale base.
-        match read_backup_cfg_text(cli_home)
-            .map(|txt| normalize_cfg_for_switchboard_base(&txt))
-            .and_then(|gateway_norm_cfg| {
-                save_switchboard_base_meta(&state.config_path, cli_home, &gateway_norm_cfg)
-            }) {
-            Ok(()) => {}
-            Err(e) => {
-                state.gateway.store.add_event(
-                    "codex",
-                    "error",
-                    "codex.provider_switchboard.base_meta_save_failed",
-                    &format!("Provider switchboard base meta save failed: {e}"),
-                    json!({
-                      "cli_home": cli_home.to_string_lossy(),
-                      "updated_at_unix_ms": unix_ms(),
-                    }),
-                );
-            }
-        }
+    let gateway_token = state.secrets.ensure_gateway_token()?;
+    if gateway_token.trim().is_empty() {
+        return Err("Gateway token is empty. Generate it in Dashboard first.".to_string());
     }
-    restore_home_original(cli_home)
+
+    let base_cfg = read_cfg_base_text(&state.config_path, cli_home)?;
+    if let Err(e) = save_switchboard_base_cfg(&state.config_path, cli_home, &base_cfg) {
+        state.gateway.store.add_event(
+            "codex",
+            "error",
+            "codex.provider_switchboard.base_save_failed",
+            &format!("Provider switchboard base save failed: {e}"),
+            json!({
+              "cli_home": cli_home.to_string_lossy(),
+              "updated_at_unix_ms": unix_ms(),
+            }),
+        );
+    }
+    if let Err(e) = save_switchboard_base_meta(&state.config_path, cli_home, &base_cfg) {
+        state.gateway.store.add_event(
+            "codex",
+            "error",
+            "codex.provider_switchboard.base_meta_save_failed",
+            &format!("Provider switchboard base meta save failed: {e}"),
+            json!({
+              "cli_home": cli_home.to_string_lossy(),
+              "updated_at_unix_ms": unix_ms(),
+            }),
+        );
+    }
+
+    let listen_port = state.gateway.cfg.read().listen.port;
+    let gateway_base_url = format!("http://127.0.0.1:{listen_port}/v1");
+    let next_cfg =
+        build_direct_provider_cfg(&base_cfg, GATEWAY_MODEL_PROVIDER_ID, &gateway_base_url);
+    let next_auth = auth_with_openai_key(gateway_token.trim());
+    write_swapped_files(cli_home, &next_auth, &next_cfg)
 }
 
 fn strip_model_provider_line(cfg: &str) -> String {
@@ -873,11 +863,59 @@ fn sync_active_provider_target_for_key_impl(
     Ok(())
 }
 
+fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<(), String> {
+    let Some(sw) = load_switchboard_state_from_config_path(&state.config_path) else {
+        return Ok(());
+    };
+    if sw
+        .get("target")
+        .and_then(|v| v.as_str())
+        .map(|v| !v.eq_ignore_ascii_case("gateway"))
+        .unwrap_or(true)
+    {
+        return Ok(());
+    }
+
+    let homes = sw
+        .get("cli_homes")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let homes = resolve_cli_homes(homes)?;
+
+    let gateway_token = state.secrets.ensure_gateway_token()?;
+    if gateway_token.trim().is_empty() {
+        return Err("gateway token is empty".to_string());
+    }
+    let next_auth = auth_with_openai_key(gateway_token.trim());
+
+    for h in &homes {
+        let (mode, _) = home_mode(h)?;
+        if mode != "gateway" {
+            continue;
+        }
+        write_json(&cli_auth_path(h), &next_auth)
+            .map_err(|e| format!("write auth.json failed: {e}"))?;
+    }
+
+    Ok(())
+}
+
 pub fn sync_active_provider_target_for_key(
     state: &tauri::State<'_, AppState>,
     provider: &str,
 ) -> Result<(), String> {
     sync_active_provider_target_for_key_impl(state, provider)
+}
+
+pub fn sync_gateway_target_for_rotated_token(
+    state: &tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    sync_gateway_target_for_rotated_token_impl(state)
 }
 
 include!("provider_switchboard/actions.rs");
