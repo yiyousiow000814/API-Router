@@ -48,7 +48,8 @@ export function CodexSwapModal({
       <div className="aoModal" onClick={(e) => e.stopPropagation()}>
         <div className="aoModalTitle">Codex CLI directories</div>
         <div className="aoModalSub">
-          Windows defaults to %USERPROFILE%\\.codex. WSL2 defaults to WSL2 home (if available).
+          Windows-only (Windows + WSL2 UNC). Windows defaults to %USERPROFILE%\\.codex. WSL2 defaults to WSL2
+          home (if available).
         </div>
         <div style={{ display: 'grid', gap: 12, marginTop: 10 }}>
           <div className="aoCardInset" style={{ border: '1px solid rgba(13, 18, 32, 0.1)', borderRadius: 12 }}>
