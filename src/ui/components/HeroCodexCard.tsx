@@ -9,6 +9,10 @@ type HeroCodexProps = {
   refreshing: boolean
   onSwapAuthConfig: () => void
   onSwapOptions: () => void
+  swapTarget: 'windows' | 'wsl2' | 'both'
+  swapTargetWindowsEnabled: boolean
+  swapTargetWslEnabled: boolean
+  onChangeSwapTarget: (target: 'windows' | 'wsl2' | 'both') => void
   swapBadgeText: string
   swapBadgeTitle: string
 }
@@ -20,11 +24,21 @@ export function HeroCodexCard({
   refreshing,
   onSwapAuthConfig,
   onSwapOptions,
+  swapTarget,
+  swapTargetWindowsEnabled,
+  swapTargetWslEnabled,
+  onChangeSwapTarget,
   swapBadgeText,
   swapBadgeTitle,
 }: HeroCodexProps) {
   const [menuOpen, setMenuOpen] = useState<boolean>(false)
   const menuWrapRef = useRef<HTMLDivElement | null>(null)
+  const swapTargetLabel = swapTarget === 'windows' ? 'Windows' : swapTarget === 'wsl2' ? 'WSL2' : 'Both'
+  const availableTargets: Array<'windows' | 'wsl2' | 'both'> = []
+  if (swapTargetWindowsEnabled && swapTargetWslEnabled) availableTargets.push('both')
+  if (swapTargetWindowsEnabled) availableTargets.push('windows')
+  if (swapTargetWslEnabled) availableTargets.push('wsl2')
+  const canChooseTarget = availableTargets.length > 1
 
   useEffect(() => {
     if (!menuOpen) return
@@ -152,16 +166,58 @@ export function HeroCodexCard({
               </button>
               <span className="aoSplitBtnDivider" aria-hidden="true" />
               <button
-                className="aoSplitBtnBtn aoSplitBtnArrow"
+                className="aoSplitBtnBtn aoSplitBtnArrow aoSplitBtnArrowLabel"
                 aria-label="Swap options"
-                title="Swap options"
+                title={`Swap target: ${swapTargetLabel}`}
                 onClick={() => setMenuOpen((v) => !v)}
               >
-                ▼
+                {swapTargetLabel} ▼
               </button>
             </div>
             {menuOpen ? (
               <div className="aoMenu aoMenuCompact" role="menu" aria-label="Swap options menu">
+                {canChooseTarget && availableTargets.includes('both') ? (
+                  <button
+                    className="aoMenuItem"
+                    role="menuitemradio"
+                    aria-checked={swapTarget === 'both'}
+                    onClick={() => {
+                      setMenuOpen(false)
+                      onChangeSwapTarget('both')
+                    }}
+                  >
+                    <span className="aoMenuIcon" aria-hidden="true">{swapTarget === 'both' ? '•' : ''}</span>
+                    Swap target: Both
+                  </button>
+                ) : null}
+                {canChooseTarget && availableTargets.includes('windows') ? (
+                  <button
+                    className="aoMenuItem"
+                    role="menuitemradio"
+                    aria-checked={swapTarget === 'windows'}
+                    onClick={() => {
+                      setMenuOpen(false)
+                      onChangeSwapTarget('windows')
+                    }}
+                  >
+                    <span className="aoMenuIcon" aria-hidden="true">{swapTarget === 'windows' ? '•' : ''}</span>
+                    Swap target: Windows
+                  </button>
+                ) : null}
+                {canChooseTarget && availableTargets.includes('wsl2') ? (
+                  <button
+                    className="aoMenuItem"
+                    role="menuitemradio"
+                    aria-checked={swapTarget === 'wsl2'}
+                    onClick={() => {
+                      setMenuOpen(false)
+                      onChangeSwapTarget('wsl2')
+                    }}
+                  >
+                    <span className="aoMenuIcon" aria-hidden="true">{swapTarget === 'wsl2' ? '•' : ''}</span>
+                    Swap target: WSL2
+                  </button>
+                ) : null}
                 <button
                   className="aoMenuItem"
                   role="menuitem"
@@ -176,7 +232,7 @@ export function HeroCodexCard({
                       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
                     </svg>
                   </span>
-                  Configure dirs
+                  Configure directories
                 </button>
               </div>
             ) : null}

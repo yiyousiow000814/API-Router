@@ -426,6 +426,7 @@ pub fn run() {
             commands::probe_provider,
             commands::codex_cli_toggle_auth_config_swap,
             commands::codex_cli_default_home,
+            commands::codex_cli_default_wsl_home,
             commands::codex_cli_swap_status,
             commands::get_codex_cli_config_toml,
             commands::set_codex_cli_config_toml,

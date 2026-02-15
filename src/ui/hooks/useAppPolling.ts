@@ -7,7 +7,8 @@ type UseAppPollingOptions = {
   statusLastActivityUnixMs: number | undefined
   codexSwapDir1: string
   codexSwapDir2: string
-  codexSwapApplyBoth: boolean
+  codexSwapUseWindows: boolean
+  codexSwapUseWsl: boolean
   refreshStatus: () => Promise<void>
   refreshConfig: () => Promise<void>
   refreshProviderSwitchStatus: () => Promise<void>
@@ -20,7 +21,8 @@ export function useAppPolling({
   statusLastActivityUnixMs,
   codexSwapDir1,
   codexSwapDir2,
-  codexSwapApplyBoth,
+  codexSwapUseWindows,
+  codexSwapUseWsl,
   refreshStatus,
   refreshConfig,
   refreshProviderSwitchStatus,
@@ -160,5 +162,5 @@ export function useAppPolling({
         providerSwitchRefreshTimerRef.current = null
       }
     }
-  }, [codexSwapApplyBoth, codexSwapDir1, codexSwapDir2])
+  }, [codexSwapUseWindows, codexSwapUseWsl, codexSwapDir1, codexSwapDir2])
 }

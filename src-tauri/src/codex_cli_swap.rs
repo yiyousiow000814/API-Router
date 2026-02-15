@@ -29,6 +29,44 @@ fn user_profile_dir() -> Option<PathBuf> {
         })
 }
 
+#[cfg(windows)]
+fn default_wsl_distribution_and_home() -> Option<(String, String)> {
+    let output = std::process::Command::new("wsl.exe")
+        .args([
+            "-e",
+            "sh",
+            "-lc",
+            "printf '%s:%s' \"$WSL_DISTRO_NAME\" \"$HOME\"",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let line = text.trim();
+    let (distro, home) = line.split_once(':')?;
+    let distro = distro.trim();
+    let home = home.trim();
+    if distro.is_empty() || home.is_empty() {
+        return None;
+    }
+    Some((distro.to_string(), home.to_string()))
+}
+
+#[cfg(windows)]
+fn wsl_home_to_unc_codex_home(distro: &str, home: &str) -> Option<PathBuf> {
+    let distro = distro.trim();
+    let home = home.trim().trim_start_matches('/');
+    if distro.is_empty() || home.is_empty() {
+        return None;
+    }
+    let home_windows = home.replace('/', "\\");
+    Some(PathBuf::from(format!(
+        "\\\\wsl.localhost\\{distro}\\{home_windows}\\.codex"
+    )))
+}
+
 fn dedup_key(cli_home: &Path) -> String {
     // We want stable behavior on Windows where paths are case-insensitive and may use mixed slashes.
     // Avoid `canonicalize()` here (it requires existence and can fail); we already validate existence later.
@@ -56,6 +94,18 @@ pub fn default_cli_codex_home() -> Option<PathBuf> {
     // Intentionally *not* CODEX_HOME: the app sets CODEX_HOME to its own isolated directory.
     // This swap targets the user's default Codex CLI home (typically ~/.codex).
     user_profile_dir().map(|p| p.join(".codex"))
+}
+
+pub fn default_wsl_cli_codex_home() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let (distro, home) = default_wsl_distribution_and_home()?;
+        wsl_home_to_unc_codex_home(&distro, &home)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 fn app_codex_home(state: &tauri::State<'_, AppState>) -> PathBuf {
