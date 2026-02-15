@@ -100,7 +100,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     entry.is_agent = true;
                 }
             }
-            backfill_main_confirmation_from_verified_review(&mut map);
+            backfill_main_confirmation_from_verified_review(&mut map, now);
         }
 
         // Drop dead sessions aggressively (e.g. user Ctrl+C'd Codex).
@@ -219,10 +219,11 @@ fn apply_discovered_router_confirmation(
 
 fn backfill_main_confirmation_from_verified_review(
     map: &mut std::collections::HashMap<String, crate::orchestrator::gateway::ClientSessionRuntime>,
+    now_unix_ms: u64,
 ) {
     let anchors: Vec<(u32, Option<String>)> = map
         .values()
-        .filter(|v| v.confirmed_router && v.is_review)
+        .filter(|v| v.confirmed_router && v.is_review && v.last_discovered_unix_ms == now_unix_ms)
         .map(|v| (v.pid, v.wt_session.clone()))
         .collect();
 
@@ -232,6 +233,9 @@ fn backfill_main_confirmation_from_verified_review(
 
     for entry in map.values_mut() {
         if entry.confirmed_router || entry.is_agent || entry.is_review {
+            continue;
+        }
+        if entry.last_discovered_unix_ms != now_unix_ms {
             continue;
         }
         let same_proc = anchors.iter().any(|(pid, wt)| {
@@ -386,7 +390,7 @@ mod tests {
             },
         );
 
-        backfill_main_confirmation_from_verified_review(&mut map);
+        backfill_main_confirmation_from_verified_review(&mut map, 1);
 
         let main = map.get("main").expect("main row");
         assert!(main.confirmed_router);
@@ -394,6 +398,49 @@ mod tests {
             main.last_reported_model_provider.as_deref(),
             Some(GATEWAY_MODEL_PROVIDER_ID)
         );
+    }
+
+    #[test]
+    fn backfill_skips_old_main_session_even_if_same_wt() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "main_old".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "main_old".to_string(),
+                pid: 9527,
+                wt_session: Some("wt-1".to_string()),
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 1,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: false,
+            },
+        );
+        map.insert(
+            "review_now".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "review_now".to_string(),
+                pid: 9527,
+                wt_session: Some("wt-1".to_string()),
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 2,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                is_agent: true,
+                is_review: true,
+                confirmed_router: true,
+            },
+        );
+
+        backfill_main_confirmation_from_verified_review(&mut map, 2);
+
+        let main = map.get("main_old").expect("main_old row");
+        assert!(!main.confirmed_router);
+        assert_eq!(main.last_reported_model_provider.as_deref(), None);
     }
 }
 
