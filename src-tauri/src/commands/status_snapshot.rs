@@ -100,6 +100,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     entry.is_agent = true;
                 }
             }
+            backfill_main_confirmation_from_verified_review(&mut map);
         }
 
         // Drop dead sessions aggressively (e.g. user Ctrl+C'd Codex).
@@ -216,6 +217,40 @@ fn apply_discovered_router_confirmation(
     }
 }
 
+fn backfill_main_confirmation_from_verified_review(
+    map: &mut std::collections::HashMap<String, crate::orchestrator::gateway::ClientSessionRuntime>,
+) {
+    let anchors: Vec<(u32, Option<String>)> = map
+        .values()
+        .filter(|v| v.confirmed_router && v.is_review)
+        .map(|v| (v.pid, v.wt_session.clone()))
+        .collect();
+
+    if anchors.is_empty() {
+        return;
+    }
+
+    for entry in map.values_mut() {
+        if entry.confirmed_router || entry.is_agent || entry.is_review {
+            continue;
+        }
+        let same_proc = anchors.iter().any(|(pid, wt)| {
+            let pid_match = *pid != 0 && entry.pid != 0 && *pid == entry.pid;
+            let wt_match = wt
+                .as_deref()
+                .zip(entry.wt_session.as_deref())
+                .is_some_and(|(a, b)| a == b);
+            pid_match || wt_match
+        });
+        if !same_proc {
+            continue;
+        }
+        entry.confirmed_router = true;
+        entry.last_reported_model_provider =
+            Some(crate::constants::GATEWAY_MODEL_PROVIDER_ID.to_string());
+    }
+}
+
 fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
     let ts = i64::try_from(ts_unix_ms).ok()?;
     let dt = Local.timestamp_millis_opt(ts).single()?;
@@ -225,7 +260,10 @@ fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
-    use crate::commands::{apply_discovered_router_confirmation, merge_discovered_model_provider};
+    use crate::commands::{
+        apply_discovered_router_confirmation, backfill_main_confirmation_from_verified_review,
+        merge_discovered_model_provider,
+    };
     use crate::orchestrator::gateway::ClientSessionRuntime;
 
     #[test]
@@ -310,6 +348,52 @@ mod tests {
         apply_discovered_router_confirmation(&mut entry, true, true);
         assert!(entry.confirmed_router);
         assert_eq!(entry.last_reported_model_provider.as_deref(), None);
+    }
+
+    #[test]
+    fn verified_review_backfills_main_session_confirmation() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "main".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "main".to_string(),
+                pid: 9527,
+                wt_session: Some("wt-1".to_string()),
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 1,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: false,
+            },
+        );
+        map.insert(
+            "review".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "review".to_string(),
+                pid: 9527,
+                wt_session: Some("wt-1".to_string()),
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 1,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                is_agent: true,
+                is_review: true,
+                confirmed_router: true,
+            },
+        );
+
+        backfill_main_confirmation_from_verified_review(&mut map);
+
+        let main = map.get("main").expect("main row");
+        assert!(main.confirmed_router);
+        assert_eq!(
+            main.last_reported_model_provider.as_deref(),
+            Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
     }
 }
 

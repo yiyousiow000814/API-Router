@@ -18,10 +18,40 @@ export function buildCodexSwapBadge(
   if (!codexSwapStatus && !providerSwitchStatus) {
     return { badgeText: '', badgeTitle: 'Codex CLI swap status: loading' }
   }
-  const mode = providerSwitchStatus?.mode
+  const providerDirs = providerSwitchStatus?.dirs ?? []
+  const scopedProviderDirs = providerDirs
+  const scopedProviderMode = (() => {
+    if (!scopedProviderDirs.length) return providerSwitchStatus?.mode
+    const modes = Array.from(new Set(scopedProviderDirs.map((d) => (d.mode ?? '').trim()).filter(Boolean)))
+    if (modes.length !== 1) return 'mixed'
+    const m = modes[0]
+    if (m === 'provider') {
+      const providerIds = Array.from(
+        new Set(
+          scopedProviderDirs
+            .map((d) => (d.model_provider ?? '').trim())
+            .filter(Boolean),
+        ),
+      )
+      if (providerIds.length > 1) return 'mixed'
+    }
+    return m === 'gateway' || m === 'official' || m === 'provider' || m === 'mixed' ? m : providerSwitchStatus?.mode
+  })()
+  const mode = scopedProviderMode
+  const scopedProviderModel = (() => {
+    if (!scopedProviderDirs.length) return providerSwitchStatus?.model_provider
+    const vals = Array.from(
+      new Set(
+        scopedProviderDirs
+          .map((d) => (d.model_provider ?? '').trim())
+          .filter(Boolean),
+      ),
+    )
+    return vals.length === 1 ? vals[0] : providerSwitchStatus?.model_provider
+  })()
   const switchboardLabel =
     mode === 'provider'
-      ? 'DP' + (providerSwitchStatus?.model_provider ? ':' + providerSwitchStatus.model_provider : '')
+      ? 'DP' + (scopedProviderModel ? ':' + scopedProviderModel : '')
       : mode === 'official'
         ? 'Auth'
         : mode === 'gateway'
