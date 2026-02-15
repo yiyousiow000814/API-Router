@@ -100,7 +100,7 @@ pub fn default_wsl_cli_codex_home() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         let (distro, home) = default_wsl_distribution_and_home()?;
-        return wsl_home_to_unc_codex_home(&distro, &home);
+        wsl_home_to_unc_codex_home(&distro, &home)
     }
     #[cfg(not(windows))]
     {

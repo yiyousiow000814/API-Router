@@ -126,7 +126,7 @@ export function ProviderSwitchboardPanel({
       <div className="aoSwitchboardTargetsGrid">
         {sectionTargets.length ? (
           sectionTargets.map((section) => {
-            const dirStatus = providerStatusByHome.get(section.home)
+            const dirStatus = providerStatusByHome.get(normalizePathForCompare(section.home))
             const activeMode = dirStatus?.mode ?? null
             const activeModelProvider = dirStatus?.model_provider ?? null
             return (

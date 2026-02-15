@@ -331,7 +331,7 @@ mod tests {
         std::fs::write(cli_cfg_path(&cli_home), swapped_cfg).unwrap();
 
         // Persist base (for next swap), then restore gateway config exactly.
-        let base_cfg = normalize_cfg_for_switchboard_base(&swapped_cfg);
+        let base_cfg = normalize_cfg_for_switchboard_base(swapped_cfg);
         save_switchboard_base_cfg(&config_path, &cli_home, &base_cfg).expect("save base");
         let gateway_norm = normalize_cfg_for_switchboard_base("model = \"gpt-5.2\"\n");
         save_switchboard_base_meta(&config_path, &cli_home, &gateway_norm).expect("save meta");

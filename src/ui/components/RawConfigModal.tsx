@@ -251,10 +251,11 @@ export function RawConfigModal({
           <div className="aoRawConfigDual">
             {homeOptions.map((home) => {
               const parsed = parseHomeLabel(home)
-              const disabled = Boolean(loadingByHome[home] || savingByHome[home] || !loadedByHome[home])
+              const isDraft = Boolean(draftByHome[home])
+              const disabled = Boolean(loadingByHome[home] || (!isDraft && savingByHome[home]) || !loadedByHome[home])
               const placeholder = loadingByHome[home]
                 ? 'Loading config.toml...'
-                : draftByHome[home]
+                : isDraft
                   ? 'Draft pad: you can write here first. It autosaves locally.'
                   : 'config.toml is empty'
               return (
@@ -275,7 +276,7 @@ export function RawConfigModal({
                           Retry
                         </button>
                       ) : null}
-                      {!draftByHome[home] ? (
+                      {!isDraft ? (
                         <button className="aoBtn aoBtnPrimary" disabled={disabled} onClick={() => onSaveHome(home)}>
                           {savingByHome[home] ? 'Saving...' : 'Save'}
                         </button>
