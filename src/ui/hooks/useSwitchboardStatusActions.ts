@@ -187,7 +187,7 @@ export function useSwitchboardStatusActions({
         overall,
         dirs: nextDirs,
       })
-      const nextModeForHomes: 'gateway' | 'official' = anySwapped ? 'official' : 'gateway'
+      const nextModeForHomes: 'gateway' | 'official' = anySwapped ? 'gateway' : 'official'
       const existingProviderDirs =
         providerSwitchStatus?.dirs ??
         knownHomes.map((home) => ({ cli_home: home, mode: 'gateway', model_provider: null }))
@@ -208,14 +208,14 @@ export function useSwitchboardStatusActions({
         dirs: updatedProviderDirs,
         provider_options: (devConfig.provider_order ?? []).filter((n) => n !== 'official'),
       })
-      flashToast(anySwapped ? 'Switched to official [TEST]' : 'Switched to gateway [TEST]')
+      flashToast(anySwapped ? 'Switched to gateway [TEST]' : 'Switched to official [TEST]')
       return
     }
     const res = await invoke<{ ok: boolean; mode: 'swapped' | 'restored'; cli_homes: string[] }>(
       'codex_cli_toggle_auth_config_swap',
       { cliHomes: homes },
     )
-    flashToast(res.mode === 'swapped' ? 'Switched to gateway' : 'Switched to official')
+    flashToast(res.mode === 'swapped' ? 'Switched to official' : 'Switched to gateway')
     await refreshStatus({ refreshSwapStatus: false })
     await Promise.all([
       refreshCodexSwapStatus(homes),
