@@ -640,19 +640,104 @@ fn model_provider_id(cfg_txt: &str) -> Option<String> {
     None
 }
 
-fn home_mode(cli_home: &Path) -> Result<(String, Option<String>), String> {
-    let state = home_swap_state(cli_home)?;
-    if state == "original" {
-        return Ok(("gateway".to_string(), None));
+fn parse_toml_string_or_bare_value(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
     }
+    if let Some(stripped) = s.strip_prefix('"') {
+        let mut out = String::new();
+        for c in stripped.chars() {
+            if c == '"' {
+                break;
+            }
+            out.push(c);
+        }
+        let out = out.trim().to_string();
+        return (!out.is_empty()).then_some(out);
+    }
+    if let Some(stripped) = s.strip_prefix('\'') {
+        let mut out = String::new();
+        for c in stripped.chars() {
+            if c == '\'' {
+                break;
+            }
+            out.push(c);
+        }
+        let out = out.trim().to_string();
+        return (!out.is_empty()).then_some(out);
+    }
+    let v = s.split('#').next().unwrap_or(s).trim();
+    (!v.is_empty()).then_some(v.to_string())
+}
+
+fn model_provider_section_base_url(cfg_txt: &str, provider_id: &str) -> Option<String> {
+    let mut in_target_section = false;
+    for line in cfg_txt.lines() {
+        let t = line.trim();
+        if t.starts_with('[') && t.ends_with(']') {
+            in_target_section = false;
+            let inner = &t[1..t.len() - 1];
+            let Some(rest) = inner.strip_prefix("model_providers.") else {
+                continue;
+            };
+            let key = if let Some(stripped) = rest.strip_prefix('"') {
+                stripped.split('"').next().unwrap_or("").trim().to_string()
+            } else {
+                rest.trim().to_string()
+            };
+            in_target_section = key == provider_id;
+            continue;
+        }
+        if !in_target_section {
+            continue;
+        }
+        let Some(after_key) = t.strip_prefix("base_url") else {
+            continue;
+        };
+        let mut rest = after_key.trim_start();
+        if !rest.starts_with('=') {
+            continue;
+        }
+        rest = rest[1..].trim_start();
+        if let Some(v) = parse_toml_string_or_bare_value(rest) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn normalize_base_url_for_compare(s: &str) -> String {
+    let mut out = s.trim().to_ascii_lowercase();
+    while out.ends_with('/') {
+        out.pop();
+    }
+    out
+}
+
+fn provider_name_by_base_url(
+    app_cfg: &crate::orchestrator::config::AppConfig,
+    base_url: &str,
+) -> Option<String> {
+    let target = normalize_base_url_for_compare(base_url);
+    if target.is_empty() {
+        return None;
+    }
+    app_cfg.providers.iter().find_map(|(name, cfg)| {
+        (normalize_base_url_for_compare(&cfg.base_url) == target).then(|| name.clone())
+    })
+}
+
+fn home_mode(cli_home: &Path) -> Result<(String, Option<String>), String> {
     let cfg = read_text(&cli_cfg_path(cli_home))?;
     let provider = model_provider_id(&cfg);
-    let mode = if provider.is_some() {
-        "provider"
-    } else {
-        "official"
-    };
-    Ok((mode.to_string(), provider))
+    if let Some(p) = provider.clone() {
+        if p.eq_ignore_ascii_case(GATEWAY_MODEL_PROVIDER_ID) {
+            return Ok(("gateway".to_string(), None));
+        }
+        return Ok(("provider".to_string(), Some(p)));
+    }
+    Ok(("official".to_string(), None))
 }
 
 pub fn get_status(
@@ -671,7 +756,17 @@ pub fn get_status(
     let mut dirs = Vec::new();
     for h in &homes {
         ensure_cli_files_exist(h)?;
-        let (mode, provider) = home_mode(h)?;
+        let cfg_txt = read_text(&cli_cfg_path(h))?;
+        let (mode, provider_raw) = home_mode(h)?;
+        let provider = if mode == "provider" {
+            provider_raw.and_then(|pid| {
+                model_provider_section_base_url(&cfg_txt, &pid)
+                    .and_then(|u| provider_name_by_base_url(&app_cfg, &u))
+                    .or(Some(pid))
+            })
+        } else {
+            None
+        };
         dirs.push(json!({
           "cli_home": h.to_string_lossy(),
           "mode": mode,

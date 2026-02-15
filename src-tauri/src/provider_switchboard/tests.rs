@@ -121,6 +121,83 @@ mod tests {
     }
 
     #[test]
+    fn home_mode_uses_config_provider_when_original() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+        std::fs::write(
+            cli_cfg_path(&cli_home),
+            "model_provider = \"codex\"\nmodel = \"gpt-5.2\"\n",
+        )
+        .unwrap();
+
+        let (mode, provider) = home_mode(&cli_home).expect("home_mode");
+        assert_eq!(mode, "provider");
+        assert_eq!(provider.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn home_mode_treats_api_router_as_gateway() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+        std::fs::write(
+            cli_cfg_path(&cli_home),
+            "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+        )
+        .unwrap();
+
+        let (mode, provider) = home_mode(&cli_home).expect("home_mode");
+        assert_eq!(mode, "gateway");
+        assert_eq!(provider, None);
+    }
+
+    #[test]
+    fn model_provider_section_base_url_reads_quoted_section() {
+        let cfg = concat!(
+            "model_provider = \"codex\"\n",
+            "[model_providers.\"codex\"]\n",
+            "name = \"codex\"\n",
+            "base_url = \"https://code.pumpkinai.vip/v1\"\n",
+            "wire_api = \"responses\"\n",
+        );
+        assert_eq!(
+            model_provider_section_base_url(cfg, "codex").as_deref(),
+            Some("https://code.pumpkinai.vip/v1")
+        );
+    }
+
+    #[test]
+    fn provider_name_by_base_url_matches_config_provider() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        let state = crate::app_state::build_state(config_path, data_dir).expect("state");
+        let target_name = {
+            let mut cfg = state.gateway.cfg.write();
+            let name = cfg
+                .providers
+                .keys()
+                .find(|k| k.as_str() != "official")
+                .cloned()
+                .expect("at least one non-official provider");
+            cfg.providers
+                .get_mut(&name)
+                .expect("provider exists")
+                .base_url = "https://code.pumpkinai.vip/v1".to_string();
+            name
+        };
+        let app_cfg = state.gateway.cfg.read().clone();
+        assert_eq!(
+            provider_name_by_base_url(&app_cfg, "https://code.pumpkinai.vip/v1").as_deref(),
+            Some(target_name.as_str())
+        );
+    }
+
+    #[test]
     fn normalize_cfg_for_switchboard_base_preserves_user_fields() {
         let cfg = concat!(
             "model_provider = \"packycode\"\n",

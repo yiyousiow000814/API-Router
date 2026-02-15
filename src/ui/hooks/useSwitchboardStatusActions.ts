@@ -66,7 +66,7 @@ export function useSwitchboardStatusActions({
               codexSwapUseWslRef.current,
             )
       const res = await invoke<CodexSwapStatus>('codex_cli_swap_status', {
-        cli_homes: homes,
+        cliHomes: homes,
       })
       setCodexSwapStatus(res)
     } catch {
@@ -96,7 +96,7 @@ export function useSwitchboardStatusActions({
     }
     try {
       const res = await invoke<ProviderSwitchboardStatus>('provider_switchboard_status', {
-        cli_homes: homes,
+        cliHomes: homes,
       })
       setProviderSwitchStatus(res)
     } catch (e) {
@@ -160,7 +160,7 @@ export function useSwitchboardStatusActions({
     const homes = cliHomes.map((s) => s.trim()).filter(Boolean)
     const res = await invoke<{ ok: boolean; mode: 'swapped' | 'restored'; cli_homes: string[] }>(
       'codex_cli_toggle_auth_config_swap',
-      { cli_homes: homes },
+      { cliHomes: homes },
     )
     flashToast(res.mode === 'swapped' ? 'Swapped Codex auth/config' : 'Restored Codex auth/config')
     await refreshStatus({ refreshSwapStatus: false })
@@ -176,10 +176,11 @@ export function useSwitchboardStatusActions({
     provider?: string,
     cliHomes?: string[],
   ) {
+    const allHomes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
     const homes =
       cliHomes && cliHomes.length
         ? cliHomes
-        : resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
+        : allHomes
     setProviderSwitchBusy(true)
     try {
       if (isDevPreview) {
@@ -219,7 +220,7 @@ export function useSwitchboardStatusActions({
         return
       }
       const res = await invoke<ProviderSwitchboardStatus>('provider_switchboard_set_target', {
-        cli_homes: homes,
+        cliHomes: homes,
         target,
         provider: provider ?? null,
       })
@@ -228,7 +229,11 @@ export function useSwitchboardStatusActions({
         target === 'provider' ? 'Switched to provider: ' + provider : target === 'gateway' ? 'Switched to gateway' : 'Switched to official'
       flashToast(msg)
       await refreshStatus({ refreshSwapStatus: false })
-      await Promise.all([refreshCodexSwapStatus(homes), refreshConfig({ refreshProviderSwitchStatus: false })])
+      await Promise.all([
+        refreshCodexSwapStatus(homes),
+        refreshProviderSwitchStatus(allHomes),
+        refreshConfig({ refreshProviderSwitchStatus: false }),
+      ])
     } catch (e) {
       flashToast(String(e), 'error')
     } finally {
