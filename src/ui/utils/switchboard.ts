@@ -48,6 +48,16 @@ export function buildCodexSwapBadge(
     const modes = Array.from(new Set(scopedProviderDirs.map((d) => (d.mode ?? '').trim()).filter(Boolean)))
     if (modes.length !== 1) return 'mixed'
     const m = modes[0]
+    if (m === 'provider') {
+      const providerIds = Array.from(
+        new Set(
+          scopedProviderDirs
+            .map((d) => (d.model_provider ?? '').trim())
+            .filter(Boolean),
+        ),
+      )
+      if (providerIds.length > 1) return 'mixed'
+    }
     return m === 'gateway' || m === 'official' || m === 'provider' || m === 'mixed' ? m : providerSwitchStatus?.mode
   })()
   const mode = scopedProviderMode
