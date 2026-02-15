@@ -18,6 +18,7 @@ type Props = {
   savingByHome: Record<string, boolean>
   dirtyByHome: Record<string, boolean>
   loadedByHome: Record<string, boolean>
+  draftByHome: Record<string, boolean>
   onChangeHome: (home: string, next: string) => void
   onSaveHome: (home: string) => void
   onRetryHome: (home: string) => void
@@ -33,6 +34,7 @@ export function RawConfigModal({
   savingByHome,
   dirtyByHome,
   loadedByHome,
+  draftByHome,
   onChangeHome,
   onSaveHome,
   onRetryHome,
@@ -219,7 +221,7 @@ export function RawConfigModal({
     return { kind: raw.slice(0, idx), path: raw.slice(idx + 2) }
   }
   const statusText = (home: string) => {
-    if (savingByHome[home]) return 'Saving'
+    if (savingByHome[home]) return 'Saving...'
     if (loadingByHome[home]) return 'Loading'
     if (!loadedByHome[home]) return 'Load Failed'
     if (dirtyByHome[home]) return 'Not Saved'
@@ -239,7 +241,7 @@ export function RawConfigModal({
         <div className="aoModalHeader">
           <div>
             <div className="aoModalTitle">Raw Codex config.toml</div>
-            <div className="aoModalSub">Edit both Windows/WSL2 configs directly. Save applies per side.</div>
+            <div className="aoModalSub">Enabled side reads/writes real config.toml. Disabled side is a local draft pad.</div>
           </div>
           <button className="aoBtn aoRawConfigCloseBtn" onClick={onClose}>
             Close
@@ -250,6 +252,11 @@ export function RawConfigModal({
             {homeOptions.map((home) => {
               const parsed = parseHomeLabel(home)
               const disabled = Boolean(loadingByHome[home] || savingByHome[home] || !loadedByHome[home])
+              const placeholder = loadingByHome[home]
+                ? 'Loading config.toml...'
+                : draftByHome[home]
+                  ? 'Draft pad: you can write here first. It autosaves locally.'
+                  : 'config.toml is empty'
               return (
                 <section key={home} className="aoRawConfigPane">
                   <div className="aoRawConfigPaneHead">
@@ -268,9 +275,11 @@ export function RawConfigModal({
                           Retry
                         </button>
                       ) : null}
-                      <button className="aoBtn aoBtnPrimary" disabled={disabled} onClick={() => onSaveHome(home)}>
-                        {savingByHome[home] ? 'Saving...' : 'Save'}
-                      </button>
+                      {!draftByHome[home] ? (
+                        <button className="aoBtn aoBtnPrimary" disabled={disabled} onClick={() => onSaveHome(home)}>
+                          {savingByHome[home] ? 'Saving...' : 'Save'}
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                   <div
@@ -296,7 +305,7 @@ export function RawConfigModal({
                       }}
                       onTouchMove={() => activateScrollbar(home)}
                       spellCheck={false}
-                      placeholder={loadingByHome[home] ? 'Loading config.toml...' : 'config.toml is empty'}
+                      placeholder={placeholder}
                       disabled={disabled}
                     />
                     <div

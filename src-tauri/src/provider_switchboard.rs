@@ -723,9 +723,18 @@ fn provider_name_by_base_url(
     if target.is_empty() {
         return None;
     }
-    app_cfg.providers.iter().find_map(|(name, cfg)| {
-        (normalize_base_url_for_compare(&cfg.base_url) == target).then(|| name.clone())
-    })
+    let matches = app_cfg
+        .providers
+        .iter()
+        .filter_map(|(name, cfg)| {
+            (normalize_base_url_for_compare(&cfg.base_url) == target).then(|| name.clone())
+        })
+        .collect::<Vec<_>>();
+    if matches.len() == 1 {
+        Some(matches[0].clone())
+    } else {
+        None
+    }
 }
 
 fn home_mode(cli_home: &Path) -> Result<(String, Option<String>), String> {

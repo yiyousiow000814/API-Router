@@ -79,6 +79,7 @@ type Props = {
   rawConfigSavingByHome: Record<string, boolean>
   rawConfigDirtyByHome: Record<string, boolean>
   rawConfigLoadedByHome: Record<string, boolean>
+  rawConfigDraftByHome: Record<string, boolean>
   onRawConfigTextChange: (home: string, next: string) => void
   saveRawConfigHome: (home: string) => Promise<void>
   retryRawConfigHome: (home: string) => Promise<void>
@@ -241,6 +242,7 @@ export function AppModals(props: Props) {
     rawConfigSavingByHome,
     rawConfigDirtyByHome,
     rawConfigLoadedByHome,
+    rawConfigDraftByHome,
     onRawConfigTextChange,
     saveRawConfigHome,
     retryRawConfigHome,
@@ -451,6 +453,7 @@ requires_openai_auth = true`}
         savingByHome={rawConfigSavingByHome}
         dirtyByHome={rawConfigDirtyByHome}
         loadedByHome={rawConfigLoadedByHome}
+        draftByHome={rawConfigDraftByHome}
         onChangeHome={onRawConfigTextChange}
         onSaveHome={(home) => void saveRawConfigHome(home)}
         onRetryHome={(home) => void retryRawConfigHome(home)}

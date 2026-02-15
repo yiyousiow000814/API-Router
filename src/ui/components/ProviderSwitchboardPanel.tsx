@@ -2,6 +2,7 @@ import type { ProviderSwitchboardStatus } from '../types'
 import { SwitchboardProvidersGrid, type SwitchboardProviderCard } from './SwitchboardProvidersGrid'
 import { SwitchboardQuickSwitch } from './SwitchboardQuickSwitch'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
+import { normalizePathForCompare } from '../utils/path'
 import './ProviderSwitchboardPanel.css'
 
 type ProviderSwitchboardPanelProps = {
@@ -34,7 +35,9 @@ export function ProviderSwitchboardPanel({
   onOpenRawConfig,
 }: ProviderSwitchboardPanelProps) {
   const providerStatusByHome = new Map(
-    (providerSwitchStatus?.dirs ?? []).map((item) => [item.cli_home.trim(), item]),
+    (providerSwitchStatus?.dirs ?? [])
+      .map((item) => [normalizePathForCompare(item.cli_home), item] as const)
+      .filter(([k]) => Boolean(k)),
   )
   const windowsHome = codexSwapUseWindows ? codexSwapDir1.trim() : ''
   const wslHome = codexSwapUseWsl ? codexSwapDir2.trim() : ''
@@ -47,7 +50,8 @@ export function ProviderSwitchboardPanel({
     { key: 'wsl2', label: 'WSL2', home: codexSwapDir2.trim(), enabled: codexSwapUseWsl },
   ]
   const compareValues = compareTargets.map((target) => {
-    const dirStatus = target.enabled && target.home ? providerStatusByHome.get(target.home) : null
+    const dirStatus =
+      target.enabled && target.home ? providerStatusByHome.get(normalizePathForCompare(target.home)) : null
     const mode = target.enabled ? dirStatus?.mode ?? '' : ''
     const provider =
       mode === 'gateway'

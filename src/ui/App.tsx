@@ -44,11 +44,15 @@ import { useUsageUiDerived } from './hooks/useUsageUiDerived'
 import { useMainContentCallbacks } from './hooks/useMainContentCallbacks'
 import {
   buildCodexSwapBadge,
-  resolveConfigEditorHomes,
   resolveCliHomes,
 } from './utils/switchboard'
 import { usageProviderRowKey } from './utils/usageStatisticsView'
 type TopPage = 'dashboard' | 'usage_statistics' | 'provider_switchboard'
+const RAW_DRAFT_WINDOWS_KEY = '__draft_windows__'
+const RAW_DRAFT_WSL_KEY = '__draft_wsl2__'
+const RAW_DRAFT_STORAGE_KEY = 'ao.rawConfigDraft.shared.v1'
+const RAW_DRAFT_WINDOWS_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.windows.v1'
+const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.wsl2.v1'
 const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
 export default function App() {
   const isDevPreview = useMemo(() => {
@@ -104,6 +108,7 @@ export default function App() {
   const [rawConfigSavingByHome, setRawConfigSavingByHome] = useState<Record<string, boolean>>({})
   const [rawConfigDirtyByHome, setRawConfigDirtyByHome] = useState<Record<string, boolean>>({})
   const [rawConfigLoadedByHome, setRawConfigLoadedByHome] = useState<Record<string, boolean>>({})
+  const [rawConfigDraftByHome, setRawConfigDraftByHome] = useState<Record<string, boolean>>({})
   const [rawConfigHomeOptions, setRawConfigHomeOptions] = useState<string[]>([])
   const [rawConfigHomeLabels, setRawConfigHomeLabels] = useState<Record<string, string>>({})
   const [instructionModalOpen, setInstructionModalOpen] = useState<boolean>(false)
@@ -202,6 +207,7 @@ export default function App() {
   const toastTimerRef = useRef<number | null>(null)
   const rawConfigTestFailOnceRef = useRef<Record<string, boolean>>({})
   const rawConfigTextsRef = useRef<Record<string, string>>({})
+  const rawConfigDraftAutoSaveTimerRef = useRef<Record<string, number>>({})
   const setRawConfigTextsSync = (
     updater: Record<string, string> | ((prev: Record<string, string>) => Record<string, string>),
   ) => {
@@ -273,6 +279,42 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
   }
 
+  function draftStorageKeyForHome(home: string): string | null {
+    if (home === RAW_DRAFT_WINDOWS_KEY || home === RAW_DRAFT_WSL_KEY) return RAW_DRAFT_STORAGE_KEY
+    return null
+  }
+
+  function readDraftFromStorage(home: string): string {
+    if (typeof window === 'undefined') return ''
+    const key = draftStorageKeyForHome(home)
+    if (!key) return ''
+    try {
+      const current = window.localStorage.getItem(key)
+      if (current != null) return current
+      // one-time legacy fallback: prefer non-empty value if it exists
+      const legacyWindows = window.localStorage.getItem(RAW_DRAFT_WINDOWS_STORAGE_KEY_LEGACY) ?? ''
+      const legacyWsl = window.localStorage.getItem(RAW_DRAFT_WSL_STORAGE_KEY_LEGACY) ?? ''
+      const migrated = legacyWindows || legacyWsl
+      if (migrated) {
+        window.localStorage.setItem(key, migrated)
+      }
+      return migrated
+    } catch {
+      return ''
+    }
+  }
+
+  function writeDraftToStorage(home: string, text: string): void {
+    if (typeof window === 'undefined') return
+    const key = draftStorageKeyForHome(home)
+    if (!key) return
+    try {
+      window.localStorage.setItem(key, text)
+    } catch {
+      // ignore storage write failures
+    }
+  }
+
   async function loadRawConfigHome(home: string) {
     const target = home.trim()
     if (!target) return
@@ -316,52 +358,94 @@ export default function App() {
     }
   }
 
+  function buildRawConfigModalPanes(
+    windowsEnabled: boolean,
+    windowsHome: string,
+    wslEnabled: boolean,
+    wslHome: string,
+  ): {
+    homeOptions: string[]
+    draftByHome: Record<string, boolean>
+    labels: Record<string, string>
+  } {
+    const windowsPane = windowsEnabled && windowsHome ? windowsHome : RAW_DRAFT_WINDOWS_KEY
+    const wslPane = wslEnabled && wslHome ? wslHome : RAW_DRAFT_WSL_KEY
+    const windowsIsDraft = windowsPane === RAW_DRAFT_WINDOWS_KEY
+    const wslIsDraft = wslPane === RAW_DRAFT_WSL_KEY
+
+    let homeOptions: string[]
+    if (!windowsIsDraft && !wslIsDraft) {
+      homeOptions = [windowsPane, wslPane]
+    } else if (!windowsIsDraft && wslIsDraft) {
+      homeOptions = [windowsPane, wslPane]
+    } else if (windowsIsDraft && !wslIsDraft) {
+      homeOptions = [wslPane, windowsPane]
+    } else {
+      homeOptions = [windowsPane, wslPane]
+    }
+
+    const draftByHome: Record<string, boolean> = {
+      [windowsPane]: windowsIsDraft,
+      [wslPane]: wslIsDraft,
+    }
+    const labels: Record<string, string> = {
+      [windowsPane]: windowsIsDraft
+        ? 'Draft: local scratchpad (not written to file)'
+        : `Windows: ${windowsPane}`,
+      [wslPane]: wslIsDraft
+        ? 'Draft: local scratchpad (not written to file)'
+        : `WSL2: ${wslPane}`,
+    }
+    return { homeOptions, draftByHome, labels }
+  }
+
   async function openRawConfigModal(options?: { reopenGettingStartedOnFail?: boolean }) {
     const reopenGettingStartedOnFail = Boolean(options?.reopenGettingStartedOnFail)
     if (rawConfigTestMode || isDevPreview) {
       const mockWindowsHome = 'C:\\Users\\<user>\\.codex'
       const mockWslHome = '\\\\wsl.localhost\\Ubuntu\\home\\<user>\\.codex'
-      setRawConfigHomeOptions([mockWindowsHome, mockWslHome])
-      setRawConfigHomeLabels({
-        [mockWindowsHome]: `Windows: ${mockWindowsHome}`,
-        [mockWslHome]: `WSL2: ${mockWslHome}`,
-      })
-      const homeOptions = [mockWindowsHome, mockWslHome]
-      setRawConfigTextsSync(Object.fromEntries(homeOptions.map((home) => [home, ''])))
+      const { homeOptions, draftByHome, labels } = buildRawConfigModalPanes(
+        codexSwapUseWindows,
+        mockWindowsHome,
+        codexSwapUseWsl,
+        mockWslHome,
+      )
+      setRawConfigHomeOptions(homeOptions)
+      setRawConfigDraftByHome(draftByHome)
+      setRawConfigHomeLabels(labels)
+      setRawConfigTextsSync(
+        Object.fromEntries(homeOptions.map((home) => [home, draftByHome[home] ? readDraftFromStorage(home) : ''])),
+      )
       setRawConfigDirtyByHome({})
-      setRawConfigLoadedByHome({})
+      setRawConfigLoadedByHome(Object.fromEntries(homeOptions.map((home) => [home, draftByHome[home]])))
       setRawConfigSavingByHome({})
       setRawConfigLoadingByHome({})
       rawConfigTestFailOnceRef.current = {}
       setRawConfigModalOpen(true)
-      await Promise.all(homeOptions.map((home) => loadRawConfigHome(home)))
+      await Promise.all(homeOptions.filter((home) => !draftByHome[home]).map((home) => loadRawConfigHome(home)))
       return
     }
     try {
-      const homes = resolveConfigEditorHomes(codexSwapDir1, codexSwapDir2)
-      let homeOptions = homes
-      if (!homeOptions.length) {
-        const defaultHome = await invoke<string>('codex_cli_default_home')
-        homeOptions = [defaultHome]
-      }
-      const labels: Record<string, string> = {}
-      if (homeOptions.length > 1) {
-        homeOptions.forEach((home) => {
-          const lower = home.toLowerCase()
-          const isWsl = lower.startsWith('\\\\wsl.localhost\\') || lower.startsWith('\\\\wsl$\\')
-          const kind = isWsl ? 'WSL2' : 'Windows'
-          labels[home] = `${kind}: ${home}`
-        })
-      }
+      const windowsHome = codexSwapDir1.trim()
+      const wslHome = codexSwapDir2.trim()
+      const { homeOptions, draftByHome, labels } = buildRawConfigModalPanes(
+        codexSwapUseWindows,
+        windowsHome,
+        codexSwapUseWsl,
+        wslHome,
+      )
+      setRawConfigDraftByHome(draftByHome)
       setRawConfigHomeOptions(homeOptions)
       setRawConfigHomeLabels(labels)
-      setRawConfigTextsSync(Object.fromEntries(homeOptions.map((home) => [home, ''])))
+      setRawConfigTextsSync(
+        Object.fromEntries(homeOptions.map((home) => [home, draftByHome[home] ? readDraftFromStorage(home) : ''])),
+      )
       setRawConfigDirtyByHome({})
-      setRawConfigLoadedByHome({})
+      setRawConfigLoadedByHome(Object.fromEntries(homeOptions.map((home) => [home, Boolean(draftByHome[home])])))
       setRawConfigSavingByHome({})
       setRawConfigLoadingByHome({})
       setRawConfigModalOpen(true)
-      await Promise.all(homeOptions.map((home) => loadRawConfigHome(home)))
+      await Promise.all(homeOptions.filter((home) => !draftByHome[home]).map((home) => loadRawConfigHome(home)))
     } catch (e) {
       const msg = String(e)
       flashToast(msg, 'error')
@@ -372,6 +456,9 @@ export default function App() {
   function updateRawConfigText(home: string, next: string) {
     setRawConfigTextsSync((prev) => ({ ...prev, [home]: next }))
     setRawConfigDirtyByHome((prev) => ({ ...prev, [home]: true }))
+    if (rawConfigDraftByHome[home]) {
+      setRawConfigSavingByHome((prev) => ({ ...prev, [home]: true }))
+    }
   }
 
   async function saveRawConfigHome(home: string) {
@@ -379,6 +466,14 @@ export default function App() {
     if (!target) return
     if (rawConfigSavingByHome[target]) return
     if (!rawConfigLoadedByHome[target]) return
+    if (rawConfigDraftByHome[target]) {
+      setRawConfigSavingByHome((prev) => ({ ...prev, [target]: true }))
+      writeDraftToStorage(target, rawConfigTextsRef.current[target] ?? '')
+      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
+      setRawConfigSavingByHome((prev) => ({ ...prev, [target]: false }))
+      flashToast('Saved draft')
+      return
+    }
     if (rawConfigTestMode || isDevPreview) {
       setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
       flashToast('[TEST] Saved in sandbox only (no real files changed).')
@@ -429,6 +524,34 @@ export default function App() {
     setProviderSwitchStatus,
     flashToast,
   })
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    for (const [home, timer] of Object.entries(rawConfigDraftAutoSaveTimerRef.current)) {
+      if (!rawConfigDraftByHome[home] && timer != null) {
+        window.clearTimeout(timer)
+        delete rawConfigDraftAutoSaveTimerRef.current[home]
+      }
+    }
+    for (const [home, isDraft] of Object.entries(rawConfigDraftByHome)) {
+      if (!isDraft) continue
+      if (!rawConfigDirtyByHome[home]) continue
+      const prevTimer = rawConfigDraftAutoSaveTimerRef.current[home]
+      if (prevTimer != null) window.clearTimeout(prevTimer)
+      rawConfigDraftAutoSaveTimerRef.current[home] = window.setTimeout(() => {
+        setRawConfigSavingByHome((prev) => ({ ...prev, [home]: true }))
+        writeDraftToStorage(home, rawConfigTextsRef.current[home] ?? '')
+        setRawConfigDirtyByHome((prev) => ({ ...prev, [home]: false }))
+        setRawConfigSavingByHome((prev) => ({ ...prev, [home]: false }))
+        delete rawConfigDraftAutoSaveTimerRef.current[home]
+      }, 450)
+    }
+    return () => {
+      for (const timer of Object.values(rawConfigDraftAutoSaveTimerRef.current)) {
+        if (timer != null) window.clearTimeout(timer)
+      }
+    }
+  }, [rawConfigDraftByHome, rawConfigDirtyByHome, rawConfigTexts])
   const {
     setSessionPreferred,
     orderedConfigProviders,
@@ -884,6 +1007,7 @@ export default function App() {
         rawConfigSavingByHome={rawConfigSavingByHome}
         rawConfigDirtyByHome={rawConfigDirtyByHome}
         rawConfigLoadedByHome={rawConfigLoadedByHome}
+        rawConfigDraftByHome={rawConfigDraftByHome}
         onRawConfigTextChange={updateRawConfigText}
         saveRawConfigHome={saveRawConfigHome}
         retryRawConfigHome={loadRawConfigHome}

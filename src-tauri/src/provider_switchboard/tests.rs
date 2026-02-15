@@ -198,6 +198,42 @@ mod tests {
     }
 
     #[test]
+    fn provider_name_by_base_url_returns_none_when_ambiguous() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        let state = crate::app_state::build_state(config_path, data_dir).expect("state");
+        let target = "https://shared.example.com/v1".to_string();
+        {
+            let mut cfg = state.gateway.cfg.write();
+            let keys = cfg
+                .providers
+                .keys()
+                .filter(|k| k.as_str() != "official")
+                .cloned()
+                .collect::<Vec<_>>();
+            assert!(
+                keys.len() >= 2,
+                "need at least two non-official providers for ambiguity test"
+            );
+            cfg.providers
+                .get_mut(&keys[0])
+                .expect("provider exists")
+                .base_url = target.clone();
+            cfg.providers
+                .get_mut(&keys[1])
+                .expect("provider exists")
+                .base_url = target.clone();
+        }
+        let app_cfg = state.gateway.cfg.read().clone();
+        assert_eq!(
+            provider_name_by_base_url(&app_cfg, "https://shared.example.com/v1"),
+            None
+        );
+    }
+
+    #[test]
     fn normalize_cfg_for_switchboard_base_preserves_user_fields() {
         let cfg = concat!(
             "model_provider = \"packycode\"\n",
