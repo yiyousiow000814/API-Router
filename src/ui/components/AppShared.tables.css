@@ -127,6 +127,18 @@
   font-size: 12px;
 }
 
+.aoNoticeBanner {
+  border: 1px solid rgba(242, 193, 77, 0.55);
+  background: rgba(242, 193, 77, 0.18);
+  border-radius: 12px;
+  padding: 10px 12px;
+  color: rgba(13, 18, 32, 0.92);
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 600;
+  margin: 4px 0 12px;
+}
+
 .aoEventsBox {
   max-height: 180px;
   overflow: auto;
@@ -267,22 +279,210 @@
   background: rgba(13, 18, 32, 0.5);
 }
 
+.aoRawConfigModalBody {
+  overflow: visible;
+  padding-right: 0;
+}
+
+.aoRawConfigCloseBtn {
+  margin-right: 0;
+}
+
 .aoRawConfigEditor {
+  box-sizing: border-box;
   width: 100%;
+  max-width: 100%;
   min-height: min(56vh, 620px);
   border-radius: 12px;
   border: 1px solid var(--ao-line);
   background: rgba(13, 18, 32, 0.03);
   color: var(--ao-fg);
   padding: 12px;
-  resize: vertical;
+  resize: none;
   outline: none;
   line-height: 1.45;
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
   font-size: 12px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.aoRawConfigEditor::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .aoRawConfigEditor:focus {
   border-color: rgba(40, 199, 217, 0.55);
   box-shadow: 0 0 0 3px rgba(40, 199, 217, 0.12);
+}
+
+.aoRawConfigDual {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 10px;
+}
+
+.aoRawConfigPane {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.aoRawConfigEditorShell {
+  position: relative;
+}
+
+.aoRawConfigPaneHead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.aoRawConfigPaneMeta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.aoRawConfigPaneTopline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aoRawConfigPaneKind {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.58);
+}
+
+.aoRawConfigPanePath {
+  display: block;
+  max-width: 100%;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.78);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aoRawConfigPaneActions {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+}
+
+.aoRawConfigPaneHead .aoRow {
+  justify-content: flex-start;
+}
+
+.aoRawConfigPaneActions .aoBtn {
+  flex: 0 0 auto;
+}
+
+.aoRawConfigState {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  background: transparent;
+  letter-spacing: 0.02em;
+}
+
+.aoRawConfigState::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+}
+
+.aoRawConfigStateInfo {
+  color: rgba(13, 18, 32, 0.7);
+}
+
+.aoRawConfigStateInfo::before {
+  background: rgba(13, 18, 32, 0.35);
+}
+
+.aoRawConfigStateWarn {
+  color: rgba(120, 90, 12, 0.95);
+}
+
+.aoRawConfigStateWarn::before {
+  background: rgba(242, 193, 77, 0.95);
+}
+
+.aoRawConfigStateError {
+  color: rgba(145, 12, 43, 0.92);
+}
+
+.aoRawConfigStateError::before {
+  background: rgba(255, 94, 125, 0.95);
+}
+
+.aoRawConfigStateOk {
+  color: rgba(5, 97, 108, 0.95);
+}
+
+.aoRawConfigStateOk::before {
+  background: rgba(40, 199, 217, 0.95);
+}
+
+.aoRawConfigScrollbarOverlay {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  bottom: 10px;
+  width: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+  z-index: 2;
+}
+
+.aoRawConfigScrollSurfaceCanScroll .aoRawConfigScrollbarOverlay {
+  pointer-events: auto;
+}
+
+.aoRawConfigScrollSurfaceCanScroll .aoRawConfigScrollbarOverlay:hover {
+  opacity: 1;
+}
+
+.aoRawConfigScrollSurfaceScrollbarVisible .aoRawConfigScrollbarOverlay {
+  opacity: 1;
+}
+
+.aoRawConfigScrollbarThumb {
+  width: 100%;
+  min-height: 24px;
+  border-radius: 999px;
+  background: rgba(120, 132, 156, 0.44);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  transition: background-color 120ms ease;
+  will-change: transform;
+  cursor: grab;
+}
+
+.aoRawConfigScrollbarOverlay:active .aoRawConfigScrollbarThumb {
+  cursor: grabbing;
+}
+
+.aoRawConfigScrollSurfaceCanScroll .aoRawConfigScrollbarOverlay:hover .aoRawConfigScrollbarThumb,
+.aoRawConfigScrollSurfaceScrollbarVisible .aoRawConfigScrollbarThumb {
+  background: rgba(94, 108, 136, 0.56);
+}
+
+@media (max-width: 1200px) {
+  .aoRawConfigDual {
+    grid-template-columns: 1fr;
+  }
 }

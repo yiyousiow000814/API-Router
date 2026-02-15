@@ -10,17 +10,21 @@ type UseSwitchboardStatusActionsOptions = {
   devConfig: Config
   codexSwapDir1: string
   codexSwapDir2: string
-  codexSwapApplyBoth: boolean
+  codexSwapUseWindows: boolean
+  codexSwapUseWsl: boolean
   codexSwapDir1Ref: MutableRefObject<string>
   codexSwapDir2Ref: MutableRefObject<string>
-  codexSwapApplyBothRef: MutableRefObject<boolean>
+  codexSwapUseWindowsRef: MutableRefObject<boolean>
+  codexSwapUseWslRef: MutableRefObject<boolean>
   overrideDirtyRef: MutableRefObject<boolean>
   setStatus: (next: Status) => void
   setOverride: (next: string) => void
   setConfig: (next: Config) => void
   setBaselineBaseUrls: (next: Record<string, string>) => void
   setGatewayTokenPreview: (next: string) => void
+  codexSwapStatus: CodexSwapStatus | null
   setCodexSwapStatus: (next: CodexSwapStatus) => void
+  providerSwitchStatus: ProviderSwitchboardStatus | null
   setProviderSwitchStatus: (next: ProviderSwitchboardStatus) => void
   flashToast: (msg: string, kind?: 'info' | 'error') => void
 }
@@ -31,17 +35,21 @@ export function useSwitchboardStatusActions({
   devConfig,
   codexSwapDir1,
   codexSwapDir2,
-  codexSwapApplyBoth,
+  codexSwapUseWindows,
+  codexSwapUseWsl,
   codexSwapDir1Ref,
   codexSwapDir2Ref,
-  codexSwapApplyBothRef,
+  codexSwapUseWindowsRef,
+  codexSwapUseWslRef,
   overrideDirtyRef,
   setStatus,
   setOverride,
   setConfig,
   setBaselineBaseUrls,
   setGatewayTokenPreview,
+  codexSwapStatus,
   setCodexSwapStatus,
+  providerSwitchStatus,
   setProviderSwitchStatus,
   flashToast,
 }: UseSwitchboardStatusActionsOptions) {
@@ -53,9 +61,14 @@ export function useSwitchboardStatusActions({
       const homes =
         cliHomes && cliHomes.length
           ? cliHomes
-          : resolveCliHomes(codexSwapDir1Ref.current, codexSwapDir2Ref.current, codexSwapApplyBothRef.current)
+          : resolveCliHomes(
+              codexSwapDir1Ref.current,
+              codexSwapDir2Ref.current,
+              codexSwapUseWindowsRef.current,
+              codexSwapUseWslRef.current,
+            )
       const res = await invoke<CodexSwapStatus>('codex_cli_swap_status', {
-        cli_homes: homes,
+        cliHomes: homes,
       })
       setCodexSwapStatus(res)
     } catch {
@@ -67,7 +80,12 @@ export function useSwitchboardStatusActions({
     const homes =
       cliHomes && cliHomes.length
         ? cliHomes
-        : resolveCliHomes(codexSwapDir1Ref.current, codexSwapDir2Ref.current, codexSwapApplyBothRef.current)
+        : resolveCliHomes(
+            codexSwapDir1Ref.current,
+            codexSwapDir2Ref.current,
+            codexSwapUseWindowsRef.current,
+            codexSwapUseWslRef.current,
+          )
     if (isDevPreview) {
       setProviderSwitchStatus({
         ok: true,
@@ -80,7 +98,7 @@ export function useSwitchboardStatusActions({
     }
     try {
       const res = await invoke<ProviderSwitchboardStatus>('provider_switchboard_status', {
-        cli_homes: homes,
+        cliHomes: homes,
       })
       setProviderSwitchStatus(res)
     } catch (e) {
@@ -126,7 +144,12 @@ export function useSwitchboardStatusActions({
       setBaselineBaseUrls(Object.fromEntries(Object.entries(c.providers).map(([name, p]) => [name, p.base_url])))
       const p = await invoke<string>('get_gateway_token_preview')
       setGatewayTokenPreview(p)
-      const homes = resolveCliHomes(codexSwapDir1Ref.current, codexSwapDir2Ref.current, codexSwapApplyBothRef.current)
+      const homes = resolveCliHomes(
+        codexSwapDir1Ref.current,
+        codexSwapDir2Ref.current,
+        codexSwapUseWindowsRef.current,
+        codexSwapUseWslRef.current,
+      )
       if (homes.length > 0 && shouldRefreshProviderSwitchStatus) {
         void refreshProviderSwitchStatus(homes)
       }
@@ -137,11 +160,62 @@ export function useSwitchboardStatusActions({
 
   async function toggleCodexSwap(cliHomes: string[]) {
     const homes = cliHomes.map((s) => s.trim()).filter(Boolean)
+    if (isDevPreview) {
+      if (!homes.length) {
+        flashToast('No enabled swap target. Open Configure Dirs first.', 'error')
+        return
+      }
+      const allHomes = resolveCliHomes(
+        codexSwapDir1Ref.current,
+        codexSwapDir2Ref.current,
+        codexSwapUseWindowsRef.current,
+        codexSwapUseWslRef.current,
+      )
+      const knownHomes = allHomes.length ? allHomes : homes
+      const prevByHome = new Map((codexSwapStatus?.dirs ?? []).map((d) => [d.cli_home.trim(), d.state]))
+      const anySwapped = homes.some((h) => (prevByHome.get(h) ?? 'original') === 'swapped')
+      const nextTargetState = anySwapped ? 'original' : 'swapped'
+      const nextDirs = knownHomes.map((h) => ({
+        cli_home: h,
+        state: homes.includes(h) ? nextTargetState : (prevByHome.get(h) ?? 'original'),
+      }))
+      const hasSwapped = nextDirs.some((d) => d.state === 'swapped')
+      const hasOriginal = nextDirs.some((d) => d.state === 'original')
+      const overall = hasSwapped && hasOriginal ? 'mixed' : hasSwapped ? 'swapped' : 'original'
+      setCodexSwapStatus({
+        ok: true,
+        overall,
+        dirs: nextDirs,
+      })
+      const nextModeForHomes: 'gateway' | 'official' = anySwapped ? 'gateway' : 'official'
+      const existingProviderDirs =
+        providerSwitchStatus?.dirs ??
+        knownHomes.map((home) => ({ cli_home: home, mode: 'gateway', model_provider: null }))
+      const updatedProviderDirs = existingProviderDirs.map((dir) =>
+        homes.includes(dir.cli_home)
+          ? { ...dir, mode: nextModeForHomes, model_provider: null }
+          : dir,
+      )
+      const uniqueModes = Array.from(new Set(updatedProviderDirs.map((dir) => dir.mode)))
+      const providerMode =
+        uniqueModes.length === 1 && (uniqueModes[0] === 'gateway' || uniqueModes[0] === 'official')
+          ? (uniqueModes[0] as 'gateway' | 'official')
+          : 'mixed'
+      setProviderSwitchStatus({
+        ok: true,
+        mode: providerMode,
+        model_provider: null,
+        dirs: updatedProviderDirs,
+        provider_options: (devConfig.provider_order ?? []).filter((n) => n !== 'official'),
+      })
+      flashToast(anySwapped ? 'Switched to gateway [TEST]' : 'Switched to official [TEST]')
+      return
+    }
     const res = await invoke<{ ok: boolean; mode: 'swapped' | 'restored'; cli_homes: string[] }>(
       'codex_cli_toggle_auth_config_swap',
-      { cli_homes: homes },
+      { cliHomes: homes },
     )
-    flashToast(res.mode === 'swapped' ? 'Swapped Codex auth/config' : 'Restored Codex auth/config')
+    flashToast(res.mode === 'swapped' ? 'Switched to official' : 'Switched to gateway')
     await refreshStatus({ refreshSwapStatus: false })
     await Promise.all([
       refreshCodexSwapStatus(homes),
@@ -150,12 +224,56 @@ export function useSwitchboardStatusActions({
     ])
   }
 
-  async function setProviderSwitchTarget(target: 'gateway' | 'official' | 'provider', provider?: string) {
-    const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapApplyBoth)
+  async function setProviderSwitchTarget(
+    target: 'gateway' | 'official' | 'provider',
+    provider?: string,
+    cliHomes?: string[],
+  ) {
+    const allHomes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
+    const homes =
+      cliHomes && cliHomes.length
+        ? cliHomes
+        : allHomes
     setProviderSwitchBusy(true)
     try {
+      if (isDevPreview) {
+        const targetProvider = target === 'provider' ? provider ?? null : null
+        const existingDirs =
+          providerSwitchStatus?.dirs ??
+          homes.map((home) => ({ cli_home: home, mode: 'gateway', model_provider: null }))
+        const updatedDirs = existingDirs.map((dir) =>
+          homes.includes(dir.cli_home)
+            ? { ...dir, mode: target, model_provider: targetProvider }
+            : dir,
+        )
+        const modes = Array.from(new Set(updatedDirs.map((dir) => dir.mode)))
+        const providerModes = updatedDirs
+          .filter((dir) => dir.mode === 'provider')
+          .map((dir) => dir.model_provider ?? '')
+        const providerValues = Array.from(new Set(providerModes))
+        const mode =
+          modes.length === 1 && (modes[0] !== 'provider' || providerValues.length <= 1)
+            ? (modes[0] as 'gateway' | 'official' | 'provider')
+            : 'mixed'
+        const modelProvider = mode === 'provider' ? providerValues[0] ?? null : null
+        setProviderSwitchStatus({
+          ok: true,
+          mode,
+          model_provider: modelProvider,
+          dirs: updatedDirs,
+          provider_options: (devConfig.provider_order ?? []).filter((n) => n !== 'official'),
+        })
+        const msg =
+          target === 'provider'
+            ? 'Switched to provider: ' + provider
+            : target === 'gateway'
+              ? 'Switched to gateway'
+              : 'Switched to official'
+        flashToast(msg)
+        return
+      }
       const res = await invoke<ProviderSwitchboardStatus>('provider_switchboard_set_target', {
-        cli_homes: homes,
+        cliHomes: homes,
         target,
         provider: provider ?? null,
       })
@@ -164,7 +282,11 @@ export function useSwitchboardStatusActions({
         target === 'provider' ? 'Switched to provider: ' + provider : target === 'gateway' ? 'Switched to gateway' : 'Switched to official'
       flashToast(msg)
       await refreshStatus({ refreshSwapStatus: false })
-      await Promise.all([refreshCodexSwapStatus(homes), refreshConfig({ refreshProviderSwitchStatus: false })])
+      await Promise.all([
+        refreshCodexSwapStatus(homes),
+        refreshProviderSwitchStatus(allHomes),
+        refreshConfig({ refreshProviderSwitchStatus: false }),
+      ])
     } catch (e) {
       flashToast(String(e), 'error')
     } finally {

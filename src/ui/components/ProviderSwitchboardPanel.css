@@ -7,8 +7,8 @@
 
 .aoProviderSwitchboardHeader {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: flex-start;
+  justify-content: flex-start;
   gap: 12px;
   padding-bottom: 4px;
   border-bottom: 1px solid rgba(13, 18, 32, 0.08);
@@ -33,10 +33,10 @@
 .aoSwitchThemeSummary {
   border: 1px solid rgba(13, 18, 32, 0.08);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.96);
   padding: 10px 12px;
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .aoSwitchThemeRow {
@@ -65,11 +65,183 @@
   margin: 0 1px;
 }
 
+.aoSwitchThemeCompareCards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.aoSwitchThemeCompareCards.is-single {
+  grid-template-columns: minmax(420px, 760px);
+  justify-content: flex-start;
+}
+
+.aoSwitchThemeCompareCard {
+  padding: 4px 8px 6px;
+  display: grid;
+  gap: 6px;
+}
+
+.aoSwitchThemeCompareCard.is-right {
+  border-left: 1px solid rgba(13, 18, 32, 0.12);
+  padding-left: 14px;
+}
+
+.aoSwitchThemeCompareCardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.aoSwitchThemeCompareCardHeadSingle {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding-bottom: 2px;
+}
+
+.aoSwitchThemeCompareCardTitle {
+  font-size: 14px;
+  letter-spacing: 0;
+  color: rgba(13, 18, 32, 0.68);
+  font-weight: 640;
+  font-family: "Segoe UI Variable", "Inter", "Segoe UI", sans-serif;
+}
+
+.aoSwitchThemeCompareCard.is-windows .aoSwitchThemeCompareCardTitle {
+  color: rgba(23, 91, 145, 0.9);
+}
+
+.aoSwitchThemeCompareCard.is-wsl2 .aoSwitchThemeCompareCardTitle {
+  color: rgba(126, 84, 24, 0.9);
+}
+
+.aoSwitchThemeCompareCardModeWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aoSwitchThemeCompareCardModeWrap .aoSwitchThemeCompareCardKey {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: rgba(13, 18, 32, 0.54);
+  font-weight: 520;
+}
+
+.aoSwitchThemeModePill {
+  border-radius: 999px;
+  padding: 1px 8px 1px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.1;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  color: rgba(13, 18, 32, 0.72);
+  background: rgba(13, 18, 32, 0.03);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoSwitchThemeModePill::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.65;
+  transform: translateY(0.5px);
+}
+
+.aoSwitchThemeModePill.is-gateway {
+  color: rgba(8, 98, 48, 0.88);
+  border-color: rgba(8, 130, 62, 0.22);
+  background: rgba(8, 130, 62, 0.06);
+}
+
+.aoSwitchThemeModePill.is-provider {
+  color: rgba(16, 74, 136, 0.92);
+  border-color: rgba(90, 151, 255, 0.35);
+  background: rgba(90, 151, 255, 0.11);
+}
+
+.aoSwitchThemeModePill.is-official {
+  color: rgba(125, 74, 12, 0.9);
+  border-color: rgba(242, 193, 77, 0.42);
+  background: rgba(242, 193, 77, 0.16);
+}
+
+.aoSwitchThemeCompareCardRow {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 12px;
+  border-top: 1px solid rgba(13, 18, 32, 0.07);
+  padding-top: 6px;
+}
+
+.aoSwitchThemeCompareCardKey {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.54);
+  font-weight: 520;
+}
+
+.aoSwitchThemeCompareCardVal {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(13, 18, 32, 0.86);
+  min-width: 0;
+  font-family: "Segoe UI Variable", "Inter", "Segoe UI", sans-serif;
+}
+
+.aoSwitchThemeCompareCardVal.aoSwitchMetaDirs {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(13, 18, 32, 0.86);
+  font-family: "Segoe UI Variable", "Inter", "Segoe UI", sans-serif;
+}
+
 .aoSwitchboardBlock {
   display: grid;
   gap: 14px;
   padding-top: 8px;
   border-top: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoSwitchboardGlobalActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.aoSwitchboardTargetsGrid {
+  display: grid;
+  gap: 12px;
+}
+
+.aoSwitchboardTargetCard {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.aoSwitchboardSectionHint {
+  max-width: 100%;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 11px;
+  word-break: break-word;
+}
+
+.aoSwitchboardEmpty {
+  border: 1px dashed rgba(13, 18, 32, 0.2);
+  border-radius: 12px;
+  padding: 12px;
 }
 
 .aoSwitchboardSectionHead {
@@ -330,6 +502,21 @@
 }
 
 @media (max-width: 1000px) {
+  .aoSwitchThemeCompareCards {
+    grid-template-columns: 1fr;
+  }
+
+  .aoSwitchThemeCompareCards.is-single {
+    grid-template-columns: 1fr;
+  }
+
+  .aoSwitchThemeCompareCard.is-right {
+    border-left: none;
+    border-top: 1px solid rgba(13, 18, 32, 0.12);
+    padding-left: 4px;
+    padding-top: 12px;
+  }
+
   .aoSwitchQuickGrid,
   .aoSwitchProviderGrid {
     grid-template-columns: 1fr;

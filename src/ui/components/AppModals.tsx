@@ -6,11 +6,13 @@ import type {
   RefObject,
   SetStateAction,
 } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { SpendHistoryRow } from '../devMockData'
 import { normalizePathForCompare } from '../utils/path'
+import { isValidWindowsCodexPath, isValidWslCodexPath } from '../utils/codexPathValidation'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
-import type { CodexSwapStatus, Config } from '../types'
+import type { Config } from '../types'
 import type {
   PricingTimelineMode,
   ProviderScheduleDraft,
@@ -57,6 +59,7 @@ type Props = {
   saveUsageBaseUrl: () => Promise<void>
   instructionModalOpen: boolean
   setInstructionModalOpen: Dispatch<SetStateAction<boolean>>
+  openRawConfigModal: (options?: { reopenGettingStartedOnFail?: boolean }) => Promise<void>
   configModalOpen: boolean
   config: Config | null
   allProviderPanelsOpen: boolean
@@ -69,16 +72,17 @@ type Props = {
   addProvider: () => Promise<void>
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
   rawConfigModalOpen: boolean
-  rawConfigText: string
-  rawConfigLoading: boolean
-  rawConfigSaving: boolean
-  rawConfigCanSave: boolean
-  rawConfigTargetHome: string
   rawConfigHomeOptions: string[]
-  setRawConfigText: Dispatch<SetStateAction<string>>
-  onRawConfigTargetHomeChange: (next: string) => void
-  reloadRawConfigModal: () => Promise<void>
-  saveRawConfigModal: () => Promise<void>
+  rawConfigHomeLabels: Record<string, string>
+  rawConfigTexts: Record<string, string>
+  rawConfigLoadingByHome: Record<string, boolean>
+  rawConfigSavingByHome: Record<string, boolean>
+  rawConfigDirtyByHome: Record<string, boolean>
+  rawConfigLoadedByHome: Record<string, boolean>
+  rawConfigDraftByHome: Record<string, boolean>
+  onRawConfigTextChange: (home: string, next: string) => void
+  saveRawConfigHome: (home: string) => Promise<void>
+  retryRawConfigHome: (home: string) => Promise<void>
   setRawConfigModalOpen: Dispatch<SetStateAction<boolean>>
   providerListRef: RefObject<HTMLDivElement | null>
   orderedConfigProviders: string[]
@@ -186,20 +190,28 @@ type Props = {
   clearUsageScheduleRowsAutoSave: () => void
   setUsageScheduleSaveError: Dispatch<SetStateAction<string>>
   setUsageScheduleModalOpen: Dispatch<SetStateAction<boolean>>
+  isDevPreview: boolean
   codexSwapModalOpen: boolean
-  codexSwapStatus: CodexSwapStatus | null
   codexSwapDir1: string
   codexSwapDir2: string
-  codexSwapApplyBoth: boolean
+  codexSwapUseWindows: boolean
+  codexSwapUseWsl: boolean
   setCodexSwapDir1: Dispatch<SetStateAction<string>>
   setCodexSwapDir2: Dispatch<SetStateAction<string>>
-  setCodexSwapApplyBoth: Dispatch<SetStateAction<boolean>>
+  setCodexSwapUseWindows: Dispatch<SetStateAction<boolean>>
+  setCodexSwapUseWsl: Dispatch<SetStateAction<boolean>>
   setCodexSwapModalOpen: Dispatch<SetStateAction<boolean>>
   toggleCodexSwap: (homes: string[]) => Promise<void>
-  resolveCliHomes: (dir1: string, dir2: string, applyBoth: boolean) => string[]
+  resolveCliHomes: (windowsDir: string, wslDir: string, useWindows: boolean, useWsl: boolean) => string[]
 }
 
 export function AppModals(props: Props) {
+  const [reopenGettingStartedAfterDirs, setReopenGettingStartedAfterDirs] = useState(false)
+  const [draftCodexSwapDir1, setDraftCodexSwapDir1] = useState('')
+  const [draftCodexSwapDir2, setDraftCodexSwapDir2] = useState('')
+  const [draftCodexSwapUseWindows, setDraftCodexSwapUseWindows] = useState(false)
+  const [draftCodexSwapUseWsl, setDraftCodexSwapUseWsl] = useState(false)
+  const codexSwapModalWasOpenRef = useRef(false)
   const {
     keyModal,
     setKeyModal,
@@ -210,6 +222,7 @@ export function AppModals(props: Props) {
     saveUsageBaseUrl,
     instructionModalOpen,
     setInstructionModalOpen,
+    openRawConfigModal,
     configModalOpen,
     config,
     allProviderPanelsOpen,
@@ -222,16 +235,17 @@ export function AppModals(props: Props) {
     addProvider,
     setConfigModalOpen,
     rawConfigModalOpen,
-    rawConfigText,
-    rawConfigLoading,
-    rawConfigSaving,
-    rawConfigCanSave,
-    rawConfigTargetHome,
     rawConfigHomeOptions,
-    setRawConfigText,
-    onRawConfigTargetHomeChange,
-    reloadRawConfigModal,
-    saveRawConfigModal,
+    rawConfigHomeLabels,
+    rawConfigTexts,
+    rawConfigLoadingByHome,
+    rawConfigSavingByHome,
+    rawConfigDirtyByHome,
+    rawConfigLoadedByHome,
+    rawConfigDraftByHome,
+    onRawConfigTextChange,
+    saveRawConfigHome,
+    retryRawConfigHome,
     setRawConfigModalOpen,
     providerListRef,
     orderedConfigProviders,
@@ -326,25 +340,30 @@ export function AppModals(props: Props) {
     clearUsageScheduleRowsAutoSave,
     setUsageScheduleSaveError,
     setUsageScheduleModalOpen,
+    isDevPreview,
     codexSwapModalOpen,
-    codexSwapStatus,
     codexSwapDir1,
     codexSwapDir2,
-    codexSwapApplyBoth,
+    codexSwapUseWindows,
+    codexSwapUseWsl,
     setCodexSwapDir1,
     setCodexSwapDir2,
-    setCodexSwapApplyBoth,
+    setCodexSwapUseWindows,
+    setCodexSwapUseWsl,
     setCodexSwapModalOpen,
     toggleCodexSwap,
     resolveCliHomes,
   } = props
-  const rawConfigTargetNorm = normalizePathForCompare(rawConfigTargetHome)
-  const rawConfigTargetSwapped = Boolean(
-    rawConfigTargetNorm &&
-      codexSwapStatus?.dirs?.some(
-        (dir) => dir.state === 'swapped' && normalizePathForCompare(dir.cli_home) === rawConfigTargetNorm,
-      ),
-  )
+
+  useEffect(() => {
+    const justOpened = codexSwapModalOpen && !codexSwapModalWasOpenRef.current
+    codexSwapModalWasOpenRef.current = codexSwapModalOpen
+    if (!justOpened) return
+    setDraftCodexSwapDir1(codexSwapDir1)
+    setDraftCodexSwapDir2(codexSwapDir2)
+    setDraftCodexSwapUseWindows(codexSwapUseWindows)
+    setDraftCodexSwapUseWsl(codexSwapUseWsl)
+  }, [codexSwapModalOpen, codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl])
 
   return (
     <>
@@ -387,6 +406,15 @@ export function AppModals(props: Props) {
       <InstructionModal
         open={instructionModalOpen}
         onClose={() => setInstructionModalOpen(false)}
+        onOpenConfigureDirs={() => {
+          setReopenGettingStartedAfterDirs(true)
+          setInstructionModalOpen(false)
+          setCodexSwapModalOpen(true)
+        }}
+        onOpenRawConfig={() => {
+          setInstructionModalOpen(false)
+          void openRawConfigModal({ reopenGettingStartedOnFail: true })
+        }}
         codeText={`model_provider = "${GATEWAY_MODEL_PROVIDER_ID}"
 
 [model_providers.${GATEWAY_MODEL_PROVIDER_ID}]
@@ -418,21 +446,17 @@ requires_openai_auth = true`}
 
       <RawConfigModal
         open={rawConfigModalOpen}
-        loading={rawConfigLoading}
-        saving={rawConfigSaving}
-        canSave={rawConfigCanSave}
-        targetHome={rawConfigTargetHome}
         homeOptions={rawConfigHomeOptions}
-        onTargetHomeChange={onRawConfigTargetHomeChange}
-        value={rawConfigText}
-        onChange={setRawConfigText}
-        onReload={() => void reloadRawConfigModal()}
-        onSave={() => void saveRawConfigModal()}
-        warningText={
-          rawConfigTargetSwapped
-            ? 'This Codex home is currently swapped. Restore may overwrite raw edits to config.toml.'
-            : null
-        }
+        homeLabels={rawConfigHomeLabels}
+        valuesByHome={rawConfigTexts}
+        loadingByHome={rawConfigLoadingByHome}
+        savingByHome={rawConfigSavingByHome}
+        dirtyByHome={rawConfigDirtyByHome}
+        loadedByHome={rawConfigLoadedByHome}
+        draftByHome={rawConfigDraftByHome}
+        onChangeHome={onRawConfigTextChange}
+        onSaveHome={(home) => void saveRawConfigHome(home)}
+        onRetryHome={(home) => void retryRawConfigHome(home)}
         onClose={() => setRawConfigModalOpen(false)}
       />
 
@@ -577,55 +601,64 @@ requires_openai_auth = true`}
 
       <CodexSwapModal
         open={codexSwapModalOpen}
-        dir1={codexSwapDir1}
-        dir2={codexSwapDir2}
-        applyBoth={codexSwapApplyBoth}
-        onChangeDir1={(v) => {
-          setCodexSwapDir1(v)
-          const d1 = v.trim()
-          const d2 = codexSwapDir2.trim()
-          if (d1 && d2 && normalizePathForCompare(d1) === normalizePathForCompare(d2)) {
-            setCodexSwapApplyBoth(false)
+        windowsDir={draftCodexSwapDir1}
+        wslDir={draftCodexSwapDir2}
+        useWindows={draftCodexSwapUseWindows}
+        useWsl={draftCodexSwapUseWsl}
+        onChangeWindowsDir={setDraftCodexSwapDir1}
+        onChangeWslDir={setDraftCodexSwapDir2}
+        onChangeUseWindows={setDraftCodexSwapUseWindows}
+        onChangeUseWsl={setDraftCodexSwapUseWsl}
+        onCancel={() => {
+          setCodexSwapModalOpen(false)
+          if (reopenGettingStartedAfterDirs) {
+            setInstructionModalOpen(true)
+            setReopenGettingStartedAfterDirs(false)
           }
         }}
-        onChangeDir2={(v) => {
-          setCodexSwapDir2(v)
-          if (!v.trim()) setCodexSwapApplyBoth(false)
-          const d1 = codexSwapDir1.trim()
-          const d2 = v.trim()
-          if (d1 && d2 && normalizePathForCompare(d1) === normalizePathForCompare(d2)) {
-            setCodexSwapApplyBoth(false)
-          }
-        }}
-        onChangeApplyBoth={(v) => {
-          const d1 = codexSwapDir1.trim()
-          const d2 = codexSwapDir2.trim()
-          if (v && d1 && d2 && normalizePathForCompare(d1) === normalizePathForCompare(d2)) {
-            flashToast('Dir 2 must be different from Dir 1', 'error')
-            setCodexSwapApplyBoth(false)
-            return
-          }
-          setCodexSwapApplyBoth(v)
-        }}
-        onCancel={() => setCodexSwapModalOpen(false)}
         onApply={() => {
           void (async () => {
             try {
-              const dir1 = codexSwapDir1.trim()
-              const dir2 = codexSwapDir2.trim()
-              if (!dir1) throw new Error('Dir 1 is required')
-              if (codexSwapApplyBoth && !dir2) throw new Error('Dir 2 is empty')
-              if (
-                codexSwapApplyBoth &&
-                dir2 &&
-                normalizePathForCompare(dir1) === normalizePathForCompare(dir2)
-              ) {
-                throw new Error('Dir 2 must be different from Dir 1')
+              const windowsDir = draftCodexSwapDir1.trim()
+              const wslDir = draftCodexSwapDir2.trim()
+              if (!draftCodexSwapUseWindows && !draftCodexSwapUseWsl) {
+                throw new Error('Enable Windows and/or WSL2.')
               }
-
-              const homes = resolveCliHomes(dir1, dir2, codexSwapApplyBoth)
-              await toggleCodexSwap(homes)
+              if (draftCodexSwapUseWindows && !isValidWindowsCodexPath(windowsDir)) {
+                throw new Error('Windows path is invalid. Use an absolute Windows path ending with \\.codex')
+              }
+              if (draftCodexSwapUseWsl && !isValidWslCodexPath(wslDir)) {
+                throw new Error('WSL2 path is invalid. Use \\\\wsl.localhost\\...\\.codex')
+              }
+              if (
+                draftCodexSwapUseWindows &&
+                draftCodexSwapUseWsl &&
+                windowsDir &&
+                wslDir &&
+                normalizePathForCompare(windowsDir) === normalizePathForCompare(wslDir)
+              ) {
+                throw new Error('Windows and WSL2 paths must be different')
+              }
+              setCodexSwapDir1(windowsDir)
+              setCodexSwapDir2(wslDir)
+              setCodexSwapUseWindows(draftCodexSwapUseWindows)
+              setCodexSwapUseWsl(draftCodexSwapUseWsl)
+              if (!isDevPreview) {
+                const homes = resolveCliHomes(
+                  windowsDir,
+                  wslDir,
+                  draftCodexSwapUseWindows,
+                  draftCodexSwapUseWsl,
+                )
+                await toggleCodexSwap(homes)
+              } else {
+                flashToast('[TEST] Applied directories in preview mode.')
+              }
               setCodexSwapModalOpen(false)
+              if (reopenGettingStartedAfterDirs) {
+                setInstructionModalOpen(true)
+                setReopenGettingStartedAfterDirs(false)
+              }
             } catch (e) {
               flashToast(String(e), 'error')
             }

@@ -82,6 +82,13 @@ pub(crate) fn codex_cli_default_home() -> Result<String, String> {
 }
 
 #[tauri::command]
+pub(crate) fn codex_cli_default_wsl_home() -> Result<String, String> {
+    crate::codex_cli_swap::default_wsl_cli_codex_home()
+        .ok_or_else(|| "missing WSL distro/HOME".to_string())
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 pub(crate) fn codex_cli_swap_status(
     cli_homes: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {

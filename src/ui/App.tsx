@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import './components/AppShared.css'
@@ -48,6 +48,11 @@ import {
 } from './utils/switchboard'
 import { usageProviderRowKey } from './utils/usageStatisticsView'
 type TopPage = 'dashboard' | 'usage_statistics' | 'provider_switchboard'
+const RAW_DRAFT_WINDOWS_KEY = '__draft_windows__'
+const RAW_DRAFT_WSL_KEY = '__draft_wsl2__'
+const RAW_DRAFT_STORAGE_KEY = 'ao.rawConfigDraft.shared.v1'
+const RAW_DRAFT_WINDOWS_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.windows.v1'
+const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.wsl2.v1'
 const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
 export default function App() {
   const isDevPreview = useMemo(() => {
@@ -62,6 +67,7 @@ export default function App() {
   }, [])
   const devMockHistoryEnabled = useMemo(() => parseDevFlag(devFlags.get('mockHistory')), [devFlags])
   const devAutoOpenHistory = useMemo(() => parseDevFlag(devFlags.get('openHistory')), [devFlags])
+  const rawConfigTestMode = useMemo(() => parseDevFlag(devFlags.get('test')), [devFlags])
   const [status, setStatus] = useState<Status | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
   const [baselineBaseUrls, setBaselineBaseUrls] = useState<Record<string, string>>({})
@@ -97,17 +103,21 @@ export default function App() {
   const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
   const [configModalOpen, setConfigModalOpen] = useState<boolean>(false)
   const [rawConfigModalOpen, setRawConfigModalOpen] = useState<boolean>(false)
-  const [rawConfigText, setRawConfigText] = useState<string>('')
-  const [rawConfigLoading, setRawConfigLoading] = useState<boolean>(false)
-  const [rawConfigSaving, setRawConfigSaving] = useState<boolean>(false)
-  const [rawConfigCanSave, setRawConfigCanSave] = useState<boolean>(false)
-  const [rawConfigTargetHome, setRawConfigTargetHome] = useState<string>('')
+  const [rawConfigTexts, setRawConfigTexts] = useState<Record<string, string>>({})
+  const [rawConfigLoadingByHome, setRawConfigLoadingByHome] = useState<Record<string, boolean>>({})
+  const [rawConfigSavingByHome, setRawConfigSavingByHome] = useState<Record<string, boolean>>({})
+  const [rawConfigDirtyByHome, setRawConfigDirtyByHome] = useState<Record<string, boolean>>({})
+  const [rawConfigLoadedByHome, setRawConfigLoadedByHome] = useState<Record<string, boolean>>({})
+  const [rawConfigDraftByHome, setRawConfigDraftByHome] = useState<Record<string, boolean>>({})
   const [rawConfigHomeOptions, setRawConfigHomeOptions] = useState<string[]>([])
+  const [rawConfigHomeLabels, setRawConfigHomeLabels] = useState<Record<string, string>>({})
   const [instructionModalOpen, setInstructionModalOpen] = useState<boolean>(false)
   const [codexSwapModalOpen, setCodexSwapModalOpen] = useState<boolean>(false)
   const [codexSwapDir1, setCodexSwapDir1] = useState<string>('')
   const [codexSwapDir2, setCodexSwapDir2] = useState<string>('')
-  const [codexSwapApplyBoth, setCodexSwapApplyBoth] = useState<boolean>(false)
+  const [codexSwapUseWindows, setCodexSwapUseWindows] = useState<boolean>(false)
+  const [codexSwapUseWsl, setCodexSwapUseWsl] = useState<boolean>(false)
+  const [codexSwapTarget, setCodexSwapTarget] = useState<'windows' | 'wsl2' | 'both'>('both')
   const [codexSwapStatus, setCodexSwapStatus] = useState<CodexSwapStatus | null>(null)
   const [editingProviderName, setEditingProviderName] = useState<string | null>(null)
   const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
@@ -182,7 +192,8 @@ export default function App() {
   } = useUsageHistoryScrollbar()
   const codexSwapDir1Ref = useRef<string>('')
   const codexSwapDir2Ref = useRef<string>('')
-  const codexSwapApplyBothRef = useRef<boolean>(false)
+  const codexSwapUseWindowsRef = useRef<boolean>(false)
+  const codexSwapUseWslRef = useRef<boolean>(false)
   const swapPrefsLoadedRef = useRef<boolean>(false)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
@@ -194,8 +205,24 @@ export default function App() {
   const usageScheduleLastSavedSigRef = useRef<string>('')
   const usageScheduleLastSavedByProviderRef = useRef<Record<string, string>>({})
   const toastTimerRef = useRef<number | null>(null)
+  const rawConfigTestFailOnceRef = useRef<Record<string, boolean>>({})
+  const rawConfigTextsRef = useRef<Record<string, string>>({})
+  const rawConfigDraftAutoSaveTimerRef = useRef<Record<string, number>>({})
+  const setRawConfigTextsSync = (
+    updater: Record<string, string> | ((prev: Record<string, string>) => Record<string, string>),
+  ) => {
+    setRawConfigTexts((prev) => {
+      const next = typeof updater === 'function' ? (updater as (p: Record<string, string>) => Record<string, string>)(prev) : updater
+      rawConfigTextsRef.current = next
+      return next
+    })
+  }
   const { switchPage } = usePageScroll({ containerRef, mainAreaRef, activePage, setActivePage: (next) => setActivePage(next as TopPage) })
+  useEffect(() => {
+    rawConfigTextsRef.current = rawConfigTexts
+  }, [rawConfigTexts])
   useAppPrefs({
+    isDevPreview,
     devAutoOpenHistory,
     setUsageHistoryModalOpen,
     autoSaveTimersRef,
@@ -205,15 +232,40 @@ export default function App() {
     setClearErrorsBeforeMs,
     codexSwapDir1,
     codexSwapDir2,
-    codexSwapApplyBoth,
+    codexSwapUseWindows,
+    codexSwapUseWsl,
     setCodexSwapDir1,
     setCodexSwapDir2,
-    setCodexSwapApplyBoth,
+    setCodexSwapUseWindows,
+    setCodexSwapUseWsl,
     codexSwapDir1Ref,
     codexSwapDir2Ref,
-    codexSwapApplyBothRef,
+    codexSwapUseWindowsRef,
+    codexSwapUseWslRef,
     swapPrefsLoadedRef,
   })
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const raw = window.localStorage.getItem('ao.codexSwap.target')
+    if (raw === 'windows' || raw === 'wsl2' || raw === 'both') {
+      setCodexSwapTarget(raw)
+    }
+  }, [])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('ao.codexSwap.target', codexSwapTarget)
+  }, [codexSwapTarget])
+  useEffect(() => {
+    if (codexSwapUseWindows && codexSwapUseWsl) return
+    if (codexSwapUseWindows && codexSwapTarget !== 'windows') {
+      setCodexSwapTarget('windows')
+      return
+    }
+    if (codexSwapUseWsl && codexSwapTarget !== 'wsl2') {
+      setCodexSwapTarget('wsl2')
+      return
+    }
+  }, [codexSwapUseWindows, codexSwapUseWsl, codexSwapTarget])
   const { providers, visibleEvents, canClearErrors, clearErrors, clientSessions } = useStatusDerivations({
     status,
     config,
@@ -227,55 +279,218 @@ export default function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
   }
 
-  async function reloadRawConfigModal(targetHome?: string) {
-    setRawConfigCanSave(false)
-    setRawConfigLoading(true)
-    try {
-      const home = (targetHome ?? rawConfigTargetHome).trim()
-      const txt = await invoke<string>('get_codex_cli_config_toml', {
-        cliHome: home || null,
-      })
-      setRawConfigText(txt)
-      setRawConfigCanSave(true)
-    } catch (e) {
-      flashToast(String(e), 'error')
-      setRawConfigText('')
-    } finally {
-      setRawConfigLoading(false)
-    }
+  function draftStorageKeyForHome(home: string): string | null {
+    if (home === RAW_DRAFT_WINDOWS_KEY || home === RAW_DRAFT_WSL_KEY) return RAW_DRAFT_STORAGE_KEY
+    return null
   }
 
-  async function openRawConfigModal() {
+  function readDraftFromStorage(home: string): string {
+    if (typeof window === 'undefined') return ''
+    const key = draftStorageKeyForHome(home)
+    if (!key) return ''
     try {
-      const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapApplyBoth)
-      let options = homes
-      if (!options.length) {
-        const defaultHome = await invoke<string>('codex_cli_default_home')
-        options = [defaultHome]
+      const current = window.localStorage.getItem(key)
+      if (current != null) return current
+      // one-time legacy fallback: prefer non-empty value if it exists
+      const legacyWindows = window.localStorage.getItem(RAW_DRAFT_WINDOWS_STORAGE_KEY_LEGACY) ?? ''
+      const legacyWsl = window.localStorage.getItem(RAW_DRAFT_WSL_STORAGE_KEY_LEGACY) ?? ''
+      const migrated = legacyWindows || legacyWsl
+      if (migrated) {
+        window.localStorage.setItem(key, migrated)
       }
-      setRawConfigHomeOptions(options)
-      setRawConfigTargetHome(options[0] ?? '')
-      setRawConfigText('')
-      setRawConfigCanSave(false)
-      setRawConfigModalOpen(true)
-      await reloadRawConfigModal(options[0] ?? '')
-    } catch (e) {
-      flashToast(String(e), 'error')
+      return migrated
+    } catch {
+      return ''
     }
   }
 
-  async function saveRawConfigModal() {
-    setRawConfigSaving(true)
+  function writeDraftToStorage(home: string, text: string): void {
+    if (typeof window === 'undefined') return
+    const key = draftStorageKeyForHome(home)
+    if (!key) return
+    try {
+      window.localStorage.setItem(key, text)
+    } catch {
+      // ignore storage write failures
+    }
+  }
+
+  async function loadRawConfigHome(home: string) {
+    const target = home.trim()
+    if (!target) return
+    setRawConfigLoadingByHome((prev) => ({ ...prev, [target]: true }))
+    try {
+      if (rawConfigTestMode || isDevPreview) {
+        const lower = target.toLowerCase()
+        const shouldFailOnce = (lower.includes('\\wsl.localhost\\') || lower.includes('\\wsl$\\')) && !rawConfigTestFailOnceRef.current[target]
+        if (shouldFailOnce) {
+          rawConfigTestFailOnceRef.current[target] = true
+          setRawConfigTextsSync((prev) => ({ ...prev, [target]: '' }))
+          setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
+          setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: false }))
+          flashToast('[TEST] Simulated load failure for WSL2 target.', 'error')
+          return
+        }
+        const mockToml = Array.from({ length: 64 }, (_, idx) => {
+          const n = String(idx + 1).padStart(2, '0')
+          return `# [TEST] sample line ${n}\nmodel_provider = "api_router"\n`
+        }).join('\n')
+        setRawConfigTextsSync((prev) => ({
+          ...prev,
+          [target]: prev[target] || mockToml,
+        }))
+        setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
+        setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: true }))
+        return
+      }
+      const txt = await invoke<string>('get_codex_cli_config_toml', {
+        cliHome: target,
+      })
+      setRawConfigTextsSync((prev) => ({ ...prev, [target]: txt }))
+      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
+      setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: true }))
+    } catch (e) {
+      setRawConfigTextsSync((prev) => ({ ...prev, [target]: '' }))
+      setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: false }))
+      flashToast(String(e), 'error')
+    } finally {
+      setRawConfigLoadingByHome((prev) => ({ ...prev, [target]: false }))
+    }
+  }
+
+  function buildRawConfigModalPanes(
+    windowsEnabled: boolean,
+    windowsHome: string,
+    wslEnabled: boolean,
+    wslHome: string,
+  ): {
+    homeOptions: string[]
+    draftByHome: Record<string, boolean>
+    labels: Record<string, string>
+  } {
+    const windowsPane = windowsEnabled && windowsHome ? windowsHome : RAW_DRAFT_WINDOWS_KEY
+    const wslPane = wslEnabled && wslHome ? wslHome : RAW_DRAFT_WSL_KEY
+    const windowsIsDraft = windowsPane === RAW_DRAFT_WINDOWS_KEY
+    const wslIsDraft = wslPane === RAW_DRAFT_WSL_KEY
+
+    let homeOptions: string[]
+    if (!windowsIsDraft && !wslIsDraft) {
+      homeOptions = [windowsPane, wslPane]
+    } else if (!windowsIsDraft && wslIsDraft) {
+      homeOptions = [windowsPane, wslPane]
+    } else if (windowsIsDraft && !wslIsDraft) {
+      homeOptions = [wslPane, windowsPane]
+    } else {
+      homeOptions = [windowsPane, wslPane]
+    }
+
+    const draftByHome: Record<string, boolean> = {
+      [windowsPane]: windowsIsDraft,
+      [wslPane]: wslIsDraft,
+    }
+    const labels: Record<string, string> = {
+      [windowsPane]: windowsIsDraft
+        ? 'Draft: local scratchpad (not written to file)'
+        : `Windows: ${windowsPane}`,
+      [wslPane]: wslIsDraft
+        ? 'Draft: local scratchpad (not written to file)'
+        : `WSL2: ${wslPane}`,
+    }
+    return { homeOptions, draftByHome, labels }
+  }
+
+  async function openRawConfigModal(options?: { reopenGettingStartedOnFail?: boolean }) {
+    const reopenGettingStartedOnFail = Boolean(options?.reopenGettingStartedOnFail)
+    if (rawConfigTestMode || isDevPreview) {
+      const mockWindowsHome = 'C:\\Users\\<user>\\.codex'
+      const mockWslHome = '\\\\wsl.localhost\\Ubuntu\\home\\<user>\\.codex'
+      const { homeOptions, draftByHome, labels } = buildRawConfigModalPanes(
+        codexSwapUseWindows,
+        mockWindowsHome,
+        codexSwapUseWsl,
+        mockWslHome,
+      )
+      setRawConfigHomeOptions(homeOptions)
+      setRawConfigDraftByHome(draftByHome)
+      setRawConfigHomeLabels(labels)
+      setRawConfigTextsSync(
+        Object.fromEntries(homeOptions.map((home) => [home, draftByHome[home] ? readDraftFromStorage(home) : ''])),
+      )
+      setRawConfigDirtyByHome({})
+      setRawConfigLoadedByHome(Object.fromEntries(homeOptions.map((home) => [home, draftByHome[home]])))
+      setRawConfigSavingByHome({})
+      setRawConfigLoadingByHome({})
+      rawConfigTestFailOnceRef.current = {}
+      setRawConfigModalOpen(true)
+      await Promise.all(homeOptions.filter((home) => !draftByHome[home]).map((home) => loadRawConfigHome(home)))
+      return
+    }
+    try {
+      const windowsHome = codexSwapDir1.trim()
+      const wslHome = codexSwapDir2.trim()
+      const { homeOptions, draftByHome, labels } = buildRawConfigModalPanes(
+        codexSwapUseWindows,
+        windowsHome,
+        codexSwapUseWsl,
+        wslHome,
+      )
+      setRawConfigDraftByHome(draftByHome)
+      setRawConfigHomeOptions(homeOptions)
+      setRawConfigHomeLabels(labels)
+      setRawConfigTextsSync(
+        Object.fromEntries(homeOptions.map((home) => [home, draftByHome[home] ? readDraftFromStorage(home) : ''])),
+      )
+      setRawConfigDirtyByHome({})
+      setRawConfigLoadedByHome(Object.fromEntries(homeOptions.map((home) => [home, Boolean(draftByHome[home])])))
+      setRawConfigSavingByHome({})
+      setRawConfigLoadingByHome({})
+      setRawConfigModalOpen(true)
+      await Promise.all(homeOptions.filter((home) => !draftByHome[home]).map((home) => loadRawConfigHome(home)))
+    } catch (e) {
+      const msg = String(e)
+      flashToast(msg, 'error')
+      if (reopenGettingStartedOnFail) setInstructionModalOpen(true)
+    }
+  }
+
+  function updateRawConfigText(home: string, next: string) {
+    setRawConfigTextsSync((prev) => ({ ...prev, [home]: next }))
+    setRawConfigDirtyByHome((prev) => ({ ...prev, [home]: true }))
+    if (rawConfigDraftByHome[home]) {
+      setRawConfigSavingByHome((prev) => ({ ...prev, [home]: true }))
+    }
+  }
+
+  async function saveRawConfigHome(home: string) {
+    const target = home.trim()
+    if (!target) return
+    if (rawConfigSavingByHome[target]) return
+    if (!rawConfigLoadedByHome[target]) return
+    if (rawConfigDraftByHome[target]) {
+      setRawConfigSavingByHome((prev) => ({ ...prev, [target]: true }))
+      writeDraftToStorage(target, rawConfigTextsRef.current[target] ?? '')
+      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
+      setRawConfigSavingByHome((prev) => ({ ...prev, [target]: false }))
+      flashToast('Saved draft')
+      return
+    }
+    if (rawConfigTestMode || isDevPreview) {
+      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
+      flashToast('[TEST] Saved in sandbox only (no real files changed).')
+      return
+    }
+    setRawConfigSavingByHome((prev) => ({ ...prev, [target]: true }))
     try {
       await invoke('set_codex_cli_config_toml', {
-        cliHome: rawConfigTargetHome || null,
-        tomlText: rawConfigText,
+        cliHome: target,
+        tomlText: rawConfigTextsRef.current[target] ?? '',
       })
-      flashToast('Codex config.toml saved')
+      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
+      flashToast(`Saved: ${target}`)
     } catch (e) {
       flashToast(String(e), 'error')
     } finally {
-      setRawConfigSaving(false)
+      setRawConfigSavingByHome((prev) => ({ ...prev, [target]: false }))
     }
   }
   const {
@@ -291,20 +506,52 @@ export default function App() {
     devConfig,
     codexSwapDir1,
     codexSwapDir2,
-    codexSwapApplyBoth,
+    codexSwapUseWindows,
+    codexSwapUseWsl,
     codexSwapDir1Ref,
     codexSwapDir2Ref,
-    codexSwapApplyBothRef,
+    codexSwapUseWindowsRef,
+    codexSwapUseWslRef,
     overrideDirtyRef,
     setStatus,
     setOverride,
     setConfig,
     setBaselineBaseUrls,
     setGatewayTokenPreview,
+    codexSwapStatus,
     setCodexSwapStatus,
+    providerSwitchStatus,
     setProviderSwitchStatus,
     flashToast,
   })
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    for (const [home, timer] of Object.entries(rawConfigDraftAutoSaveTimerRef.current)) {
+      if (!rawConfigDraftByHome[home] && timer != null) {
+        window.clearTimeout(timer)
+        delete rawConfigDraftAutoSaveTimerRef.current[home]
+      }
+    }
+    for (const [home, isDraft] of Object.entries(rawConfigDraftByHome)) {
+      if (!isDraft) continue
+      if (!rawConfigDirtyByHome[home]) continue
+      const prevTimer = rawConfigDraftAutoSaveTimerRef.current[home]
+      if (prevTimer != null) window.clearTimeout(prevTimer)
+      rawConfigDraftAutoSaveTimerRef.current[home] = window.setTimeout(() => {
+        setRawConfigSavingByHome((prev) => ({ ...prev, [home]: true }))
+        writeDraftToStorage(home, rawConfigTextsRef.current[home] ?? '')
+        setRawConfigDirtyByHome((prev) => ({ ...prev, [home]: false }))
+        setRawConfigSavingByHome((prev) => ({ ...prev, [home]: false }))
+        delete rawConfigDraftAutoSaveTimerRef.current[home]
+      }, 450)
+    }
+    return () => {
+      for (const timer of Object.values(rawConfigDraftAutoSaveTimerRef.current)) {
+        if (timer != null) window.clearTimeout(timer)
+      }
+    }
+  }, [rawConfigDraftByHome, rawConfigDirtyByHome, rawConfigTexts])
   const {
     setSessionPreferred,
     orderedConfigProviders,
@@ -329,7 +576,29 @@ export default function App() {
     devStatus,
     devConfig,
   })
-  const codexSwapBadge = useMemo(() => buildCodexSwapBadge(codexSwapStatus, providerSwitchStatus), [codexSwapStatus, providerSwitchStatus])
+  const codexSwapBadge = useMemo(() => {
+    const windowsHome = codexSwapUseWindows ? codexSwapDir1.trim() : ''
+    const wslHome = codexSwapUseWsl ? codexSwapDir2.trim() : ''
+    const selectedHomes =
+      codexSwapTarget === 'windows'
+        ? windowsHome
+          ? [windowsHome]
+          : []
+        : codexSwapTarget === 'wsl2'
+          ? wslHome
+            ? [wslHome]
+            : []
+          : resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
+    return buildCodexSwapBadge(codexSwapStatus, providerSwitchStatus, selectedHomes)
+  }, [
+    codexSwapStatus,
+    providerSwitchStatus,
+    codexSwapTarget,
+    codexSwapDir1,
+    codexSwapDir2,
+    codexSwapUseWindows,
+    codexSwapUseWsl,
+  ])
   const {
     providerListRef,
     registerProviderCardRef,
@@ -358,7 +627,9 @@ export default function App() {
     refreshStatus,
     codexSwapDir1,
     codexSwapDir2,
-    codexSwapApplyBoth,
+    codexSwapUseWindows,
+    codexSwapUseWsl,
+    codexSwapTarget,
     toggleCodexSwap,
     setCodexSwapModalOpen,
     setOverride,
@@ -498,7 +769,8 @@ export default function App() {
     statusLastActivityUnixMs: status?.last_activity_unix_ms,
     codexSwapDir1,
     codexSwapDir2,
-    codexSwapApplyBoth,
+    codexSwapUseWindows,
+    codexSwapUseWsl,
     refreshStatus,
     refreshConfig,
     refreshProviderSwitchStatus,
@@ -620,6 +892,10 @@ export default function App() {
               codexRefreshing={codexRefreshing}
               onCodexSwapAuthConfig={onCodexSwapAuthConfig}
               onOpenCodexSwapOptions={onOpenCodexSwapOptions}
+              codexSwapTarget={codexSwapTarget}
+              codexSwapUseWindows={codexSwapUseWindows}
+              codexSwapUseWsl={codexSwapUseWsl}
+              onChangeCodexSwapTarget={setCodexSwapTarget}
               codexSwapBadgeText={codexSwapBadge.badgeText}
               codexSwapBadgeTitle={codexSwapBadge.badgeTitle}
               override={override}
@@ -685,6 +961,10 @@ export default function App() {
               switchboardProps={{
                 providerSwitchStatus,
                 providerSwitchBusy,
+                codexSwapDir1,
+                codexSwapDir2,
+                codexSwapUseWindows,
+                codexSwapUseWsl,
                 switchboardModeLabel,
                 switchboardModelProviderLabel,
                 switchboardTargetDirsLabel,
@@ -707,6 +987,7 @@ export default function App() {
         saveUsageBaseUrl={saveUsageBaseUrl}
         instructionModalOpen={instructionModalOpen}
         setInstructionModalOpen={setInstructionModalOpen}
+        openRawConfigModal={openRawConfigModal}
         configModalOpen={configModalOpen}
         config={config}
         allProviderPanelsOpen={allProviderPanelsOpen}
@@ -719,21 +1000,17 @@ export default function App() {
         addProvider={addProvider}
         setConfigModalOpen={setConfigModalOpen}
         rawConfigModalOpen={rawConfigModalOpen}
-        rawConfigText={rawConfigText}
-        rawConfigLoading={rawConfigLoading}
-        rawConfigSaving={rawConfigSaving}
-        rawConfigCanSave={rawConfigCanSave}
-        rawConfigTargetHome={rawConfigTargetHome}
         rawConfigHomeOptions={rawConfigHomeOptions}
-        setRawConfigText={setRawConfigText}
-        onRawConfigTargetHomeChange={(next) => {
-          setRawConfigTargetHome(next)
-          void reloadRawConfigModal(next)
-        }}
-        reloadRawConfigModal={async () => {
-          await reloadRawConfigModal()
-        }}
-        saveRawConfigModal={saveRawConfigModal}
+        rawConfigHomeLabels={rawConfigHomeLabels}
+        rawConfigTexts={rawConfigTexts}
+        rawConfigLoadingByHome={rawConfigLoadingByHome}
+        rawConfigSavingByHome={rawConfigSavingByHome}
+        rawConfigDirtyByHome={rawConfigDirtyByHome}
+        rawConfigLoadedByHome={rawConfigLoadedByHome}
+        rawConfigDraftByHome={rawConfigDraftByHome}
+        onRawConfigTextChange={updateRawConfigText}
+        saveRawConfigHome={saveRawConfigHome}
+        retryRawConfigHome={loadRawConfigHome}
         setRawConfigModalOpen={setRawConfigModalOpen}
         providerListRef={providerListRef}
         orderedConfigProviders={orderedConfigProviders}
@@ -828,14 +1105,16 @@ export default function App() {
         clearUsageScheduleRowsAutoSave={clearUsageScheduleRowsAutoSave}
         setUsageScheduleSaveError={setUsageScheduleSaveError}
         setUsageScheduleModalOpen={setUsageScheduleModalOpen}
+        isDevPreview={isDevPreview}
         codexSwapModalOpen={codexSwapModalOpen}
-        codexSwapStatus={codexSwapStatus}
         codexSwapDir1={codexSwapDir1}
         codexSwapDir2={codexSwapDir2}
-        codexSwapApplyBoth={codexSwapApplyBoth}
+        codexSwapUseWindows={codexSwapUseWindows}
+        codexSwapUseWsl={codexSwapUseWsl}
         setCodexSwapDir1={setCodexSwapDir1}
         setCodexSwapDir2={setCodexSwapDir2}
-        setCodexSwapApplyBoth={setCodexSwapApplyBoth}
+        setCodexSwapUseWindows={setCodexSwapUseWindows}
+        setCodexSwapUseWsl={setCodexSwapUseWsl}
         setCodexSwapModalOpen={setCodexSwapModalOpen}
         toggleCodexSwap={toggleCodexSwap}
         resolveCliHomes={resolveCliHomes}
