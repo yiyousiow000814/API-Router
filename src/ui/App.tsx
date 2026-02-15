@@ -112,6 +112,7 @@ export default function App() {
   const [codexSwapDir2, setCodexSwapDir2] = useState<string>('')
   const [codexSwapUseWindows, setCodexSwapUseWindows] = useState<boolean>(false)
   const [codexSwapUseWsl, setCodexSwapUseWsl] = useState<boolean>(false)
+  const [codexSwapTarget, setCodexSwapTarget] = useState<'windows' | 'wsl2' | 'both'>('both')
   const [codexSwapStatus, setCodexSwapStatus] = useState<CodexSwapStatus | null>(null)
   const [editingProviderName, setEditingProviderName] = useState<string | null>(null)
   const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
@@ -237,6 +238,28 @@ export default function App() {
     codexSwapUseWslRef,
     swapPrefsLoadedRef,
   })
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const raw = window.localStorage.getItem('ao.codexSwap.target')
+    if (raw === 'windows' || raw === 'wsl2' || raw === 'both') {
+      setCodexSwapTarget(raw)
+    }
+  }, [])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('ao.codexSwap.target', codexSwapTarget)
+  }, [codexSwapTarget])
+  useEffect(() => {
+    if (codexSwapUseWindows && codexSwapUseWsl) return
+    if (codexSwapUseWindows && codexSwapTarget !== 'windows') {
+      setCodexSwapTarget('windows')
+      return
+    }
+    if (codexSwapUseWsl && codexSwapTarget !== 'wsl2') {
+      setCodexSwapTarget('wsl2')
+      return
+    }
+  }, [codexSwapUseWindows, codexSwapUseWsl, codexSwapTarget])
   const { providers, visibleEvents, canClearErrors, clearErrors, clientSessions } = useStatusDerivations({
     status,
     config,
@@ -400,6 +423,7 @@ export default function App() {
     setConfig,
     setBaselineBaseUrls,
     setGatewayTokenPreview,
+    codexSwapStatus,
     setCodexSwapStatus,
     providerSwitchStatus,
     setProviderSwitchStatus,
@@ -429,7 +453,29 @@ export default function App() {
     devStatus,
     devConfig,
   })
-  const codexSwapBadge = useMemo(() => buildCodexSwapBadge(codexSwapStatus, providerSwitchStatus), [codexSwapStatus, providerSwitchStatus])
+  const codexSwapBadge = useMemo(() => {
+    const windowsHome = codexSwapUseWindows ? codexSwapDir1.trim() : ''
+    const wslHome = codexSwapUseWsl ? codexSwapDir2.trim() : ''
+    const selectedHomes =
+      codexSwapTarget === 'windows'
+        ? windowsHome
+          ? [windowsHome]
+          : []
+        : codexSwapTarget === 'wsl2'
+          ? wslHome
+            ? [wslHome]
+            : []
+          : resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
+    return buildCodexSwapBadge(codexSwapStatus, providerSwitchStatus, selectedHomes)
+  }, [
+    codexSwapStatus,
+    providerSwitchStatus,
+    codexSwapTarget,
+    codexSwapDir1,
+    codexSwapDir2,
+    codexSwapUseWindows,
+    codexSwapUseWsl,
+  ])
   const {
     providerListRef,
     registerProviderCardRef,
@@ -460,6 +506,7 @@ export default function App() {
     codexSwapDir2,
     codexSwapUseWindows,
     codexSwapUseWsl,
+    codexSwapTarget,
     toggleCodexSwap,
     setCodexSwapModalOpen,
     setOverride,
@@ -722,6 +769,10 @@ export default function App() {
               codexRefreshing={codexRefreshing}
               onCodexSwapAuthConfig={onCodexSwapAuthConfig}
               onOpenCodexSwapOptions={onOpenCodexSwapOptions}
+              codexSwapTarget={codexSwapTarget}
+              codexSwapUseWindows={codexSwapUseWindows}
+              codexSwapUseWsl={codexSwapUseWsl}
+              onChangeCodexSwapTarget={setCodexSwapTarget}
               codexSwapBadgeText={codexSwapBadge.badgeText}
               codexSwapBadgeTitle={codexSwapBadge.badgeTitle}
               override={override}

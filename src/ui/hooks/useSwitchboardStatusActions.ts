@@ -22,6 +22,7 @@ type UseSwitchboardStatusActionsOptions = {
   setConfig: (next: Config) => void
   setBaselineBaseUrls: (next: Record<string, string>) => void
   setGatewayTokenPreview: (next: string) => void
+  codexSwapStatus: CodexSwapStatus | null
   setCodexSwapStatus: (next: CodexSwapStatus) => void
   providerSwitchStatus: ProviderSwitchboardStatus | null
   setProviderSwitchStatus: (next: ProviderSwitchboardStatus) => void
@@ -46,6 +47,7 @@ export function useSwitchboardStatusActions({
   setConfig,
   setBaselineBaseUrls,
   setGatewayTokenPreview,
+  codexSwapStatus,
   setCodexSwapStatus,
   providerSwitchStatus,
   setProviderSwitchStatus,
@@ -158,11 +160,62 @@ export function useSwitchboardStatusActions({
 
   async function toggleCodexSwap(cliHomes: string[]) {
     const homes = cliHomes.map((s) => s.trim()).filter(Boolean)
+    if (isDevPreview) {
+      if (!homes.length) {
+        flashToast('No enabled swap target. Open Configure Dirs first.', 'error')
+        return
+      }
+      const allHomes = resolveCliHomes(
+        codexSwapDir1Ref.current,
+        codexSwapDir2Ref.current,
+        codexSwapUseWindowsRef.current,
+        codexSwapUseWslRef.current,
+      )
+      const knownHomes = allHomes.length ? allHomes : homes
+      const prevByHome = new Map((codexSwapStatus?.dirs ?? []).map((d) => [d.cli_home.trim(), d.state]))
+      const anySwapped = homes.some((h) => (prevByHome.get(h) ?? 'original') === 'swapped')
+      const nextTargetState = anySwapped ? 'original' : 'swapped'
+      const nextDirs = knownHomes.map((h) => ({
+        cli_home: h,
+        state: homes.includes(h) ? nextTargetState : (prevByHome.get(h) ?? 'original'),
+      }))
+      const hasSwapped = nextDirs.some((d) => d.state === 'swapped')
+      const hasOriginal = nextDirs.some((d) => d.state === 'original')
+      const overall = hasSwapped && hasOriginal ? 'mixed' : hasSwapped ? 'swapped' : 'original'
+      setCodexSwapStatus({
+        ok: true,
+        overall,
+        dirs: nextDirs,
+      })
+      const nextModeForHomes: 'gateway' | 'official' = anySwapped ? 'gateway' : 'official'
+      const existingProviderDirs =
+        providerSwitchStatus?.dirs ??
+        knownHomes.map((home) => ({ cli_home: home, mode: 'gateway', model_provider: null }))
+      const updatedProviderDirs = existingProviderDirs.map((dir) =>
+        homes.includes(dir.cli_home)
+          ? { ...dir, mode: nextModeForHomes, model_provider: null }
+          : dir,
+      )
+      const uniqueModes = Array.from(new Set(updatedProviderDirs.map((dir) => dir.mode)))
+      const providerMode =
+        uniqueModes.length === 1 && (uniqueModes[0] === 'gateway' || uniqueModes[0] === 'official')
+          ? (uniqueModes[0] as 'gateway' | 'official')
+          : 'mixed'
+      setProviderSwitchStatus({
+        ok: true,
+        mode: providerMode,
+        model_provider: null,
+        dirs: updatedProviderDirs,
+        provider_options: (devConfig.provider_order ?? []).filter((n) => n !== 'official'),
+      })
+      flashToast(anySwapped ? 'Switched to gateway [TEST]' : 'Switched to official [TEST]')
+      return
+    }
     const res = await invoke<{ ok: boolean; mode: 'swapped' | 'restored'; cli_homes: string[] }>(
       'codex_cli_toggle_auth_config_swap',
       { cliHomes: homes },
     )
-    flashToast(res.mode === 'swapped' ? 'Swapped Codex auth/config' : 'Restored Codex auth/config')
+    flashToast(res.mode === 'swapped' ? 'Switched to official' : 'Switched to gateway')
     await refreshStatus({ refreshSwapStatus: false })
     await Promise.all([
       refreshCodexSwapStatus(homes),

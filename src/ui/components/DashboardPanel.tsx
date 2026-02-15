@@ -17,6 +17,10 @@ type Props = {
   codexRefreshing: boolean
   onCodexSwapAuthConfig: () => void
   onOpenCodexSwapOptions: () => void
+  codexSwapTarget: 'windows' | 'wsl2' | 'both'
+  codexSwapUseWindows: boolean
+  codexSwapUseWsl: boolean
+  onChangeCodexSwapTarget: (target: 'windows' | 'wsl2' | 'both') => void
   codexSwapBadgeText: string
   codexSwapBadgeTitle: string
   override: string
@@ -45,6 +49,10 @@ export function DashboardPanel({
   codexRefreshing,
   onCodexSwapAuthConfig,
   onOpenCodexSwapOptions,
+  codexSwapTarget,
+  codexSwapUseWindows,
+  codexSwapUseWsl,
+  onChangeCodexSwapTarget,
   codexSwapBadgeText,
   codexSwapBadgeTitle,
   override,
@@ -76,6 +84,10 @@ export function DashboardPanel({
           refreshing={codexRefreshing}
           onSwapAuthConfig={onCodexSwapAuthConfig}
           onSwapOptions={onOpenCodexSwapOptions}
+          swapTarget={codexSwapTarget}
+          swapTargetWindowsEnabled={codexSwapUseWindows}
+          swapTargetWslEnabled={codexSwapUseWsl}
+          onChangeSwapTarget={onChangeCodexSwapTarget}
           swapBadgeText={codexSwapBadgeText}
           swapBadgeTitle={codexSwapBadgeTitle}
         />

@@ -32,14 +32,39 @@ export function resolveConfigEditorHomes(windowsDir: string, wslDir: string): st
 export function buildCodexSwapBadge(
   codexSwapStatus: CodexSwapStatus | null,
   providerSwitchStatus: ProviderSwitchboardStatus | null,
+  selectedHomes?: string[],
 ): { badgeText: string; badgeTitle: string } {
   if (!codexSwapStatus && !providerSwitchStatus) {
     return { badgeText: '', badgeTitle: 'Codex CLI swap status: loading' }
   }
-  const mode = providerSwitchStatus?.mode
+  const targetHomes = (selectedHomes ?? []).map((s) => normalizePathForCompare(s)).filter(Boolean)
+  const providerDirs = providerSwitchStatus?.dirs ?? []
+  const scopedProviderDirs =
+    targetHomes.length > 0
+      ? providerDirs.filter((d) => targetHomes.includes(normalizePathForCompare(d.cli_home)))
+      : providerDirs
+  const scopedProviderMode = (() => {
+    if (!scopedProviderDirs.length) return providerSwitchStatus?.mode
+    const modes = Array.from(new Set(scopedProviderDirs.map((d) => (d.mode ?? '').trim()).filter(Boolean)))
+    if (modes.length !== 1) return 'mixed'
+    const m = modes[0]
+    return m === 'gateway' || m === 'official' || m === 'provider' || m === 'mixed' ? m : providerSwitchStatus?.mode
+  })()
+  const mode = scopedProviderMode
+  const scopedProviderModel = (() => {
+    if (!scopedProviderDirs.length) return providerSwitchStatus?.model_provider
+    const vals = Array.from(
+      new Set(
+        scopedProviderDirs
+          .map((d) => (d.model_provider ?? '').trim())
+          .filter(Boolean),
+      ),
+    )
+    return vals.length === 1 ? vals[0] : providerSwitchStatus?.model_provider
+  })()
   const switchboardLabel =
     mode === 'provider'
-      ? 'DP' + (providerSwitchStatus?.model_provider ? ':' + providerSwitchStatus.model_provider : '')
+      ? 'DP' + (scopedProviderModel ? ':' + scopedProviderModel : '')
       : mode === 'official'
         ? 'Auth'
         : mode === 'gateway'
@@ -47,7 +72,22 @@ export function buildCodexSwapBadge(
           : mode === 'mixed'
             ? 'Mixed'
             : null
-  const overall = codexSwapStatus?.overall
+  const scopedSwapDirs = (() => {
+    const dirs = codexSwapStatus?.dirs ?? []
+    if (!targetHomes.length) return dirs
+    return dirs.filter((d) => targetHomes.includes(normalizePathForCompare(d.cli_home)))
+  })()
+  const overall = (() => {
+    if (!scopedSwapDirs.length) return codexSwapStatus?.overall
+    const states = scopedSwapDirs.map((d) => d.state)
+    const hasError = states.some((s) => s !== 'original' && s !== 'swapped')
+    if (hasError) return 'error'
+    const hasSwapped = states.includes('swapped')
+    const hasOriginal = states.includes('original')
+    if (hasSwapped && hasOriginal) return 'mixed'
+    if (hasSwapped) return 'swapped'
+    return 'original'
+  })()
   const swapFallbackLabel =
     overall === 'swapped'
       ? 'Auth'
@@ -60,13 +100,13 @@ export function buildCodexSwapBadge(
             : 'Loading'
   const badgeText = switchboardLabel ?? swapFallbackLabel
   const parts =
-    providerSwitchStatus?.dirs?.length
-      ? providerSwitchStatus.dirs.map((d) => {
+    scopedProviderDirs.length
+      ? scopedProviderDirs.map((d) => {
           const modeText = d.mode === 'provider' ? 'provider:' + (d.model_provider ?? '-') : d.mode
           return d.cli_home + ': ' + modeText
         })
-      : codexSwapStatus?.dirs?.length
-        ? codexSwapStatus.dirs.map((d) => d.cli_home + ': ' + d.state)
+      : scopedSwapDirs.length
+        ? scopedSwapDirs.map((d) => d.cli_home + ': ' + d.state)
         : []
   const badgeTitle = parts.length
     ? 'Codex CLI swap status: ' + badgeText + '. ' + parts.join(' | ')

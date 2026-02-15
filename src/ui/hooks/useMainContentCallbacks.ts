@@ -14,6 +14,7 @@ type Params = {
   codexSwapDir2: string
   codexSwapUseWindows: boolean
   codexSwapUseWsl: boolean
+  codexSwapTarget: 'windows' | 'wsl2' | 'both'
   toggleCodexSwap: (homes: string[]) => Promise<void>
   setCodexSwapModalOpen: Dispatch<SetStateAction<boolean>>
   setOverride: Dispatch<SetStateAction<string>>
@@ -33,6 +34,7 @@ export function useMainContentCallbacks(params: Params) {
     codexSwapDir2,
     codexSwapUseWindows,
     codexSwapUseWsl,
+    codexSwapTarget,
     toggleCodexSwap,
     setCodexSwapModalOpen,
     setOverride,
@@ -91,7 +93,22 @@ export function useMainContentCallbacks(params: Params) {
   const onCodexSwapAuthConfig = () => {
     void (async () => {
       try {
-        const homes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
+        const windowsHome = codexSwapUseWindows ? codexSwapDir1.trim() : ''
+        const wslHome = codexSwapUseWsl ? codexSwapDir2.trim() : ''
+        const homes =
+          codexSwapTarget === 'windows'
+            ? windowsHome
+              ? [windowsHome]
+              : []
+            : codexSwapTarget === 'wsl2'
+              ? wslHome
+                ? [wslHome]
+                : []
+              : resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
+        if (!homes.length) {
+          flashToast('No enabled swap target. Open Configure Dirs first.', 'error')
+          return
+        }
         await toggleCodexSwap(homes)
       } catch (e) {
         flashToast(String(e), 'error')
