@@ -60,7 +60,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_to_gateway_home_restores_even_if_base_save_fails() {
+    fn switch_to_gateway_home_writes_gateway_even_if_base_save_fails() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");
         let data_dir = tmp.path().join("data");
@@ -90,9 +90,18 @@ mod tests {
 
         switch_to_gateway_home_impl(&state, &cli_home).expect("switch gateway");
 
-        let restored_cfg = std::fs::read_to_string(cli_cfg_path(&cli_home)).unwrap();
-        assert!(restored_cfg.contains("model = \"gpt-5.2\""));
-        assert!(!swap_state_dir(&cli_home).exists());
+        let switched_cfg = std::fs::read_to_string(cli_cfg_path(&cli_home)).unwrap();
+        assert!(switched_cfg.contains("model_provider = \"api_router\""));
+        assert!(switched_cfg.contains("base_url = \"http://127.0.0.1:4000/v1\""));
+        let switched_auth = read_json(&cli_auth_path(&cli_home)).expect("read switched auth");
+        assert_eq!(
+            switched_auth
+                .get("OPENAI_API_KEY")
+                .and_then(|v| v.as_str())
+                .map(str::trim),
+            state.secrets.get_gateway_token().as_deref()
+        );
+        assert!(swap_state_dir(&cli_home).exists());
     }
 
     #[test]
@@ -409,6 +418,52 @@ mod tests {
         assert_eq!(
             auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
             Some("sk-new")
+        );
+    }
+
+    #[test]
+    fn sync_gateway_target_for_rotated_token_updates_auth_for_gateway_targets() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        state
+            .secrets
+            .set_gateway_token("ao_new_gateway_token")
+            .expect("set gateway token");
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"OPENAI_API_KEY":"ao_old"}"#).unwrap();
+        std::fs::write(
+            cli_cfg_path(&cli_home),
+            "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+        )
+        .unwrap();
+
+        let sw_path = switchboard_state_path_from_config_path(&state.config_path);
+        std::fs::create_dir_all(sw_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            sw_path,
+            serde_json::to_string_pretty(&json!({
+              "target": "gateway",
+              "provider": serde_json::Value::Null,
+              "cli_homes": [cli_home.to_string_lossy().to_string()]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        sync_gateway_target_for_rotated_token_impl(&state).expect("sync gateway token");
+
+        let auth: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(cli_auth_path(&cli_home)).unwrap())
+                .unwrap();
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
+            Some("ao_new_gateway_token")
         );
     }
 

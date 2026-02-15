@@ -90,7 +90,13 @@ pub(crate) fn get_gateway_token(state: tauri::State<'_, app_state::AppState>) ->
 pub(crate) fn rotate_gateway_token(
     state: tauri::State<'_, app_state::AppState>,
 ) -> Result<String, String> {
-    state.secrets.rotate_gateway_token()
+    let token = state.secrets.rotate_gateway_token()?;
+    if let Err(e) = crate::provider_switchboard::sync_gateway_target_for_rotated_token(&state) {
+        return Err(format!(
+            "Gateway token rotated, but failed to sync active gateway targets: {e}"
+        ));
+    }
+    Ok(token)
 }
 
 #[tauri::command]
