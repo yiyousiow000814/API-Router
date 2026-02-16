@@ -224,7 +224,7 @@ fn apply_discovered_router_confirmation(
 
 fn backfill_main_confirmation_from_verified_review(
     map: &mut std::collections::HashMap<String, crate::orchestrator::gateway::ClientSessionRuntime>,
-    now_unix_ms: u64,
+    _now_unix_ms: u64,
 ) {
     let anchors: Vec<(u32, Option<String>)> = map
         .values()
@@ -238,9 +238,6 @@ fn backfill_main_confirmation_from_verified_review(
 
     for entry in map.values_mut() {
         if entry.confirmed_router || entry.is_agent || entry.is_review {
-            continue;
-        }
-        if entry.last_discovered_unix_ms != now_unix_ms {
             continue;
         }
         let same_proc = anchors.iter().any(|(pid, wt)| {
@@ -406,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn backfill_skips_old_main_session_even_if_same_wt() {
+    fn backfill_can_confirm_old_main_session_when_review_verified() {
         let mut map = std::collections::HashMap::new();
         map.insert(
             "main_old".to_string(),
@@ -444,8 +441,11 @@ mod tests {
         backfill_main_confirmation_from_verified_review(&mut map, 2);
 
         let main = map.get("main_old").expect("main_old row");
-        assert!(!main.confirmed_router);
-        assert_eq!(main.last_reported_model_provider.as_deref(), None);
+        assert!(main.confirmed_router);
+        assert_eq!(
+            main.last_reported_model_provider.as_deref(),
+            Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
     }
 
     #[test]
