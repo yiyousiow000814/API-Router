@@ -444,7 +444,7 @@ fn discover_sessions_using_router_uncached(
     }
 
     fn list_wsl_distros() -> Vec<String> {
-        let out = std::process::Command::new("wsl.exe")
+        let out = hidden_wsl_command()
             .args(["-l", "-q"])
             .output();
         let Ok(out) = out else {
@@ -467,7 +467,7 @@ fn discover_sessions_using_router_uncached(
             pid = pid,
             key = key
         );
-        let out = std::process::Command::new("wsl.exe")
+        let out = hidden_wsl_command()
             .args(["-d", distro, "--", "sh", "-lc", &script])
             .output()
             .ok()?;
@@ -480,7 +480,7 @@ fn discover_sessions_using_router_uncached(
 
     fn discover_wsl_sessions_for_distro(distro: &str, server_port: u16) -> Vec<InferredWtSession> {
         let script = "ps -eo pid=,etimes=,args= | grep -E 'codex.js|@openai/codex|/codex( |$)' | grep -v grep";
-        let out = std::process::Command::new("wsl.exe")
+        let out = hidden_wsl_command()
             .args(["-d", distro, "--", "sh", "-lc", script])
             .output();
         let Ok(out) = out else {
@@ -605,6 +605,14 @@ fn discover_sessions_using_router_uncached(
             });
         }
         sessions
+    }
+
+    fn hidden_wsl_command() -> std::process::Command {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let mut cmd = std::process::Command::new("wsl.exe");
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd
     }
 
     let mut out: Vec<InferredWtSession> = Vec::new();
