@@ -9,7 +9,10 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 fn hidden_command(program: &str) -> Command {
+    #[cfg(windows)]
     let mut cmd = Command::new(program);
+    #[cfg(not(windows))]
+    let cmd = Command::new(program);
     #[cfg(windows)]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
