@@ -407,6 +407,206 @@ fn discover_sessions_using_router_uncached(
         candidates.into_iter().map(|(p, _t)| p).next()
     }
 
+    fn parse_cwd_from_cmdline(cmd: &str) -> Option<String> {
+        let toks: Vec<&str> = cmd.split_whitespace().collect();
+        for i in 0..toks.len() {
+            let t = toks[i];
+            if t == "-C" || t.eq_ignore_ascii_case("--cd") {
+                if let Some(next) = toks.get(i + 1) {
+                    let v = next.trim_matches(|c: char| c == '"' || c == '\'');
+                    if !v.is_empty() {
+                        return Some(v.to_string());
+                    }
+                }
+            }
+            if let Some((k, v)) = t.split_once('=') {
+                if k.eq_ignore_ascii_case("--cd") {
+                    let v = v.trim_matches(|c: char| c == '"' || c == '\'');
+                    if !v.is_empty() {
+                        return Some(v.to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn wsl_path_to_unc(distro: &str, linux_path: &str) -> Option<std::path::PathBuf> {
+        let p = linux_path.trim();
+        if !p.starts_with('/') {
+            return None;
+        }
+        let path_part = p.trim_start_matches('/').replace('/', "\\");
+        Some(std::path::PathBuf::from(format!(
+            "\\\\wsl.localhost\\{}\\{}",
+            distro, path_part
+        )))
+    }
+
+    fn list_wsl_distros() -> Vec<String> {
+        let out = std::process::Command::new("wsl.exe")
+            .args(["-l", "-q"])
+            .output();
+        let Ok(out) = out else {
+            return Vec::new();
+        };
+        if !out.status.success() {
+            return Vec::new();
+        }
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().trim_start_matches('*').trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    fn wsl_read_env_key(distro: &str, pid: u32, key: &str) -> Option<String> {
+        let script = format!(
+            "tr '\\0' '\\n' < /proc/{pid}/environ 2>/dev/null | sed -n 's/^{key}=//p' | head -n 1",
+            pid = pid,
+            key = key
+        );
+        let out = std::process::Command::new("wsl.exe")
+            .args(["-d", distro, "--", "sh", "-lc", &script])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!v.is_empty()).then_some(v)
+    }
+
+    fn discover_wsl_sessions_for_distro(distro: &str, server_port: u16) -> Vec<InferredWtSession> {
+        let script = "ps -eo pid=,etimes=,args= | grep -E 'codex.js|@openai/codex|/codex( |$)' | grep -v grep";
+        let out = std::process::Command::new("wsl.exe")
+            .args(["-d", distro, "--", "sh", "-lc", script])
+            .output();
+        let Ok(out) = out else {
+            return Vec::new();
+        };
+        if !out.status.success() {
+            return Vec::new();
+        }
+
+        let mut sessions = Vec::new();
+        for raw in String::from_utf8_lossy(&out.stdout).lines() {
+            let line = raw.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let mut parts = line.splitn(3, char::is_whitespace).filter(|s| !s.is_empty());
+            let Some(pid_s) = parts.next() else {
+                continue;
+            };
+            let Some(etimes_s) = parts.next() else {
+                continue;
+            };
+            let Some(cmd) = parts.next() else {
+                continue;
+            };
+            let Ok(pid) = pid_s.parse::<u32>() else {
+                continue;
+            };
+            let etimes = etimes_s.parse::<u64>().unwrap_or(0);
+
+            let wt = wsl_read_env_key(distro, pid, "WT_SESSION");
+            let Some(wt) = wt else {
+                continue;
+            };
+            if wt.trim().is_empty() {
+                continue;
+            }
+
+            let home = wsl_read_env_key(distro, pid, "HOME");
+            let codex_home_linux =
+                wsl_read_env_key(distro, pid, "CODEX_HOME").or_else(|| home.clone().map(|h| format!("{h}/.codex")));
+            let cwd_linux = parse_cwd_from_cmdline(cmd);
+
+            let start = SystemTime::now()
+                .checked_sub(Duration::from_secs(etimes))
+                .unwrap_or(SystemTime::now());
+
+            let mut codex_session_id = parse_codex_session_id_from_cmdline(cmd);
+            if codex_session_id.is_none() {
+                if let (Some(codex_home_linux), Some(cwd_linux)) =
+                    (codex_home_linux.as_deref(), cwd_linux.as_deref())
+                {
+                    if let (Some(codex_home_unc), Some(cwd_unc)) = (
+                        wsl_path_to_unc(distro, codex_home_linux),
+                        wsl_path_to_unc(distro, cwd_linux),
+                    ) {
+                        codex_session_id = infer_codex_session_id_from_rollouts_dir(
+                            &codex_home_unc,
+                            &cwd_unc,
+                            server_port,
+                            Some(start),
+                        )
+                        .or_else(|| infer_codex_session_id_from_tui_log(&codex_home_unc, start));
+                    }
+                }
+            }
+            let Some(codex_session_id) = codex_session_id else {
+                continue;
+            };
+
+            let mut reported_model_provider: Option<String> = None;
+            let mut reported_base_url: Option<String> = None;
+            let mut is_agent = false;
+            let mut is_review = false;
+            let mut router_confirmed = false;
+
+            if let Some(codex_home_linux) = codex_home_linux.as_deref() {
+                if let Some(codex_home_unc) = wsl_path_to_unc(distro, codex_home_linux) {
+                    if let Some(rollout) = latest_rollout_for_session(&codex_home_unc, &codex_session_id) {
+                        if let Ok(file) = std::fs::File::open(&rollout) {
+                            let mut r = std::io::BufReader::new(file);
+                            let mut first = String::new();
+                            if r.read_line(&mut first).ok().unwrap_or(0) > 0 {
+                                if let Some(m) = parse_rollout_session_meta(&first) {
+                                    reported_model_provider = m.model_provider.clone();
+                                    reported_base_url = m.base_url.clone();
+                                    is_agent = m.is_agent;
+                                    is_review = m.is_review;
+                                    router_confirmed = rollout_base_url_matches_router(&m, server_port)
+                                        .unwrap_or(false);
+                                }
+                            }
+                        }
+                    }
+                    if !router_confirmed {
+                        if let Some((cfg, _mtime)) = read_config_with_mtime(&codex_home_unc.join("config.toml")) {
+                            if let Some(provider_id) = get_model_provider_id(&cfg) {
+                                let base = get_provider_base_url(&cfg, &provider_id);
+                                if let Some(base) = base.as_deref() {
+                                    reported_base_url = Some(base.to_string());
+                                    router_confirmed = looks_like_router_base(base, server_port);
+                                }
+                                if reported_model_provider.is_none() {
+                                    reported_model_provider = Some(provider_id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            sessions.push(InferredWtSession {
+                wt_session: wt,
+                // Linux PID is not valid for Windows liveness checks.
+                pid: 0,
+                codex_session_id: Some(codex_session_id),
+                reported_model_provider,
+                reported_base_url,
+                router_confirmed,
+                is_agent,
+                is_review,
+            });
+        }
+        sessions
+    }
+
     let mut out: Vec<InferredWtSession> = Vec::new();
     // Processes created after this app starts are safe to classify from their startup config
     // snapshot (frozen per pid/create_time) even if config mtime appears untrusted.
@@ -522,5 +722,8 @@ fn discover_sessions_using_router_uncached(
     }
 
     let _ = unsafe { CloseHandle(snapshot) };
+    for distro in list_wsl_distros() {
+        out.extend(discover_wsl_sessions_for_distro(&distro, server_port));
+    }
     out
 }
