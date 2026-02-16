@@ -863,9 +863,9 @@ fn sync_active_provider_target_for_key_impl(
     Ok(())
 }
 
-fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<(), String> {
+fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<Vec<String>, String> {
     let Some(sw) = load_switchboard_state_from_config_path(&state.config_path) else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     if sw
         .get("target")
@@ -873,7 +873,7 @@ fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<(), St
         .map(|v| !v.eq_ignore_ascii_case("gateway"))
         .unwrap_or(true)
     {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let homes = sw
@@ -892,17 +892,28 @@ fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<(), St
         return Err("gateway token is empty".to_string());
     }
     let next_auth = auth_with_openai_key(gateway_token.trim());
+    let mut failed_targets: Vec<String> = Vec::new();
 
     for h in &homes {
-        let (mode, _) = home_mode(h)?;
+        let mode = match home_mode(h) {
+            Ok((mode, _)) => mode,
+            Err(e) => {
+                failed_targets.push(format!("{} ({e})", h.to_string_lossy()));
+                continue;
+            }
+        };
         if mode != "gateway" {
             continue;
         }
-        write_json(&cli_auth_path(h), &next_auth)
-            .map_err(|e| format!("write auth.json failed: {e}"))?;
+        if let Err(e) = write_json(&cli_auth_path(h), &next_auth) {
+            failed_targets.push(format!(
+                "{} (write auth.json failed: {e})",
+                h.to_string_lossy()
+            ));
+        }
     }
 
-    Ok(())
+    Ok(failed_targets)
 }
 
 pub fn sync_active_provider_target_for_key(
@@ -915,6 +926,20 @@ pub fn sync_active_provider_target_for_key(
 pub fn sync_gateway_target_for_rotated_token(
     state: &tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    let failed = sync_gateway_target_for_rotated_token_impl(state)?;
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "failed to sync gateway token for targets: {}",
+            failed.join(" | ")
+        ))
+    }
+}
+
+pub fn sync_gateway_target_for_rotated_token_with_failures(
+    state: &tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
     sync_gateway_target_for_rotated_token_impl(state)
 }
 

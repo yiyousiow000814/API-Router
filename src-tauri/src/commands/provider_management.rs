@@ -89,18 +89,39 @@ pub(crate) fn get_gateway_token(state: tauri::State<'_, app_state::AppState>) ->
 #[tauri::command]
 pub(crate) fn rotate_gateway_token(
     state: tauri::State<'_, app_state::AppState>,
-) -> Result<String, String> {
+) -> Result<serde_json::Value, String> {
     let token = state.secrets.rotate_gateway_token()?;
-    if let Err(e) = crate::provider_switchboard::sync_gateway_target_for_rotated_token(&state) {
+    let failed_targets =
+        match crate::provider_switchboard::sync_gateway_target_for_rotated_token_with_failures(
+            &state,
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                state.gateway.store.add_event(
+                    "gateway",
+                    "error",
+                    "codex.provider_switchboard.gateway_token_sync_failed",
+                    &format!(
+                        "Gateway token rotated, but failed to sync active gateway targets: {e}"
+                    ),
+                    serde_json::Value::Null,
+                );
+                vec![format!("sync state error: {e}")]
+            }
+        };
+    if !failed_targets.is_empty() {
         state.gateway.store.add_event(
             "gateway",
             "error",
             "codex.provider_switchboard.gateway_token_sync_failed",
-            &format!("Gateway token rotated, but failed to sync active gateway targets: {e}"),
-            serde_json::Value::Null,
+            "Gateway token rotated, but failed to sync some gateway targets.",
+            serde_json::json!({ "failed_targets": failed_targets }),
         );
     }
-    Ok(token)
+    Ok(serde_json::json!({
+      "token": token,
+      "failed_targets": failed_targets
+    }))
 }
 
 #[tauri::command]
