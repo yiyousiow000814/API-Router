@@ -91,11 +91,11 @@ pub(crate) fn rotate_gateway_token(
     state: tauri::State<'_, app_state::AppState>,
 ) -> Result<serde_json::Value, String> {
     let token = state.secrets.rotate_gateway_token()?;
-    let failed_targets =
+    let (failed_targets, sync_hard_failed) =
         match crate::provider_switchboard::sync_gateway_target_for_rotated_token_with_failures(
             &state,
         ) {
-            Ok(v) => v,
+            Ok(v) => (v, false),
             Err(e) => {
                 state.gateway.store.add_event(
                     "gateway",
@@ -106,10 +106,10 @@ pub(crate) fn rotate_gateway_token(
                     ),
                     serde_json::Value::Null,
                 );
-                vec![format!("sync state error: {e}")]
+                (vec![format!("sync state error: {e}")], true)
             }
         };
-    if !failed_targets.is_empty() {
+    if !sync_hard_failed && !failed_targets.is_empty() {
         state.gateway.store.add_event(
             "gateway",
             "error",
