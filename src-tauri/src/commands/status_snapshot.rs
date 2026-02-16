@@ -228,7 +228,7 @@ fn backfill_main_confirmation_from_verified_review(
 ) {
     let anchors: Vec<(u32, Option<String>)> = map
         .values()
-        .filter(|v| v.confirmed_router && v.is_review && v.last_discovered_unix_ms == now_unix_ms)
+        .filter(|v| v.confirmed_router && v.is_review)
         .map(|v| (v.pid, v.wt_session.clone()))
         .collect();
 
@@ -446,6 +446,52 @@ mod tests {
         let main = map.get("main_old").expect("main_old row");
         assert!(!main.confirmed_router);
         assert_eq!(main.last_reported_model_provider.as_deref(), None);
+    }
+
+    #[test]
+    fn verified_review_recent_request_backfills_main_without_discovery_now() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "main_now".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "main_now".to_string(),
+                pid: 9527,
+                wt_session: Some("wt-1".to_string()),
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 2_000,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: false,
+            },
+        );
+        map.insert(
+            "review_active".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "review_active".to_string(),
+                pid: 9527,
+                wt_session: Some("wt-1".to_string()),
+                last_request_unix_ms: 1_995,
+                last_discovered_unix_ms: 1,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                is_agent: true,
+                is_review: true,
+                confirmed_router: true,
+            },
+        );
+
+        backfill_main_confirmation_from_verified_review(&mut map, 2_000);
+
+        let main = map.get("main_now").expect("main_now row");
+        assert!(main.confirmed_router);
+        assert_eq!(
+            main.last_reported_model_provider.as_deref(),
+            Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
     }
 }
 
