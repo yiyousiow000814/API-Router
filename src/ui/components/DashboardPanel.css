@@ -10,6 +10,38 @@
   order: 1;
 }
 
+.aoHeroStatus .aoStatGrid {
+  grid-template-columns: 132px minmax(0, 1fr);
+  column-gap: 10px;
+}
+
+.aoHeroStatus .aoTokenRow {
+  grid-template-columns: 132px minmax(0, 1fr);
+  column-gap: 10px;
+}
+
+.aoHeroStatus .aoStatLabel {
+  white-space: nowrap;
+}
+
+.aoHeroStatus .aoTokenRowRight {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.aoHeroStatus .aoTokenRowRight .aoValSmall {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
+}
+
+.aoHeroStatus .aoTokenRowRight .aoIconBtn,
+.aoHeroStatus .aoTokenRowRight .aoBtn {
+  flex: 0 0 auto;
+}
+
 .aoHeroRouting {
   order: 2;
 }
@@ -52,6 +84,10 @@
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.aoTokenRowRight .aoBtn {
+  white-space: nowrap;
 }
 
 .aoResetHint {

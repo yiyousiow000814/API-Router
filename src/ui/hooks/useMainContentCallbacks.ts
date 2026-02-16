@@ -1,6 +1,6 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import type { Status } from '../types'
+import type { ProviderSwitchboardStatus, Status } from '../types'
 import { resolveCliHomes } from '../utils/switchboard'
 
 type Params = {
@@ -8,6 +8,7 @@ type Params = {
   flashToast: (msg: string, kind?: 'info' | 'error') => void
   setGatewayModalOpen: Dispatch<SetStateAction<boolean>>
   setGatewayTokenReveal: Dispatch<SetStateAction<string>>
+  setGatewayTokenPreview: Dispatch<SetStateAction<string>>
   setCodexRefreshing: Dispatch<SetStateAction<boolean>>
   refreshStatus: () => Promise<void>
   codexSwapDir1: string
@@ -15,7 +16,12 @@ type Params = {
   codexSwapUseWindows: boolean
   codexSwapUseWsl: boolean
   codexSwapTarget: 'windows' | 'wsl2' | 'both'
-  toggleCodexSwap: (homes: string[]) => Promise<void>
+  providerSwitchStatus: ProviderSwitchboardStatus | null
+  setProviderSwitchTarget: (
+    target: 'gateway' | 'official' | 'provider',
+    provider?: string,
+    cliHomes?: string[],
+  ) => Promise<void>
   setCodexSwapModalOpen: Dispatch<SetStateAction<boolean>>
   setOverride: Dispatch<SetStateAction<string>>
   overrideDirtyRef: MutableRefObject<boolean>
@@ -28,6 +34,7 @@ export function useMainContentCallbacks(params: Params) {
     flashToast,
     setGatewayModalOpen,
     setGatewayTokenReveal,
+    setGatewayTokenPreview,
     setCodexRefreshing,
     refreshStatus,
     codexSwapDir1,
@@ -35,7 +42,8 @@ export function useMainContentCallbacks(params: Params) {
     codexSwapUseWindows,
     codexSwapUseWsl,
     codexSwapTarget,
-    toggleCodexSwap,
+    providerSwitchStatus,
+    setProviderSwitchTarget,
     setCodexSwapModalOpen,
     setOverride,
     overrideDirtyRef,
@@ -55,8 +63,18 @@ export function useMainContentCallbacks(params: Params) {
   }
 
   const onShowGatewayRotate = () => {
-    setGatewayModalOpen(true)
-    setGatewayTokenReveal('')
+    void (async () => {
+      try {
+        await invoke<string>('rotate_gateway_token')
+        const p = await invoke<string>('get_gateway_token_preview')
+        setGatewayTokenPreview(p)
+        setGatewayTokenReveal('')
+        setGatewayModalOpen(false)
+        flashToast('Gateway token rotated')
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+    })()
   }
 
   const onCodexLoginLogout = () => {
@@ -109,7 +127,10 @@ export function useMainContentCallbacks(params: Params) {
           flashToast('No enabled swap target. Open Configure Dirs first.', 'error')
           return
         }
-        await toggleCodexSwap(homes)
+        const modeByHome = new Map((providerSwitchStatus?.dirs ?? []).map((d) => [d.cli_home.trim(), d.mode]))
+        const allSelectedGateway = homes.every((h) => modeByHome.get(h) === 'gateway')
+        const nextTarget: 'gateway' | 'official' = allSelectedGateway ? 'official' : 'gateway'
+        await setProviderSwitchTarget(nextTarget, undefined, homes)
       } catch (e) {
         flashToast(String(e), 'error')
       }

@@ -2,6 +2,7 @@ import { useState, type MutableRefObject } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status } from '../types'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
+import { normalizePathForCompare } from '../utils/path'
 import { resolveCliHomes } from '../utils/switchboard'
 
 type UseSwitchboardStatusActionsOptions = {
@@ -53,7 +54,12 @@ export function useSwitchboardStatusActions({
   setProviderSwitchStatus,
   flashToast,
 }: UseSwitchboardStatusActionsOptions) {
-  const [providerSwitchBusy, setProviderSwitchBusy] = useState<boolean>(false)
+  const [providerSwitchBusy] = useState<boolean>(false)
+
+  function isWslHomePath(home: string): boolean {
+    const s = home.trim().replace(/\//g, '\\').toLowerCase()
+    return s.startsWith('\\\\wsl.localhost\\') || s.startsWith('\\\\wsl$\\')
+  }
 
   async function refreshCodexSwapStatus(cliHomes?: string[]) {
     if (isDevPreview) return
@@ -100,7 +106,35 @@ export function useSwitchboardStatusActions({
       const res = await invoke<ProviderSwitchboardStatus>('provider_switchboard_status', {
         cliHomes: homes,
       })
-      setProviderSwitchStatus(res)
+      const allEnabledHomes = resolveCliHomes(
+        codexSwapDir1Ref.current,
+        codexSwapDir2Ref.current,
+        codexSwapUseWindowsRef.current,
+        codexSwapUseWslRef.current,
+      )
+      const isPartialRefresh =
+        Boolean(cliHomes && cliHomes.length) && homes.length < allEnabledHomes.length
+      if (!isPartialRefresh) {
+        setProviderSwitchStatus(res)
+        return
+      }
+      const prevDirs = providerSwitchStatus?.dirs ?? []
+      const nextByHome = new Map(
+        (res.dirs ?? []).map((d) => [normalizePathForCompare(d.cli_home), d] as const),
+      )
+      const mergedFromPrev = prevDirs.map(
+        (d) => nextByHome.get(normalizePathForCompare(d.cli_home)) ?? d,
+      )
+      const extraNew = (res.dirs ?? []).filter(
+        (d) =>
+          !prevDirs.some(
+            (p) => normalizePathForCompare(p.cli_home) === normalizePathForCompare(d.cli_home),
+          ),
+      )
+      setProviderSwitchStatus({
+        ...res,
+        dirs: [...mergedFromPrev, ...extraNew],
+      })
     } catch (e) {
       flashToast(String(e), 'error')
     }
@@ -211,6 +245,22 @@ export function useSwitchboardStatusActions({
       flashToast(anySwapped ? 'Switched to gateway [TEST]' : 'Switched to official [TEST]')
       return
     }
+
+    const prevByHome = new Map((codexSwapStatus?.dirs ?? []).map((d) => [d.cli_home.trim(), d.state]))
+    const anySwapped = homes.some((h) => (prevByHome.get(h) ?? 'original') === 'swapped')
+    const switchingToGateway = anySwapped
+    if (switchingToGateway) {
+      const access = await invoke<{ ok: boolean; legacy_conflict?: boolean }>('wsl_gateway_access_quick_status')
+      if (access.legacy_conflict) {
+        const shouldCleanup = window.confirm(
+          '检测到旧版 WSL2 portproxy 占用了 4000（会导致 Windows 也连不上 gateway）。\n\n点击 OK 立即清理（需要管理员权限），点击 Cancel 取消切换。',
+        )
+        if (!shouldCleanup) return
+        await invoke('wsl_gateway_revoke_access')
+        flashToast('Removed legacy WSL2 portproxy conflict')
+      }
+    }
+
     const res = await invoke<{ ok: boolean; mode: 'swapped' | 'restored'; cli_homes: string[] }>(
       'codex_cli_toggle_auth_config_swap',
       { cliHomes: homes },
@@ -234,7 +284,6 @@ export function useSwitchboardStatusActions({
       cliHomes && cliHomes.length
         ? cliHomes
         : allHomes
-    setProviderSwitchBusy(true)
     try {
       if (isDevPreview) {
         const targetProvider = target === 'provider' ? provider ?? null : null
@@ -272,25 +321,57 @@ export function useSwitchboardStatusActions({
         flashToast(msg)
         return
       }
+
+      if (target === 'gateway') {
+        const access = await invoke<{ ok: boolean; authorized: boolean; legacy_conflict?: boolean }>('wsl_gateway_access_quick_status')
+        if (access.legacy_conflict) {
+          const shouldCleanup = window.confirm(
+            '检测到旧版 WSL2 portproxy 占用了 4000（会导致 Windows 也连不上 gateway）。\n\n点击 OK 立即清理（需要管理员权限），点击 Cancel 取消切换。',
+          )
+          if (!shouldCleanup) return
+          await invoke('wsl_gateway_revoke_access')
+          flashToast('Removed legacy WSL2 portproxy conflict')
+        }
+      }
+
+      if (target === 'gateway' && homes.some((h) => isWslHomePath(h))) {
+        const access = await invoke<{ ok: boolean; authorized: boolean }>('wsl_gateway_access_quick_status')
+        if (!access.authorized) {
+          const shouldAuthorize = window.confirm(
+            'WSL2 连接本机 gateway 需要先授权 Windows 网络规则。\n\n点击 OK 立即 Authorize（Admin），点击 Cancel 先不切换。',
+          )
+          if (!shouldAuthorize) return
+          await invoke('wsl_gateway_authorize_access')
+          flashToast('WSL2 gateway access authorized')
+        }
+      }
+
       const res = await invoke<ProviderSwitchboardStatus>('provider_switchboard_set_target', {
         cliHomes: homes,
         target,
         provider: provider ?? null,
       })
-      setProviderSwitchStatus(res)
+      const prevDirs = providerSwitchStatus?.dirs ?? []
+      const nextByHome = new Map(
+        (res.dirs ?? []).map((d) => [d.cli_home.trim(), d]),
+      )
+      const mergedFromPrev = prevDirs.map((d) => nextByHome.get(d.cli_home.trim()) ?? d)
+      const extraNew = (res.dirs ?? []).filter(
+        (d) => !prevDirs.some((p) => p.cli_home.trim() === d.cli_home.trim()),
+      )
+      const mergedDirs = [...mergedFromPrev, ...extraNew]
+      setProviderSwitchStatus({
+        ...res,
+        dirs: mergedDirs,
+      })
       const msg =
         target === 'provider' ? 'Switched to provider: ' + provider : target === 'gateway' ? 'Switched to gateway' : 'Switched to official'
       flashToast(msg)
-      await refreshStatus({ refreshSwapStatus: false })
-      await Promise.all([
-        refreshCodexSwapStatus(homes),
-        refreshProviderSwitchStatus(allHomes),
-        refreshConfig({ refreshProviderSwitchStatus: false }),
-      ])
+      // Avoid full-page flicker: trust set_target response as source of truth here,
+      // and only refresh swap state in background for badge consistency.
+      void refreshCodexSwapStatus(homes)
     } catch (e) {
       flashToast(String(e), 'error')
-    } finally {
-      setProviderSwitchBusy(false)
     }
   }
 

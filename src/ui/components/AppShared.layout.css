@@ -591,6 +591,8 @@
 .aoGsActionRow {
   display: flex;
   align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .aoGsAssist {
@@ -744,6 +746,25 @@
   border-color: rgba(13, 18, 32, 0.18);
 }
 
+.aoBtn:disabled,
+.aoBtnPrimary:disabled,
+.aoBtnDanger:disabled {
+  cursor: not-allowed;
+  transform: none;
+  background: rgba(13, 18, 32, 0.05);
+  border-color: rgba(13, 18, 32, 0.1);
+  color: rgba(13, 18, 32, 0.42);
+  box-shadow: none;
+}
+
+.aoBtn:disabled:hover,
+.aoBtnPrimary:disabled:hover,
+.aoBtnDanger:disabled:hover {
+  transform: none;
+  background: rgba(13, 18, 32, 0.05);
+  border-color: rgba(13, 18, 32, 0.1);
+}
+
 .aoBtnPrimary {
   background: linear-gradient(135deg, rgba(40, 199, 217, 0.3), rgba(242, 193, 77, 0.22));
   border-color: rgba(40, 199, 217, 0.3);
@@ -877,4 +898,9 @@
 .aoBtnDanger {
   background: rgba(255, 94, 125, 0.12);
   border-color: rgba(255, 94, 125, 0.26);
+}
+
+.aoBtnDanger:hover {
+  background: rgba(255, 94, 125, 0.18);
+  border-color: rgba(255, 94, 125, 0.38);
 }

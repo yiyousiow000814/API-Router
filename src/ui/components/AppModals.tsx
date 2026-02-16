@@ -11,7 +11,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { SpendHistoryRow } from '../devMockData'
 import { normalizePathForCompare } from '../utils/path'
 import { isValidWindowsCodexPath, isValidWslCodexPath } from '../utils/codexPathValidation'
-import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
+import { GATEWAY_MODEL_PROVIDER_ID, GATEWAY_WINDOWS_HOST } from '../constants'
 import type { Config } from '../types'
 import type {
   PricingTimelineMode,
@@ -411,6 +411,8 @@ export function AppModals(props: Props) {
       <InstructionModal
         open={instructionModalOpen}
         onClose={() => setInstructionModalOpen(false)}
+        flashToast={flashToast}
+        isDevPreview={isDevPreview}
         onOpenConfigureDirs={() => {
           setReopenGettingStartedAfterDirs(true)
           setInstructionModalOpen(false)
@@ -424,7 +426,7 @@ export function AppModals(props: Props) {
 
 [model_providers.${GATEWAY_MODEL_PROVIDER_ID}]
 name = "API Router"
-base_url = "http://127.0.0.1:4000/v1"
+base_url = "http://${GATEWAY_WINDOWS_HOST}:4000/v1"
 wire_api = "responses"
 requires_openai_auth = true`}
       />
@@ -620,6 +622,8 @@ requires_openai_auth = true`}
         wslDir={draftCodexSwapDir2}
         useWindows={draftCodexSwapUseWindows}
         useWsl={draftCodexSwapUseWsl}
+        flashToast={flashToast}
+        isDevPreview={isDevPreview}
         onChangeWindowsDir={setDraftCodexSwapDir1}
         onChangeWslDir={setDraftCodexSwapDir2}
         onChangeUseWindows={setDraftCodexSwapUseWindows}
