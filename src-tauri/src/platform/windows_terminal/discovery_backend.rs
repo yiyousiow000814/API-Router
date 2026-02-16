@@ -470,30 +470,62 @@ fn discover_sessions_using_router_uncached(
         }
         decode_wsl_output(&out.stdout)
             .lines()
-            .map(|s| s.trim().trim_start_matches('*').trim())
+            .map(|s| s.replace('\0', ""))
+            .map(|s| s.trim().trim_start_matches('*').trim().trim_start_matches('\u{feff}').to_string())
             .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
             .collect()
     }
 
-    fn wsl_read_env_key(distro: &str, pid: u32, key: &str) -> Option<String> {
-        let script = format!(
-            "tr '\\0' '\\n' < /proc/{pid}/environ 2>/dev/null | sed -n 's/^{key}=//p' | head -n 1",
-            pid = pid,
-            key = key
-        );
-        let out = hidden_wsl_command()
-            .args(["-d", distro, "--", "sh", "-lc", &script])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        (!v.is_empty()).then_some(v)
-    }
-
     fn discover_wsl_sessions_for_distro(distro: &str, server_port: u16) -> Vec<InferredWtSession> {
+        fn wsl_read_env_bundle(
+            distro: &str,
+            pid: u32,
+        ) -> Option<(String, Option<String>, Option<String>)> {
+            let out = hidden_wsl_command()
+                .args(["-d", distro, "--", "cat", &format!("/proc/{pid}/environ")])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let mut wt: Option<String> = None;
+            let mut home: Option<String> = None;
+            let mut codex_home: Option<String> = None;
+            for chunk in out.stdout.split(|b| *b == 0) {
+                if chunk.is_empty() {
+                    continue;
+                }
+                let Ok(s) = std::str::from_utf8(chunk) else {
+                    continue;
+                };
+                if let Some(v) = s.strip_prefix("WT_SESSION=") {
+                    let v = v.trim();
+                    if !v.is_empty() {
+                        wt = Some(v.to_string());
+                    }
+                    continue;
+                }
+                if let Some(v) = s.strip_prefix("HOME=") {
+                    let v = v.trim();
+                    if !v.is_empty() {
+                        home = Some(v.to_string());
+                    }
+                    continue;
+                }
+                if let Some(v) = s.strip_prefix("CODEX_HOME=") {
+                    let v = v.trim();
+                    if !v.is_empty() {
+                        codex_home = Some(v.to_string());
+                    }
+                }
+            }
+            let wt = wt.unwrap_or_default();
+            if wt.is_empty() {
+                return None;
+            }
+            Some((wt, home, codex_home))
+        }
+
         let script = "ps -eo pid=,etimes=,args= | grep -E 'codex.js|@openai/codex|/codex( |$)' | grep -v grep";
         let out = hidden_wsl_command()
             .args(["-d", distro, "--", "sh", "-lc", script])
@@ -535,18 +567,12 @@ fn discover_sessions_using_router_uncached(
             if !cmd.contains("/bin/codex") {
                 continue;
             }
-
-            let wt = wsl_read_env_key(distro, pid, "WT_SESSION");
-            let Some(wt) = wt else {
+            let Some((wt, home, codex_home_raw)) = wsl_read_env_bundle(distro, pid) else {
                 continue;
             };
-            if wt.trim().is_empty() {
-                continue;
-            }
 
-            let home = wsl_read_env_key(distro, pid, "HOME");
             let codex_home_linux =
-                wsl_read_env_key(distro, pid, "CODEX_HOME").or_else(|| home.clone().map(|h| format!("{h}/.codex")));
+                codex_home_raw.or_else(|| home.clone().map(|h| format!("{h}/.codex")));
             let cwd_linux = parse_cwd_from_cmdline(&cmd);
 
             let start = SystemTime::now()
@@ -669,7 +695,7 @@ fn discover_sessions_using_router_uncached(
 
         // WSL discovery shells into distros and reads /proc; keep it less frequent than
         // UI status polling to avoid periodic UI hitching.
-        const WSL_TTL_MS: u64 = 10_000;
+        const WSL_TTL_MS: u64 = 2_000;
         let now = now_unix_ms();
         if let Ok(guard) = cache.lock() {
             if now.saturating_sub(guard.updated_at_unix_ms) < WSL_TTL_MS {
