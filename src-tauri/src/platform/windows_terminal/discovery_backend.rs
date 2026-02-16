@@ -444,6 +444,21 @@ fn discover_sessions_using_router_uncached(
     }
 
     fn list_wsl_distros() -> Vec<String> {
+        fn decode_wsl_output(bytes: &[u8]) -> String {
+            // `wsl.exe -l -q` commonly returns UTF-16LE on Windows.
+            if bytes.len() >= 2
+                && bytes.len() % 2 == 0
+                && bytes.iter().skip(1).step_by(2).any(|b| *b == 0)
+            {
+                let utf16: Vec<u16> = bytes
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                return String::from_utf16_lossy(&utf16);
+            }
+            String::from_utf8_lossy(bytes).to_string()
+        }
+
         let out = hidden_wsl_command()
             .args(["-l", "-q"])
             .output();
@@ -453,7 +468,7 @@ fn discover_sessions_using_router_uncached(
         if !out.status.success() {
             return Vec::new();
         }
-        String::from_utf8_lossy(&out.stdout)
+        decode_wsl_output(&out.stdout)
             .lines()
             .map(|s| s.trim().trim_start_matches('*').trim())
             .filter(|s| !s.is_empty())
@@ -491,25 +506,35 @@ fn discover_sessions_using_router_uncached(
         }
 
         let mut sessions = Vec::new();
+        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut session_owner_wt: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         for raw in String::from_utf8_lossy(&out.stdout).lines() {
             let line = raw.trim();
             if line.is_empty() {
                 continue;
             }
-            let mut parts = line.splitn(3, char::is_whitespace).filter(|s| !s.is_empty());
+            let mut parts = line.split_whitespace();
             let Some(pid_s) = parts.next() else {
                 continue;
             };
             let Some(etimes_s) = parts.next() else {
                 continue;
             };
-            let Some(cmd) = parts.next() else {
+            let cmd = parts.collect::<Vec<_>>().join(" ");
+            if cmd.is_empty() {
                 continue;
-            };
+            }
             let Ok(pid) = pid_s.parse::<u32>() else {
                 continue;
             };
             let etimes = etimes_s.parse::<u64>().unwrap_or(0);
+
+            // Keep one canonical process per Codex session in WSL:
+            // prefer Node launcher (`.../bin/codex`) and skip vendor helper binary rows.
+            if !cmd.contains("/bin/codex") {
+                continue;
+            }
 
             let wt = wsl_read_env_key(distro, pid, "WT_SESSION");
             let Some(wt) = wt else {
@@ -522,13 +547,13 @@ fn discover_sessions_using_router_uncached(
             let home = wsl_read_env_key(distro, pid, "HOME");
             let codex_home_linux =
                 wsl_read_env_key(distro, pid, "CODEX_HOME").or_else(|| home.clone().map(|h| format!("{h}/.codex")));
-            let cwd_linux = parse_cwd_from_cmdline(cmd);
+            let cwd_linux = parse_cwd_from_cmdline(&cmd);
 
             let start = SystemTime::now()
                 .checked_sub(Duration::from_secs(etimes))
                 .unwrap_or(SystemTime::now());
 
-            let mut codex_session_id = parse_codex_session_id_from_cmdline(cmd);
+            let mut codex_session_id = parse_codex_session_id_from_cmdline(&cmd);
             if codex_session_id.is_none() {
                 if let (Some(codex_home_linux), Some(cwd_linux)) =
                     (codex_home_linux.as_deref(), cwd_linux.as_deref())
@@ -547,9 +572,20 @@ fn discover_sessions_using_router_uncached(
                     }
                 }
             }
-            let Some(codex_session_id) = codex_session_id else {
+            let mut codex_session_id =
+                codex_session_id.unwrap_or_else(|| format!("wsl:{wt}"));
+            if let Some(existing_wt) = session_owner_wt.get(&codex_session_id) {
+                if existing_wt != &wt {
+                    // Rollout/log inference can collide when multiple WSL Codex sessions share cwd.
+                    // Keep rows distinct in UI using WT_SESSION-derived fallback id.
+                    codex_session_id = format!("wsl:{wt}");
+                }
+            } else {
+                session_owner_wt.insert(codex_session_id.clone(), wt.clone());
+            }
+            if !seen.insert((wt.clone(), codex_session_id.clone())) {
                 continue;
-            };
+            }
 
             let mut reported_model_provider: Option<String> = None;
             let mut reported_base_url: Option<String> = None;
