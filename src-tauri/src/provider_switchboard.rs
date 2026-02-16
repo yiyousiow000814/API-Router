@@ -923,20 +923,6 @@ pub fn sync_active_provider_target_for_key(
     sync_active_provider_target_for_key_impl(state, provider)
 }
 
-pub fn sync_gateway_target_for_rotated_token(
-    state: &tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    let failed = sync_gateway_target_for_rotated_token_impl(state)?;
-    if failed.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "failed to sync gateway token for targets: {}",
-            failed.join(" | ")
-        ))
-    }
-}
-
 pub fn sync_gateway_target_for_rotated_token_with_failures(
     state: &tauri::State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
