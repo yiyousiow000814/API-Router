@@ -34,6 +34,11 @@ import { ConfigModal } from './ConfigModal'
 import { RawConfigModal } from './RawConfigModal'
 import { CodexSwapModal } from './CodexSwapModal'
 
+type RotateGatewayTokenResult = {
+  token: string
+  failed_targets?: string[]
+}
+
 type CurrencyMenuState = {
   provider: string
   providers: string[]
@@ -473,11 +478,21 @@ requires_openai_auth = true`}
           setGatewayTokenReveal(t)
         }}
         onRotate={async () => {
-          const t = await invoke<string>('rotate_gateway_token')
-          setGatewayTokenReveal(t)
+          const res = await invoke<RotateGatewayTokenResult>('rotate_gateway_token')
+          setGatewayTokenReveal(res.token)
           const p = await invoke<string>('get_gateway_token_preview')
           setGatewayTokenPreview(p)
-          flashToast('Gateway token rotated')
+          const failed = (res.failed_targets ?? []).filter(Boolean)
+          if (failed.length) {
+            const shown = failed.slice(0, 2).join(' ; ')
+            const more = failed.length > 2 ? ` ; +${failed.length - 2} more` : ''
+            flashToast(
+              `Gateway token rotated. Failed to sync: ${shown}${more}. Check Provider Switchboard -> Edit config.toml for those targets.`,
+              'error',
+            )
+          } else {
+            flashToast('Gateway token rotated')
+          }
         }}
       />
 
