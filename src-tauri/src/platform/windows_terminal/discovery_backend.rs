@@ -643,6 +643,51 @@ fn discover_sessions_using_router_uncached(
         sessions
     }
 
+    fn discover_wsl_sessions_cached(server_port: u16) -> Vec<InferredWtSession> {
+        #[derive(Clone)]
+        struct Cache {
+            updated_at_unix_ms: u64,
+            items: Vec<InferredWtSession>,
+        }
+
+        fn now_unix_ms() -> u64 {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0)
+        }
+
+        static WSL_CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+        let cache = WSL_CACHE.get_or_init(|| {
+            Mutex::new(Cache {
+                updated_at_unix_ms: 0,
+                items: Vec::new(),
+            })
+        });
+
+        // WSL discovery shells into distros and reads /proc; keep it less frequent than
+        // UI status polling to avoid periodic UI hitching.
+        const WSL_TTL_MS: u64 = 10_000;
+        let now = now_unix_ms();
+        if let Ok(guard) = cache.lock() {
+            if now.saturating_sub(guard.updated_at_unix_ms) < WSL_TTL_MS {
+                return guard.items.clone();
+            }
+        }
+
+        let mut items = Vec::new();
+        for distro in list_wsl_distros() {
+            items.extend(discover_wsl_sessions_for_distro(&distro, server_port));
+        }
+        if let Ok(mut guard) = cache.lock() {
+            guard.updated_at_unix_ms = now;
+            guard.items = items.clone();
+        }
+        items
+    }
+
     fn hidden_wsl_command() -> std::process::Command {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -766,8 +811,6 @@ fn discover_sessions_using_router_uncached(
     }
 
     let _ = unsafe { CloseHandle(snapshot) };
-    for distro in list_wsl_distros() {
-        out.extend(discover_wsl_sessions_for_distro(&distro, server_port));
-    }
+    out.extend(discover_wsl_sessions_cached(server_port));
     out
 }

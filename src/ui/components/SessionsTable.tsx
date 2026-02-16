@@ -35,9 +35,19 @@ export function SessionsTable({
   onSetPreferred,
   allowPreferredChanges = true,
 }: Props) {
+  function displaySessionId(raw: string | null): string {
+    if (!raw) return '-'
+    if (raw.startsWith('wsl:')) return raw.slice(4)
+    return raw
+  }
+
   function sessionOriginClass(s: SessionRow): string {
     const base = (s.reported_base_url ?? '').trim().toLowerCase()
-    if (!base) return ''
+    if (!base) {
+      const id = (s.codex_session_id ?? '').trim().toLowerCase()
+      if (id.startsWith('wsl:')) return 'aoSessionsIdWsl2'
+      return 'aoSessionsIdWindows'
+    }
     if (base.includes(`//${GATEWAY_WSL2_HOST.toLowerCase()}:`)) return 'aoSessionsIdWsl2'
     if (
       base.includes(`//${GATEWAY_WINDOWS_HOST.toLowerCase()}:`) ||
@@ -45,7 +55,20 @@ export function SessionsTable({
     ) {
       return 'aoSessionsIdWindows'
     }
-    return ''
+    // Keep session origin color deterministic in UI: anything not proven WSL2 defaults to Windows.
+    return 'aoSessionsIdWindows'
+  }
+
+  function codexProviderLabel(s: SessionRow): string {
+    const verified = s.verified !== false
+    const isAgent = s.is_agent === true
+    const isReview = isAgent && s.is_review === true
+    if (isReview) return 'review'
+    if (isAgent) return 'agents'
+    // If session is still unverified and we have no base_url evidence, provider id is often just
+    // startup config hint and can be misleading.
+    if (!verified && !(s.reported_base_url ?? '').trim()) return '-'
+    return s.reported_model_provider ?? '-'
   }
 
   const verifiedRows = sessions.filter((s) => s.verified !== false)
@@ -77,17 +100,14 @@ export function SessionsTable({
                 const codexSession = s.codex_session_id ?? null
                 const wt = s.wt_session ?? '-'
                 const isAgent = s.is_agent === true
-                const isReview = isAgent && s.is_review === true
-                const codexProvider = isReview
-                  ? 'review'
-                  : (isAgent ? 'agents' : (s.reported_model_provider ?? '-'))
+                const codexProvider = codexProviderLabel(s)
                 const modelName = s.reported_model ?? '-'
                 const originClass = sessionOriginClass(s)
                 return (
                   <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
                     <td className="aoSessionsMono">
                       {codexSession ? (
-                        <div className={originClass} title={`WT_SESSION: ${wt}`}>{codexSession}</div>
+                        <div className={originClass} title={`WT_SESSION: ${wt}`}>{displaySessionId(codexSession)}</div>
                       ) : (
                         <div className={originClass} title={`WT_SESSION: ${wt}`}>-</div>
                       )}
@@ -176,17 +196,14 @@ export function SessionsTable({
                   const codexSession = s.codex_session_id ?? null
                   const wt = s.wt_session ?? '-'
                   const isAgent = s.is_agent === true
-                  const isReview = isAgent && s.is_review === true
-                  const codexProvider = isReview
-                    ? 'review'
-                    : (isAgent ? 'agents' : (s.reported_model_provider ?? '-'))
+                  const codexProvider = codexProviderLabel(s)
                   const modelName = s.reported_model ?? '-'
                   const originClass = sessionOriginClass(s)
                   return (
                     <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
                       <td className="aoSessionsMono">
                         {codexSession ? (
-                          <div className={originClass} title={`WT_SESSION: ${wt}`}>{codexSession}</div>
+                          <div className={originClass} title={`WT_SESSION: ${wt}`}>{displaySessionId(codexSession)}</div>
                         ) : (
                           <div className={originClass} title={`WT_SESSION: ${wt}`}>-</div>
                         )}

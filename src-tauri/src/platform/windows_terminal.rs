@@ -90,7 +90,7 @@ fn parse_codex_session_id_from_cmdline(cmd: &str) -> Option<String> {
 fn looks_like_router_base(v: &str, port: u16) -> bool {
     let v = v.to_ascii_lowercase();
     let port_s = format!(":{port}");
-    (v.contains("127.0.0.1")
+    (v.contains(crate::constants::GATEWAY_WINDOWS_HOST)
         || v.contains("localhost")
         || v.contains(crate::constants::GATEWAY_WSL2_HOST))
         && v.contains(&port_s)
