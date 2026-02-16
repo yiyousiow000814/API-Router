@@ -92,9 +92,13 @@ pub(crate) fn rotate_gateway_token(
 ) -> Result<String, String> {
     let token = state.secrets.rotate_gateway_token()?;
     if let Err(e) = crate::provider_switchboard::sync_gateway_target_for_rotated_token(&state) {
-        return Err(format!(
-            "Gateway token rotated, but failed to sync active gateway targets: {e}"
-        ));
+        state.gateway.store.add_event(
+            "gateway",
+            "error",
+            "codex.provider_switchboard.gateway_token_sync_failed",
+            &format!("Gateway token rotated, but failed to sync active gateway targets: {e}"),
+            serde_json::Value::Null,
+        );
     }
     Ok(token)
 }
