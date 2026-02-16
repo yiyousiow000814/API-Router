@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { fmtWhen } from '../utils/format'
+import { GATEWAY_WINDOWS_HOST, GATEWAY_WSL2_HOST } from '../constants'
 import './SessionsTable.css'
 
 type SessionRow = {
@@ -34,6 +35,19 @@ export function SessionsTable({
   onSetPreferred,
   allowPreferredChanges = true,
 }: Props) {
+  function sessionOriginClass(s: SessionRow): string {
+    const base = (s.reported_base_url ?? '').trim().toLowerCase()
+    if (!base) return ''
+    if (base.includes(`//${GATEWAY_WSL2_HOST.toLowerCase()}:`)) return 'aoSessionsIdWsl2'
+    if (
+      base.includes(`//${GATEWAY_WINDOWS_HOST.toLowerCase()}:`) ||
+      base.includes('//localhost:')
+    ) {
+      return 'aoSessionsIdWindows'
+    }
+    return ''
+  }
+
   const verifiedRows = sessions.filter((s) => s.verified !== false)
   const unverifiedRows = sessions.filter((s) => s.verified === false)
   const [showUnverified, setShowUnverified] = useState(false)
@@ -68,13 +82,14 @@ export function SessionsTable({
                   ? 'review'
                   : (isAgent ? 'agents' : (s.reported_model_provider ?? '-'))
                 const modelName = s.reported_model ?? '-'
+                const originClass = sessionOriginClass(s)
                 return (
                   <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
                     <td className="aoSessionsMono">
                       {codexSession ? (
-                        <div title={`WT_SESSION: ${wt}`}>{codexSession}</div>
+                        <div className={originClass} title={`WT_SESSION: ${wt}`}>{codexSession}</div>
                       ) : (
-                        <div title={`WT_SESSION: ${wt}`}>-</div>
+                        <div className={originClass} title={`WT_SESSION: ${wt}`}>-</div>
                       )}
                     </td>
                     <td className="aoSessionsCellCenter">
@@ -166,13 +181,14 @@ export function SessionsTable({
                     ? 'review'
                     : (isAgent ? 'agents' : (s.reported_model_provider ?? '-'))
                   const modelName = s.reported_model ?? '-'
+                  const originClass = sessionOriginClass(s)
                   return (
                     <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
                       <td className="aoSessionsMono">
                         {codexSession ? (
-                          <div title={`WT_SESSION: ${wt}`}>{codexSession}</div>
+                          <div className={originClass} title={`WT_SESSION: ${wt}`}>{codexSession}</div>
                         ) : (
-                          <div title={`WT_SESSION: ${wt}`}>-</div>
+                          <div className={originClass} title={`WT_SESSION: ${wt}`}>-</div>
                         )}
                       </td>
                       <td className="aoSessionsCellCenter">

@@ -518,6 +518,63 @@ pub fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
+pub fn is_wt_session_alive(wt_session: &str) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+
+        fn wide_cstr_to_string(buf: &[u16]) -> String {
+            let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            String::from_utf16_lossy(&buf[..end])
+        }
+
+        let target = wt_session.trim();
+        if target.is_empty() {
+            return false;
+        }
+
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return false;
+        }
+
+        let candidates = ["codex.exe", "codex", "wsl.exe", "bash.exe"];
+        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        let mut alive = false;
+        let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+        while ok {
+            let exe = wide_cstr_to_string(&entry.szExeFile).to_ascii_lowercase();
+            if candidates.iter().any(|n| *n == exe) {
+                if let Some(v) = crate::platform::windows_loopback_peer::read_process_env_var(
+                    entry.th32ProcessID,
+                    "WT_SESSION",
+                ) {
+                    if v.trim().eq_ignore_ascii_case(target) {
+                        alive = true;
+                        break;
+                    }
+                }
+            }
+            ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        }
+
+        let _ = unsafe { CloseHandle(snapshot) };
+        alive
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = wt_session;
+        false
+    }
+}
+
 #[cfg(windows)]
 include!("windows_terminal/discovery_backend.rs");
 include!("windows_terminal/tests.rs");

@@ -107,11 +107,6 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
         // We keep the persisted preference mapping in config; only the runtime list is pruned.
         {
             let mut map = state.gateway.client_sessions.write();
-            // Some sessions (e.g. WSL2 traffic or when PID inference fails) can have pid=0.
-            // Keep them briefly for UI visibility, but prune request-only rows faster so closed
-            // WSL2 sessions disappear promptly.
-            const STALE_NO_PID_DISCOVERED_MS: u64 = 5 * 60 * 1000;
-            const STALE_NO_PID_REQUEST_ONLY_MS: u64 = 90 * 1000;
             map.retain(|_, v| {
                 let active = v.last_request_unix_ms > 0
                     && now.saturating_sub(v.last_request_unix_ms) < 60_000;
@@ -122,13 +117,16 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     return false;
                 }
                 if v.pid == 0 {
-                    let last_seen = v.last_request_unix_ms.max(v.last_discovered_unix_ms);
-                    let ttl = if v.last_discovered_unix_ms == 0 {
-                        STALE_NO_PID_REQUEST_ONLY_MS
-                    } else {
-                        STALE_NO_PID_DISCOVERED_MS
-                    };
-                    if last_seen > 0 && now.saturating_sub(last_seen) > ttl {
+                    // No PID: use WT_SESSION liveness if available (close tab => remove),
+                    // otherwise keep only while request activity is recent.
+                    if let Some(wt) = v.wt_session.as_deref() {
+                        if !wt.trim().is_empty()
+                            && !crate::platform::windows_terminal::is_wt_session_alive(wt)
+                            && !active
+                        {
+                            return false;
+                        }
+                    } else if !active {
                         return false;
                     }
                 }
