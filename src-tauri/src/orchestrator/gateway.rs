@@ -552,11 +552,13 @@ async fn responses(
                             resp,
                             st.clone(),
                             provider_name,
-                            api_key_ref_from_raw(api_key.as_deref()),
                             timeout,
-                            session_key.clone(),
-                            requested_model.clone(),
-                            request_origin.to_string(),
+                            SsePersistContext {
+                                api_key_ref: api_key_ref_from_raw(api_key.as_deref()),
+                                session_key: session_key.clone(),
+                                requested_model: requested_model.clone(),
+                                request_origin: request_origin.to_string(),
+                            },
                         );
                     }
                     Ok(resp) => {
@@ -666,13 +668,12 @@ async fn responses(
                     let api_key_ref = api_key_ref_from_raw(api_key.as_deref());
 
                     // Persist the exchange so we can keep continuity if provider changes later.
-                    st.store
-                        .record_success(
-                            &provider_name,
-                            &response_obj,
-                            Some(&api_key_ref),
-                            request_origin,
-                        );
+                    st.store.record_success(
+                        &provider_name,
+                        &response_obj,
+                        Some(&api_key_ref),
+                        request_origin,
+                    );
 
                     // Avoid spamming the event log for routine successful requests; only surface
                     // interesting routing outcomes (failover / non-preferred).

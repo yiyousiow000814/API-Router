@@ -151,15 +151,20 @@ fn upstream_auth<'a>(st: &GatewayState, client_auth: Option<&'a str>) -> Option<
     Some(auth)
 }
 
+#[derive(Clone)]
+struct SsePersistContext {
+    api_key_ref: String,
+    session_key: String,
+    requested_model: Option<String>,
+    request_origin: String,
+}
+
 fn passthrough_sse_and_persist(
     upstream_resp: reqwest::Response,
     st: GatewayState,
     provider_name: String,
-    api_key_ref: String,
     idle_timeout_seconds: u64,
-    session_key: String,
-    requested_model: Option<String>,
-    request_origin: String,
+    persist_ctx: SsePersistContext,
 ) -> Response {
     use futures_util::StreamExt;
 
@@ -175,10 +180,10 @@ fn passthrough_sse_and_persist(
     // Persist on drop isn't guaranteed; do it after stream completes.
     let st2 = st.clone();
     let provider2 = provider_name.clone();
-    let api_key_ref2 = api_key_ref.clone();
-    let session_key2 = session_key.clone();
-    let requested_model2 = requested_model.clone();
-    let request_origin2 = request_origin.clone();
+    let api_key_ref2 = persist_ctx.api_key_ref.clone();
+    let session_key2 = persist_ctx.session_key.clone();
+    let requested_model2 = persist_ctx.requested_model.clone();
+    let request_origin2 = persist_ctx.request_origin.clone();
     let tap3 = tap.clone();
     let stream = async_stream::stream! {
         let mut forwarded_bytes: u64 = 0;
