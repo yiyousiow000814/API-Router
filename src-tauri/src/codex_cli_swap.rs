@@ -30,8 +30,17 @@ fn user_profile_dir() -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
+fn hidden_wsl_command() -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let mut cmd = std::process::Command::new("wsl.exe");
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+#[cfg(windows)]
 fn default_wsl_distribution_and_home() -> Option<(String, String)> {
-    let output = std::process::Command::new("wsl.exe")
+    let output = hidden_wsl_command()
         .args([
             "-e",
             "sh",

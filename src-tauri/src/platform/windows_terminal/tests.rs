@@ -535,6 +535,30 @@ mod tests {
     }
 
     #[test]
+    fn infer_parent_session_id_from_tui_log_extracts_nested_parent() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let codex_home = tmp.path().join(".codex");
+        let log_dir = codex_home.join("log");
+        std::fs::create_dir_all(&log_dir).expect("mkdir");
+        let log_path = log_dir.join("codex-tui.log");
+        let mut f = std::fs::File::create(&log_path).expect("create");
+        writeln!(
+            f,
+            "2026-02-17T12:49:12.807612Z  INFO session_loop{{thread_id=019c67c0-c95d-7b10-a0a1-fc576b458272}}:session_loop{{thread_id=019c6ba5-c863-7c70-84c5-0e1f3c74d06a}}: codex_core::codex: new"
+        )
+        .unwrap();
+
+        let got = infer_parent_session_id_from_tui_log(
+            &codex_home,
+            "019c6ba5-c863-7c70-84c5-0e1f3c74d06a",
+        );
+        assert_eq!(
+            got.as_deref(),
+            Some("019c67c0-c95d-7b10-a0a1-fc576b458272")
+        );
+    }
+
+    #[test]
     #[ignore]
     fn manual_print_discovery() {
         fn find_repo_root_from_cwd() -> Option<PathBuf> {

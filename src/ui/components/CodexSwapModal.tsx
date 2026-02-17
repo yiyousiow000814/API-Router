@@ -24,18 +24,20 @@ type Props = {
 type WslGatewayTest = {
   ok: boolean
   authorized: boolean
+  wsl_host?: string
 }
 
 type WslGatewayAccessStatus = {
   ok: boolean
   authorized: boolean
+  wsl_host?: string
 }
 
-function wslAccessSummary(authorized: boolean): string {
+function wslAccessSummary(authorized: boolean, wslHost: string): string {
   if (authorized) {
-    return `Enabled: use WSL2 base_url http://${GATEWAY_WSL2_HOST}:4000/v1.`
+    return `Enabled: use WSL2 base_url http://${wslHost}:4000/v1.`
   }
-  return `Disabled: WSL2 access to http://${GATEWAY_WSL2_HOST}:4000/v1 is blocked (expected after Revoke).`
+  return `Disabled: WSL2 access to http://${wslHost}:4000/v1 is blocked (expected after Revoke).`
 }
 
 export function CodexSwapModal({
@@ -55,6 +57,7 @@ export function CodexSwapModal({
 }: Props) {
   const [wslBusy, setWslBusy] = useState(false)
   const [wslAuthorized, setWslAuthorized] = useState(false)
+  const [wslHost, setWslHost] = useState<string>(GATEWAY_WSL2_HOST)
 
   async function refreshWslAccessStatus() {
     if (isDevPreview) {
@@ -68,6 +71,7 @@ export function CodexSwapModal({
     try {
       const res = await invoke<WslGatewayAccessStatus>('wsl_gateway_access_status')
       setWslAuthorized(Boolean(res.authorized))
+      setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
     } catch {
       // noop
     }
@@ -88,6 +92,7 @@ export function CodexSwapModal({
     try {
       const res = await invoke<WslGatewayTest>('wsl_gateway_authorize_access')
       setWslAuthorized(Boolean(res.authorized))
+      setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
       flashToast('WSL2 gateway access authorized')
     } catch (e) {
       flashToast(String(e), 'error')
@@ -111,6 +116,7 @@ export function CodexSwapModal({
     try {
       const res = await invoke<WslGatewayTest>('wsl_gateway_revoke_access')
       setWslAuthorized(Boolean(res.authorized))
+      setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
       flashToast('WSL2 gateway access revoked')
     } catch (e) {
       flashToast(String(e), 'error')
@@ -231,7 +237,7 @@ export function CodexSwapModal({
                     Revoke
                   </button>
                 </div>
-                <div className="aoHint">{wslAccessSummary(wslAuthorized)}</div>
+                <div className="aoHint">{wslAccessSummary(wslAuthorized, wslHost)}</div>
               </div>
             ) : null}
           </div>

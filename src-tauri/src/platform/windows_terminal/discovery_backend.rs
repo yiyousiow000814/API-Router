@@ -821,6 +821,13 @@ fn discover_sessions_using_router_uncached(
                     }
                 }
             }
+            let agent_parent_session_id = if is_agent {
+                codex_home_unc
+                    .as_deref()
+                    .and_then(|home| infer_parent_session_id_from_tui_log(home, &codex_session_id))
+            } else {
+                None
+            };
 
             sessions.push(InferredWtSession {
                 // Mark WSL WT sessions explicitly so UI/source logic can distinguish them
@@ -848,6 +855,7 @@ fn discover_sessions_using_router_uncached(
                     None
                 },
                 reported_base_url,
+                agent_parent_session_id,
                 router_confirmed,
                 is_agent,
                 is_review,
@@ -1000,6 +1008,15 @@ fn discover_sessions_using_router_uncached(
                         }
                     }
                 };
+                let is_agent = rollout_meta.as_ref().map(|m| m.is_agent).unwrap_or(false);
+                let is_review = rollout_meta.as_ref().map(|m| m.is_review).unwrap_or(false);
+                let agent_parent_session_id = if is_agent {
+                    codex_home
+                        .as_deref()
+                        .and_then(|home| infer_parent_session_id_from_tui_log(home, &codex_session_id))
+                } else {
+                    None
+                };
                 out.push(InferredWtSession {
                     wt_session: wt,
                     pid,
@@ -1010,10 +1027,11 @@ fn discover_sessions_using_router_uncached(
                             frozen_codex_model_provider(pid, is_new_since_app_started)
                         }),
                     reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
+                    agent_parent_session_id,
                     codex_session_id: Some(codex_session_id),
                     router_confirmed: matched,
-                    is_agent: rollout_meta.as_ref().map(|m| m.is_agent).unwrap_or(false),
-                    is_review: rollout_meta.as_ref().map(|m| m.is_review).unwrap_or(false),
+                    is_agent,
+                    is_review,
                 });
             }
         }

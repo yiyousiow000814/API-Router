@@ -146,11 +146,37 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         }
         let _ = gateway.store.backfill_api_key_ref_fields(&key_refs);
     }
-    Ok(AppState {
+    let app_state = AppState {
         config_path,
         gateway,
         secrets,
-    })
+    };
+
+    match crate::provider_switchboard::sync_gateway_target_for_current_token_on_startup(&app_state)
+    {
+        Ok(failed_targets) => {
+            if !failed_targets.is_empty() {
+                app_state.gateway.store.add_event(
+                    "gateway",
+                    "error",
+                    "codex.provider_switchboard.gateway_token_sync_failed",
+                    "Gateway token sync at startup failed for some targets.",
+                    serde_json::json!({ "failed_targets": failed_targets }),
+                );
+            }
+        }
+        Err(e) => {
+            app_state.gateway.store.add_event(
+                "gateway",
+                "error",
+                "codex.provider_switchboard.gateway_token_sync_failed",
+                &format!("Gateway token sync at startup failed: {e}"),
+                serde_json::Value::Null,
+            );
+        }
+    }
+
+    Ok(app_state)
 }
 
 pub(crate) fn normalize_provider_order(cfg: &mut AppConfig) -> bool {
@@ -204,4 +230,69 @@ fn should_prune_placeholder_provider(cfg: &AppConfig, secrets: &SecretStore, nam
         "Provider {}",
         name.trim_start_matches("provider_")
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_state;
+    use serde_json::json;
+
+    #[test]
+    fn build_state_syncs_gateway_token_to_gateway_targets() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let secrets_path = config_path
+            .parent()
+            .expect("config parent")
+            .join("secrets.json");
+        let secrets = crate::orchestrator::secrets::SecretStore::new(secrets_path);
+        secrets
+            .set_gateway_token("ao_new_gateway_token")
+            .expect("set gateway token");
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).expect("mkdir cli home");
+        std::fs::write(
+            cli_home.join("auth.json"),
+            r#"{"OPENAI_API_KEY":"ao_old_gateway_token"}"#,
+        )
+        .expect("write stale auth");
+        std::fs::write(
+            cli_home.join("config.toml"),
+            "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+        )
+        .expect("write gateway config");
+
+        let switchboard_state = config_path
+            .parent()
+            .expect("config parent")
+            .join("codex-home")
+            .join("provider-switchboard-state.json");
+        std::fs::create_dir_all(switchboard_state.parent().expect("state parent"))
+            .expect("mkdir state parent");
+        std::fs::write(
+            &switchboard_state,
+            serde_json::to_string_pretty(&json!({
+              "target": "gateway",
+              "provider": serde_json::Value::Null,
+              "cli_homes": [cli_home.to_string_lossy().to_string()]
+            }))
+            .expect("state json"),
+        )
+        .expect("write switchboard state");
+
+        let _state = build_state(config_path, data_dir).expect("build state");
+
+        let auth: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(cli_home.join("auth.json")).expect("read synced auth"),
+        )
+        .expect("parse synced auth");
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
+            Some("ao_new_gateway_token")
+        );
+    }
 }

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { fmtWhen } from '../utils/format'
-import { GATEWAY_WINDOWS_HOST, GATEWAY_WSL2_HOST } from '../constants'
+import { GATEWAY_WINDOWS_HOST } from '../constants'
 import './SessionsTable.css'
 
 type SessionRow = {
@@ -33,15 +33,25 @@ export function isWslSessionRow(s: Pick<SessionRow, 'wt_session' | 'reported_bas
 
   const base = (s.reported_base_url ?? '').trim().toLowerCase()
   if (!base) return false
-  if (base.includes(`//${GATEWAY_WSL2_HOST.toLowerCase()}:`)) return true
+  let host = ''
+  try {
+    host = new URL(base).hostname.toLowerCase()
+  } catch {
+    host = ''
+  }
+  if (!host) return false
   if (
-    base.includes(`//${GATEWAY_WINDOWS_HOST.toLowerCase()}:`) ||
-    base.includes('//localhost:')
+    host === GATEWAY_WINDOWS_HOST.toLowerCase() ||
+    host === 'localhost' ||
+    host === '::1'
   ) {
     return false
   }
-  // Keep session origin deterministic in UI: anything not proven WSL2 defaults to Windows.
-  return false
+  const parts = host.split('.')
+  const ipv4 =
+    parts.length === 4 &&
+    parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255)
+  return ipv4
 }
 
 export function SessionsTable({

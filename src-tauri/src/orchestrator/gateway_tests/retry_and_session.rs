@@ -610,6 +610,245 @@ async fn gateway_request_sets_session_model_provider_to_api_router() {
 }
 
 #[tokio::test]
+async fn review_request_backfills_parent_main_session_from_body_source() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(
+            move |_body: axum::extract::Json<serde_json::Value>| async move {
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "id": "resp_ok",
+                        "model": "gpt-5.2-2025-12-11",
+                        "output": [{"content": [{"type": "output_text", "text": "ok"}]}]
+                    })),
+                )
+            },
+        ),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 4000,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 1,
+            failure_threshold: 1,
+            cooldown_seconds: 1,
+            request_timeout_seconds: 5,
+        },
+        providers: std::collections::BTreeMap::from([(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        )]),
+        provider_order: vec!["p1".to_string()],
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let client_sessions = Arc::new(RwLock::new(HashMap::new()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: client_sessions.clone(),
+    };
+
+    let app = build_router(state);
+    let review_sid = "019c6b95-65bc-71f3-b5de-afe50c3476d5";
+    let parent_sid = "019c67c0-c95d-7b10-a0a1-fc576b458272";
+    let body = json!({
+        "model": "gpt-test",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "review"}]
+        }],
+        "session_source": {
+            "subagent": {
+                "thread_spawn": {
+                    "parent_thread_id": parent_sid
+                }
+            }
+        },
+        "stream": false
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("host", "172.26.144.1:4000")
+                .header("x-openai-subagent", "review")
+                .header("session_id", review_sid)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let sessions = client_sessions.read();
+    let review = sessions.get(review_sid).expect("review session");
+    assert!(review.confirmed_router);
+    assert!(review.is_agent);
+    assert!(review.is_review);
+
+    let main = sessions.get(parent_sid).expect("parent main session");
+    assert!(main.confirmed_router);
+    assert!(!main.is_agent);
+    assert!(!main.is_review);
+    assert_eq!(
+        main.last_reported_model_provider.as_deref(),
+        Some(GATEWAY_MODEL_PROVIDER_ID)
+    );
+}
+
+#[tokio::test]
+async fn parent_thread_backfill_detects_missing_review_header_path() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(
+            move |_body: axum::extract::Json<serde_json::Value>| async move {
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "id": "resp_ok",
+                        "model": "gpt-5.2-2025-12-11",
+                        "output": [{"content": [{"type": "output_text", "text": "ok"}]}]
+                    })),
+                )
+            },
+        ),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 4000,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 1,
+            failure_threshold: 1,
+            cooldown_seconds: 1,
+            request_timeout_seconds: 5,
+        },
+        providers: std::collections::BTreeMap::from([(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        )]),
+        provider_order: vec!["p1".to_string()],
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let client_sessions = Arc::new(RwLock::new(HashMap::new()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: client_sessions.clone(),
+    };
+
+    let app = build_router(state);
+    let review_sid = "019c6b95-65bc-71f3-b5de-afe50c3476d5";
+    let parent_sid = "019c67c0-c95d-7b10-a0a1-fc576b458272";
+    let body = json!({
+        "model": "gpt-test",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "review-without-header"}]
+        }],
+        // Deliberately no `x-openai-subagent: review` header and no string "review" marker.
+        "session_source": {
+            "subagent": {
+                "thread_spawn": {
+                    "parent_thread_id": parent_sid
+                }
+            }
+        },
+        "stream": false
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("host", "172.26.144.1:4000")
+                .header("session_id", review_sid)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let sessions = client_sessions.read();
+    let parent = sessions
+        .get(parent_sid)
+        .expect("parent main session should be backfilled");
+    assert!(parent.confirmed_router);
+    assert_eq!(
+        parent.last_reported_model_provider.as_deref(),
+        Some(GATEWAY_MODEL_PROVIDER_ID)
+    );
+}
+
+#[tokio::test]
 async fn stream_usage_prefers_response_created_model_not_unknown() {
     let app = Router::new().route(
         "/v1/responses",

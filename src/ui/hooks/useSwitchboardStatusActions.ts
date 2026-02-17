@@ -1,4 +1,4 @@
-import { useState, type MutableRefObject } from 'react'
+import { useRef, useState, type MutableRefObject } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status } from '../types'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
@@ -54,7 +54,20 @@ export function useSwitchboardStatusActions({
   setProviderSwitchStatus,
   flashToast,
 }: UseSwitchboardStatusActionsOptions) {
-  const [providerSwitchBusy] = useState<boolean>(false)
+  const [providerSwitchBusy, setProviderSwitchBusy] = useState<boolean>(false)
+  const providerSwitchBusyRef = useRef<boolean>(false)
+
+  function tryEnterProviderSwitchBusy(): boolean {
+    if (providerSwitchBusyRef.current) return false
+    providerSwitchBusyRef.current = true
+    setProviderSwitchBusy(true)
+    return true
+  }
+
+  function leaveProviderSwitchBusy() {
+    providerSwitchBusyRef.current = false
+    setProviderSwitchBusy(false)
+  }
 
   function isWslHomePath(home: string): boolean {
     const s = home.trim().replace(/\//g, '\\').toLowerCase()
@@ -193,85 +206,90 @@ export function useSwitchboardStatusActions({
   }
 
   async function toggleCodexSwap(cliHomes: string[]) {
+    if (!tryEnterProviderSwitchBusy()) return
     const homes = cliHomes.map((s) => s.trim()).filter(Boolean)
-    if (isDevPreview) {
-      if (!homes.length) {
-        flashToast('No enabled swap target. Open Configure Dirs first.', 'error')
+    try {
+      if (isDevPreview) {
+        if (!homes.length) {
+          flashToast('No enabled swap target. Open Configure Dirs first.', 'error')
+          return
+        }
+        const allHomes = resolveCliHomes(
+          codexSwapDir1Ref.current,
+          codexSwapDir2Ref.current,
+          codexSwapUseWindowsRef.current,
+          codexSwapUseWslRef.current,
+        )
+        const knownHomes = allHomes.length ? allHomes : homes
+        const prevByHome = new Map((codexSwapStatus?.dirs ?? []).map((d) => [d.cli_home.trim(), d.state]))
+        const anySwapped = homes.some((h) => (prevByHome.get(h) ?? 'original') === 'swapped')
+        const nextTargetState = anySwapped ? 'original' : 'swapped'
+        const nextDirs = knownHomes.map((h) => ({
+          cli_home: h,
+          state: homes.includes(h) ? nextTargetState : (prevByHome.get(h) ?? 'original'),
+        }))
+        const hasSwapped = nextDirs.some((d) => d.state === 'swapped')
+        const hasOriginal = nextDirs.some((d) => d.state === 'original')
+        const overall = hasSwapped && hasOriginal ? 'mixed' : hasSwapped ? 'swapped' : 'original'
+        setCodexSwapStatus({
+          ok: true,
+          overall,
+          dirs: nextDirs,
+        })
+        const nextModeForHomes: 'gateway' | 'official' = anySwapped ? 'gateway' : 'official'
+        const existingProviderDirs =
+          providerSwitchStatus?.dirs ??
+          knownHomes.map((home) => ({ cli_home: home, mode: 'gateway', model_provider: null }))
+        const updatedProviderDirs = existingProviderDirs.map((dir) =>
+          homes.includes(dir.cli_home)
+            ? { ...dir, mode: nextModeForHomes, model_provider: null }
+            : dir,
+        )
+        const uniqueModes = Array.from(new Set(updatedProviderDirs.map((dir) => dir.mode)))
+        const providerMode =
+          uniqueModes.length === 1 && (uniqueModes[0] === 'gateway' || uniqueModes[0] === 'official')
+            ? (uniqueModes[0] as 'gateway' | 'official')
+            : 'mixed'
+        setProviderSwitchStatus({
+          ok: true,
+          mode: providerMode,
+          model_provider: null,
+          dirs: updatedProviderDirs,
+          provider_options: (devConfig.provider_order ?? []).filter((n) => n !== 'official'),
+        })
+        flashToast(anySwapped ? 'Switched to gateway [TEST]' : 'Switched to official [TEST]')
         return
       }
-      const allHomes = resolveCliHomes(
-        codexSwapDir1Ref.current,
-        codexSwapDir2Ref.current,
-        codexSwapUseWindowsRef.current,
-        codexSwapUseWslRef.current,
-      )
-      const knownHomes = allHomes.length ? allHomes : homes
+
       const prevByHome = new Map((codexSwapStatus?.dirs ?? []).map((d) => [d.cli_home.trim(), d.state]))
       const anySwapped = homes.some((h) => (prevByHome.get(h) ?? 'original') === 'swapped')
-      const nextTargetState = anySwapped ? 'original' : 'swapped'
-      const nextDirs = knownHomes.map((h) => ({
-        cli_home: h,
-        state: homes.includes(h) ? nextTargetState : (prevByHome.get(h) ?? 'original'),
-      }))
-      const hasSwapped = nextDirs.some((d) => d.state === 'swapped')
-      const hasOriginal = nextDirs.some((d) => d.state === 'original')
-      const overall = hasSwapped && hasOriginal ? 'mixed' : hasSwapped ? 'swapped' : 'original'
-      setCodexSwapStatus({
-        ok: true,
-        overall,
-        dirs: nextDirs,
-      })
-      const nextModeForHomes: 'gateway' | 'official' = anySwapped ? 'gateway' : 'official'
-      const existingProviderDirs =
-        providerSwitchStatus?.dirs ??
-        knownHomes.map((home) => ({ cli_home: home, mode: 'gateway', model_provider: null }))
-      const updatedProviderDirs = existingProviderDirs.map((dir) =>
-        homes.includes(dir.cli_home)
-          ? { ...dir, mode: nextModeForHomes, model_provider: null }
-          : dir,
-      )
-      const uniqueModes = Array.from(new Set(updatedProviderDirs.map((dir) => dir.mode)))
-      const providerMode =
-        uniqueModes.length === 1 && (uniqueModes[0] === 'gateway' || uniqueModes[0] === 'official')
-          ? (uniqueModes[0] as 'gateway' | 'official')
-          : 'mixed'
-      setProviderSwitchStatus({
-        ok: true,
-        mode: providerMode,
-        model_provider: null,
-        dirs: updatedProviderDirs,
-        provider_options: (devConfig.provider_order ?? []).filter((n) => n !== 'official'),
-      })
-      flashToast(anySwapped ? 'Switched to gateway [TEST]' : 'Switched to official [TEST]')
-      return
-    }
-
-    const prevByHome = new Map((codexSwapStatus?.dirs ?? []).map((d) => [d.cli_home.trim(), d.state]))
-    const anySwapped = homes.some((h) => (prevByHome.get(h) ?? 'original') === 'swapped')
-    const switchingToGateway = anySwapped
-    if (switchingToGateway) {
-      const access = await invoke<{ ok: boolean; legacy_conflict?: boolean }>('wsl_gateway_access_quick_status')
-      if (access.legacy_conflict) {
-        const shouldCleanup = window.confirm(
-          '检测到旧版 WSL2 portproxy 占用了 4000（会导致 Windows 也连不上 gateway）。\n\n点击 OK 立即清理（需要管理员权限），点击 Cancel 取消切换。',
-        )
-        if (!shouldCleanup) return
-        await invoke('wsl_gateway_revoke_access')
-        flashToast('Removed legacy WSL2 portproxy conflict')
+      const switchingToGateway = anySwapped
+      if (switchingToGateway) {
+        const access = await invoke<{ ok: boolean; legacy_conflict?: boolean }>('wsl_gateway_access_quick_status')
+        if (access.legacy_conflict) {
+          const shouldCleanup = window.confirm(
+            'A legacy WSL2 portproxy rule is using port 4000 (this can also break Windows access to the gateway).\n\nClick OK to clean it now (requires admin), or Cancel to abort switching.',
+          )
+          if (!shouldCleanup) return
+          await invoke('wsl_gateway_revoke_access')
+          flashToast('Removed legacy WSL2 portproxy conflict')
+        }
       }
-    }
 
-    const res = await invoke<{ ok: boolean; mode: 'swapped' | 'restored'; cli_homes: string[] }>(
-      'codex_cli_toggle_auth_config_swap',
-      { cliHomes: homes },
-    )
-    flashToast(res.mode === 'swapped' ? 'Switched to official' : 'Switched to gateway')
-    await refreshStatus({ refreshSwapStatus: false })
-    await Promise.all([
-      refreshCodexSwapStatus(homes),
-      refreshProviderSwitchStatus(homes),
-      refreshConfig({ refreshProviderSwitchStatus: false }),
-    ])
+      const res = await invoke<{ ok: boolean; mode: 'swapped' | 'restored'; cli_homes: string[] }>(
+        'codex_cli_toggle_auth_config_swap',
+        { cliHomes: homes },
+      )
+      flashToast(res.mode === 'swapped' ? 'Switched to official' : 'Switched to gateway')
+      await refreshStatus({ refreshSwapStatus: false })
+      await Promise.all([
+        refreshCodexSwapStatus(homes),
+        refreshProviderSwitchStatus(homes),
+        refreshConfig({ refreshProviderSwitchStatus: false }),
+      ])
+    } finally {
+      leaveProviderSwitchBusy()
+    }
   }
 
   async function setProviderSwitchTarget(
@@ -279,6 +297,7 @@ export function useSwitchboardStatusActions({
     provider?: string,
     cliHomes?: string[],
   ) {
+    if (!tryEnterProviderSwitchBusy()) return
     const allHomes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
     const homes =
       cliHomes && cliHomes.length
@@ -326,7 +345,7 @@ export function useSwitchboardStatusActions({
         const access = await invoke<{ ok: boolean; authorized: boolean; legacy_conflict?: boolean }>('wsl_gateway_access_quick_status')
         if (access.legacy_conflict) {
           const shouldCleanup = window.confirm(
-            '检测到旧版 WSL2 portproxy 占用了 4000（会导致 Windows 也连不上 gateway）。\n\n点击 OK 立即清理（需要管理员权限），点击 Cancel 取消切换。',
+            'A legacy WSL2 portproxy rule is using port 4000 (this can also break Windows access to the gateway).\n\nClick OK to clean it now (requires admin), or Cancel to abort switching.',
           )
           if (!shouldCleanup) return
           await invoke('wsl_gateway_revoke_access')
@@ -338,7 +357,7 @@ export function useSwitchboardStatusActions({
         const access = await invoke<{ ok: boolean; authorized: boolean }>('wsl_gateway_access_quick_status')
         if (!access.authorized) {
           const shouldAuthorize = window.confirm(
-            'WSL2 连接本机 gateway 需要先授权 Windows 网络规则。\n\n点击 OK 立即 Authorize（Admin），点击 Cancel 先不切换。',
+            'WSL2 access to the local gateway requires Windows network authorization first.\n\nClick OK to authorize now (Admin), or Cancel to skip switching for now.',
           )
           if (!shouldAuthorize) return
           await invoke('wsl_gateway_authorize_access')
@@ -353,11 +372,16 @@ export function useSwitchboardStatusActions({
       })
       const prevDirs = providerSwitchStatus?.dirs ?? []
       const nextByHome = new Map(
-        (res.dirs ?? []).map((d) => [d.cli_home.trim(), d]),
+        (res.dirs ?? []).map((d) => [normalizePathForCompare(d.cli_home), d]),
       )
-      const mergedFromPrev = prevDirs.map((d) => nextByHome.get(d.cli_home.trim()) ?? d)
+      const mergedFromPrev = prevDirs.map(
+        (d) => nextByHome.get(normalizePathForCompare(d.cli_home)) ?? d,
+      )
       const extraNew = (res.dirs ?? []).filter(
-        (d) => !prevDirs.some((p) => p.cli_home.trim() === d.cli_home.trim()),
+        (d) =>
+          !prevDirs.some(
+            (p) => normalizePathForCompare(p.cli_home) === normalizePathForCompare(d.cli_home),
+          ),
       )
       const mergedDirs = [...mergedFromPrev, ...extraNew]
       setProviderSwitchStatus({
@@ -372,6 +396,8 @@ export function useSwitchboardStatusActions({
       void refreshCodexSwapStatus(homes)
     } catch (e) {
       flashToast(String(e), 'error')
+    } finally {
+      leaveProviderSwitchBusy()
     }
   }
 

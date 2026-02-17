@@ -33,8 +33,7 @@ export function UsageStatsFiltersBar({
   usageOriginFilterOptions,
   toggleUsageOriginFilter,
 }: Props) {
-  const hasWindowsOrigin = usageOriginFilterOptions.includes('windows')
-  const hasWsl2Origin = usageOriginFilterOptions.includes('wsl2')
+  const originOptionsLoaded = usageOriginFilterOptions.length > 0
   return (
     <>
       <div className="aoUsageStatsHeader">
@@ -55,7 +54,8 @@ export function UsageStatsFiltersBar({
             <button
               className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnOrigin${usageFilterOrigins.includes('windows') ? ' aoUsageWindowBtnActive' : ''}`}
               onClick={() => toggleUsageOriginFilter('windows')}
-              disabled={usageStatisticsLoading || !hasWindowsOrigin}
+              disabled={usageStatisticsLoading}
+              title={originOptionsLoaded ? undefined : 'No origin data yet'}
               aria-pressed={usageFilterOrigins.includes('windows')}
             >
               Windows
@@ -63,7 +63,8 @@ export function UsageStatsFiltersBar({
             <button
               className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnOrigin${usageFilterOrigins.includes('wsl2') ? ' aoUsageWindowBtnActive' : ''}`}
               onClick={() => toggleUsageOriginFilter('wsl2')}
-              disabled={usageStatisticsLoading || !hasWsl2Origin}
+              disabled={usageStatisticsLoading}
+              title={originOptionsLoaded ? undefined : 'No origin data yet'}
               aria-pressed={usageFilterOrigins.includes('wsl2')}
             >
               WSL2

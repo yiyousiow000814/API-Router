@@ -1,7 +1,7 @@
 use std::fs;
 use std::process::Command;
 use serde_json::json;
-use crate::constants::{GATEWAY_ANY_HOST, GATEWAY_WINDOWS_HOST, GATEWAY_WSL2_HOST};
+use crate::constants::{GATEWAY_ANY_HOST, GATEWAY_WINDOWS_HOST};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -68,7 +68,7 @@ fn run_elevated_script(script_body: &str, port: u16) -> Result<(), String> {
     }
 }
 
-fn authorize_access_impl(port: u16) -> Result<serde_json::Value, String> {
+fn authorize_access_impl(port: u16, wsl_host: &str) -> Result<serde_json::Value, String> {
     let script = r#"
 param(
   [Parameter(Mandatory=$true)][int]$Port,
@@ -90,18 +90,19 @@ try {
   exit 1
 }
 "#
-    .replace("__WSL_HOST__", GATEWAY_WSL2_HOST);
+    .replace("__WSL_HOST__", wsl_host);
     let script = script
         .replace("__ANY_HOST__", GATEWAY_ANY_HOST)
         .replace("__WIN_HOST__", GATEWAY_WINDOWS_HOST);
     run_elevated_script(&script, port)?;
     Ok(json!({
       "ok": true,
-      "authorized": access_authorized_impl(port)
+      "authorized": access_authorized_impl(port, wsl_host),
+      "wsl_host": wsl_host
     }))
 }
 
-fn revoke_access_impl(port: u16) -> Result<serde_json::Value, String> {
+fn revoke_access_impl(port: u16, wsl_host: &str) -> Result<serde_json::Value, String> {
     let script = r#"
 param(
   [Parameter(Mandatory=$true)][int]$Port,
@@ -120,16 +121,17 @@ try {
   exit 1
 }
 "#
-    .replace("__WSL_HOST__", GATEWAY_WSL2_HOST);
+    .replace("__WSL_HOST__", wsl_host);
     let script = script.replace("__ANY_HOST__", GATEWAY_ANY_HOST);
     run_elevated_script(&script, port)?;
     Ok(json!({
       "ok": true,
-      "authorized": access_authorized_impl(port)
+      "authorized": access_authorized_impl(port, wsl_host),
+      "wsl_host": wsl_host
     }))
 }
 
-fn access_authorized_impl(port: u16) -> bool {
+fn access_authorized_impl(port: u16, wsl_host: &str) -> bool {
     let out = hidden_command("netsh.exe")
         .args(["interface", "portproxy", "show", "v4tov4"])
         .output();
@@ -140,9 +142,9 @@ fn access_authorized_impl(port: u16) -> bool {
         return false;
     }
     let txt = String::from_utf8_lossy(&out.stdout);
-    // WSL2 clients use host IP (172.26.144.1). The proxy still forwards to
+    // WSL2 clients use host IP (detected and pinned at runtime). The proxy still forwards to
     // Windows local gateway listener on 127.0.0.1:<port>.
-    has_portproxy_rule(&txt, GATEWAY_WSL2_HOST, port, GATEWAY_WINDOWS_HOST, port)
+    has_portproxy_rule(&txt, wsl_host, port, GATEWAY_WINDOWS_HOST, port)
 }
 
 fn legacy_conflict_impl(port: u16) -> bool {
@@ -188,11 +190,15 @@ pub(crate) async fn wsl_gateway_access_status(
     state: tauri::State<'_, app_state::AppState>,
 ) -> Result<serde_json::Value, String> {
     let port = state.gateway.cfg.read().listen.port;
+    let config_path = state.config_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let wsl_host =
+            crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(&config_path));
         Ok(json!({
           "ok": true,
-          "authorized": access_authorized_impl(port),
+          "authorized": access_authorized_impl(port, &wsl_host),
           "legacy_conflict": legacy_conflict_impl(port),
+          "wsl_host": wsl_host,
         }))
     })
     .await
@@ -204,11 +210,15 @@ pub(crate) async fn wsl_gateway_access_quick_status(
     state: tauri::State<'_, app_state::AppState>,
 ) -> Result<serde_json::Value, String> {
     let port = state.gateway.cfg.read().listen.port;
+    let config_path = state.config_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let wsl_host =
+            crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(&config_path));
         Ok(json!({
           "ok": true,
-          "authorized": access_authorized_impl(port),
+          "authorized": access_authorized_impl(port, &wsl_host),
           "legacy_conflict": legacy_conflict_impl(port),
+          "wsl_host": wsl_host,
         }))
     })
     .await
@@ -220,14 +230,18 @@ pub(crate) async fn wsl_gateway_authorize_access(
     state: tauri::State<'_, app_state::AppState>,
 ) -> Result<serde_json::Value, String> {
     let port = state.gateway.cfg.read().listen.port;
+    let config_path = state.config_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if access_authorized_impl(port) {
+        let wsl_host =
+            crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(&config_path));
+        if access_authorized_impl(port, &wsl_host) {
             return Ok(json!({
               "ok": true,
-              "authorized": true
+              "authorized": true,
+              "wsl_host": wsl_host
             }));
         }
-        authorize_access_impl(port)
+        authorize_access_impl(port, &wsl_host)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -238,14 +252,18 @@ pub(crate) async fn wsl_gateway_revoke_access(
     state: tauri::State<'_, app_state::AppState>,
 ) -> Result<serde_json::Value, String> {
     let port = state.gateway.cfg.read().listen.port;
+    let config_path = state.config_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if !access_authorized_impl(port) {
+        let wsl_host =
+            crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(&config_path));
+        if !access_authorized_impl(port, &wsl_host) {
             return Ok(json!({
               "ok": true,
-              "authorized": false
+              "authorized": false,
+              "wsl_host": wsl_host
             }));
         }
-        revoke_access_impl(port)
+        revoke_access_impl(port, &wsl_host)
     })
     .await
     .map_err(|e| e.to_string())?

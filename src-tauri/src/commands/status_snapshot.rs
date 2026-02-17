@@ -1,6 +1,8 @@
 #[tauri::command]
 pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value {
     let cfg = state.gateway.cfg.read().clone();
+    let wsl_gateway_host =
+        crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(&state.config_path));
     let now = unix_ms();
     state.gateway.router.sync_with_config(&cfg, now);
     let providers = state.gateway.router.snapshot(now);
@@ -85,6 +87,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                         last_reported_model_provider: None,
                         last_reported_model: None,
                         last_reported_base_url: None,
+                        agent_parent_session_id: None,
                         is_agent: s.is_agent,
                         is_review: s.is_review,
                         confirmed_router: s.router_confirmed,
@@ -101,6 +104,9 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                 if let Some(bu) = s.reported_base_url.as_deref() {
                     entry.last_reported_base_url = Some(bu.to_string());
                 }
+                if let Some(parent_sid) = s.agent_parent_session_id.as_deref() {
+                    entry.agent_parent_session_id = Some(parent_sid.to_string());
+                }
                 if s.is_agent {
                     entry.is_agent = true;
                 }
@@ -109,7 +115,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     entry.is_agent = true;
                 }
             }
-            backfill_main_confirmation_from_verified_review(&mut map, now);
+            backfill_main_confirmation_from_verified_agent(&mut map, now);
         }
 
         // Drop dead sessions aggressively (e.g. user Ctrl+C'd Codex).
@@ -209,6 +215,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
 
     serde_json::json!({
       "listen": { "host": cfg.listen.host, "port": cfg.listen.port },
+      "wsl_gateway_host": wsl_gateway_host,
       "preferred_provider": cfg.routing.preferred_provider,
       "manual_override": manual_override,
       "providers": providers,
@@ -254,30 +261,67 @@ fn apply_discovered_router_confirmation(
     }
 }
 
-fn backfill_main_confirmation_from_verified_review(
+fn backfill_main_confirmation_from_verified_agent(
     map: &mut std::collections::HashMap<String, crate::orchestrator::gateway::ClientSessionRuntime>,
     _now_unix_ms: u64,
 ) {
-    let anchors: Vec<(u32, Option<String>)> = map
+    for entry in map.values_mut() {
+        if !(entry.confirmed_router && entry.is_agent) {
+            continue;
+        }
+        if entry.agent_parent_session_id.is_some() {
+            continue;
+        }
+        let Some(parent_sid) =
+            crate::platform::windows_terminal::infer_parent_session_id_for_agent_session(
+                &entry.codex_session_id,
+            )
+        else {
+            continue;
+        };
+        if parent_sid != entry.codex_session_id {
+            entry.agent_parent_session_id = Some(parent_sid);
+        }
+    }
+
+    let anchors: Vec<(u32, Option<String>, Option<String>)> = map
         .values()
-        .filter(|v| v.confirmed_router && v.is_review)
-        .map(|v| (v.pid, v.wt_session.clone()))
+        .filter(|v| v.confirmed_router && v.is_agent)
+        .map(|v| (v.pid, v.wt_session.clone(), v.agent_parent_session_id.clone()))
         .collect();
 
     if anchors.is_empty() {
         return;
     }
 
+    let parent_ids: std::collections::HashSet<String> = anchors
+        .iter()
+        .filter_map(|(_, _, parent_sid)| parent_sid.as_ref())
+        .map(|sid| sid.to_string())
+        .collect();
+
+    for parent_sid in parent_ids {
+        let Some(entry) = map.get_mut(&parent_sid) else {
+            continue;
+        };
+        if entry.confirmed_router || entry.is_agent || entry.is_review {
+            continue;
+        }
+        entry.confirmed_router = true;
+        entry.last_reported_model_provider =
+            Some(crate::constants::GATEWAY_MODEL_PROVIDER_ID.to_string());
+    }
+
     for entry in map.values_mut() {
         if entry.confirmed_router || entry.is_agent || entry.is_review {
             continue;
         }
-        let same_proc = anchors.iter().any(|(pid, wt)| {
+        let same_proc = anchors.iter().any(|(pid, wt, _parent_sid)| {
             let pid_match = *pid != 0 && entry.pid != 0 && *pid == entry.pid;
             let wt_match = wt
                 .as_deref()
                 .zip(entry.wt_session.as_deref())
-                .is_some_and(|(a, b)| a == b);
+                .is_some_and(|(a, b)| crate::platform::windows_terminal::wt_session_ids_equal(a, b));
             pid_match || wt_match
         });
         if !same_proc {
@@ -342,7 +386,7 @@ fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
 mod tests {
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::commands::{
-        apply_discovered_router_confirmation, backfill_main_confirmation_from_verified_review,
+        apply_discovered_router_confirmation, backfill_main_confirmation_from_verified_agent,
         merge_discovered_model_provider, should_keep_runtime_session,
     };
     use crate::orchestrator::gateway::ClientSessionRuntime;
@@ -358,6 +402,7 @@ mod tests {
             last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
             last_reported_model: None,
             last_reported_base_url: None,
+            agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
             confirmed_router: true,
@@ -380,6 +425,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
             confirmed_router: false,
@@ -399,6 +445,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
             confirmed_router: false,
@@ -422,6 +469,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            agent_parent_session_id: None,
             is_agent: true,
             is_review: false,
             confirmed_router: false,
@@ -445,6 +493,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
                 confirmed_router: false,
@@ -461,13 +510,14 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                agent_parent_session_id: None,
                 is_agent: true,
                 is_review: true,
                 confirmed_router: true,
             },
         );
 
-        backfill_main_confirmation_from_verified_review(&mut map, 1);
+        backfill_main_confirmation_from_verified_agent(&mut map, 1);
 
         let main = map.get("main").expect("main row");
         assert!(main.confirmed_router);
@@ -491,6 +541,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
                 confirmed_router: false,
@@ -507,13 +558,14 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                agent_parent_session_id: None,
                 is_agent: true,
                 is_review: true,
                 confirmed_router: true,
             },
         );
 
-        backfill_main_confirmation_from_verified_review(&mut map, 2);
+        backfill_main_confirmation_from_verified_agent(&mut map, 2);
 
         let main = map.get("main_old").expect("main_old row");
         assert!(main.confirmed_router);
@@ -537,6 +589,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
                 confirmed_router: false,
@@ -553,15 +606,282 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                agent_parent_session_id: None,
                 is_agent: true,
                 is_review: true,
                 confirmed_router: true,
             },
         );
 
-        backfill_main_confirmation_from_verified_review(&mut map, 2_000);
+        backfill_main_confirmation_from_verified_agent(&mut map, 2_000);
 
         let main = map.get("main_now").expect("main_now row");
+        assert!(main.confirmed_router);
+        assert_eq!(
+            main.last_reported_model_provider.as_deref(),
+            Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
+    }
+
+    #[test]
+    fn verified_agent_backfills_main_by_same_wt_without_review_flag() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "main_agent_wt".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "main_agent_wt".to_string(),
+                pid: 0,
+                wt_session: Some("wsl:abc-123".to_string()),
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 2_000,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: false,
+            },
+        );
+        map.insert(
+            "agent_tool".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "agent_tool".to_string(),
+                pid: 0,
+                wt_session: Some("abc-123".to_string()),
+                last_request_unix_ms: 1_995,
+                last_discovered_unix_ms: 1,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                agent_parent_session_id: None,
+                is_agent: true,
+                is_review: false,
+                confirmed_router: true,
+            },
+        );
+
+        backfill_main_confirmation_from_verified_agent(&mut map, 2_000);
+
+        let main = map.get("main_agent_wt").expect("main_agent_wt row");
+        assert!(main.confirmed_router);
+        assert_eq!(
+            main.last_reported_model_provider.as_deref(),
+            Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
+    }
+
+    #[test]
+    fn verified_agent_backfills_main_by_parent_sid_without_wt_or_pid_match() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "main_from_parent".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "main_from_parent".to_string(),
+                pid: 0,
+                wt_session: None,
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 2_000,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: false,
+            },
+        );
+        map.insert(
+            "agent_with_parent".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "agent_with_parent".to_string(),
+                pid: 0,
+                wt_session: None,
+                last_request_unix_ms: 1_995,
+                last_discovered_unix_ms: 1,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                agent_parent_session_id: Some("main_from_parent".to_string()),
+                is_agent: true,
+                is_review: false,
+                confirmed_router: true,
+            },
+        );
+
+        backfill_main_confirmation_from_verified_agent(&mut map, 2_000);
+
+        let main = map.get("main_from_parent").expect("main_from_parent row");
+        assert!(main.confirmed_router);
+        assert_eq!(
+            main.last_reported_model_provider.as_deref(),
+            Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verified_agent_backfills_main_from_tui_parent_lookup_when_runtime_parent_missing() {
+        use std::io::Write;
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let codex_home = tmp.path().join(".codex");
+        let log_dir = codex_home.join("log");
+        std::fs::create_dir_all(&log_dir).expect("mkdir");
+        let log_path = log_dir.join("codex-tui.log");
+
+        let main_sid = "019c67c0-c95d-7b10-a0a1-fc576b458272";
+        let agent_sid = "019c6bc7-1636-7730-ae5a-03f9d3417528";
+        let mut f = std::fs::File::create(&log_path).expect("create");
+        writeln!(
+            f,
+            "2026-02-17T13:25:35.418912Z  INFO session_loop{{thread_id={main_sid}}}:session_loop{{thread_id={agent_sid}}}: codex_core::codex: new"
+        )
+        .unwrap();
+
+        let prev_codex_home = std::env::var("CODEX_HOME").ok();
+        std::env::set_var("CODEX_HOME", &codex_home);
+
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            main_sid.to_string(),
+            ClientSessionRuntime {
+                codex_session_id: main_sid.to_string(),
+                pid: 0,
+                wt_session: None,
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 2_000,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: false,
+            },
+        );
+        map.insert(
+            agent_sid.to_string(),
+            ClientSessionRuntime {
+                codex_session_id: agent_sid.to_string(),
+                pid: 0,
+                wt_session: None,
+                last_request_unix_ms: 1_995,
+                last_discovered_unix_ms: 1,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                agent_parent_session_id: None,
+                is_agent: true,
+                is_review: false,
+                confirmed_router: true,
+            },
+        );
+
+        backfill_main_confirmation_from_verified_agent(&mut map, 2_000);
+
+        match prev_codex_home {
+            Some(v) => std::env::set_var("CODEX_HOME", v),
+            None => std::env::remove_var("CODEX_HOME"),
+        }
+
+        let main = map.get(main_sid).expect("main row");
+        assert!(main.confirmed_router);
+        assert_eq!(
+            main.last_reported_model_provider.as_deref(),
+            Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
+    }
+
+    #[test]
+    fn verified_review_backfills_main_when_wsl_prefix_differs() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "main_wsl".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "main_wsl".to_string(),
+                pid: 0,
+                wt_session: Some("wsl:ABC-123".to_string()),
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 2_000,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: false,
+            },
+        );
+        map.insert(
+            "review_wsl".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "review_wsl".to_string(),
+                pid: 0,
+                wt_session: Some("abc-123".to_string()),
+                last_request_unix_ms: 1_995,
+                last_discovered_unix_ms: 1,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                agent_parent_session_id: None,
+                is_agent: true,
+                is_review: true,
+                confirmed_router: true,
+            },
+        );
+
+        backfill_main_confirmation_from_verified_agent(&mut map, 2_000);
+
+        let main = map.get("main_wsl").expect("main_wsl row");
+        assert!(main.confirmed_router);
+        assert_eq!(
+            main.last_reported_model_provider.as_deref(),
+            Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
+    }
+
+    #[test]
+    fn verified_review_backfills_main_when_wsl_prefix_differs_reverse() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "main_wsl_rev".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "main_wsl_rev".to_string(),
+                pid: 0,
+                wt_session: Some("abc-xyz".to_string()),
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 2_000,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: false,
+            },
+        );
+        map.insert(
+            "review_wsl_rev".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "review_wsl_rev".to_string(),
+                pid: 0,
+                wt_session: Some("wsl:ABC-XYZ".to_string()),
+                last_request_unix_ms: 1_995,
+                last_discovered_unix_ms: 1,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                agent_parent_session_id: None,
+                is_agent: true,
+                is_review: true,
+                confirmed_router: true,
+            },
+        );
+
+        backfill_main_confirmation_from_verified_agent(&mut map, 2_000);
+
+        let main = map.get("main_wsl_rev").expect("main_wsl_rev row");
         assert!(main.confirmed_router);
         assert_eq!(
             main.last_reported_model_provider.as_deref(),
@@ -581,6 +901,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
             confirmed_router: true,
@@ -602,6 +923,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
             confirmed_router: true,
@@ -623,6 +945,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
             confirmed_router: true,
@@ -644,6 +967,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
             confirmed_router: true,

@@ -16,18 +16,20 @@ type Props = {
 type WslGatewayAccessStatus = {
   ok: boolean
   authorized: boolean
+  wsl_host?: string
 }
 
 type WslGatewayAccessMutation = {
   ok: boolean
   authorized: boolean
+  wsl_host?: string
 }
 
-function wslAccessSummary(authorized: boolean): string {
+function wslAccessSummary(authorized: boolean, wslHost: string): string {
   if (authorized) {
-    return `Enabled: use WSL2 base_url http://${GATEWAY_WSL2_HOST}:4000/v1.`
+    return `Enabled: use WSL2 base_url http://${wslHost}:4000/v1.`
   }
-  return `Disabled: WSL2 access to http://${GATEWAY_WSL2_HOST}:4000/v1 is blocked (expected after Revoke).`
+  return `Disabled: WSL2 access to http://${wslHost}:4000/v1 is blocked (expected after Revoke).`
 }
 
 export function InstructionModal({
@@ -41,6 +43,7 @@ export function InstructionModal({
 }: Props) {
   const [wslBusy, setWslBusy] = useState<boolean>(false)
   const [wslAuthorized, setWslAuthorized] = useState<boolean>(false)
+  const [wslHost, setWslHost] = useState<string>(GATEWAY_WSL2_HOST)
 
   async function refreshWslAccessStatus() {
     if (isDevPreview) {
@@ -55,6 +58,7 @@ export function InstructionModal({
     try {
       const res = await invoke<WslGatewayAccessStatus>('wsl_gateway_access_status')
       setWslAuthorized(Boolean(res.authorized))
+      setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
     } catch {
       // keep UI responsive; status can be fetched after user action
     }
@@ -80,6 +84,7 @@ export function InstructionModal({
     try {
       const res = await invoke<WslGatewayAccessMutation>('wsl_gateway_authorize_access')
       setWslAuthorized(Boolean(res.authorized))
+      setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
       flashToast('WSL2 gateway access authorized')
     } catch (e) {
       flashToast(String(e), 'error')
@@ -103,6 +108,7 @@ export function InstructionModal({
     try {
       const res = await invoke<WslGatewayAccessMutation>('wsl_gateway_revoke_access')
       setWslAuthorized(Boolean(res.authorized))
+      setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
       flashToast('WSL2 gateway access revoked')
     } catch (e) {
       flashToast(String(e), 'error')
@@ -196,7 +202,7 @@ export function InstructionModal({
                   <div className="aoGsAssist">
                     Windows: <code>base_url = "http://{GATEWAY_WINDOWS_HOST}:4000/v1"</code>.
                     <br />
-                    WSL2: <code>base_url = "http://{GATEWAY_WSL2_HOST}:4000/v1"</code>.
+                    WSL2: <code>base_url = "http://{wslHost}:4000/v1"</code>.
                   </div>
                   <pre className="aoInstructionCode aoGsCodeBlock">{codeText}</pre>
                 </section>
@@ -226,7 +232,7 @@ export function InstructionModal({
                       Revoke
                     </button>
                   </div>
-                  <div className="aoGsMuted">{wslAccessSummary(wslAuthorized)}</div>
+                  <div className="aoGsMuted">{wslAccessSummary(wslAuthorized, wslHost)}</div>
                 </section>
 
                 <section className="aoGsStepCard" role="note" aria-label="step 6 auth auto managed">

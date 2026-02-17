@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::constants::{GATEWAY_MODEL_PROVIDER_ID, GATEWAY_WINDOWS_HOST, GATEWAY_WSL2_HOST};
+use crate::constants::{GATEWAY_MODEL_PROVIDER_ID, GATEWAY_WINDOWS_HOST};
 use crate::orchestrator::store::unix_ms;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -390,8 +390,10 @@ fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), 
     }
 
     let listen_port = state.gateway.cfg.read().listen.port;
+    let wsl_gateway_host =
+        crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(&state.config_path));
     let gateway_host = if is_wsl_unc_home(cli_home) {
-        GATEWAY_WSL2_HOST
+        wsl_gateway_host.as_str()
     } else {
         GATEWAY_WINDOWS_HOST
     };
@@ -918,7 +920,18 @@ fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<Vec<St
         if mode != "gateway" {
             continue;
         }
-        if let Err(e) = write_json(&cli_auth_path(h), &next_auth) {
+        let auth_path = cli_auth_path(h);
+        let current_gateway_token = read_json(&auth_path).ok().and_then(|v| {
+            v.get("OPENAI_API_KEY")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        });
+        if current_gateway_token.as_deref() == Some(gateway_token.trim()) {
+            continue;
+        }
+        if let Err(e) = write_json(&auth_path, &next_auth) {
             failed_targets.push(format!(
                 "{} (write auth.json failed: {e})",
                 h.to_string_lossy()
@@ -938,6 +951,12 @@ pub fn sync_active_provider_target_for_key(
 
 pub fn sync_gateway_target_for_rotated_token_with_failures(
     state: &tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    sync_gateway_target_for_rotated_token_impl(state)
+}
+
+pub(crate) fn sync_gateway_target_for_current_token_on_startup(
+    state: &AppState,
 ) -> Result<Vec<String>, String> {
     sync_gateway_target_for_rotated_token_impl(state)
 }

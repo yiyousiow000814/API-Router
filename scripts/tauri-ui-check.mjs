@@ -279,9 +279,15 @@ async function main() {
       await waitSectionHeading(driver, 'Events')
 
       console.log('[ui:tauri] Subtest A: getting started modal')
-      await openModalAndCloseOptional(driver, 'Getting Started', 'Codex config', 'Close', 'Getting Started modal check')
+      await openModalAndCloseOptional(
+        driver,
+        'Getting Started',
+        'Getting Started',
+        'Close',
+        'Getting Started modal check',
+      )
       console.log('[ui:tauri] Subtest A: gateway token modal')
-      await openModalAndClose(driver, 'Show / Rotate', 'Codex gateway token', 'Close')
+      await clickButtonByText(driver, 'Rotate', 15000)
 
       console.log('[ui:tauri] Subtest A: usage statistics page')
       await clickTopNav(driver, 'Usage Statistics')
@@ -300,7 +306,7 @@ async function main() {
       await waitVisible(driver, By.xpath(`//span[contains(@class,'aoSwitchQuickTitle') and normalize-space()='Gateway']`), 12000)
       await waitVisible(driver, By.xpath(`//span[contains(@class,'aoSwitchQuickTitle') and normalize-space()='Official']`), 12000)
       await waitVisible(driver, By.xpath(`//span[contains(@class,'aoSwitchQuickTitle') and normalize-space()='Direct Provider']`), 12000)
-      await openModalAndClose(driver, 'Configure Dirs', 'Codex CLI dirs', 'Cancel')
+      await openModalAndClose(driver, 'Configure Dirs', 'Codex CLI directories', 'Cancel')
       console.log('[ui:tauri] Subtest A2: switchboard switch contract')
       await runSwitchboardSwitchCase(driver, directProvider, uiProfileDir)
 

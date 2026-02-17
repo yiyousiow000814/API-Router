@@ -14,6 +14,7 @@ export function HeroStatusCard({
   onCopyToken,
   onShowRotate,
 }: HeroStatusProps) {
+  const wslGatewayHost = status.wsl_gateway_host?.trim() || GATEWAY_WSL2_HOST
   return (
     <div className="aoCard aoHeroCard aoHeroStatus">
       <div className="aoCardHeader">
@@ -30,7 +31,7 @@ export function HeroStatusCard({
         </div>
         <div className="aoStatLabel">Base URL (WSL2)</div>
         <div className="aoStatValue">
-          http://{GATEWAY_WSL2_HOST}:{status.listen.port}/v1
+          http://{wslGatewayHost}:{status.listen.port}/v1
         </div>
         <div className="aoStatLabel">Preferred</div>
         <div className="aoStatValue">{status.preferred_provider}</div>
