@@ -15,6 +15,7 @@
     "ui:tauri": "node scripts/tauri-ui-check.mjs",
     "ui:check": "node scripts/run-ui-tauri-if-windows.mjs",
     "backend:check": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
+    "check:ci-local": "npm run build && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml --locked",
     "check:all": "npm run test && npm run check:line-endings && npm run backend:check && npm run ui:check",
     "build:root-exe:checked": "node scripts/run-ui-tauri-if-windows.mjs && npm run build:root-exe",
     "test": "npm run check:gateway-provider-id && vitest run"
