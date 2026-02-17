@@ -158,6 +158,7 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
                     }),
                     Some("test"),
                     None,
+                    crate::constants::USAGE_ORIGIN_UNKNOWN,
                 );
             }
         };
@@ -310,6 +311,13 @@ pub fn run() {
                 }
             }
             app.manage(state);
+            if !is_ui_tauri {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let st = app_handle.state::<app_state::AppState>();
+                    app_state::run_startup_gateway_token_sync(&st);
+                });
+            }
 
             if !is_ui_tauri {
                 // Spawn the local OpenAI-compatible gateway.
@@ -432,6 +440,10 @@ pub fn run() {
             commands::set_codex_cli_config_toml,
             commands::provider_switchboard_status,
             commands::provider_switchboard_set_target,
+            commands::wsl_gateway_access_status,
+            commands::wsl_gateway_access_quick_status,
+            commands::wsl_gateway_authorize_access,
+            commands::wsl_gateway_revoke_access,
             commands::codex_account_login,
             commands::codex_account_logout,
             commands::codex_account_refresh,

@@ -52,6 +52,88 @@ fn session_key_from_request(headers: &HeaderMap, body: &Value) -> Option<String>
     Some(v.to_string())
 }
 
+fn request_base_url_hint(headers: &HeaderMap, listen_port: u16) -> Option<String> {
+    let host_raw = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())?;
+
+    // `Host` is usually `host[:port]`. Keep this best-effort and deterministic for UI origin
+    // detection. If the client omitted port, use the router listen port.
+    let authority = if host_raw.starts_with('[') {
+        // IPv6 host: `[::1]` or `[::1]:4000`
+        if host_raw.rfind("]:").is_some() {
+            host_raw.to_string()
+        } else {
+            format!("{host_raw}:{listen_port}")
+        }
+    } else if host_raw.contains(':') {
+        host_raw.to_string()
+    } else {
+        format!("{host_raw}:{listen_port}")
+    };
+
+    Some(format!("http://{authority}/v1"))
+}
+
+fn request_looks_like_wsl_origin(base_url: &str) -> bool {
+    let Some(host) = reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_ascii_lowercase()))
+    else {
+        return false;
+    };
+    let windows_host = crate::constants::GATEWAY_WINDOWS_HOST.to_ascii_lowercase();
+    if host == windows_host || host == "localhost" || host == "::1" {
+        return false;
+    }
+    if host
+        == crate::platform::wsl_gateway_host::cached_wsl_gateway_host_lowercase()
+            .unwrap_or_default()
+    {
+        return true;
+    }
+    // Only attempt runtime host resolution for private IPv4 candidates. This keeps the hot
+    // path cheap for non-local domains/hosts.
+    let is_private_ipv4 = host
+        .parse::<std::net::Ipv4Addr>()
+        .map(|ip| ip.is_private())
+        .unwrap_or(false);
+    if !is_private_ipv4 {
+        return false;
+    }
+    if host
+        == crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(None).to_ascii_lowercase()
+    {
+        return true;
+    }
+    false
+}
+
+fn request_looks_like_windows_origin(base_url: &str) -> bool {
+    let Some(host) = reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_ascii_lowercase()))
+    else {
+        return false;
+    };
+    host == crate::constants::GATEWAY_WINDOWS_HOST || host == "localhost" || host == "::1"
+}
+
+fn usage_origin_from_base_url(base_url: Option<&str>) -> &'static str {
+    let Some(base_url) = base_url else {
+        return crate::constants::USAGE_ORIGIN_UNKNOWN;
+    };
+    if request_looks_like_wsl_origin(base_url) {
+        return crate::constants::USAGE_ORIGIN_WSL2;
+    }
+    if request_looks_like_windows_origin(base_url) {
+        return crate::constants::USAGE_ORIGIN_WINDOWS;
+    }
+    crate::constants::USAGE_ORIGIN_UNKNOWN
+}
+
 fn codex_session_id_for_display(headers: &HeaderMap, body: &Value) -> Option<String> {
     for k in [
         "session_id",
@@ -141,6 +223,33 @@ fn request_is_review(headers: &HeaderMap, body: &Value) -> bool {
         return true;
     }
     body_session_source_is_review(body)
+}
+
+fn body_agent_parent_session_id(body: &Value) -> Option<String> {
+    let source = body
+        .get("session_source")
+        .or_else(|| body.get("sessionSource"))?;
+    let source_obj = source.as_object()?;
+    let subagent = source_obj
+        .get("subagent")
+        .or_else(|| source_obj.get("subAgent"))?;
+    let subagent_obj = subagent.as_object()?;
+    let thread_spawn = subagent_obj
+        .get("thread_spawn")
+        .or_else(|| subagent_obj.get("threadSpawn"))?;
+    let thread_spawn_obj = thread_spawn.as_object()?;
+    let parent = thread_spawn_obj
+        .get("parent_thread_id")
+        .or_else(|| thread_spawn_obj.get("parentThreadId"))
+        .and_then(|v| v.as_str())?
+        .trim();
+    if parent.is_empty() {
+        return None;
+    }
+    if uuid::Uuid::parse_str(parent).is_err() {
+        return None;
+    }
+    Some(parent.to_string())
 }
 
 fn is_prev_id_unsupported_error(message: &str) -> bool {
@@ -233,4 +342,78 @@ fn ends_with_items(haystack: &[Value], needle: &[Value]) -> bool {
     }
     let start = haystack.len() - needle.len();
     haystack[start..] == *needle
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{body_agent_parent_session_id, usage_origin_from_base_url};
+    use serde_json::json;
+
+    #[test]
+    fn usage_origin_recognizes_windows_hosts() {
+        assert_eq!(
+            usage_origin_from_base_url(Some("http://127.0.0.1:4000/v1")),
+            crate::constants::USAGE_ORIGIN_WINDOWS
+        );
+        assert_eq!(
+            usage_origin_from_base_url(Some("http://localhost:4000/v1")),
+            crate::constants::USAGE_ORIGIN_WINDOWS
+        );
+    }
+
+    #[test]
+    fn usage_origin_recognizes_wsl2_private_ipv4_host() {
+        let wsl_host = crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(None);
+        assert_eq!(
+            usage_origin_from_base_url(Some(&format!("http://{wsl_host}:4000/v1"))),
+            crate::constants::USAGE_ORIGIN_WSL2
+        );
+    }
+
+    #[test]
+    fn usage_origin_keeps_unknown_for_non_local_domain() {
+        assert_eq!(
+            usage_origin_from_base_url(Some("https://example.com/v1")),
+            crate::constants::USAGE_ORIGIN_UNKNOWN
+        );
+    }
+
+    #[test]
+    fn usage_origin_keeps_unknown_for_non_wsl_ipv4_host() {
+        assert_eq!(
+            usage_origin_from_base_url(Some("http://203.0.113.10:4000/v1")),
+            crate::constants::USAGE_ORIGIN_UNKNOWN
+        );
+    }
+
+    #[test]
+    fn review_parent_session_id_extracts_thread_spawn_parent() {
+        let body = json!({
+            "session_source": {
+                "subagent": {
+                    "thread_spawn": {
+                        "parent_thread_id": "019c67c0-c95d-7b10-a0a1-fc576b458272"
+                    }
+                }
+            }
+        });
+        assert_eq!(
+            body_agent_parent_session_id(&body).as_deref(),
+            Some("019c67c0-c95d-7b10-a0a1-fc576b458272")
+        );
+    }
+
+    #[test]
+    fn review_parent_session_id_rejects_invalid_parent() {
+        let body = json!({
+            "sessionSource": {
+                "subAgent": {
+                    "threadSpawn": {
+                        "parentThreadId": "not-a-uuid"
+                    }
+                }
+            }
+        });
+        assert!(body_agent_parent_session_id(&body).is_none());
+    }
 }

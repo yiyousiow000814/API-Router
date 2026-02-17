@@ -30,6 +30,7 @@
 ## Engineering Constraints
 - **Cross-platform**: Keep the gateway and tooling compatible with Windows + Linux (WSL2) at minimum.
 - **Evidence requirement**: Back conclusions with reproducible commands or steps (state A → change → state B).
+- **Test-first fix flow**: When adding tests or fixing bugs, always follow this sequence: (1) create a reproducible test, (2) verify it fails on current code, (3) implement the fix, (4) verify the test passes.
 - **Line endings**: Use LF as the repository standard. CRLF is only allowed for Windows script files (`.bat`, `.cmd`, `.ps1`).
 - **File size guideline (industry style)**: Prefer small, focused files (roughly 200-500 lines) when practical.
 - **Hard cap**: For non-lock source files, 800 lines is the maximum. If a file goes over 800 lines, split it into coherent modules/files in the same PR unless there is a clear, documented reason not to.

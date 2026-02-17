@@ -176,8 +176,14 @@ impl Store {
         model: &str,
         increments: UsageTokenIncrements,
         api_key_ref: Option<&str>,
+        origin: &str,
         flush: bool,
     ) {
+        let origin = match origin.trim().to_ascii_lowercase().as_str() {
+            crate::constants::USAGE_ORIGIN_WINDOWS => crate::constants::USAGE_ORIGIN_WINDOWS,
+            crate::constants::USAGE_ORIGIN_WSL2 => crate::constants::USAGE_ORIGIN_WSL2,
+            _ => crate::constants::USAGE_ORIGIN_UNKNOWN,
+        };
         let ts = unix_ms();
         let id = uuid::Uuid::new_v4().to_string();
         let key = format!("usage_req:{ts}:{id}");
@@ -185,6 +191,7 @@ impl Store {
             "provider": provider,
             "api_key_ref": api_key_ref.unwrap_or("-"),
             "model": model,
+            "origin": origin,
             "unix_ms": ts,
             "input_tokens": increments.input_tokens,
             "output_tokens": increments.output_tokens,

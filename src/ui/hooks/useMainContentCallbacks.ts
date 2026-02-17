@@ -1,13 +1,20 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import type { Status } from '../types'
+import type { ProviderSwitchboardStatus, Status } from '../types'
 import { resolveCliHomes } from '../utils/switchboard'
+import { normalizePathForCompare } from '../utils/path'
+
+type RotateGatewayTokenResult = {
+  token: string
+  failed_targets?: string[]
+}
 
 type Params = {
   status: Status | null
   flashToast: (msg: string, kind?: 'info' | 'error') => void
   setGatewayModalOpen: Dispatch<SetStateAction<boolean>>
   setGatewayTokenReveal: Dispatch<SetStateAction<string>>
+  setGatewayTokenPreview: Dispatch<SetStateAction<string>>
   setCodexRefreshing: Dispatch<SetStateAction<boolean>>
   refreshStatus: () => Promise<void>
   codexSwapDir1: string
@@ -15,7 +22,12 @@ type Params = {
   codexSwapUseWindows: boolean
   codexSwapUseWsl: boolean
   codexSwapTarget: 'windows' | 'wsl2' | 'both'
-  toggleCodexSwap: (homes: string[]) => Promise<void>
+  providerSwitchStatus: ProviderSwitchboardStatus | null
+  setProviderSwitchTarget: (
+    target: 'gateway' | 'official' | 'provider',
+    provider?: string,
+    cliHomes?: string[],
+  ) => Promise<void>
   setCodexSwapModalOpen: Dispatch<SetStateAction<boolean>>
   setOverride: Dispatch<SetStateAction<string>>
   overrideDirtyRef: MutableRefObject<boolean>
@@ -28,6 +40,7 @@ export function useMainContentCallbacks(params: Params) {
     flashToast,
     setGatewayModalOpen,
     setGatewayTokenReveal,
+    setGatewayTokenPreview,
     setCodexRefreshing,
     refreshStatus,
     codexSwapDir1,
@@ -35,7 +48,8 @@ export function useMainContentCallbacks(params: Params) {
     codexSwapUseWindows,
     codexSwapUseWsl,
     codexSwapTarget,
-    toggleCodexSwap,
+    providerSwitchStatus,
+    setProviderSwitchTarget,
     setCodexSwapModalOpen,
     setOverride,
     overrideDirtyRef,
@@ -55,8 +69,28 @@ export function useMainContentCallbacks(params: Params) {
   }
 
   const onShowGatewayRotate = () => {
-    setGatewayModalOpen(true)
-    setGatewayTokenReveal('')
+    void (async () => {
+      try {
+        const { failed_targets } = await invoke<RotateGatewayTokenResult>('rotate_gateway_token')
+        const p = await invoke<string>('get_gateway_token_preview')
+        setGatewayTokenPreview(p)
+        setGatewayTokenReveal('')
+        setGatewayModalOpen(false)
+        const failed = (failed_targets ?? []).filter(Boolean)
+        if (failed.length) {
+          const shown = failed.slice(0, 2).join(' ; ')
+          const more = failed.length > 2 ? ` ; +${failed.length - 2} more` : ''
+          flashToast(
+            `Gateway token rotated. Failed to sync: ${shown}${more}. Check Provider Switchboard -> Edit config.toml for those targets.`,
+            'error',
+          )
+        } else {
+          flashToast('Gateway token rotated')
+        }
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+    })()
   }
 
   const onCodexLoginLogout = () => {
@@ -109,7 +143,24 @@ export function useMainContentCallbacks(params: Params) {
           flashToast('No enabled swap target. Open Configure Dirs first.', 'error')
           return
         }
-        await toggleCodexSwap(homes)
+        const modeByHome = new Map(
+          (providerSwitchStatus?.dirs ?? []).map((d) => [
+            normalizePathForCompare(d.cli_home),
+            d.mode,
+          ]),
+        )
+        const statusMissingForSelectedHomes = homes.some(
+          (h) => !modeByHome.has(normalizePathForCompare(h)),
+        )
+        if (!providerSwitchStatus || statusMissingForSelectedHomes) {
+          flashToast('Switchboard status is loading. Please retry in a moment.', 'error')
+          return
+        }
+        const allSelectedGateway = homes.every(
+          (h) => modeByHome.get(normalizePathForCompare(h)) === 'gateway',
+        )
+        const nextTarget: 'gateway' | 'official' = allSelectedGateway ? 'official' : 'gateway'
+        await setProviderSwitchTarget(nextTarget, undefined, homes)
       } catch (e) {
         flashToast(String(e), 'error')
       }

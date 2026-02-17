@@ -468,6 +468,53 @@ mod tests {
     }
 
     #[test]
+    fn sync_gateway_target_for_rotated_token_does_not_rewrite_matching_auth_json() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        state
+            .secrets
+            .set_gateway_token("ao_same_gateway_token")
+            .expect("set gateway token");
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(
+            cli_auth_path(&cli_home),
+            r#"{"OPENAI_API_KEY":"ao_same_gateway_token","extra":"keep"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            cli_cfg_path(&cli_home),
+            "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+        )
+        .unwrap();
+
+        let sw_path = switchboard_state_path_from_config_path(&state.config_path);
+        std::fs::create_dir_all(sw_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            sw_path,
+            serde_json::to_string_pretty(&json!({
+              "target": "gateway",
+              "provider": serde_json::Value::Null,
+              "cli_homes": [cli_home.to_string_lossy().to_string()]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        sync_gateway_target_for_rotated_token_impl(&state).expect("sync gateway token");
+
+        let auth: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(cli_auth_path(&cli_home)).unwrap())
+                .unwrap();
+        assert_eq!(auth.get("extra").and_then(|v| v.as_str()), Some("keep"));
+    }
+
+    #[test]
     fn on_provider_renamed_updates_state_and_swapped_cli_config() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");

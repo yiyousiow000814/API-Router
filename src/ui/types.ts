@@ -9,6 +9,7 @@ export type ProviderHealth = {
 
 export type Status = {
   listen: { host: string; port: number }
+  wsl_gateway_host?: string
   preferred_provider: string
   manual_override: string | null
   providers: Record<string, ProviderHealth>
@@ -33,6 +34,7 @@ export type Status = {
     preferred_provider?: string | null
     verified?: boolean
     is_agent?: boolean
+    is_review?: boolean
   }>
   active_provider?: string | null
   active_reason?: string | null
@@ -137,10 +139,12 @@ export type UsageStatistics = {
   filter?: {
     providers?: string[] | null
     models?: string[] | null
+    origins?: string[] | null
   }
   catalog?: {
     providers: string[]
     models: string[]
+    origins?: string[]
   }
   bucket_seconds: number
   summary: {

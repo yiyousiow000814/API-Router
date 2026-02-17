@@ -24,22 +24,23 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
       e.code === 'config.session_preferred_provider_updated' || e.code === 'config.session_preferred_provider_cleared'
 
     const wtSessionVal = f['wt_session']
+    const wt = typeof wtSessionVal === 'string' ? wtSessionVal : null
+
     const legacySessionIdVal = f['session_id']
-    const wt =
-      typeof wtSessionVal === 'string'
-        ? wtSessionVal
+
+    const codexSessionVal = f['codex_session_id']
+    const codex =
+      typeof codexSessionVal === 'string'
+        ? codexSessionVal
         : typeof legacySessionIdVal === 'string'
           ? legacySessionIdVal
           : null
 
-    const codexSessionVal = f['codex_session_id']
-    const codex = typeof codexSessionVal === 'string' ? codexSessionVal : null
-
     const pidVal = f['pid']
     const pid = typeof pidVal === 'number' ? pidVal : null
 
-    const showSession = isSessionPref || !!codex || !!wt || pid !== null
-    const sessionCell = showSession ? codex ?? wt ?? '-' : '-'
+    const showSession = isSessionPref || !!codex || pid !== null
+    const sessionCell = showSession ? codex ?? '-' : '-'
     const sessionTitle = showSession
       ? [codex ? `Codex session: ${codex}` : null, wt ? `WT_SESSION: ${wt}` : null, pid ? `pid: ${pid}` : null]
           .filter(Boolean)
@@ -139,4 +140,3 @@ export function EventsTable({ events, canClearErrors, onClearErrors }: Props) {
     </table>
   )
 }
-

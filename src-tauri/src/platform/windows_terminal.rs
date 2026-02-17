@@ -8,6 +8,8 @@ use std::io::BufRead;
 use std::net::SocketAddr;
 
 #[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
 use std::sync::{Mutex, OnceLock};
 #[cfg(windows)]
 use std::time::{Duration, SystemTime};
@@ -19,9 +21,16 @@ pub struct InferredWtSession {
     pub codex_session_id: Option<String>,
     pub reported_model_provider: Option<String>,
     pub reported_base_url: Option<String>,
+    pub agent_parent_session_id: Option<String>,
     pub router_confirmed: bool,
     pub is_agent: bool,
     pub is_review: bool,
+}
+
+#[derive(Clone)]
+pub struct SessionDiscoverySnapshot {
+    pub items: Vec<InferredWtSession>,
+    pub fresh: bool,
 }
 
 #[cfg(windows)]
@@ -88,9 +97,24 @@ fn parse_codex_session_id_from_cmdline(cmd: &str) -> Option<String> {
 
 #[cfg(windows)]
 fn looks_like_router_base(v: &str, port: u16) -> bool {
-    let v = v.to_ascii_lowercase();
-    let port_s = format!(":{port}");
-    (v.contains("127.0.0.1") || v.contains("localhost")) && v.contains(&port_s)
+    let normalized = if v.contains("://") {
+        v.to_string()
+    } else {
+        format!("http://{v}")
+    };
+    let Ok(url) = reqwest::Url::parse(&normalized) else {
+        return false;
+    };
+    let Some(host) = url.host_str().map(|s| s.to_ascii_lowercase()) else {
+        return false;
+    };
+    let base_port = url.port_or_known_default().unwrap_or(80);
+    if base_port != port {
+        return false;
+    }
+    let wsl_host = crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(None);
+    let wsl_host = wsl_host.to_ascii_lowercase();
+    host == crate::constants::GATEWAY_WINDOWS_HOST || host == "localhost" || host == wsl_host
 }
 
 #[cfg(windows)]
@@ -347,6 +371,34 @@ fn infer_codex_session_id_from_rollouts_dir(
 }
 
 #[cfg(windows)]
+fn parse_tui_log_thread_ids(line: &str) -> Vec<String> {
+    let line = line.trim();
+    if line.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut rest = line;
+    loop {
+        let Some(idx) = rest.find("thread_id=") else {
+            break;
+        };
+        rest = &rest[idx + "thread_id=".len()..];
+        let end = rest
+            .find(|c: char| c == '}' || c == ':' || c.is_whitespace())
+            .unwrap_or(rest.len());
+        let id = rest[..end].trim();
+        if uuid::Uuid::parse_str(id).is_ok() {
+            out.push(id.to_string());
+        }
+        if end >= rest.len() {
+            break;
+        }
+        rest = &rest[end..];
+    }
+    out
+}
+
+#[cfg(windows)]
 fn parse_tui_log_session_line(line: &str) -> Option<(SystemTime, String)> {
     let line = line.trim();
     if line.is_empty() {
@@ -354,16 +406,7 @@ fn parse_tui_log_session_line(line: &str) -> Option<(SystemTime, String)> {
     }
     let ts = line.split_whitespace().next()?;
     let dt = chrono::DateTime::parse_from_rfc3339(ts).ok()?;
-    let mut idx = line.find("thread_id=")?;
-    idx += "thread_id=".len();
-    let rest = &line[idx..];
-    let end = rest
-        .find(|c: char| c == '}' || c == ':' || c.is_whitespace())
-        .unwrap_or(rest.len());
-    let id = rest[..end].trim();
-    if uuid::Uuid::parse_str(id).is_err() {
-        return None;
-    }
+    let id = parse_tui_log_thread_ids(line).into_iter().next()?;
     let ts_ms = u64::try_from(dt.timestamp_millis()).ok()?;
     let sys = SystemTime::UNIX_EPOCH + Duration::from_millis(ts_ms);
     Some((sys, id.to_string()))
@@ -417,6 +460,144 @@ fn infer_codex_session_id_from_tui_log(
     best.map(|(id, _)| id)
 }
 
+#[cfg(windows)]
+fn infer_parent_session_id_from_tui_log(
+    codex_home: &std::path::Path,
+    child_session_id: &str,
+) -> Option<String> {
+    const LOG_SCAN_MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+    let child = child_session_id.trim();
+    if uuid::Uuid::parse_str(child).is_err() {
+        return None;
+    }
+
+    let log_path = codex_home.join("log").join("codex-tui.log");
+    let file = std::fs::File::open(&log_path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let len = reader.get_ref().metadata().ok()?.len();
+    if len > LOG_SCAN_MAX_BYTES {
+        let _ = std::io::Seek::seek(
+            &mut reader,
+            std::io::SeekFrom::Start(len - LOG_SCAN_MAX_BYTES),
+        );
+    }
+
+    let mut line = String::new();
+    let mut last_parent: Option<String> = None;
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).ok().unwrap_or(0) == 0 {
+            break;
+        }
+        let ids = parse_tui_log_thread_ids(&line);
+        if ids.len() < 2 {
+            continue;
+        }
+        let pos = ids.iter().rposition(|id| id.eq_ignore_ascii_case(child));
+        let Some(pos) = pos else {
+            continue;
+        };
+        if pos == 0 {
+            continue;
+        }
+        let parent = ids[..pos]
+            .iter()
+            .rev()
+            .find(|id| !id.eq_ignore_ascii_case(child))
+            .cloned();
+        if let Some(parent) = parent {
+            last_parent = Some(parent);
+        }
+    }
+    last_parent
+}
+
+pub(crate) fn infer_parent_session_id_for_agent_session(child_session_id: &str) -> Option<String> {
+    #[cfg(not(windows))]
+    {
+        let _ = child_session_id;
+        None
+    }
+
+    #[cfg(windows)]
+    {
+        fn now_unix_ms() -> u64 {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0)
+        }
+
+        #[derive(Clone)]
+        struct CacheEntry {
+            updated_at_unix_ms: u64,
+            parent_session_id: Option<String>,
+        }
+
+        static CACHE: OnceLock<Mutex<std::collections::HashMap<String, CacheEntry>>> =
+            OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+        const TTL_MS: u64 = 2_000;
+
+        let child = child_session_id.trim();
+        if uuid::Uuid::parse_str(child).is_err() {
+            return None;
+        }
+
+        let now = now_unix_ms();
+        if let Ok(guard) = cache.lock() {
+            if let Some(hit) = guard.get(child) {
+                if now.saturating_sub(hit.updated_at_unix_ms) < TTL_MS {
+                    return hit.parent_session_id.clone();
+                }
+            }
+        }
+
+        let mut homes: Vec<std::path::PathBuf> = Vec::new();
+        let mut push_home = |p: std::path::PathBuf| {
+            if !homes.iter().any(|v| v == &p) {
+                homes.push(p);
+            }
+        };
+        if let Ok(v) = std::env::var("CODEX_HOME") {
+            let v = v.trim();
+            if !v.is_empty() {
+                push_home(std::path::PathBuf::from(v));
+            }
+        }
+        if let Ok(user) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+            let user = user.trim();
+            if !user.is_empty() {
+                push_home(std::path::PathBuf::from(user).join(".codex"));
+            }
+        }
+        if let Some(wsl_home) = crate::codex_cli_swap::default_wsl_cli_codex_home() {
+            push_home(wsl_home);
+        }
+
+        let parent = homes
+            .iter()
+            .find_map(|home| infer_parent_session_id_from_tui_log(home, child));
+
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(
+                child.to_string(),
+                CacheEntry {
+                    updated_at_unix_ms: now,
+                    parent_session_id: parent.clone(),
+                },
+            );
+            if guard.len() > 1024 {
+                guard.clear();
+            }
+        }
+        parent
+    }
+}
+
 pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWtSession> {
     #[cfg(not(windows))]
     {
@@ -442,6 +623,7 @@ pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWt
             codex_session_id,
             reported_model_provider: None,
             reported_base_url: None,
+            agent_parent_session_id: None,
             router_confirmed: true,
             is_agent: false,
             is_review: false,
@@ -453,10 +635,20 @@ pub fn discover_sessions_using_router(
     server_port: u16,
     expected_gateway_token: Option<&str>,
 ) -> Vec<InferredWtSession> {
+    discover_sessions_using_router_snapshot(server_port, expected_gateway_token).items
+}
+
+pub fn discover_sessions_using_router_snapshot(
+    server_port: u16,
+    expected_gateway_token: Option<&str>,
+) -> SessionDiscoverySnapshot {
     #[cfg(not(windows))]
     {
         let _ = (server_port, expected_gateway_token);
-        Vec::new()
+        SessionDiscoverySnapshot {
+            items: Vec::new(),
+            fresh: true,
+        }
     }
 
     #[cfg(windows)]
@@ -477,32 +669,107 @@ pub fn discover_sessions_using_router(
         }
 
         static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+        static REFRESHING: OnceLock<AtomicBool> = OnceLock::new();
         let cache = CACHE.get_or_init(|| {
             Mutex::new(Cache {
                 updated_at_unix_ms: 0,
                 items: Vec::new(),
             })
         });
+        let refreshing = REFRESHING.get_or_init(|| AtomicBool::new(false));
 
         // This scan involves cross-process memory reads; keep it cheap on frequent UI polling.
         const TTL_MS: u64 = 2_000;
         let now = now_unix_ms();
-        {
-            let guard = cache.lock().ok();
-            if let Some(guard) = guard.as_ref() {
-                if now.saturating_sub(guard.updated_at_unix_ms) < TTL_MS {
-                    return guard.items.clone();
-                }
-            }
+        let (cached_items, cache_is_fresh) = if let Ok(guard) = cache.lock() {
+            (
+                guard.items.clone(),
+                now.saturating_sub(guard.updated_at_unix_ms) < TTL_MS,
+            )
+        } else {
+            (Vec::new(), false)
+        };
+        if cache_is_fresh {
+            return SessionDiscoverySnapshot {
+                items: cached_items,
+                fresh: true,
+            };
         }
 
-        let items = discover_sessions_using_router_uncached(server_port, expected_gateway_token);
-        if let Ok(mut guard) = cache.lock() {
-            guard.updated_at_unix_ms = now;
-            guard.items = items.clone();
+        // Stale-while-revalidate: return stale cache immediately and refresh in background.
+        if refreshing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let token = expected_gateway_token.map(|s| s.to_string());
+            std::thread::spawn(move || {
+                let items = discover_sessions_using_router_uncached(server_port, token.as_deref());
+                let now = now_unix_ms();
+                if let Ok(mut guard) = cache.lock() {
+                    guard.updated_at_unix_ms = now;
+                    guard.items = items;
+                }
+                refreshing.store(false, Ordering::Release);
+            });
         }
-        items
+        SessionDiscoverySnapshot {
+            items: cached_items,
+            fresh: false,
+        }
     }
+}
+
+fn wt_session_strip_wsl_prefix(raw: &str) -> &str {
+    let t = raw.trim();
+    if let Some(v) = t.strip_prefix("wsl:") {
+        return v.trim();
+    }
+    if let Some(v) = t.strip_prefix("WSL:") {
+        return v.trim();
+    }
+    t
+}
+
+pub(crate) fn wt_session_ids_equal(a: &str, b: &str) -> bool {
+    let a = wt_session_strip_wsl_prefix(a);
+    let b = wt_session_strip_wsl_prefix(b);
+    !a.is_empty() && !b.is_empty() && a.eq_ignore_ascii_case(b)
+}
+
+pub fn merge_wt_session_marker(existing: Option<&str>, observed: &str) -> Option<String> {
+    let observed_trimmed = observed.trim();
+    if observed_trimmed.is_empty() {
+        return existing
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+    }
+    let observed_norm = wt_session_strip_wsl_prefix(observed_trimmed);
+    if observed_norm.is_empty() {
+        return existing
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+    }
+    let observed_is_wsl = observed_trimmed.to_ascii_lowercase().starts_with("wsl:");
+
+    let existing_trimmed = existing
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_default();
+    let existing_is_wsl = existing_trimmed.to_ascii_lowercase().starts_with("wsl:");
+
+    if !existing_trimmed.is_empty() && wt_session_ids_equal(existing_trimmed, observed_norm) {
+        if existing_is_wsl || observed_is_wsl {
+            return Some(format!("wsl:{observed_norm}"));
+        }
+        return Some(observed_norm.to_string());
+    }
+
+    if observed_is_wsl {
+        return Some(format!("wsl:{observed_norm}"));
+    }
+    Some(observed_norm.to_string())
 }
 
 pub fn is_pid_alive(pid: u32) -> bool {
@@ -514,6 +781,63 @@ pub fn is_pid_alive(pid: u32) -> bool {
     #[cfg(not(windows))]
     {
         let _ = pid;
+        false
+    }
+}
+
+pub fn is_wt_session_alive(wt_session: &str) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+
+        fn wide_cstr_to_string(buf: &[u16]) -> String {
+            let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            String::from_utf16_lossy(&buf[..end])
+        }
+
+        let target = wt_session.trim();
+        if target.is_empty() {
+            return false;
+        }
+
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return false;
+        }
+
+        let candidates = ["codex.exe", "codex", "wsl.exe", "bash.exe"];
+        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        let mut alive = false;
+        let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+        while ok {
+            let exe = wide_cstr_to_string(&entry.szExeFile).to_ascii_lowercase();
+            if candidates.iter().any(|n| *n == exe) {
+                if let Some(v) = crate::platform::windows_loopback_peer::read_process_env_var(
+                    entry.th32ProcessID,
+                    "WT_SESSION",
+                ) {
+                    if wt_session_ids_equal(v.trim(), target) {
+                        alive = true;
+                        break;
+                    }
+                }
+            }
+            ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        }
+
+        let _ = unsafe { CloseHandle(snapshot) };
+        alive
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = wt_session;
         false
     }
 }

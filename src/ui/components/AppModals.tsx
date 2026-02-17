@@ -11,7 +11,8 @@ import { invoke } from '@tauri-apps/api/core'
 import type { SpendHistoryRow } from '../devMockData'
 import { normalizePathForCompare } from '../utils/path'
 import { isValidWindowsCodexPath, isValidWslCodexPath } from '../utils/codexPathValidation'
-import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
+import { GATEWAY_MODEL_PROVIDER_ID, GATEWAY_WINDOWS_HOST } from '../constants'
+import { buildGatewayBaseUrl, normalizeGatewayPort } from '../utils/gatewayUrl'
 import type { Config } from '../types'
 import type {
   PricingTimelineMode,
@@ -196,6 +197,7 @@ type Props = {
   setUsageScheduleSaveError: Dispatch<SetStateAction<string>>
   setUsageScheduleModalOpen: Dispatch<SetStateAction<boolean>>
   isDevPreview: boolean
+  listenPort?: number
   codexSwapModalOpen: boolean
   codexSwapDir1: string
   codexSwapDir2: string
@@ -216,6 +218,7 @@ export function AppModals(props: Props) {
   const [draftCodexSwapDir2, setDraftCodexSwapDir2] = useState('')
   const [draftCodexSwapUseWindows, setDraftCodexSwapUseWindows] = useState(false)
   const [draftCodexSwapUseWsl, setDraftCodexSwapUseWsl] = useState(false)
+  const gatewayPort = normalizeGatewayPort(props.listenPort)
   const codexSwapModalWasOpenRef = useRef(false)
   const {
     keyModal,
@@ -411,6 +414,9 @@ export function AppModals(props: Props) {
       <InstructionModal
         open={instructionModalOpen}
         onClose={() => setInstructionModalOpen(false)}
+        flashToast={flashToast}
+        isDevPreview={isDevPreview}
+        listenPort={gatewayPort}
         onOpenConfigureDirs={() => {
           setReopenGettingStartedAfterDirs(true)
           setInstructionModalOpen(false)
@@ -424,7 +430,7 @@ export function AppModals(props: Props) {
 
 [model_providers.${GATEWAY_MODEL_PROVIDER_ID}]
 name = "API Router"
-base_url = "http://127.0.0.1:4000/v1"
+base_url = "${buildGatewayBaseUrl(GATEWAY_WINDOWS_HOST, gatewayPort)}"
 wire_api = "responses"
 requires_openai_auth = true`}
       />
@@ -620,6 +626,8 @@ requires_openai_auth = true`}
         wslDir={draftCodexSwapDir2}
         useWindows={draftCodexSwapUseWindows}
         useWsl={draftCodexSwapUseWsl}
+        flashToast={flashToast}
+        isDevPreview={isDevPreview}
         onChangeWindowsDir={setDraftCodexSwapDir1}
         onChangeWslDir={setDraftCodexSwapDir2}
         onChangeUseWindows={setDraftCodexSwapUseWindows}
@@ -679,6 +687,7 @@ requires_openai_auth = true`}
             }
           })()
         }}
+        listenPort={gatewayPort}
       />
     </>
   )

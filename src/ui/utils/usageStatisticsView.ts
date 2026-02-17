@@ -11,6 +11,12 @@ export function buildUsageModelFilterOptions(usageCatalogModels: string[]): stri
   return [...usageCatalogModels].sort((a, b) => a.localeCompare(b))
 }
 
+export function buildUsageOriginFilterOptions(usageCatalogOrigins: string[]): string[] {
+  const required = ['windows', 'wsl2']
+  const merged = new Set<string>([...required, ...usageCatalogOrigins])
+  return [...merged].sort((a, b) => a.localeCompare(b))
+}
+
 export function sanitizeSelectedFilterValues(selected: string[], options: string[]): string[] {
   return selected.filter((name) => options.includes(name))
 }

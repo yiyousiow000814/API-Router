@@ -29,6 +29,7 @@ type Params = {
   usageWindowHours: number
   usageFilterProviders: string[]
   usageFilterModels: string[]
+  usageFilterOrigins: string[]
   setUsageStatistics: Dispatch<SetStateAction<UsageStatistics | null>>
   setUsageStatisticsLoading: Dispatch<SetStateAction<boolean>>
   flashToast: (msg: string, kind?: 'info' | 'error') => void
@@ -74,6 +75,7 @@ export function useUsageOpsBridge(params: Params) {
     usageWindowHours,
     usageFilterProviders,
     usageFilterModels,
+    usageFilterOrigins,
     setUsageStatistics,
     setUsageStatisticsLoading,
     flashToast,
@@ -147,6 +149,7 @@ export function useUsageOpsBridge(params: Params) {
           usageWindowHours,
           usageFilterProviders,
           usageFilterModels,
+          usageFilterOrigins,
         }),
       )
       return
@@ -157,6 +160,7 @@ export function useUsageOpsBridge(params: Params) {
         hours: usageWindowHours,
         providers: usageFilterProviders.length ? usageFilterProviders : null,
         models: usageFilterModels.length ? usageFilterModels : null,
+        origins: usageFilterOrigins.length ? usageFilterOrigins : null,
       })
       setUsageStatistics(res)
     } catch (e) {

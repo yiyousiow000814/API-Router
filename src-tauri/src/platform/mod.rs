@@ -4,3 +4,4 @@
 
 pub mod windows_loopback_peer;
 pub mod windows_terminal;
+pub mod wsl_gateway_host;

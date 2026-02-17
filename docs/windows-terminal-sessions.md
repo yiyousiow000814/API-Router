@@ -29,8 +29,8 @@ This logic lives in reusable platform helpers:
 
 ## Verified vs Unverified (Pre-Discovery)
 
-API Router supports a best-effort "pre-discovery" scan (Windows only): it can list Codex sessions that exist in
-Windows Terminal even before the first request hits the gateway.
+API Router supports a best-effort "pre-discovery" scan (Windows host): it can list Codex sessions that exist in
+Windows Terminal (including WSL2 tabs/panes) even before the first request hits the gateway.
 
 Because the app cannot always prove the effective `base_url` of a running Codex process (Codex freezes config at
 process start and does not always record `base_url` in session metadata), sessions are shown in two states:
@@ -59,7 +59,8 @@ Note: only the runtime list is pruned. Your configured per-session preference ma
 ## Limitations
 
 - This feature is **Windows-only**.
-- WSL2 is not supported for session mapping yet (a Codex process inside WSL2 is not trivially attributable to a Windows Terminal tab).
+- WSL2 pre-discovery depends on `WT_SESSION` and Codex metadata being readable from the WSL process;
+  if no real Codex session id can be inferred yet, the row is hidden until it becomes available.
 
 ## Why a Session Can Stay Unverified
 

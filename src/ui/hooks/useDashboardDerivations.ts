@@ -13,6 +13,7 @@ import {
 } from '../utils/switchboard'
 import {
   buildUsageModelFilterOptions,
+  buildUsageOriginFilterOptions,
   buildUsagePricingGroups,
   buildUsageProviderDisplayGroups,
   buildUsageProviderFilterOptions,
@@ -36,6 +37,8 @@ type Params = {
   setUsageFilterProviders: Dispatch<SetStateAction<string[]>>
   usageFilterModels: string[]
   setUsageFilterModels: Dispatch<SetStateAction<string[]>>
+  usageFilterOrigins: string[]
+  setUsageFilterOrigins: Dispatch<SetStateAction<string[]>>
   usageWindowHours: number
   setUsageChartHover: Dispatch<
     SetStateAction<{
@@ -62,6 +65,7 @@ export function useDashboardDerivations(params: Params) {
     usageStatistics,
     setUsageFilterProviders,
     setUsageFilterModels,
+    setUsageFilterOrigins,
     usageWindowHours,
     setUsageChartHover,
     formatUsdMaybe,
@@ -122,6 +126,7 @@ export function useDashboardDerivations(params: Params) {
   const usageTopModel = usageByModel[0] ?? null
   const usageCatalogProviders = usageStatistics?.catalog?.providers ?? []
   const usageCatalogModels = usageStatistics?.catalog?.models ?? []
+  const usageCatalogOrigins = usageStatistics?.catalog?.origins ?? []
   const usageProviderFilterOptions = useMemo(
     () => buildUsageProviderFilterOptions(usageCatalogProviders),
     [usageCatalogProviders],
@@ -129,6 +134,10 @@ export function useDashboardDerivations(params: Params) {
   const usageModelFilterOptions = useMemo(
     () => buildUsageModelFilterOptions(usageCatalogModels),
     [usageCatalogModels],
+  )
+  const usageOriginFilterOptions = useMemo(
+    () => buildUsageOriginFilterOptions(usageCatalogOrigins),
+    [usageCatalogOrigins],
   )
   const usageSharedCostView = useMemo(() => buildUsageSharedCostView(usageByProvider), [usageByProvider])
   const usageProviderDisplayGroups = useMemo(
@@ -209,6 +218,11 @@ export function useDashboardDerivations(params: Params) {
       prev.includes(name) ? prev.filter((v) => v !== name) : [...prev, name],
     )
   }, [])
+  const toggleUsageOriginFilter = useCallback((name: string) => {
+    setUsageFilterOrigins((prev: string[]) =>
+      prev.includes(name) ? prev.filter((v) => v !== name) : [name],
+    )
+  }, [])
 
   const usageChart = useMemo(
     () => buildUsageChartModel(usageTimeline, usageMaxTimelineRequests, usageMaxTimelineTokens),
@@ -260,6 +274,7 @@ export function useDashboardDerivations(params: Params) {
     usageTopModel,
     usageProviderFilterOptions,
     usageModelFilterOptions,
+    usageOriginFilterOptions,
     usageProviderDisplayGroups,
     usagePricedRequestCount,
     usageDedupedTotalUsedUsd,
@@ -275,6 +290,7 @@ export function useDashboardDerivations(params: Params) {
     usageAnomalies,
     toggleUsageProviderFilter,
     toggleUsageModelFilter,
+    toggleUsageOriginFilter,
     usageChart,
     showUsageChartHover,
   }

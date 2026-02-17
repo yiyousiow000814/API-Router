@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { fmtWhen } from '../utils/format'
+import { GATEWAY_WINDOWS_HOST, GATEWAY_WSL2_HOST } from '../constants'
 import './SessionsTable.css'
 
 type SessionRow = {
@@ -21,19 +22,77 @@ type Props = {
   sessions: SessionRow[]
   providers: string[]
   globalPreferred: string
+  wslGatewayHost?: string
   updating: Record<string, boolean>
   onSetPreferred: (sessionId: string, provider: string | null) => void
   allowPreferredChanges?: boolean
+}
+
+export function isWslSessionRow(
+  s: Pick<SessionRow, 'wt_session' | 'reported_base_url'>,
+  wslGatewayHost: string = GATEWAY_WSL2_HOST,
+): boolean {
+  const wt = (s.wt_session ?? '').trim().toLowerCase()
+  if (wt.startsWith('wsl:')) return true
+
+  const base = (s.reported_base_url ?? '').trim().toLowerCase()
+  if (!base) return false
+  let host = ''
+  try {
+    host = new URL(base).hostname.toLowerCase()
+  } catch {
+    host = ''
+  }
+  if (!host) return false
+  if (
+    host === GATEWAY_WINDOWS_HOST.toLowerCase() ||
+    host === 'localhost' ||
+    host === '::1'
+  ) {
+    return false
+  }
+  const normalizedWslHost = (wslGatewayHost.trim() || GATEWAY_WSL2_HOST).toLowerCase()
+  return host === normalizedWslHost
 }
 
 export function SessionsTable({
   sessions,
   providers,
   globalPreferred,
+  wslGatewayHost = GATEWAY_WSL2_HOST,
   updating,
   onSetPreferred,
   allowPreferredChanges = true,
 }: Props) {
+  function codexSessionIdOnly(raw: string | null | undefined): string | null {
+    const v = (raw ?? '').trim()
+    if (!v) return null
+    // Legacy synthetic ids can be WT_SESSION-derived (e.g. `wsl:<wt-session>`).
+    // Keep UI strict: Codex session column only shows real Codex session ids.
+    if (v.toLowerCase().startsWith('wsl:')) return null
+    return v
+  }
+
+  function isWslSession(s: SessionRow): boolean {
+    return isWslSessionRow(s, wslGatewayHost)
+  }
+
+  function sessionOriginClass(s: SessionRow): string {
+    return isWslSession(s) ? 'aoSessionsIdWsl2' : 'aoSessionsIdWindows'
+  }
+
+  function codexProviderLabel(s: SessionRow): string {
+    const verified = s.verified !== false
+    const isAgent = s.is_agent === true
+    const isReview = isAgent && s.is_review === true
+    if (isReview) return 'review'
+    if (isAgent) return 'agents'
+    // If session is still unverified and we have no base_url evidence, provider id is often just
+    // startup config hint and can be misleading.
+    if (!verified && !(s.reported_base_url ?? '').trim()) return '-'
+    return s.reported_model_provider ?? '-'
+  }
+
   const verifiedRows = sessions.filter((s) => s.verified !== false)
   const unverifiedRows = sessions.filter((s) => s.verified === false)
   const [showUnverified, setShowUnverified] = useState(false)
@@ -60,21 +119,32 @@ export function SessionsTable({
               verifiedRows.map((s) => {
                 const verified = s.verified !== false
                 const routingTarget = s.preferred_provider ?? globalPreferred
-                const codexSession = s.codex_session_id ?? null
+                const codexSession = codexSessionIdOnly(s.codex_session_id)
                 const wt = s.wt_session ?? '-'
                 const isAgent = s.is_agent === true
-                const isReview = isAgent && s.is_review === true
-                const codexProvider = isReview
-                  ? 'review'
-                  : (isAgent ? 'agents' : (s.reported_model_provider ?? '-'))
+                const codexProvider = codexProviderLabel(s)
                 const modelName = s.reported_model ?? '-'
+                const originClass = sessionOriginClass(s)
+                const wsl = isWslSession(s)
+                const originBadgeClass = wsl
+                  ? 'aoSessionOriginBadge aoSessionOriginBadgeWsl'
+                  : 'aoSessionOriginBadge aoSessionOriginBadgeWindows'
+                const originLabel = wsl ? 'WSL2' : 'WIN'
+                const rowClass = isAgent
+                  ? wsl
+                    ? 'aoSessionRowAgent aoSessionRowAgentWsl'
+                    : 'aoSessionRowAgent'
+                  : undefined
                 return (
-                  <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
+                  <tr key={s.id} className={rowClass}>
                     <td className="aoSessionsMono">
                       {codexSession ? (
-                        <div title={`WT_SESSION: ${wt}`}>{codexSession}</div>
+                        <div className={originClass} title={`WT_SESSION: ${wt}`}>
+                          <span className={originBadgeClass}>{originLabel}</span>
+                          {codexSession}
+                        </div>
                       ) : (
-                        <div title={`WT_SESSION: ${wt}`}>-</div>
+                        <div className={originClass} title={`WT_SESSION: ${wt}`}>-</div>
                       )}
                     </td>
                     <td className="aoSessionsCellCenter">
@@ -158,21 +228,32 @@ export function SessionsTable({
                 {unverifiedRows.map((s) => {
                   const verified = s.verified !== false
                   const routingTarget = s.preferred_provider ?? globalPreferred
-                  const codexSession = s.codex_session_id ?? null
+                  const codexSession = codexSessionIdOnly(s.codex_session_id)
                   const wt = s.wt_session ?? '-'
                   const isAgent = s.is_agent === true
-                  const isReview = isAgent && s.is_review === true
-                  const codexProvider = isReview
-                    ? 'review'
-                    : (isAgent ? 'agents' : (s.reported_model_provider ?? '-'))
+                  const codexProvider = codexProviderLabel(s)
                   const modelName = s.reported_model ?? '-'
+                  const originClass = sessionOriginClass(s)
+                  const wsl = isWslSession(s)
+                  const originBadgeClass = wsl
+                    ? 'aoSessionOriginBadge aoSessionOriginBadgeWsl'
+                    : 'aoSessionOriginBadge aoSessionOriginBadgeWindows'
+                  const originLabel = wsl ? 'WSL2' : 'WIN'
+                  const rowClass = isAgent
+                    ? wsl
+                      ? 'aoSessionRowAgent aoSessionRowAgentWsl'
+                      : 'aoSessionRowAgent'
+                    : undefined
                   return (
-                    <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
+                    <tr key={s.id} className={rowClass}>
                       <td className="aoSessionsMono">
                         {codexSession ? (
-                          <div title={`WT_SESSION: ${wt}`}>{codexSession}</div>
+                          <div className={originClass} title={`WT_SESSION: ${wt}`}>
+                            <span className={originBadgeClass}>{originLabel}</span>
+                            {codexSession}
+                          </div>
                         ) : (
-                          <div title={`WT_SESSION: ${wt}`}>-</div>
+                          <div className={originClass} title={`WT_SESSION: ${wt}`}>-</div>
                         )}
                       </td>
                       <td className="aoSessionsCellCenter">

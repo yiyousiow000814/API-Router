@@ -15,3 +15,4 @@ include!("commands/spend_history.rs");
 include!("commands/provider_management.rs");
 include!("commands/quota_ops.rs");
 include!("commands/account_switchboard.rs");
+include!("commands/wsl_gateway_access.rs");

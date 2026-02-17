@@ -29,6 +29,10 @@ type Props = {
   setUsageFilterModels: (models: string[]) => void
   usageModelFilterOptions: string[]
   toggleUsageModelFilter: (modelName: string) => void
+  usageFilterOrigins: string[]
+  setUsageFilterOrigins: (origins: string[]) => void
+  usageOriginFilterOptions: string[]
+  toggleUsageOriginFilter: (originName: string) => void
   usageAnomalies: {
     messages: string[]
     highCostRowKeys: Set<string>
@@ -94,6 +98,10 @@ export function UsageStatisticsPanel({
   setUsageFilterModels,
   usageModelFilterOptions,
   toggleUsageModelFilter,
+  usageFilterOrigins,
+  setUsageFilterOrigins,
+  usageOriginFilterOptions,
+  toggleUsageOriginFilter,
   usageAnomalies,
   usageSummary,
   formatKpiTokens,
@@ -175,6 +183,10 @@ export function UsageStatisticsPanel({
         setUsageFilterModels={setUsageFilterModels}
         usageModelFilterOptions={usageModelFilterOptions}
         toggleUsageModelFilter={toggleUsageModelFilter}
+        usageFilterOrigins={usageFilterOrigins}
+        setUsageFilterOrigins={setUsageFilterOrigins}
+        usageOriginFilterOptions={usageOriginFilterOptions}
+        toggleUsageOriginFilter={toggleUsageOriginFilter}
       />
       {visibleAnomalyEntries.length ? (
         <div className="aoUsageAnomalyBanner" role="status" aria-live="polite">

@@ -1,6 +1,10 @@
+import { useEffect, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import { ModalBackdrop } from './ModalBackdrop'
 import { normalizePathForCompare } from '../utils/path'
 import { isValidWindowsCodexPath, isValidWslCodexPath } from '../utils/codexPathValidation'
+import { GATEWAY_WSL2_HOST } from '../constants'
+import { buildGatewayBaseUrl, normalizeGatewayPort } from '../utils/gatewayUrl'
 
 type Props = {
   open: boolean
@@ -14,6 +18,29 @@ type Props = {
   onChangeUseWsl: (v: boolean) => void
   onCancel: () => void
   onApply: () => void
+  flashToast: (msg: string, kind?: 'info' | 'error') => void
+  isDevPreview: boolean
+  listenPort: number
+}
+
+type WslGatewayTest = {
+  ok: boolean
+  authorized: boolean
+  wsl_host?: string
+}
+
+type WslGatewayAccessStatus = {
+  ok: boolean
+  authorized: boolean
+  wsl_host?: string
+}
+
+function wslAccessSummary(authorized: boolean, wslHost: string, listenPort: number): string {
+  const baseUrl = buildGatewayBaseUrl(wslHost, listenPort)
+  if (authorized) {
+    return `Enabled: use WSL2 base_url ${baseUrl}.`
+  }
+  return `Disabled: WSL2 access to ${baseUrl} is blocked (expected after Revoke).`
 }
 
 export function CodexSwapModal({
@@ -28,7 +55,86 @@ export function CodexSwapModal({
   onChangeUseWsl,
   onCancel,
   onApply,
+  flashToast,
+  isDevPreview,
+  listenPort,
 }: Props) {
+  const [wslBusy, setWslBusy] = useState(false)
+  const [wslAuthorized, setWslAuthorized] = useState(false)
+  const [wslHost, setWslHost] = useState<string>(GATEWAY_WSL2_HOST)
+  const gatewayPort = normalizeGatewayPort(listenPort)
+
+  async function refreshWslAccessStatus() {
+    if (isDevPreview) {
+      try {
+        setWslAuthorized(localStorage.getItem('ao:wsl-gateway-authorized') === '1')
+      } catch {
+        setWslAuthorized(false)
+      }
+      return
+    }
+    try {
+      const res = await invoke<WslGatewayAccessStatus>('wsl_gateway_access_status')
+      setWslAuthorized(Boolean(res.authorized))
+      setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
+    } catch {
+      // noop
+    }
+  }
+
+  async function authorizeWslAccess() {
+    if (isDevPreview) {
+      setWslAuthorized(true)
+      try {
+        localStorage.setItem('ao:wsl-gateway-authorized', '1')
+      } catch {
+        // noop
+      }
+      flashToast('WSL2 gateway access authorized [TEST]')
+      return
+    }
+    setWslBusy(true)
+    try {
+      const res = await invoke<WslGatewayTest>('wsl_gateway_authorize_access')
+      setWslAuthorized(Boolean(res.authorized))
+      setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
+      flashToast('WSL2 gateway access authorized')
+    } catch (e) {
+      flashToast(String(e), 'error')
+    } finally {
+      setWslBusy(false)
+    }
+  }
+
+  async function revokeWslAccess() {
+    if (isDevPreview) {
+      setWslAuthorized(false)
+      try {
+        localStorage.setItem('ao:wsl-gateway-authorized', '0')
+      } catch {
+        // noop
+      }
+      flashToast('WSL2 gateway access revoked [TEST]')
+      return
+    }
+    setWslBusy(true)
+    try {
+      const res = await invoke<WslGatewayTest>('wsl_gateway_revoke_access')
+      setWslAuthorized(Boolean(res.authorized))
+      setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
+      flashToast('WSL2 gateway access revoked')
+    } catch (e) {
+      flashToast(String(e), 'error')
+    } finally {
+      setWslBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!open || !useWsl) return
+    void refreshWslAccessStatus()
+  }, [open, useWsl])
+
   if (!open) return null
 
   const hasWindowsDir = windowsDir.trim().length > 0
@@ -100,6 +206,43 @@ export function CodexSwapModal({
             {hasWslDir && !wslPathValid ? (
               <div className="aoHint" style={{ marginTop: 6 }}>
                 Use a WSL2 UNC path like `\\\\wsl.localhost\\Distro\\home\\user\\.codex`.
+              </div>
+            ) : null}
+            {useWsl ? (
+              <div
+                className="aoCardInset"
+                style={{
+                  marginTop: 10,
+                  border: '1px solid rgba(13, 18, 32, 0.1)',
+                  borderRadius: 12,
+                  padding: 10,
+                  display: 'grid',
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span className="aoMiniLabel">WSL2 gateway access</span>
+                </div>
+                <div className="aoHint">
+                  App can apply/remove Windows networking rules for WSL2 access. You can authorize and revoke repeatedly.
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button
+                    className="aoBtn aoBtnPrimary"
+                    onClick={() => void authorizeWslAccess()}
+                    disabled={wslBusy || wslAuthorized}
+                  >
+                    {wslAuthorized ? 'Authorized' : 'Authorize (Admin)'}
+                  </button>
+                  <button
+                    className={`aoBtn${wslAuthorized ? ' aoBtnDanger' : ''}`}
+                    onClick={() => void revokeWslAccess()}
+                    disabled={wslBusy || !wslAuthorized}
+                  >
+                    Revoke
+                  </button>
+                </div>
+                <div className="aoHint">{wslAccessSummary(wslAuthorized, wslHost, gatewayPort)}</div>
               </div>
             ) : null}
           </div>

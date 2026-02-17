@@ -1,4 +1,5 @@
 import type { Status } from '../types'
+import { GATEWAY_WINDOWS_HOST, GATEWAY_WSL2_HOST } from '../constants'
 
 type HeroStatusProps = {
   status: Status
@@ -13,19 +14,24 @@ export function HeroStatusCard({
   onCopyToken,
   onShowRotate,
 }: HeroStatusProps) {
+  const wslGatewayHost = status.wsl_gateway_host?.trim() || GATEWAY_WSL2_HOST
   return (
     <div className="aoCard aoHeroCard aoHeroStatus">
       <div className="aoCardHeader">
-        <div className="aoCardTitle">Status</div>
+        <div className="aoCardTitle">Gateway</div>
         <span className="aoPill aoPulse">
           <span className="aoDot" />
           <span className="aoPillText">running</span>
         </span>
       </div>
       <div className="aoStatGrid">
-        <div className="aoStatLabel">Gateway</div>
+        <div className="aoStatLabel">Base URL (Wins)</div>
         <div className="aoStatValue">
-          {status.listen.host}:{status.listen.port}
+          http://{GATEWAY_WINDOWS_HOST}:{status.listen.port}/v1
+        </div>
+        <div className="aoStatLabel">Base URL (WSL2)</div>
+        <div className="aoStatValue">
+          http://{wslGatewayHost}:{status.listen.port}/v1
         </div>
         <div className="aoStatLabel">Preferred</div>
         <div className="aoStatValue">{status.preferred_provider}</div>
@@ -49,7 +55,7 @@ export function HeroStatusCard({
             </svg>
           </button>
           <button className="aoBtn" onClick={onShowRotate}>
-            Show / Rotate
+            Rotate
           </button>
         </div>
       </div>

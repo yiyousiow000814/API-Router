@@ -129,6 +129,7 @@ export default function App() {
   const [usageWindowHours, setUsageWindowHours] = useState<number>(24)
   const [usageFilterProviders, setUsageFilterProviders] = useState<string[]>([])
   const [usageFilterModels, setUsageFilterModels] = useState<string[]>([])
+  const [usageFilterOrigins, setUsageFilterOrigins] = useState<string[]>([])
   const [usageStatisticsLoading, setUsageStatisticsLoading] = useState<boolean>(false)
   const [usagePricingModalOpen, setUsagePricingModalOpen] = useState<boolean>(false)
   const [usagePricingDrafts, setUsagePricingDrafts] = useState<Record<string, UsagePricingDraft>>({})
@@ -504,6 +505,7 @@ export default function App() {
     isDevPreview,
     devStatus,
     devConfig,
+    listenPort: config?.listen.port ?? devConfig.listen.port,
     codexSwapDir1,
     codexSwapDir2,
     codexSwapUseWindows,
@@ -623,6 +625,7 @@ export default function App() {
     flashToast,
     setGatewayModalOpen,
     setGatewayTokenReveal,
+    setGatewayTokenPreview,
     setCodexRefreshing,
     refreshStatus,
     codexSwapDir1,
@@ -630,7 +633,8 @@ export default function App() {
     codexSwapUseWindows,
     codexSwapUseWsl,
     codexSwapTarget,
-    toggleCodexSwap,
+    providerSwitchStatus,
+    setProviderSwitchTarget,
     setCodexSwapModalOpen,
     setOverride,
     overrideDirtyRef,
@@ -670,6 +674,7 @@ export default function App() {
     usageWindowHours,
     usageFilterProviders,
     usageFilterModels,
+    usageFilterOrigins,
     setUsageStatistics,
     setUsageStatisticsLoading,
     flashToast,
@@ -712,10 +717,11 @@ export default function App() {
     providerGroupLabelByName, linkedProvidersForApiKey, switchboardProviderCards, switchboardModeLabel,
     switchboardModelProviderLabel, switchboardTargetDirsLabel, usageSummary, usageByProvider, usageTotalInputTokens,
     usageTotalOutputTokens, usageAvgTokensPerRequest, usageTopModel, usageProviderFilterOptions, usageModelFilterOptions,
+    usageOriginFilterOptions,
     usageProviderDisplayGroups, usagePricedRequestCount, usageDedupedTotalUsedUsd, usagePricedCoveragePct,
     usageActiveWindowHours, usageAvgRequestsPerHour, usageAvgTokensPerHour, usageWindowLabel,
     usageProviderTotalsAndAverages, usagePricingProviderNames, usagePricingGroups, usageScheduleProviderOptions,
-    usageAnomalies, toggleUsageProviderFilter, toggleUsageModelFilter, usageChart, showUsageChartHover,
+    usageAnomalies, toggleUsageProviderFilter, toggleUsageModelFilter, toggleUsageOriginFilter, usageChart, showUsageChartHover,
   } = useDashboardDerivations({
     config,
     orderedConfigProviders,
@@ -731,6 +737,8 @@ export default function App() {
     setUsageFilterProviders,
     usageFilterModels,
     setUsageFilterModels,
+    usageFilterOrigins,
+    setUsageFilterOrigins,
     usageWindowHours,
     setUsageChartHover,
     formatUsdMaybe,
@@ -743,6 +751,8 @@ export default function App() {
     usageProviderFilterOptions,
     setUsageFilterModels,
     usageModelFilterOptions,
+    setUsageFilterOrigins,
+    usageOriginFilterOptions,
   })
   const {
     saveProvider, deleteProvider, saveKey, clearKey, refreshQuota, refreshQuotaAll,
@@ -783,6 +793,7 @@ export default function App() {
     usageWindowHours,
     usageFilterProviders,
     usageFilterModels,
+    usageFilterOrigins,
     isDevPreview,
     refreshFxRatesDaily,
     usagePricingModalOpen,
@@ -923,6 +934,10 @@ export default function App() {
                 setUsageFilterModels,
                 usageModelFilterOptions,
                 toggleUsageModelFilter,
+                usageFilterOrigins,
+                setUsageFilterOrigins,
+                usageOriginFilterOptions,
+                toggleUsageOriginFilter,
                 usageAnomalies,
                 usageSummary,
                 formatKpiTokens,
@@ -1106,6 +1121,7 @@ export default function App() {
         setUsageScheduleSaveError={setUsageScheduleSaveError}
         setUsageScheduleModalOpen={setUsageScheduleModalOpen}
         isDevPreview={isDevPreview}
+        listenPort={status?.listen.port}
         codexSwapModalOpen={codexSwapModalOpen}
         codexSwapDir1={codexSwapDir1}
         codexSwapDir2={codexSwapDir2}

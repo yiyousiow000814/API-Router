@@ -93,6 +93,8 @@ pub struct ClientSessionRuntime {
     // Last model observed from upstream response payload/events.
     pub last_reported_model: Option<String>,
     pub last_reported_base_url: Option<String>,
+    // Parent main session id for agent sub-sessions when known.
+    pub agent_parent_session_id: Option<String>,
     // Mark sessions spawned from Codex subagent flows.
     pub is_agent: bool,
     // Subagent subtype marker (currently only review is surfaced in UI).
@@ -257,9 +259,27 @@ async fn responses(
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("peer:{peer}"));
     let client_session = windows_terminal::infer_wt_session(peer, cfg.listen.port);
+    let request_base_url = request_base_url_hint(&headers, cfg.listen.port);
+    let request_origin = usage_origin_from_base_url(request_base_url.as_deref());
+    let request_is_wsl = request_origin == crate::constants::USAGE_ORIGIN_WSL2;
+    let inferred_wt_marker = client_session.as_ref().map(|s| {
+        let wt = s
+            .wt_session
+            .trim()
+            .trim_start_matches("wsl:")
+            .trim_start_matches("WSL:")
+            .trim();
+        if request_is_wsl {
+            format!("wsl:{wt}")
+        } else {
+            wt.to_string()
+        }
+    });
     let agent_request = request_is_agent(&headers, &body);
+    let review_request = request_is_review(&headers, &body);
+    let agent_parent_session_id = body_agent_parent_session_id(&body);
     let routing_session_fields = {
-        let wt = client_session.as_ref().map(|s| s.wt_session.clone());
+        let wt = inferred_wt_marker.clone();
         let pid = client_session.as_ref().map(|s| s.pid);
         // Prefer the human-facing codex session id if present; fall back to session key.
         let codex = (!session_key.starts_with("peer:")).then_some(session_key.clone());
@@ -274,25 +294,34 @@ async fn responses(
     // WT_SESSION is window-scoped and can be shared across tabs; additionally, some network calls may
     // be owned by helper processes.
     if !session_key.starts_with("peer:") {
+        let now_unix_ms = unix_ms();
         let mut map = st.client_sessions.write();
         let entry = map
             .entry(session_key.clone())
             .or_insert_with(|| ClientSessionRuntime {
                 codex_session_id: session_key.clone(),
                 pid: client_session.as_ref().map(|s| s.pid).unwrap_or(0),
-                wt_session: client_session.as_ref().map(|s| s.wt_session.clone()),
+                wt_session: inferred_wt_marker
+                    .as_deref()
+                    .and_then(|wt| windows_terminal::merge_wt_session_marker(None, wt)),
                 last_request_unix_ms: 0,
                 last_discovered_unix_ms: 0,
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                agent_parent_session_id: None,
                 is_agent: agent_request || client_session.as_ref().is_some_and(|s| s.is_agent),
                 is_review: false,
                 confirmed_router: true,
             });
         if let Some(inferred) = client_session.as_ref() {
             entry.pid = inferred.pid;
-            entry.wt_session = Some(inferred.wt_session.clone());
+            if let Some(observed_wt) = inferred_wt_marker.as_deref() {
+                entry.wt_session = windows_terminal::merge_wt_session_marker(
+                    entry.wt_session.as_deref(),
+                    observed_wt,
+                );
+            }
             if inferred.is_agent {
                 entry.is_agent = true;
             }
@@ -300,17 +329,83 @@ async fn responses(
                 entry.is_review = true;
             }
         }
+        if request_is_wsl {
+            if let Some(existing_wt) = entry.wt_session.as_deref() {
+                let forced_wsl = format!(
+                    "wsl:{}",
+                    existing_wt
+                        .trim()
+                        .trim_start_matches("wsl:")
+                        .trim_start_matches("WSL:")
+                        .trim()
+                );
+                entry.wt_session = windows_terminal::merge_wt_session_marker(
+                    entry.wt_session.as_deref(),
+                    &forced_wsl,
+                );
+            }
+        }
         if agent_request {
             entry.is_agent = true;
         }
-        if request_is_review(&headers, &body) {
+        if review_request {
             entry.is_review = true;
             entry.is_agent = true;
         }
+        if let Some(parent_sid) = agent_parent_session_id.as_deref() {
+            entry.agent_parent_session_id = Some(parent_sid.to_string());
+        }
+        if let Some(base_url) = request_base_url.as_deref() {
+            entry.last_reported_base_url = Some(base_url.to_string());
+        }
         // Keep codex provider deterministic once the session is proven to route through gateway.
         entry.last_reported_model_provider = Some(GATEWAY_MODEL_PROVIDER_ID.to_string());
-        entry.last_request_unix_ms = unix_ms();
+        entry.last_request_unix_ms = now_unix_ms;
         entry.confirmed_router = true;
+
+        if let Some(parent_sid) = agent_parent_session_id.as_deref() {
+            if parent_sid != session_key {
+                let parent_entry =
+                    map.entry(parent_sid.to_string())
+                        .or_insert_with(|| ClientSessionRuntime {
+                            codex_session_id: parent_sid.to_string(),
+                            pid: client_session.as_ref().map(|s| s.pid).unwrap_or(0),
+                            wt_session: inferred_wt_marker
+                                .as_deref()
+                                .and_then(|wt| windows_terminal::merge_wt_session_marker(None, wt)),
+                            last_request_unix_ms: 0,
+                            last_discovered_unix_ms: now_unix_ms,
+                            last_reported_model_provider: Some(
+                                GATEWAY_MODEL_PROVIDER_ID.to_string(),
+                            ),
+                            last_reported_model: None,
+                            last_reported_base_url: None,
+                            agent_parent_session_id: None,
+                            is_agent: false,
+                            is_review: false,
+                            confirmed_router: true,
+                        });
+                if let Some(inferred) = client_session.as_ref() {
+                    if inferred.pid != 0 {
+                        parent_entry.pid = inferred.pid;
+                    }
+                }
+                if let Some(observed_wt) = inferred_wt_marker.as_deref() {
+                    parent_entry.wt_session = windows_terminal::merge_wt_session_marker(
+                        parent_entry.wt_session.as_deref(),
+                        observed_wt,
+                    );
+                }
+                if let Some(base_url) = request_base_url.as_deref() {
+                    parent_entry.last_reported_base_url = Some(base_url.to_string());
+                }
+                parent_entry.last_discovered_unix_ms =
+                    parent_entry.last_discovered_unix_ms.max(now_unix_ms);
+                parent_entry.last_reported_model_provider =
+                    Some(GATEWAY_MODEL_PROVIDER_ID.to_string());
+                parent_entry.confirmed_router = true;
+            }
+        }
     }
 
     let previous_response_id = body
@@ -510,10 +605,13 @@ async fn responses(
                             resp,
                             st.clone(),
                             provider_name,
-                            api_key_ref_from_raw(api_key.as_deref()),
                             timeout,
-                            session_key.clone(),
-                            requested_model.clone(),
+                            SsePersistContext {
+                                api_key_ref: api_key_ref_from_raw(api_key.as_deref()),
+                                session_key: session_key.clone(),
+                                requested_model: requested_model.clone(),
+                                request_origin: request_origin.to_string(),
+                            },
                         );
                     }
                     Ok(resp) => {
@@ -623,8 +721,12 @@ async fn responses(
                     let api_key_ref = api_key_ref_from_raw(api_key.as_deref());
 
                     // Persist the exchange so we can keep continuity if provider changes later.
-                    st.store
-                        .record_success(&provider_name, &response_obj, Some(&api_key_ref));
+                    st.store.record_success(
+                        &provider_name,
+                        &response_obj,
+                        Some(&api_key_ref),
+                        request_origin,
+                    );
 
                     // Avoid spamming the event log for routine successful requests; only surface
                     // interesting routing outcomes (failover / non-preferred).
