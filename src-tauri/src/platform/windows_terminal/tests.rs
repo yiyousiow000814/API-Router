@@ -77,6 +77,13 @@ mod tests {
     }
 
     #[test]
+    fn looks_like_router_base_does_not_match_prefix_like_host() {
+        let wsl_host = crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(None);
+        let tricky = format!("http://{wsl_host}.evil:4000/v1");
+        assert!(!looks_like_router_base(&tricky, 4000));
+    }
+
+    #[test]
     fn norm_cwd_for_match_trims_trailing_slashes() {
         assert_eq!(norm_cwd_for_match("C:\\Work\\Proj\\"), "c:/work/proj");
         assert_eq!(norm_cwd_for_match("C:/Work/Proj"), "c:/work/proj");

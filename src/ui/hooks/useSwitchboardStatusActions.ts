@@ -82,6 +82,26 @@ export function summarizeProviderSwitchState(dirs: ProviderSwitchDir[]): {
   return { mode: 'mixed', model_provider: null }
 }
 
+export function applyProviderSwitchStatusResult(
+  prevStatus: ProviderSwitchboardStatus | null,
+  nextStatus: ProviderSwitchboardStatus,
+  partial: boolean,
+): ProviderSwitchboardStatus {
+  if (!partial) {
+    return nextStatus
+  }
+  const mergedDirs = mergeProviderSwitchDirs(prevStatus?.dirs ?? [], nextStatus.dirs ?? [], {
+    partial: true,
+  })
+  const summary = summarizeProviderSwitchState(mergedDirs)
+  return {
+    ...nextStatus,
+    mode: summary.mode,
+    model_provider: summary.model_provider,
+    dirs: mergedDirs,
+  }
+}
+
 type GatewayAccessStatus = { ok: boolean; authorized?: boolean; legacy_conflict?: boolean }
 
 export async function runGatewaySwitchPreflight(
@@ -214,15 +234,9 @@ export function useSwitchboardStatusActions({
       )
       const isPartialRefresh =
         Boolean(cliHomes && cliHomes.length) && homes.length < allEnabledHomes.length
-      if (!isPartialRefresh) {
-        setProviderSwitchStatus(res)
-        return
-      }
-      const prevDirs = providerSwitchStatus?.dirs ?? []
-      setProviderSwitchStatus({
-        ...res,
-        dirs: mergeProviderSwitchDirs(prevDirs, res.dirs ?? [], { partial: true }),
-      })
+      setProviderSwitchStatus(
+        applyProviderSwitchStatusResult(providerSwitchStatus, res, isPartialRefresh),
+      )
     } catch (e) {
       flashToast(String(e), 'error')
     }
@@ -438,16 +452,9 @@ export function useSwitchboardStatusActions({
         provider: provider ?? null,
       })
       const isPartialUpdate = homes.length < allHomes.length
-      const mergedDirs = mergeProviderSwitchDirs(providerSwitchStatus?.dirs ?? [], res.dirs ?? [], {
-        partial: isPartialUpdate,
-      })
-      const mergedSummary = summarizeProviderSwitchState(mergedDirs)
-      setProviderSwitchStatus({
-        ...res,
-        mode: mergedSummary.mode,
-        model_provider: mergedSummary.model_provider,
-        dirs: mergedDirs,
-      })
+      setProviderSwitchStatus(
+        applyProviderSwitchStatusResult(providerSwitchStatus, res, isPartialUpdate),
+      )
       const msg =
         target === 'provider' ? 'Switched to provider: ' + provider : target === 'gateway' ? 'Switched to gateway' : 'Switched to official'
       flashToast(msg)

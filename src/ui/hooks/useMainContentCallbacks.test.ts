@@ -60,5 +60,38 @@ describe('useMainContentCallbacks', () => {
       'error',
     )
   })
-})
 
+  it('blocks quick swap toggle while switchboard status is loading', async () => {
+    const flashToast = vi.fn()
+    const setProviderSwitchTarget = vi.fn(async () => {})
+    const callbacks = useMainContentCallbacks({
+      status: null,
+      flashToast,
+      setGatewayModalOpen: vi.fn(),
+      setGatewayTokenReveal: vi.fn(),
+      setGatewayTokenPreview: vi.fn(),
+      setCodexRefreshing: vi.fn(),
+      refreshStatus: vi.fn(async () => {}),
+      codexSwapDir1: 'C:\\Users\\a\\.codex',
+      codexSwapDir2: '\\\\wsl.localhost\\Ubuntu\\home\\a\\.codex',
+      codexSwapUseWindows: true,
+      codexSwapUseWsl: false,
+      codexSwapTarget: 'windows',
+      providerSwitchStatus: null,
+      setProviderSwitchTarget,
+      setCodexSwapModalOpen: vi.fn(),
+      setOverride: vi.fn(),
+      overrideDirtyRef: { current: false },
+      applyOverride: vi.fn(async () => {}),
+    })
+
+    callbacks.onCodexSwapAuthConfig()
+    await flushAsync()
+
+    expect(setProviderSwitchTarget).not.toHaveBeenCalled()
+    expect(flashToast).toHaveBeenCalledWith(
+      expect.stringContaining('Switchboard status is loading'),
+      'error',
+    )
+  })
+})

@@ -97,14 +97,24 @@ fn parse_codex_session_id_from_cmdline(cmd: &str) -> Option<String> {
 
 #[cfg(windows)]
 fn looks_like_router_base(v: &str, port: u16) -> bool {
-    let v = v.to_ascii_lowercase();
-    let port_s = format!(":{port}");
+    let normalized = if v.contains("://") {
+        v.to_string()
+    } else {
+        format!("http://{v}")
+    };
+    let Ok(url) = reqwest::Url::parse(&normalized) else {
+        return false;
+    };
+    let Some(host) = url.host_str().map(|s| s.to_ascii_lowercase()) else {
+        return false;
+    };
+    let base_port = url.port_or_known_default().unwrap_or(80);
+    if base_port != port {
+        return false;
+    }
     let wsl_host = crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(None);
     let wsl_host = wsl_host.to_ascii_lowercase();
-    (v.contains(crate::constants::GATEWAY_WINDOWS_HOST)
-        || v.contains("localhost")
-        || v.contains(&wsl_host))
-        && v.contains(&port_s)
+    host == crate::constants::GATEWAY_WINDOWS_HOST || host == "localhost" || host == wsl_host
 }
 
 #[cfg(windows)]

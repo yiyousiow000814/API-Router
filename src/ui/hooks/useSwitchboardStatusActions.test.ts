@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  applyProviderSwitchStatusResult,
   mergeProviderSwitchDirs,
   runGatewaySwitchPreflight,
   summarizeProviderSwitchState,
@@ -83,5 +84,30 @@ describe('summarizeProviderSwitchState', () => {
     ]
     const summary = summarizeProviderSwitchState(mergedDirs)
     expect(summary.mode).toBe('mixed')
+  })
+})
+
+describe('applyProviderSwitchStatusResult', () => {
+  it('re-summarizes top-level mode after partial merge', () => {
+    const prevStatus = {
+      ok: true,
+      mode: 'mixed' as const,
+      model_provider: null,
+      dirs: [
+        { cli_home: 'C:\\Users\\a\\.codex', mode: 'gateway', model_provider: null },
+        { cli_home: '\\\\wsl.localhost\\Ubuntu\\home\\a\\.codex', mode: 'official', model_provider: null },
+      ],
+      provider_options: ['packycode'],
+    }
+    const partialRes = {
+      ok: true,
+      mode: 'gateway' as const,
+      model_provider: null,
+      dirs: [{ cli_home: 'C:\\Users\\a\\.codex', mode: 'gateway', model_provider: null }],
+      provider_options: ['packycode'],
+    }
+
+    const merged = applyProviderSwitchStatusResult(prevStatus, partialRes, true)
+    expect(merged.mode).toBe('mixed')
   })
 })

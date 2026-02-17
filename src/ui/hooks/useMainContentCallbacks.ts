@@ -2,6 +2,7 @@ import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { ProviderSwitchboardStatus, Status } from '../types'
 import { resolveCliHomes } from '../utils/switchboard'
+import { normalizePathForCompare } from '../utils/path'
 
 type RotateGatewayTokenResult = {
   token: string
@@ -142,8 +143,22 @@ export function useMainContentCallbacks(params: Params) {
           flashToast('No enabled swap target. Open Configure Dirs first.', 'error')
           return
         }
-        const modeByHome = new Map((providerSwitchStatus?.dirs ?? []).map((d) => [d.cli_home.trim(), d.mode]))
-        const allSelectedGateway = homes.every((h) => modeByHome.get(h) === 'gateway')
+        const modeByHome = new Map(
+          (providerSwitchStatus?.dirs ?? []).map((d) => [
+            normalizePathForCompare(d.cli_home),
+            d.mode,
+          ]),
+        )
+        const statusMissingForSelectedHomes = homes.some(
+          (h) => !modeByHome.has(normalizePathForCompare(h)),
+        )
+        if (!providerSwitchStatus || statusMissingForSelectedHomes) {
+          flashToast('Switchboard status is loading. Please retry in a moment.', 'error')
+          return
+        }
+        const allSelectedGateway = homes.every(
+          (h) => modeByHome.get(normalizePathForCompare(h)) === 'gateway',
+        )
         const nextTarget: 'gateway' | 'official' = allSelectedGateway ? 'official' : 'gateway'
         await setProviderSwitchTarget(nextTarget, undefined, homes)
       } catch (e) {
