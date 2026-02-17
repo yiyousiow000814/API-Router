@@ -32,6 +32,7 @@ describe('runGatewaySwitchPreflight', () => {
     const ok = await runGatewaySwitchPreflight(
       'gateway',
       ['\\\\wsl.localhost\\Ubuntu\\home\\a\\.codex'],
+      4000,
       (home) => home.toLowerCase().startsWith('\\\\wsl.localhost\\'),
       invokeFn as any,
       confirmFn,
@@ -63,6 +64,7 @@ describe('runGatewaySwitchPreflight', () => {
     const ok = await runGatewaySwitchPreflight(
       'gateway',
       ['\\\\wsl.localhost\\Ubuntu\\home\\a\\.codex'],
+      4000,
       (home) => home.toLowerCase().startsWith('\\\\wsl.localhost\\'),
       invokeFn as any,
       confirmFn,
@@ -73,6 +75,59 @@ describe('runGatewaySwitchPreflight', () => {
     expect(
       invokeFn.mock.calls.filter(([name]) => name === 'wsl_gateway_access_quick_status').length,
     ).toBe(2)
+  })
+
+  it('aborts when authorization returns authorized=false', async () => {
+    const invokeFn = vi.fn(async (cmd: string) => {
+      if (cmd === 'wsl_gateway_access_quick_status') {
+        return { ok: true, authorized: false, legacy_conflict: false }
+      }
+      if (cmd === 'wsl_gateway_authorize_access') {
+        return { ok: true, authorized: false }
+      }
+      throw new Error(`unexpected command: ${cmd}`)
+    })
+    const confirmFn = vi.fn().mockReturnValue(true)
+    const flashToast = vi.fn()
+
+    const ok = await runGatewaySwitchPreflight(
+      'gateway',
+      ['\\\\wsl.localhost\\Ubuntu\\home\\a\\.codex'],
+      4000,
+      (home) => home.toLowerCase().startsWith('\\\\wsl.localhost\\'),
+      invokeFn as any,
+      confirmFn,
+      flashToast,
+    )
+
+    expect(ok).toBe(false)
+    expect(flashToast).toHaveBeenCalledWith(
+      expect.stringContaining('authorization failed'),
+      'error',
+    )
+  })
+
+  it('uses listen port in legacy conflict prompt', async () => {
+    const invokeFn = vi.fn(async (cmd: string) => {
+      if (cmd === 'wsl_gateway_access_quick_status') {
+        return { ok: true, authorized: true, legacy_conflict: true }
+      }
+      throw new Error(`unexpected command: ${cmd}`)
+    })
+    const confirmFn = vi.fn().mockReturnValue(false)
+    const flashToast = vi.fn()
+
+    await runGatewaySwitchPreflight(
+      'gateway',
+      ['\\\\wsl.localhost\\Ubuntu\\home\\a\\.codex'],
+      1234,
+      (home) => home.toLowerCase().startsWith('\\\\wsl.localhost\\'),
+      invokeFn as any,
+      confirmFn,
+      flashToast,
+    )
+
+    expect(confirmFn).toHaveBeenCalledWith(expect.stringContaining('port 1234'))
   })
 })
 

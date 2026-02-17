@@ -24,6 +24,76 @@ fn ps_quote_single(s: &str) -> String {
     s.replace('\'', "''")
 }
 
+fn ensure_last_exit_ok(step: &str) -> String {
+    format!(
+        "if ($LASTEXITCODE -ne 0) {{ throw \"{step} failed with exit code $LASTEXITCODE\" }}"
+    )
+}
+
+fn authorize_access_script(wsl_host: &str) -> String {
+    format!(
+        r#"
+param(
+  [Parameter(Mandatory=$true)][int]$Port,
+  [Parameter(Mandatory=$true)][string]$StatusFile
+)
+$ErrorActionPreference = 'Stop'
+try {{
+  $null = Start-Service iphlpsvc -ErrorAction SilentlyContinue
+  $rule = "API Router WSL Port $Port"
+  if (-not (Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue)) {{
+    New-NetFirewallRule -DisplayName $rule -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Any | Out-Null
+  }}
+  netsh interface portproxy delete v4tov4 listenaddress={wsl_host} listenport=$Port | Out-Null
+  {check_delete_wsl}
+  netsh interface portproxy delete v4tov4 listenaddress={any_host} listenport=$Port | Out-Null
+  {check_delete_any}
+  netsh interface portproxy add v4tov4 listenaddress={wsl_host} listenport=$Port connectaddress={win_host} connectport=$Port | Out-Null
+  {check_add}
+  Set-Content -Path $StatusFile -Value 'ok' -Encoding utf8
+}} catch {{
+  Set-Content -Path $StatusFile -Value ("error: " + $_.Exception.Message) -Encoding utf8
+  exit 1
+}}
+"#,
+        wsl_host = wsl_host,
+        any_host = GATEWAY_ANY_HOST,
+        win_host = GATEWAY_WINDOWS_HOST,
+        check_delete_wsl = ensure_last_exit_ok("portproxy delete wsl host"),
+        check_delete_any = ensure_last_exit_ok("portproxy delete any host"),
+        check_add = ensure_last_exit_ok("portproxy add wsl host"),
+    )
+}
+
+fn revoke_access_script(wsl_host: &str) -> String {
+    format!(
+        r#"
+param(
+  [Parameter(Mandatory=$true)][int]$Port,
+  [Parameter(Mandatory=$true)][string]$StatusFile
+)
+$ErrorActionPreference = 'Stop'
+try {{
+  $rule = "API Router WSL Port $Port"
+  $r = Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue
+  if ($r) {{ Remove-NetFirewallRule -DisplayName $rule | Out-Null }}
+  netsh interface portproxy delete v4tov4 listenaddress={wsl_host} listenport=$Port | Out-Null
+  {check_delete_wsl}
+  netsh interface portproxy delete v4tov4 listenaddress={any_host} listenport=$Port | Out-Null
+  {check_delete_any}
+  Set-Content -Path $StatusFile -Value 'ok' -Encoding utf8
+}} catch {{
+  Set-Content -Path $StatusFile -Value ("error: " + $_.Exception.Message) -Encoding utf8
+  exit 1
+}}
+"#,
+        wsl_host = wsl_host,
+        any_host = GATEWAY_ANY_HOST,
+        check_delete_wsl = ensure_last_exit_ok("portproxy delete wsl host"),
+        check_delete_any = ensure_last_exit_ok("portproxy delete any host"),
+    )
+}
+
 fn run_elevated_script(script_body: &str, port: u16) -> Result<(), String> {
     let temp = std::env::temp_dir();
     let script_path = temp.join(format!(
@@ -69,31 +139,7 @@ fn run_elevated_script(script_body: &str, port: u16) -> Result<(), String> {
 }
 
 fn authorize_access_impl(port: u16, wsl_host: &str) -> Result<serde_json::Value, String> {
-    let script = r#"
-param(
-  [Parameter(Mandatory=$true)][int]$Port,
-  [Parameter(Mandatory=$true)][string]$StatusFile
-)
-$ErrorActionPreference = 'Stop'
-try {
-  $null = Start-Service iphlpsvc -ErrorAction SilentlyContinue
-  $rule = "API Router WSL Port $Port"
-  if (-not (Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue)) {
-    New-NetFirewallRule -DisplayName $rule -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Any | Out-Null
-  }
-  netsh interface portproxy delete v4tov4 listenaddress=__WSL_HOST__ listenport=$Port | Out-Null
-  netsh interface portproxy delete v4tov4 listenaddress=__ANY_HOST__ listenport=$Port | Out-Null
-  netsh interface portproxy add v4tov4 listenaddress=__WSL_HOST__ listenport=$Port connectaddress=__WIN_HOST__ connectport=$Port | Out-Null
-  Set-Content -Path $StatusFile -Value 'ok' -Encoding utf8
-} catch {
-  Set-Content -Path $StatusFile -Value ("error: " + $_.Exception.Message) -Encoding utf8
-  exit 1
-}
-"#
-    .replace("__WSL_HOST__", wsl_host);
-    let script = script
-        .replace("__ANY_HOST__", GATEWAY_ANY_HOST)
-        .replace("__WIN_HOST__", GATEWAY_WINDOWS_HOST);
+    let script = authorize_access_script(wsl_host);
     run_elevated_script(&script, port)?;
     Ok(json!({
       "ok": true,
@@ -103,26 +149,7 @@ try {
 }
 
 fn revoke_access_impl(port: u16, wsl_host: &str) -> Result<serde_json::Value, String> {
-    let script = r#"
-param(
-  [Parameter(Mandatory=$true)][int]$Port,
-  [Parameter(Mandatory=$true)][string]$StatusFile
-)
-$ErrorActionPreference = 'Stop'
-try {
-  $rule = "API Router WSL Port $Port"
-  $r = Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue
-  if ($r) { Remove-NetFirewallRule -DisplayName $rule | Out-Null }
-  netsh interface portproxy delete v4tov4 listenaddress=__WSL_HOST__ listenport=$Port | Out-Null
-  netsh interface portproxy delete v4tov4 listenaddress=__ANY_HOST__ listenport=$Port | Out-Null
-  Set-Content -Path $StatusFile -Value 'ok' -Encoding utf8
-} catch {
-  Set-Content -Path $StatusFile -Value ("error: " + $_.Exception.Message) -Encoding utf8
-  exit 1
-}
-"#
-    .replace("__WSL_HOST__", wsl_host);
-    let script = script.replace("__ANY_HOST__", GATEWAY_ANY_HOST);
+    let script = revoke_access_script(wsl_host);
     run_elevated_script(&script, port)?;
     Ok(json!({
       "ok": true,
@@ -183,6 +210,25 @@ fn has_portproxy_rule(
             && cols[2] == connect_addr
             && cols[3] == connect_port
     })
+}
+
+#[cfg(test)]
+mod wsl_gateway_access_tests {
+    use super::{authorize_access_script, revoke_access_script};
+
+    #[test]
+    fn authorize_script_checks_netsh_exit_codes() {
+        let script = authorize_access_script("172.26.144.1");
+        assert!(script.contains("portproxy add wsl host failed with exit code"));
+        assert!(script.contains("if ($LASTEXITCODE -ne 0)"));
+    }
+
+    #[test]
+    fn revoke_script_checks_netsh_exit_codes() {
+        let script = revoke_access_script("172.26.144.1");
+        assert!(script.contains("portproxy delete wsl host failed with exit code"));
+        assert!(script.contains("if ($LASTEXITCODE -ne 0)"));
+    }
 }
 
 #[tauri::command]

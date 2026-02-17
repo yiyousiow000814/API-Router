@@ -505,6 +505,7 @@ export default function App() {
     isDevPreview,
     devStatus,
     devConfig,
+    listenPort: config?.listen.port ?? devConfig.listen.port,
     codexSwapDir1,
     codexSwapDir2,
     codexSwapUseWindows,

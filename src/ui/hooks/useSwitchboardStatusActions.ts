@@ -9,6 +9,7 @@ type UseSwitchboardStatusActionsOptions = {
   isDevPreview: boolean
   devStatus: Status
   devConfig: Config
+  listenPort: number
   codexSwapDir1: string
   codexSwapDir2: string
   codexSwapUseWindows: boolean
@@ -107,6 +108,7 @@ type GatewayAccessStatus = { ok: boolean; authorized?: boolean; legacy_conflict?
 export async function runGatewaySwitchPreflight(
   target: 'gateway' | 'official' | 'provider',
   homes: string[],
+  listenPort: number,
   isWslHomePath: (home: string) => boolean,
   invokeFn: typeof invoke,
   confirmFn: (msg: string) => boolean,
@@ -118,7 +120,7 @@ export async function runGatewaySwitchPreflight(
   let access = await invokeFn<GatewayAccessStatus>('wsl_gateway_access_quick_status')
   if (access.legacy_conflict) {
     const shouldCleanup = confirmFn(
-      'A legacy WSL2 portproxy rule is using port 4000 (this can also break Windows access to the gateway).\n\nClick OK to clean it now (requires admin), or Cancel to abort switching.',
+      `A legacy WSL2 portproxy rule is using port ${listenPort} (this can also break Windows access to the gateway).\n\nClick OK to clean it now (requires admin), or Cancel to abort switching.`,
     )
     if (!shouldCleanup) return false
     await invokeFn('wsl_gateway_revoke_access')
@@ -131,7 +133,11 @@ export async function runGatewaySwitchPreflight(
       'WSL2 access to the local gateway requires Windows network authorization first.\n\nClick OK to authorize now (Admin), or Cancel to skip switching for now.',
     )
     if (!shouldAuthorize) return false
-    await invokeFn('wsl_gateway_authorize_access')
+    const authRes = await invokeFn<GatewayAccessStatus>('wsl_gateway_authorize_access')
+    if (authRes.authorized !== true) {
+      flashToast('WSL2 gateway authorization failed. Please retry as Administrator.', 'error')
+      return false
+    }
     flashToast('WSL2 gateway access authorized')
   }
   return true
@@ -141,6 +147,7 @@ export function useSwitchboardStatusActions({
   isDevPreview,
   devStatus,
   devConfig,
+  listenPort,
   codexSwapDir1: _codexSwapDir1,
   codexSwapDir2: _codexSwapDir2,
   codexSwapUseWindows: _codexSwapUseWindows,
@@ -359,6 +366,7 @@ export function useSwitchboardStatusActions({
         const ok = await runGatewaySwitchPreflight(
           'gateway',
           homes,
+          listenPort,
           isWslHomePath,
           invoke,
           (msg) => window.confirm(msg),
@@ -443,6 +451,7 @@ export function useSwitchboardStatusActions({
         const ok = await runGatewaySwitchPreflight(
           target,
           homes,
+          listenPort,
           isWslHomePath,
           invoke,
           (msg) => window.confirm(msg),
