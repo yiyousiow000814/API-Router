@@ -4,6 +4,7 @@ import { ModalBackdrop } from './ModalBackdrop'
 import { normalizePathForCompare } from '../utils/path'
 import { isValidWindowsCodexPath, isValidWslCodexPath } from '../utils/codexPathValidation'
 import { GATEWAY_WSL2_HOST } from '../constants'
+import { buildGatewayBaseUrl, normalizeGatewayPort } from '../utils/gatewayUrl'
 
 type Props = {
   open: boolean
@@ -19,6 +20,7 @@ type Props = {
   onApply: () => void
   flashToast: (msg: string, kind?: 'info' | 'error') => void
   isDevPreview: boolean
+  listenPort: number
 }
 
 type WslGatewayTest = {
@@ -33,11 +35,12 @@ type WslGatewayAccessStatus = {
   wsl_host?: string
 }
 
-function wslAccessSummary(authorized: boolean, wslHost: string): string {
+function wslAccessSummary(authorized: boolean, wslHost: string, listenPort: number): string {
+  const baseUrl = buildGatewayBaseUrl(wslHost, listenPort)
   if (authorized) {
-    return `Enabled: use WSL2 base_url http://${wslHost}:4000/v1.`
+    return `Enabled: use WSL2 base_url ${baseUrl}.`
   }
-  return `Disabled: WSL2 access to http://${wslHost}:4000/v1 is blocked (expected after Revoke).`
+  return `Disabled: WSL2 access to ${baseUrl} is blocked (expected after Revoke).`
 }
 
 export function CodexSwapModal({
@@ -54,10 +57,12 @@ export function CodexSwapModal({
   onApply,
   flashToast,
   isDevPreview,
+  listenPort,
 }: Props) {
   const [wslBusy, setWslBusy] = useState(false)
   const [wslAuthorized, setWslAuthorized] = useState(false)
   const [wslHost, setWslHost] = useState<string>(GATEWAY_WSL2_HOST)
+  const gatewayPort = normalizeGatewayPort(listenPort)
 
   async function refreshWslAccessStatus() {
     if (isDevPreview) {
@@ -237,7 +242,7 @@ export function CodexSwapModal({
                     Revoke
                   </button>
                 </div>
-                <div className="aoHint">{wslAccessSummary(wslAuthorized, wslHost)}</div>
+                <div className="aoHint">{wslAccessSummary(wslAuthorized, wslHost, gatewayPort)}</div>
               </div>
             ) : null}
           </div>

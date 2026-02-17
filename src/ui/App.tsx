@@ -1120,6 +1120,7 @@ export default function App() {
         setUsageScheduleSaveError={setUsageScheduleSaveError}
         setUsageScheduleModalOpen={setUsageScheduleModalOpen}
         isDevPreview={isDevPreview}
+        listenPort={status?.listen.port}
         codexSwapModalOpen={codexSwapModalOpen}
         codexSwapDir1={codexSwapDir1}
         codexSwapDir2={codexSwapDir2}

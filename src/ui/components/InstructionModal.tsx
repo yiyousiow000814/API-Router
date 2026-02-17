@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { ModalBackdrop } from './ModalBackdrop'
 import { GATEWAY_WINDOWS_HOST, GATEWAY_WSL2_HOST } from '../constants'
+import { buildGatewayBaseUrl, normalizeGatewayPort } from '../utils/gatewayUrl'
 
 type Props = {
   open: boolean
@@ -9,6 +10,7 @@ type Props = {
   onOpenConfigureDirs: () => void
   onOpenRawConfig: () => void
   codeText: string
+  listenPort: number
   flashToast: (msg: string, kind?: 'info' | 'error') => void
   isDevPreview: boolean
 }
@@ -25,11 +27,12 @@ type WslGatewayAccessMutation = {
   wsl_host?: string
 }
 
-function wslAccessSummary(authorized: boolean, wslHost: string): string {
+function wslAccessSummary(authorized: boolean, wslHost: string, listenPort: number): string {
+  const baseUrl = buildGatewayBaseUrl(wslHost, listenPort)
   if (authorized) {
-    return `Enabled: use WSL2 base_url http://${wslHost}:4000/v1.`
+    return `Enabled: use WSL2 base_url ${baseUrl}.`
   }
-  return `Disabled: WSL2 access to http://${wslHost}:4000/v1 is blocked (expected after Revoke).`
+  return `Disabled: WSL2 access to ${baseUrl} is blocked (expected after Revoke).`
 }
 
 export function InstructionModal({
@@ -38,12 +41,14 @@ export function InstructionModal({
   onOpenConfigureDirs,
   onOpenRawConfig,
   codeText,
+  listenPort,
   flashToast,
   isDevPreview,
 }: Props) {
   const [wslBusy, setWslBusy] = useState<boolean>(false)
   const [wslAuthorized, setWslAuthorized] = useState<boolean>(false)
   const [wslHost, setWslHost] = useState<string>(GATEWAY_WSL2_HOST)
+  const gatewayPort = normalizeGatewayPort(listenPort)
 
   async function refreshWslAccessStatus() {
     if (isDevPreview) {
@@ -200,9 +205,9 @@ export function InstructionModal({
                     it), then append <code>[model_providers.api_router]</code> section at file bottom.
                   </div>
                   <div className="aoGsAssist">
-                    Windows: <code>base_url = "http://{GATEWAY_WINDOWS_HOST}:4000/v1"</code>.
+                    Windows: <code>base_url = "{buildGatewayBaseUrl(GATEWAY_WINDOWS_HOST, gatewayPort)}"</code>.
                     <br />
-                    WSL2: <code>base_url = "http://{wslHost}:4000/v1"</code>.
+                    WSL2: <code>base_url = "{buildGatewayBaseUrl(wslHost, gatewayPort)}"</code>.
                   </div>
                   <pre className="aoInstructionCode aoGsCodeBlock">{codeText}</pre>
                 </section>
@@ -232,7 +237,7 @@ export function InstructionModal({
                       Revoke
                     </button>
                   </div>
-                  <div className="aoGsMuted">{wslAccessSummary(wslAuthorized, wslHost)}</div>
+                  <div className="aoGsMuted">{wslAccessSummary(wslAuthorized, wslHost, gatewayPort)}</div>
                 </section>
 
                 <section className="aoGsStepCard" role="note" aria-label="step 6 auth auto managed">

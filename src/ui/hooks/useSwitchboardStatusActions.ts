@@ -55,6 +55,33 @@ export function mergeProviderSwitchDirs(
   return [...mergedFromPrev, ...extraNew]
 }
 
+export function summarizeProviderSwitchState(dirs: ProviderSwitchDir[]): {
+  mode: ProviderSwitchboardStatus['mode']
+  model_provider: string | null
+} {
+  if (!dirs.length) {
+    return { mode: 'gateway', model_provider: null }
+  }
+  const modeValues = Array.from(new Set(dirs.map((d) => d.mode)))
+  if (modeValues.length !== 1) {
+    return { mode: 'mixed', model_provider: null }
+  }
+  const mode = modeValues[0]
+  if (mode === 'gateway' || mode === 'official') {
+    return { mode, model_provider: null }
+  }
+  if (mode !== 'provider') {
+    return { mode: 'mixed', model_provider: null }
+  }
+  const providerValues = Array.from(
+    new Set(dirs.map((d) => (d.model_provider ?? '').trim()).filter(Boolean)),
+  )
+  if (providerValues.length === 1) {
+    return { mode: 'provider', model_provider: providerValues[0] }
+  }
+  return { mode: 'mixed', model_provider: null }
+}
+
 type GatewayAccessStatus = { ok: boolean; authorized?: boolean; legacy_conflict?: boolean }
 
 export async function runGatewaySwitchPreflight(
@@ -68,7 +95,7 @@ export async function runGatewaySwitchPreflight(
   if (target !== 'gateway') {
     return true
   }
-  const access = await invokeFn<GatewayAccessStatus>('wsl_gateway_access_quick_status')
+  let access = await invokeFn<GatewayAccessStatus>('wsl_gateway_access_quick_status')
   if (access.legacy_conflict) {
     const shouldCleanup = confirmFn(
       'A legacy WSL2 portproxy rule is using port 4000 (this can also break Windows access to the gateway).\n\nClick OK to clean it now (requires admin), or Cancel to abort switching.',
@@ -76,6 +103,7 @@ export async function runGatewaySwitchPreflight(
     if (!shouldCleanup) return false
     await invokeFn('wsl_gateway_revoke_access')
     flashToast('Removed legacy WSL2 portproxy conflict')
+    access = await invokeFn<GatewayAccessStatus>('wsl_gateway_access_quick_status')
   }
   const hasWslTarget = homes.some((home) => isWslHomePath(home))
   if (hasWslTarget && access.authorized === false) {
@@ -310,7 +338,7 @@ export function useSwitchboardStatusActions({
 
       const prevByHome = new Map((codexSwapStatus?.dirs ?? []).map((d) => [d.cli_home.trim(), d.state]))
       const anySwapped = homes.some((h) => (prevByHome.get(h) ?? 'original') === 'swapped')
-      const switchingToGateway = anySwapped
+      const switchingToGateway = !anySwapped
       if (switchingToGateway) {
         const ok = await runGatewaySwitchPreflight(
           'gateway',
@@ -413,8 +441,11 @@ export function useSwitchboardStatusActions({
       const mergedDirs = mergeProviderSwitchDirs(providerSwitchStatus?.dirs ?? [], res.dirs ?? [], {
         partial: isPartialUpdate,
       })
+      const mergedSummary = summarizeProviderSwitchState(mergedDirs)
       setProviderSwitchStatus({
         ...res,
+        mode: mergedSummary.mode,
+        model_provider: mergedSummary.model_provider,
         dirs: mergedDirs,
       })
       const msg =
