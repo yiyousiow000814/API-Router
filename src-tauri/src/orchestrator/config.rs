@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingConfig {
     pub preferred_provider: String,
-    /// Per-client-session preferred provider overrides (e.g. WT_SESSION on Windows Terminal).
+    /// Per-client-session preferred provider overrides (keyed by Codex session id).
     ///
     /// When a request is tagged with a client session id, the router can use this mapping
     /// instead of the global `preferred_provider`.

@@ -258,9 +258,8 @@ async fn responses(
         .unwrap_or_else(|| format!("peer:{peer}"));
     let client_session = windows_terminal::infer_wt_session(peer, cfg.listen.port);
     let request_base_url = request_base_url_hint(&headers, cfg.listen.port);
-    let request_is_wsl = request_base_url
-        .as_deref()
-        .is_some_and(request_looks_like_wsl_origin);
+    let request_origin = usage_origin_from_base_url(request_base_url.as_deref());
+    let request_is_wsl = request_origin == crate::constants::USAGE_ORIGIN_WSL2;
     let inferred_wt_marker = client_session.as_ref().map(|s| {
         let wt = s
             .wt_session
@@ -557,6 +556,7 @@ async fn responses(
                             timeout,
                             session_key.clone(),
                             requested_model.clone(),
+                            request_origin.to_string(),
                         );
                     }
                     Ok(resp) => {
@@ -667,7 +667,12 @@ async fn responses(
 
                     // Persist the exchange so we can keep continuity if provider changes later.
                     st.store
-                        .record_success(&provider_name, &response_obj, Some(&api_key_ref));
+                        .record_success(
+                            &provider_name,
+                            &response_obj,
+                            Some(&api_key_ref),
+                            request_origin,
+                        );
 
                     // Avoid spamming the event log for routine successful requests; only surface
                     // interesting routing outcomes (failover / non-preferred).

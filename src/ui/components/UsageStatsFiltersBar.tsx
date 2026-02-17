@@ -10,6 +10,10 @@ type Props = {
   setUsageFilterModels: (models: string[]) => void
   usageModelFilterOptions: string[]
   toggleUsageModelFilter: (modelName: string) => void
+  usageFilterOrigins: string[]
+  setUsageFilterOrigins: (origins: string[]) => void
+  usageOriginFilterOptions: string[]
+  toggleUsageOriginFilter: (originName: string) => void
 }
 
 export function UsageStatsFiltersBar({
@@ -24,7 +28,13 @@ export function UsageStatsFiltersBar({
   setUsageFilterModels,
   usageModelFilterOptions,
   toggleUsageModelFilter,
+  usageFilterOrigins,
+  setUsageFilterOrigins,
+  usageOriginFilterOptions,
+  toggleUsageOriginFilter,
 }: Props) {
+  const hasWindowsOrigin = usageOriginFilterOptions.includes('windows')
+  const hasWsl2Origin = usageOriginFilterOptions.includes('wsl2')
   return (
     <>
       <div className="aoUsageStatsHeader">
@@ -33,30 +43,59 @@ export function UsageStatsFiltersBar({
           <div className="aoHint">Requests, tokens, model mix, and provider-aware estimated request pricing.</div>
         </div>
         <div className="aoUsageStatsActions">
-          <button
-            className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 24 ? ' aoUsageWindowBtnActive' : ''}`}
-            onClick={() => setUsageWindowHours(24)}
-            disabled={usageStatisticsLoading}
-            aria-pressed={usageWindowHours === 24}
-          >
-            24h
-          </button>
-          <button
-            className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 7 * 24 ? ' aoUsageWindowBtnActive' : ''}`}
-            onClick={() => setUsageWindowHours(7 * 24)}
-            disabled={usageStatisticsLoading}
-            aria-pressed={usageWindowHours === 7 * 24}
-          >
-            7d
-          </button>
-          <button
-            className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 30 * 24 ? ' aoUsageWindowBtnActive' : ''}`}
-            onClick={() => setUsageWindowHours(30 * 24)}
-            disabled={usageStatisticsLoading}
-            aria-pressed={usageWindowHours === 30 * 24}
-          >
-            1M
-          </button>
+          <div className="aoUsageStatsActionGroup" role="group" aria-label="Usage origin">
+            <button
+              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnOrigin${usageFilterOrigins.length === 0 ? ' aoUsageWindowBtnActive' : ''}`}
+              onClick={() => setUsageFilterOrigins([])}
+              disabled={usageStatisticsLoading}
+              aria-pressed={usageFilterOrigins.length === 0}
+            >
+              All
+            </button>
+            <button
+              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnOrigin${usageFilterOrigins.includes('windows') ? ' aoUsageWindowBtnActive' : ''}`}
+              onClick={() => toggleUsageOriginFilter('windows')}
+              disabled={usageStatisticsLoading || !hasWindowsOrigin}
+              aria-pressed={usageFilterOrigins.includes('windows')}
+            >
+              Windows
+            </button>
+            <button
+              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnOrigin${usageFilterOrigins.includes('wsl2') ? ' aoUsageWindowBtnActive' : ''}`}
+              onClick={() => toggleUsageOriginFilter('wsl2')}
+              disabled={usageStatisticsLoading || !hasWsl2Origin}
+              aria-pressed={usageFilterOrigins.includes('wsl2')}
+            >
+              WSL2
+            </button>
+          </div>
+          <span className="aoUsageStatsActionsDivider" aria-hidden="true" />
+          <div className="aoUsageStatsActionGroup" role="group" aria-label="Usage window">
+            <button
+              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 24 ? ' aoUsageWindowBtnActive' : ''}`}
+              onClick={() => setUsageWindowHours(24)}
+              disabled={usageStatisticsLoading}
+              aria-pressed={usageWindowHours === 24}
+            >
+              24h
+            </button>
+            <button
+              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 7 * 24 ? ' aoUsageWindowBtnActive' : ''}`}
+              onClick={() => setUsageWindowHours(7 * 24)}
+              disabled={usageStatisticsLoading}
+              aria-pressed={usageWindowHours === 7 * 24}
+            >
+              7d
+            </button>
+            <button
+              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 30 * 24 ? ' aoUsageWindowBtnActive' : ''}`}
+              onClick={() => setUsageWindowHours(30 * 24)}
+              disabled={usageStatisticsLoading}
+              aria-pressed={usageWindowHours === 30 * 24}
+            >
+              1M
+            </button>
+          </div>
         </div>
       </div>
       <div className="aoUsageFilterCard">

@@ -138,10 +138,12 @@ export type UsageStatistics = {
   filter?: {
     providers?: string[] | null
     models?: string[] | null
+    origins?: string[] | null
   }
   catalog?: {
     providers: string[]
     models: string[]
+    origins?: string[]
   }
   bucket_seconds: number
   summary: {

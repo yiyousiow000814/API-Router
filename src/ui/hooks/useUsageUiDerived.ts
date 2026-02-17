@@ -11,6 +11,8 @@ type Params = {
   usageProviderFilterOptions: string[]
   setUsageFilterModels: Dispatch<SetStateAction<string[]>>
   usageModelFilterOptions: string[]
+  setUsageFilterOrigins: Dispatch<SetStateAction<string[]>>
+  usageOriginFilterOptions: string[]
 }
 
 export function useUsageUiDerived(params: Params) {
@@ -22,6 +24,8 @@ export function useUsageUiDerived(params: Params) {
     usageProviderFilterOptions,
     setUsageFilterModels,
     usageModelFilterOptions,
+    setUsageFilterOrigins,
+    usageOriginFilterOptions,
   } = params
 
   function providerDisplayName(providerName: string): string {
@@ -61,6 +65,16 @@ export function useUsageUiDerived(params: Params) {
       return next
     })
   }, [usageModelFilterOptions])
+
+  useEffect(() => {
+    setUsageFilterOrigins((prev: string[]) => {
+      const next = sanitizeSelectedFilterValues(prev, usageOriginFilterOptions)
+      if (next.length === prev.length && next.every((value, index) => value === prev[index])) {
+        return prev
+      }
+      return next
+    })
+  }, [usageOriginFilterOptions])
 
   return { providerDisplayName, usageScheduleSaveStatusText }
 }

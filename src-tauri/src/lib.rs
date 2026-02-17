@@ -158,6 +158,7 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
                     }),
                     Some("test"),
                     None,
+                    crate::constants::USAGE_ORIGIN_UNKNOWN,
                 );
             }
         };

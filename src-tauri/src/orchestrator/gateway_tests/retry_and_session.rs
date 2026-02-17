@@ -833,3 +833,138 @@ async fn request_host_updates_session_reported_base_url_for_origin_detection() {
         Some("http://172.26.144.1:4000/v1")
     );
 }
+
+#[tokio::test]
+async fn usage_records_store_windows_and_wsl2_origin_from_request_host() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(move |Json(body): Json<serde_json::Value>| async move {
+            let marker = body
+                .pointer("/input/0/content/0/text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let (input_tokens, output_tokens) = if marker.eq_ignore_ascii_case("wsl2") {
+                (27_u64, 9_u64)
+            } else {
+                (13_u64, 4_u64)
+            };
+            Json(json!({
+                "id": format!("resp_{marker}"),
+                "model": "gpt-5.2-2025-12-11",
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                },
+                "output": [{"content": [{"type": "output_text", "text": "ok"}]}]
+            }))
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 4000,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 1,
+            failure_threshold: 1,
+            cooldown_seconds: 1,
+            request_timeout_seconds: 5,
+        },
+        providers: std::collections::BTreeMap::from([(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        )]),
+        provider_order: vec!["p1".to_string()],
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store: store.clone(),
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state);
+    let make_body = |text: &str| {
+        json!({
+            "model": "gpt-test",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}]
+            }],
+            "stream": false
+        })
+    };
+
+    let windows_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("host", "127.0.0.1:4000")
+                .header("session_id", "session-origin-windows")
+                .body(Body::from(make_body("windows").to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(windows_resp.status(), StatusCode::OK);
+
+    let wsl_resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("host", "172.26.144.1:4000")
+                .header("session_id", "session-origin-wsl2")
+                .body(Body::from(make_body("wsl2").to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wsl_resp.status(), StatusCode::OK);
+
+    let usage_rows = store.list_usage_requests(16);
+    let windows_row = usage_rows.iter().find(|row| {
+        row.get("total_tokens").and_then(|v| v.as_u64()) == Some(17)
+            && row.get("origin").and_then(|v| v.as_str()) == Some("windows")
+    });
+    let wsl_row = usage_rows.iter().find(|row| {
+        row.get("total_tokens").and_then(|v| v.as_u64()) == Some(36)
+            && row.get("origin").and_then(|v| v.as_str()) == Some("wsl2")
+    });
+    assert!(windows_row.is_some(), "missing windows usage row: {usage_rows:?}");
+    assert!(wsl_row.is_some(), "missing wsl2 usage row: {usage_rows:?}");
+}

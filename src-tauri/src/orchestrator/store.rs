@@ -275,8 +275,14 @@ impl Store {
         let _ = self.db.flush();
     }
 
-    pub fn record_success(&self, provider: &str, response_obj: &Value, api_key_ref: Option<&str>) {
-        self.record_success_with_model(provider, response_obj, api_key_ref, None);
+    pub fn record_success(
+        &self,
+        provider: &str,
+        response_obj: &Value,
+        api_key_ref: Option<&str>,
+        origin: &str,
+    ) {
+        self.record_success_with_model(provider, response_obj, api_key_ref, None, origin);
     }
 
     pub fn record_success_with_model(
@@ -285,6 +291,7 @@ impl Store {
         response_obj: &Value,
         api_key_ref: Option<&str>,
         model_override: Option<&str>,
+        origin: &str,
     ) {
         let (
             input_tokens,
@@ -309,6 +316,7 @@ impl Store {
             &Self::model_for_usage(response_obj, model_override),
             increments,
             api_key_ref,
+            origin,
             true,
         );
     }

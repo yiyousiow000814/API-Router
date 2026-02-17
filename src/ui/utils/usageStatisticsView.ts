@@ -11,6 +11,10 @@ export function buildUsageModelFilterOptions(usageCatalogModels: string[]): stri
   return [...usageCatalogModels].sort((a, b) => a.localeCompare(b))
 }
 
+export function buildUsageOriginFilterOptions(usageCatalogOrigins: string[]): string[] {
+  return [...usageCatalogOrigins].sort((a, b) => a.localeCompare(b))
+}
+
 export function sanitizeSelectedFilterValues(selected: string[], options: string[]): string[] {
   return selected.filter((name) => options.includes(name))
 }

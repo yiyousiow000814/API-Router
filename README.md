@@ -75,7 +75,6 @@ After this, you switch providers inside the app.
 - Chat Completions API (this app focuses on Responses).
 - Reusing official OAuth credentials for upstream providers.
 - Non-Windows platforms are untested.
-- Windows Terminal session detection in WSL2 (Codex running in WSL2 is not mapped to Windows Terminal tabs yet).
 
 ## Troubleshooting
 

@@ -1,9 +1,23 @@
+fn normalize_usage_origin(origin: Option<&str>) -> String {
+    let normalized = origin
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match normalized.as_str() {
+        crate::constants::USAGE_ORIGIN_WINDOWS => crate::constants::USAGE_ORIGIN_WINDOWS,
+        crate::constants::USAGE_ORIGIN_WSL2 => crate::constants::USAGE_ORIGIN_WSL2,
+        _ => crate::constants::USAGE_ORIGIN_UNKNOWN,
+    }
+    .to_string()
+}
+
 #[tauri::command]
 pub(crate) fn get_usage_statistics(
     state: tauri::State<'_, app_state::AppState>,
     hours: Option<u64>,
     providers: Option<Vec<String>>,
     models: Option<Vec<String>>,
+    origins: Option<Vec<String>>,
 ) -> serde_json::Value {
     fn as_f64(v: Option<&Value>) -> Option<f64> {
         v.and_then(|x| {
@@ -74,8 +88,14 @@ pub(crate) fn get_usage_statistics(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let origin_filter: BTreeSet<String> = origins
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| normalize_usage_origin(Some(&s)))
+        .collect();
     let has_provider_filter = !provider_filter.is_empty();
     let has_model_filter = !model_filter.is_empty();
+    let has_origin_filter = !origin_filter.is_empty();
     let bucket_ms = if window_hours <= 48 {
         60 * 60 * 1000
     } else {
@@ -93,6 +113,7 @@ pub(crate) fn get_usage_statistics(
     let mut active_window_hour_buckets: BTreeSet<u64> = BTreeSet::new();
     let mut catalog_providers: BTreeSet<String> = BTreeSet::new();
     let mut catalog_models: BTreeSet<String> = BTreeSet::new();
+    let mut catalog_origins: BTreeSet<String> = BTreeSet::new();
     let mut timeline: BTreeMap<u64, (u64, u64, u64, u64)> = BTreeMap::new();
     let mut filtered: Vec<UsageRow> = Vec::new();
     let last_24h_unix_ms = now.saturating_sub(24 * 60 * 60 * 1000);
@@ -124,8 +145,10 @@ pub(crate) fn get_usage_statistics(
             .filter(|s| !s.is_empty())
             .unwrap_or("unknown")
             .to_string();
+        let origin = normalize_usage_origin(rec.get("origin").and_then(|v| v.as_str()));
         let provider_lc = provider.to_ascii_lowercase();
         let model_lc = model.to_ascii_lowercase();
+        let origin_lc = origin.to_ascii_lowercase();
         let input_tokens = rec
             .get("input_tokens")
             .and_then(|v| v.as_u64())
@@ -152,6 +175,7 @@ pub(crate) fn get_usage_statistics(
         }
         let provider_matches = !has_provider_filter || provider_filter.contains(&provider_lc);
         let model_matches = !has_model_filter || model_filter.contains(&model_lc);
+        let origin_matches = !has_origin_filter || origin_filter.contains(&origin_lc);
         if provider_matches {
             if let Some(day_key) = local_day_key_from_unix_ms(ts) {
                 provider_req_by_day_all_from_req
@@ -165,13 +189,16 @@ pub(crate) fn get_usage_statistics(
         if ts < since_unix_ms {
             continue;
         }
-        if model_matches {
+        if model_matches && origin_matches {
             catalog_providers.insert(provider.clone());
         }
-        if provider_matches {
+        if provider_matches && origin_matches {
             catalog_models.insert(model.clone());
         }
-        if !provider_matches || !model_matches {
+        if provider_matches && model_matches {
+            catalog_origins.insert(origin.clone());
+        }
+        if !provider_matches || !model_matches || !origin_matches {
             continue;
         }
         let api_key_ref = rec
@@ -796,8 +823,14 @@ pub(crate) fn get_usage_statistics(
     } else {
         Value::Null
     };
+    let filter_origins_json = if has_origin_filter {
+        serde_json::json!(origin_filter.into_iter().collect::<Vec<_>>())
+    } else {
+        Value::Null
+    };
     let catalog_provider_values: Vec<String> = catalog_providers.into_iter().collect();
     let catalog_model_values: Vec<String> = catalog_models.into_iter().collect();
+    let catalog_origin_values: Vec<String> = catalog_origins.into_iter().collect();
 
     serde_json::json!({
       "ok": true,
@@ -805,11 +838,13 @@ pub(crate) fn get_usage_statistics(
       "window_hours": window_hours,
       "filter": {
         "providers": filter_providers_json,
-        "models": filter_models_json
+        "models": filter_models_json,
+        "origins": filter_origins_json
       },
       "catalog": {
         "providers": catalog_provider_values,
-        "models": catalog_model_values
+        "models": catalog_model_values,
+        "origins": catalog_origin_values
       },
       "bucket_seconds": bucket_ms / 1000,
       "summary": {
@@ -826,4 +861,22 @@ pub(crate) fn get_usage_statistics(
         "timeline": timeline_points
       }
     })
+}
+
+#[cfg(test)]
+mod usage_metrics_tests {
+    use super::normalize_usage_origin;
+
+    #[test]
+    fn normalize_usage_origin_maps_known_values() {
+        assert_eq!(normalize_usage_origin(Some("windows")), "windows");
+        assert_eq!(normalize_usage_origin(Some("WSL2")), "wsl2");
+    }
+
+    #[test]
+    fn normalize_usage_origin_falls_back_to_unknown() {
+        assert_eq!(normalize_usage_origin(None), "unknown");
+        assert_eq!(normalize_usage_origin(Some("  ")), "unknown");
+        assert_eq!(normalize_usage_origin(Some("linux")), "unknown");
+    }
 }

@@ -159,6 +159,7 @@ fn passthrough_sse_and_persist(
     idle_timeout_seconds: u64,
     session_key: String,
     requested_model: Option<String>,
+    request_origin: String,
 ) -> Response {
     use futures_util::StreamExt;
 
@@ -177,6 +178,7 @@ fn passthrough_sse_and_persist(
     let api_key_ref2 = api_key_ref.clone();
     let session_key2 = session_key.clone();
     let requested_model2 = requested_model.clone();
+    let request_origin2 = request_origin.clone();
     let tap3 = tap.clone();
     let stream = async_stream::stream! {
         let mut forwarded_bytes: u64 = 0;
@@ -314,6 +316,7 @@ fn passthrough_sse_and_persist(
                     &resp_obj,
                     Some(&api_key_ref2),
                     created_model_for_usage.as_deref(),
+                    &request_origin2,
                 );
         }
     };

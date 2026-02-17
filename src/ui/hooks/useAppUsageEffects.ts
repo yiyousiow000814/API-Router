@@ -30,6 +30,7 @@ type Params = {
   usageWindowHours: number
   usageFilterProviders: string[]
   usageFilterModels: string[]
+  usageFilterOrigins: string[]
   isDevPreview: boolean
   refreshFxRatesDaily: (force?: boolean) => Promise<void>
   usagePricingModalOpen: boolean
@@ -77,6 +78,7 @@ export function useAppUsageEffects(params: Params) {
     usageWindowHours,
     usageFilterProviders,
     usageFilterModels,
+    usageFilterOrigins,
     isDevPreview,
     refreshFxRatesDaily,
     usagePricingModalOpen,
@@ -122,7 +124,7 @@ export function useAppUsageEffects(params: Params) {
     void refreshUsageStatistics()
     const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), 15_000)
     return () => window.clearInterval(t)
-  }, [activePage, usageWindowHours, usageFilterProviders, usageFilterModels])
+  }, [activePage, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins])
 
   useEffect(() => {
     if (isDevPreview) return

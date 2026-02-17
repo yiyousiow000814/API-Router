@@ -86,6 +86,29 @@ fn request_looks_like_wsl_origin(base_url: &str) -> bool {
     lower.contains(&needle)
 }
 
+fn request_looks_like_windows_origin(base_url: &str) -> bool {
+    let Some(host) = reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_ascii_lowercase()))
+    else {
+        return false;
+    };
+    host == crate::constants::GATEWAY_WINDOWS_HOST || host == "localhost" || host == "::1"
+}
+
+fn usage_origin_from_base_url(base_url: Option<&str>) -> &'static str {
+    let Some(base_url) = base_url else {
+        return crate::constants::USAGE_ORIGIN_UNKNOWN;
+    };
+    if request_looks_like_wsl_origin(base_url) {
+        return crate::constants::USAGE_ORIGIN_WSL2;
+    }
+    if request_looks_like_windows_origin(base_url) {
+        return crate::constants::USAGE_ORIGIN_WINDOWS;
+    }
+    crate::constants::USAGE_ORIGIN_UNKNOWN
+}
+
 fn codex_session_id_for_display(headers: &HeaderMap, body: &Value) -> Option<String> {
     for k in [
         "session_id",
