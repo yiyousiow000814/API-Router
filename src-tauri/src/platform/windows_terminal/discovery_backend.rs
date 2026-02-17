@@ -172,6 +172,12 @@ fn discover_sessions_using_router_uncached(
             .map(|d| d.as_millis() as u64)
     }
 
+    fn discovery_app_started_unix_ms() -> u64 {
+        static DISCOVERY_APP_STARTED_UNIX_MS: OnceLock<u64> = OnceLock::new();
+        *DISCOVERY_APP_STARTED_UNIX_MS
+            .get_or_init(|| systemtime_to_unix_ms(SystemTime::now()).unwrap_or(0))
+    }
+
     fn read_process_codex_session_id(pid: u32) -> Option<String> {
         // New Codex sessions don't always include `resume <uuid>` in argv. Try env vars first.
         // Keep this defensive: only accept valid UUIDs.
@@ -477,10 +483,27 @@ fn discover_sessions_using_router_uncached(
     }
 
     fn discover_wsl_sessions_for_distro(distro: &str, server_port: u16) -> Vec<InferredWtSession> {
+        fn parse_codex_session_id_from_env_var(raw: &str) -> Option<String> {
+            let v = raw.trim();
+            if v.is_empty() {
+                return None;
+            }
+            if uuid::Uuid::parse_str(v).is_ok() {
+                return Some(v.to_string());
+            }
+            None
+        }
+
         fn wsl_read_env_bundle(
             distro: &str,
             pid: u32,
-        ) -> Option<(String, Option<String>, Option<String>)> {
+        ) -> Option<(
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )> {
             let out = hidden_wsl_command()
                 .args(["-d", distro, "--", "cat", &format!("/proc/{pid}/environ")])
                 .output()
@@ -491,6 +514,8 @@ fn discover_sessions_using_router_uncached(
             let mut wt: Option<String> = None;
             let mut home: Option<String> = None;
             let mut codex_home: Option<String> = None;
+            let mut env_base_url: Option<String> = None;
+            let mut env_session_id: Option<String> = None;
             for chunk in out.stdout.split(|b| *b == 0) {
                 if chunk.is_empty() {
                     continue;
@@ -517,13 +542,53 @@ fn discover_sessions_using_router_uncached(
                     if !v.is_empty() {
                         codex_home = Some(v.to_string());
                     }
+                    continue;
+                }
+                for key in ["CODEX_SESSION_ID=", "THREAD_ID=", "CODEX_THREAD_ID="] {
+                    if let Some(v) = s.strip_prefix(key) {
+                        if env_session_id.is_none() {
+                            env_session_id = parse_codex_session_id_from_env_var(v);
+                        }
+                        break;
+                    }
+                }
+                for key in [
+                    "OPENAI_BASE_URL=",
+                    "OPENAI_API_BASE=",
+                    "OPENAI_BASE=",
+                    "OPENAI_API_HOST=",
+                ] {
+                    if let Some(v) = s.strip_prefix(key) {
+                        let v = v.trim();
+                        if !v.is_empty() && env_base_url.is_none() {
+                            env_base_url = Some(v.to_string());
+                        }
+                        break;
+                    }
                 }
             }
             let wt = wt.unwrap_or_default();
             if wt.is_empty() {
                 return None;
             }
-            Some((wt, home, codex_home))
+            Some((wt, home, codex_home, env_base_url, env_session_id))
+        }
+
+        fn rollout_meta_for_session(
+            codex_home_unc: &std::path::Path,
+            session_id: &str,
+            server_port: u16,
+        ) -> Option<(Option<String>, bool, bool, bool)> {
+            let rollout = latest_rollout_for_session(codex_home_unc, session_id)?;
+            let file = std::fs::File::open(&rollout).ok()?;
+            let mut r = std::io::BufReader::new(file);
+            let mut first = String::new();
+            if r.read_line(&mut first).ok().unwrap_or(0) == 0 {
+                return None;
+            }
+            let m = parse_rollout_session_meta(&first)?;
+            let matched = rollout_base_url_matches_router(&m, server_port).unwrap_or(false);
+            Some((m.base_url.clone(), m.is_agent, m.is_review, matched))
         }
 
         let script = "ps -eo pid=,etimes=,args= | grep -E 'codex.js|@openai/codex|/codex( |$)' | grep -v grep";
@@ -541,6 +606,12 @@ fn discover_sessions_using_router_uncached(
         let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
         let mut session_owner_wt: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        // Cache "real Codex UUID per WSL tab" so temporary inference misses do not make
+        // session ids flap between real UUID and WT_SESSION fallback.
+        static FROZEN_WSL_SESSION_BY_TAB: OnceLock<Mutex<std::collections::HashMap<String, String>>> =
+            OnceLock::new();
+        let frozen_by_tab =
+            FROZEN_WSL_SESSION_BY_TAB.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
         for raw in String::from_utf8_lossy(&out.stdout).lines() {
             let line = raw.trim();
             if line.is_empty() {
@@ -562,49 +633,60 @@ fn discover_sessions_using_router_uncached(
             };
             let etimes = etimes_s.parse::<u64>().unwrap_or(0);
 
-            // Keep one canonical process per Codex session in WSL:
-            // prefer Node launcher (`.../bin/codex`) and skip vendor helper binary rows.
-            if !cmd.contains("/bin/codex") {
-                continue;
-            }
-            let Some((wt, home, codex_home_raw)) = wsl_read_env_bundle(distro, pid) else {
+            let Some((wt, home, codex_home_raw, env_base_url, env_session_id)) =
+                wsl_read_env_bundle(distro, pid)
+            else {
                 continue;
             };
 
             let codex_home_linux =
                 codex_home_raw.or_else(|| home.clone().map(|h| format!("{h}/.codex")));
             let cwd_linux = parse_cwd_from_cmdline(&cmd);
+            let codex_home_unc = codex_home_linux
+                .as_deref()
+                .and_then(|p| wsl_path_to_unc(distro, p));
+            let cwd_unc = cwd_linux.as_deref().and_then(|p| wsl_path_to_unc(distro, p));
 
             let start = SystemTime::now()
                 .checked_sub(Duration::from_secs(etimes))
                 .unwrap_or(SystemTime::now());
+            let pid_created_unix_ms = systemtime_to_unix_ms(start).unwrap_or(0);
+            let app_started_unix_ms = discovery_app_started_unix_ms();
+            let is_new_since_app_started = app_started_unix_ms > 0
+                && pid_created_unix_ms >= app_started_unix_ms.saturating_sub(5_000);
 
             let mut codex_session_id = parse_codex_session_id_from_cmdline(&cmd);
             if codex_session_id.is_none() {
-                if let (Some(codex_home_linux), Some(cwd_linux)) =
-                    (codex_home_linux.as_deref(), cwd_linux.as_deref())
-                {
-                    if let (Some(codex_home_unc), Some(cwd_unc)) = (
-                        wsl_path_to_unc(distro, codex_home_linux),
-                        wsl_path_to_unc(distro, cwd_linux),
-                    ) {
-                        codex_session_id = infer_codex_session_id_from_rollouts_dir(
-                            &codex_home_unc,
-                            &cwd_unc,
-                            server_port,
-                            Some(start),
-                        )
-                        .or_else(|| infer_codex_session_id_from_tui_log(&codex_home_unc, start));
-                    }
+                codex_session_id = env_session_id.clone();
+            }
+            if codex_session_id.is_none() {
+                if let (Some(ch), Some(cw)) = (codex_home_unc.as_deref(), cwd_unc.as_deref()) {
+                    codex_session_id =
+                        infer_codex_session_id_from_rollouts_dir(ch, cw, server_port, Some(start))
+                            .or_else(|| infer_codex_session_id_from_tui_log(ch, start));
                 }
             }
-            let mut codex_session_id =
-                codex_session_id.unwrap_or_else(|| format!("wsl:{wt}"));
+            let tab_key = format!("{distro}:{wt}");
+            if codex_session_id.is_none() {
+                if let Ok(guard) = frozen_by_tab.lock() {
+                    codex_session_id = guard.get(&tab_key).cloned();
+                }
+            }
+            let Some(codex_session_id) = codex_session_id else {
+                // No real Codex session id yet. Do not fall back to WT_SESSION in UI.
+                continue;
+            };
+            if let Ok(mut guard) = frozen_by_tab.lock() {
+                guard.insert(tab_key, codex_session_id.clone());
+                if guard.len() > 1024 {
+                    guard.clear();
+                }
+            }
             if let Some(existing_wt) = session_owner_wt.get(&codex_session_id) {
                 if existing_wt != &wt {
-                    // Rollout/log inference can collide when multiple WSL Codex sessions share cwd.
-                    // Keep rows distinct in UI using WT_SESSION-derived fallback id.
-                    codex_session_id = format!("wsl:{wt}");
+                    // Inference collision across tabs: skip this row instead of emitting
+                    // synthetic WT_SESSION ids.
+                    continue;
                 }
             } else {
                 session_owner_wt.insert(codex_session_id.clone(), wt.clone());
@@ -613,41 +695,55 @@ fn discover_sessions_using_router_uncached(
                 continue;
             }
 
-            let mut reported_model_provider: Option<String> = None;
             let mut reported_base_url: Option<String> = None;
             let mut is_agent = false;
             let mut is_review = false;
             let mut router_confirmed = false;
+            let mut base_url_evidence_kind = BaseUrlEvidenceKind::None;
 
-            if let Some(codex_home_linux) = codex_home_linux.as_deref() {
-                if let Some(codex_home_unc) = wsl_path_to_unc(distro, codex_home_linux) {
-                    if let Some(rollout) = latest_rollout_for_session(&codex_home_unc, &codex_session_id) {
-                        if let Ok(file) = std::fs::File::open(&rollout) {
-                            let mut r = std::io::BufReader::new(file);
-                            let mut first = String::new();
-                            if r.read_line(&mut first).ok().unwrap_or(0) > 0 {
-                                if let Some(m) = parse_rollout_session_meta(&first) {
-                                    reported_model_provider = m.model_provider.clone();
-                                    reported_base_url = m.base_url.clone();
-                                    is_agent = m.is_agent;
-                                    is_review = m.is_review;
-                                    router_confirmed = rollout_base_url_matches_router(&m, server_port)
-                                        .unwrap_or(false);
-                                }
-                            }
-                        }
+            if let Some(codex_home_unc) = codex_home_unc.as_deref() {
+                if let Some((base, agent, review, matched)) =
+                    rollout_meta_for_session(codex_home_unc, &codex_session_id, server_port)
+                {
+                    reported_base_url = base;
+                    is_agent = agent;
+                    is_review = review;
+                    router_confirmed = matched;
+                }
+                if !router_confirmed && base_url_evidence_kind == BaseUrlEvidenceKind::None {
+                    if let Some(base) = env_base_url.as_deref() {
+                        reported_base_url = Some(base.to_string());
+                        base_url_evidence_kind = BaseUrlEvidenceKind::Env;
+                        router_confirmed = looks_like_router_base(base, server_port);
                     }
-                    if !router_confirmed {
-                        if let Some((cfg, _mtime)) = read_config_with_mtime(&codex_home_unc.join("config.toml")) {
-                            if let Some(provider_id) = get_model_provider_id(&cfg) {
-                                let base = get_provider_base_url(&cfg, &provider_id);
-                                if let Some(base) = base.as_deref() {
-                                    reported_base_url = Some(base.to_string());
-                                    router_confirmed = looks_like_router_base(base, server_port);
-                                }
-                                if reported_model_provider.is_none() {
-                                    reported_model_provider = Some(provider_id);
-                                }
+                }
+                if !router_confirmed && base_url_evidence_kind == BaseUrlEvidenceKind::None {
+                    if let Some((cfg, cfg_mtime)) =
+                        read_config_with_mtime(&codex_home_unc.join("config.toml"))
+                    {
+                        if let Some(provider_id) = get_model_provider_id(&cfg) {
+                            let base = get_provider_base_url(&cfg, &provider_id);
+                            if let Some(base) = base.as_deref() {
+                                reported_base_url = Some(base.to_string());
+                                let matches = looks_like_router_base(base, server_port);
+                                let trusted = cfg_mtime <= start + Duration::from_secs(2);
+                                base_url_evidence_kind = if trusted {
+                                    BaseUrlEvidenceKind::ConfigTrusted
+                                } else {
+                                    BaseUrlEvidenceKind::ConfigUntrusted
+                                };
+                                router_confirmed = if !matches {
+                                    false
+                                } else {
+                                    match base_url_evidence_kind {
+                                        BaseUrlEvidenceKind::Env
+                                        | BaseUrlEvidenceKind::ConfigTrusted => true,
+                                        BaseUrlEvidenceKind::ConfigUntrusted => {
+                                            is_new_since_app_started
+                                        }
+                                        BaseUrlEvidenceKind::None => false,
+                                    }
+                                };
                             }
                         }
                     }
@@ -655,11 +751,30 @@ fn discover_sessions_using_router_uncached(
             }
 
             sessions.push(InferredWtSession {
-                wt_session: wt,
+                // Mark WSL WT sessions explicitly so UI/source logic can distinguish them
+                // even when base_url evidence is temporarily unavailable.
+                wt_session: format!("wsl:{wt}"),
                 // Linux PID is not valid for Windows liveness checks.
                 pid: 0,
-                codex_session_id: Some(codex_session_id),
-                reported_model_provider,
+                codex_session_id: Some(codex_session_id.clone()),
+                // Unverified provider hint policy:
+                // - only sessions started while app is running can show provider from config
+                // - historical sessions keep provider hidden (`-` in UI)
+                reported_model_provider: if is_new_since_app_started {
+                    // Use current config as the source of truth for newly opened sessions.
+                    if let Some(codex_home_linux) = codex_home_linux.as_deref() {
+                        if let Some(codex_home_unc) = wsl_path_to_unc(distro, codex_home_linux) {
+                            read_config_with_mtime(&codex_home_unc.join("config.toml"))
+                                .and_then(|(cfg, _)| get_model_provider_id(&cfg))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                },
                 reported_base_url,
                 router_confirmed,
                 is_agent,
@@ -725,9 +840,7 @@ fn discover_sessions_using_router_uncached(
     let mut out: Vec<InferredWtSession> = Vec::new();
     // Processes created after this app starts are safe to classify from their startup config
     // snapshot (frozen per pid/create_time) even if config mtime appears untrusted.
-    static DISCOVERY_APP_STARTED_UNIX_MS: OnceLock<u64> = OnceLock::new();
-    let app_started_unix_ms = *DISCOVERY_APP_STARTED_UNIX_MS
-        .get_or_init(|| systemtime_to_unix_ms(SystemTime::now()).unwrap_or(0));
+    let app_started_unix_ms = discovery_app_started_unix_ms();
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         return out;

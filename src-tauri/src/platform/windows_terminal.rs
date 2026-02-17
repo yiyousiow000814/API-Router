@@ -10,6 +10,8 @@ use std::net::SocketAddr;
 #[cfg(windows)]
 use std::sync::{Mutex, OnceLock};
 #[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
 use std::time::{Duration, SystemTime};
 
 #[derive(Clone, Debug)]
@@ -480,31 +482,47 @@ pub fn discover_sessions_using_router(
         }
 
         static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+        static REFRESHING: OnceLock<AtomicBool> = OnceLock::new();
         let cache = CACHE.get_or_init(|| {
             Mutex::new(Cache {
                 updated_at_unix_ms: 0,
                 items: Vec::new(),
             })
         });
+        let refreshing = REFRESHING.get_or_init(|| AtomicBool::new(false));
 
         // This scan involves cross-process memory reads; keep it cheap on frequent UI polling.
         const TTL_MS: u64 = 2_000;
         let now = now_unix_ms();
-        {
-            let guard = cache.lock().ok();
-            if let Some(guard) = guard.as_ref() {
-                if now.saturating_sub(guard.updated_at_unix_ms) < TTL_MS {
-                    return guard.items.clone();
-                }
-            }
+        let (cached_items, cache_is_fresh) = if let Ok(guard) = cache.lock() {
+            (
+                guard.items.clone(),
+                now.saturating_sub(guard.updated_at_unix_ms) < TTL_MS,
+            )
+        } else {
+            (Vec::new(), false)
+        };
+        if cache_is_fresh {
+            return cached_items;
         }
 
-        let items = discover_sessions_using_router_uncached(server_port, expected_gateway_token);
-        if let Ok(mut guard) = cache.lock() {
-            guard.updated_at_unix_ms = now;
-            guard.items = items.clone();
+        // Stale-while-revalidate: return stale cache immediately and refresh in background.
+        if refreshing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let token = expected_gateway_token.map(|s| s.to_string());
+            std::thread::spawn(move || {
+                let items = discover_sessions_using_router_uncached(server_port, token.as_deref());
+                let now = now_unix_ms();
+                if let Ok(mut guard) = cache.lock() {
+                    guard.updated_at_unix_ms = now;
+                    guard.items = items;
+                }
+                refreshing.store(false, Ordering::Release);
+            });
         }
-        items
+        cached_items
     }
 }
 
