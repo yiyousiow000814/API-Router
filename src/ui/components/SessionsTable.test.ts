@@ -28,4 +28,13 @@ describe('isWslSessionRow', () => {
       }),
     ).toBe(false)
   })
+
+  it('does not treat arbitrary ipv4 host as wsl2', () => {
+    expect(
+      isWslSessionRow({
+        wt_session: 'abc',
+        reported_base_url: 'http://192.168.1.8:4000/v1',
+      }),
+    ).toBe(false)
+  })
 })

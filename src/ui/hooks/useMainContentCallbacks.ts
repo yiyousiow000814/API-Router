@@ -3,6 +3,11 @@ import { invoke } from '@tauri-apps/api/core'
 import type { ProviderSwitchboardStatus, Status } from '../types'
 import { resolveCliHomes } from '../utils/switchboard'
 
+type RotateGatewayTokenResult = {
+  token: string
+  failed_targets?: string[]
+}
+
 type Params = {
   status: Status | null
   flashToast: (msg: string, kind?: 'info' | 'error') => void
@@ -65,12 +70,22 @@ export function useMainContentCallbacks(params: Params) {
   const onShowGatewayRotate = () => {
     void (async () => {
       try {
-        await invoke<string>('rotate_gateway_token')
+        const { failed_targets } = await invoke<RotateGatewayTokenResult>('rotate_gateway_token')
         const p = await invoke<string>('get_gateway_token_preview')
         setGatewayTokenPreview(p)
         setGatewayTokenReveal('')
         setGatewayModalOpen(false)
-        flashToast('Gateway token rotated')
+        const failed = (failed_targets ?? []).filter(Boolean)
+        if (failed.length) {
+          const shown = failed.slice(0, 2).join(' ; ')
+          const more = failed.length > 2 ? ` ; +${failed.length - 2} more` : ''
+          flashToast(
+            `Gateway token rotated. Failed to sync: ${shown}${more}. Check Provider Switchboard -> Edit config.toml for those targets.`,
+            'error',
+          )
+        } else {
+          flashToast('Gateway token rotated')
+        }
       } catch (e) {
         flashToast(String(e), 'error')
       }

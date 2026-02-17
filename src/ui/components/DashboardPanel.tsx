@@ -112,6 +112,7 @@ export function DashboardPanel({
         clientSessions={clientSessions}
         providers={providers}
         globalPreferred={status.preferred_provider}
+        wslGatewayHost={status.wsl_gateway_host}
         updatingSessionPref={updatingSessionPref}
         onSetSessionPreferred={onSetSessionPreferred}
       />

@@ -30,6 +30,65 @@ type UseSwitchboardStatusActionsOptions = {
   flashToast: (msg: string, kind?: 'info' | 'error') => void
 }
 
+type ProviderSwitchDir = NonNullable<ProviderSwitchboardStatus['dirs']>[number]
+
+export function mergeProviderSwitchDirs(
+  prevDirs: ProviderSwitchDir[],
+  nextDirs: ProviderSwitchDir[],
+  options?: { partial?: boolean },
+): ProviderSwitchDir[] {
+  if (!options?.partial) {
+    return [...nextDirs]
+  }
+  const nextByHome = new Map(
+    nextDirs.map((d) => [normalizePathForCompare(d.cli_home), d]),
+  )
+  const mergedFromPrev = prevDirs.map(
+    (d) => nextByHome.get(normalizePathForCompare(d.cli_home)) ?? d,
+  )
+  const extraNew = nextDirs.filter(
+    (d) =>
+      !prevDirs.some(
+        (p) => normalizePathForCompare(p.cli_home) === normalizePathForCompare(d.cli_home),
+      ),
+  )
+  return [...mergedFromPrev, ...extraNew]
+}
+
+type GatewayAccessStatus = { ok: boolean; authorized?: boolean; legacy_conflict?: boolean }
+
+export async function runGatewaySwitchPreflight(
+  target: 'gateway' | 'official' | 'provider',
+  homes: string[],
+  isWslHomePath: (home: string) => boolean,
+  invokeFn: typeof invoke,
+  confirmFn: (msg: string) => boolean,
+  flashToast: (msg: string, kind?: 'info' | 'error') => void,
+): Promise<boolean> {
+  if (target !== 'gateway') {
+    return true
+  }
+  const access = await invokeFn<GatewayAccessStatus>('wsl_gateway_access_quick_status')
+  if (access.legacy_conflict) {
+    const shouldCleanup = confirmFn(
+      'A legacy WSL2 portproxy rule is using port 4000 (this can also break Windows access to the gateway).\n\nClick OK to clean it now (requires admin), or Cancel to abort switching.',
+    )
+    if (!shouldCleanup) return false
+    await invokeFn('wsl_gateway_revoke_access')
+    flashToast('Removed legacy WSL2 portproxy conflict')
+  }
+  const hasWslTarget = homes.some((home) => isWslHomePath(home))
+  if (hasWslTarget && access.authorized === false) {
+    const shouldAuthorize = confirmFn(
+      'WSL2 access to the local gateway requires Windows network authorization first.\n\nClick OK to authorize now (Admin), or Cancel to skip switching for now.',
+    )
+    if (!shouldAuthorize) return false
+    await invokeFn('wsl_gateway_authorize_access')
+    flashToast('WSL2 gateway access authorized')
+  }
+  return true
+}
+
 export function useSwitchboardStatusActions({
   isDevPreview,
   devStatus,
@@ -132,21 +191,9 @@ export function useSwitchboardStatusActions({
         return
       }
       const prevDirs = providerSwitchStatus?.dirs ?? []
-      const nextByHome = new Map(
-        (res.dirs ?? []).map((d) => [normalizePathForCompare(d.cli_home), d] as const),
-      )
-      const mergedFromPrev = prevDirs.map(
-        (d) => nextByHome.get(normalizePathForCompare(d.cli_home)) ?? d,
-      )
-      const extraNew = (res.dirs ?? []).filter(
-        (d) =>
-          !prevDirs.some(
-            (p) => normalizePathForCompare(p.cli_home) === normalizePathForCompare(d.cli_home),
-          ),
-      )
       setProviderSwitchStatus({
         ...res,
-        dirs: [...mergedFromPrev, ...extraNew],
+        dirs: mergeProviderSwitchDirs(prevDirs, res.dirs ?? [], { partial: true }),
       })
     } catch (e) {
       flashToast(String(e), 'error')
@@ -265,14 +312,16 @@ export function useSwitchboardStatusActions({
       const anySwapped = homes.some((h) => (prevByHome.get(h) ?? 'original') === 'swapped')
       const switchingToGateway = anySwapped
       if (switchingToGateway) {
-        const access = await invoke<{ ok: boolean; legacy_conflict?: boolean }>('wsl_gateway_access_quick_status')
-        if (access.legacy_conflict) {
-          const shouldCleanup = window.confirm(
-            'A legacy WSL2 portproxy rule is using port 4000 (this can also break Windows access to the gateway).\n\nClick OK to clean it now (requires admin), or Cancel to abort switching.',
-          )
-          if (!shouldCleanup) return
-          await invoke('wsl_gateway_revoke_access')
-          flashToast('Removed legacy WSL2 portproxy conflict')
+        const ok = await runGatewaySwitchPreflight(
+          'gateway',
+          homes,
+          isWslHomePath,
+          invoke,
+          (msg) => window.confirm(msg),
+          flashToast,
+        )
+        if (!ok) {
+          return
         }
       }
 
@@ -342,26 +391,16 @@ export function useSwitchboardStatusActions({
       }
 
       if (target === 'gateway') {
-        const access = await invoke<{ ok: boolean; authorized: boolean; legacy_conflict?: boolean }>('wsl_gateway_access_quick_status')
-        if (access.legacy_conflict) {
-          const shouldCleanup = window.confirm(
-            'A legacy WSL2 portproxy rule is using port 4000 (this can also break Windows access to the gateway).\n\nClick OK to clean it now (requires admin), or Cancel to abort switching.',
-          )
-          if (!shouldCleanup) return
-          await invoke('wsl_gateway_revoke_access')
-          flashToast('Removed legacy WSL2 portproxy conflict')
-        }
-      }
-
-      if (target === 'gateway' && homes.some((h) => isWslHomePath(h))) {
-        const access = await invoke<{ ok: boolean; authorized: boolean }>('wsl_gateway_access_quick_status')
-        if (!access.authorized) {
-          const shouldAuthorize = window.confirm(
-            'WSL2 access to the local gateway requires Windows network authorization first.\n\nClick OK to authorize now (Admin), or Cancel to skip switching for now.',
-          )
-          if (!shouldAuthorize) return
-          await invoke('wsl_gateway_authorize_access')
-          flashToast('WSL2 gateway access authorized')
+        const ok = await runGatewaySwitchPreflight(
+          target,
+          homes,
+          isWslHomePath,
+          invoke,
+          (msg) => window.confirm(msg),
+          flashToast,
+        )
+        if (!ok) {
+          return
         }
       }
 
@@ -370,20 +409,10 @@ export function useSwitchboardStatusActions({
         target,
         provider: provider ?? null,
       })
-      const prevDirs = providerSwitchStatus?.dirs ?? []
-      const nextByHome = new Map(
-        (res.dirs ?? []).map((d) => [normalizePathForCompare(d.cli_home), d]),
-      )
-      const mergedFromPrev = prevDirs.map(
-        (d) => nextByHome.get(normalizePathForCompare(d.cli_home)) ?? d,
-      )
-      const extraNew = (res.dirs ?? []).filter(
-        (d) =>
-          !prevDirs.some(
-            (p) => normalizePathForCompare(p.cli_home) === normalizePathForCompare(d.cli_home),
-          ),
-      )
-      const mergedDirs = [...mergedFromPrev, ...extraNew]
+      const isPartialUpdate = homes.length < allHomes.length
+      const mergedDirs = mergeProviderSwitchDirs(providerSwitchStatus?.dirs ?? [], res.dirs ?? [], {
+        partial: isPartialUpdate,
+      })
       setProviderSwitchStatus({
         ...res,
         dirs: mergedDirs,

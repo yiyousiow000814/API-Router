@@ -92,7 +92,7 @@ fn request_looks_like_wsl_origin(base_url: &str) -> bool {
     {
         return true;
     }
-    host.parse::<std::net::Ipv4Addr>().is_ok()
+    false
 }
 
 fn request_looks_like_windows_origin(base_url: &str) -> bool {
@@ -347,8 +347,9 @@ mod tests {
 
     #[test]
     fn usage_origin_recognizes_wsl2_private_ipv4_host() {
+        let wsl_host = crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(None);
         assert_eq!(
-            usage_origin_from_base_url(Some("http://172.31.192.1:4000/v1")),
+            usage_origin_from_base_url(Some(&format!("http://{wsl_host}:4000/v1"))),
             crate::constants::USAGE_ORIGIN_WSL2
         );
     }
@@ -357,6 +358,14 @@ mod tests {
     fn usage_origin_keeps_unknown_for_non_local_domain() {
         assert_eq!(
             usage_origin_from_base_url(Some("https://example.com/v1")),
+            crate::constants::USAGE_ORIGIN_UNKNOWN
+        );
+    }
+
+    #[test]
+    fn usage_origin_keeps_unknown_for_non_wsl_ipv4_host() {
+        assert_eq!(
+            usage_origin_from_base_url(Some("http://203.0.113.10:4000/v1")),
             crate::constants::USAGE_ORIGIN_UNKNOWN
         );
     }

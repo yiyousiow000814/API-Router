@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { fmtWhen } from '../utils/format'
-import { GATEWAY_WINDOWS_HOST } from '../constants'
+import { GATEWAY_WINDOWS_HOST, GATEWAY_WSL2_HOST } from '../constants'
 import './SessionsTable.css'
 
 type SessionRow = {
@@ -22,12 +22,16 @@ type Props = {
   sessions: SessionRow[]
   providers: string[]
   globalPreferred: string
+  wslGatewayHost?: string
   updating: Record<string, boolean>
   onSetPreferred: (sessionId: string, provider: string | null) => void
   allowPreferredChanges?: boolean
 }
 
-export function isWslSessionRow(s: Pick<SessionRow, 'wt_session' | 'reported_base_url'>): boolean {
+export function isWslSessionRow(
+  s: Pick<SessionRow, 'wt_session' | 'reported_base_url'>,
+  wslGatewayHost: string = GATEWAY_WSL2_HOST,
+): boolean {
   const wt = (s.wt_session ?? '').trim().toLowerCase()
   if (wt.startsWith('wsl:')) return true
 
@@ -47,17 +51,15 @@ export function isWslSessionRow(s: Pick<SessionRow, 'wt_session' | 'reported_bas
   ) {
     return false
   }
-  const parts = host.split('.')
-  const ipv4 =
-    parts.length === 4 &&
-    parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255)
-  return ipv4
+  const normalizedWslHost = (wslGatewayHost.trim() || GATEWAY_WSL2_HOST).toLowerCase()
+  return host === normalizedWslHost
 }
 
 export function SessionsTable({
   sessions,
   providers,
   globalPreferred,
+  wslGatewayHost = GATEWAY_WSL2_HOST,
   updating,
   onSetPreferred,
   allowPreferredChanges = true,
@@ -72,7 +74,7 @@ export function SessionsTable({
   }
 
   function isWslSession(s: SessionRow): boolean {
-    return isWslSessionRow(s)
+    return isWslSessionRow(s, wslGatewayHost)
   }
 
   function sessionOriginClass(s: SessionRow): string {
