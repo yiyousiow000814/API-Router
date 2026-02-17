@@ -267,7 +267,7 @@ fn should_keep_runtime_session(
     if entry.pid == 0 {
         let wt = entry.wt_session.as_deref().unwrap_or_default().trim();
         let is_wsl_marker = wt.to_ascii_lowercase().starts_with("wsl:");
-        if is_wsl_marker && !active {
+        if is_wsl_marker {
             // For WSL sessions we don't have a stable Windows PID. If discovery no longer sees this
             // Codex sid for a while, drop it even when the tab/shell remains open.
             let stale = entry.last_discovered_unix_ms == 0
@@ -278,7 +278,8 @@ fn should_keep_runtime_session(
         }
 
         if !wt.is_empty() {
-            if !is_wt_session_alive(wt) && !active {
+            // WT tab identity is a hard liveness boundary for pid=0 sessions.
+            if !is_wt_session_alive(wt) {
                 return false;
             }
         } else if !active {
@@ -568,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn active_wsl_session_stays_even_if_discovery_is_stale() {
+    fn active_wsl_session_drops_when_discovery_is_stale() {
         let now = 100_000_u64;
         let entry = ClientSessionRuntime {
             codex_session_id: "wsl-active".to_string(),
@@ -576,6 +577,27 @@ mod tests {
             wt_session: Some("wsl:test-wt".to_string()),
             last_request_unix_ms: now.saturating_sub(5_000),
             last_discovered_unix_ms: now.saturating_sub(45_000),
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            is_agent: false,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true);
+        assert!(!keep);
+    }
+
+    #[test]
+    fn active_wsl_session_keeps_when_discovery_is_recent() {
+        let now = 100_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "wsl-active-recent".to_string(),
+            pid: 0,
+            wt_session: Some("wsl:test-wt".to_string()),
+            last_request_unix_ms: now.saturating_sub(5_000),
+            last_discovered_unix_ms: now.saturating_sub(2_000),
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
