@@ -141,10 +141,10 @@ export function useSwitchboardStatusActions({
   isDevPreview,
   devStatus,
   devConfig,
-  codexSwapDir1,
-  codexSwapDir2,
-  codexSwapUseWindows,
-  codexSwapUseWsl,
+  codexSwapDir1: _codexSwapDir1,
+  codexSwapDir2: _codexSwapDir2,
+  codexSwapUseWindows: _codexSwapUseWindows,
+  codexSwapUseWsl: _codexSwapUseWsl,
   codexSwapDir1Ref,
   codexSwapDir2Ref,
   codexSwapUseWindowsRef,
@@ -163,6 +163,8 @@ export function useSwitchboardStatusActions({
 }: UseSwitchboardStatusActionsOptions) {
   const [providerSwitchBusy, setProviderSwitchBusy] = useState<boolean>(false)
   const providerSwitchBusyRef = useRef<boolean>(false)
+  const providerSwitchStatusRef = useRef<ProviderSwitchboardStatus | null>(providerSwitchStatus)
+  providerSwitchStatusRef.current = providerSwitchStatus
 
   function tryEnterProviderSwitchBusy(): boolean {
     if (providerSwitchBusyRef.current) return false
@@ -235,7 +237,7 @@ export function useSwitchboardStatusActions({
       const isPartialRefresh =
         Boolean(cliHomes && cliHomes.length) && homes.length < allEnabledHomes.length
       setProviderSwitchStatus(
-        applyProviderSwitchStatusResult(providerSwitchStatus, res, isPartialRefresh),
+        applyProviderSwitchStatusResult(providerSwitchStatusRef.current, res, isPartialRefresh),
       )
     } catch (e) {
       flashToast(String(e), 'error')
@@ -389,7 +391,12 @@ export function useSwitchboardStatusActions({
     cliHomes?: string[],
   ) {
     if (!tryEnterProviderSwitchBusy()) return
-    const allHomes = resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
+    const allHomes = resolveCliHomes(
+      codexSwapDir1Ref.current,
+      codexSwapDir2Ref.current,
+      codexSwapUseWindowsRef.current,
+      codexSwapUseWslRef.current,
+    )
     const homes =
       cliHomes && cliHomes.length
         ? cliHomes
@@ -453,7 +460,7 @@ export function useSwitchboardStatusActions({
       })
       const isPartialUpdate = homes.length < allHomes.length
       setProviderSwitchStatus(
-        applyProviderSwitchStatusResult(providerSwitchStatus, res, isPartialUpdate),
+        applyProviderSwitchStatusResult(providerSwitchStatusRef.current, res, isPartialUpdate),
       )
       const msg =
         target === 'provider' ? 'Switched to provider: ' + provider : target === 'gateway' ? 'Switched to gateway' : 'Switched to official'

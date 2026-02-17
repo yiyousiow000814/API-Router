@@ -72,6 +72,11 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
         {
             let mut map = state.gateway.client_sessions.write();
             for s in discovered {
+                if !discovery_is_fresh {
+                    // Stale discovery snapshots are display-only. Do not mutate runtime session
+                    // state with cached rows.
+                    continue;
+                }
                 let Some(codex_session_id) = s.codex_session_id.as_deref() else {
                     continue;
                 };
@@ -100,7 +105,8 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     entry.wt_session.as_deref(),
                     &s.wt_session,
                 );
-                entry.last_discovered_unix_ms = now;
+                entry.last_discovered_unix_ms =
+                    next_last_discovered_unix_ms(entry.last_discovered_unix_ms, now, true);
                 apply_discovered_router_confirmation(entry, s.router_confirmed, s.is_agent);
                 merge_discovered_model_provider(entry, s.reported_model_provider.as_deref());
                 if let Some(bu) = s.reported_base_url.as_deref() {
@@ -343,6 +349,13 @@ fn session_is_active(entry: &crate::orchestrator::gateway::ClientSessionRuntime,
     entry.last_request_unix_ms > 0 && now.saturating_sub(entry.last_request_unix_ms) < 60_000
 }
 
+fn next_last_discovered_unix_ms(prev: u64, now: u64, discovery_is_fresh: bool) -> u64 {
+    if discovery_is_fresh {
+        return now;
+    }
+    prev
+}
+
 fn next_wsl_discovery_miss_count(prev: u8, seen_now: bool, discovery_is_fresh: bool) -> u8 {
     if seen_now {
         return 0;
@@ -361,6 +374,7 @@ fn should_keep_runtime_session(
     wsl_discovery_miss_count: u8,
 ) -> bool {
     const WSL_MAX_DISCOVERY_MISSES: u8 = 3;
+    const PIDLESS_WT_MAX_STALE_MS: u64 = 15 * 60 * 1000;
 
     let active = session_is_active(entry, now);
     if entry.is_agent && !active {
@@ -381,6 +395,11 @@ fn should_keep_runtime_session(
         }
 
         if !wt.is_empty() {
+            let last_seen = entry.last_request_unix_ms.max(entry.last_discovered_unix_ms);
+            let stale_too_long = last_seen == 0 || now.saturating_sub(last_seen) > PIDLESS_WT_MAX_STALE_MS;
+            if !active && stale_too_long {
+                return false;
+            }
             // WT tab identity is a hard liveness boundary for pid=0 sessions.
             if !is_wt_session_alive(wt) {
                 return false;
@@ -403,7 +422,8 @@ mod tests {
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::commands::{
         apply_discovered_router_confirmation, backfill_main_confirmation_from_verified_agent,
-        merge_discovered_model_provider, next_wsl_discovery_miss_count,
+        merge_discovered_model_provider, next_last_discovered_unix_ms,
+        next_wsl_discovery_miss_count,
         should_keep_runtime_session,
     };
     use crate::orchestrator::gateway::ClientSessionRuntime;
@@ -995,6 +1015,28 @@ mod tests {
     }
 
     #[test]
+    fn pidless_wt_session_drops_when_stale_too_long_even_if_wt_alive() {
+        let now = 2_000_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "pidless-stale".to_string(),
+            pid: 0,
+            wt_session: Some("abc-wt".to_string()),
+            last_request_unix_ms: now.saturating_sub(20 * 60 * 1000),
+            last_discovered_unix_ms: now.saturating_sub(20 * 60 * 1000),
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            agent_parent_session_id: None,
+            is_agent: false,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 0);
+        assert!(!keep);
+    }
+
+    #[test]
     fn wsl_discovery_miss_count_skips_increment_when_discovery_is_stale() {
         assert_eq!(
             next_wsl_discovery_miss_count(2, false, false),
@@ -1016,6 +1058,12 @@ mod tests {
             next_wsl_discovery_miss_count(2, true, false),
             0
         );
+    }
+
+    #[test]
+    fn last_discovered_timestamp_is_not_overwritten_by_stale_discovery() {
+        assert_eq!(next_last_discovered_unix_ms(1234, 9999, false), 1234);
+        assert_eq!(next_last_discovered_unix_ms(1234, 9999, true), 9999);
     }
 }
 
