@@ -45,9 +45,7 @@ try {{
     New-NetFirewallRule -DisplayName $rule -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Any | Out-Null
   }}
   netsh interface portproxy delete v4tov4 listenaddress={wsl_host} listenport=$Port | Out-Null
-  {check_delete_wsl}
   netsh interface portproxy delete v4tov4 listenaddress={any_host} listenport=$Port | Out-Null
-  {check_delete_any}
   netsh interface portproxy add v4tov4 listenaddress={wsl_host} listenport=$Port connectaddress={win_host} connectport=$Port | Out-Null
   {check_add}
   Set-Content -Path $StatusFile -Value 'ok' -Encoding utf8
@@ -59,8 +57,6 @@ try {{
         wsl_host = wsl_host,
         any_host = GATEWAY_ANY_HOST,
         win_host = GATEWAY_WINDOWS_HOST,
-        check_delete_wsl = ensure_last_exit_ok("portproxy delete wsl host"),
-        check_delete_any = ensure_last_exit_ok("portproxy delete any host"),
         check_add = ensure_last_exit_ok("portproxy add wsl host"),
     )
 }
@@ -78,19 +74,15 @@ try {{
   $r = Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue
   if ($r) {{ Remove-NetFirewallRule -DisplayName $rule | Out-Null }}
   netsh interface portproxy delete v4tov4 listenaddress={wsl_host} listenport=$Port | Out-Null
-  {check_delete_wsl}
   netsh interface portproxy delete v4tov4 listenaddress={any_host} listenport=$Port | Out-Null
-  {check_delete_any}
   Set-Content -Path $StatusFile -Value 'ok' -Encoding utf8
 }} catch {{
   Set-Content -Path $StatusFile -Value ("error: " + $_.Exception.Message) -Encoding utf8
   exit 1
 }}
-"#,
+    "#,
         wsl_host = wsl_host,
         any_host = GATEWAY_ANY_HOST,
-        check_delete_wsl = ensure_last_exit_ok("portproxy delete wsl host"),
-        check_delete_any = ensure_last_exit_ok("portproxy delete any host"),
     )
 }
 
@@ -224,10 +216,9 @@ mod wsl_gateway_access_tests {
     }
 
     #[test]
-    fn revoke_script_checks_netsh_exit_codes() {
+    fn revoke_script_does_not_fail_when_delete_target_missing() {
         let script = revoke_access_script("172.26.144.1");
-        assert!(script.contains("portproxy delete wsl host failed with exit code"));
-        assert!(script.contains("if ($LASTEXITCODE -ne 0)"));
+        assert!(!script.contains("portproxy delete wsl host failed with exit code"));
     }
 }
 
