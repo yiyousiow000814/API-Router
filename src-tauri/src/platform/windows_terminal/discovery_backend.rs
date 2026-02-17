@@ -483,6 +483,14 @@ fn discover_sessions_using_router_uncached(
     }
 
     fn discover_wsl_sessions_for_distro(distro: &str, server_port: u16) -> Vec<InferredWtSession> {
+        struct WslEnvBundle {
+            wt: String,
+            home: Option<String>,
+            codex_home: Option<String>,
+            env_base_url: Option<String>,
+            env_session_id: Option<String>,
+        }
+
         fn parse_codex_session_id_from_env_var(raw: &str) -> Option<String> {
             let v = raw.trim();
             if v.is_empty() {
@@ -554,13 +562,7 @@ fn discover_sessions_using_router_uncached(
         fn wsl_read_env_bundle(
             distro: &str,
             pid: u32,
-        ) -> Option<(
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        )> {
+        ) -> Option<WslEnvBundle> {
             let out = hidden_wsl_command()
                 .args(["-d", distro, "--", "cat", &format!("/proc/{pid}/environ")])
                 .output()
@@ -628,7 +630,13 @@ fn discover_sessions_using_router_uncached(
             if wt.is_empty() {
                 return None;
             }
-            Some((wt, home, codex_home, env_base_url, env_session_id))
+            Some(WslEnvBundle {
+                wt,
+                home,
+                codex_home,
+                env_base_url,
+                env_session_id,
+            })
         }
 
         fn rollout_meta_for_session(
@@ -690,11 +698,15 @@ fn discover_sessions_using_router_uncached(
             };
             let etimes = etimes_s.parse::<u64>().unwrap_or(0);
 
-            let Some((wt, home, codex_home_raw, env_base_url, env_session_id)) =
-                wsl_read_env_bundle(distro, pid)
+            let Some(env) = wsl_read_env_bundle(distro, pid)
             else {
                 continue;
             };
+            let wt = env.wt;
+            let home = env.home;
+            let codex_home_raw = env.codex_home;
+            let env_base_url = env.env_base_url;
+            let env_session_id = env.env_session_id;
 
             let codex_home_linux =
                 codex_home_raw.or_else(|| home.clone().map(|h| format!("{h}/.codex")));

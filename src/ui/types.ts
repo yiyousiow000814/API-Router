@@ -33,6 +33,7 @@ export type Status = {
     preferred_provider?: string | null
     verified?: boolean
     is_agent?: boolean
+    is_review?: boolean
   }>
   active_provider?: string | null
   active_reason?: string | null
