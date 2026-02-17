@@ -37,6 +37,31 @@ pub struct AppState {
     pub secrets: SecretStore,
 }
 
+pub fn run_startup_gateway_token_sync(state: &AppState) {
+    match crate::provider_switchboard::sync_gateway_target_for_current_token_on_startup(state) {
+        Ok(failed_targets) => {
+            if !failed_targets.is_empty() {
+                state.gateway.store.add_event(
+                    "gateway",
+                    "error",
+                    "codex.provider_switchboard.gateway_token_sync_failed",
+                    "Gateway token sync at startup failed for some targets.",
+                    serde_json::json!({ "failed_targets": failed_targets }),
+                );
+            }
+        }
+        Err(e) => {
+            state.gateway.store.add_event(
+                "gateway",
+                "error",
+                "codex.provider_switchboard.gateway_token_sync_failed",
+                &format!("Gateway token sync at startup failed: {e}"),
+                serde_json::Value::Null,
+            );
+        }
+    }
+}
+
 pub fn load_or_init_config(path: &PathBuf) -> anyhow::Result<AppConfig> {
     if path.exists() {
         let txt = std::fs::read_to_string(path)?;
@@ -152,30 +177,6 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         secrets,
     };
 
-    match crate::provider_switchboard::sync_gateway_target_for_current_token_on_startup(&app_state)
-    {
-        Ok(failed_targets) => {
-            if !failed_targets.is_empty() {
-                app_state.gateway.store.add_event(
-                    "gateway",
-                    "error",
-                    "codex.provider_switchboard.gateway_token_sync_failed",
-                    "Gateway token sync at startup failed for some targets.",
-                    serde_json::json!({ "failed_targets": failed_targets }),
-                );
-            }
-        }
-        Err(e) => {
-            app_state.gateway.store.add_event(
-                "gateway",
-                "error",
-                "codex.provider_switchboard.gateway_token_sync_failed",
-                &format!("Gateway token sync at startup failed: {e}"),
-                serde_json::Value::Null,
-            );
-        }
-    }
-
     Ok(app_state)
 }
 
@@ -234,7 +235,7 @@ fn should_prune_placeholder_provider(cfg: &AppConfig, secrets: &SecretStore, nam
 
 #[cfg(test)]
 mod tests {
-    use super::build_state;
+    use super::{build_state, run_startup_gateway_token_sync};
     use serde_json::json;
 
     #[test]
@@ -284,7 +285,8 @@ mod tests {
         )
         .expect("write switchboard state");
 
-        let _state = build_state(config_path, data_dir).expect("build state");
+        let state = build_state(config_path, data_dir).expect("build state");
+        run_startup_gateway_token_sync(&state);
 
         let auth: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(cli_home.join("auth.json")).expect("read synced auth"),

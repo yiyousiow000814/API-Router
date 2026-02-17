@@ -1,5 +1,6 @@
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,6 +14,27 @@ const DETECT_RETRY_MS: u64 = 30_000;
 struct RuntimeCache {
     host: Option<String>,
     last_detect_attempt_unix_ms: u64,
+}
+
+fn fast_cache_host() -> &'static std::sync::RwLock<Option<String>> {
+    static FAST_HOST: OnceLock<std::sync::RwLock<Option<String>>> = OnceLock::new();
+    FAST_HOST.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+fn fast_cache_updated_at() -> &'static AtomicU64 {
+    static FAST_UPDATED_AT_UNIX_MS: OnceLock<AtomicU64> = OnceLock::new();
+    FAST_UPDATED_AT_UNIX_MS.get_or_init(|| AtomicU64::new(0))
+}
+
+fn update_fast_cache(host: Option<&str>, now_unix_ms: u64) {
+    if let Ok(mut guard) = fast_cache_host().write() {
+        *guard = host.map(|s| s.to_ascii_lowercase());
+    }
+    fast_cache_updated_at().store(now_unix_ms, Ordering::Relaxed);
+}
+
+pub fn cached_wsl_gateway_host_lowercase() -> Option<String> {
+    fast_cache_host().read().ok().and_then(|g| g.clone())
 }
 
 fn now_unix_ms() -> u64 {
@@ -159,11 +181,13 @@ pub fn resolve_wsl_gateway_host(config_path: Option<&Path>) -> String {
         }
         cached_host_for_fallback = guard.host.clone();
         if let Some(host) = guard.host.as_deref() {
+            update_fast_cache(Some(host), now);
             if !should_retry_detection(now, guard.last_detect_attempt_unix_ms) {
                 return host.to_string();
             }
             guard.last_detect_attempt_unix_ms = now;
         } else if !should_retry_detection(now, guard.last_detect_attempt_unix_ms) {
+            update_fast_cache(None, now);
             return crate::constants::GATEWAY_WSL2_HOST.to_string();
         } else {
             guard.last_detect_attempt_unix_ms = now;
@@ -177,10 +201,16 @@ pub fn resolve_wsl_gateway_host(config_path: Option<&Path>) -> String {
         if let Ok(mut guard) = cache.lock() {
             guard.host = Some(host.clone());
         }
+        update_fast_cache(Some(&host), now);
         return host;
     }
 
-    cached_host_for_fallback.unwrap_or_else(|| crate::constants::GATEWAY_WSL2_HOST.to_string())
+    if let Some(host) = cached_host_for_fallback {
+        update_fast_cache(Some(&host), now);
+        return host;
+    }
+    update_fast_cache(None, now);
+    crate::constants::GATEWAY_WSL2_HOST.to_string()
 }
 
 #[cfg(test)]

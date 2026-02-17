@@ -88,7 +88,23 @@ fn request_looks_like_wsl_origin(base_url: &str) -> bool {
     if host == windows_host || host == "localhost" || host == "::1" {
         return false;
     }
-    if host == crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(None).to_ascii_lowercase()
+    if host
+        == crate::platform::wsl_gateway_host::cached_wsl_gateway_host_lowercase()
+            .unwrap_or_default()
+    {
+        return true;
+    }
+    // Only attempt runtime host resolution for private IPv4 candidates. This keeps the hot
+    // path cheap for non-local domains/hosts.
+    let is_private_ipv4 = host
+        .parse::<std::net::Ipv4Addr>()
+        .map(|ip| ip.is_private())
+        .unwrap_or(false);
+    if !is_private_ipv4 {
+        return false;
+    }
+    if host
+        == crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(None).to_ascii_lowercase()
     {
         return true;
     }

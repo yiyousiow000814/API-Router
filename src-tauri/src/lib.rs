@@ -311,6 +311,13 @@ pub fn run() {
                 }
             }
             app.manage(state);
+            if !is_ui_tauri {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let st = app_handle.state::<app_state::AppState>();
+                    app_state::run_startup_gateway_token_sync(&st);
+                });
+            }
 
             if !is_ui_tauri {
                 // Spawn the local OpenAI-compatible gateway.
