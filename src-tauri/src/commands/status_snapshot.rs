@@ -58,10 +58,12 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
         // the first request is sent (Windows Terminal only).
         let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
         let expected = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
-        let discovered = crate::platform::windows_terminal::discover_sessions_using_router(
+        let discovered_snapshot = crate::platform::windows_terminal::discover_sessions_using_router_snapshot(
             cfg.listen.port,
             expected,
         );
+        let discovered = discovered_snapshot.items;
+        let discovery_is_fresh = discovered_snapshot.fresh;
         let mut seen_in_discovery: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
@@ -145,8 +147,12 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                         }
                         0
                     } else if let Some(guard) = miss_counts_guard.as_mut() {
-                        let next = guard.get(&codex_id).copied().unwrap_or(0).saturating_add(1);
-                        guard.insert(codex_id.clone(), next);
+                        let prev = guard.get(&codex_id).copied().unwrap_or(0);
+                        let next =
+                            next_wsl_discovery_miss_count(prev, seen_now, discovery_is_fresh);
+                        if discovery_is_fresh {
+                            guard.insert(codex_id.clone(), next);
+                        }
                         next
                     } else {
                         0
@@ -337,6 +343,16 @@ fn session_is_active(entry: &crate::orchestrator::gateway::ClientSessionRuntime,
     entry.last_request_unix_ms > 0 && now.saturating_sub(entry.last_request_unix_ms) < 60_000
 }
 
+fn next_wsl_discovery_miss_count(prev: u8, seen_now: bool, discovery_is_fresh: bool) -> u8 {
+    if seen_now {
+        return 0;
+    }
+    if !discovery_is_fresh {
+        return prev;
+    }
+    prev.saturating_add(1)
+}
+
 fn should_keep_runtime_session(
     entry: &crate::orchestrator::gateway::ClientSessionRuntime,
     now: u64,
@@ -387,7 +403,8 @@ mod tests {
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::commands::{
         apply_discovered_router_confirmation, backfill_main_confirmation_from_verified_agent,
-        merge_discovered_model_provider, should_keep_runtime_session,
+        merge_discovered_model_provider, next_wsl_discovery_miss_count,
+        should_keep_runtime_session,
     };
     use crate::orchestrator::gateway::ClientSessionRuntime;
 
@@ -975,6 +992,30 @@ mod tests {
 
         let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 0);
         assert!(keep);
+    }
+
+    #[test]
+    fn wsl_discovery_miss_count_skips_increment_when_discovery_is_stale() {
+        assert_eq!(
+            next_wsl_discovery_miss_count(2, false, false),
+            2
+        );
+    }
+
+    #[test]
+    fn wsl_discovery_miss_count_increments_when_discovery_is_fresh() {
+        assert_eq!(
+            next_wsl_discovery_miss_count(2, false, true),
+            3
+        );
+    }
+
+    #[test]
+    fn wsl_discovery_miss_count_resets_when_seen_in_discovery() {
+        assert_eq!(
+            next_wsl_discovery_miss_count(2, true, false),
+            0
+        );
     }
 }
 

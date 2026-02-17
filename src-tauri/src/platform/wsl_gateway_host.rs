@@ -23,6 +23,10 @@ fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn should_retry_detection(now_unix_ms: u64, last_detect_attempt_unix_ms: u64) -> bool {
+    now_unix_ms.saturating_sub(last_detect_attempt_unix_ms) >= DETECT_RETRY_MS
+}
+
 fn cache_path_from_config_path(config_path: &Path) -> PathBuf {
     config_path
         .parent()
@@ -141,28 +145,29 @@ pub fn resolve_wsl_gateway_host(config_path: Option<&Path>) -> String {
     static CACHE: OnceLock<Mutex<RuntimeCache>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(RuntimeCache::default()));
 
-    let cache_path = resolve_cache_path(config_path);
-    if let Some(path) = cache_path.as_deref() {
-        if let Some(host) = read_cached_host(path) {
-            if let Ok(mut guard) = cache.lock() {
-                guard.host = Some(host.clone());
-            }
-            return host;
-        }
-    }
-
     let now = now_unix_ms();
-    if let Ok(guard) = cache.lock() {
-        if let Some(host) = guard.host.as_deref() {
-            return host.to_string();
-        }
-        if now.saturating_sub(guard.last_detect_attempt_unix_ms) < DETECT_RETRY_MS {
-            return crate::constants::GATEWAY_WSL2_HOST.to_string();
-        }
-    }
+    let cache_path = resolve_cache_path(config_path);
 
+    let mut cached_host_for_fallback: Option<String> = None;
     if let Ok(mut guard) = cache.lock() {
-        guard.last_detect_attempt_unix_ms = now;
+        if guard.host.is_none() {
+            if let Some(path) = cache_path.as_deref() {
+                if let Some(host) = read_cached_host(path) {
+                    guard.host = Some(host);
+                }
+            }
+        }
+        cached_host_for_fallback = guard.host.clone();
+        if let Some(host) = guard.host.as_deref() {
+            if !should_retry_detection(now, guard.last_detect_attempt_unix_ms) {
+                return host.to_string();
+            }
+            guard.last_detect_attempt_unix_ms = now;
+        } else if !should_retry_detection(now, guard.last_detect_attempt_unix_ms) {
+            return crate::constants::GATEWAY_WSL2_HOST.to_string();
+        } else {
+            guard.last_detect_attempt_unix_ms = now;
+        }
     }
 
     if let Some(host) = detect_wsl_gateway_host() {
@@ -175,12 +180,12 @@ pub fn resolve_wsl_gateway_host(config_path: Option<&Path>) -> String {
         return host;
     }
 
-    crate::constants::GATEWAY_WSL2_HOST.to_string()
+    cached_host_for_fallback.unwrap_or_else(|| crate::constants::GATEWAY_WSL2_HOST.to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_ipv4, read_cached_host, write_cached_host};
+    use super::{normalize_ipv4, read_cached_host, should_retry_detection, write_cached_host};
 
     #[test]
     fn normalize_ipv4_accepts_valid_ipv4() {
@@ -207,5 +212,12 @@ mod tests {
         let path = tmp.path().join("wsl-gateway-host.txt");
         write_cached_host(&path, "172.18.80.1");
         assert_eq!(read_cached_host(&path), Some("172.18.80.1".to_string()));
+    }
+
+    #[test]
+    fn should_retry_detection_when_retry_window_elapsed() {
+        assert!(!should_retry_detection(40_000, 40_000));
+        assert!(!should_retry_detection(40_000, 40_000 - (30_000 - 1)));
+        assert!(should_retry_detection(40_000, 40_000 - 30_000));
     }
 }

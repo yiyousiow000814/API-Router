@@ -27,6 +27,12 @@ pub struct InferredWtSession {
     pub is_review: bool,
 }
 
+#[derive(Clone)]
+pub struct SessionDiscoverySnapshot {
+    pub items: Vec<InferredWtSession>,
+    pub fresh: bool,
+}
+
 #[cfg(windows)]
 fn parse_codex_session_id_from_cmdline(cmd: &str) -> Option<String> {
     // Codex sometimes launches as: `codex.exe resume <uuid>`.
@@ -619,10 +625,20 @@ pub fn discover_sessions_using_router(
     server_port: u16,
     expected_gateway_token: Option<&str>,
 ) -> Vec<InferredWtSession> {
+    discover_sessions_using_router_snapshot(server_port, expected_gateway_token).items
+}
+
+pub fn discover_sessions_using_router_snapshot(
+    server_port: u16,
+    expected_gateway_token: Option<&str>,
+) -> SessionDiscoverySnapshot {
     #[cfg(not(windows))]
     {
         let _ = (server_port, expected_gateway_token);
-        Vec::new()
+        SessionDiscoverySnapshot {
+            items: Vec::new(),
+            fresh: true,
+        }
     }
 
     #[cfg(windows)]
@@ -664,7 +680,10 @@ pub fn discover_sessions_using_router(
             (Vec::new(), false)
         };
         if cache_is_fresh {
-            return cached_items;
+            return SessionDiscoverySnapshot {
+                items: cached_items,
+                fresh: true,
+            };
         }
 
         // Stale-while-revalidate: return stale cache immediately and refresh in background.
@@ -683,7 +702,10 @@ pub fn discover_sessions_using_router(
                 refreshing.store(false, Ordering::Release);
             });
         }
-        cached_items
+        SessionDiscoverySnapshot {
+            items: cached_items,
+            fresh: false,
+        }
     }
 }
 
