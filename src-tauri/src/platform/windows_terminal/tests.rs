@@ -5,6 +5,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::Write;
     use std::path::PathBuf;
+    use std::process::{Child, Command, Stdio};
     use std::time::Duration;
 
     #[test]
@@ -79,6 +80,286 @@ mod tests {
     fn norm_cwd_for_match_trims_trailing_slashes() {
         assert_eq!(norm_cwd_for_match("C:\\Work\\Proj\\"), "c:/work/proj");
         assert_eq!(norm_cwd_for_match("C:/Work/Proj"), "c:/work/proj");
+    }
+
+    #[test]
+    fn wt_session_ids_equal_accepts_wsl_prefix() {
+        assert!(wt_session_ids_equal(
+            "7c757b99-7a1f-455a-b301-3e0271e7f615",
+            "wsl:7c757b99-7a1f-455a-b301-3e0271e7f615"
+        ));
+        assert!(wt_session_ids_equal(
+            "WSL:B11E1CBB-E347-4979-8C73-8D5FB903AC45",
+            "b11e1cbb-e347-4979-8c73-8d5fb903ac45"
+        ));
+    }
+
+    #[test]
+    fn merge_wt_session_marker_preserves_wsl_origin_for_same_id() {
+        assert_eq!(
+            merge_wt_session_marker(
+                Some("wsl:7c757b99-7a1f-455a-b301-3e0271e7f615"),
+                "7c757b99-7a1f-455a-b301-3e0271e7f615"
+            )
+            .as_deref(),
+            Some("wsl:7c757b99-7a1f-455a-b301-3e0271e7f615")
+        );
+        assert_eq!(
+            merge_wt_session_marker(
+                Some("7c757b99-7a1f-455a-b301-3e0271e7f615"),
+                "wsl:7c757b99-7a1f-455a-b301-3e0271e7f615"
+            )
+            .as_deref(),
+            Some("wsl:7c757b99-7a1f-455a-b301-3e0271e7f615")
+        );
+    }
+
+    #[test]
+    fn merge_wt_session_marker_keeps_latest_when_ids_differ() {
+        assert_eq!(
+            merge_wt_session_marker(
+                Some("wsl:7c757b99-7a1f-455a-b301-3e0271e7f615"),
+                "b11e1cbb-e347-4979-8c73-8d5fb903ac45"
+            )
+            .as_deref(),
+            Some("b11e1cbb-e347-4979-8c73-8d5fb903ac45")
+        );
+    }
+
+    #[test]
+    fn is_wt_session_alive_accepts_wsl_prefixed_target() {
+        use std::process::{Command, Stdio};
+
+        let marker = format!("codex-test-{}", std::process::id());
+        let mut child = match Command::new("wsl.exe")
+            .args(["--exec", "sh", "-lc", "sleep 5"])
+            .env("WT_SESSION", &marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => {
+                // Environment may not have WSL available in all Windows runners.
+                return;
+            }
+        };
+
+        std::thread::sleep(Duration::from_millis(300));
+        if let Ok(Some(_status)) = child.try_wait() {
+            // Default distro may be missing; skip in that environment.
+            return;
+        }
+
+        let raw = is_wt_session_alive(&marker);
+        let prefixed = is_wt_session_alive(&format!("wsl:{marker}"));
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert!(raw, "expected WT_SESSION liveness for spawned wsl.exe process");
+        assert!(
+            prefixed,
+            "expected wsl-prefixed WT_SESSION liveness for spawned wsl.exe process"
+        );
+    }
+
+    fn parse_wsl_list_output(bytes: &[u8]) -> String {
+        if bytes.len() >= 2
+            && bytes.len() % 2 == 0
+            && bytes.iter().skip(1).step_by(2).any(|b| *b == 0)
+        {
+            let utf16: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            return String::from_utf16_lossy(&utf16);
+        }
+        String::from_utf8_lossy(bytes).to_string()
+    }
+
+    fn first_wsl_distro() -> Option<String> {
+        let out = Command::new("wsl.exe").args(["-l", "-q"]).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        parse_wsl_list_output(&out.stdout)
+            .lines()
+            .map(|s| s.replace('\0', ""))
+            .map(|s| {
+                s.trim()
+                    .trim_start_matches('*')
+                    .trim()
+                    .trim_start_matches('\u{feff}')
+                    .to_string()
+            })
+            .find(|s| !s.is_empty())
+    }
+
+    fn spawn_fake_wsl_codex_process(
+        distro: &str,
+        wt_session: &str,
+        session_id: &str,
+        with_resume_arg: bool,
+    ) -> Option<Child> {
+        let wt = wt_session.replace('"', "");
+        let sid = session_id.replace('"', "");
+        let root = format!("/tmp/api-router-wsl-e2e-{wt}");
+        let home = format!("{root}/home");
+        let codex_home = format!("{home}/.codex");
+        let sess_dir = format!("{codex_home}/sessions/2026/02/17");
+        let log_dir = format!("{codex_home}/log");
+        let rollout = format!("{sess_dir}/rollout-2026-02-17T00-00-00-{sid}.jsonl");
+        let log = format!("{log_dir}/codex-tui.log");
+        let runner = "/tmp/codex";
+
+        let prep = format!(
+            r#"set -eu; mkdir -p "{sess_dir}" "{log_dir}"; printf '{{"type":"session_meta","payload":{{"id":"%s","cwd":"/tmp","model_provider":"api_router","base_url":"http://172.26.144.1:4000/v1"}}}}\n' "{sid}" > "{rollout}"; printf '%s\n' '#!/bin/sh' 'exec 3< "{rollout}"' 'exec 4>> "{log}"' 'printf '\''2026-02-17T00:00:00.000000Z  INFO session_loop{{thread_id=%s}}: codex\n'\'' "{sid}" >&4' 'sleep 180' > "{runner}"; chmod +x "{runner}""#
+        );
+        let prep_out = Command::new("wsl.exe")
+            .args(["-d", distro, "--", "sh", "-c", &prep])
+            .output()
+            .ok()?;
+        if !prep_out.status.success() {
+            return None;
+        }
+
+        let home_env = format!("HOME=/tmp/api-router-wsl-e2e-{wt}/home");
+        let wt_env = format!("WT_SESSION={wt}");
+        let mut cmd = Command::new("wsl.exe");
+        cmd.args(["-d", distro, "--", "env", &wt_env, &home_env, runner]);
+        if with_resume_arg {
+            cmd.arg("resume").arg(&sid);
+        }
+        let mut child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .ok()?;
+        std::thread::sleep(Duration::from_millis(300));
+        if child.try_wait().ok().flatten().is_some() {
+            return None;
+        }
+        Some(child)
+    }
+
+    fn discovered_wsl_sid_for_wt(port: u16, wt_session: &str) -> Option<String> {
+        let target = format!("wsl:{wt_session}");
+        discover_sessions_using_router_uncached(port, None)
+            .into_iter()
+            .find(|s| s.wt_session.eq_ignore_ascii_case(&target))
+            .and_then(|s| s.codex_session_id)
+    }
+
+    fn wait_for_wsl_sid(port: u16, wt_session: &str, timeout_ms: u64) -> Option<String> {
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            if let Some(sid) = discovered_wsl_sid_for_wt(port, wt_session) {
+                return Some(sid);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    fn wait_for_wsl_absent(port: u16, wt_session: &str, timeout_ms: u64) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            if discovered_wsl_sid_for_wt(port, wt_session).is_none() {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    fn debug_print_wsl_probe(distro: &str, wt_session: &str) {
+        let ps = Command::new("wsl.exe")
+            .args([
+                "-d",
+                distro,
+                "--",
+                "sh",
+                "-lc",
+                "ps -eo pid=,etimes=,args= | grep -E 'codex.js|@openai/codex|/codex( |$)' | grep -v grep || true",
+            ])
+            .output();
+        if let Ok(out) = ps {
+            eprintln!(
+                "e2e_wsl_probe: ps={}",
+                String::from_utf8_lossy(&out.stdout).trim()
+            );
+        }
+        let codex_probe = Command::new("wsl.exe")
+            .args([
+                "-d",
+                distro,
+                "--",
+                "sh",
+                "-lc",
+                "ps -eo pid=,args= | grep '/tmp/codex' | grep -v grep | while read pid rest; do echo PID=\\$pid; cat /proc/\\$pid/environ | tr '\\0' '\\n' | grep '^WT_SESSION=' || true; for f in /proc/\\$pid/fd/*; do readlink \"\\$f\" 2>/dev/null; done | grep -E 'rollout-.*\\.jsonl' || true; done",
+            ])
+            .output();
+        if let Ok(out) = codex_probe {
+            eprintln!(
+                "e2e_wsl_probe: codex_probe={}",
+                String::from_utf8_lossy(&out.stdout).trim()
+            );
+        }
+        let target = format!("wsl:{wt_session}");
+        let items = discover_sessions_using_router_uncached(4000, None);
+        for s in items {
+            if s.wt_session.eq_ignore_ascii_case(&target) {
+                eprintln!(
+                    "e2e_wsl_probe: matched wt={} sid={}",
+                    s.wt_session,
+                    s.codex_session_id.as_deref().unwrap_or("<none>")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn e2e_wsl_same_wt_new_and_resume_sessions_switch_sid() {
+        let Some(distro) = first_wsl_distro() else {
+            return;
+        };
+        let wt_session = format!("api-router-e2e-wt-{}", std::process::id());
+        let sid1 = uuid::Uuid::new_v4().to_string();
+        let sid2 = uuid::Uuid::new_v4().to_string();
+        let port = 4000u16;
+
+        let mut first =
+            spawn_fake_wsl_codex_process(&distro, &wt_session, &sid1, false).expect("spawn first");
+        let got1 = wait_for_wsl_sid(port, &wt_session, 8_000);
+        if got1.is_none() {
+            debug_print_wsl_probe(&distro, &wt_session);
+        }
+        let _ = first.kill();
+        let _ = first.wait();
+        assert_eq!(got1.as_deref(), Some(sid1.as_str()));
+        assert!(wait_for_wsl_absent(port, &wt_session, 8_000));
+
+        let mut second =
+            spawn_fake_wsl_codex_process(&distro, &wt_session, &sid2, false).expect("spawn second");
+        let got2 = wait_for_wsl_sid(port, &wt_session, 8_000);
+        let _ = second.kill();
+        let _ = second.wait();
+        assert_eq!(got2.as_deref(), Some(sid2.as_str()));
+        assert!(wait_for_wsl_absent(port, &wt_session, 8_000));
+
+        let mut resumed =
+            spawn_fake_wsl_codex_process(&distro, &wt_session, &sid1, true).expect("spawn resumed");
+        let got3 = wait_for_wsl_sid(port, &wt_session, 8_000);
+        let _ = resumed.kill();
+        let _ = resumed.wait();
+        assert_eq!(got3.as_deref(), Some(sid1.as_str()));
     }
 
     #[test]
@@ -300,7 +581,15 @@ mod tests {
             token.as_deref().unwrap_or("<none>")
         );
 
-        let items = discover_sessions_using_router(port, token.as_deref());
+        let mut items = discover_sessions_using_router_uncached(port, token.as_deref());
+        if items.is_empty() {
+            // Keep a cache-path fallback for local diagnostics.
+            items = discover_sessions_using_router(port, token.as_deref());
+            if items.is_empty() {
+                std::thread::sleep(Duration::from_millis(700));
+                items = discover_sessions_using_router(port, token.as_deref());
+            }
+        }
         eprintln!("manual_print_discovery: discovered_count={}", items.len());
 
         let mut by_id: BTreeMap<String, usize> = BTreeMap::new();

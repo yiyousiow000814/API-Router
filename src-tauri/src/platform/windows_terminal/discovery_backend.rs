@@ -494,6 +494,63 @@ fn discover_sessions_using_router_uncached(
             None
         }
 
+        fn parse_codex_session_id_from_rollout_path(raw: &str) -> Option<String> {
+            let path = raw.trim();
+            if path.is_empty() {
+                return None;
+            }
+            let name = std::path::Path::new(path).file_name()?.to_str()?;
+            let lower = name.to_ascii_lowercase();
+            let jsonl_idx = lower.find(".jsonl")?;
+            let stem = &name[..jsonl_idx];
+            if !stem.to_ascii_lowercase().starts_with("rollout-") {
+                return None;
+            }
+            if stem.len() < 36 {
+                return None;
+            }
+            let sid = stem[stem.len() - 36..].trim();
+            if uuid::Uuid::parse_str(sid).is_ok() {
+                return Some(sid.to_ascii_lowercase());
+            }
+            None
+        }
+
+        fn wsl_read_session_id_from_proc_fd(distro: &str, pid: u32) -> Option<String> {
+            // `/proc/<pid>/fd/*` can briefly disappear while the process is alive; do not
+            // treat a non-zero shell status as fatal as long as we got output to parse.
+            let script = format!(
+                // NOTE: pass `\\$f` so WSL's command translation does not strip `$f`
+                // before `/bin/sh` gets to expand it.
+                "for f in /proc/{pid}/fd/*; do readlink \"\\$f\" 2>/dev/null || true; done; true"
+            );
+            let out = hidden_wsl_command()
+                .args(["-d", distro, "--", "sh", "-lc", &script])
+                .output()
+                .ok()?;
+
+            let mut sid_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                let Some(sid) = parse_codex_session_id_from_rollout_path(line) else {
+                    continue;
+                };
+                *sid_counts.entry(sid).or_default() += 1;
+            }
+            if sid_counts.is_empty() {
+                return None;
+            }
+            let mut ranked: Vec<(String, usize)> = sid_counts.into_iter().collect();
+            ranked.sort_by_key(|(_sid, count)| std::cmp::Reverse(*count));
+            if ranked.len() == 1 {
+                return Some(ranked[0].0.clone());
+            }
+            if ranked[0].1 > ranked[1].1 {
+                return Some(ranked[0].0.clone());
+            }
+            None
+        }
+
         fn wsl_read_env_bundle(
             distro: &str,
             pid: u32,
@@ -658,6 +715,9 @@ fn discover_sessions_using_router_uncached(
             let mut codex_session_id = parse_codex_session_id_from_cmdline(&cmd);
             if codex_session_id.is_none() {
                 codex_session_id = env_session_id.clone();
+            }
+            if codex_session_id.is_none() {
+                codex_session_id = wsl_read_session_id_from_proc_fd(distro, pid);
             }
             if codex_session_id.is_none() {
                 if let (Some(ch), Some(cw)) = (codex_home_unc.as_deref(), cwd_unc.as_deref()) {

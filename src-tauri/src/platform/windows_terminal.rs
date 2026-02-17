@@ -8,9 +8,9 @@ use std::io::BufRead;
 use std::net::SocketAddr;
 
 #[cfg(windows)]
-use std::sync::{Mutex, OnceLock};
-#[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+use std::sync::{Mutex, OnceLock};
 #[cfg(windows)]
 use std::time::{Duration, SystemTime};
 
@@ -526,6 +526,59 @@ pub fn discover_sessions_using_router(
     }
 }
 
+fn wt_session_strip_wsl_prefix(raw: &str) -> &str {
+    let t = raw.trim();
+    if let Some(v) = t.strip_prefix("wsl:") {
+        return v.trim();
+    }
+    if let Some(v) = t.strip_prefix("WSL:") {
+        return v.trim();
+    }
+    t
+}
+
+fn wt_session_ids_equal(a: &str, b: &str) -> bool {
+    let a = wt_session_strip_wsl_prefix(a);
+    let b = wt_session_strip_wsl_prefix(b);
+    !a.is_empty() && !b.is_empty() && a.eq_ignore_ascii_case(b)
+}
+
+pub fn merge_wt_session_marker(existing: Option<&str>, observed: &str) -> Option<String> {
+    let observed_trimmed = observed.trim();
+    if observed_trimmed.is_empty() {
+        return existing
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+    }
+    let observed_norm = wt_session_strip_wsl_prefix(observed_trimmed);
+    if observed_norm.is_empty() {
+        return existing
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+    }
+    let observed_is_wsl = observed_trimmed.to_ascii_lowercase().starts_with("wsl:");
+
+    let existing_trimmed = existing
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_default();
+    let existing_is_wsl = existing_trimmed.to_ascii_lowercase().starts_with("wsl:");
+
+    if !existing_trimmed.is_empty() && wt_session_ids_equal(existing_trimmed, observed_norm) {
+        if existing_is_wsl || observed_is_wsl {
+            return Some(format!("wsl:{observed_norm}"));
+        }
+        return Some(observed_norm.to_string());
+    }
+
+    if observed_is_wsl {
+        return Some(format!("wsl:{observed_norm}"));
+    }
+    Some(observed_norm.to_string())
+}
+
 pub fn is_pid_alive(pid: u32) -> bool {
     #[cfg(windows)]
     {
@@ -576,7 +629,7 @@ pub fn is_wt_session_alive(wt_session: &str) -> bool {
                     entry.th32ProcessID,
                     "WT_SESSION",
                 ) {
-                    if v.trim().eq_ignore_ascii_case(target) {
+                    if wt_session_ids_equal(v.trim(), target) {
                         alive = true;
                         break;
                     }

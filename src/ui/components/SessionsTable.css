@@ -22,6 +22,27 @@
   color: rgba(126, 84, 24, 0.9);
 }
 
+.aoSessionOriginBadge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.aoSessionOriginBadgeWindows {
+  border: 1px solid rgba(23, 91, 145, 0.28);
+  background: rgba(23, 91, 145, 0.12);
+  color: rgba(23, 91, 145, 0.95);
+}
+
+.aoSessionOriginBadgeWsl {
+  border: 1px solid rgba(126, 84, 24, 0.28);
+  background: rgba(126, 84, 24, 0.12);
+  color: rgba(126, 84, 24, 0.95);
+}
+
 .aoSessionRowAgent td {
   background: rgba(40, 199, 217, 0.03) !important;
 }
@@ -31,12 +52,31 @@
 }
 
 .aoSessionRowAgent .aoPill {
-  background: rgba(40, 199, 217, 0.09);
-  border-color: rgba(40, 199, 217, 0.22);
+  background: rgba(13, 18, 32, 0.035);
+  border-color: rgba(255, 255, 255, 0.14);
 }
 
 .aoSessionRowAgent .aoSelect:disabled {
   color: rgba(13, 18, 32, 0.44);
   border-color: rgba(40, 199, 217, 0.2);
   background: rgba(40, 199, 217, 0.05);
+}
+
+.aoSessionRowAgentWsl td {
+  background: rgba(126, 84, 24, 0.028) !important;
+}
+
+.aoSessionRowAgentWsl td:first-child {
+  box-shadow: inset 2px 0 0 rgba(126, 84, 24, 0.42);
+}
+
+.aoSessionRowAgentWsl .aoPill {
+  background: rgba(13, 18, 32, 0.035);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.aoSessionRowAgentWsl .aoSelect:disabled {
+  color: rgba(13, 18, 32, 0.44);
+  border-color: rgba(126, 84, 24, 0.2);
+  background: rgba(126, 84, 24, 0.04);
 }

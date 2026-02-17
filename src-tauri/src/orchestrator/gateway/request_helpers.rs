@@ -52,6 +52,40 @@ fn session_key_from_request(headers: &HeaderMap, body: &Value) -> Option<String>
     Some(v.to_string())
 }
 
+fn request_base_url_hint(headers: &HeaderMap, listen_port: u16) -> Option<String> {
+    let host_raw = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())?;
+
+    // `Host` is usually `host[:port]`. Keep this best-effort and deterministic for UI origin
+    // detection. If the client omitted port, use the router listen port.
+    let authority = if host_raw.starts_with('[') {
+        // IPv6 host: `[::1]` or `[::1]:4000`
+        if host_raw.rfind("]:").is_some() {
+            host_raw.to_string()
+        } else {
+            format!("{host_raw}:{listen_port}")
+        }
+    } else if host_raw.contains(':') {
+        host_raw.to_string()
+    } else {
+        format!("{host_raw}:{listen_port}")
+    };
+
+    Some(format!("http://{authority}/v1"))
+}
+
+fn request_looks_like_wsl_origin(base_url: &str) -> bool {
+    let lower = base_url.to_ascii_lowercase();
+    let needle = format!(
+        "//{}:",
+        crate::constants::GATEWAY_WSL2_HOST.to_ascii_lowercase()
+    );
+    lower.contains(&needle)
+}
+
 fn codex_session_id_for_display(headers: &HeaderMap, body: &Value) -> Option<String> {
     for k in [
         "session_id",

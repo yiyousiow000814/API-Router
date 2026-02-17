@@ -27,6 +27,23 @@ type Props = {
   allowPreferredChanges?: boolean
 }
 
+export function isWslSessionRow(s: Pick<SessionRow, 'wt_session' | 'reported_base_url'>): boolean {
+  const wt = (s.wt_session ?? '').trim().toLowerCase()
+  if (wt.startsWith('wsl:')) return true
+
+  const base = (s.reported_base_url ?? '').trim().toLowerCase()
+  if (!base) return false
+  if (base.includes(`//${GATEWAY_WSL2_HOST.toLowerCase()}:`)) return true
+  if (
+    base.includes(`//${GATEWAY_WINDOWS_HOST.toLowerCase()}:`) ||
+    base.includes('//localhost:')
+  ) {
+    return false
+  }
+  // Keep session origin deterministic in UI: anything not proven WSL2 defaults to Windows.
+  return false
+}
+
 export function SessionsTable({
   sessions,
   providers,
@@ -35,28 +52,21 @@ export function SessionsTable({
   onSetPreferred,
   allowPreferredChanges = true,
 }: Props) {
-  function displaySessionId(raw: string | null): string {
-    if (!raw) return '-'
-    if (raw.startsWith('wsl:')) return raw.slice(4)
-    return raw
+  function codexSessionIdOnly(raw: string | null | undefined): string | null {
+    const v = (raw ?? '').trim()
+    if (!v) return null
+    // Legacy synthetic ids can be WT_SESSION-derived (e.g. `wsl:<wt-session>`).
+    // Keep UI strict: Codex session column only shows real Codex session ids.
+    if (v.toLowerCase().startsWith('wsl:')) return null
+    return v
+  }
+
+  function isWslSession(s: SessionRow): boolean {
+    return isWslSessionRow(s)
   }
 
   function sessionOriginClass(s: SessionRow): string {
-    const base = (s.reported_base_url ?? '').trim().toLowerCase()
-    if (!base) {
-      const id = (s.codex_session_id ?? '').trim().toLowerCase()
-      if (id.startsWith('wsl:')) return 'aoSessionsIdWsl2'
-      return 'aoSessionsIdWindows'
-    }
-    if (base.includes(`//${GATEWAY_WSL2_HOST.toLowerCase()}:`)) return 'aoSessionsIdWsl2'
-    if (
-      base.includes(`//${GATEWAY_WINDOWS_HOST.toLowerCase()}:`) ||
-      base.includes('//localhost:')
-    ) {
-      return 'aoSessionsIdWindows'
-    }
-    // Keep session origin color deterministic in UI: anything not proven WSL2 defaults to Windows.
-    return 'aoSessionsIdWindows'
+    return isWslSession(s) ? 'aoSessionsIdWsl2' : 'aoSessionsIdWindows'
   }
 
   function codexProviderLabel(s: SessionRow): string {
@@ -97,17 +107,30 @@ export function SessionsTable({
               verifiedRows.map((s) => {
                 const verified = s.verified !== false
                 const routingTarget = s.preferred_provider ?? globalPreferred
-                const codexSession = s.codex_session_id ?? null
+                const codexSession = codexSessionIdOnly(s.codex_session_id)
                 const wt = s.wt_session ?? '-'
                 const isAgent = s.is_agent === true
                 const codexProvider = codexProviderLabel(s)
                 const modelName = s.reported_model ?? '-'
                 const originClass = sessionOriginClass(s)
+                const wsl = isWslSession(s)
+                const originBadgeClass = wsl
+                  ? 'aoSessionOriginBadge aoSessionOriginBadgeWsl'
+                  : 'aoSessionOriginBadge aoSessionOriginBadgeWindows'
+                const originLabel = wsl ? 'WSL2' : 'WIN'
+                const rowClass = isAgent
+                  ? wsl
+                    ? 'aoSessionRowAgent aoSessionRowAgentWsl'
+                    : 'aoSessionRowAgent'
+                  : undefined
                 return (
-                  <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
+                  <tr key={s.id} className={rowClass}>
                     <td className="aoSessionsMono">
                       {codexSession ? (
-                        <div className={originClass} title={`WT_SESSION: ${wt}`}>{displaySessionId(codexSession)}</div>
+                        <div className={originClass} title={`WT_SESSION: ${wt}`}>
+                          <span className={originBadgeClass}>{originLabel}</span>
+                          {codexSession}
+                        </div>
                       ) : (
                         <div className={originClass} title={`WT_SESSION: ${wt}`}>-</div>
                       )}
@@ -193,17 +216,30 @@ export function SessionsTable({
                 {unverifiedRows.map((s) => {
                   const verified = s.verified !== false
                   const routingTarget = s.preferred_provider ?? globalPreferred
-                  const codexSession = s.codex_session_id ?? null
+                  const codexSession = codexSessionIdOnly(s.codex_session_id)
                   const wt = s.wt_session ?? '-'
                   const isAgent = s.is_agent === true
                   const codexProvider = codexProviderLabel(s)
                   const modelName = s.reported_model ?? '-'
                   const originClass = sessionOriginClass(s)
+                  const wsl = isWslSession(s)
+                  const originBadgeClass = wsl
+                    ? 'aoSessionOriginBadge aoSessionOriginBadgeWsl'
+                    : 'aoSessionOriginBadge aoSessionOriginBadgeWindows'
+                  const originLabel = wsl ? 'WSL2' : 'WIN'
+                  const rowClass = isAgent
+                    ? wsl
+                      ? 'aoSessionRowAgent aoSessionRowAgentWsl'
+                      : 'aoSessionRowAgent'
+                    : undefined
                   return (
-                    <tr key={s.id} className={isAgent ? 'aoSessionRowAgent' : undefined}>
+                    <tr key={s.id} className={rowClass}>
                       <td className="aoSessionsMono">
                         {codexSession ? (
-                          <div className={originClass} title={`WT_SESSION: ${wt}`}>{displaySessionId(codexSession)}</div>
+                          <div className={originClass} title={`WT_SESSION: ${wt}`}>
+                            <span className={originBadgeClass}>{originLabel}</span>
+                            {codexSession}
+                          </div>
                         ) : (
                           <div className={originClass} title={`WT_SESSION: ${wt}`}>-</div>
                         )}

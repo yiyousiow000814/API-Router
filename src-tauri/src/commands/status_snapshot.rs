@@ -73,7 +73,10 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     crate::orchestrator::gateway::ClientSessionRuntime {
                         codex_session_id: codex_session_id.to_string(),
                         pid: s.pid,
-                        wt_session: Some(s.wt_session.clone()),
+                        wt_session: crate::platform::windows_terminal::merge_wt_session_marker(
+                            None,
+                            &s.wt_session,
+                        ),
                         last_request_unix_ms: 0,
                         last_discovered_unix_ms: 0,
                         last_reported_model_provider: None,
@@ -85,7 +88,10 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     }
                 });
                 entry.pid = s.pid;
-                entry.wt_session = Some(s.wt_session.clone());
+                entry.wt_session = crate::platform::windows_terminal::merge_wt_session_marker(
+                    entry.wt_session.as_deref(),
+                    &s.wt_session,
+                );
                 entry.last_discovered_unix_ms = now;
                 apply_discovered_router_confirmation(entry, s.router_confirmed, s.is_agent);
                 merge_discovered_model_provider(entry, s.reported_model_provider.as_deref());
@@ -108,29 +114,12 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
         {
             let mut map = state.gateway.client_sessions.write();
             map.retain(|_, v| {
-                let active = v.last_request_unix_ms > 0
-                    && now.saturating_sub(v.last_request_unix_ms) < 60_000;
-                if v.is_agent && !active {
-                    return false;
-                }
-                if v.pid != 0 && !crate::platform::windows_terminal::is_pid_alive(v.pid) {
-                    return false;
-                }
-                if v.pid == 0 {
-                    // No PID: use WT_SESSION liveness if available (close tab => remove),
-                    // otherwise keep only while request activity is recent.
-                    if let Some(wt) = v.wt_session.as_deref() {
-                        if !wt.trim().is_empty()
-                            && !crate::platform::windows_terminal::is_wt_session_alive(wt)
-                            && !active
-                        {
-                            return false;
-                        }
-                    } else if !active {
-                        return false;
-                    }
-                }
-                true
+                should_keep_runtime_session(
+                    v,
+                    now,
+                    crate::platform::windows_terminal::is_pid_alive,
+                    crate::platform::windows_terminal::is_wt_session_alive,
+                )
             });
         }
 
@@ -145,8 +134,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
             .map(|(_codex_session_id, v)| {
                 // Consider a session "active" only if it has recently made requests through the router.
                 // Discovery scans run frequently and should not keep sessions pinned as active forever.
-                let active = v.last_request_unix_ms > 0
-                    && now.saturating_sub(v.last_request_unix_ms) < 60_000;
+                let active = session_is_active(&v, now);
 
                 let codex_id = v.codex_session_id.clone();
                 let pref = cfg
@@ -257,6 +245,49 @@ fn backfill_main_confirmation_from_verified_review(
     }
 }
 
+fn session_is_active(entry: &crate::orchestrator::gateway::ClientSessionRuntime, now: u64) -> bool {
+    entry.last_request_unix_ms > 0 && now.saturating_sub(entry.last_request_unix_ms) < 60_000
+}
+
+fn should_keep_runtime_session(
+    entry: &crate::orchestrator::gateway::ClientSessionRuntime,
+    now: u64,
+    is_pid_alive: fn(u32) -> bool,
+    is_wt_session_alive: fn(&str) -> bool,
+) -> bool {
+    const WSL_STALE_DISCOVERY_MS: u64 = 15_000;
+
+    let active = session_is_active(entry, now);
+    if entry.is_agent && !active {
+        return false;
+    }
+    if entry.pid != 0 && !is_pid_alive(entry.pid) {
+        return false;
+    }
+    if entry.pid == 0 {
+        let wt = entry.wt_session.as_deref().unwrap_or_default().trim();
+        let is_wsl_marker = wt.to_ascii_lowercase().starts_with("wsl:");
+        if is_wsl_marker && !active {
+            // For WSL sessions we don't have a stable Windows PID. If discovery no longer sees this
+            // Codex sid for a while, drop it even when the tab/shell remains open.
+            let stale = entry.last_discovered_unix_ms == 0
+                || now.saturating_sub(entry.last_discovered_unix_ms) > WSL_STALE_DISCOVERY_MS;
+            if stale {
+                return false;
+            }
+        }
+
+        if !wt.is_empty() {
+            if !is_wt_session_alive(wt) && !active {
+                return false;
+            }
+        } else if !active {
+            return false;
+        }
+    }
+    true
+}
+
 fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
     let ts = i64::try_from(ts_unix_ms).ok()?;
     let dt = Local.timestamp_millis_opt(ts).single()?;
@@ -268,7 +299,7 @@ mod tests {
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::commands::{
         apply_discovered_router_confirmation, backfill_main_confirmation_from_verified_review,
-        merge_discovered_model_provider,
+        merge_discovered_model_provider, should_keep_runtime_session,
     };
     use crate::orchestrator::gateway::ClientSessionRuntime;
 
@@ -492,6 +523,69 @@ mod tests {
             main.last_reported_model_provider.as_deref(),
             Some(GATEWAY_MODEL_PROVIDER_ID)
         );
+    }
+
+    #[test]
+    fn stale_wsl_session_drops_even_when_wt_session_is_alive() {
+        let now = 100_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "wsl-old".to_string(),
+            pid: 0,
+            wt_session: Some("wsl:test-wt".to_string()),
+            last_request_unix_ms: now.saturating_sub(120_000),
+            last_discovered_unix_ms: now.saturating_sub(30_000),
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            is_agent: false,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true);
+        assert!(!keep);
+    }
+
+    #[test]
+    fn recent_wsl_discovery_keeps_idle_session_when_wt_alive() {
+        let now = 100_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "wsl-recent".to_string(),
+            pid: 0,
+            wt_session: Some("wsl:test-wt".to_string()),
+            last_request_unix_ms: now.saturating_sub(120_000),
+            last_discovered_unix_ms: now.saturating_sub(5_000),
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            is_agent: false,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true);
+        assert!(keep);
+    }
+
+    #[test]
+    fn active_wsl_session_stays_even_if_discovery_is_stale() {
+        let now = 100_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "wsl-active".to_string(),
+            pid: 0,
+            wt_session: Some("wsl:test-wt".to_string()),
+            last_request_unix_ms: now.saturating_sub(5_000),
+            last_discovered_unix_ms: now.saturating_sub(45_000),
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            is_agent: false,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true);
+        assert!(keep);
     }
 }
 

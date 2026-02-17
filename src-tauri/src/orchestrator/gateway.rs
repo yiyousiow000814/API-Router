@@ -257,9 +257,26 @@ async fn responses(
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("peer:{peer}"));
     let client_session = windows_terminal::infer_wt_session(peer, cfg.listen.port);
+    let request_base_url = request_base_url_hint(&headers, cfg.listen.port);
+    let request_is_wsl = request_base_url
+        .as_deref()
+        .is_some_and(request_looks_like_wsl_origin);
+    let inferred_wt_marker = client_session.as_ref().map(|s| {
+        let wt = s
+            .wt_session
+            .trim()
+            .trim_start_matches("wsl:")
+            .trim_start_matches("WSL:")
+            .trim();
+        if request_is_wsl {
+            format!("wsl:{wt}")
+        } else {
+            wt.to_string()
+        }
+    });
     let agent_request = request_is_agent(&headers, &body);
     let routing_session_fields = {
-        let wt = client_session.as_ref().map(|s| s.wt_session.clone());
+        let wt = inferred_wt_marker.clone();
         let pid = client_session.as_ref().map(|s| s.pid);
         // Prefer the human-facing codex session id if present; fall back to session key.
         let codex = (!session_key.starts_with("peer:")).then_some(session_key.clone());
@@ -280,7 +297,9 @@ async fn responses(
             .or_insert_with(|| ClientSessionRuntime {
                 codex_session_id: session_key.clone(),
                 pid: client_session.as_ref().map(|s| s.pid).unwrap_or(0),
-                wt_session: client_session.as_ref().map(|s| s.wt_session.clone()),
+                wt_session: inferred_wt_marker
+                    .as_deref()
+                    .and_then(|wt| windows_terminal::merge_wt_session_marker(None, wt)),
                 last_request_unix_ms: 0,
                 last_discovered_unix_ms: 0,
                 last_reported_model_provider: None,
@@ -292,12 +311,33 @@ async fn responses(
             });
         if let Some(inferred) = client_session.as_ref() {
             entry.pid = inferred.pid;
-            entry.wt_session = Some(inferred.wt_session.clone());
+            if let Some(observed_wt) = inferred_wt_marker.as_deref() {
+                entry.wt_session = windows_terminal::merge_wt_session_marker(
+                    entry.wt_session.as_deref(),
+                    observed_wt,
+                );
+            }
             if inferred.is_agent {
                 entry.is_agent = true;
             }
             if inferred.is_review {
                 entry.is_review = true;
+            }
+        }
+        if request_is_wsl {
+            if let Some(existing_wt) = entry.wt_session.as_deref() {
+                let forced_wsl = format!(
+                    "wsl:{}",
+                    existing_wt
+                        .trim()
+                        .trim_start_matches("wsl:")
+                        .trim_start_matches("WSL:")
+                        .trim()
+                );
+                entry.wt_session = windows_terminal::merge_wt_session_marker(
+                    entry.wt_session.as_deref(),
+                    &forced_wsl,
+                );
             }
         }
         if agent_request {
@@ -306,6 +346,9 @@ async fn responses(
         if request_is_review(&headers, &body) {
             entry.is_review = true;
             entry.is_agent = true;
+        }
+        if let Some(base_url) = request_base_url.as_deref() {
+            entry.last_reported_base_url = Some(base_url.to_string());
         }
         // Keep codex provider deterministic once the session is proven to route through gateway.
         entry.last_reported_model_provider = Some(GATEWAY_MODEL_PROVIDER_ID.to_string());
