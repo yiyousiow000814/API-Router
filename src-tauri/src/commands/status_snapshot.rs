@@ -60,6 +60,8 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
             cfg.listen.port,
             expected,
         );
+        let mut seen_in_discovery: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         // Track all discovered sessions, but only allow provider preference changes once we have
         // strong evidence that the session is using this gateway.
@@ -69,6 +71,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                 let Some(codex_session_id) = s.codex_session_id.as_deref() else {
                     continue;
                 };
+                seen_in_discovery.insert(codex_session_id.to_string());
                 let entry = map.entry(codex_session_id.to_string()).or_insert_with(|| {
                     crate::orchestrator::gateway::ClientSessionRuntime {
                         codex_session_id: codex_session_id.to_string(),
@@ -113,14 +116,55 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
         // We keep the persisted preference mapping in config; only the runtime list is pruned.
         {
             let mut map = state.gateway.client_sessions.write();
+            static WSL_DISCOVERY_MISS_COUNTS: std::sync::OnceLock<
+                std::sync::Mutex<std::collections::HashMap<String, u8>>,
+            > = std::sync::OnceLock::new();
+            let miss_counts = WSL_DISCOVERY_MISS_COUNTS
+                .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+            let mut miss_counts_guard = miss_counts.lock().ok();
             map.retain(|_, v| {
+                let codex_id = v.codex_session_id.clone();
+                let is_wsl_pidless = v.pid == 0
+                    && v.wt_session
+                        .as_deref()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_ascii_lowercase()
+                        .starts_with("wsl:");
+                let seen_now = seen_in_discovery.contains(&codex_id);
+                let wsl_discovery_miss_count = if is_wsl_pidless {
+                    if seen_now {
+                        if let Some(guard) = miss_counts_guard.as_mut() {
+                            guard.remove(&codex_id);
+                        }
+                        0
+                    } else if let Some(guard) = miss_counts_guard.as_mut() {
+                        let next = guard.get(&codex_id).copied().unwrap_or(0).saturating_add(1);
+                        guard.insert(codex_id.clone(), next);
+                        next
+                    } else {
+                        0
+                    }
+                } else {
+                    if let Some(guard) = miss_counts_guard.as_mut() {
+                        guard.remove(&codex_id);
+                    }
+                    0
+                };
+
                 should_keep_runtime_session(
                     v,
                     now,
                     crate::platform::windows_terminal::is_pid_alive,
                     crate::platform::windows_terminal::is_wt_session_alive,
+                    wsl_discovery_miss_count,
                 )
             });
+            if let Some(guard) = miss_counts_guard.as_mut() {
+                let live_ids: std::collections::HashSet<String> =
+                    map.keys().map(|k| k.to_string()).collect();
+                guard.retain(|k, _| live_ids.contains(k));
+            }
         }
 
         let map = state.gateway.client_sessions.read().clone();
@@ -254,8 +298,9 @@ fn should_keep_runtime_session(
     now: u64,
     is_pid_alive: fn(u32) -> bool,
     is_wt_session_alive: fn(&str) -> bool,
+    wsl_discovery_miss_count: u8,
 ) -> bool {
-    const WSL_STALE_DISCOVERY_MS: u64 = 15_000;
+    const WSL_MAX_DISCOVERY_MISSES: u8 = 3;
 
     let active = session_is_active(entry, now);
     if entry.is_agent && !active {
@@ -268,11 +313,9 @@ fn should_keep_runtime_session(
         let wt = entry.wt_session.as_deref().unwrap_or_default().trim();
         let is_wsl_marker = wt.to_ascii_lowercase().starts_with("wsl:");
         if is_wsl_marker {
-            // For WSL sessions we don't have a stable Windows PID. If discovery no longer sees this
-            // Codex sid for a while, drop it even when the tab/shell remains open.
-            let stale = entry.last_discovered_unix_ms == 0
-                || now.saturating_sub(entry.last_discovered_unix_ms) > WSL_STALE_DISCOVERY_MS;
-            if stale {
+            // WSL sessions usually have pid=0 on Windows side. Use consecutive discovery misses
+            // to avoid flicker from one-off scan failures while still removing quickly after Ctrl+C.
+            if wsl_discovery_miss_count >= WSL_MAX_DISCOVERY_MISSES {
                 return false;
             }
         }
@@ -543,7 +586,7 @@ mod tests {
             confirmed_router: true,
         };
 
-        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true);
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 3);
         assert!(!keep);
     }
 
@@ -564,7 +607,7 @@ mod tests {
             confirmed_router: true,
         };
 
-        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true);
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 1);
         assert!(keep);
     }
 
@@ -585,7 +628,7 @@ mod tests {
             confirmed_router: true,
         };
 
-        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true);
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 3);
         assert!(!keep);
     }
 
@@ -606,7 +649,7 @@ mod tests {
             confirmed_router: true,
         };
 
-        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true);
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 0);
         assert!(keep);
     }
 }
