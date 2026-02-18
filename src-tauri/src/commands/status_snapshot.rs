@@ -547,12 +547,11 @@ pub(crate) fn get_event_log_entries(
             let _ = dedup.insert(key);
         }
     }
-    let data_root = state
+    let backup_root = state
         .config_path
         .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .join("data");
-    append_backup_events(&mut events, &mut dedup, &data_root, from, to, cap);
+        .unwrap_or(std::path::Path::new("."));
+    append_backup_events(&mut events, &mut dedup, backup_root, from, to, cap);
     events.sort_by(|a, b| {
         let a_ts = a.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
         let b_ts = b.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
