@@ -150,10 +150,8 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
   const now = Date.now()
   const defaultRangeEndDay = startOfDayMs(now)
   const hasDateFilter = fromDayStart != null || toDayStart != null
-  const rangeStartDay =
-    fromDayStart != null ? fromDayStart : toDayStart != null ? toDayStart : defaultRangeEndDay
-  const rangeEndDay =
-    toDayStart != null ? toDayStart : fromDayStart != null ? fromDayStart : defaultRangeEndDay
+  const rangeStartDay = fromDayStart ?? defaultRangeEndDay
+  const rangeEndDay = toDayStart ?? defaultRangeEndDay
   const effectiveStartDay = Math.min(rangeStartDay, rangeEndDay)
   const effectiveEndDay = Math.max(rangeStartDay, rangeEndDay)
   const minUnixMs = effectiveStartDay
@@ -572,8 +570,7 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
                       <button
                         key={cell.dayStartMs}
                         className={`aoEventLogDateCell${cell.inMonth ? '' : ' is-out'}${showTodayHint && cell.dayStartMs === todayDayStart ? ' is-today' : ''}${isStart ? ' is-start' : ''}${isEnd ? ' is-end' : ''}${inRange ? ' is-range' : ''}`}
-                        disabled={!hasRecord}
-                        onClick={hasRecord ? () => {
+                        onClick={() => {
                           const iso = dayStartToIso(cell.dayStartMs)
                           if (pickerFromDayStart != null && pickerToDayStart != null) {
                             resetToFromAnchor(iso)
@@ -601,9 +598,9 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
                           } else {
                             setPickerDateTo(iso)
                           }
-                          setDateAnchor('from')
+                          setDateAnchor('to')
                           setOpenDatePicker(true)
-                        } : undefined}
+                        }}
                         title={
                           hasRecord
                             ? `Info ${levelCounts.infos} · Warning ${levelCounts.warnings} · Error ${levelCounts.errors}`
