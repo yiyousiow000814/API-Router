@@ -538,8 +538,9 @@ fn append_backup_event_years(years: &mut std::collections::BTreeSet<i32>, backup
             continue;
         };
         let include = name.starts_with("sled.backup.")
-            || name == "sled.manual-backup"
-            || name == "sled.manual-backup-v2";
+            || name.starts_with("sled.manual-backup.")
+            || name.starts_with("sled.bak.")
+            || name.starts_with("sled.corrupt.");
         if include && path.is_dir() {
             dirs.push(path);
         }
