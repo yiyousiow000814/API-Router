@@ -46,7 +46,13 @@ export function InstructionModal({
   isDevPreview,
 }: Props) {
   const [wslBusy, setWslBusy] = useState<boolean>(false)
-  const [wslAuthorized, setWslAuthorized] = useState<boolean>(false)
+  const [wslAuthorized, setWslAuthorized] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('ao:wsl-gateway-authorized') === '1'
+    } catch {
+      return false
+    }
+  })
   const [wslHost, setWslHost] = useState<string>(GATEWAY_WSL2_HOST)
   const gatewayPort = normalizeGatewayPort(listenPort)
 
@@ -62,12 +68,22 @@ export function InstructionModal({
     }
     try {
       const res = await invoke<WslGatewayAccessStatus>('wsl_gateway_access_status')
-      setWslAuthorized(Boolean(res.authorized))
+      const authorized = Boolean(res.authorized)
+      setWslAuthorized(authorized)
       setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
+      try {
+        localStorage.setItem('ao:wsl-gateway-authorized', authorized ? '1' : '0')
+      } catch {
+        // noop
+      }
     } catch {
       // keep UI responsive; status can be fetched after user action
     }
   }
+
+  useEffect(() => {
+    void refreshWslAccessStatus()
+  }, [])
 
   useEffect(() => {
     if (!open) return
@@ -88,8 +104,14 @@ export function InstructionModal({
     setWslBusy(true)
     try {
       const res = await invoke<WslGatewayAccessMutation>('wsl_gateway_authorize_access')
-      setWslAuthorized(Boolean(res.authorized))
+      const authorized = Boolean(res.authorized)
+      setWslAuthorized(authorized)
       setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
+      try {
+        localStorage.setItem('ao:wsl-gateway-authorized', authorized ? '1' : '0')
+      } catch {
+        // noop
+      }
       flashToast('WSL2 gateway access authorized')
     } catch (e) {
       flashToast(String(e), 'error')
@@ -112,8 +134,14 @@ export function InstructionModal({
     setWslBusy(true)
     try {
       const res = await invoke<WslGatewayAccessMutation>('wsl_gateway_revoke_access')
-      setWslAuthorized(Boolean(res.authorized))
+      const authorized = Boolean(res.authorized)
+      setWslAuthorized(authorized)
       setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
+      try {
+        localStorage.setItem('ao:wsl-gateway-authorized', authorized ? '1' : '0')
+      } catch {
+        // noop
+      }
       flashToast('WSL2 gateway access revoked')
     } catch (e) {
       flashToast(String(e), 'error')

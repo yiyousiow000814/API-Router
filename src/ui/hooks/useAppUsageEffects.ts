@@ -1,5 +1,5 @@
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import type { Config } from '../types'
 import type {
   ProviderScheduleDraft,
@@ -72,6 +72,7 @@ type Params = {
 }
 
 export function useAppUsageEffects(params: Params) {
+  const usageHistoryPrefetchStartedRef = useRef(false)
   const {
     activePage,
     refreshUsageStatistics,
@@ -199,6 +200,19 @@ export function useAppUsageEffects(params: Params) {
       return changed ? next : prev
     })
   }, [usagePricingModalOpen, usagePricingProviderNames, config])
+
+  useEffect(() => {
+    if (usageHistoryPrefetchStartedRef.current) return
+    if (usageHistoryLoadedRef.current) return
+    usageHistoryPrefetchStartedRef.current = true
+    const timer = window.setTimeout(() => {
+      if (usageHistoryLoadedRef.current) return
+      void refreshUsageHistory({ silent: true })
+    }, 400)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [refreshUsageHistory, usageHistoryLoadedRef])
 
   useEffect(() => {
     if (!usageHistoryModalOpen) {
