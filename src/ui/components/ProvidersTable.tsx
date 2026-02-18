@@ -197,8 +197,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
               if (event.unix_ms !== lastErrorAt) return false
               return event.message.trim() === lastErrorMessage
             })
-            const showLastError = lastErrorAt > 0
-            const canJumpToEventLog = showLastError && lastErrorMessage.length > 0 && hasMatchingRecentError
+            const showLastError = lastErrorAt > 0 && lastErrorMessage.length > 0 && hasMatchingRecentError
 
             return (
               <tr key={p}>
@@ -218,21 +217,19 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                   {showLastError ? (
                     <span className="aoLastErrorCell">
                       <span className="aoLastErrorTime">{fmtWhen(lastErrorAt)}</span>
-                      {canJumpToEventLog ? (
-                        <button
-                          className="aoLastErrorViewBtn"
-                          onClick={() =>
-                            onOpenLastErrorInEventLog({
-                              provider: p,
-                              unixMs: lastErrorAt,
-                              message: h.last_error,
-                            })
-                          }
-                          title="Open in Event Log"
-                        >
-                          View
-                        </button>
-                      ) : null}
+                      <button
+                        className="aoLastErrorViewBtn"
+                        onClick={() =>
+                          onOpenLastErrorInEventLog({
+                            provider: p,
+                            unixMs: lastErrorAt,
+                            message: h.last_error,
+                          })
+                        }
+                        title="Open in Event Log"
+                      >
+                        View
+                      </button>
                     </span>
                   ) : (
                     '-'
