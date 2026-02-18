@@ -472,11 +472,18 @@ fn append_backup_events(
     data_root: &std::path::Path,
     from: Option<u64>,
     to: Option<u64>,
+    cap: usize,
 ) {
+    if out.len() >= cap {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(data_root) else {
         return;
     };
     for entry in entries.flatten() {
+        if out.len() >= cap {
+            break;
+        }
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -492,6 +499,9 @@ fn append_backup_events(
             continue;
         };
         for item in db.scan_prefix(b"event:").rev() {
+            if out.len() >= cap {
+                break;
+            }
             let Ok((_, v)) = item else {
                 continue;
             };
@@ -539,7 +549,7 @@ pub(crate) fn get_event_log_entries(
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .join("data");
-    append_backup_events(&mut events, &mut dedup, &data_root, from, to);
+    append_backup_events(&mut events, &mut dedup, &data_root, from, to, cap);
     events.sort_by(|a, b| {
         let a_ts = a.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
         let b_ts = b.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);

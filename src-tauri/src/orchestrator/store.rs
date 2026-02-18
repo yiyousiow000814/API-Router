@@ -38,7 +38,6 @@ pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<Stri
 }
 
 impl Store {
-    const MAX_EVENTS: usize = 200;
     const MAX_USAGE_REQUESTS: usize = 500_000;
     const USAGE_PRUNE_EVERY: u64 = 128;
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
@@ -163,32 +162,6 @@ impl Store {
         }
         for key in batch.drain(..) {
             let _ = self.db.remove(key);
-        }
-    }
-
-    fn prune_events_db(db: &sled::Db) {
-        let boundary = db.scan_prefix(b"event:").rev().nth(Self::MAX_EVENTS);
-        let Some(Ok((end_key, _))) = boundary else {
-            return;
-        };
-
-        let start = b"event:".to_vec();
-        let end = end_key.to_vec();
-
-        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
-        for res in db.range(start..=end) {
-            let Ok((k, _)) = res else {
-                continue;
-            };
-            batch.push(k);
-            if batch.len() >= 1024 {
-                for key in batch.drain(..) {
-                    let _ = db.remove(key);
-                }
-            }
-        }
-        for key in batch.drain(..) {
-            let _ = db.remove(key);
         }
     }
 
@@ -726,7 +699,6 @@ pub fn maintain_store_dir(path: &Path) -> anyhow::Result<()> {
             let _ = db.remove(key);
         }
 
-        Store::prune_events_db(&db);
         Store::prune_usage_requests_db(&db);
         db.flush()?;
     } // drop DB handle (important for Windows rename)
