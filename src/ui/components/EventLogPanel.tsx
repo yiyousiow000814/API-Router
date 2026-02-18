@@ -276,7 +276,8 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
   const resetToFromAnchor = (iso: string) => {
     setPickerDateFrom(iso)
     setPickerDateTo('')
-    reopenFromAnchor()
+    setDateAnchor('to')
+    setOpenDatePicker(true)
   }
 
   useEffect(() => {
