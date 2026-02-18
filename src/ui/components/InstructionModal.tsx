@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { ModalBackdrop } from './ModalBackdrop'
 import { GATEWAY_WINDOWS_HOST, GATEWAY_WSL2_HOST } from '../constants'
 import { buildGatewayBaseUrl, normalizeGatewayPort } from '../utils/gatewayUrl'
-
-const WSL_AUTH_STORAGE_KEY = 'ao:wsl-gateway-authorized'
-const WSL_AUTH_EVENT = 'ao:wsl-gateway-authorized-changed'
+import {
+  persistWslGatewayAuthorizedToStorage,
+  readWslGatewayAuthorizedFromStorage,
+  subscribeWslGatewayAuthorized,
+} from '../utils/wslGatewayAuthSync'
 
 type Props = {
   open: boolean
@@ -49,33 +51,13 @@ export function InstructionModal({
   isDevPreview,
 }: Props) {
   const [wslBusy, setWslBusy] = useState<boolean>(false)
-  const [wslAuthorized, setWslAuthorized] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(WSL_AUTH_STORAGE_KEY) === '1'
-    } catch {
-      return false
-    }
-  })
+  const [wslAuthorized, setWslAuthorized] = useState<boolean>(() => readWslGatewayAuthorizedFromStorage())
   const [wslHost, setWslHost] = useState<string>(GATEWAY_WSL2_HOST)
   const gatewayPort = normalizeGatewayPort(listenPort)
 
-  function persistWslAuthorized(authorized: boolean) {
-    try {
-      localStorage.setItem(WSL_AUTH_STORAGE_KEY, authorized ? '1' : '0')
-      window.dispatchEvent(new CustomEvent<boolean>(WSL_AUTH_EVENT, { detail: authorized }))
-    } catch {
-      // noop
-    }
-  }
-
-  async function refreshWslAccessStatus() {
+  const refreshWslAccessStatus = useCallback(async () => {
     if (isDevPreview) {
-      try {
-        const saved = localStorage.getItem(WSL_AUTH_STORAGE_KEY) === '1'
-        setWslAuthorized(saved)
-      } catch {
-        setWslAuthorized(false)
-      }
+      setWslAuthorized(readWslGatewayAuthorizedFromStorage())
       return
     }
     try {
@@ -83,38 +65,25 @@ export function InstructionModal({
       const authorized = Boolean(res.authorized)
       setWslAuthorized(authorized)
       setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
-      persistWslAuthorized(authorized)
+      persistWslGatewayAuthorizedToStorage(authorized)
     } catch {
       // keep UI responsive; status can be fetched after user action
     }
-  }
+  }, [isDevPreview])
 
   useEffect(() => {
     if (!open) return
     void refreshWslAccessStatus()
-  }, [open, isDevPreview])
+  }, [open, refreshWslAccessStatus])
 
   useEffect(() => {
-    const onStorage = (event: StorageEvent) => {
-      if (event.key !== WSL_AUTH_STORAGE_KEY) return
-      setWslAuthorized(event.newValue === '1')
-    }
-    const onCustom = (event: Event) => {
-      const customEvent = event as CustomEvent<boolean>
-      if (typeof customEvent.detail === 'boolean') setWslAuthorized(customEvent.detail)
-    }
-    window.addEventListener('storage', onStorage)
-    window.addEventListener(WSL_AUTH_EVENT, onCustom as EventListener)
-    return () => {
-      window.removeEventListener('storage', onStorage)
-      window.removeEventListener(WSL_AUTH_EVENT, onCustom as EventListener)
-    }
+    return subscribeWslGatewayAuthorized(setWslAuthorized)
   }, [])
 
   async function authorizeWslAccess() {
     if (isDevPreview) {
       setWslAuthorized(true)
-      persistWslAuthorized(true)
+      persistWslGatewayAuthorizedToStorage(true)
       flashToast('WSL2 gateway access authorized [TEST]')
       return
     }
@@ -124,7 +93,7 @@ export function InstructionModal({
       const authorized = Boolean(res.authorized)
       setWslAuthorized(authorized)
       setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
-      persistWslAuthorized(authorized)
+      persistWslGatewayAuthorizedToStorage(authorized)
       flashToast('WSL2 gateway access authorized')
     } catch (e) {
       flashToast(String(e), 'error')
@@ -136,7 +105,7 @@ export function InstructionModal({
   async function revokeWslAccess() {
     if (isDevPreview) {
       setWslAuthorized(false)
-      persistWslAuthorized(false)
+      persistWslGatewayAuthorizedToStorage(false)
       flashToast('WSL2 gateway access revoked [TEST]')
       return
     }
@@ -146,7 +115,7 @@ export function InstructionModal({
       const authorized = Boolean(res.authorized)
       setWslAuthorized(authorized)
       setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
-      persistWslAuthorized(authorized)
+      persistWslGatewayAuthorizedToStorage(authorized)
       flashToast('WSL2 gateway access revoked')
     } catch (e) {
       flashToast(String(e), 'error')

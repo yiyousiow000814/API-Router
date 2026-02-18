@@ -164,7 +164,7 @@ export function useUsageOpsBridge(params: Params) {
       })
       setUsageStatistics(res)
     } catch (e) {
-      flashToast(String(e), 'error')
+      if (!silent) flashToast(String(e), 'error')
     } finally {
       if (!silent) setUsageStatisticsLoading(false)
     }
