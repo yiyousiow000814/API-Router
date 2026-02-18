@@ -297,7 +297,9 @@ export function EventsTable({
 
     return (
       <tr key={key} className={isError ? 'aoEventRowError' : isWarning ? 'aoEventRowWarning' : undefined}>
-        <td title={fmtWhen(e.unix_ms)}>{fmtAgo(e.unix_ms)}</td>
+        <td title={fmtWhen(e.unix_ms)}>
+          {`${fmtAgo(e.unix_ms)} (${fmtWhen(e.unix_ms).slice(11)})`}
+        </td>
         <td className="aoEventsMono" title={sessionTitle}>
           {sessionCell}
         </td>
