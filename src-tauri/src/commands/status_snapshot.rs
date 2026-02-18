@@ -7,6 +7,8 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
     state.gateway.router.sync_with_config(&cfg, now);
     let providers = state.gateway.router.snapshot(now);
     let manual_override = state.gateway.router.manual_override.read().clone();
+    // Dashboard snapshot is intentionally compact (recent only). Full event history is queried
+    // via get_event_log_entries for Event Log page, not through this status payload.
     let recent_events = state.gateway.store.list_events_split(5, 5);
     let metrics = state.gateway.store.get_metrics();
     let quota = state.gateway.store.list_quota_snapshots();
