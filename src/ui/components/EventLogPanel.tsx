@@ -134,11 +134,17 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
   const [pickerDateTo, setPickerDateTo] = useState<string>(EVENT_LOG_UI_STATE.dateTo)
   const [pickerMonthStartMs, setPickerMonthStartMs] = useState<number>(startOfMonthMs(Date.now()))
   const [pickerHeaderEditOpen, setPickerHeaderEditOpen] = useState<boolean>(false)
+  const [knownEventYears, setKnownEventYears] = useState<number[]>(() => {
+    const years = new Set<number>()
+    for (const event of events) years.add(new Date(event.unix_ms).getFullYear())
+    return [...years].sort((a, b) => a - b)
+  })
   const [chartHover, setChartHover] = useState<EventLogChartHover | null>(null)
   const [focusedEvent, setFocusedEvent] = useState<EventLogEntry | null>(null)
   const [focusNonce, setFocusNonce] = useState(0)
   const datePickerRef = useRef<HTMLDivElement | null>(null)
   const querySeqRef = useRef(0)
+  const yearQuerySeqRef = useRef(0)
   const handledFocusNonceRef = useRef<number | null>(null)
   const fromDayStart = parseDateInputToDayStart(dateFrom)
   const toDayStart = parseDateInputToDayStart(dateTo)
@@ -156,6 +162,11 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
       if (querySeqRef.current !== reqId) return
       if (!Array.isArray(rows)) return
       setSourceEvents([...rows].sort((a, b) => b.unix_ms - a.unix_ms))
+      setKnownEventYears((prev) => {
+        const years = new Set(prev)
+        for (const row of rows) years.add(new Date(row.unix_ms).getFullYear())
+        return [...years].sort((a, b) => a - b)
+      })
     } catch {
       // Keep the latest successful snapshot to avoid UI flicker when fetch transiently fails.
     }
@@ -307,11 +318,10 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
   const pickerMonth = pickerMonthDate.getMonth()
   const pickerYear = pickerMonthDate.getFullYear()
   const pickerYearOptions = useMemo(() => {
-    const years = new Set<number>()
-    for (const event of sourceEvents) years.add(new Date(event.unix_ms).getFullYear())
-    const sorted = [...years].sort((a, b) => a - b)
-    return sorted.length ? sorted : [pickerYear]
-  }, [pickerYear, sourceEvents])
+    const years = new Set(knownEventYears)
+    years.add(pickerYear)
+    return [...years].sort((a, b) => a - b)
+  }, [knownEventYears, pickerYear])
   const allLevelsSelected = selectedLevels.length === ALL_LEVELS.length
   const todayDayStart = startOfDayMs(Date.now())
   const showTodayHint = pickerFromDayStart == null && pickerToDayStart == null
@@ -361,11 +371,26 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
     if (!openDatePicker) setPickerHeaderEditOpen(false)
   }, [openDatePicker])
   useEffect(() => {
-    if (!pickerHeaderEditOpen) return
-    if (pickerYearOptions.includes(pickerYear)) return
-    const fallbackYear = pickerYearOptions[pickerYearOptions.length - 1]
-    setPickerMonthStartMs(new Date(fallbackYear, pickerMonth, 1).getTime())
-  }, [pickerHeaderEditOpen, pickerMonth, pickerYear, pickerYearOptions])
+    const reqId = ++yearQuerySeqRef.current
+    void (async () => {
+      try {
+        const rows = await invoke<EventLogEntry[]>('get_event_log_entries', {
+          fromUnixMs: null,
+          toUnixMs: null,
+          limit: EVENT_LOG_FETCH_LIMIT,
+        })
+        if (yearQuerySeqRef.current !== reqId) return
+        if (!Array.isArray(rows)) return
+        setKnownEventYears((prev) => {
+          const years = new Set(prev)
+          for (const row of rows) years.add(new Date(row.unix_ms).getFullYear())
+          return [...years].sort((a, b) => a - b)
+        })
+      } catch {
+        // Keep current year list on failure.
+      }
+    })()
+  }, [])
   useEffect(() => {
     if (!focusRequest) return
     // Ensure the target row is not hidden by level/search/date filters.
@@ -613,6 +638,7 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
                         onChange={(event) => {
                           const nextMonth = Number(event.target.value)
                           setPickerMonthStartMs(new Date(pickerYear, nextMonth, 1).getTime())
+                          setPickerHeaderEditOpen(false)
                         }}
                         aria-label="Select month"
                       >
@@ -628,6 +654,7 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
                         onChange={(event) => {
                           const nextYear = Number(event.target.value)
                           setPickerMonthStartMs(new Date(nextYear, pickerMonth, 1).getTime())
+                          setPickerHeaderEditOpen(false)
                         }}
                         aria-label="Select year"
                       >
@@ -641,7 +668,7 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
                   ) : (
                     <button
                       className="aoEventLogDateTitleBtn"
-                      onClick={() => setPickerHeaderEditOpen(true)}
+                      onClick={() => setPickerHeaderEditOpen((prev) => !prev)}
                       title="Jump to month/year"
                       aria-label="Jump to month/year"
                     >
