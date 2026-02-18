@@ -38,7 +38,8 @@ pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<Stri
 }
 
 impl Store {
-    const MAX_EVENTS: usize = 200;
+    const MAX_EVENTS_RUNTIME: usize = 5000;
+    const EVENT_PRUNE_EVERY: u64 = 64;
     const MAX_USAGE_REQUESTS: usize = 500_000;
     const USAGE_PRUNE_EVERY: u64 = 128;
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
@@ -135,36 +136,6 @@ impl Store {
             && j.get("total_tokens").and_then(|v| v.as_u64()).is_some()
     }
 
-    fn prune_events(&self) {
-        // Keep only the newest MAX_EVENTS event keys.
-        // Keys are `event:{unix_ms}:{uuid}` and are lexicographically ordered by time.
-        let boundary = self.db.scan_prefix(b"event:").rev().nth(Self::MAX_EVENTS);
-
-        let Some(Ok((end_key, _))) = boundary else {
-            return;
-        };
-
-        let start = b"event:".to_vec();
-        let end = end_key.to_vec();
-
-        // Delete in chunks to avoid building a huge Vec if the DB grew large.
-        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
-        for res in self.db.range(start..=end) {
-            let Ok((k, _)) = res else {
-                continue;
-            };
-            batch.push(k);
-            if batch.len() >= 1024 {
-                for key in batch.drain(..) {
-                    let _ = self.db.remove(key);
-                }
-            }
-        }
-        for key in batch.drain(..) {
-            let _ = self.db.remove(key);
-        }
-    }
-
     fn prune_usage_requests(&self) {
         let boundary = self
             .db
@@ -193,32 +164,6 @@ impl Store {
         }
         for key in batch.drain(..) {
             let _ = self.db.remove(key);
-        }
-    }
-
-    fn prune_events_db(db: &sled::Db) {
-        let boundary = db.scan_prefix(b"event:").rev().nth(Self::MAX_EVENTS);
-        let Some(Ok((end_key, _))) = boundary else {
-            return;
-        };
-
-        let start = b"event:".to_vec();
-        let end = end_key.to_vec();
-
-        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
-        for res in db.range(start..=end) {
-            let Ok((k, _)) = res else {
-                continue;
-            };
-            batch.push(k);
-            if batch.len() >= 1024 {
-                for key in batch.drain(..) {
-                    let _ = db.remove(key);
-                }
-            }
-        }
-        for key in batch.drain(..) {
-            let _ = db.remove(key);
         }
     }
 
@@ -271,8 +216,42 @@ impl Store {
         let _ = self
             .db
             .insert(key.as_bytes(), serde_json::to_vec(&v).unwrap_or_default());
-        self.prune_events();
+        // Shared pruning cadence counter: reused by usage/event maintenance to avoid
+        // adding another atomic. Event pruning remains bounded by MAX_EVENTS_RUNTIME.
+        let seq = self.usage_prune_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        if seq % Self::EVENT_PRUNE_EVERY == 0 {
+            self.prune_events_runtime();
+        }
         let _ = self.db.flush();
+    }
+
+    fn prune_events_runtime(&self) {
+        let boundary = self
+            .db
+            .scan_prefix(b"event:")
+            .rev()
+            .nth(Self::MAX_EVENTS_RUNTIME);
+        let Some(Ok((end_key, _))) = boundary else {
+            return;
+        };
+
+        let start = b"event:".to_vec();
+        let end = end_key.to_vec();
+        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
+        for res in self.db.range(start..=end) {
+            let Ok((k, _)) = res else {
+                continue;
+            };
+            batch.push(k);
+            if batch.len() >= 1024 {
+                for key in batch.drain(..) {
+                    let _ = self.db.remove(key);
+                }
+            }
+        }
+        for key in batch.drain(..) {
+            let _ = self.db.remove(key);
+        }
     }
 
     pub fn record_success(
@@ -596,6 +575,48 @@ impl Store {
         out
     }
 
+    pub fn list_events_range(
+        &self,
+        from_unix_ms: Option<u64>,
+        to_unix_ms: Option<u64>,
+        limit: Option<usize>,
+    ) -> Vec<Value> {
+        let cap = limit.unwrap_or(usize::MAX).max(1);
+        let mut out: Vec<Value> = Vec::with_capacity(cap.min(1024));
+        for res in self.db.scan_prefix(b"event:").rev() {
+            let Ok((_, v)) = res else {
+                continue;
+            };
+            let Ok(j) = serde_json::from_slice::<Value>(&v) else {
+                continue;
+            };
+            if !Self::is_valid_event(&j) {
+                continue;
+            }
+            let Some(unix_ms) = j.get("unix_ms").and_then(|v| v.as_u64()) else {
+                continue;
+            };
+            if let Some(from) = from_unix_ms {
+                if unix_ms < from {
+                    // Keys are event:{unix_ms}:{uuid}, and add_event writes the same unix_ms
+                    // into both key and payload. Once we pass `from`, the remaining entries
+                    // in this reverse scan are older and can be skipped.
+                    break;
+                }
+            }
+            if let Some(to) = to_unix_ms {
+                if unix_ms > to {
+                    continue;
+                }
+            }
+            out.push(j);
+            if out.len() >= cap {
+                break;
+            }
+        }
+        out
+    }
+
     pub fn list_usage_requests(&self, limit: usize) -> Vec<Value> {
         self.db
             .scan_prefix(b"usage_req:")
@@ -718,7 +739,6 @@ pub fn maintain_store_dir(path: &Path) -> anyhow::Result<()> {
             let _ = db.remove(key);
         }
 
-        Store::prune_events_db(&db);
         Store::prune_usage_requests_db(&db);
         db.flush()?;
     } // drop DB handle (important for Windows rename)
