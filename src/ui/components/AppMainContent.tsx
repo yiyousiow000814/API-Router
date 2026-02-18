@@ -33,8 +33,6 @@ type Props = {
   updatingSessionPref: Record<string, boolean>
   onSetSessionPreferred: (sessionId: string, provider: string | null) => void
   eventLogSeedEvents: any[]
-  canClearErrors: boolean
-  onClearErrors: () => void
   usageProps: any
   switchboardProps: any
 }
@@ -69,8 +67,6 @@ export function AppMainContent(props: Props) {
     updatingSessionPref,
     onSetSessionPreferred,
     eventLogSeedEvents,
-    canClearErrors,
-    onClearErrors,
     usageProps,
     switchboardProps,
   } = props
@@ -87,8 +83,6 @@ export function AppMainContent(props: Props) {
     return (
       <EventLogPanel
         events={eventLogSeedEvents}
-        canClearErrors={canClearErrors}
-        onClearErrors={onClearErrors}
       />
     )
   }

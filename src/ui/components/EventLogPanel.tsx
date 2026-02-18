@@ -6,8 +6,6 @@ import './EventLogPanel.css'
 
 type Props = {
   events: Status['recent_events']
-  canClearErrors: boolean
-  onClearErrors: () => void
 }
 
 type EventLevel = 'info' | 'warning' | 'error'
@@ -109,7 +107,7 @@ function parseDateInputToDayStart(dateText: string): number | null {
   return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime()
 }
 
-export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) {
+export function EventLogPanel({ events }: Props) {
   const [sourceEvents, setSourceEvents] = useState<EventLogEntry[]>(() =>
     [...events].sort((a, b) => b.unix_ms - a.unix_ms),
   )
@@ -687,8 +685,6 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
         scrollInside
         scrollPersistKey="event_log_table"
         visibleEvents={tableEvents}
-        canClearErrors={canClearErrors}
-        onClearErrors={onClearErrors}
       />
     </div>
   )
