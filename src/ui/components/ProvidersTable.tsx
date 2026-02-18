@@ -26,7 +26,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
             Cooldown
           </th>
           <th style={{ width: 170 }}>Last OK</th>
-          <th>Last Error</th>
+          <th>Last Fail At</th>
           <th style={{ width: 240 }}>Usage</th>
         </tr>
       </thead>

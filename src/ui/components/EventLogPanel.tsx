@@ -58,6 +58,16 @@ function addMonths(unixMs: number, delta: number): number {
   return new Date(d.getFullYear(), d.getMonth() + delta, 1).getTime()
 }
 
+function addDays(unixMs: number, delta: number): number {
+  const d = new Date(unixMs)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + delta).getTime()
+}
+
+function dayIndex(unixMs: number): number {
+  const d = new Date(unixMs)
+  return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / MS_PER_DAY)
+}
+
 function dayStartToIso(unixMs: number): string {
   const d = new Date(unixMs)
   const y = d.getFullYear()
@@ -113,7 +123,7 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
 
   const now = Date.now()
   const defaultRangeEndDay = startOfDayMs(now)
-  const defaultRangeStartDay = defaultRangeEndDay - (TABLE_DEFAULT_WINDOW_DAYS - 1) * MS_PER_DAY
+  const defaultRangeStartDay = addDays(defaultRangeEndDay, -(TABLE_DEFAULT_WINDOW_DAYS - 1))
   const fromDayRaw = parseDateInputToDayStart(dateFrom)
   const toDayRaw = parseDateInputToDayStart(dateTo)
   const rangeStartDay = fromDayRaw ?? defaultRangeStartDay
@@ -121,7 +131,7 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
   const effectiveStartDay = Math.min(rangeStartDay, rangeEndDay)
   const effectiveEndDay = Math.max(rangeStartDay, rangeEndDay)
   const minUnixMs = effectiveStartDay
-  const maxUnixMs = effectiveEndDay + MS_PER_DAY - 1
+  const maxUnixMs = addDays(effectiveEndDay, 1) - 1
   const searchNeedle = searchText.trim().toLowerCase()
 
   const timeFiltered = useMemo(
@@ -158,12 +168,11 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
       minEventDay = defaultRangeEndDay
       maxEventDay = defaultRangeEndDay
     }
-    const spanDays = Math.max(1, Math.floor((maxEventDay - minEventDay) / MS_PER_DAY) + 1)
-    const chartStartDay =
-      spanDays >= CHART_WINDOW_DAYS ? maxEventDay - (CHART_WINDOW_DAYS - 1) * MS_PER_DAY : minEventDay
+    const spanDays = Math.max(1, dayIndex(maxEventDay) - dayIndex(minEventDay) + 1)
+    const chartStartDay = spanDays >= CHART_WINDOW_DAYS ? addDays(maxEventDay, -(CHART_WINDOW_DAYS - 1)) : minEventDay
 
     const rows = Array.from({ length: CHART_WINDOW_DAYS }, (_, idx) => {
-      const dayStartMs = chartStartDay + idx * MS_PER_DAY
+      const dayStartMs = addDays(chartStartDay, idx)
       return { dayStartMs, infos: 0, warnings: 0, errors: 0 }
     })
     const rowByDay = new Map(rows.map((r) => [r.dayStartMs, r]))
@@ -231,9 +240,9 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
   const monthCells = useMemo(() => {
     const targetMonth = new Date(pickerMonthStartMs).getMonth()
     const startDow = new Date(pickerMonthStartMs).getDay()
-    const gridStart = pickerMonthStartMs - startDow * MS_PER_DAY
+    const gridStart = addDays(pickerMonthStartMs, -startDow)
     return Array.from({ length: 42 }, (_, idx) => {
-      const dayStartMs = gridStart + idx * MS_PER_DAY
+      const dayStartMs = addDays(gridStart, idx)
       return {
         dayStartMs,
         inMonth: new Date(dayStartMs).getMonth() === targetMonth,
