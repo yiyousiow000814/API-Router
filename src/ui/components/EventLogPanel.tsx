@@ -102,6 +102,7 @@ function parseDateInputToDayStart(dateText: string): number | null {
   const day = Number(m[3])
   const dt = new Date(year, month - 1, day)
   if (Number.isNaN(dt.getTime())) return null
+  if (dt.getFullYear() !== year || dt.getMonth() + 1 !== month || dt.getDate() !== day) return null
   return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime()
 }
 

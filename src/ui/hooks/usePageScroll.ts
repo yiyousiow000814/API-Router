@@ -72,7 +72,7 @@ export function usePageScroll(options: {
       options.setActivePage(next)
       scheduleRestore(next)
     },
-    [options, saveCurrentPageScroll, scheduleRestore],
+    [options.setActivePage, saveCurrentPageScroll, scheduleRestore],
   )
 
   useEffect(() => {
