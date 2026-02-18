@@ -267,7 +267,7 @@ export default function App() {
       return
     }
   }, [codexSwapUseWindows, codexSwapUseWsl, codexSwapTarget])
-  const { providers, visibleEvents, canClearErrors, clearErrors, clientSessions } = useStatusDerivations({
+  const { providers, canClearErrors, clearErrors, clientSessions } = useStatusDerivations({
     status,
     config,
     clearErrorsBeforeMs,
@@ -918,7 +918,6 @@ export default function App() {
               clientSessions={clientSessions ?? []}
               updatingSessionPref={updatingSessionPref}
               onSetSessionPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
-              visibleEvents={visibleEvents}
               eventLogSeedEvents={status?.recent_events ?? []}
               canClearErrors={canClearErrors}
               onClearErrors={clearErrors}

@@ -70,7 +70,6 @@ export function useStatusDerivations({
 
   return {
     providers,
-    visibleEvents,
     canClearErrors,
     clearErrors,
     clientSessions,
