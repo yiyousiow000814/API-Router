@@ -1,5 +1,6 @@
 export type HotkeyEventLike = {
   key: string
+  code?: string
   ctrlKey?: boolean
   metaKey?: boolean
   altKey?: boolean
@@ -12,6 +13,7 @@ export function isSaveHotkey(e: HotkeyEventLike): boolean {
   if (e.altKey) return false
   if (e.shiftKey) return false
   if (!(e.ctrlKey || e.metaKey)) return false
+  if (e.code === 'KeyS') return true
   return e.key.toLowerCase() === 's'
 }
 

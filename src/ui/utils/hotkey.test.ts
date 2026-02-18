@@ -7,6 +7,10 @@ describe('isSaveHotkey', () => {
     expect(isSaveHotkey({ key: 'S', metaKey: true })).toBe(true)
   })
 
+  it('accepts KeyS code even when key is layout-variant', () => {
+    expect(isSaveHotkey({ key: 'ы', code: 'KeyS', ctrlKey: true })).toBe(true)
+  })
+
   it('rejects non-save combinations', () => {
     expect(isSaveHotkey({ key: 's', ctrlKey: true, shiftKey: true })).toBe(false)
     expect(isSaveHotkey({ key: 's', ctrlKey: true, altKey: true })).toBe(false)
