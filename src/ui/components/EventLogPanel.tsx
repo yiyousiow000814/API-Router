@@ -34,6 +34,7 @@ const CHART_WINDOW_DAYS = 60
 const EVENT_LOG_TABLE_LIMIT = 200
 const EVENT_LOG_FETCH_LIMIT = 2000
 const ALL_LEVELS: EventLevel[] = ['info', 'warning', 'error']
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 const EVENT_LOG_UI_STATE: {
   selectedLevels: EventLevel[]
   searchText: string
@@ -132,6 +133,7 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
   const [pickerDateFrom, setPickerDateFrom] = useState<string>(EVENT_LOG_UI_STATE.dateFrom)
   const [pickerDateTo, setPickerDateTo] = useState<string>(EVENT_LOG_UI_STATE.dateTo)
   const [pickerMonthStartMs, setPickerMonthStartMs] = useState<number>(startOfMonthMs(Date.now()))
+  const [pickerHeaderEditOpen, setPickerHeaderEditOpen] = useState<boolean>(false)
   const [chartHover, setChartHover] = useState<EventLogChartHover | null>(null)
   const [focusedEvent, setFocusedEvent] = useState<EventLogEntry | null>(null)
   const [focusNonce, setFocusNonce] = useState(0)
@@ -301,6 +303,15 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
 
   const pickerFromDayStart = parseDateInputToDayStart(pickerDateFrom)
   const pickerToDayStart = parseDateInputToDayStart(pickerDateTo)
+  const pickerMonthDate = useMemo(() => new Date(pickerMonthStartMs), [pickerMonthStartMs])
+  const pickerMonth = pickerMonthDate.getMonth()
+  const pickerYear = pickerMonthDate.getFullYear()
+  const pickerYearOptions = useMemo(() => {
+    const nowYear = new Date().getFullYear()
+    const minYear = Math.min(nowYear - 10, pickerYear - 5)
+    const maxYear = Math.max(nowYear + 2, pickerYear + 5)
+    return Array.from({ length: maxYear - minYear + 1 }, (_, idx) => minYear + idx)
+  }, [pickerYear])
   const allLevelsSelected = selectedLevels.length === ALL_LEVELS.length
   const todayDayStart = startOfDayMs(Date.now())
   const showTodayHint = pickerFromDayStart == null && pickerToDayStart == null
@@ -346,6 +357,9 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
     setDateFrom(pickerDateFrom)
     setDateTo(pickerDateTo)
   }, [openDatePicker, pickerDateFrom, pickerDateTo])
+  useEffect(() => {
+    if (!openDatePicker) setPickerHeaderEditOpen(false)
+  }, [openDatePicker])
   useEffect(() => {
     if (!focusRequest) return
     // Ensure the target row is not hidden by level/search/date filters.
@@ -585,9 +599,51 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
                   >
                     {'<'}
                   </button>
-                  <span className="aoEventLogDateTitle">
-                    {new Date(pickerMonthStartMs).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
-                  </span>
+                  {pickerHeaderEditOpen ? (
+                    <span className="aoEventLogDateTitleEdit">
+                      <select
+                        className="aoEventLogDateSelect"
+                        value={pickerMonth}
+                        onChange={(event) => {
+                          const nextMonth = Number(event.target.value)
+                          setPickerMonthStartMs(new Date(pickerYear, nextMonth, 1).getTime())
+                        }}
+                        aria-label="Select month"
+                      >
+                        {MONTH_NAMES.map((name, idx) => (
+                          <option key={name} value={idx}>
+                            {name}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="aoEventLogDateSelect"
+                        value={pickerYear}
+                        onChange={(event) => {
+                          const nextYear = Number(event.target.value)
+                          setPickerMonthStartMs(new Date(nextYear, pickerMonth, 1).getTime())
+                        }}
+                        aria-label="Select year"
+                      >
+                        {pickerYearOptions.map((year) => (
+                          <option key={year} value={year}>
+                            {year}
+                          </option>
+                        ))}
+                      </select>
+                    </span>
+                  ) : (
+                    <button
+                      className="aoEventLogDateTitleBtn"
+                      onClick={() => setPickerHeaderEditOpen(true)}
+                      title="Jump to month/year"
+                      aria-label="Jump to month/year"
+                    >
+                      <span className="aoEventLogDateTitle">
+                        {pickerMonthDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                      </span>
+                    </button>
+                  )}
                   <button
                     className="aoEventLogDateNavBtn"
                     onClick={() => setPickerMonthStartMs((prev) => addMonths(prev, 1))}

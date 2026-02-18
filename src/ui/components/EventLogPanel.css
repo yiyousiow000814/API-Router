@@ -128,6 +128,36 @@
   color: rgba(13, 18, 32, 0.62);
 }
 
+.aoEventLogDateTitleBtn {
+  border: 0;
+  background: transparent;
+  padding: 0 6px;
+  cursor: pointer;
+}
+
+.aoEventLogDateTitleBtn:hover .aoEventLogDateTitle {
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoEventLogDateTitleEdit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoEventLogDateSelect {
+  height: 24px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  color: rgba(13, 18, 32, 0.86);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0 8px;
+}
+
 .aoEventLogDateWeekdays {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
