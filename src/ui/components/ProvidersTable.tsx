@@ -3,14 +3,21 @@ import type { Status } from '../types'
 
 const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
 
+export type LastErrorJump = {
+  provider: string
+  unixMs: number
+  message: string
+}
+
 type Props = {
   providers: string[]
   status: Status
   refreshingProviders: Record<string, boolean>
   onRefreshQuota: (provider: string) => void
+  onOpenLastErrorInEventLog: (payload: LastErrorJump) => void
 }
 
-export function ProvidersTable({ providers, status, refreshingProviders, onRefreshQuota }: Props) {
+export function ProvidersTable({ providers, status, refreshingProviders, onRefreshQuota, onOpenLastErrorInEventLog }: Props) {
   return (
     <table className="aoTable aoTableFixed">
       <thead>
@@ -26,7 +33,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
             Cooldown
           </th>
           <th style={{ width: 170 }}>Last OK</th>
-          <th>Last Fail At</th>
+          <th>Last Error</th>
           <th style={{ width: 240 }}>Usage</th>
         </tr>
       </thead>
@@ -182,27 +189,52 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
               </div>
             )
 
-          return (
-            <tr key={p}>
-              <td style={{ fontFamily: mono }}>{p}</td>
-              <td className="aoCellCenter">
-                <div className="aoCellCenterInner">
-                  <span className={`aoPill ${isActive ? 'aoPulse' : ''}`.trim()}>
-                    <span className={dotClass} />
-                    <span className="aoPillText">{healthLabel}</span>
-                  </span>
-                </div>
-              </td>
-              <td className="aoCellCenter">{h.consecutive_failures}</td>
-              <td className="aoCellCenter">{cooldownActive ? fmtWhen(h.cooldown_until_unix_ms) : '-'}</td>
-              <td>{fmtWhen(h.last_ok_at_unix_ms)}</td>
-              <td>{h.last_fail_at_unix_ms > 0 ? fmtWhen(h.last_fail_at_unix_ms) : '-'}</td>
-              <td className="aoUsageCell">
-                <div className="aoUsageCellInner">{usageNode}</div>
-              </td>
-            </tr>
-          )
-        })}
+            const lastErrorMessage = h.last_error?.trim() ?? ''
+            const lastErrorAt = h.last_fail_at_unix_ms
+            const showLastError = lastErrorAt > 0 && lastErrorMessage.length > 0
+
+            return (
+              <tr key={p}>
+                <td style={{ fontFamily: mono }}>{p}</td>
+                <td className="aoCellCenter">
+                  <div className="aoCellCenterInner">
+                    <span className={`aoPill ${isActive ? 'aoPulse' : ''}`.trim()}>
+                      <span className={dotClass} />
+                      <span className="aoPillText">{healthLabel}</span>
+                    </span>
+                  </div>
+                </td>
+                <td className="aoCellCenter">{h.consecutive_failures}</td>
+                <td className="aoCellCenter">{cooldownActive ? fmtWhen(h.cooldown_until_unix_ms) : '-'}</td>
+                <td>{fmtWhen(h.last_ok_at_unix_ms)}</td>
+                <td>
+                  {showLastError ? (
+                    <span className="aoLastErrorCell">
+                      <span className="aoLastErrorTime">{fmtWhen(lastErrorAt)}</span>
+                      <button
+                        className="aoLastErrorViewBtn"
+                        onClick={() =>
+                          onOpenLastErrorInEventLog({
+                            provider: p,
+                            unixMs: lastErrorAt,
+                            message: h.last_error,
+                          })
+                        }
+                        title="Open in Event Log"
+                      >
+                        View
+                      </button>
+                    </span>
+                  ) : (
+                    '-'
+                  )}
+                </td>
+                <td className="aoUsageCell">
+                  <div className="aoUsageCellInner">{usageNode}</div>
+                </td>
+              </tr>
+            )
+          })}
       </tbody>
     </table>
   )

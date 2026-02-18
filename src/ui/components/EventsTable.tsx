@@ -7,6 +7,8 @@ import './EventsTable.css'
 
 type Props = {
   events: Status['recent_events']
+  focusEvent?: Status['recent_events'][number] | null
+  focusNonce?: number
   splitByLevel?: boolean
   scrollInside?: boolean
   scrollPersistKey?: string
@@ -28,6 +30,8 @@ function formatEventMessageDialog(message: string): string {
 
 export function EventsTable({
   events,
+  focusEvent = null,
+  focusNonce = 0,
   splitByLevel = true,
   scrollInside = false,
   scrollPersistKey,
@@ -42,6 +46,8 @@ export function EventsTable({
   const eventsScrollbarHideTimerRef = useRef<number | null>(null)
   const eventsScrollbarRafRef = useRef<number | null>(null)
   const eventsScrollbarDragRef = useRef<DragState>(IDLE_DRAG_STATE)
+  const focusRowRef = useRef<HTMLTableRowElement | null>(null)
+  const focusFlashTimerRef = useRef<number | null>(null)
 
   const setEventsScrollbarVisible = useCallback((visible: boolean) => {
     eventsTableSurfaceRef.current?.classList.toggle('aoEventsTableSurfaceScrollbarVisible', visible)
@@ -237,8 +243,35 @@ export function EventsTable({
         window.cancelAnimationFrame(eventsScrollbarRafRef.current)
         eventsScrollbarRafRef.current = null
       }
+      if (focusFlashTimerRef.current != null) {
+        window.clearTimeout(focusFlashTimerRef.current)
+        focusFlashTimerRef.current = null
+      }
     }
   }, [])
+
+  useEffect(() => {
+    if (!focusEvent) {
+      focusRowRef.current = null
+      return
+    }
+  }, [focusEvent])
+
+  useEffect(() => {
+    if (!focusNonce || !focusEvent) return
+    const row = focusRowRef.current
+    if (!row) return
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    row.classList.remove('aoEventRowFocusFlash')
+    // Force reflow so repeated focus requests replay the animation.
+    void row.getBoundingClientRect()
+    row.classList.add('aoEventRowFocusFlash')
+    if (focusFlashTimerRef.current != null) window.clearTimeout(focusFlashTimerRef.current)
+    focusFlashTimerRef.current = window.setTimeout(() => {
+      row.classList.remove('aoEventRowFocusFlash')
+      focusFlashTimerRef.current = null
+    }, 1400)
+  }, [focusEvent, focusNonce])
 
   // Infos are displayed directly, so cap them here. Errors/warnings are merged/sorted and capped later.
   const errors = allEvents.filter((e) => e.level === 'error')
@@ -291,8 +324,14 @@ export function EventsTable({
           .join('\n')
       : ''
 
+    const isFocus = focusEvent != null && e === focusEvent
+
     return (
-      <tr key={key} className={isError ? 'aoEventRowError' : isWarning ? 'aoEventRowWarning' : undefined}>
+      <tr
+        key={key}
+        ref={isFocus ? focusRowRef : undefined}
+        className={`${isError ? 'aoEventRowError' : isWarning ? 'aoEventRowWarning' : ''}`.trim() || undefined}
+      >
         <td title={fmtWhen(e.unix_ms)}>{fmtAgo(e.unix_ms)}</td>
         <td className="aoEventsMono" title={sessionTitle}>
           {sessionCell}

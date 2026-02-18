@@ -3,6 +3,8 @@ import type { Status } from '../types'
 
 type Props = {
   visibleEvents: Status['recent_events']
+  focusEvent?: Status['recent_events'][number] | null
+  focusNonce?: number
   title?: string
   splitByLevel?: boolean
   scrollInside?: boolean
@@ -12,6 +14,8 @@ type Props = {
 
 export function DashboardEventsSection({
   visibleEvents,
+  focusEvent,
+  focusNonce,
   title = 'Events',
   splitByLevel = true,
   scrollInside = false,
@@ -29,6 +33,8 @@ export function DashboardEventsSection({
       ) : null}
       <EventsTable
         events={visibleEvents}
+        focusEvent={focusEvent}
+        focusNonce={focusNonce}
         splitByLevel={splitByLevel}
         scrollInside={scrollInside}
         scrollPersistKey={scrollPersistKey}

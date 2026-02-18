@@ -1,8 +1,9 @@
 import { fmtWhen } from '../utils/format'
 import { DashboardPanel } from './DashboardPanel'
-import { EventLogPanel } from './EventLogPanel'
+import { EventLogPanel, type EventLogFocusRequest } from './EventLogPanel'
 import { ProviderSwitchboardPanel } from './ProviderSwitchboardPanel'
 import { UsageStatisticsPanel } from './UsageStatisticsPanel'
+import type { LastErrorJump } from './ProvidersTable'
 
 type Props = {
   activePage: 'dashboard' | 'usage_statistics' | 'provider_switchboard' | 'event_log'
@@ -32,7 +33,9 @@ type Props = {
   clientSessions: any[]
   updatingSessionPref: Record<string, boolean>
   onSetSessionPreferred: (sessionId: string, provider: string | null) => void
+  onOpenLastErrorInEventLog: (payload: LastErrorJump) => void
   eventLogSeedEvents: any[]
+  eventLogFocusRequest: EventLogFocusRequest | null
   usageProps: any
   switchboardProps: any
 }
@@ -66,7 +69,9 @@ export function AppMainContent(props: Props) {
     clientSessions,
     updatingSessionPref,
     onSetSessionPreferred,
+    onOpenLastErrorInEventLog,
     eventLogSeedEvents,
+    eventLogFocusRequest,
     usageProps,
     switchboardProps,
   } = props
@@ -83,6 +88,7 @@ export function AppMainContent(props: Props) {
     return (
       <EventLogPanel
         events={eventLogSeedEvents}
+        focusRequest={eventLogFocusRequest}
       />
     )
   }
@@ -116,6 +122,7 @@ export function AppMainContent(props: Props) {
       onOpenConfigModal={onOpenConfigModal}
       refreshingProviders={refreshingProviders}
       onRefreshQuota={onRefreshQuota}
+      onOpenLastErrorInEventLog={onOpenLastErrorInEventLog}
       clientSessions={clientSessions ?? []}
       updatingSessionPref={updatingSessionPref}
       onSetSessionPreferred={onSetSessionPreferred}
