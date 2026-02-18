@@ -139,6 +139,12 @@
   color: rgba(13, 18, 32, 0.9);
 }
 
+.aoEventLogDateTitleBtn:focus-visible {
+  outline: 2px solid rgba(var(--ao-accent-rgb), 0.5);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
 .aoEventLogDateTitleEdit {
   display: inline-flex;
   align-items: center;

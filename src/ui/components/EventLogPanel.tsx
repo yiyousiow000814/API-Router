@@ -148,6 +148,30 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
   const handledFocusNonceRef = useRef<number | null>(null)
   const fromDayStart = parseDateInputToDayStart(dateFrom)
   const toDayStart = parseDateInputToDayStart(dateTo)
+  const mergeKnownYears = useCallback((rows: EventLogEntry[]) => {
+    setKnownEventYears((prev) => {
+      const years = new Set(prev)
+      for (const row of rows) years.add(new Date(row.unix_ms).getFullYear())
+      return [...years].sort((a, b) => a - b)
+    })
+  }, [])
+  const refreshKnownEventYears = useCallback(async () => {
+    const reqId = ++yearQuerySeqRef.current
+    try {
+      const years = await invoke<number[]>('get_event_log_years')
+      if (yearQuerySeqRef.current !== reqId) return
+      if (!Array.isArray(years)) return
+      setKnownEventYears((prev) => {
+        const merged = new Set(prev)
+        for (const year of years) {
+          if (Number.isFinite(year)) merged.add(Number(year))
+        }
+        return [...merged].sort((a, b) => a - b)
+      })
+    } catch {
+      // Keep current year list on failure.
+    }
+  }, [])
 
   const fetchEventLogEntries = useCallback(async (fromDay: number | null, toDay: number | null) => {
     const fromUnixMs = fromDay == null ? null : fromDay
@@ -162,15 +186,11 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
       if (querySeqRef.current !== reqId) return
       if (!Array.isArray(rows)) return
       setSourceEvents([...rows].sort((a, b) => b.unix_ms - a.unix_ms))
-      setKnownEventYears((prev) => {
-        const years = new Set(prev)
-        for (const row of rows) years.add(new Date(row.unix_ms).getFullYear())
-        return [...years].sort((a, b) => a - b)
-      })
+      mergeKnownYears(rows)
     } catch {
       // Keep the latest successful snapshot to avoid UI flicker when fetch transiently fails.
     }
-  }, [])
+  }, [mergeKnownYears])
 
   const now = Date.now()
   const defaultRangeEndDay = startOfDayMs(now)
@@ -354,6 +374,14 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
     }
   }, [events, sourceEvents.length])
   useEffect(() => {
+    if (!events.length) return
+    mergeKnownYears(events)
+  }, [events, mergeKnownYears])
+  useEffect(() => {
+    if (!sourceEvents.length) return
+    mergeKnownYears(sourceEvents)
+  }, [sourceEvents, mergeKnownYears])
+  useEffect(() => {
     void fetchEventLogEntries(fromDayStart, toDayStart)
   }, [fetchEventLogEntries, fromDayStart, toDayStart])
   useEffect(() => {
@@ -371,26 +399,8 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
     if (!openDatePicker) setPickerHeaderEditOpen(false)
   }, [openDatePicker])
   useEffect(() => {
-    const reqId = ++yearQuerySeqRef.current
-    void (async () => {
-      try {
-        const rows = await invoke<EventLogEntry[]>('get_event_log_entries', {
-          fromUnixMs: null,
-          toUnixMs: null,
-          limit: EVENT_LOG_FETCH_LIMIT,
-        })
-        if (yearQuerySeqRef.current !== reqId) return
-        if (!Array.isArray(rows)) return
-        setKnownEventYears((prev) => {
-          const years = new Set(prev)
-          for (const row of rows) years.add(new Date(row.unix_ms).getFullYear())
-          return [...years].sort((a, b) => a - b)
-        })
-      } catch {
-        // Keep current year list on failure.
-      }
-    })()
-  }, [])
+    void refreshKnownEventYears()
+  }, [refreshKnownEventYears])
   useEffect(() => {
     if (!focusRequest) return
     // Ensure the target row is not hidden by level/search/date filters.
