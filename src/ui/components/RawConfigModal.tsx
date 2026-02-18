@@ -1,5 +1,6 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { ModalBackdrop } from './ModalBackdrop'
+import { isSaveHotkey, resolvePreferredTarget } from '../utils/hotkey'
 
 type DragState = {
   active: boolean
@@ -213,6 +214,36 @@ export function RawConfigModal({
       })
     }
   }, [])
+
+  useEffect(() => {
+    if (!open || typeof window === 'undefined') return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!isSaveHotkey(e)) return
+      const activeEl = document.activeElement
+      const activeHome = homeOptions.find((home) => editorRefs.current[home] === activeEl) ?? null
+      const stateByHome = Object.fromEntries(
+        homeOptions.map((home) => [
+          home,
+          {
+            isDraft: Boolean(draftByHome[home]),
+            loading: Boolean(loadingByHome[home]),
+            saving: Boolean(savingByHome[home]),
+            loaded: Boolean(loadedByHome[home]),
+          },
+        ]),
+      )
+      const targetHome = resolvePreferredTarget(homeOptions, activeHome, (home) => {
+        const state = stateByHome[home]
+        return state.loaded && !state.isDraft && !state.loading && !state.saving
+      })
+      if (!targetHome) return
+      e.preventDefault()
+      onSaveHome(targetHome)
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [open, homeOptions, draftByHome, loadingByHome, savingByHome, loadedByHome, onSaveHome])
 
   const parseHomeLabel = (home: string) => {
     const raw = homeLabels?.[home] ?? home

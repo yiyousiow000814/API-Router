@@ -1,0 +1,27 @@
+export type HotkeyEventLike = {
+  key: string
+  ctrlKey?: boolean
+  metaKey?: boolean
+  altKey?: boolean
+  shiftKey?: boolean
+  defaultPrevented?: boolean
+}
+
+export function isSaveHotkey(e: HotkeyEventLike): boolean {
+  if (e.defaultPrevented) return false
+  if (e.altKey) return false
+  if (e.shiftKey) return false
+  if (!(e.ctrlKey || e.metaKey)) return false
+  return e.key.toLowerCase() === 's'
+}
+
+export function resolvePreferredTarget<T extends string>(
+  orderedTargets: T[],
+  focusedTarget: T | null,
+  canUseTarget: (target: T) => boolean,
+): T | null {
+  if (focusedTarget && canUseTarget(focusedTarget)) {
+    return focusedTarget
+  }
+  return orderedTargets.find((target) => canUseTarget(target)) ?? null
+}
