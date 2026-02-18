@@ -151,7 +151,7 @@ export function useAppUsageEffects(params: Params) {
 
   useEffect(() => {
     if (activePage !== 'usage_statistics') return
-    void refreshUsageStatistics()
+    void refreshUsageStatistics({ silent: true })
     const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), 15_000)
     return () => window.clearInterval(t)
   }, [activePage, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins])
