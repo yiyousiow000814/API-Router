@@ -349,19 +349,19 @@ export function EventsTable({
         <td className="aoEventsCellWrap">
           <div className="aoEventMessageWrap">
             <div className="aoEventMessage">
-              <button
-                className={`aoEventMessageTextBtn${canExpandError ? ' is-clickable' : ''}`}
-                title={canExpandError ? 'Click to view full message' : e.code ? `${e.code}: ${e.message}` : e.message}
-                onClick={
-                  canExpandError
-                    ? () => setMessageDialog({ title: e.code || 'Error message', text: formatEventMessageDialog(e.message) })
-                    : undefined
-                }
-              >
-                <span className="aoEventMessageText">
+              {canExpandError ? (
+                <button
+                  className="aoEventMessageTextBtn is-clickable"
+                  title="Click to view full message"
+                  onClick={() => setMessageDialog({ title: e.code || 'Error message', text: formatEventMessageDialog(e.message) })}
+                >
+                  <span className="aoEventMessageText">{collapsedMessage}</span>
+                </button>
+              ) : (
+                <span className="aoEventMessageText aoEventMessageTextStatic" title={e.code ? `${e.code}: ${e.message}` : e.message}>
                   {collapsedMessage}
                 </span>
-              </button>
+              )}
             </div>
             {isError ? (
               <button

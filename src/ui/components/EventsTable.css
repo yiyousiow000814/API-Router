@@ -48,6 +48,7 @@
   padding: 0;
   text-align: left;
   color: inherit;
+  user-select: text;
 }
 
 .aoEventMessageTextBtn.is-clickable {
@@ -63,6 +64,13 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
+  user-select: text;
+}
+
+.aoEventMessageTextStatic {
+  display: -webkit-box;
+  width: 100%;
+  cursor: text;
 }
 
 .aoEventMessageWrap {

@@ -36,6 +36,7 @@ type Props = {
   onOpenLastErrorInEventLog: (payload: LastErrorJump) => void
   eventLogSeedEvents: any[]
   eventLogFocusRequest: EventLogFocusRequest | null
+  onEventLogFocusRequestHandled: (nonce: number) => void
   usageProps: any
   switchboardProps: any
 }
@@ -72,6 +73,7 @@ export function AppMainContent(props: Props) {
     onOpenLastErrorInEventLog,
     eventLogSeedEvents,
     eventLogFocusRequest,
+    onEventLogFocusRequestHandled,
     usageProps,
     switchboardProps,
   } = props
@@ -89,6 +91,7 @@ export function AppMainContent(props: Props) {
       <EventLogPanel
         events={eventLogSeedEvents}
         focusRequest={eventLogFocusRequest}
+        onFocusRequestHandled={onEventLogFocusRequestHandled}
       />
     )
   }

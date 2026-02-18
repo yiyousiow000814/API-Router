@@ -7,6 +7,7 @@ import './EventLogPanel.css'
 type Props = {
   events: Status['recent_events']
   focusRequest: EventLogFocusRequest | null
+  onFocusRequestHandled: (nonce: number) => void
 }
 
 export type EventLogFocusRequest = {
@@ -115,7 +116,7 @@ function parseDateInputToDayStart(dateText: string): number | null {
   return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime()
 }
 
-export function EventLogPanel({ events, focusRequest }: Props) {
+export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: Props) {
   const [sourceEvents, setSourceEvents] = useState<EventLogEntry[]>(() =>
     [...events].sort((a, b) => b.unix_ms - a.unix_ms),
   )
@@ -136,6 +137,7 @@ export function EventLogPanel({ events, focusRequest }: Props) {
   const [focusNonce, setFocusNonce] = useState(0)
   const datePickerRef = useRef<HTMLDivElement | null>(null)
   const querySeqRef = useRef(0)
+  const handledFocusNonceRef = useRef<number | null>(null)
   const fromDayStart = parseDateInputToDayStart(dateFrom)
   const toDayStart = parseDateInputToDayStart(dateTo)
 
@@ -357,6 +359,7 @@ export function EventLogPanel({ events, focusRequest }: Props) {
   }, [focusRequest])
   useEffect(() => {
     if (!focusRequest || !sourceEvents.length) return
+    if (handledFocusNonceRef.current === focusRequest.nonce) return
     const providerNeedle = focusRequest.provider.trim().toLowerCase()
     const messageNeedle = focusRequest.message.trim().toLowerCase()
     const messageProbe = messageNeedle.slice(0, 120)
@@ -374,7 +377,9 @@ export function EventLogPanel({ events, focusRequest }: Props) {
     if (!target) return
     setFocusedEvent(target)
     setFocusNonce(focusRequest.nonce)
-  }, [focusRequest, sourceEvents])
+    handledFocusNonceRef.current = focusRequest.nonce
+    onFocusRequestHandled(focusRequest.nonce)
+  }, [focusRequest, onFocusRequestHandled, sourceEvents])
 
   return (
     <div className="aoEventLogLayout">

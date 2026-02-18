@@ -235,6 +235,12 @@ export default function App() {
     })
     switchPage('event_log')
   }
+  const handleEventLogFocusRequestHandled = (nonce: number) => {
+    setEventLogFocusRequest((current) => {
+      if (!current) return current
+      return current.nonce === nonce ? null : current
+    })
+  }
   useEffect(() => {
     rawConfigTextsRef.current = rawConfigTexts
   }, [rawConfigTexts])
@@ -933,6 +939,7 @@ export default function App() {
               onOpenLastErrorInEventLog={handleOpenLastErrorInEventLog}
               eventLogSeedEvents={status?.recent_events ?? []}
               eventLogFocusRequest={eventLogFocusRequest}
+              onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
               usageProps={{
                 config,
                 usageWindowHours,
