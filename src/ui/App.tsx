@@ -919,6 +919,7 @@ export default function App() {
               updatingSessionPref={updatingSessionPref}
               onSetSessionPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
               visibleEvents={visibleEvents}
+              eventLogSeedEvents={status?.recent_events ?? []}
               canClearErrors={canClearErrors}
               onClearErrors={clearErrors}
               usageProps={{

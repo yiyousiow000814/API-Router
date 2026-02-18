@@ -417,12 +417,157 @@ fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
     Some(dt.format("%Y-%m-%d").to_string())
 }
 
+fn event_query_key(e: &Value) -> Option<String> {
+    let unix_ms = e.get("unix_ms").and_then(|v| v.as_u64())?;
+    let provider = e.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+    let level = e.get("level").and_then(|v| v.as_str()).unwrap_or("");
+    let code = e.get("code").and_then(|v| v.as_str()).unwrap_or("");
+    let message = e.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    let fields = e
+        .get("fields")
+        .and_then(|v| serde_json::to_string(v).ok())
+        .unwrap_or_default();
+    Some(format!(
+        "{unix_ms}|{provider}|{level}|{code}|{message}|{fields}"
+    ))
+}
+
+fn event_shape_is_valid(e: &Value) -> bool {
+    e.get("unix_ms").and_then(|v| v.as_u64()).is_some()
+        && e.get("provider").and_then(|v| v.as_str()).is_some()
+        && e.get("level").and_then(|v| v.as_str()).is_some()
+        && e.get("code").and_then(|v| v.as_str()).is_some()
+        && e.get("message").and_then(|v| v.as_str()).is_some()
+}
+
+const EVENT_LOG_QUERY_DEFAULT_LIMIT: usize = 2000;
+const EVENT_LOG_QUERY_MAX_LIMIT: usize = 5000;
+
+fn normalize_event_query_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(EVENT_LOG_QUERY_DEFAULT_LIMIT)
+        .clamp(1, EVENT_LOG_QUERY_MAX_LIMIT)
+}
+
+fn event_in_time_window(e: &Value, from: Option<u64>, to: Option<u64>) -> bool {
+    let Some(unix_ms) = e.get("unix_ms").and_then(|v| v.as_u64()) else {
+        return false;
+    };
+    if let Some(from_ms) = from {
+        if unix_ms < from_ms {
+            return false;
+        }
+    }
+    if let Some(to_ms) = to {
+        if unix_ms > to_ms {
+            return false;
+        }
+    }
+    true
+}
+
+fn append_backup_events(
+    out: &mut Vec<Value>,
+    dedup: &mut std::collections::HashSet<String>,
+    data_root: &std::path::Path,
+    from: Option<u64>,
+    to: Option<u64>,
+    cap: usize,
+) {
+    if out.len() >= cap {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(data_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if out.len() >= cap {
+            break;
+        }
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let include = name.starts_with("sled.backup.")
+            || name.starts_with("sled.manual-backup.")
+            || name.starts_with("sled.bak.")
+            || name.starts_with("sled.corrupt.");
+        if !include {
+            continue;
+        }
+        let Ok(db) = sled::open(&path) else {
+            continue;
+        };
+        for item in db.scan_prefix(b"event:").rev() {
+            if out.len() >= cap {
+                break;
+            }
+            let Ok((_, v)) = item else {
+                continue;
+            };
+            let Ok(e) = serde_json::from_slice::<Value>(&v) else {
+                continue;
+            };
+            if !event_shape_is_valid(&e) {
+                continue;
+            }
+            if !event_in_time_window(&e, from, to) {
+                continue;
+            }
+            let Some(key) = event_query_key(&e) else {
+                continue;
+            };
+            if dedup.insert(key) {
+                out.push(e);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub(crate) fn get_event_log_entries(
+    state: tauri::State<'_, app_state::AppState>,
+    from_unix_ms: Option<u64>,
+    to_unix_ms: Option<u64>,
+    limit: Option<usize>,
+) -> serde_json::Value {
+    let (from, to) = match (from_unix_ms, to_unix_ms) {
+        (Some(from), Some(to)) if from > to => (Some(to), Some(from)),
+        _ => (from_unix_ms, to_unix_ms),
+    };
+    let cap = normalize_event_query_limit(limit);
+    let mut events = state.gateway.store.list_events_range(from, to, Some(cap));
+    events.retain(event_shape_is_valid);
+    let mut dedup = std::collections::HashSet::<String>::new();
+    for e in &events {
+        if let Some(key) = event_query_key(e) {
+            let _ = dedup.insert(key);
+        }
+    }
+    let backup_root = state
+        .config_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
+    append_backup_events(&mut events, &mut dedup, backup_root, from, to, cap);
+    events.sort_by(|a, b| {
+        let a_ts = a.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        let b_ts = b.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        b_ts.cmp(&a_ts)
+    });
+    events.truncate(cap);
+    serde_json::Value::Array(events)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::commands::{
         apply_discovered_router_confirmation, backfill_main_confirmation_from_verified_agent,
-        merge_discovered_model_provider, next_last_discovered_unix_ms,
+        event_query_key, merge_discovered_model_provider, next_last_discovered_unix_ms,
+        normalize_event_query_limit,
         next_wsl_discovery_miss_count,
         should_keep_runtime_session,
     };
@@ -449,6 +594,34 @@ mod tests {
             entry.last_reported_model_provider.as_deref(),
             Some(GATEWAY_MODEL_PROVIDER_ID)
         );
+    }
+
+    #[test]
+    fn normalize_event_query_limit_applies_default_and_cap() {
+        assert_eq!(normalize_event_query_limit(None), 2000);
+        assert_eq!(normalize_event_query_limit(Some(0)), 1);
+        assert_eq!(normalize_event_query_limit(Some(999_999)), 5000);
+    }
+
+    #[test]
+    fn event_query_key_distinguishes_fields_payload() {
+        let a = serde_json::json!({
+            "unix_ms": 1,
+            "provider": "gateway",
+            "level": "info",
+            "code": "x",
+            "message": "same",
+            "fields": { "codex_session_id": "s1" }
+        });
+        let b = serde_json::json!({
+            "unix_ms": 1,
+            "provider": "gateway",
+            "level": "info",
+            "code": "x",
+            "message": "same",
+            "fields": { "codex_session_id": "s2" }
+        });
+        assert_ne!(event_query_key(&a), event_query_key(&b));
     }
 
     #[test]
