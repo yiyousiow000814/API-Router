@@ -14,6 +14,7 @@ export type Status = {
   manual_override: string | null
   providers: Record<string, ProviderHealth>
   metrics: Record<string, { ok_requests: number; error_requests: number; total_tokens: number }>
+  // Dashboard snapshot window (small/recent only), not full Event Log history.
   recent_events: Array<{
     provider: string
     level: string
