@@ -307,11 +307,11 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
   const pickerMonth = pickerMonthDate.getMonth()
   const pickerYear = pickerMonthDate.getFullYear()
   const pickerYearOptions = useMemo(() => {
-    const nowYear = new Date().getFullYear()
-    const minYear = Math.min(nowYear - 10, pickerYear - 5)
-    const maxYear = Math.max(nowYear + 2, pickerYear + 5)
-    return Array.from({ length: maxYear - minYear + 1 }, (_, idx) => minYear + idx)
-  }, [pickerYear])
+    const years = new Set<number>()
+    for (const event of sourceEvents) years.add(new Date(event.unix_ms).getFullYear())
+    const sorted = [...years].sort((a, b) => a - b)
+    return sorted.length ? sorted : [pickerYear]
+  }, [pickerYear, sourceEvents])
   const allLevelsSelected = selectedLevels.length === ALL_LEVELS.length
   const todayDayStart = startOfDayMs(Date.now())
   const showTodayHint = pickerFromDayStart == null && pickerToDayStart == null
@@ -360,6 +360,12 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
   useEffect(() => {
     if (!openDatePicker) setPickerHeaderEditOpen(false)
   }, [openDatePicker])
+  useEffect(() => {
+    if (!pickerHeaderEditOpen) return
+    if (pickerYearOptions.includes(pickerYear)) return
+    const fallbackYear = pickerYearOptions[pickerYearOptions.length - 1]
+    setPickerMonthStartMs(new Date(fallbackYear, pickerMonth, 1).getTime())
+  }, [pickerHeaderEditOpen, pickerMonth, pickerYear, pickerYearOptions])
   useEffect(() => {
     if (!focusRequest) return
     // Ensure the target row is not hidden by level/search/date filters.
