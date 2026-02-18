@@ -20,8 +20,13 @@ describe('resolvePreferredTarget', () => {
     expect(target).toBe('b')
   })
 
-  it('falls back to first usable target', () => {
+  it('returns null when focused target is not usable', () => {
     const target = resolvePreferredTarget(['a', 'b'], 'b', (v) => v === 'a')
+    expect(target).toBeNull()
+  })
+
+  it('falls back to first usable target when no focused target', () => {
+    const target = resolvePreferredTarget(['a', 'b'], null, (v) => v === 'a')
     expect(target).toBe('a')
   })
 

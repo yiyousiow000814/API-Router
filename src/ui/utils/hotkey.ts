@@ -20,8 +20,8 @@ export function resolvePreferredTarget<T extends string>(
   focusedTarget: T | null,
   canUseTarget: (target: T) => boolean,
 ): T | null {
-  if (focusedTarget && canUseTarget(focusedTarget)) {
-    return focusedTarget
+  if (focusedTarget) {
+    return canUseTarget(focusedTarget) ? focusedTarget : null
   }
   return orderedTargets.find((target) => canUseTarget(target)) ?? null
 }

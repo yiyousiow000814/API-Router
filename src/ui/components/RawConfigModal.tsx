@@ -219,6 +219,7 @@ export function RawConfigModal({
     if (!open || typeof window === 'undefined') return
     const onKeyDown = (e: KeyboardEvent) => {
       if (!isSaveHotkey(e)) return
+      e.preventDefault()
       const activeEl = document.activeElement
       const activeHome = homeOptions.find((home) => editorRefs.current[home] === activeEl) ?? null
       const stateByHome = Object.fromEntries(
@@ -237,7 +238,6 @@ export function RawConfigModal({
         return state.loaded && !state.isDraft && !state.loading && !state.saving
       })
       if (!targetHome) return
-      e.preventDefault()
       onSaveHome(targetHome)
     }
 
