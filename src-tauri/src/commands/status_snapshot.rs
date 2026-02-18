@@ -491,7 +491,10 @@ fn append_backup_events(
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        let include = name.starts_with("sled.backup.") || name.starts_with("sled.manual-backup.");
+        let include = name.starts_with("sled.backup.")
+            || name.starts_with("sled.manual-backup.")
+            || name.starts_with("sled.bak.")
+            || name.starts_with("sled.corrupt.");
         if !include {
             continue;
         }

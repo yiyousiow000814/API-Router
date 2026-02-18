@@ -38,6 +38,8 @@ pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<Stri
 }
 
 impl Store {
+    const MAX_EVENTS_RUNTIME: usize = 5000;
+    const EVENT_PRUNE_EVERY: u64 = 64;
     const MAX_USAGE_REQUESTS: usize = 500_000;
     const USAGE_PRUNE_EVERY: u64 = 128;
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
@@ -214,7 +216,40 @@ impl Store {
         let _ = self
             .db
             .insert(key.as_bytes(), serde_json::to_vec(&v).unwrap_or_default());
+        let seq = self.usage_prune_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        if seq % Self::EVENT_PRUNE_EVERY == 0 {
+            self.prune_events_runtime();
+        }
         let _ = self.db.flush();
+    }
+
+    fn prune_events_runtime(&self) {
+        let boundary = self
+            .db
+            .scan_prefix(b"event:")
+            .rev()
+            .nth(Self::MAX_EVENTS_RUNTIME);
+        let Some(Ok((end_key, _))) = boundary else {
+            return;
+        };
+
+        let start = b"event:".to_vec();
+        let end = end_key.to_vec();
+        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
+        for res in self.db.range(start..=end) {
+            let Ok((k, _)) = res else {
+                continue;
+            };
+            batch.push(k);
+            if batch.len() >= 1024 {
+                for key in batch.drain(..) {
+                    let _ = self.db.remove(key);
+                }
+            }
+        }
+        for key in batch.drain(..) {
+            let _ = self.db.remove(key);
+        }
     }
 
     pub fn record_success(
@@ -561,7 +596,7 @@ impl Store {
             };
             if let Some(from) = from_unix_ms {
                 if unix_ms < from {
-                    continue;
+                    break;
                 }
             }
             if let Some(to) = to_unix_ms {
