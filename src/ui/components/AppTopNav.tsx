@@ -1,4 +1,4 @@
-type TopPage = 'dashboard' | 'usage_statistics' | 'provider_switchboard'
+type TopPage = 'dashboard' | 'usage_statistics' | 'provider_switchboard' | 'event_log'
 
 type AppTopNavProps = {
   activePage: TopPage
@@ -52,6 +52,20 @@ export function AppTopNav({ activePage, onSwitchPage, onOpenGettingStarted }: Ap
             <circle cx="9" cy="17" r="3" />
           </svg>
           <span>Provider Switchboard</span>
+        </button>
+        <button
+          className={`aoTopNavBtn${activePage === 'event_log' ? ' is-active' : ''}`}
+          role="tab"
+          aria-selected={activePage === 'event_log'}
+          onClick={() => onSwitchPage('event_log')}
+        >
+          <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 4.5h14" />
+            <path d="M5 9.5h14" />
+            <path d="M5 14.5h14" />
+            <path d="M5 19.5h10" />
+          </svg>
+          <span>Event Log</span>
         </button>
       </div>
       <button className="aoTinyBtn" aria-label="Getting Started" onClick={onOpenGettingStarted}>

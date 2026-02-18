@@ -5,17 +5,40 @@ type Props = {
   visibleEvents: Status['recent_events']
   canClearErrors: boolean
   onClearErrors: () => void
+  title?: string
+  splitByLevel?: boolean
+  scrollInside?: boolean
+  showHeader?: boolean
+  scrollPersistKey?: string
 }
 
-export function DashboardEventsSection({ visibleEvents, canClearErrors, onClearErrors }: Props) {
+export function DashboardEventsSection({
+  visibleEvents,
+  canClearErrors,
+  onClearErrors,
+  title = 'Events',
+  splitByLevel = true,
+  scrollInside = false,
+  showHeader = true,
+  scrollPersistKey,
+}: Props) {
   return (
     <div className="aoSection">
-      <div className="aoSectionHeader">
-        <div className="aoRow">
-          <h3 className="aoH3">Events</h3>
+      {showHeader ? (
+        <div className="aoSectionHeader">
+          <div className="aoRow">
+            <h3 className="aoH3">{title}</h3>
+          </div>
         </div>
-      </div>
-      <EventsTable events={visibleEvents} canClearErrors={canClearErrors} onClearErrors={onClearErrors} />
+      ) : null}
+      <EventsTable
+        events={visibleEvents}
+        canClearErrors={canClearErrors}
+        onClearErrors={onClearErrors}
+        splitByLevel={splitByLevel}
+        scrollInside={scrollInside}
+        scrollPersistKey={scrollPersistKey}
+      />
     </div>
   )
 }

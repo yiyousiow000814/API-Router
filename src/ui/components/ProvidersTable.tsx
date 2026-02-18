@@ -196,7 +196,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
               <td className="aoCellCenter">{h.consecutive_failures}</td>
               <td className="aoCellCenter">{cooldownActive ? fmtWhen(h.cooldown_until_unix_ms) : '-'}</td>
               <td>{fmtWhen(h.last_ok_at_unix_ms)}</td>
-              <td className="aoCellWrap">{h.last_error ? h.last_error : '-'}</td>
+              <td>{h.last_fail_at_unix_ms > 0 ? fmtWhen(h.last_fail_at_unix_ms) : '-'}</td>
               <td className="aoUsageCell">
                 <div className="aoUsageCellInner">{usageNode}</div>
               </td>

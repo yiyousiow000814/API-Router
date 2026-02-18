@@ -1,10 +1,11 @@
 import { fmtWhen } from '../utils/format'
 import { DashboardPanel } from './DashboardPanel'
+import { EventLogPanel } from './EventLogPanel'
 import { ProviderSwitchboardPanel } from './ProviderSwitchboardPanel'
 import { UsageStatisticsPanel } from './UsageStatisticsPanel'
 
 type Props = {
-  activePage: 'dashboard' | 'usage_statistics' | 'provider_switchboard'
+  activePage: 'dashboard' | 'usage_statistics' | 'provider_switchboard' | 'event_log'
   status: any
   config: any
   providers: any[]
@@ -80,6 +81,16 @@ export function AppMainContent(props: Props) {
 
   if (activePage === 'provider_switchboard') {
     return <ProviderSwitchboardPanel {...switchboardProps} />
+  }
+
+  if (activePage === 'event_log') {
+    return (
+      <EventLogPanel
+        events={visibleEvents}
+        canClearErrors={canClearErrors}
+        onClearErrors={onClearErrors}
+      />
+    )
   }
 
   if (!status) {

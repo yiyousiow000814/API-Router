@@ -5,3 +5,191 @@
 .aoEventsCellWrap {
   word-break: break-word;
 }
+
+.aoEventsTablePlain .aoTable th,
+.aoEventsTablePlain .aoTable td,
+.aoEventsTableSurface .aoTable th,
+.aoEventsTableSurface .aoTable td {
+  padding-left: 5px;
+  padding-right: 5px;
+}
+
+.aoEventsTablePlain .aoTable th:first-child,
+.aoEventsTablePlain .aoTable td:first-child,
+.aoEventsTableSurface .aoTable th:first-child,
+.aoEventsTableSurface .aoTable td:first-child {
+  padding-left: 10px;
+}
+
+.aoEventsTablePlain .aoTable th:last-child,
+.aoEventsTablePlain .aoTable td:last-child,
+.aoEventsTableSurface .aoTable th:last-child,
+.aoEventsTableSurface .aoTable td:last-child {
+  padding-right: 10px;
+}
+
+.aoEventsLevelCell {
+  text-align: center;
+}
+
+.aoTable th.aoEventsLevelCell {
+  text-align: center;
+}
+
+.aoEventMessage {
+  flex: 1;
+  min-width: 0;
+}
+
+.aoEventMessageTextBtn {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+}
+
+.aoEventMessageTextBtn.is-clickable {
+  cursor: pointer;
+}
+
+.aoEventMessageText {
+  min-width: 0;
+  line-height: 1.45;
+  color: inherit;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.aoEventMessageWrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.aoEventCopyBtn {
+  flex: 0 0 auto;
+}
+
+.aoEventCopySlot {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+}
+
+.aoEventMessageDialogBody {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.aoEventsTableSurface {
+  --ao-events-scrollbar-size: 8px;
+  --ao-events-scroll-thumb: rgba(120, 132, 156, 0.44);
+  --ao-events-scroll-thumb-hover: rgba(94, 108, 136, 0.56);
+  display: flex;
+  flex-direction: column;
+  height: var(--ao-events-table-height, calc(100vh - 150px));
+  min-height: 260px;
+  max-height: none;
+  border: 1px solid var(--ao-line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.8);
+  overflow: hidden;
+}
+
+.aoEventsTableHead {
+  flex: 0 0 auto;
+  border-bottom: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgba(13, 18, 32, 0.03);
+}
+
+.aoEventsTableHead .aoTable th {
+  border-bottom: none;
+  background: transparent;
+}
+
+.aoEventsTableSurface .aoTable {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.aoEventsTableBody {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.aoEventsTableWrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.aoEventsTableWrap::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.aoEventsTableWrap::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.aoEventsScrollbarOverlay {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  bottom: 7px;
+  width: var(--ao-events-scrollbar-size);
+  overflow: hidden;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  touch-action: none;
+  transition: opacity 140ms ease;
+  z-index: 2;
+}
+
+.aoEventsScrollbarOverlayVisible {
+  opacity: 1;
+}
+
+.aoEventsTableSurfaceCanScroll .aoEventsScrollbarOverlay {
+  pointer-events: auto;
+}
+
+.aoEventsTableSurfaceCanScroll .aoEventsScrollbarOverlay:hover .aoEventsScrollbarThumb {
+  background: var(--ao-events-scroll-thumb-hover);
+}
+
+.aoEventsScrollbarThumb {
+  width: 100%;
+  min-height: 24px;
+  border-radius: 999px;
+  background: var(--ao-events-scroll-thumb);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  transition: background-color 120ms ease;
+  will-change: transform;
+  cursor: grab;
+}
+
+.aoEventsScrollbarOverlay:active .aoEventsScrollbarThumb {
+  cursor: grabbing;
+}
+
+.aoEventsTableSurfaceScrollbarVisible .aoEventsScrollbarThumb {
+  background: var(--ao-events-scroll-thumb-hover);
+}
