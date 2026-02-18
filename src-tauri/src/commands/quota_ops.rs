@@ -1,3 +1,73 @@
+const USAGE_REFRESH_SUMMARY_WINDOW_MS: u64 = 30 * 60 * 1000;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct UsageRefreshSummaryWindow {
+    window_start_ms: u64,
+    first_success_at_ms: u64,
+    last_success_at_ms: u64,
+    success_count: u64,
+    providers: usize,
+    consecutive_failures: u64,
+}
+
+fn usage_refresh_window_state() -> &'static std::sync::Mutex<UsageRefreshSummaryWindow> {
+    static STATE: std::sync::OnceLock<std::sync::Mutex<UsageRefreshSummaryWindow>> =
+        std::sync::OnceLock::new();
+    STATE.get_or_init(|| std::sync::Mutex::new(UsageRefreshSummaryWindow::default()))
+}
+
+fn usage_refresh_on_success(
+    now_ms: u64,
+    providers: usize,
+) -> (Option<UsageRefreshSummaryWindow>, Option<u64>) {
+    let lock = usage_refresh_window_state();
+    let Ok(mut st) = lock.lock() else {
+        return (None, None);
+    };
+
+    let mut summary_to_emit: Option<UsageRefreshSummaryWindow> = None;
+    let recovered_failures = if st.consecutive_failures > 0 {
+        let n = st.consecutive_failures;
+        st.consecutive_failures = 0;
+        Some(n)
+    } else {
+        None
+    };
+
+    if st.window_start_ms > 0
+        && st.success_count > 0
+        && now_ms.saturating_sub(st.window_start_ms) >= USAGE_REFRESH_SUMMARY_WINDOW_MS
+    {
+        summary_to_emit = Some(*st);
+        st.window_start_ms = now_ms;
+        st.first_success_at_ms = now_ms;
+        st.last_success_at_ms = now_ms;
+        st.success_count = 0;
+        st.providers = providers;
+    } else if st.window_start_ms == 0 {
+        st.window_start_ms = now_ms;
+        st.first_success_at_ms = now_ms;
+        st.last_success_at_ms = now_ms;
+        st.providers = providers;
+    }
+
+    st.success_count = st.success_count.saturating_add(1);
+    if st.first_success_at_ms == 0 {
+        st.first_success_at_ms = now_ms;
+    }
+    st.last_success_at_ms = now_ms;
+    st.providers = providers;
+
+    (summary_to_emit, recovered_failures)
+}
+
+fn usage_refresh_on_failure() {
+    let lock = usage_refresh_window_state();
+    if let Ok(mut st) = lock.lock() {
+        st.consecutive_failures = st.consecutive_failures.saturating_add(1);
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn refresh_quota(
     state: tauri::State<'_, app_state::AppState>,
@@ -52,15 +122,38 @@ pub(crate) async fn refresh_quota_all(
 ) -> Result<(), String> {
     let (ok, err, failed) =
         crate::orchestrator::quota::refresh_quota_all_with_summary(&state.gateway).await;
+    let now_ms = crate::orchestrator::store::unix_ms();
     if err == 0 {
-        state.gateway.store.add_event(
-            "gateway",
-            "info",
-            "usage.refresh_succeeded",
-            &format!("Usage refresh succeeded: {ok} providers"),
-            serde_json::json!({ "providers": ok }),
-        );
+        let (summary_to_emit, recovered_failures) = usage_refresh_on_success(now_ms, ok);
+        if let Some(prev) = summary_to_emit {
+            state.gateway.store.add_event(
+                "gateway",
+                "info",
+                "usage.refresh_succeeded_summary",
+                &format!(
+                    "Usage refresh succeeded: {} runs, {} providers, 30m window",
+                    prev.success_count, prev.providers
+                ),
+                serde_json::json!({
+                    "runs": prev.success_count,
+                    "providers": prev.providers,
+                    "window_ms": USAGE_REFRESH_SUMMARY_WINDOW_MS,
+                    "first_success_at_unix_ms": prev.first_success_at_ms,
+                    "last_success_at_unix_ms": prev.last_success_at_ms
+                }),
+            );
+        }
+        if let Some(failed_count) = recovered_failures {
+            state.gateway.store.add_event(
+                "gateway",
+                "info",
+                "usage.refresh_recovered",
+                &format!("Usage refresh recovered after {failed_count} failures"),
+                serde_json::json!({ "failed_runs": failed_count, "providers": ok }),
+            );
+        }
     } else {
+        usage_refresh_on_failure();
         let shown = failed
             .iter()
             .take(3)
@@ -375,4 +468,3 @@ pub(crate) async fn probe_provider(
     );
     Err(err)
 }
-
