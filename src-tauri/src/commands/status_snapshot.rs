@@ -551,16 +551,20 @@ fn append_backup_event_years(years: &mut std::collections::BTreeSet<i32>, backup
             continue;
         };
         for item in db.scan_prefix(b"event:") {
-            let Ok((_, v)) = item else {
+            let Ok((k, _)) = item else {
                 continue;
             };
-            let Ok(e) = serde_json::from_slice::<Value>(&v) else {
+            let Some(body) = k.as_ref().strip_prefix(b"event:") else {
                 continue;
             };
-            if !event_shape_is_valid(&e) {
+            let Some(split_at) = body.iter().position(|b| *b == b':') else {
                 continue;
-            }
-            let Some(unix_ms) = e.get("unix_ms").and_then(|v| v.as_u64()) else {
+            };
+            let ts_bytes = &body[..split_at];
+            let Ok(ts_str) = std::str::from_utf8(ts_bytes) else {
+                continue;
+            };
+            let Ok(unix_ms) = ts_str.parse::<u64>() else {
                 continue;
             };
             let Ok(ts) = i64::try_from(unix_ms) else {
@@ -609,22 +613,7 @@ pub(crate) fn get_event_log_entries(
 
 #[tauri::command]
 pub(crate) fn get_event_log_years(state: tauri::State<'_, app_state::AppState>) -> Vec<i32> {
-    let mut years = std::collections::BTreeSet::<i32>::new();
-    let events = state.gateway.store.list_events_range(None, None, None);
-    for e in &events {
-        if !event_shape_is_valid(e) {
-            continue;
-        }
-        let Some(unix_ms) = e.get("unix_ms").and_then(|v| v.as_u64()) else {
-            continue;
-        };
-        let Ok(ts) = i64::try_from(unix_ms) else {
-            continue;
-        };
-        if let chrono::LocalResult::Single(dt) = chrono::Local.timestamp_millis_opt(ts) {
-            years.insert(chrono::Datelike::year(&dt));
-        }
-    }
+    let mut years = state.gateway.store.list_event_years();
     let backup_root = state
         .config_path
         .parent()
