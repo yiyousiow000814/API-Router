@@ -195,7 +195,6 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
               if (event.level !== 'error') return false
               if (event.provider !== p) return false
               if (event.unix_ms !== lastErrorAt) return false
-              if (lastErrorMessage.length === 0) return true
               return event.message.trim() === lastErrorMessage
             })
             const showLastError = lastErrorAt > 0 && lastErrorMessage.length > 0 && hasMatchingRecentError
