@@ -6,6 +6,15 @@ import './EventLogPanel.css'
 
 type Props = {
   events: Status['recent_events']
+  focusRequest: EventLogFocusRequest | null
+  onFocusRequestHandled: (nonce: number) => void
+}
+
+export type EventLogFocusRequest = {
+  provider: string
+  unixMs: number
+  message: string
+  nonce: number
 }
 
 type EventLevel = 'info' | 'warning' | 'error'
@@ -107,7 +116,7 @@ function parseDateInputToDayStart(dateText: string): number | null {
   return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime()
 }
 
-export function EventLogPanel({ events }: Props) {
+export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: Props) {
   const [sourceEvents, setSourceEvents] = useState<EventLogEntry[]>(() =>
     [...events].sort((a, b) => b.unix_ms - a.unix_ms),
   )
@@ -124,8 +133,11 @@ export function EventLogPanel({ events }: Props) {
   const [pickerDateTo, setPickerDateTo] = useState<string>(EVENT_LOG_UI_STATE.dateTo)
   const [pickerMonthStartMs, setPickerMonthStartMs] = useState<number>(startOfMonthMs(Date.now()))
   const [chartHover, setChartHover] = useState<EventLogChartHover | null>(null)
+  const [focusedEvent, setFocusedEvent] = useState<EventLogEntry | null>(null)
+  const [focusNonce, setFocusNonce] = useState(0)
   const datePickerRef = useRef<HTMLDivElement | null>(null)
   const querySeqRef = useRef(0)
+  const handledFocusNonceRef = useRef<number | null>(null)
   const fromDayStart = parseDateInputToDayStart(dateFrom)
   const toDayStart = parseDateInputToDayStart(dateTo)
 
@@ -334,6 +346,40 @@ export function EventLogPanel({ events }: Props) {
     setDateFrom(pickerDateFrom)
     setDateTo(pickerDateTo)
   }, [openDatePicker, pickerDateFrom, pickerDateTo])
+  useEffect(() => {
+    if (!focusRequest) return
+    // Ensure the target row is not hidden by level/search/date filters.
+    setSelectedLevels([...ALL_LEVELS])
+    setSearchText('')
+    setDateFrom('')
+    setDateTo('')
+    setPickerDateFrom('')
+    setPickerDateTo('')
+    setOpenDatePicker(false)
+  }, [focusRequest])
+  useEffect(() => {
+    if (!focusRequest || !sourceEvents.length) return
+    if (handledFocusNonceRef.current === focusRequest.nonce) return
+    const providerNeedle = focusRequest.provider.trim().toLowerCase()
+    const messageNeedle = focusRequest.message.trim().toLowerCase()
+    const messageProbe = messageNeedle.slice(0, 120)
+    const providerErrors = sourceEvents.filter((e) => e.provider.toLowerCase() === providerNeedle && e.level === 'error')
+    if (!providerErrors.length) return
+    const matchingMessage = providerErrors.filter((e) => {
+      const msg = e.message.toLowerCase()
+      if (!messageProbe) return true
+      return msg.includes(messageProbe) || messageProbe.includes(msg.slice(0, Math.min(120, msg.length)))
+    })
+    const candidates = matchingMessage.length ? matchingMessage : providerErrors
+    const target = [...candidates].sort(
+      (a, b) => Math.abs(a.unix_ms - focusRequest.unixMs) - Math.abs(b.unix_ms - focusRequest.unixMs),
+    )[0]
+    if (!target) return
+    setFocusedEvent(target)
+    setFocusNonce(focusRequest.nonce)
+    handledFocusNonceRef.current = focusRequest.nonce
+    onFocusRequestHandled(focusRequest.nonce)
+  }, [focusRequest, onFocusRequestHandled, sourceEvents])
 
   return (
     <div className="aoEventLogLayout">
@@ -685,6 +731,8 @@ export function EventLogPanel({ events }: Props) {
         scrollInside
         scrollPersistKey="event_log_table"
         visibleEvents={tableEvents}
+        focusEvent={focusedEvent}
+        focusNonce={focusNonce}
       />
     </div>
   )

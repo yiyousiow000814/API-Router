@@ -27,6 +27,7 @@ import {
 import { AppMainContent } from './components/AppMainContent'
 import { AppModals } from './components/AppModals'
 import { AppTopNav } from './components/AppTopNav'
+import type { LastErrorJump } from './components/ProvidersTable'
 import { useConfigDrag } from './hooks/useConfigDrag'
 import { useProviderActions } from './hooks/useProviderActions'
 import { useUsageHistoryScrollbar } from './hooks/useUsageHistoryScrollbar'
@@ -123,6 +124,12 @@ export default function App() {
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
   const [codexRefreshing, setCodexRefreshing] = useState<boolean>(false)
   const [activePage, setActivePage] = useState<TopPage>('dashboard')
+  const [eventLogFocusRequest, setEventLogFocusRequest] = useState<{
+    provider: string
+    unixMs: number
+    message: string
+    nonce: number
+  } | null>(null)
   const [providerSwitchStatus, setProviderSwitchStatus] = useState<ProviderSwitchboardStatus | null>(null)
   const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(null)
   const [usageWindowHours, setUsageWindowHours] = useState<number>(24)
@@ -218,6 +225,22 @@ export default function App() {
     })
   }
   const { switchPage } = usePageScroll({ containerRef, mainAreaRef, activePage, setActivePage: (next) => setActivePage(next as TopPage) })
+  const handleOpenLastErrorInEventLog = (payload: LastErrorJump) => {
+    const nonce = Date.now()
+    setEventLogFocusRequest({
+      provider: payload.provider,
+      unixMs: payload.unixMs,
+      message: payload.message,
+      nonce,
+    })
+    switchPage('event_log')
+  }
+  const handleEventLogFocusRequestHandled = (nonce: number) => {
+    setEventLogFocusRequest((current) => {
+      if (!current) return current
+      return current.nonce === nonce ? null : current
+    })
+  }
   useEffect(() => {
     rawConfigTextsRef.current = rawConfigTexts
   }, [rawConfigTexts])
@@ -913,7 +936,10 @@ export default function App() {
               clientSessions={clientSessions ?? []}
               updatingSessionPref={updatingSessionPref}
               onSetSessionPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
+              onOpenLastErrorInEventLog={handleOpenLastErrorInEventLog}
               eventLogSeedEvents={status?.recent_events ?? []}
+              eventLogFocusRequest={eventLogFocusRequest}
+              onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
               usageProps={{
                 config,
                 usageWindowHours,

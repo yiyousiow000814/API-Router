@@ -1,4 +1,5 @@
 import { ProvidersTable } from './ProvidersTable'
+import type { LastErrorJump } from './ProvidersTable'
 import type { Status } from '../types'
 
 type Props = {
@@ -7,6 +8,7 @@ type Props = {
   refreshingProviders: Record<string, boolean>
   onRefreshQuota: (provider: string) => void
   onOpenConfigModal: () => void
+  onOpenLastErrorInEventLog: (payload: LastErrorJump) => void
 }
 
 export function DashboardProvidersSection({
@@ -15,6 +17,7 @@ export function DashboardProvidersSection({
   refreshingProviders,
   onRefreshQuota,
   onOpenConfigModal,
+  onOpenLastErrorInEventLog,
 }: Props) {
   return (
     <div className="aoSection">
@@ -34,6 +37,7 @@ export function DashboardProvidersSection({
         status={status}
         refreshingProviders={refreshingProviders}
         onRefreshQuota={onRefreshQuota}
+        onOpenLastErrorInEventLog={onOpenLastErrorInEventLog}
       />
     </div>
   )

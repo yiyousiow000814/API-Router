@@ -261,6 +261,32 @@
   background: rgba(var(--ao-accent-rgb), 0.08);
 }
 
+.aoLastErrorCell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aoLastErrorTime {
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoLastErrorViewBtn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.55);
+  cursor: pointer;
+}
+
+.aoLastErrorViewBtn:hover {
+  color: rgba(13, 18, 32, 0.82);
+}
+
 .aoUsageRefreshBtnMini {
   width: 26px;
   height: 26px;

@@ -48,6 +48,7 @@
   padding: 0;
   text-align: left;
   color: inherit;
+  user-select: text;
 }
 
 .aoEventMessageTextBtn.is-clickable {
@@ -63,6 +64,13 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
+  user-select: text;
+}
+
+.aoEventMessageTextStatic {
+  display: -webkit-box;
+  width: 100%;
+  cursor: text;
 }
 
 .aoEventMessageWrap {
@@ -192,4 +200,20 @@
 
 .aoEventsTableSurfaceScrollbarVisible .aoEventsScrollbarThumb {
   background: var(--ao-events-scroll-thumb-hover);
+}
+
+.aoEventRowFocusFlash {
+  animation: aoEventRowFocusFlash 650ms ease 2;
+}
+
+@keyframes aoEventRowFocusFlash {
+  0% {
+    background: rgba(226, 57, 78, 0.08);
+  }
+  50% {
+    background: rgba(226, 57, 78, 0.2);
+  }
+  100% {
+    background: rgba(226, 57, 78, 0.04);
+  }
 }
