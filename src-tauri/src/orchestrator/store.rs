@@ -596,6 +596,45 @@ impl Store {
         out
     }
 
+    pub fn list_events_range(
+        &self,
+        from_unix_ms: Option<u64>,
+        to_unix_ms: Option<u64>,
+        limit: usize,
+    ) -> Vec<Value> {
+        let cap = limit.max(1);
+        let mut out: Vec<Value> = Vec::with_capacity(cap);
+        for res in self.db.scan_prefix(b"event:").rev() {
+            let Ok((_, v)) = res else {
+                continue;
+            };
+            let Ok(j) = serde_json::from_slice::<Value>(&v) else {
+                continue;
+            };
+            if !Self::is_valid_event(&j) {
+                continue;
+            }
+            let Some(unix_ms) = j.get("unix_ms").and_then(|v| v.as_u64()) else {
+                continue;
+            };
+            if let Some(from) = from_unix_ms {
+                if unix_ms < from {
+                    continue;
+                }
+            }
+            if let Some(to) = to_unix_ms {
+                if unix_ms > to {
+                    continue;
+                }
+            }
+            out.push(j);
+            if out.len() >= cap {
+                break;
+            }
+        }
+        out
+    }
+
     pub fn list_usage_requests(&self, limit: usize) -> Vec<Value> {
         self.db
             .scan_prefix(b"usage_req:")

@@ -417,6 +417,22 @@ fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
     Some(dt.format("%Y-%m-%d").to_string())
 }
 
+#[tauri::command]
+pub(crate) fn get_event_log_entries(
+    state: tauri::State<'_, app_state::AppState>,
+    from_unix_ms: Option<u64>,
+    to_unix_ms: Option<u64>,
+    limit: Option<usize>,
+) -> serde_json::Value {
+    let (from, to) = match (from_unix_ms, to_unix_ms) {
+        (Some(from), Some(to)) if from > to => (Some(to), Some(from)),
+        _ => (from_unix_ms, to_unix_ms),
+    };
+    let cap = limit.unwrap_or(200).clamp(1, 200);
+    let events = state.gateway.store.list_events_range(from, to, cap);
+    serde_json::Value::Array(events)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;

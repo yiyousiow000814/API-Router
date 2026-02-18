@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Status } from '../types'
 import { DashboardEventsSection } from './DashboardEventsSection'
 import './EventLogPanel.css'
@@ -11,6 +12,7 @@ type Props = {
 
 type EventLevel = 'info' | 'warning' | 'error'
 type DateAnchor = 'from' | 'to'
+type EventLogEntry = Status['recent_events'][number]
 type EventLogChartHover = {
   x: number
   y: number
@@ -21,8 +23,8 @@ type EventLogChartHover = {
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
-const TABLE_DEFAULT_WINDOW_DAYS = 30
 const CHART_WINDOW_DAYS = 60
+const EVENT_LOG_FETCH_LIMIT = 200
 const ALL_LEVELS: EventLevel[] = ['info', 'warning', 'error']
 const EVENT_LOG_UI_STATE: {
   selectedLevels: EventLevel[]
@@ -107,6 +109,9 @@ function parseDateInputToDayStart(dateText: string): number | null {
 }
 
 export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) {
+  const [sourceEvents, setSourceEvents] = useState<EventLogEntry[]>(() =>
+    [...events].sort((a, b) => b.unix_ms - a.unix_ms),
+  )
   const [selectedLevels, setSelectedLevels] = useState<EventLevel[]>(() => {
     const levels = EVENT_LOG_UI_STATE.selectedLevels.filter((level) => ALL_LEVELS.includes(level))
     return levels.length ? levels : [...ALL_LEVELS]
@@ -121,31 +126,50 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
   const [pickerMonthStartMs, setPickerMonthStartMs] = useState<number>(startOfMonthMs(Date.now()))
   const [chartHover, setChartHover] = useState<EventLogChartHover | null>(null)
   const datePickerRef = useRef<HTMLDivElement | null>(null)
+  const querySeqRef = useRef(0)
+  const fromDayStart = parseDateInputToDayStart(dateFrom)
+  const toDayStart = parseDateInputToDayStart(dateTo)
+
+  const fetchEventLogEntries = useCallback(async (fromDay: number | null, toDay: number | null) => {
+    const fromUnixMs = fromDay == null ? null : fromDay
+    const toUnixMs = toDay == null ? null : addDays(toDay, 1) - 1
+    const reqId = ++querySeqRef.current
+    try {
+      const rows = await invoke<EventLogEntry[]>('get_event_log_entries', {
+        fromUnixMs,
+        toUnixMs,
+        limit: EVENT_LOG_FETCH_LIMIT,
+      })
+      if (querySeqRef.current !== reqId) return
+      if (!Array.isArray(rows)) return
+      setSourceEvents([...rows].sort((a, b) => b.unix_ms - a.unix_ms))
+    } catch {
+      // Keep the latest successful snapshot to avoid UI flicker when fetch transiently fails.
+    }
+  }, [])
 
   const now = Date.now()
   const defaultRangeEndDay = startOfDayMs(now)
-  const defaultRangeStartDay = addDays(defaultRangeEndDay, -(TABLE_DEFAULT_WINDOW_DAYS - 1))
-  const fromDayRaw = parseDateInputToDayStart(dateFrom)
-  const toDayRaw = parseDateInputToDayStart(dateTo)
-  const rangeStartDay = fromDayRaw ?? defaultRangeStartDay
-  const rangeEndDay = toDayRaw ?? defaultRangeEndDay
+  const hasDateFilter = fromDayStart != null || toDayStart != null
+  const rangeStartDay = fromDayStart ?? defaultRangeEndDay
+  const rangeEndDay = toDayStart ?? defaultRangeEndDay
   const effectiveStartDay = Math.min(rangeStartDay, rangeEndDay)
   const effectiveEndDay = Math.max(rangeStartDay, rangeEndDay)
   const minUnixMs = effectiveStartDay
   const maxUnixMs = addDays(effectiveEndDay, 1) - 1
   const searchNeedle = searchText.trim().toLowerCase()
 
-  const timeFiltered = useMemo(
-    () => events.filter((e) => e.unix_ms >= minUnixMs && e.unix_ms <= maxUnixMs).sort((a, b) => b.unix_ms - a.unix_ms),
-    [events, minUnixMs, maxUnixMs],
-  )
+  const timeFiltered = useMemo(() => {
+    if (!hasDateFilter) return sourceEvents
+    return sourceEvents.filter((e) => e.unix_ms >= minUnixMs && e.unix_ms <= maxUnixMs)
+  }, [sourceEvents, hasDateFilter, minUnixMs, maxUnixMs])
 
   const searchFiltered = useMemo(() => {
     if (!searchNeedle) return timeFiltered
     return timeFiltered.filter((e) => buildSearchText(e).includes(searchNeedle))
   }, [timeFiltered, searchNeedle])
 
-  const chartSourceEvents = useMemo(() => events, [events])
+  const chartSourceEvents = useMemo(() => sourceEvents, [sourceEvents])
 
   const selectedLevelSet = useMemo(() => new Set(selectedLevels), [selectedLevels])
   const filteredEvents = useMemo(
@@ -211,15 +235,15 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
 
   const eventDayCounts = useMemo(() => {
     const out = new Map<number, number>()
-    for (const e of events) {
+    for (const e of sourceEvents) {
       const day = startOfDayMs(e.unix_ms)
       out.set(day, (out.get(day) ?? 0) + 1)
     }
     return out
-  }, [events])
+  }, [sourceEvents])
   const eventDayLevelCounts = useMemo(() => {
     const out = new Map<number, { infos: number; warnings: number; errors: number }>()
-    for (const e of events) {
+    for (const e of sourceEvents) {
       const day = startOfDayMs(e.unix_ms)
       const row = out.get(day) ?? { infos: 0, warnings: 0, errors: 0 }
       if (e.level === 'error') row.errors += 1
@@ -228,15 +252,15 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
       out.set(day, row)
     }
     return out
-  }, [events])
+  }, [sourceEvents])
   const latestEventDay = useMemo(() => {
-    if (!events.length) return null
-    let maxUnixMs = events[0]?.unix_ms ?? 0
-    for (const e of events) {
+    if (!sourceEvents.length) return null
+    let maxUnixMs = sourceEvents[0]?.unix_ms ?? 0
+    for (const e of sourceEvents) {
       if (e.unix_ms > maxUnixMs) maxUnixMs = e.unix_ms
     }
     return startOfDayMs(maxUnixMs)
-  }, [events])
+  }, [sourceEvents])
 
   const monthCells = useMemo(() => {
     const targetMonth = new Date(pickerMonthStartMs).getMonth()
@@ -263,8 +287,6 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
     return () => window.removeEventListener('mousedown', onPointerDown)
   }, [openDatePicker])
 
-  const fromDayStart = parseDateInputToDayStart(dateFrom)
-  const toDayStart = parseDateInputToDayStart(dateTo)
   const pickerFromDayStart = parseDateInputToDayStart(pickerDateFrom)
   const pickerToDayStart = parseDateInputToDayStart(pickerDateTo)
   const allLevelsSelected = selectedLevels.length === ALL_LEVELS.length
@@ -293,6 +315,20 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
   useEffect(() => {
     EVENT_LOG_UI_STATE.dateTo = dateTo
   }, [dateTo])
+  useEffect(() => {
+    if (!sourceEvents.length && events.length) {
+      setSourceEvents([...events].sort((a, b) => b.unix_ms - a.unix_ms))
+    }
+  }, [events, sourceEvents.length])
+  useEffect(() => {
+    void fetchEventLogEntries(fromDayStart, toDayStart)
+  }, [fetchEventLogEntries, fromDayStart, toDayStart])
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void fetchEventLogEntries(fromDayStart, toDayStart)
+    }, 15_000)
+    return () => window.clearInterval(timer)
+  }, [fetchEventLogEntries, fromDayStart, toDayStart])
   useEffect(() => {
     if (!openDatePicker) return
     setDateFrom(pickerDateFrom)
