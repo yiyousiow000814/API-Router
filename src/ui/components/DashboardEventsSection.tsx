@@ -3,8 +3,6 @@ import type { Status } from '../types'
 
 type Props = {
   visibleEvents: Status['recent_events']
-  canClearErrors: boolean
-  onClearErrors: () => void
   title?: string
   splitByLevel?: boolean
   scrollInside?: boolean
@@ -14,8 +12,6 @@ type Props = {
 
 export function DashboardEventsSection({
   visibleEvents,
-  canClearErrors,
-  onClearErrors,
   title = 'Events',
   splitByLevel = true,
   scrollInside = false,
@@ -33,8 +29,6 @@ export function DashboardEventsSection({
       ) : null}
       <EventsTable
         events={visibleEvents}
-        canClearErrors={canClearErrors}
-        onClearErrors={onClearErrors}
         splitByLevel={splitByLevel}
         scrollInside={scrollInside}
         scrollPersistKey={scrollPersistKey}

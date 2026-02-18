@@ -72,7 +72,6 @@ export default function App() {
   const [config, setConfig] = useState<Config | null>(null)
   const [baselineBaseUrls, setBaselineBaseUrls] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<string>('')
-  const [clearErrorsBeforeMs, setClearErrorsBeforeMs] = useState<number>(0)
   const [override, setOverride] = useState<string>('') // '' => auto
   const [newProviderName, setNewProviderName] = useState<string>('')
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
@@ -229,8 +228,6 @@ export default function App() {
     autoSaveTimersRef,
     setProviderPanelsOpen,
     providerPanelsOpen,
-    clearErrorsBeforeMs,
-    setClearErrorsBeforeMs,
     codexSwapDir1,
     codexSwapDir2,
     codexSwapUseWindows,
@@ -267,11 +264,9 @@ export default function App() {
       return
     }
   }, [codexSwapUseWindows, codexSwapUseWsl, codexSwapTarget])
-  const { providers, visibleEvents, canClearErrors, clearErrors, clientSessions } = useStatusDerivations({
+  const { providers, clientSessions } = useStatusDerivations({
     status,
     config,
-    clearErrorsBeforeMs,
-    setClearErrorsBeforeMs,
   })
   function flashToast(msg: string, kind: 'info' | 'error' = 'info') {
     setToast(msg)
@@ -918,10 +913,7 @@ export default function App() {
               clientSessions={clientSessions ?? []}
               updatingSessionPref={updatingSessionPref}
               onSetSessionPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
-              visibleEvents={visibleEvents}
               eventLogSeedEvents={status?.recent_events ?? []}
-              canClearErrors={canClearErrors}
-              onClearErrors={clearErrors}
               usageProps={{
                 config,
                 usageWindowHours,

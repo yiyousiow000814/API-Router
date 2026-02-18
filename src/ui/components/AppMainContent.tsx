@@ -32,10 +32,7 @@ type Props = {
   clientSessions: any[]
   updatingSessionPref: Record<string, boolean>
   onSetSessionPreferred: (sessionId: string, provider: string | null) => void
-  visibleEvents: any[]
   eventLogSeedEvents: any[]
-  canClearErrors: boolean
-  onClearErrors: () => void
   usageProps: any
   switchboardProps: any
 }
@@ -69,10 +66,7 @@ export function AppMainContent(props: Props) {
     clientSessions,
     updatingSessionPref,
     onSetSessionPreferred,
-    visibleEvents,
     eventLogSeedEvents,
-    canClearErrors,
-    onClearErrors,
     usageProps,
     switchboardProps,
   } = props
@@ -89,8 +83,6 @@ export function AppMainContent(props: Props) {
     return (
       <EventLogPanel
         events={eventLogSeedEvents}
-        canClearErrors={canClearErrors}
-        onClearErrors={onClearErrors}
       />
     )
   }
@@ -127,9 +119,6 @@ export function AppMainContent(props: Props) {
       clientSessions={clientSessions ?? []}
       updatingSessionPref={updatingSessionPref}
       onSetSessionPreferred={onSetSessionPreferred}
-      visibleEvents={visibleEvents}
-      canClearErrors={canClearErrors}
-      onClearErrors={onClearErrors}
     />
   )
 }

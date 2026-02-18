@@ -1,7 +1,6 @@
 import { HeroCodexCard, HeroRoutingCard, HeroStatusCard } from './HeroCards'
 import { DashboardProvidersSection } from './DashboardProvidersSection'
 import { DashboardSessionsSection } from './DashboardSessionsSection'
-import { DashboardEventsSection } from './DashboardEventsSection'
 import type { Config, Status } from '../types'
 import './DashboardPanel.css'
 
@@ -32,9 +31,6 @@ type Props = {
   clientSessions: NonNullable<Status['client_sessions']>
   updatingSessionPref: Record<string, boolean>
   onSetSessionPreferred: (sessionId: string, provider: string | null) => void
-  visibleEvents: Status['recent_events']
-  canClearErrors: boolean
-  onClearErrors: () => void
 }
 
 export function DashboardPanel({
@@ -64,9 +60,6 @@ export function DashboardPanel({
   clientSessions,
   updatingSessionPref,
   onSetSessionPreferred,
-  visibleEvents,
-  canClearErrors,
-  onClearErrors,
 }: Props) {
   return (
     <>
@@ -115,12 +108,6 @@ export function DashboardPanel({
         wslGatewayHost={status.wsl_gateway_host}
         updatingSessionPref={updatingSessionPref}
         onSetSessionPreferred={onSetSessionPreferred}
-      />
-
-      <DashboardEventsSection
-        visibleEvents={visibleEvents}
-        canClearErrors={canClearErrors}
-        onClearErrors={onClearErrors}
       />
     </>
   )

@@ -7,8 +7,6 @@ import './EventsTable.css'
 
 type Props = {
   events: Status['recent_events']
-  canClearErrors?: boolean
-  onClearErrors?: () => void
   splitByLevel?: boolean
   scrollInside?: boolean
   scrollPersistKey?: string
@@ -30,8 +28,6 @@ function formatEventMessageDialog(message: string): string {
 
 export function EventsTable({
   events,
-  canClearErrors,
-  onClearErrors,
   splitByLevel = true,
   scrollInside = false,
   scrollPersistKey,
@@ -409,16 +405,6 @@ export function EventsTable({
               <div>
                 <span>Errors / Warnings</span>
               </div>
-              {(errors.length || warnings.length) && onClearErrors ? (
-                <button
-                  className="aoEventsClearBtn"
-                  onClick={onClearErrors}
-                  disabled={!canClearErrors}
-                  title="Clear visible errors/warnings (UI only)"
-                >
-                  Clear
-                </button>
-              ) : null}
             </div>
           </td>
         </tr>

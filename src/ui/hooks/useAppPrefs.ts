@@ -9,8 +9,6 @@ type UseAppPrefsOptions = {
   autoSaveTimersRef: MutableRefObject<Record<string, number>>
   setProviderPanelsOpen: (value: Record<string, boolean>) => void
   providerPanelsOpen: Record<string, boolean>
-  clearErrorsBeforeMs: number
-  setClearErrorsBeforeMs: (value: number) => void
   codexSwapDir1: string
   codexSwapDir2: string
   codexSwapUseWindows: boolean
@@ -33,8 +31,6 @@ export function useAppPrefs({
   autoSaveTimersRef,
   setProviderPanelsOpen,
   providerPanelsOpen,
-  clearErrorsBeforeMs,
-  setClearErrorsBeforeMs,
   codexSwapDir1,
   codexSwapDir2,
   codexSwapUseWindows,
@@ -171,34 +167,9 @@ export function useAppPrefs({
   useEffect(() => {
     if (typeof window === 'undefined') return
     try {
-      const saved = window.localStorage.getItem('ao.clearErrorsBeforeMs')
-      if (!saved) return
-      const n = Number(saved)
-      if (Number.isFinite(n) && n > 0) setClearErrorsBeforeMs(n)
-    } catch (e) {
-      console.warn('Failed to load UI prefs', e)
-    }
-  }, [setClearErrorsBeforeMs])
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    try {
       window.localStorage.setItem('ao.providerPanelsOpen', JSON.stringify(providerPanelsOpen))
     } catch (e) {
       console.warn('Failed to save provider panels', e)
     }
   }, [providerPanelsOpen])
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    try {
-      if (!clearErrorsBeforeMs) {
-        window.localStorage.removeItem('ao.clearErrorsBeforeMs')
-        return
-      }
-      window.localStorage.setItem('ao.clearErrorsBeforeMs', String(clearErrorsBeforeMs))
-    } catch (e) {
-      console.warn('Failed to save UI prefs', e)
-    }
-  }, [clearErrorsBeforeMs])
 }
