@@ -428,7 +428,7 @@ pub(crate) fn get_event_log_entries(
         (Some(from), Some(to)) if from > to => (Some(to), Some(from)),
         _ => (from_unix_ms, to_unix_ms),
     };
-    let cap = limit.unwrap_or(200).clamp(1, 200);
+    let cap = limit.map(|v| v.clamp(1, 200));
     let events = state.gateway.store.list_events_range(from, to, cap);
     serde_json::Value::Array(events)
 }

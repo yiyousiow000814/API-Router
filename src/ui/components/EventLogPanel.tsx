@@ -24,7 +24,7 @@ type EventLogChartHover = {
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
 const CHART_WINDOW_DAYS = 60
-const EVENT_LOG_FETCH_LIMIT = 200
+const EVENT_LOG_TABLE_LIMIT = 200
 const ALL_LEVELS: EventLevel[] = ['info', 'warning', 'error']
 const EVENT_LOG_UI_STATE: {
   selectedLevels: EventLevel[]
@@ -138,7 +138,6 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
       const rows = await invoke<EventLogEntry[]>('get_event_log_entries', {
         fromUnixMs,
         toUnixMs,
-        limit: EVENT_LOG_FETCH_LIMIT,
       })
       if (querySeqRef.current !== reqId) return
       if (!Array.isArray(rows)) return
@@ -180,6 +179,7 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
       }),
     [searchFiltered, selectedLevelSet],
   )
+  const tableEvents = useMemo(() => filteredEvents.slice(0, EVENT_LOG_TABLE_LIMIT), [filteredEvents])
 
   const dailyIssueCounts = useMemo(() => {
     let minEventDay = Number.POSITIVE_INFINITY
@@ -684,7 +684,7 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
         splitByLevel={false}
         scrollInside
         scrollPersistKey="event_log_table"
-        visibleEvents={filteredEvents}
+        visibleEvents={tableEvents}
         canClearErrors={canClearErrors}
         onClearErrors={onClearErrors}
       />

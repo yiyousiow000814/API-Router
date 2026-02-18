@@ -135,36 +135,6 @@ impl Store {
             && j.get("total_tokens").and_then(|v| v.as_u64()).is_some()
     }
 
-    fn prune_events(&self) {
-        // Keep only the newest MAX_EVENTS event keys.
-        // Keys are `event:{unix_ms}:{uuid}` and are lexicographically ordered by time.
-        let boundary = self.db.scan_prefix(b"event:").rev().nth(Self::MAX_EVENTS);
-
-        let Some(Ok((end_key, _))) = boundary else {
-            return;
-        };
-
-        let start = b"event:".to_vec();
-        let end = end_key.to_vec();
-
-        // Delete in chunks to avoid building a huge Vec if the DB grew large.
-        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
-        for res in self.db.range(start..=end) {
-            let Ok((k, _)) = res else {
-                continue;
-            };
-            batch.push(k);
-            if batch.len() >= 1024 {
-                for key in batch.drain(..) {
-                    let _ = self.db.remove(key);
-                }
-            }
-        }
-        for key in batch.drain(..) {
-            let _ = self.db.remove(key);
-        }
-    }
-
     fn prune_usage_requests(&self) {
         let boundary = self
             .db
@@ -271,7 +241,6 @@ impl Store {
         let _ = self
             .db
             .insert(key.as_bytes(), serde_json::to_vec(&v).unwrap_or_default());
-        self.prune_events();
         let _ = self.db.flush();
     }
 
@@ -600,10 +569,10 @@ impl Store {
         &self,
         from_unix_ms: Option<u64>,
         to_unix_ms: Option<u64>,
-        limit: usize,
+        limit: Option<usize>,
     ) -> Vec<Value> {
-        let cap = limit.max(1);
-        let mut out: Vec<Value> = Vec::with_capacity(cap);
+        let cap = limit.unwrap_or(usize::MAX).max(1);
+        let mut out: Vec<Value> = Vec::with_capacity(cap.min(1024));
         for res in self.db.scan_prefix(b"event:").rev() {
             let Ok((_, v)) = res else {
                 continue;
