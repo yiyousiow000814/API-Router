@@ -105,6 +105,8 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
   const [dateTo, setDateTo] = useState<string>(EVENT_LOG_UI_STATE.dateTo)
   const [openDatePicker, setOpenDatePicker] = useState<boolean>(false)
   const [dateAnchor, setDateAnchor] = useState<DateAnchor>('from')
+  const [pickerDateFrom, setPickerDateFrom] = useState<string>(EVENT_LOG_UI_STATE.dateFrom)
+  const [pickerDateTo, setPickerDateTo] = useState<string>(EVENT_LOG_UI_STATE.dateTo)
   const [pickerMonthStartMs, setPickerMonthStartMs] = useState<number>(startOfMonthMs(Date.now()))
   const [chartHover, setChartHover] = useState<EventLogChartHover | null>(null)
   const datePickerRef = useRef<HTMLDivElement | null>(null)
@@ -253,9 +255,20 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
 
   const fromDayStart = parseDateInputToDayStart(dateFrom)
   const toDayStart = parseDateInputToDayStart(dateTo)
+  const pickerFromDayStart = parseDateInputToDayStart(pickerDateFrom)
+  const pickerToDayStart = parseDateInputToDayStart(pickerDateTo)
   const allLevelsSelected = selectedLevels.length === ALL_LEVELS.length
   const todayDayStart = startOfDayMs(Date.now())
-  const showTodayHint = fromDayStart == null && toDayStart == null
+  const showTodayHint = pickerFromDayStart == null && pickerToDayStart == null
+  const reopenFromAnchor = () => {
+    setDateAnchor('from')
+    setOpenDatePicker(true)
+  }
+  const resetToFromAnchor = (iso: string) => {
+    setPickerDateFrom(iso)
+    setPickerDateTo('')
+    reopenFromAnchor()
+  }
 
   useEffect(() => {
     EVENT_LOG_UI_STATE.selectedLevels = [...selectedLevels]
@@ -269,6 +282,11 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
   useEffect(() => {
     EVENT_LOG_UI_STATE.dateTo = dateTo
   }, [dateTo])
+  useEffect(() => {
+    if (!openDatePicker) return
+    setDateFrom(pickerDateFrom)
+    setDateTo(pickerDateTo)
+  }, [openDatePicker, pickerDateFrom, pickerDateTo])
 
   return (
     <div className="aoEventLogLayout">
@@ -423,26 +441,44 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
             <button
               className={`aoInput aoEventLogDateInput aoEventLogDateTrigger${fromDayStart ? ' has-value' : ''}${openDatePicker && dateAnchor === 'from' ? ' is-active' : ''}`}
               onClick={() => {
+                const sameAnchorOpen = openDatePicker && dateAnchor === 'from'
+                if (sameAnchorOpen) {
+                  setOpenDatePicker(false)
+                  return
+                }
+                if (!openDatePicker) {
+                  setPickerDateFrom(dateFrom)
+                  setPickerDateTo(dateTo)
+                }
                 const base = fromDayStart ?? toDayStart ?? latestEventDay ?? startOfDayMs(Date.now())
                 setPickerMonthStartMs(startOfMonthMs(base))
                 setDateAnchor('from')
-                setOpenDatePicker(openDatePicker && dateAnchor === 'from' ? false : true)
+                setOpenDatePicker(true)
               }}
               aria-haspopup="dialog"
-              aria-expanded={openDatePicker}
+              aria-expanded={openDatePicker && dateAnchor === 'from'}
             >
               {fromDayStart ? fmtDayMonthYear(fromDayStart) : <span className="aoEventLogDatePlaceholder">From</span>}
             </button>
             <button
               className={`aoInput aoEventLogDateInput aoEventLogDateTrigger${toDayStart ? ' has-value' : ''}${openDatePicker && dateAnchor === 'to' ? ' is-active' : ''}`}
               onClick={() => {
+                const sameAnchorOpen = openDatePicker && dateAnchor === 'to'
+                if (sameAnchorOpen) {
+                  setOpenDatePicker(false)
+                  return
+                }
+                if (!openDatePicker) {
+                  setPickerDateFrom(dateFrom)
+                  setPickerDateTo(dateTo)
+                }
                 const base = toDayStart ?? fromDayStart ?? latestEventDay ?? startOfDayMs(Date.now())
                 setPickerMonthStartMs(startOfMonthMs(base))
                 setDateAnchor('to')
-                setOpenDatePicker(openDatePicker && dateAnchor === 'to' ? false : true)
+                setOpenDatePicker(true)
               }}
               aria-haspopup="dialog"
-              aria-expanded={openDatePicker}
+              aria-expanded={openDatePicker && dateAnchor === 'to'}
             >
               {toDayStart ? fmtDayMonthYear(toDayStart) : <span className="aoEventLogDatePlaceholder">To</span>}
             </button>
@@ -476,41 +512,44 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
                   {monthCells.map((cell) => {
                     const hasRecord = (eventDayCounts.get(cell.dayStartMs) ?? 0) > 0
                     const levelCounts = eventDayLevelCounts.get(cell.dayStartMs) ?? { infos: 0, warnings: 0, errors: 0 }
-                    const isStart = fromDayStart === cell.dayStartMs
-                    const isEnd = toDayStart === cell.dayStartMs
+                    const isStart = pickerFromDayStart === cell.dayStartMs
+                    const isEnd = pickerToDayStart === cell.dayStartMs
                     const inRange =
-                      fromDayStart != null &&
-                      toDayStart != null &&
-                      cell.dayStartMs > Math.min(fromDayStart, toDayStart) &&
-                      cell.dayStartMs < Math.max(fromDayStart, toDayStart)
+                      pickerFromDayStart != null &&
+                      pickerToDayStart != null &&
+                      cell.dayStartMs > Math.min(pickerFromDayStart, pickerToDayStart) &&
+                      cell.dayStartMs < Math.max(pickerFromDayStart, pickerToDayStart)
                     return (
                       <button
                         key={cell.dayStartMs}
                         className={`aoEventLogDateCell${cell.inMonth ? '' : ' is-out'}${showTodayHint && cell.dayStartMs === todayDayStart ? ' is-today' : ''}${isStart ? ' is-start' : ''}${isEnd ? ' is-end' : ''}${inRange ? ' is-range' : ''}`}
                         onClick={() => {
                           const iso = dayStartToIso(cell.dayStartMs)
+                          if (pickerFromDayStart != null && pickerToDayStart != null) {
+                            resetToFromAnchor(iso)
+                            return
+                          }
                           if (dateAnchor === 'from') {
-                            setDateFrom(iso)
-                            if (toDayStart != null && toDayStart < cell.dayStartMs) {
-                              setDateTo(iso)
+                            setPickerDateFrom(iso)
+                            if (pickerToDayStart != null && pickerToDayStart < cell.dayStartMs) {
+                              setPickerDateTo(iso)
                             }
                             setDateAnchor('to')
                             setOpenDatePicker(true)
                             return
                           }
 
-                          if (fromDayStart == null) {
-                            setDateTo(iso)
-                            setDateAnchor('from')
-                            setOpenDatePicker(true)
+                          if (pickerFromDayStart == null) {
+                            setPickerDateTo(iso)
+                            reopenFromAnchor()
                             return
                           }
 
-                          if (cell.dayStartMs < fromDayStart) {
-                            setDateFrom(iso)
-                            setDateTo(dayStartToIso(fromDayStart))
+                          if (cell.dayStartMs < pickerFromDayStart) {
+                            setPickerDateFrom(iso)
+                            setPickerDateTo(dayStartToIso(pickerFromDayStart))
                           } else {
-                            setDateTo(iso)
+                            setPickerDateTo(iso)
                           }
                           setDateAnchor('to')
                           setOpenDatePicker(true)
@@ -534,36 +573,47 @@ export function EventLogPanel({ events, canClearErrors, onClearErrors }: Props) 
                   })}
                 </div>
                 <div className="aoEventLogDatePopoverFoot">
-                  <button
-                    className="aoTinyBtn aoUsageActionBtn"
-                    onClick={() => {
-                      setDateFrom('')
-                      setDateTo('')
-                      setOpenDatePicker(false)
-                    }}
-                  >
-                    Clear
-                  </button>
-                  <button
-                    className="aoTinyBtn aoUsageActionBtn"
-                    onClick={() => {
-                      const today = dayStartToIso(startOfDayMs(Date.now()))
-                      if (!fromDayStart || toDayStart) {
-                        setDateFrom(today)
-                        setDateTo('')
-                        return
-                      }
-                      if (startOfDayMs(Date.now()) < fromDayStart) {
-                        setDateTo(dayStartToIso(fromDayStart))
-                        setDateFrom(today)
-                      } else {
-                        setDateTo(today)
-                      }
-                      setOpenDatePicker(false)
-                    }}
-                  >
-                    Today
-                  </button>
+                  <div className="aoEventLogDatePopoverFootGroup">
+                    <button
+                      className="aoTinyBtn aoUsageActionBtn"
+                      onClick={() => {
+                        setPickerDateFrom('')
+                        setPickerDateTo('')
+                      }}
+                    >
+                      Clear
+                    </button>
+                    <button
+                      className="aoTinyBtn aoUsageActionBtn"
+                      onClick={() => {
+                        const today = dayStartToIso(startOfDayMs(Date.now()))
+                        if (!pickerFromDayStart || pickerToDayStart) {
+                          setPickerDateFrom(today)
+                          setPickerDateTo('')
+                          setDateAnchor('to')
+                          return
+                        }
+                        if (startOfDayMs(Date.now()) < pickerFromDayStart) {
+                          setPickerDateTo(dayStartToIso(pickerFromDayStart))
+                          setPickerDateFrom(today)
+                        } else {
+                          setPickerDateTo(today)
+                        }
+                      }}
+                    >
+                      Today
+                    </button>
+                  </div>
+                  <div className="aoEventLogDatePopoverFootGroup">
+                    <button
+                      className="aoTinyBtn aoUsageActionBtn"
+                      onClick={() => {
+                        setOpenDatePicker(false)
+                      }}
+                    >
+                      OK
+                    </button>
+                  </div>
                 </div>
               </div>
             ) : null}
