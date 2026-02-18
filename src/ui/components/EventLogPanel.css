@@ -1,0 +1,432 @@
+.aoEventLogLayout {
+  --ao-events-table-height: calc(100vh - 360px);
+}
+
+.aoEventLogToolbar {
+  display: grid;
+  grid-template-columns: auto minmax(280px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 2px 10px;
+}
+
+.aoEventLogToolbarGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoEventLogDateLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoEventLogDateInput {
+  width: 116px;
+  height: 24px;
+  padding: 0 8px;
+}
+
+.aoEventLogDatePickerWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoEventLogDateTrigger {
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  color: rgba(13, 18, 32, 0.86);
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.aoEventLogDateTrigger:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.3);
+  background: rgba(var(--ao-accent-rgb), 0.1);
+}
+
+.aoEventLogDateTrigger.has-value {
+  border-color: rgba(13, 18, 32, 0.14);
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.aoEventLogDateTrigger.is-active {
+  border-color: rgba(13, 18, 32, 0.14);
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.2), rgba(242, 193, 77, 0.16));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62);
+}
+
+.aoEventLogDateTrigger[aria-expanded='true'] {
+  border-color: rgba(13, 18, 32, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62);
+}
+
+.aoEventLogDateTrigger:focus,
+.aoEventLogDateTrigger:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.aoEventLogDatePlaceholder {
+  color: rgba(13, 18, 32, 0.62);
+  font-weight: 560;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+.aoEventLogDatePopover {
+  position: absolute;
+  top: 36px;
+  left: 0;
+  z-index: 30;
+  width: 292px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.99);
+  box-shadow:
+    0 18px 36px rgba(13, 18, 32, 0.2),
+    0 6px 12px rgba(13, 18, 32, 0.08);
+  padding: 10px;
+}
+
+.aoEventLogDatePopoverHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.aoEventLogDateNavBtn {
+  width: 36px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.16);
+  background: rgba(255, 255, 255, 0.94);
+  color: rgba(13, 18, 32, 0.78);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.aoEventLogDateNavBtn:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.46);
+  background: rgba(var(--ao-accent-rgb), 0.1);
+}
+
+.aoEventLogDateTitle {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.62);
+}
+
+.aoEventLogDateWeekdays {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.58);
+  text-align: center;
+}
+
+.aoEventLogDateGrid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.aoEventLogDateCell {
+  border: 1px solid rgba(13, 18, 32, 0.06);
+  border-radius: 8px;
+  min-height: 34px;
+  background: rgba(255, 255, 255, 0.94);
+  color: rgba(13, 18, 32, 0.9);
+  padding: 4px 2px 3px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  cursor: pointer;
+}
+
+.aoEventLogDateCell:focus,
+.aoEventLogDateCell:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.aoEventLogDateCell.is-out {
+  opacity: 0.45;
+}
+
+.aoEventLogDateCell.is-range {
+  background: rgba(var(--ao-accent-rgb), 0.12);
+  border-color: rgba(var(--ao-accent-rgb), 0.26);
+}
+
+.aoEventLogDateCell.is-today {
+  border-color: rgba(var(--ao-accent-rgb), 0.4);
+  background: rgba(var(--ao-accent-rgb), 0.09);
+  box-shadow: inset 0 0 0 1px rgba(var(--ao-accent-rgb), 0.14);
+}
+
+.aoEventLogDateCell.is-start,
+.aoEventLogDateCell.is-end {
+  border-color: rgba(var(--ao-accent-rgb), 0.34);
+  background: rgba(var(--ao-accent-rgb), 0.2);
+  box-shadow: none;
+}
+
+.aoEventLogDateDots {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.aoEventLogDateDot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(var(--ao-accent-rgb), 0.92);
+  box-shadow: none;
+}
+
+.aoEventLogDateDotInfo {
+  background: #38c4d7;
+}
+
+.aoEventLogDateDotWarning {
+  background: #f2b43f;
+}
+
+.aoEventLogDateDotError {
+  background: #f05a7a;
+}
+
+.aoEventLogDatePopoverFoot {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.aoEventLogDatePopoverFootGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoEventLogSearch {
+  width: 100%;
+  min-width: 260px;
+}
+
+.aoEventLogDateRange {
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(13, 18, 32, 0.03);
+}
+
+.aoEventLogFilterGroup {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 12px;
+  background: rgba(13, 18, 32, 0.03);
+}
+
+.aoEventLogFilterDivider {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: rgba(13, 18, 32, 0.12);
+}
+
+.aoEventLogDateClear {
+  margin-left: 4px;
+}
+
+.aoEventLogDateClear:disabled {
+  background: rgba(13, 18, 32, 0.03);
+  border-color: rgba(13, 18, 32, 0.08);
+  color: rgba(13, 18, 32, 0.3);
+  opacity: 0.68;
+  cursor: not-allowed;
+}
+
+.aoEventLogDateClear:disabled:hover {
+  background: rgba(13, 18, 32, 0.06);
+  border-color: rgba(13, 18, 32, 0.12);
+}
+
+.aoEventLogDateTrigger {
+  width: 120px;
+}
+
+@media (max-width: 1180px) {
+  .aoEventLogToolbar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+  .aoEventLogDateRange {
+    justify-content: flex-start;
+  }
+}
+
+.aoEventLogChartCard {
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.74);
+  padding: 10px 12px 12px;
+  margin-bottom: 10px;
+}
+
+.aoEventLogChartHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aoEventLogChartPlot {
+  height: 120px;
+  display: grid;
+  align-items: end;
+  gap: 1px;
+  margin-top: 10px;
+  position: relative;
+}
+
+.aoEventLogBarGroup {
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: stretch;
+}
+
+.aoEventLogBarGroup.is-empty {
+  pointer-events: none;
+}
+
+.aoEventLogBarWrap {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: stretch;
+}
+
+.aoEventLogBarStack {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+}
+
+.aoEventLogBarSegment {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  min-height: 0;
+  border-radius: 4px 4px 0 0;
+}
+
+.aoEventLogBarInfo {
+  background: #38c4d7;
+}
+
+.aoEventLogBarWarning {
+  background: #f2b43f;
+}
+
+.aoEventLogBarError {
+  background: #f05a7a;
+}
+
+.aoEventLogChartMeta {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: rgba(13, 18, 32, 0.62);
+  font-size: 12px;
+}
+
+.aoEventLogLegend {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.aoEventLogLegendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.aoEventLogLegendDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+}
+
+.aoEventLogTooltip {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 10px));
+  border: 1px solid rgba(13, 18, 32, 0.16);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow:
+    0 16px 30px rgba(13, 18, 32, 0.16),
+    0 3px 10px rgba(13, 18, 32, 0.09);
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: rgba(13, 18, 32, 0.86);
+  pointer-events: none;
+  z-index: 40;
+  white-space: nowrap;
+}
+
+.aoEventLogTooltipTitle {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-bottom: 5px;
+}
+
+.aoEventLogTooltipRow {
+  display: grid;
+  grid-template-columns: 10px auto auto;
+  align-items: center;
+  column-gap: 6px;
+}
+
+.aoEventLogTooltipRow b {
+  font-weight: 700;
+  justify-self: end;
+}
+
+@media (max-width: 980px) {
+  .aoEventLogLayout {
+    --ao-events-table-height: calc(100vh - 420px);
+  }
+
+  .aoEventLogSearch {
+    min-width: 200px;
+  }
+}

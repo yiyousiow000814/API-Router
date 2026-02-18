@@ -26,7 +26,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
             Cooldown
           </th>
           <th style={{ width: 170 }}>Last OK</th>
-          <th>Last Error</th>
+          <th>Last Fail At</th>
           <th style={{ width: 240 }}>Usage</th>
         </tr>
       </thead>
@@ -196,7 +196,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
               <td className="aoCellCenter">{h.consecutive_failures}</td>
               <td className="aoCellCenter">{cooldownActive ? fmtWhen(h.cooldown_until_unix_ms) : '-'}</td>
               <td>{fmtWhen(h.last_ok_at_unix_ms)}</td>
-              <td className="aoCellWrap">{h.last_error ? h.last_error : '-'}</td>
+              <td>{h.last_fail_at_unix_ms > 0 ? fmtWhen(h.last_fail_at_unix_ms) : '-'}</td>
               <td className="aoUsageCell">
                 <div className="aoUsageCellInner">{usageNode}</div>
               </td>

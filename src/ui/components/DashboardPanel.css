@@ -345,13 +345,6 @@
   color: rgba(138, 85, 0, 0.95);
 }
 
-.aoEventMessage {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-}
-
 .aoEventsSection td {
   padding: 10px 12px 6px;
   font-size: 12px;

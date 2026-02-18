@@ -19,6 +19,93 @@ export type SpendHistoryRow = {
 
 const DEV_NOW = Date.now()
 
+function buildDevRecentEvents(count = 200): NonNullable<Status['recent_events']> {
+  const providers = ['provider_1', 'provider_2']
+  const mockSessions = [
+    { codex: '019c4578-0f3c-7f82-a4f9-b41a1e65e242', wt: 'wt-8f42f1' },
+    { codex: '019c03fd-6ea4-7121-961f-9f9b64d2c1b5', wt: '7c757b99-7a1f-455a-b301-3e0271e7f615' },
+    { codex: '019c7f46-c5ec-7e2e-9205-4e00718a524e', wt: 'wsl:4504a762-cce0-40c8-ba5e-310424165b01' },
+    { codex: '019c9f18-3d72-7ce3-a9a1-2fd7f4d9d100', wt: '3f9d88a2-5f14-4f8e-a3be-214eb4f6c2b1' },
+    { codex: '019c9f18-89aa-7b11-bc42-6fbe3dc89002', wt: 'wsl:1c9a4f93-3214-4ef5-b6d4-0f6e6e1af991' },
+  ]
+  const out: NonNullable<Status['recent_events']> = []
+  let dayOffset = 0
+  while (out.length < count) {
+    // Realistic daily variance (some quiet days, some busy days), not fixed per day.
+    const daySeed = (dayOffset * 37 + 11) % 100
+    const dayCount = 2 + ((daySeed * 7 + dayOffset * 3) % 13) // 2..14 events/day
+    const dayProfile = (dayOffset * 19 + 7) % 100
+
+    for (let slot = 0; slot < dayCount && out.length < count; slot += 1) {
+      const idx = out.length
+      const levelRoll = (dayOffset * 41 + slot * 23 + 17) % 100
+      const infoThreshold = dayProfile < 12 ? 74 : dayProfile < 65 ? 84 : 91
+      const warningThreshold = dayProfile < 12 ? 95 : dayProfile < 65 ? 96 : 98
+      const level: 'info' | 'warning' | 'error' =
+        levelRoll < infoThreshold ? 'info' : levelRoll < warningThreshold ? 'warning' : 'error'
+      const provider = providers[(dayOffset + slot + (level === 'error' ? 1 : 0)) % providers.length]
+      const session = mockSessions[(dayOffset + slot * 2) % mockSessions.length]
+      const intraDaySeconds = 120 + ((slot * 97 + dayOffset * 29) % (22 * 60 * 60))
+      const secAgo = dayOffset * 24 * 60 * 60 + intraDaySeconds
+      const unix_ms = DEV_NOW - secAgo * 1000
+
+      if (level === 'info') {
+        out.push({
+          provider,
+          level,
+          unix_ms,
+          code: 'routing.selected',
+          message:
+            idx % 2 === 0
+              ? `Selected ${provider} (healthy, preferred). Health probe passed and latency stayed within target.`
+              : `Selected ${provider} (fallback). Preferred provider cooldown is active, traffic routed to backup.`,
+          fields: {
+            reason: idx % 2 === 0 ? 'preferred_provider' : 'failover',
+            latency_ms: 95 + (idx % 35),
+            codex_session_id: session.codex,
+            wt_session: session.wt,
+            pid: 3400 + (idx % 7),
+          },
+        })
+        continue
+      }
+
+      if (level === 'warning') {
+        out.push({
+          provider,
+          level,
+          unix_ms,
+          code: 'quota.low',
+          message: `${provider} quota is getting low. Remaining daily budget may not cover current request rate.`,
+          fields: {
+            remaining_percent: Math.max(1, 35 - (idx % 30)),
+            codex_session_id: session.codex,
+            wt_session: session.wt,
+          },
+        })
+        continue
+      }
+
+      out.push({
+        provider,
+        level,
+        unix_ms,
+        code: 'upstream.timeout',
+        message: `stream read error (request timed out); completed=false; forwarded_bytes=0; upstream_status=200 OK; url=https://api.example.com/v1/responses; content_type=text/event-stream; content_encoding=(none); transfer_encoding=chunked; automatic failover executed from ${provider} to backup provider and this request may have increased end-to-end latency.`,
+        fields: {
+          timeout_seconds: 120,
+          retryable: true,
+          session_id: session.codex,
+          wt_session: session.wt,
+        },
+      })
+    }
+    dayOffset += 1
+  }
+
+  return out
+}
+
 export const devStatus: Status = {
   listen: { host: '127.0.0.1', port: 4000 },
   preferred_provider: 'provider_1',
@@ -45,24 +132,7 @@ export const devStatus: Status = {
     provider_1: { ok_requests: 210, error_requests: 3, total_tokens: 128400 },
     provider_2: { ok_requests: 12, error_requests: 2, total_tokens: 3400 },
   },
-  recent_events: [
-    {
-      provider: 'provider_1',
-      level: 'info',
-      unix_ms: DEV_NOW - 8000,
-      code: 'routing.selected',
-      message: 'Selected provider_1 (healthy, preferred).',
-      fields: { reason: 'preferred_provider', latency_ms: 112 },
-    },
-    {
-      provider: 'provider_2',
-      level: 'error',
-      unix_ms: DEV_NOW - 21000,
-      code: 'upstream.timeout',
-      message: 'Provider timeout; failover to provider_1.',
-      fields: { timeout_seconds: 120, retryable: true },
-    },
-  ],
+  recent_events: buildDevRecentEvents(200),
   client_sessions: [
     {
       id: '019c4578-0f3c-7f82-a4f9-b41a1e65e242',
