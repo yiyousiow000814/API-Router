@@ -216,6 +216,8 @@ impl Store {
         let _ = self
             .db
             .insert(key.as_bytes(), serde_json::to_vec(&v).unwrap_or_default());
+        // Shared pruning cadence counter: reused by usage/event maintenance to avoid
+        // adding another atomic. Event pruning remains bounded by MAX_EVENTS_RUNTIME.
         let seq = self.usage_prune_seq.fetch_add(1, Ordering::Relaxed) + 1;
         if seq % Self::EVENT_PRUNE_EVERY == 0 {
             self.prune_events_runtime();
@@ -596,6 +598,9 @@ impl Store {
             };
             if let Some(from) = from_unix_ms {
                 if unix_ms < from {
+                    // Keys are event:{unix_ms}:{uuid}, and add_event writes the same unix_ms
+                    // into both key and payload. Once we pass `from`, the remaining entries
+                    // in this reverse scan are older and can be skipped.
                     break;
                 }
             }
