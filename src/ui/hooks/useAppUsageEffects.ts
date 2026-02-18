@@ -74,6 +74,7 @@ type Params = {
 export function useAppUsageEffects(params: Params) {
   const usageHistoryPrefetchStartedRef = useRef(false)
   const usageStatsPrefetchStartedRef = useRef(false)
+  const previousActivePageRef = useRef<Params['activePage'] | null>(null)
   const {
     activePage,
     refreshUsageStatistics,
@@ -139,9 +140,9 @@ export function useAppUsageEffects(params: Params) {
   useEffect(() => {
     if (usageStatsPrefetchStartedRef.current) return
     if (activePage === 'usage_statistics') return
-    usageStatsPrefetchStartedRef.current = true
     const timer = window.setTimeout(() => {
       if (activePageRef.current === 'usage_statistics') return
+      usageStatsPrefetchStartedRef.current = true
       void refreshUsageStatisticsRef.current({ silent: true })
     }, 500)
     return () => {
@@ -151,10 +152,15 @@ export function useAppUsageEffects(params: Params) {
 
   useEffect(() => {
     if (activePage !== 'usage_statistics') return
-    void refreshUsageStatistics({ silent: true })
+    const enteringUsagePage = previousActivePageRef.current !== 'usage_statistics'
+    void refreshUsageStatistics({ silent: enteringUsagePage })
     const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), 15_000)
     return () => window.clearInterval(t)
   }, [activePage, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins])
+
+  useEffect(() => {
+    previousActivePageRef.current = activePage
+  }, [activePage])
 
   useEffect(() => {
     if (isDevPreview) return
