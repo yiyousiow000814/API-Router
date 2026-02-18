@@ -6,6 +6,9 @@ import { isValidWindowsCodexPath, isValidWslCodexPath } from '../utils/codexPath
 import { GATEWAY_WSL2_HOST } from '../constants'
 import { buildGatewayBaseUrl, normalizeGatewayPort } from '../utils/gatewayUrl'
 
+const WSL_AUTH_STORAGE_KEY = 'ao:wsl-gateway-authorized'
+const WSL_AUTH_EVENT = 'ao:wsl-gateway-authorized-changed'
+
 type Props = {
   open: boolean
   windowsDir: string
@@ -62,7 +65,7 @@ export function CodexSwapModal({
   const [wslBusy, setWslBusy] = useState(false)
   const [wslAuthorized, setWslAuthorized] = useState<boolean>(() => {
     try {
-      return localStorage.getItem('ao:wsl-gateway-authorized') === '1'
+      return localStorage.getItem(WSL_AUTH_STORAGE_KEY) === '1'
     } catch {
       return false
     }
@@ -70,10 +73,19 @@ export function CodexSwapModal({
   const [wslHost, setWslHost] = useState<string>(GATEWAY_WSL2_HOST)
   const gatewayPort = normalizeGatewayPort(listenPort)
 
+  function persistWslAuthorized(authorized: boolean) {
+    try {
+      localStorage.setItem(WSL_AUTH_STORAGE_KEY, authorized ? '1' : '0')
+      window.dispatchEvent(new CustomEvent<boolean>(WSL_AUTH_EVENT, { detail: authorized }))
+    } catch {
+      // noop
+    }
+  }
+
   async function refreshWslAccessStatus() {
     if (isDevPreview) {
       try {
-        setWslAuthorized(localStorage.getItem('ao:wsl-gateway-authorized') === '1')
+        setWslAuthorized(localStorage.getItem(WSL_AUTH_STORAGE_KEY) === '1')
       } catch {
         setWslAuthorized(false)
       }
@@ -84,11 +96,7 @@ export function CodexSwapModal({
       const authorized = Boolean(res.authorized)
       setWslAuthorized(authorized)
       setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
-      try {
-        localStorage.setItem('ao:wsl-gateway-authorized', authorized ? '1' : '0')
-      } catch {
-        // noop
-      }
+      persistWslAuthorized(authorized)
     } catch {
       // noop
     }
@@ -97,11 +105,7 @@ export function CodexSwapModal({
   async function authorizeWslAccess() {
     if (isDevPreview) {
       setWslAuthorized(true)
-      try {
-        localStorage.setItem('ao:wsl-gateway-authorized', '1')
-      } catch {
-        // noop
-      }
+      persistWslAuthorized(true)
       flashToast('WSL2 gateway access authorized [TEST]')
       return
     }
@@ -111,11 +115,7 @@ export function CodexSwapModal({
       const authorized = Boolean(res.authorized)
       setWslAuthorized(authorized)
       setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
-      try {
-        localStorage.setItem('ao:wsl-gateway-authorized', authorized ? '1' : '0')
-      } catch {
-        // noop
-      }
+      persistWslAuthorized(authorized)
       flashToast('WSL2 gateway access authorized')
     } catch (e) {
       flashToast(String(e), 'error')
@@ -127,11 +127,7 @@ export function CodexSwapModal({
   async function revokeWslAccess() {
     if (isDevPreview) {
       setWslAuthorized(false)
-      try {
-        localStorage.setItem('ao:wsl-gateway-authorized', '0')
-      } catch {
-        // noop
-      }
+      persistWslAuthorized(false)
       flashToast('WSL2 gateway access revoked [TEST]')
       return
     }
@@ -141,11 +137,7 @@ export function CodexSwapModal({
       const authorized = Boolean(res.authorized)
       setWslAuthorized(authorized)
       setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
-      try {
-        localStorage.setItem('ao:wsl-gateway-authorized', authorized ? '1' : '0')
-      } catch {
-        // noop
-      }
+      persistWslAuthorized(authorized)
       flashToast('WSL2 gateway access revoked')
     } catch (e) {
       flashToast(String(e), 'error')
@@ -155,13 +147,26 @@ export function CodexSwapModal({
   }
 
   useEffect(() => {
-    void refreshWslAccessStatus()
-  }, [])
-
-  useEffect(() => {
     if (!open || !useWsl) return
     void refreshWslAccessStatus()
-  }, [open, useWsl])
+  }, [open, useWsl, isDevPreview])
+
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== WSL_AUTH_STORAGE_KEY) return
+      setWslAuthorized(event.newValue === '1')
+    }
+    const onCustom = (event: Event) => {
+      const customEvent = event as CustomEvent<boolean>
+      if (typeof customEvent.detail === 'boolean') setWslAuthorized(customEvent.detail)
+    }
+    window.addEventListener('storage', onStorage)
+    window.addEventListener(WSL_AUTH_EVENT, onCustom as EventListener)
+    return () => {
+      window.removeEventListener('storage', onStorage)
+      window.removeEventListener(WSL_AUTH_EVENT, onCustom as EventListener)
+    }
+  }, [])
 
   if (!open) return null
 

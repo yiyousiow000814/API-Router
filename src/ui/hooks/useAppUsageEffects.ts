@@ -119,6 +119,11 @@ export function useAppUsageEffects(params: Params) {
     queueAutoSaveTimer,
     autoSaveUsageScheduleRows,
   } = params
+  const refreshUsageHistoryRef = useRef(refreshUsageHistory)
+
+  useEffect(() => {
+    refreshUsageHistoryRef.current = refreshUsageHistory
+  }, [refreshUsageHistory])
 
   useEffect(() => {
     if (activePage !== 'usage_statistics') return
@@ -207,12 +212,12 @@ export function useAppUsageEffects(params: Params) {
     usageHistoryPrefetchStartedRef.current = true
     const timer = window.setTimeout(() => {
       if (usageHistoryLoadedRef.current) return
-      void refreshUsageHistory({ silent: true })
+      void refreshUsageHistoryRef.current({ silent: true })
     }, 400)
     return () => {
       window.clearTimeout(timer)
     }
-  }, [refreshUsageHistory, usageHistoryLoadedRef])
+  }, [usageHistoryLoadedRef])
 
   useEffect(() => {
     if (!usageHistoryModalOpen) {
