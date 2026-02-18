@@ -1,5 +1,5 @@
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import type { Config } from '../types'
 import type {
   ProviderScheduleDraft,
@@ -72,6 +72,9 @@ type Params = {
 }
 
 export function useAppUsageEffects(params: Params) {
+  const usageHistoryPrefetchStartedRef = useRef(false)
+  const usageStatsPrefetchStartedRef = useRef(false)
+  const previousActivePageRef = useRef<Params['activePage'] | null>(null)
   const {
     activePage,
     refreshUsageStatistics,
@@ -118,13 +121,46 @@ export function useAppUsageEffects(params: Params) {
     queueAutoSaveTimer,
     autoSaveUsageScheduleRows,
   } = params
+  const refreshUsageHistoryRef = useRef(refreshUsageHistory)
+  const refreshUsageStatisticsRef = useRef(refreshUsageStatistics)
+  const activePageRef = useRef(activePage)
+
+  useEffect(() => {
+    refreshUsageHistoryRef.current = refreshUsageHistory
+  }, [refreshUsageHistory])
+
+  useEffect(() => {
+    refreshUsageStatisticsRef.current = refreshUsageStatistics
+  }, [refreshUsageStatistics])
+
+  useEffect(() => {
+    activePageRef.current = activePage
+  }, [activePage])
+
+  useEffect(() => {
+    if (usageStatsPrefetchStartedRef.current) return
+    if (activePage === 'usage_statistics') return
+    const timer = window.setTimeout(() => {
+      if (activePageRef.current === 'usage_statistics') return
+      usageStatsPrefetchStartedRef.current = true
+      void refreshUsageStatisticsRef.current({ silent: true })
+    }, 500)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [activePage])
 
   useEffect(() => {
     if (activePage !== 'usage_statistics') return
-    void refreshUsageStatistics()
+    const enteringUsagePage = previousActivePageRef.current !== 'usage_statistics'
+    void refreshUsageStatistics({ silent: enteringUsagePage })
     const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), 15_000)
     return () => window.clearInterval(t)
   }, [activePage, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins])
+
+  useEffect(() => {
+    previousActivePageRef.current = activePage
+  }, [activePage])
 
   useEffect(() => {
     if (isDevPreview) return
@@ -199,6 +235,19 @@ export function useAppUsageEffects(params: Params) {
       return changed ? next : prev
     })
   }, [usagePricingModalOpen, usagePricingProviderNames, config])
+
+  useEffect(() => {
+    if (usageHistoryPrefetchStartedRef.current) return
+    if (usageHistoryLoadedRef.current) return
+    usageHistoryPrefetchStartedRef.current = true
+    const timer = window.setTimeout(() => {
+      if (usageHistoryLoadedRef.current) return
+      void refreshUsageHistoryRef.current({ silent: true })
+    }, 400)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [usageHistoryLoadedRef])
 
   useEffect(() => {
     if (!usageHistoryModalOpen) {

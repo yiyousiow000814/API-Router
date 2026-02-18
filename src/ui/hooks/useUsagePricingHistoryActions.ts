@@ -327,7 +327,7 @@ export function useUsagePricingHistoryActions(params: Params) {
       })
       if (!keepEditCell) setUsageHistoryEditCell(null)
     } catch (e) {
-      flashToast(String(e), 'error')
+      if (!silent) flashToast(String(e), 'error')
     } finally {
       if (!silent) setUsageHistoryLoading(false)
     }
