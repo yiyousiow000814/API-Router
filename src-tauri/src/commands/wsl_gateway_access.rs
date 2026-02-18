@@ -268,7 +268,7 @@ pub(crate) async fn wsl_gateway_authorize_access(
 ) -> Result<serde_json::Value, String> {
     let port = state.gateway.cfg.read().listen.port;
     let config_path = state.config_path.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let out = tauri::async_runtime::spawn_blocking(move || {
         let wsl_host =
             crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(&config_path));
         if access_authorized_impl(port, &wsl_host) {
@@ -281,7 +281,19 @@ pub(crate) async fn wsl_gateway_authorize_access(
         authorize_access_impl(port, &wsl_host)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    let wsl_host = out
+        .get("wsl_host")
+        .and_then(|v| v.as_str())
+        .unwrap_or("-");
+    state.gateway.store.add_event(
+        "gateway",
+        "info",
+        "wsl.gateway_access_authorized",
+        &format!("WSL2 gateway access authorized ({wsl_host})"),
+        serde_json::json!({ "wsl_host": wsl_host }),
+    );
+    Ok(out)
 }
 
 #[tauri::command]
@@ -290,7 +302,7 @@ pub(crate) async fn wsl_gateway_revoke_access(
 ) -> Result<serde_json::Value, String> {
     let port = state.gateway.cfg.read().listen.port;
     let config_path = state.config_path.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let out = tauri::async_runtime::spawn_blocking(move || {
         let wsl_host =
             crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(&config_path));
         if !access_authorized_impl(port, &wsl_host) {
@@ -303,5 +315,17 @@ pub(crate) async fn wsl_gateway_revoke_access(
         revoke_access_impl(port, &wsl_host)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    let wsl_host = out
+        .get("wsl_host")
+        .and_then(|v| v.as_str())
+        .unwrap_or("-");
+    state.gateway.store.add_event(
+        "gateway",
+        "info",
+        "wsl.gateway_access_revoked",
+        &format!("WSL2 gateway access revoked ({wsl_host})"),
+        serde_json::json!({ "wsl_host": wsl_host }),
+    );
+    Ok(out)
 }

@@ -54,6 +54,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
         .unwrap_or(serde_json::json!({"ok": false}));
 
     let client_sessions = {
+        let previous_sessions = state.gateway.client_sessions.read().clone();
         // Best-effort: discover running Codex processes configured to use this router, even before
         // the first request is sent (Windows Terminal only).
         let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
@@ -81,25 +82,28 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     continue;
                 };
                 seen_in_discovery.insert(codex_session_id.to_string());
-                let entry = map.entry(codex_session_id.to_string()).or_insert_with(|| {
-                    crate::orchestrator::gateway::ClientSessionRuntime {
-                        codex_session_id: codex_session_id.to_string(),
-                        pid: s.pid,
-                        wt_session: crate::platform::windows_terminal::merge_wt_session_marker(
-                            None,
-                            &s.wt_session,
-                        ),
-                        last_request_unix_ms: 0,
-                        last_discovered_unix_ms: 0,
-                        last_reported_model_provider: None,
-                        last_reported_model: None,
-                        last_reported_base_url: None,
-                        agent_parent_session_id: None,
-                        is_agent: s.is_agent,
-                        is_review: s.is_review,
-                        confirmed_router: s.router_confirmed,
+                let entry = match map.entry(codex_session_id.to_string()) {
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(crate::orchestrator::gateway::ClientSessionRuntime {
+                            codex_session_id: codex_session_id.to_string(),
+                            pid: s.pid,
+                            wt_session: crate::platform::windows_terminal::merge_wt_session_marker(
+                                None,
+                                &s.wt_session,
+                            ),
+                            last_request_unix_ms: 0,
+                            last_discovered_unix_ms: 0,
+                            last_reported_model_provider: None,
+                            last_reported_model: None,
+                            last_reported_base_url: None,
+                            agent_parent_session_id: None,
+                            is_agent: s.is_agent,
+                            is_review: s.is_review,
+                            confirmed_router: s.router_confirmed,
+                        })
                     }
-                });
+                    std::collections::hash_map::Entry::Occupied(slot) => slot.into_mut(),
+                };
                 entry.pid = s.pid;
                 entry.wt_session = crate::platform::windows_terminal::merge_wt_session_marker(
                     entry.wt_session.as_deref(),
@@ -185,7 +189,18 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
             }
         }
 
-        let map = state.gateway.client_sessions.read().clone();
+        let current_sessions = state.gateway.client_sessions.read().clone();
+        for (code, message, fields) in build_session_change_events(
+            &previous_sessions,
+            &current_sessions,
+            &wsl_gateway_host,
+        ) {
+            state.gateway
+                .store
+                .add_event("gateway", "info", &code, &message, fields);
+        }
+
+        let map = current_sessions;
         let mut items: Vec<_> = map.into_iter().collect();
         items.sort_by_key(|(_k, v)| {
             std::cmp::Reverse(v.last_request_unix_ms.max(v.last_discovered_unix_ms))
@@ -242,6 +257,129 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
       "codex_account": codex_account,
       "client_sessions": client_sessions
     })
+}
+
+fn is_wsl_session_origin(
+    wt_session: Option<&str>,
+    reported_base_url: Option<&str>,
+    wsl_gateway_host: &str,
+) -> bool {
+    let wt = wt_session.unwrap_or("").trim().to_ascii_lowercase();
+    if wt.starts_with("wsl:") {
+        return true;
+    }
+
+    let base = reported_base_url.unwrap_or("").trim().to_ascii_lowercase();
+    if base.is_empty() {
+        return false;
+    }
+
+    let host = reqwest::Url::parse(&base)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .unwrap_or_default();
+    if host.is_empty() {
+        return false;
+    }
+    if host == crate::constants::GATEWAY_WINDOWS_HOST.to_ascii_lowercase()
+        || host == "localhost"
+        || host == "::1"
+    {
+        return false;
+    }
+    host == wsl_gateway_host.trim().to_ascii_lowercase()
+}
+
+fn build_session_change_events(
+    previous_sessions: &std::collections::HashMap<
+        String,
+        crate::orchestrator::gateway::ClientSessionRuntime,
+    >,
+    current_sessions: &std::collections::HashMap<
+        String,
+        crate::orchestrator::gateway::ClientSessionRuntime,
+    >,
+    wsl_gateway_host: &str,
+) -> Vec<(String, String, serde_json::Value)> {
+    let mut out: Vec<(String, String, serde_json::Value)> = Vec::new();
+    for (codex_session_id, curr) in current_sessions {
+        let prev = previous_sessions.get(codex_session_id);
+        let origin = if is_wsl_session_origin(
+            curr.wt_session.as_deref(),
+            curr.last_reported_base_url.as_deref(),
+            wsl_gateway_host,
+        ) {
+            "wsl2"
+        } else {
+            "win"
+        };
+        if prev.map(|s| s.confirmed_router).unwrap_or(false) != curr.confirmed_router
+            && curr.confirmed_router
+        {
+            out.push((
+                "codex.session_verified".to_string(),
+                format!("Codex session verified ({origin})"),
+                serde_json::json!({
+                    "codex_session_id": codex_session_id,
+                    "wt_session": curr.wt_session,
+                    "reported_base_url": curr.last_reported_base_url,
+                    "origin": origin,
+                    "verified": true
+                }),
+            ));
+        }
+        if prev.map(|s| s.is_review).unwrap_or(false) != curr.is_review && curr.is_review {
+            out.push((
+                "codex.session_review_appeared".to_string(),
+                format!("Codex review session appeared ({origin})"),
+                serde_json::json!({
+                    "codex_session_id": codex_session_id,
+                    "wt_session": curr.wt_session,
+                    "reported_base_url": curr.last_reported_base_url,
+                    "origin": origin,
+                    "is_review": true
+                }),
+            ));
+        }
+        if prev.map(|s| s.is_agent).unwrap_or(false) != curr.is_agent && curr.is_agent {
+            out.push((
+                "codex.session_agent_appeared".to_string(),
+                format!("Codex agent session appeared ({origin})"),
+                serde_json::json!({
+                    "codex_session_id": codex_session_id,
+                    "wt_session": curr.wt_session,
+                    "reported_base_url": curr.last_reported_base_url,
+                    "origin": origin,
+                    "is_agent": true
+                }),
+            ));
+        }
+    }
+    for (codex_session_id, prev) in previous_sessions {
+        if current_sessions.contains_key(codex_session_id) {
+            continue;
+        }
+        let origin = if is_wsl_session_origin(
+            prev.wt_session.as_deref(),
+            prev.last_reported_base_url.as_deref(),
+            wsl_gateway_host,
+        ) {
+            "wsl2"
+        } else {
+            "win"
+        };
+        out.push((
+            "codex.session_closed".to_string(),
+            format!("Codex session closed ({origin})"),
+            serde_json::json!({
+                "codex_session_id": codex_session_id,
+                "wt_session": prev.wt_session,
+                "reported_base_url": prev.last_reported_base_url,
+                "origin": origin
+            }),
+        ));
+    }
+    out
 }
 
 fn merge_discovered_model_provider(
@@ -529,11 +667,36 @@ mod tests {
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::commands::{
         apply_discovered_router_confirmation, backfill_main_confirmation_from_verified_agent,
-        merge_discovered_model_provider, next_last_discovered_unix_ms,
+        build_session_change_events, is_wsl_session_origin, merge_discovered_model_provider,
+        next_last_discovered_unix_ms,
         next_wsl_discovery_miss_count,
         should_keep_runtime_session,
     };
     use crate::orchestrator::gateway::ClientSessionRuntime;
+
+    fn mk_runtime(
+        codex_session_id: &str,
+        wt_session: Option<&str>,
+        reported_base_url: Option<&str>,
+        confirmed_router: bool,
+        is_review: bool,
+        is_agent: bool,
+    ) -> ClientSessionRuntime {
+        ClientSessionRuntime {
+            codex_session_id: codex_session_id.to_string(),
+            pid: 0,
+            wt_session: wt_session.map(|v| v.to_string()),
+            last_request_unix_ms: 0,
+            last_discovered_unix_ms: 1,
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: reported_base_url.map(|v| v.to_string()),
+            agent_parent_session_id: None,
+            is_agent,
+            is_review,
+            confirmed_router,
+        }
+    }
 
     #[test]
     fn discovered_provider_does_not_override_confirmed_gateway_session() {
@@ -1053,6 +1216,133 @@ mod tests {
 
         let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 3);
         assert!(!keep);
+    }
+
+    #[test]
+    fn wsl_origin_detected_by_wt_session_prefix() {
+        assert!(is_wsl_session_origin(
+            Some("wsl:abc-123"),
+            Some("http://127.0.0.1:3000"),
+            "172.26.144.1",
+        ));
+    }
+
+    #[test]
+    fn wsl_origin_detected_by_reported_base_url_host() {
+        assert!(is_wsl_session_origin(
+            Some("abc-123"),
+            Some("http://172.26.144.1:3000"),
+            "172.26.144.1",
+        ));
+    }
+
+    #[test]
+    fn windows_origin_when_base_url_is_localhost_or_loopback() {
+        assert!(!is_wsl_session_origin(
+            Some("abc-123"),
+            Some("http://localhost:3000"),
+            "172.26.144.1",
+        ));
+        assert!(!is_wsl_session_origin(
+            Some("abc-123"),
+            Some("http://127.0.0.1:3000"),
+            "172.26.144.1",
+        ));
+    }
+
+    #[test]
+    fn session_change_events_cover_verified_review_agent_and_closed() {
+        let mut previous = std::collections::HashMap::<String, ClientSessionRuntime>::new();
+        previous.insert(
+            "sid-verified".to_string(),
+            mk_runtime(
+                "sid-verified",
+                Some("wsl:abc-1"),
+                Some("http://172.26.144.1:3000"),
+                false,
+                false,
+                false,
+            ),
+        );
+        previous.insert(
+            "sid-review".to_string(),
+            mk_runtime(
+                "sid-review",
+                Some("wt-review"),
+                Some("http://127.0.0.1:3000"),
+                true,
+                false,
+                true,
+            ),
+        );
+        previous.insert(
+            "sid-agent".to_string(),
+            mk_runtime(
+                "sid-agent",
+                Some("wt-agent"),
+                Some("http://127.0.0.1:3000"),
+                true,
+                false,
+                false,
+            ),
+        );
+        previous.insert(
+            "sid-closed".to_string(),
+            mk_runtime(
+                "sid-closed",
+                Some("wsl:closed"),
+                Some("http://172.26.144.1:3000"),
+                true,
+                false,
+                false,
+            ),
+        );
+
+        let mut current = std::collections::HashMap::<String, ClientSessionRuntime>::new();
+        current.insert(
+            "sid-verified".to_string(),
+            mk_runtime(
+                "sid-verified",
+                Some("wsl:abc-1"),
+                Some("http://172.26.144.1:3000"),
+                true,
+                false,
+                false,
+            ),
+        );
+        current.insert(
+            "sid-review".to_string(),
+            mk_runtime(
+                "sid-review",
+                Some("wt-review"),
+                Some("http://127.0.0.1:3000"),
+                true,
+                true,
+                true,
+            ),
+        );
+        current.insert(
+            "sid-agent".to_string(),
+            mk_runtime(
+                "sid-agent",
+                Some("wt-agent"),
+                Some("http://127.0.0.1:3000"),
+                true,
+                false,
+                true,
+            ),
+        );
+
+        let events = build_session_change_events(&previous, &current, "172.26.144.1");
+        let codes = events
+            .iter()
+            .map(|(code, _message, _fields)| code.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(codes.contains(&"codex.session_verified"));
+        assert!(codes.contains(&"codex.session_review_appeared"));
+        assert!(codes.contains(&"codex.session_agent_appeared"));
+        assert!(codes.contains(&"codex.session_closed"));
     }
 
     #[test]
