@@ -210,7 +210,6 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     .filter(|p| cfg.providers.contains_key(p));
                 let current_route = last_used_by_session
                     .get(&codex_id)
-                    .filter(|route| now.saturating_sub(route.unix_ms) < 2 * 60 * 1000)
                     .filter(|route| cfg.providers.contains_key(route.provider.as_str()));
                 let last_seen_unix_ms = v.last_request_unix_ms.max(v.last_discovered_unix_ms);
                 serde_json::json!({
