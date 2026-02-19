@@ -4,9 +4,10 @@ type AppTopNavProps = {
   activePage: TopPage
   onSwitchPage: (next: TopPage) => void
   onOpenGettingStarted: () => void
+  onUsageStatisticsIntent?: () => void
 }
 
-export function AppTopNav({ activePage, onSwitchPage, onOpenGettingStarted }: AppTopNavProps) {
+export function AppTopNav({ activePage, onSwitchPage, onOpenGettingStarted, onUsageStatisticsIntent }: AppTopNavProps) {
   return (
     <div className="aoBrandRight">
       <div className="aoTopNav" role="tablist" aria-label="Main pages">
@@ -29,6 +30,8 @@ export function AppTopNav({ activePage, onSwitchPage, onOpenGettingStarted }: Ap
           role="tab"
           aria-selected={activePage === 'usage_statistics'}
           onClick={() => onSwitchPage('usage_statistics')}
+          onMouseEnter={() => onUsageStatisticsIntent?.()}
+          onFocus={() => onUsageStatisticsIntent?.()}
         >
           <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 19.5h16" />

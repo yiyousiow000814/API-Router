@@ -71,11 +71,8 @@ type Params = {
   autoSaveUsageScheduleRows: (rows: ProviderScheduleDraft[], signature: string) => Promise<void>
 }
 
-const USAGE_STATS_BACKGROUND_REFRESH_MS = 60_000
-
 export function useAppUsageEffects(params: Params) {
   const usageHistoryPrefetchStartedRef = useRef(false)
-  const usageStatsBackgroundRefreshInFlightRef = useRef(false)
   const previousActivePageRef = useRef<Params['activePage'] | null>(null)
   const {
     activePage,
@@ -124,39 +121,10 @@ export function useAppUsageEffects(params: Params) {
     autoSaveUsageScheduleRows,
   } = params
   const refreshUsageHistoryRef = useRef(refreshUsageHistory)
-  const refreshUsageStatisticsRef = useRef(refreshUsageStatistics)
-  const activePageRef = useRef(activePage)
 
   useEffect(() => {
     refreshUsageHistoryRef.current = refreshUsageHistory
   }, [refreshUsageHistory])
-
-  useEffect(() => {
-    refreshUsageStatisticsRef.current = refreshUsageStatistics
-  }, [refreshUsageStatistics])
-
-  useEffect(() => {
-    activePageRef.current = activePage
-  }, [activePage])
-
-  const runBackgroundUsageStatsRefresh = () => {
-    if (activePageRef.current === 'usage_statistics') return
-    if (usageStatsBackgroundRefreshInFlightRef.current) return
-    usageStatsBackgroundRefreshInFlightRef.current = true
-    void refreshUsageStatisticsRef.current({ silent: true }).finally(() => {
-      usageStatsBackgroundRefreshInFlightRef.current = false
-    })
-  }
-
-  useEffect(() => {
-    if (activePage === 'usage_statistics') return
-    const backgroundTimer = window.setInterval(() => {
-      runBackgroundUsageStatsRefresh()
-    }, USAGE_STATS_BACKGROUND_REFRESH_MS)
-    return () => {
-      window.clearInterval(backgroundTimer)
-    }
-  }, [activePage])
 
   useEffect(() => {
     if (activePage !== 'usage_statistics') return
