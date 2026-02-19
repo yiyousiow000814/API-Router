@@ -296,18 +296,25 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
     return out
   }, [dailyStatsByDay, fallbackDailyByDayFromEvents])
 
-  const latestEventDay = useMemo(() => {
+  const dailyMinMaxDay = useMemo(() => {
+    let minDay = Number.POSITIVE_INFINITY
     let maxDay = Number.NEGATIVE_INFINITY
     for (const day of effectiveDailyByDay.keys()) {
+      if (day < minDay) minDay = day
       if (day > maxDay) maxDay = day
     }
-    if (!Number.isFinite(maxDay)) return null
-    return maxDay
+    if (!Number.isFinite(minDay) || !Number.isFinite(maxDay)) {
+      return { minDay: null as number | null, maxDay: null as number | null }
+    }
+    return { minDay, maxDay }
   }, [effectiveDailyByDay])
+  const latestEventDay = dailyMinMaxDay.maxDay
 
   const dailyIssueCounts = useMemo(() => {
-    const chartEndDay = latestEventDay ?? defaultRangeEndDay
-    const chartStartDay = addDays(chartEndDay, -(CHART_WINDOW_DAYS - 1))
+    const minEventDay = dailyMinMaxDay.minDay ?? defaultRangeEndDay
+    const maxEventDay = dailyMinMaxDay.maxDay ?? defaultRangeEndDay
+    const spanDays = Math.max(1, ((maxEventDay - minEventDay) / (24 * 60 * 60 * 1000)) + 1)
+    const chartStartDay = spanDays >= CHART_WINDOW_DAYS ? addDays(maxEventDay, -(CHART_WINDOW_DAYS - 1)) : minEventDay
     return Array.from({ length: CHART_WINDOW_DAYS }, (_, idx) => {
       const dayStartMs = addDays(chartStartDay, idx)
       const row = effectiveDailyByDay.get(dayStartMs) ?? { infos: 0, warnings: 0, errors: 0 }
@@ -318,7 +325,7 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
         errors: row.errors,
       }
     })
-  }, [defaultRangeEndDay, effectiveDailyByDay, latestEventDay])
+  }, [dailyMinMaxDay, defaultRangeEndDay, effectiveDailyByDay])
 
   const maxStackCount = useMemo(
     () => dailyIssueCounts.reduce((max, row) => Math.max(max, row.infos, row.warnings, row.errors), 0),

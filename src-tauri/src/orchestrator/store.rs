@@ -45,7 +45,7 @@ impl Store {
     // Breaking-change friendly: bump this to invalidate old persisted event shapes.
     const EVENTS_SCHEMA_VERSION: &'static [u8] = b"1";
     const EVENTS_SCHEMA_KEY: &'static [u8] = b"events:schema_version";
-    const EVENT_DAY_INDEX_VERSION: &'static [u8] = b"1";
+    const EVENT_DAY_INDEX_VERSION: &'static [u8] = b"2";
     const EVENT_DAY_INDEX_VERSION_KEY: &'static [u8] = b"events:day_index_version";
 
     fn allowed_key_prefixes() -> [&'static [u8]; 10] {
