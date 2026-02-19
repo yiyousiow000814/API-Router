@@ -149,4 +149,109 @@ mod tests {
         assert_eq!(rows[0].get("errors").and_then(|v| v.as_u64()), Some(1));
         assert_eq!(rows[1].get("warnings").and_then(|v| v.as_u64()), Some(1));
     }
+
+    #[test]
+    fn legacy_sqlite_merge_runs_once_even_if_legacy_file_remains() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let sled_dir = root.join("sled");
+        std::fs::create_dir_all(&sled_dir).unwrap();
+
+        let canonical_sqlite = root.join("events.sqlite3");
+        let legacy_sqlite = sled_dir.join("events.sqlite3");
+
+        {
+            let conn = rusqlite::Connection::open(&canonical_sqlite).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS event_meta(
+                  key TEXT PRIMARY KEY,
+                  value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS events(
+                  id TEXT PRIMARY KEY,
+                  unix_ms INTEGER NOT NULL,
+                  provider TEXT NOT NULL,
+                  level TEXT NOT NULL,
+                  code TEXT NOT NULL,
+                  message TEXT NOT NULL,
+                  fields_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS event_day_counts(
+                  day_key TEXT PRIMARY KEY,
+                  day_start_unix_ms INTEGER NOT NULL,
+                  total INTEGER NOT NULL,
+                  infos INTEGER NOT NULL,
+                  warnings INTEGER NOT NULL,
+                  errors INTEGER NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES('schema_version', ?1)",
+                [Store::EVENTS_SQLITE_SCHEMA_VERSION],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')",
+                [Store::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('canonical-a', 1000, 'p1', 'info', 'test_event', 'canonical', '{}')",
+                [],
+            )
+            .unwrap();
+        }
+
+        {
+            let conn = rusqlite::Connection::open(&legacy_sqlite).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS events(
+                  id TEXT PRIMARY KEY,
+                  unix_ms INTEGER NOT NULL,
+                  provider TEXT NOT NULL,
+                  level TEXT NOT NULL,
+                  code TEXT NOT NULL,
+                  message TEXT NOT NULL,
+                  fields_json TEXT NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('legacy-a', 2000, 'p1', 'warning', 'test_event', 'legacy-a', '{}')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&sled_dir).unwrap();
+        assert_eq!(store.list_events_range(None, None, Some(10)).len(), 2);
+        drop(store);
+
+        {
+            let conn = rusqlite::Connection::open(&legacy_sqlite).unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('legacy-b', 3000, 'p1', 'error', 'test_event', 'legacy-b', '{}')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&sled_dir).unwrap();
+        let events = store.list_events_range(None, None, Some(10));
+        assert_eq!(events.len(), 2);
+        assert!(events
+            .iter()
+            .any(|event| event.get("message").and_then(|v| v.as_str()) == Some("legacy-a")));
+        assert!(!events
+            .iter()
+            .any(|event| event.get("message").and_then(|v| v.as_str()) == Some("legacy-b")));
+    }
 }

@@ -46,6 +46,7 @@ impl Store {
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
     const EVENTS_SQLITE_SCHEMA_VERSION: &'static str = "1";
     const EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str = "migrated_from_sled_v1";
+    const EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY: &'static str = "merged_legacy_sqlite_v1";
 
     fn allowed_key_prefixes() -> [&'static [u8]; 10] {
         [
@@ -110,11 +111,19 @@ impl Store {
             .ensure_event_sqlite_schema()
             .map_err(|e| sled::Error::Unsupported(format!("init events sqlite failed: {e}")))?;
         if let Some(legacy_path) = legacy_events_db_path {
-            store
-                .merge_legacy_events_sqlite(&legacy_path)
+            let already_merged = store
+                .legacy_sqlite_merge_done()
                 .map_err(|e| {
-                    sled::Error::Unsupported(format!("merge legacy events sqlite failed: {e}"))
+                    sled::Error::Unsupported(format!("check legacy sqlite merge state failed: {e}"))
                 })?;
+            if !already_merged {
+                store
+                    .merge_legacy_events_sqlite(&legacy_path)
+                    .and_then(|_| store.mark_legacy_sqlite_merge_done())
+                    .map_err(|e| {
+                        sled::Error::Unsupported(format!("merge legacy events sqlite failed: {e}"))
+                    })?;
+            }
         }
         Ok(store)
     }
@@ -169,9 +178,41 @@ impl Store {
                  ON CONFLICT(key) DO UPDATE SET value='0'",
                 [Self::EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY],
             )?;
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
+                [Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY],
+            )?;
         }
+        conn.execute(
+            "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+             ON CONFLICT(key) DO NOTHING",
+            [Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY],
+        )?;
         drop(conn);
         self.migrate_legacy_events_from_sled_if_needed()?;
+        Ok(())
+    }
+
+    fn legacy_sqlite_merge_done(&self) -> anyhow::Result<bool> {
+        let conn = self.events_db.lock();
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM event_meta WHERE key=?1",
+                [Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value.as_deref() == Some("1"))
+    }
+
+    fn mark_legacy_sqlite_merge_done(&self) -> anyhow::Result<()> {
+        let conn = self.events_db.lock();
+        conn.execute(
+            "INSERT INTO event_meta(key, value) VALUES(?1, '1')
+             ON CONFLICT(key) DO UPDATE SET value='1'",
+            [Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY],
+        )?;
         Ok(())
     }
 
