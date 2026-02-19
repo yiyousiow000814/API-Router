@@ -1,5 +1,5 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
-import { useMemo, useRef } from 'react'
+import { useCallback, useMemo, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { SpendHistoryRow } from '../devMockData'
 import type { Config, UsageStatistics } from '../types'
@@ -140,7 +140,7 @@ export function useUsageOpsBridge(params: Params) {
     }, delayMs)
   }
 
-  async function refreshUsageStatistics(options?: { silent?: boolean }) {
+  const refreshUsageStatistics = useCallback(async (options?: { silent?: boolean }) => {
     const silent = options?.silent === true
     if (isDevPreview) {
       setUsageStatistics(
@@ -168,7 +168,16 @@ export function useUsageOpsBridge(params: Params) {
     } finally {
       if (!silent) setUsageStatisticsLoading(false)
     }
-  }
+  }, [
+    isDevPreview,
+    setUsageStatistics,
+    usageWindowHours,
+    usageFilterProviders,
+    usageFilterModels,
+    usageFilterOrigins,
+    setUsageStatisticsLoading,
+    flashToast,
+  ])
 
   const usageCurrencyOptions = useMemo(() => buildUsageCurrencyOptions(fxRatesByCurrency), [fxRatesByCurrency])
 
