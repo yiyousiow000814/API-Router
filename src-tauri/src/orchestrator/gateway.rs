@@ -188,6 +188,37 @@ where
     }
 }
 
+pub(crate) fn should_log_routing_path_event(
+    prev: Option<&LastUsedRoute>,
+    provider: &str,
+    reason: &str,
+    preferred: &str,
+    is_first_attempt: bool,
+) -> bool {
+    // Skip routine preferred-path success logs on first attempt.
+    if is_first_attempt && reason == "preferred_healthy" {
+        return false;
+    }
+    match prev {
+        None => true,
+        Some(last) => {
+            last.provider != provider || last.reason != reason || last.preferred != preferred
+        }
+    }
+}
+
+pub(crate) fn is_back_to_preferred_transition(
+    prev: Option<&LastUsedRoute>,
+    provider: &str,
+    preferred: &str,
+) -> bool {
+    prev.is_some_and(|last| {
+        last.provider.as_str() != provider
+            && last.preferred.as_str() == provider
+            && preferred == provider
+    })
+}
+
 pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: usize) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -558,7 +589,13 @@ async fn responses(
                         st.router.mark_success(&provider_name, unix_ms());
                         // Avoid spamming the event log for routine successful requests; only
                         // surface interesting routing outcomes (failover / non-preferred).
-                        if !is_first_attempt || reason != "preferred_healthy" {
+                        if should_log_routing_path_event(
+                            prev.as_ref(),
+                            &provider_name,
+                            reason,
+                            preferred,
+                            is_first_attempt,
+                        ) {
                             st.store.add_event(
                                 &provider_name,
                                 "info",
@@ -572,11 +609,11 @@ async fn responses(
                                     "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
                                 }),
                             );
-                        } else if prev.as_ref().is_some_and(|p| {
-                            p.provider.as_str() != provider_name
-                                && p.preferred.as_str() == provider_name
-                                && preferred == provider_name
-                        }) {
+                        } else if is_back_to_preferred_transition(
+                            prev.as_ref(),
+                            &provider_name,
+                            preferred,
+                        ) {
                             // Only log "back to preferred" when we were previously using a
                             // different provider.
                             st.store.add_event(
@@ -730,7 +767,13 @@ async fn responses(
 
                     // Avoid spamming the event log for routine successful requests; only surface
                     // interesting routing outcomes (failover / non-preferred).
-                    if !is_first_attempt || reason != "preferred_healthy" {
+                    if should_log_routing_path_event(
+                        prev.as_ref(),
+                        &provider_name,
+                        reason,
+                        preferred,
+                        is_first_attempt,
+                    ) {
                         st.store.add_event(
                             &provider_name,
                             "info",
@@ -744,11 +787,11 @@ async fn responses(
                                 "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
                             }),
                         );
-                    } else if prev.as_ref().is_some_and(|p| {
-                        p.provider.as_str() != provider_name
-                            && p.preferred.as_str() == provider_name
-                            && preferred == provider_name
-                    }) {
+                    } else if is_back_to_preferred_transition(
+                        prev.as_ref(),
+                        &provider_name,
+                        preferred,
+                    ) {
                         st.store.add_event(
                             &provider_name,
                             "info",

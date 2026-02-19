@@ -13,7 +13,8 @@ use tower::ServiceExt;
 use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
 use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
 use crate::orchestrator::gateway::{
-    build_router, build_router_with_body_limit, decide_provider, open_store_dir, GatewayState,
+    build_router, build_router_with_body_limit, decide_provider,
+    is_back_to_preferred_transition, open_store_dir, should_log_routing_path_event, GatewayState,
     LastUsedRoute,
 };
 use crate::orchestrator::router::RouterState;
@@ -76,4 +77,3 @@ fn setup_codex_session(
     std::fs::write(&session_file, body_txt).unwrap();
     guard
 }
-
