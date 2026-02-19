@@ -46,6 +46,58 @@ async fn health_and_status_work_without_upstream() {
 }
 
 #[test]
+fn routing_info_event_only_logs_when_route_state_changes() {
+    let last = LastUsedRoute {
+        provider: "packycode".to_string(),
+        reason: "preferred_unhealthy".to_string(),
+        preferred: "openai".to_string(),
+        unix_ms: unix_ms(),
+    };
+
+    assert!(should_log_routing_path_event(
+        None,
+        "packycode",
+        "preferred_unhealthy",
+        "openai",
+        true,
+    ));
+    assert!(!should_log_routing_path_event(
+        Some(&last),
+        "packycode",
+        "preferred_unhealthy",
+        "openai",
+        true,
+    ));
+    assert!(!should_log_routing_path_event(
+        Some(&last),
+        "packycode",
+        "preferred_unhealthy",
+        "openai",
+        false,
+    ));
+    assert!(should_log_routing_path_event(
+        Some(&last),
+        "another-provider",
+        "preferred_unhealthy",
+        "openai",
+        true,
+    ));
+
+    assert!(!should_log_routing_path_event(
+        Some(&last),
+        "openai",
+        "preferred_healthy",
+        "openai",
+        true,
+    ));
+    assert!(is_back_to_preferred_transition(
+        Some(&last),
+        "openai",
+        "openai",
+    ));
+}
+
+#[test]
 fn decide_provider_holds_fallback_during_preferred_stabilizing_window() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = open_store_dir(tmp.path().join("data")).expect("store");
@@ -461,4 +513,3 @@ fn decide_provider_respects_provider_order_for_fallback() {
     assert_eq!(picked, "zeta");
     assert_eq!(reason, "preferred_unhealthy");
 }
-
