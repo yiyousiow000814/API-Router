@@ -141,7 +141,6 @@ export function useAppUsageEffects(params: Params) {
 
   const runBackgroundUsageStatsRefresh = () => {
     if (activePageRef.current === 'usage_statistics') return
-    if (typeof document !== 'undefined' && document.hidden) return
     if (usageStatsBackgroundRefreshInFlightRef.current) return
     usageStatsBackgroundRefreshInFlightRef.current = true
     void refreshUsageStatisticsRef.current({ silent: true }).finally(() => {
