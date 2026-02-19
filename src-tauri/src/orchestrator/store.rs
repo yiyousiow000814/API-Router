@@ -76,7 +76,7 @@ impl Store {
         } else {
             path.join("events.sqlite3")
         };
-        let legacy_events_db_path = if is_sled_dir {
+        let mut legacy_events_db_path = if is_sled_dir {
             let p = path.join("events.sqlite3");
             if p != events_db_path && p.exists() {
                 Some(p)
@@ -89,10 +89,13 @@ impl Store {
         // One-time migration path: older builds stored sqlite under `<data>/sled/events.sqlite3`.
         // If we moved to `<data>/events.sqlite3` and the new file does not exist yet, copy it.
         if is_sled_dir {
-            let legacy_events_db_path = path.join("events.sqlite3");
-            if !events_db_path.exists() && legacy_events_db_path.exists() {
-                if std::fs::rename(&legacy_events_db_path, &events_db_path).is_err() {
-                    let _ = std::fs::copy(&legacy_events_db_path, &events_db_path);
+            let legacy_path = path.join("events.sqlite3");
+            if !events_db_path.exists() && legacy_path.exists() {
+                let moved = std::fs::rename(&legacy_path, &events_db_path).is_ok()
+                    || std::fs::copy(&legacy_path, &events_db_path).is_ok();
+                if moved {
+                    // Data is already in the canonical sqlite path; skip legacy merge.
+                    legacy_events_db_path = None;
                 }
             }
         }
