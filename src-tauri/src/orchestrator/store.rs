@@ -111,11 +111,9 @@ impl Store {
             .ensure_event_sqlite_schema()
             .map_err(|e| sled::Error::Unsupported(format!("init events sqlite failed: {e}")))?;
         if let Some(legacy_path) = legacy_events_db_path {
-            let already_merged = store
-                .legacy_sqlite_merge_done()
-                .map_err(|e| {
-                    sled::Error::Unsupported(format!("check legacy sqlite merge state failed: {e}"))
-                })?;
+            let already_merged = store.legacy_sqlite_merge_done().map_err(|e| {
+                sled::Error::Unsupported(format!("check legacy sqlite merge state failed: {e}"))
+            })?;
             if !already_merged {
                 store
                     .merge_legacy_events_sqlite(&legacy_path)
