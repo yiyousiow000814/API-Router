@@ -2,7 +2,7 @@ use chrono::{Datelike, Local, TimeZone};
 use parking_lot::Mutex;
 use rusqlite::{params, OptionalExtension};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -92,8 +92,22 @@ impl Store {
         if is_sled_dir {
             let legacy_path = path.join("events.sqlite3");
             if !events_db_path.exists() && legacy_path.exists() {
-                let moved = std::fs::rename(&legacy_path, &events_db_path).is_ok()
-                    || std::fs::copy(&legacy_path, &events_db_path).is_ok();
+                let moved = if std::fs::rename(&legacy_path, &events_db_path).is_ok() {
+                    true
+                } else {
+                    // Best effort: fold WAL pages into the main DB before fallback copy so we
+                    // don't silently drop recent legacy events.
+                    Self::checkpoint_sqlite_wal(&legacy_path);
+                    std::fs::copy(&legacy_path, &events_db_path).is_ok()
+                        && Self::copy_file_if_exists(
+                            &Self::sqlite_sidecar_path(&legacy_path, "-wal"),
+                            &Self::sqlite_sidecar_path(&events_db_path, "-wal"),
+                        )
+                        && Self::copy_file_if_exists(
+                            &Self::sqlite_sidecar_path(&legacy_path, "-shm"),
+                            &Self::sqlite_sidecar_path(&events_db_path, "-shm"),
+                        )
+                };
                 if moved {
                     // Data is already in the canonical sqlite path; skip legacy merge.
                     legacy_events_db_path = None;
@@ -124,6 +138,26 @@ impl Store {
             }
         }
         Ok(store)
+    }
+
+    fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+        let mut out = path.as_os_str().to_os_string();
+        out.push(suffix);
+        PathBuf::from(out)
+    }
+
+    fn checkpoint_sqlite_wal(path: &Path) {
+        let Ok(conn) = rusqlite::Connection::open(path) else {
+            return;
+        };
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    }
+
+    fn copy_file_if_exists(src: &Path, dst: &Path) -> bool {
+        if !src.exists() {
+            return true;
+        }
+        std::fs::copy(src, dst).is_ok()
     }
 
     fn ensure_event_sqlite_schema(&self) -> anyhow::Result<()> {
