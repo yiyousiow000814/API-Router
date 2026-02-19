@@ -132,7 +132,7 @@ export const devStatus: Status = {
     provider_1: { ok_requests: 210, error_requests: 3, total_tokens: 128400 },
     provider_2: { ok_requests: 12, error_requests: 2, total_tokens: 3400 },
   },
-  recent_events: buildDevRecentEvents(200),
+  recent_events: buildDevRecentEvents(520),
   client_sessions: [
     {
       id: '019c4578-0f3c-7f82-a4f9-b41a1e65e242',
