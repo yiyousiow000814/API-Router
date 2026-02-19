@@ -197,6 +197,28 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
         );
     }
 
+    // Seed enough event-log rows so UI pagination/incremental loading can be verified in test profile.
+    for i in 0..520 {
+        let provider = if i % 3 == 0 {
+            "provider_1"
+        } else if i % 3 == 1 {
+            "provider_2"
+        } else {
+            "official"
+        };
+        state.gateway.store.add_event(
+            provider,
+            "info",
+            "test_profile.bulk_event",
+            &format!("test profile bulk event #{i}"),
+            json!({
+                "seed": true,
+                "seq": i,
+                "codex_session_id": format!("test-session-{}", i % 9),
+            }),
+        );
+    }
+
     state.gateway.store.add_event(
         "gateway",
         "info",
@@ -205,6 +227,7 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
         json!({
             "providers": ["provider_1", "provider_2"],
             "history_days": 45,
+            "seeded_events": 520,
         }),
     );
     Ok(())

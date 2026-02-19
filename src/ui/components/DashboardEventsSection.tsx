@@ -10,6 +10,7 @@ type Props = {
   scrollInside?: boolean
   showHeader?: boolean
   scrollPersistKey?: string
+  onReachEnd?: () => void
 }
 
 export function DashboardEventsSection({
@@ -21,6 +22,7 @@ export function DashboardEventsSection({
   scrollInside = false,
   showHeader = true,
   scrollPersistKey,
+  onReachEnd,
 }: Props) {
   return (
     <div className="aoSection">
@@ -38,6 +40,7 @@ export function DashboardEventsSection({
         splitByLevel={splitByLevel}
         scrollInside={scrollInside}
         scrollPersistKey={scrollPersistKey}
+        onReachEnd={onReachEnd}
       />
     </div>
   )

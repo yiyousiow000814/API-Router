@@ -12,6 +12,7 @@ type Props = {
   splitByLevel?: boolean
   scrollInside?: boolean
   scrollPersistKey?: string
+  onReachEnd?: () => void
 }
 
 type DragState = {
@@ -35,6 +36,7 @@ export function EventsTable({
   splitByLevel = true,
   scrollInside = false,
   scrollPersistKey,
+  onReachEnd,
 }: Props) {
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null)
   const [messageDialog, setMessageDialog] = useState<{ title: string; text: string } | null>(null)
@@ -48,6 +50,7 @@ export function EventsTable({
   const eventsScrollbarDragRef = useRef<DragState>(IDLE_DRAG_STATE)
   const focusRowRef = useRef<HTMLTableRowElement | null>(null)
   const focusFlashTimerRef = useRef<number | null>(null)
+  const wasNearBottomRef = useRef(false)
 
   const setEventsScrollbarVisible = useCallback((visible: boolean) => {
     eventsTableSurfaceRef.current?.classList.toggle('aoEventsTableSurfaceScrollbarVisible', visible)
@@ -256,6 +259,10 @@ export function EventsTable({
       return
     }
   }, [focusEvent])
+
+  useEffect(() => {
+    wasNearBottomRef.current = false
+  }, [allEvents.length])
 
   useEffect(() => {
     if (!focusNonce || !focusEvent) return
@@ -522,6 +529,14 @@ export function EventsTable({
           onScroll={() => {
             if (scrollPersistKey && eventsTableWrapRef.current) {
               SCROLL_TOP_BY_KEY.set(scrollPersistKey, eventsTableWrapRef.current.scrollTop ?? 0)
+            }
+            if (onReachEnd && eventsTableWrapRef.current) {
+              const wrap = eventsTableWrapRef.current
+              const nearBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 24
+              if (nearBottom && !wasNearBottomRef.current) {
+                onReachEnd()
+              }
+              wasNearBottomRef.current = nearBottom
             }
             scheduleEventsScrollbarSync()
             activateEventsScrollbarUi()
