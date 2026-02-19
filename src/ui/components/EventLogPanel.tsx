@@ -289,7 +289,12 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
     return out
   }, [sourceEvents])
 
-  const effectiveDailyByDay = dailyStatsByDay.size > 0 ? dailyStatsByDay : fallbackDailyByDayFromEvents
+  const effectiveDailyByDay = useMemo(() => {
+    if (dailyStatsByDay.size === 0) return fallbackDailyByDayFromEvents
+    const out = new Map(fallbackDailyByDayFromEvents)
+    for (const [day, row] of dailyStatsByDay) out.set(day, row)
+    return out
+  }, [dailyStatsByDay, fallbackDailyByDayFromEvents])
 
   const latestEventDay = useMemo(() => {
     let maxDay = Number.NEGATIVE_INFINITY
