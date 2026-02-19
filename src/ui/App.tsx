@@ -247,6 +247,10 @@ export default function App() {
       return current.nonce === nonce ? null : current
     })
   }
+  const eventLogSeedEvents = useMemo(
+    () => (eventLogPreloadEntries.length > 0 ? eventLogPreloadEntries : status?.recent_events ?? []),
+    [eventLogPreloadEntries, status?.recent_events],
+  )
   useEffect(() => {
     let cancelled = false
     const loadEventLogPreload = async () => {
@@ -997,7 +1001,7 @@ export default function App() {
               updatingSessionPref={updatingSessionPref}
               onSetSessionPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
               onOpenLastErrorInEventLog={handleOpenLastErrorInEventLog}
-              eventLogSeedEvents={eventLogPreloadEntries}
+              eventLogSeedEvents={eventLogSeedEvents}
               eventLogSeedDailyStats={eventLogPreloadDailyStats}
               eventLogFocusRequest={eventLogFocusRequest}
               onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
