@@ -76,6 +76,7 @@ const USAGE_STATS_BACKGROUND_REFRESH_MS = 60_000
 export function useAppUsageEffects(params: Params) {
   const usageHistoryPrefetchStartedRef = useRef(false)
   const usageStatsPrefetchStartedRef = useRef(false)
+  const usageStatsBackgroundRefreshInFlightRef = useRef(false)
   const previousActivePageRef = useRef<Params['activePage'] | null>(null)
   const {
     activePage,
@@ -139,16 +140,24 @@ export function useAppUsageEffects(params: Params) {
     activePageRef.current = activePage
   }, [activePage])
 
+  const runBackgroundUsageStatsRefresh = () => {
+    if (activePageRef.current === 'usage_statistics') return
+    if (typeof document !== 'undefined' && document.hidden) return
+    if (usageStatsBackgroundRefreshInFlightRef.current) return
+    usageStatsBackgroundRefreshInFlightRef.current = true
+    void refreshUsageStatisticsRef.current({ silent: true }).finally(() => {
+      usageStatsBackgroundRefreshInFlightRef.current = false
+    })
+  }
+
   useEffect(() => {
     if (activePage === 'usage_statistics') return
     const initialTimer = window.setTimeout(() => {
-      if (activePageRef.current === 'usage_statistics') return
       usageStatsPrefetchStartedRef.current = true
-      void refreshUsageStatisticsRef.current({ silent: true })
+      runBackgroundUsageStatsRefresh()
     }, usageStatsPrefetchStartedRef.current ? 0 : 500)
     const backgroundTimer = window.setInterval(() => {
-      if (activePageRef.current === 'usage_statistics') return
-      void refreshUsageStatisticsRef.current({ silent: true })
+      runBackgroundUsageStatsRefresh()
     }, USAGE_STATS_BACKGROUND_REFRESH_MS)
     return () => {
       window.clearTimeout(initialTimer)
