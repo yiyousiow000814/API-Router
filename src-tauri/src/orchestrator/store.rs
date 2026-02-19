@@ -70,11 +70,32 @@ impl Store {
         let db = sled::open(path)?;
         // Keep the event SQLite file outside the sled directory. Sled maintenance/recovery
         // may swap or recreate the whole sled dir, which would otherwise drop events.sqlite3.
-        let events_db_path = if path.file_name().and_then(|n| n.to_str()) == Some("sled") {
+        let is_sled_dir = path.file_name().and_then(|n| n.to_str()) == Some("sled");
+        let events_db_path = if is_sled_dir {
             path.parent().unwrap_or(path).join("events.sqlite3")
         } else {
             path.join("events.sqlite3")
         };
+        let legacy_events_db_path = if is_sled_dir {
+            let p = path.join("events.sqlite3");
+            if p != events_db_path && p.exists() {
+                Some(p)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        // One-time migration path: older builds stored sqlite under `<data>/sled/events.sqlite3`.
+        // If we moved to `<data>/events.sqlite3` and the new file does not exist yet, copy it.
+        if is_sled_dir {
+            let legacy_events_db_path = path.join("events.sqlite3");
+            if !events_db_path.exists() && legacy_events_db_path.exists() {
+                if std::fs::rename(&legacy_events_db_path, &events_db_path).is_err() {
+                    let _ = std::fs::copy(&legacy_events_db_path, &events_db_path);
+                }
+            }
+        }
         let events_db = rusqlite::Connection::open(events_db_path)
             .map_err(|e| sled::Error::Unsupported(format!("open events sqlite failed: {e}")))?;
         let store = Self {
@@ -85,6 +106,13 @@ impl Store {
         store
             .ensure_event_sqlite_schema()
             .map_err(|e| sled::Error::Unsupported(format!("init events sqlite failed: {e}")))?;
+        if let Some(legacy_path) = legacy_events_db_path {
+            store
+                .merge_legacy_events_sqlite(&legacy_path)
+                .map_err(|e| {
+                    sled::Error::Unsupported(format!("merge legacy events sqlite failed: {e}"))
+                })?;
+        }
         Ok(store)
     }
 
@@ -135,12 +163,57 @@ impl Store {
             )?;
             conn.execute(
                 "INSERT INTO event_meta(key, value) VALUES(?1, '0')
-                 ON CONFLICT(key) DO NOTHING",
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
                 [Self::EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY],
             )?;
         }
         drop(conn);
         self.migrate_legacy_events_from_sled_if_needed()?;
+        Ok(())
+    }
+
+    fn merge_legacy_events_sqlite(&self, legacy_path: &Path) -> anyhow::Result<()> {
+        let legacy_conn = rusqlite::Connection::open(legacy_path)?;
+        let mut stmt = legacy_conn.prepare(
+            "SELECT id, unix_ms, provider, level, code, message, fields_json FROM events",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?;
+
+        let mut conn = self.events_db.lock();
+        let tx = conn.transaction()?;
+        for (id, unix_ms, provider, level, code, message, fields_json) in rows.flatten() {
+            let inserted = tx.execute(
+                "INSERT OR IGNORE INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![id, unix_ms, provider, level, code, message, fields_json],
+            )?;
+            if inserted == 0 {
+                continue;
+            }
+            let Ok(unix_ms_u64) = u64::try_from(unix_ms) else {
+                continue;
+            };
+            let Some(day_key) = Self::local_day_key_from_unix_ms(unix_ms_u64) else {
+                continue;
+            };
+            let Some(day_start_unix_ms) =
+                Self::day_start_unix_ms_from_day_key(&day_key).and_then(|x| i64::try_from(x).ok())
+            else {
+                continue;
+            };
+            Self::upsert_event_day_counts(&tx, &day_key, day_start_unix_ms, &level)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -320,11 +393,14 @@ impl Store {
         let mut conn = self.events_db.lock();
         let tx = conn.transaction()?;
         for (id, unix_ms, provider, level, code, message, fields_json) in staged {
-            tx.execute(
+            let inserted = tx.execute(
                 "INSERT OR IGNORE INTO events(id, unix_ms, provider, level, code, message, fields_json)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![id, unix_ms, provider, level, code, message, fields_json],
             )?;
+            if inserted == 0 {
+                continue;
+            }
             let Ok(unix_ms_u64) = u64::try_from(*unix_ms) else {
                 continue;
             };
