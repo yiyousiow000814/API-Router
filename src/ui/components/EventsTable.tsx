@@ -489,7 +489,7 @@ export function EventsTable({
         </div>
         {messageDialog ? (
           <ModalBackdrop onClose={() => setMessageDialog(null)}>
-            <div className="aoModal" onClick={(e) => e.stopPropagation()}>
+            <div className="aoModal aoEventMessageModal" onClick={(e) => e.stopPropagation()}>
               <div className="aoModalHeader">
                 <div className="aoModalTitle">{messageDialog.title}</div>
                 <button className="aoTinyBtn" onClick={() => setMessageDialog(null)}>
@@ -567,7 +567,7 @@ export function EventsTable({
       </div>
       {messageDialog ? (
         <ModalBackdrop onClose={() => setMessageDialog(null)}>
-          <div className="aoModal" onClick={(e) => e.stopPropagation()}>
+          <div className="aoModal aoEventMessageModal" onClick={(e) => e.stopPropagation()}>
             <div className="aoModalHeader">
               <div className="aoModalTitle">{messageDialog.title}</div>
               <button className="aoTinyBtn" onClick={() => setMessageDialog(null)}>

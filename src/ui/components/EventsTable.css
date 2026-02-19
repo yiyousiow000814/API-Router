@@ -46,7 +46,10 @@
   border: 0;
   background: transparent;
   padding: 0;
+  margin: 0;
   text-align: left;
+  font: inherit;
+  line-height: inherit;
   color: inherit;
   user-select: text;
 }
@@ -92,10 +95,20 @@
 .aoEventMessageDialogBody {
   margin: 0;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.aoModal.aoEventMessageModal {
+  width: min(1100px, 96vw);
+  max-width: 96vw;
+}
+
+.aoEventMessageModal .aoModalBody {
+  max-height: min(78vh, 900px);
 }
 
 .aoEventsTableSurface {
