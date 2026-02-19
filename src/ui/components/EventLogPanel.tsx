@@ -176,10 +176,12 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
       // Keep current year list on failure.
     }
   }, [])
-  const fetchEventLogDailyStats = useCallback(async () => {
+  const fetchEventLogDailyStats = useCallback(async (fromDay: number | null, toDay: number | null) => {
+    const fromUnixMs = fromDay == null ? null : fromDay
+    const toUnixMs = toDay == null ? null : addDays(toDay, 1) - 1
     const reqId = ++dailyStatsSeqRef.current
     try {
-      const rows = await invoke<EventLogDailyStat[]>('get_event_log_daily_stats')
+      const rows = await invoke<EventLogDailyStat[]>('get_event_log_daily_stats', { fromUnixMs, toUnixMs })
       if (dailyStatsSeqRef.current !== reqId) return
       if (!Array.isArray(rows)) return
       const normalized = rows
@@ -439,12 +441,12 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
     void fetchEventLogEntries(fromDayStart, toDayStart)
   }, [fetchEventLogEntries, fromDayStart, toDayStart])
   useEffect(() => {
-    void fetchEventLogDailyStats()
-  }, [fetchEventLogDailyStats])
+    void fetchEventLogDailyStats(fromDayStart, toDayStart)
+  }, [fetchEventLogDailyStats, fromDayStart, toDayStart])
   useEffect(() => {
     const timer = window.setInterval(() => {
       void fetchEventLogEntries(fromDayStart, toDayStart)
-      void fetchEventLogDailyStats()
+      void fetchEventLogDailyStats(fromDayStart, toDayStart)
     }, 15_000)
     return () => window.clearInterval(timer)
   }, [fetchEventLogDailyStats, fetchEventLogEntries, fromDayStart, toDayStart])
@@ -801,7 +803,7 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
                           } else {
                             setPickerDateTo(iso)
                           }
-                          setDateAnchor('to')
+                          setDateAnchor('from')
                           setOpenDatePicker(true)
                         }}
                         title={
