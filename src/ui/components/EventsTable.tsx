@@ -21,12 +21,22 @@ type DragState = {
   pointerOffsetY: number
 }
 
+type OverflowMetrics = {
+  scrollWidth: number
+  clientWidth: number
+  scrollHeight: number
+  clientHeight: number
+}
+
 const IDLE_DRAG_STATE: DragState = { active: false, pointerId: -1, pointerOffsetY: 0 }
 const SCROLL_TOP_BY_KEY = new Map<string, number>()
-const ERROR_MESSAGE_COLLAPSE_CHARS = 220
 
 function formatEventMessageDialog(message: string): string {
   return message.replace(/;\s+/g, ';\n')
+}
+
+export function isEventMessageOverflow(metrics: OverflowMetrics): boolean {
+  return metrics.scrollHeight - metrics.clientHeight > 1 || metrics.scrollWidth - metrics.clientWidth > 1
 }
 
 export function EventsTable({
@@ -40,6 +50,7 @@ export function EventsTable({
 }: Props) {
   const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null)
   const [messageDialog, setMessageDialog] = useState<{ title: string; text: string } | null>(null)
+  const [expandableMessageKeys, setExpandableMessageKeys] = useState<Record<string, true>>({})
   const allEvents = events ?? []
   const eventsTableSurfaceRef = useRef<HTMLDivElement | null>(null)
   const eventsTableWrapRef = useRef<HTMLDivElement | null>(null)
@@ -51,6 +62,7 @@ export function EventsTable({
   const focusRowRef = useRef<HTMLTableRowElement | null>(null)
   const focusFlashTimerRef = useRef<number | null>(null)
   const wasNearBottomRef = useRef(false)
+  const messageTextRefs = useRef(new Map<string, HTMLSpanElement>())
 
   const setEventsScrollbarVisible = useCallback((visible: boolean) => {
     eventsTableSurfaceRef.current?.classList.toggle('aoEventsTableSurfaceScrollbarVisible', visible)
@@ -208,6 +220,47 @@ export function EventsTable({
     activateEventsScrollbarUi()
   }, [activateEventsScrollbarUi])
 
+  const setMessageTextRef = useCallback((key: string, element: HTMLSpanElement | null) => {
+    if (element) {
+      messageTextRefs.current.set(key, element)
+      return
+    }
+    messageTextRefs.current.delete(key)
+  }, [])
+
+  const refreshExpandableMessageKeys = useCallback(() => {
+    const next: Record<string, true> = {}
+    messageTextRefs.current.forEach((element, key) => {
+      if (
+        isEventMessageOverflow({
+          scrollHeight: element.scrollHeight,
+          clientHeight: element.clientHeight,
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        })
+      ) {
+        next[key] = true
+      }
+    })
+    setExpandableMessageKeys((prev) => {
+      const prevKeys = Object.keys(prev)
+      const nextKeys = Object.keys(next)
+      if (prevKeys.length === nextKeys.length && prevKeys.every((k) => next[k])) return prev
+      return next
+    })
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const raf = window.requestAnimationFrame(refreshExpandableMessageKeys)
+    const onResize = () => refreshExpandableMessageKeys()
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.cancelAnimationFrame(raf)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [refreshExpandableMessageKeys, allEvents.length, splitByLevel, scrollInside])
+
   useEffect(() => {
     if (!scrollInside || typeof window === 'undefined') return
     const wrap = eventsTableWrapRef.current
@@ -298,11 +351,8 @@ export function EventsTable({
   const renderRow = (e: Status['recent_events'][number], key: string) => {
     const isError = e.level === 'error'
     const isWarning = e.level === 'warning'
-    const canExpandError = isError && e.message.length > ERROR_MESSAGE_COLLAPSE_CHARS
+    const canExpandMessage = !!expandableMessageKeys[key]
     const displayMessage = e.message
-    const collapsedMessage = canExpandError
-      ? `${displayMessage.slice(0, ERROR_MESSAGE_COLLAPSE_CHARS).trimEnd()}...`
-      : displayMessage
     const f: Record<string, unknown> = e.fields ?? {}
     const isSessionPref =
       e.code === 'config.session_preferred_provider_updated' || e.code === 'config.session_preferred_provider_cleared'
@@ -356,17 +406,23 @@ export function EventsTable({
         <td className="aoEventsCellWrap">
           <div className="aoEventMessageWrap">
             <div className="aoEventMessage">
-              {canExpandError ? (
+              {canExpandMessage ? (
                 <button
                   className="aoEventMessageTextBtn is-clickable"
                   title="Click to view full message"
-                  onClick={() => setMessageDialog({ title: e.code || 'Error message', text: formatEventMessageDialog(e.message) })}
+                  onClick={() => setMessageDialog({ title: e.code || 'Message', text: formatEventMessageDialog(e.message) })}
                 >
-                  <span className="aoEventMessageText">{collapsedMessage}</span>
+                  <span ref={(element) => setMessageTextRef(key, element)} className="aoEventMessageText">
+                    {displayMessage}
+                  </span>
                 </button>
               ) : (
-                <span className="aoEventMessageText aoEventMessageTextStatic" title={e.code ? `${e.code}: ${e.message}` : e.message}>
-                  {collapsedMessage}
+                <span
+                  ref={(element) => setMessageTextRef(key, element)}
+                  className="aoEventMessageText aoEventMessageTextStatic"
+                  title={e.code ? `${e.code}: ${e.message}` : e.message}
+                >
+                  {displayMessage}
                 </span>
               )}
             </div>
