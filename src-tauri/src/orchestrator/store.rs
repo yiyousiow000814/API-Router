@@ -1,4 +1,4 @@
-use chrono::{Local, TimeZone};
+use chrono::{Datelike, Local, TimeZone};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,16 +38,6 @@ pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<Stri
 }
 
 impl Store {
-    fn parse_event_unix_ms_from_key(key: &[u8]) -> Option<u64> {
-        let body = key.strip_prefix(b"event:")?;
-        let split_at = body.iter().position(|b| *b == b':')?;
-        let ts_bytes = &body[..split_at];
-        let ts_str = std::str::from_utf8(ts_bytes).ok()?;
-        ts_str.parse::<u64>().ok()
-    }
-
-    const MAX_EVENTS_RUNTIME: usize = 5000;
-    const EVENT_PRUNE_EVERY: u64 = 64;
     const MAX_USAGE_REQUESTS: usize = 500_000;
     const USAGE_PRUNE_EVERY: u64 = 128;
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
@@ -55,10 +45,13 @@ impl Store {
     // Breaking-change friendly: bump this to invalidate old persisted event shapes.
     const EVENTS_SCHEMA_VERSION: &'static [u8] = b"1";
     const EVENTS_SCHEMA_KEY: &'static [u8] = b"events:schema_version";
+    const EVENT_DAY_INDEX_VERSION: &'static [u8] = b"1";
+    const EVENT_DAY_INDEX_VERSION_KEY: &'static [u8] = b"events:day_index_version";
 
-    fn allowed_key_prefixes() -> [&'static [u8]; 9] {
+    fn allowed_key_prefixes() -> [&'static [u8]; 10] {
         [
             b"event:",
+            b"event_day:",
             b"metrics:",
             b"quota:",
             b"ledger:",
@@ -70,11 +63,12 @@ impl Store {
         ]
     }
 
-    fn allowed_exact_keys() -> [&'static [u8]; 3] {
+    fn allowed_exact_keys() -> [&'static [u8]; 4] {
         [
             b"codex_account:snapshot",
             b"official_web:snapshot",
             Self::EVENTS_SCHEMA_KEY,
+            Self::EVENT_DAY_INDEX_VERSION_KEY,
         ]
     }
 
@@ -85,6 +79,7 @@ impl Store {
             usage_prune_seq: Arc::new(AtomicU64::new(0)),
         };
         store.ensure_events_schema();
+        store.ensure_event_day_index();
         Ok(store)
     }
 
@@ -105,9 +100,34 @@ impl Store {
         }
     }
 
+    fn ensure_event_day_index(&self) {
+        let cur = self
+            .db
+            .get(Self::EVENT_DAY_INDEX_VERSION_KEY)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if cur.as_ref() == Self::EVENT_DAY_INDEX_VERSION {
+            return;
+        }
+        self.rebuild_event_day_index();
+        let _ = self.db.insert(
+            Self::EVENT_DAY_INDEX_VERSION_KEY,
+            Self::EVENT_DAY_INDEX_VERSION,
+        );
+        let _ = self.db.flush();
+    }
+
     fn clear_events(&self) {
+        self.clear_prefix(b"event:");
+        self.clear_prefix(b"event_day:");
+        let _ = self.db.remove(Self::EVENT_DAY_INDEX_VERSION_KEY);
+        let _ = self.db.flush();
+    }
+
+    fn clear_prefix(&self, prefix: &[u8]) {
         let mut batch: Vec<sled::IVec> = Vec::with_capacity(2048);
-        for res in self.db.scan_prefix(b"event:") {
+        for res in self.db.scan_prefix(prefix) {
             let Ok((k, _)) = res else {
                 continue;
             };
@@ -121,7 +141,110 @@ impl Store {
         for key in batch.drain(..) {
             let _ = self.db.remove(key);
         }
-        let _ = self.db.flush();
+    }
+
+    fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
+        let ts = i64::try_from(ts_unix_ms).ok()?;
+        let dt = Local.timestamp_millis_opt(ts).single()?;
+        Some(dt.format("%Y-%m-%d").to_string())
+    }
+
+    fn parse_day_key_from_daily_key(key: &[u8]) -> Option<&str> {
+        let body = key.strip_prefix(b"event_day:")?;
+        std::str::from_utf8(body).ok()
+    }
+
+    fn day_start_unix_ms_from_day_key(day_key: &str) -> Option<u64> {
+        let date = chrono::NaiveDate::parse_from_str(day_key, "%Y-%m-%d").ok()?;
+        let dt = Local
+            .with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
+            .single()?;
+        u64::try_from(dt.timestamp_millis()).ok()
+    }
+
+    fn event_day_counts_from_value(v: &[u8]) -> Option<(u64, u64, u64, u64)> {
+        let row = serde_json::from_slice::<Value>(v).ok()?;
+        let total = row.get("total").and_then(|x| x.as_u64()).unwrap_or(0);
+        let infos = row.get("infos").and_then(|x| x.as_u64()).unwrap_or(0);
+        let warnings = row.get("warnings").and_then(|x| x.as_u64()).unwrap_or(0);
+        let errors = row.get("errors").and_then(|x| x.as_u64()).unwrap_or(0);
+        Some((total, infos, warnings, errors))
+    }
+
+    fn put_event_day_counts(
+        &self,
+        day_key: &str,
+        total: u64,
+        infos: u64,
+        warnings: u64,
+        errors: u64,
+    ) {
+        let key = format!("event_day:{day_key}");
+        let row = serde_json::json!({
+            "day": day_key,
+            "total": total,
+            "infos": infos,
+            "warnings": warnings,
+            "errors": errors,
+        });
+        let _ = self
+            .db
+            .insert(key.as_bytes(), serde_json::to_vec(&row).unwrap_or_default());
+    }
+
+    fn update_event_day_index(&self, unix_ms: u64, level: &str) {
+        let Some(day_key) = Self::local_day_key_from_unix_ms(unix_ms) else {
+            return;
+        };
+        let key = format!("event_day:{day_key}");
+        let (mut total, mut infos, mut warnings, mut errors) = self
+            .db
+            .get(key.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|v| Self::event_day_counts_from_value(&v))
+            .unwrap_or((0, 0, 0, 0));
+        total = total.saturating_add(1);
+        match level {
+            "error" => errors = errors.saturating_add(1),
+            "warning" => warnings = warnings.saturating_add(1),
+            _ => infos = infos.saturating_add(1),
+        }
+        self.put_event_day_counts(&day_key, total, infos, warnings, errors);
+    }
+
+    fn rebuild_event_day_index(&self) {
+        self.clear_prefix(b"event_day:");
+        let mut day_map: std::collections::BTreeMap<String, (u64, u64, u64, u64)> =
+            std::collections::BTreeMap::new();
+        for res in self.db.scan_prefix(b"event:") {
+            let Ok((_, v)) = res else {
+                continue;
+            };
+            let Ok(j) = serde_json::from_slice::<Value>(&v) else {
+                continue;
+            };
+            if !Self::is_valid_event(&j) {
+                continue;
+            }
+            let Some(unix_ms) = j.get("unix_ms").and_then(|x| x.as_u64()) else {
+                continue;
+            };
+            let Some(day_key) = Self::local_day_key_from_unix_ms(unix_ms) else {
+                continue;
+            };
+            let level = j.get("level").and_then(|x| x.as_str()).unwrap_or("info");
+            let row = day_map.entry(day_key).or_insert((0, 0, 0, 0));
+            row.0 = row.0.saturating_add(1);
+            match level {
+                "error" => row.3 = row.3.saturating_add(1),
+                "warning" => row.2 = row.2.saturating_add(1),
+                _ => row.1 = row.1.saturating_add(1),
+            }
+        }
+        for (day_key, (total, infos, warnings, errors)) in day_map {
+            self.put_event_day_counts(&day_key, total, infos, warnings, errors);
+        }
     }
 
     fn is_valid_event(j: &Value) -> bool {
@@ -224,42 +347,8 @@ impl Store {
         let _ = self
             .db
             .insert(key.as_bytes(), serde_json::to_vec(&v).unwrap_or_default());
-        // Shared pruning cadence counter: reused by usage/event maintenance to avoid
-        // adding another atomic. Event pruning remains bounded by MAX_EVENTS_RUNTIME.
-        let seq = self.usage_prune_seq.fetch_add(1, Ordering::Relaxed) + 1;
-        if seq % Self::EVENT_PRUNE_EVERY == 0 {
-            self.prune_events_runtime();
-        }
+        self.update_event_day_index(ts, level);
         let _ = self.db.flush();
-    }
-
-    fn prune_events_runtime(&self) {
-        let boundary = self
-            .db
-            .scan_prefix(b"event:")
-            .rev()
-            .nth(Self::MAX_EVENTS_RUNTIME);
-        let Some(Ok((end_key, _))) = boundary else {
-            return;
-        };
-
-        let start = b"event:".to_vec();
-        let end = end_key.to_vec();
-        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
-        for res in self.db.range(start..=end) {
-            let Ok((k, _)) = res else {
-                continue;
-            };
-            batch.push(k);
-            if batch.len() >= 1024 {
-                for key in batch.drain(..) {
-                    let _ = self.db.remove(key);
-                }
-            }
-        }
-        for key in batch.drain(..) {
-            let _ = self.db.remove(key);
-        }
     }
 
     pub fn record_success(
@@ -585,21 +674,75 @@ impl Store {
 
     pub fn list_event_years(&self) -> std::collections::BTreeSet<i32> {
         let mut years = std::collections::BTreeSet::<i32>::new();
-        for res in self.db.scan_prefix(b"event:") {
+        for res in self.db.scan_prefix(b"event_day:") {
             let Ok((k, _)) = res else {
                 continue;
             };
-            let Some(unix_ms) = Self::parse_event_unix_ms_from_key(k.as_ref()) else {
+            let Some(day_key) = Self::parse_day_key_from_daily_key(k.as_ref()) else {
                 continue;
             };
-            let Ok(ts) = i64::try_from(unix_ms) else {
+            let Some(year_str) = day_key.get(..4) else {
                 continue;
             };
-            if let chrono::LocalResult::Single(dt) = Local.timestamp_millis_opt(ts) {
-                years.insert(chrono::Datelike::year(&dt));
-            }
+            let Ok(year) = year_str.parse::<i32>() else {
+                continue;
+            };
+            years.insert(year);
         }
         years
+    }
+
+    pub fn list_event_daily_counts_range(
+        &self,
+        from_unix_ms: Option<u64>,
+        to_unix_ms: Option<u64>,
+    ) -> Vec<Value> {
+        let from_day_start = from_unix_ms
+            .and_then(Self::local_day_key_from_unix_ms)
+            .and_then(|day_key| Self::day_start_unix_ms_from_day_key(&day_key));
+        let to_day_start = to_unix_ms
+            .and_then(Self::local_day_key_from_unix_ms)
+            .and_then(|day_key| Self::day_start_unix_ms_from_day_key(&day_key));
+        let mut out: Vec<Value> = Vec::new();
+        for res in self.db.scan_prefix(b"event_day:") {
+            let Ok((k, v)) = res else {
+                continue;
+            };
+            let Some(day_key) = Self::parse_day_key_from_daily_key(k.as_ref()) else {
+                continue;
+            };
+            let Some(day_start_unix_ms) = Self::day_start_unix_ms_from_day_key(day_key) else {
+                continue;
+            };
+            if let Some(from) = from_day_start {
+                if day_start_unix_ms < from {
+                    continue;
+                }
+            }
+            if let Some(to) = to_day_start {
+                if day_start_unix_ms > to {
+                    continue;
+                }
+            }
+            let Some((total, infos, warnings, errors)) = Self::event_day_counts_from_value(&v)
+            else {
+                continue;
+            };
+            out.push(serde_json::json!({
+                "day": day_key,
+                "day_start_unix_ms": day_start_unix_ms,
+                "total": total,
+                "infos": infos,
+                "warnings": warnings,
+                "errors": errors,
+            }));
+        }
+        out.sort_by_key(|row| {
+            row.get("day_start_unix_ms")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0)
+        });
+        out
     }
 
     pub fn list_events_range(

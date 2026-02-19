@@ -624,6 +624,19 @@ pub(crate) fn get_event_log_years(state: tauri::State<'_, app_state::AppState>) 
     years.into_iter().collect()
 }
 
+#[tauri::command]
+pub(crate) fn get_event_log_daily_stats(
+    state: tauri::State<'_, app_state::AppState>,
+    from_unix_ms: Option<u64>,
+    to_unix_ms: Option<u64>,
+) -> serde_json::Value {
+    let (from, to) = match (from_unix_ms, to_unix_ms) {
+        (Some(from), Some(to)) if from > to => (Some(to), Some(from)),
+        _ => (from_unix_ms, to_unix_ms),
+    };
+    serde_json::Value::Array(state.gateway.store.list_event_daily_counts_range(from, to))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
