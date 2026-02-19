@@ -403,6 +403,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::get_event_log_entries,
+            commands::get_event_log_years,
             commands::set_manual_override,
             commands::get_config,
             commands::get_gateway_token_preview,

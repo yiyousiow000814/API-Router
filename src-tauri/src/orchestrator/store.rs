@@ -38,6 +38,14 @@ pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<Stri
 }
 
 impl Store {
+    fn parse_event_unix_ms_from_key(key: &[u8]) -> Option<u64> {
+        let body = key.strip_prefix(b"event:")?;
+        let split_at = body.iter().position(|b| *b == b':')?;
+        let ts_bytes = &body[..split_at];
+        let ts_str = std::str::from_utf8(ts_bytes).ok()?;
+        ts_str.parse::<u64>().ok()
+    }
+
     const MAX_EVENTS_RUNTIME: usize = 5000;
     const EVENT_PRUNE_EVERY: u64 = 64;
     const MAX_USAGE_REQUESTS: usize = 500_000;
@@ -573,6 +581,25 @@ impl Store {
         }
 
         out
+    }
+
+    pub fn list_event_years(&self) -> std::collections::BTreeSet<i32> {
+        let mut years = std::collections::BTreeSet::<i32>::new();
+        for res in self.db.scan_prefix(b"event:") {
+            let Ok((k, _)) = res else {
+                continue;
+            };
+            let Some(unix_ms) = Self::parse_event_unix_ms_from_key(k.as_ref()) else {
+                continue;
+            };
+            let Ok(ts) = i64::try_from(unix_ms) else {
+                continue;
+            };
+            if let chrono::LocalResult::Single(dt) = Local.timestamp_millis_opt(ts) {
+                years.insert(chrono::Datelike::year(&dt));
+            }
+        }
+        years
     }
 
     pub fn list_events_range(

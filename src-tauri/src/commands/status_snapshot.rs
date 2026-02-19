@@ -529,6 +529,56 @@ fn append_backup_events(
     }
 }
 
+fn append_backup_event_years(years: &mut std::collections::BTreeSet<i32>, backup_root: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(backup_root) else {
+        return;
+    };
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let include = name.starts_with("sled.backup.")
+            || name.starts_with("sled.manual-backup.")
+            || name.starts_with("sled.bak.")
+            || name.starts_with("sled.corrupt.");
+        if include && path.is_dir() {
+            dirs.push(path);
+        }
+    }
+    dirs.sort();
+    for path in dirs {
+        let Ok(db) = sled::open(&path) else {
+            continue;
+        };
+        for item in db.scan_prefix(b"event:") {
+            let Ok((k, _)) = item else {
+                continue;
+            };
+            let Some(body) = k.as_ref().strip_prefix(b"event:") else {
+                continue;
+            };
+            let Some(split_at) = body.iter().position(|b| *b == b':') else {
+                continue;
+            };
+            let ts_bytes = &body[..split_at];
+            let Ok(ts_str) = std::str::from_utf8(ts_bytes) else {
+                continue;
+            };
+            let Ok(unix_ms) = ts_str.parse::<u64>() else {
+                continue;
+            };
+            let Ok(ts) = i64::try_from(unix_ms) else {
+                continue;
+            };
+            if let chrono::LocalResult::Single(dt) = chrono::Local.timestamp_millis_opt(ts) {
+                years.insert(chrono::Datelike::year(&dt));
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub(crate) fn get_event_log_entries(
     state: tauri::State<'_, app_state::AppState>,
@@ -561,6 +611,17 @@ pub(crate) fn get_event_log_entries(
     });
     events.truncate(cap);
     serde_json::Value::Array(events)
+}
+
+#[tauri::command]
+pub(crate) fn get_event_log_years(state: tauri::State<'_, app_state::AppState>) -> Vec<i32> {
+    let mut years = state.gateway.store.list_event_years();
+    let backup_root = state
+        .config_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
+    append_backup_event_years(&mut years, backup_root);
+    years.into_iter().collect()
 }
 
 #[cfg(test)]
