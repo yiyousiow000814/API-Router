@@ -6,6 +6,7 @@ import './EventLogPanel.css'
 
 type Props = {
   events: Status['recent_events']
+  dailyStatsSeed?: EventLogDailyStat[]
   focusRequest: EventLogFocusRequest | null
   onFocusRequestHandled: (nonce: number) => void
 }
@@ -19,8 +20,8 @@ export type EventLogFocusRequest = {
 
 type EventLevel = 'info' | 'warning' | 'error'
 type DateAnchor = 'from' | 'to'
-type EventLogEntry = Status['recent_events'][number]
-type EventLogDailyStat = {
+export type EventLogEntry = Status['recent_events'][number]
+export type EventLogDailyStat = {
   day: string
   day_start_unix_ms: number
   total: number
@@ -119,7 +120,7 @@ function parseDateInputToDayStart(dateText: string): number | null {
   return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime()
 }
 
-export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: Props) {
+export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFocusRequestHandled }: Props) {
   const [sourceEvents, setSourceEvents] = useState<EventLogEntry[]>(() =>
     [...events].sort((a, b) => b.unix_ms - a.unix_ms),
   )
@@ -141,7 +142,9 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
     for (const event of events) years.add(new Date(event.unix_ms).getFullYear())
     return [...years].sort((a, b) => a - b)
   })
-  const [dailyStats, setDailyStats] = useState<EventLogDailyStat[]>([])
+  const [dailyStats, setDailyStats] = useState<EventLogDailyStat[]>(() =>
+    [...dailyStatsSeed].sort((a, b) => a.day_start_unix_ms - b.day_start_unix_ms),
+  )
   const [chartHover, setChartHover] = useState<EventLogChartHover | null>(null)
   const [focusedEvent, setFocusedEvent] = useState<EventLogEntry | null>(null)
   const [focusNonce, setFocusNonce] = useState(0)
@@ -425,10 +428,24 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
     EVENT_LOG_UI_STATE.dateTo = dateTo
   }, [dateTo])
   useEffect(() => {
-    if (!sourceEvents.length && events.length) {
+    if (events.length && sourceEvents.length === 0) {
       setSourceEvents([...events].sort((a, b) => b.unix_ms - a.unix_ms))
     }
   }, [events, sourceEvents.length])
+  useEffect(() => {
+    if (!dailyStatsSeed.length) return
+    setDailyStats((prev) => {
+      const prevSig = prev
+        .map((row) => `${row.day_start_unix_ms}:${row.total}:${row.infos}:${row.warnings}:${row.errors}`)
+        .join('|')
+      const next = [...dailyStatsSeed].sort((a, b) => a.day_start_unix_ms - b.day_start_unix_ms)
+      const nextSig = next
+        .map((row) => `${row.day_start_unix_ms}:${row.total}:${row.infos}:${row.warnings}:${row.errors}`)
+        .join('|')
+      if (prevSig === nextSig) return prev
+      return next
+    })
+  }, [dailyStatsSeed])
   useEffect(() => {
     if (!events.length) return
     mergeKnownYears(events)
