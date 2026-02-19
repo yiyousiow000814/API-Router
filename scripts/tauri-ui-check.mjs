@@ -30,6 +30,7 @@ import {
   parsePx,
   pickDirectProvider,
   runFontBaselineCase,
+  runEventLogCalendarDailyStatsCase,
   runPricingTimelineModalCase,
   runProviderStatisticsKeyStyleCase,
   runSwitchboardSwitchCase,
@@ -299,6 +300,8 @@ async function main() {
       await runUsageHistoryScrollCase(driver, screenshotPath)
       await openModalAndCloseOptional(driver, 'Base Pricing', 'Base Pricing', 'Close', 'Base Pricing modal check')
       await runPricingTimelineModalCase(driver, screenshotPath)
+      console.log('[ui:tauri] Subtest A1b: event log calendar daily stats contract')
+      await runEventLogCalendarDailyStatsCase(driver, directProvider, screenshotPath)
 
       console.log('[ui:tauri] Subtest A: provider switchboard page')
       await clickTopNav(driver, 'Provider Switchboard')

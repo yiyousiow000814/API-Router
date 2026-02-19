@@ -419,6 +419,21 @@ fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
     Some(dt.format("%Y-%m-%d").to_string())
 }
 
+fn day_start_unix_ms_from_day_key(day_key: &str) -> Option<u64> {
+    let date = chrono::NaiveDate::parse_from_str(day_key, "%Y-%m-%d").ok()?;
+    let dt = Local
+        .with_ymd_and_hms(
+            chrono::Datelike::year(&date),
+            chrono::Datelike::month(&date),
+            chrono::Datelike::day(&date),
+            0,
+            0,
+            0,
+        )
+        .single()?;
+    u64::try_from(dt.timestamp_millis()).ok()
+}
+
 fn event_query_key(e: &Value) -> Option<String> {
     let unix_ms = e.get("unix_ms").and_then(|v| v.as_u64())?;
     let provider = e.get("provider").and_then(|v| v.as_str()).unwrap_or("");
@@ -495,8 +510,7 @@ fn append_backup_events(
         };
         let include = name.starts_with("sled.backup.")
             || name.starts_with("sled.manual-backup.")
-            || name.starts_with("sled.bak.")
-            || name.starts_with("sled.corrupt.");
+            || name.starts_with("sled.bak.");
         if !include {
             continue;
         }
@@ -529,6 +543,13 @@ fn append_backup_events(
     }
 }
 
+fn backup_data_root_from_config_path(config_path: &std::path::Path) -> std::path::PathBuf {
+    config_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("data")
+}
+
 fn append_backup_event_years(years: &mut std::collections::BTreeSet<i32>, backup_root: &std::path::Path) {
     let Ok(entries) = std::fs::read_dir(backup_root) else {
         return;
@@ -541,8 +562,7 @@ fn append_backup_event_years(years: &mut std::collections::BTreeSet<i32>, backup
         };
         let include = name.starts_with("sled.backup.")
             || name.starts_with("sled.manual-backup.")
-            || name.starts_with("sled.bak.")
-            || name.starts_with("sled.corrupt.");
+            || name.starts_with("sled.bak.");
         if include && path.is_dir() {
             dirs.push(path);
         }
@@ -579,6 +599,87 @@ fn append_backup_event_years(years: &mut std::collections::BTreeSet<i32>, backup
     }
 }
 
+fn append_backup_event_daily_stats(
+    rows: &mut Vec<Value>,
+    backup_root: &std::path::Path,
+    from: Option<u64>,
+    to: Option<u64>,
+) {
+    let Ok(entries) = std::fs::read_dir(backup_root) else {
+        return;
+    };
+    let mut existing_days: std::collections::HashSet<String> = rows
+        .iter()
+        .filter_map(|row| row.get("day").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let include = name.starts_with("sled.backup.")
+            || name.starts_with("sled.manual-backup.")
+            || name.starts_with("sled.bak.");
+        if include && path.is_dir() {
+            dirs.push(path);
+        }
+    }
+    dirs.sort();
+    let mut day_counts: std::collections::BTreeMap<String, (u64, u64, u64, u64)> =
+        std::collections::BTreeMap::new();
+    for path in dirs {
+        let Ok(db) = sled::open(&path) else {
+            continue;
+        };
+        for item in db.scan_prefix(b"event:") {
+            let Ok((_, v)) = item else {
+                continue;
+            };
+            let Ok(e) = serde_json::from_slice::<Value>(&v) else {
+                continue;
+            };
+            if !event_shape_is_valid(&e) {
+                continue;
+            }
+            if !event_in_time_window(&e, from, to) {
+                continue;
+            }
+            let Some(unix_ms) = e.get("unix_ms").and_then(|v| v.as_u64()) else {
+                continue;
+            };
+            let Some(day_key) = local_day_key_from_unix_ms(unix_ms) else {
+                continue;
+            };
+            if existing_days.contains(&day_key) {
+                continue;
+            }
+            let level = e.get("level").and_then(|v| v.as_str()).unwrap_or("info");
+            let row = day_counts.entry(day_key).or_insert((0, 0, 0, 0));
+            row.0 = row.0.saturating_add(1);
+            match level {
+                "error" => row.3 = row.3.saturating_add(1),
+                "warning" => row.2 = row.2.saturating_add(1),
+                _ => row.1 = row.1.saturating_add(1),
+            }
+        }
+    }
+    for (day, (total, infos, warnings, errors)) in day_counts {
+        let Some(day_start_unix_ms) = day_start_unix_ms_from_day_key(&day) else {
+            continue;
+        };
+        rows.push(serde_json::json!({
+            "day": day,
+            "day_start_unix_ms": day_start_unix_ms,
+            "total": total,
+            "infos": infos,
+            "warnings": warnings,
+            "errors": errors,
+        }));
+        let _ = existing_days.insert(day);
+    }
+}
+
 #[tauri::command]
 pub(crate) fn get_event_log_entries(
     state: tauri::State<'_, app_state::AppState>,
@@ -601,9 +702,9 @@ pub(crate) fn get_event_log_entries(
     }
     let backup_root = state
         .config_path
-        .parent()
-        .unwrap_or(std::path::Path::new("."));
-    append_backup_events(&mut events, &mut dedup, backup_root, from, to, cap);
+        .as_path();
+    let backup_root = backup_data_root_from_config_path(backup_root);
+    append_backup_events(&mut events, &mut dedup, &backup_root, from, to, cap);
     events.sort_by(|a, b| {
         let a_ts = a.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
         let b_ts = b.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -616,12 +717,26 @@ pub(crate) fn get_event_log_entries(
 #[tauri::command]
 pub(crate) fn get_event_log_years(state: tauri::State<'_, app_state::AppState>) -> Vec<i32> {
     let mut years = state.gateway.store.list_event_years();
-    let backup_root = state
-        .config_path
-        .parent()
-        .unwrap_or(std::path::Path::new("."));
-    append_backup_event_years(&mut years, backup_root);
+    let backup_root = backup_data_root_from_config_path(state.config_path.as_path());
+    append_backup_event_years(&mut years, &backup_root);
     years.into_iter().collect()
+}
+
+#[tauri::command]
+pub(crate) fn get_event_log_daily_stats(
+    state: tauri::State<'_, app_state::AppState>,
+    from_unix_ms: Option<u64>,
+    to_unix_ms: Option<u64>,
+) -> serde_json::Value {
+    let (from, to) = match (from_unix_ms, to_unix_ms) {
+        (Some(from), Some(to)) if from > to => (Some(to), Some(from)),
+        _ => (from_unix_ms, to_unix_ms),
+    };
+    let mut rows = state.gateway.store.list_event_daily_counts_range(from, to);
+    let backup_root = backup_data_root_from_config_path(state.config_path.as_path());
+    append_backup_event_daily_stats(&mut rows, &backup_root, from, to);
+    rows.sort_by_key(|row| row.get("day_start_unix_ms").and_then(|v| v.as_u64()).unwrap_or(0));
+    serde_json::Value::Array(rows)
 }
 
 #[cfg(test)]
@@ -629,12 +744,13 @@ mod tests {
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::commands::{
         apply_discovered_router_confirmation, backfill_main_confirmation_from_verified_agent,
-        event_query_key, merge_discovered_model_provider, next_last_discovered_unix_ms,
-        normalize_event_query_limit,
+        append_backup_event_daily_stats, day_start_unix_ms_from_day_key, event_query_key,
+        merge_discovered_model_provider, next_last_discovered_unix_ms, normalize_event_query_limit,
         next_wsl_discovery_miss_count,
         should_keep_runtime_session,
     };
     use crate::orchestrator::gateway::ClientSessionRuntime;
+    use chrono::TimeZone;
 
     #[test]
     fn discovered_provider_does_not_override_confirmed_gateway_session() {
@@ -685,6 +801,76 @@ mod tests {
             "fields": { "codex_session_id": "s2" }
         });
         assert_ne!(event_query_key(&a), event_query_key(&b));
+    }
+
+    #[test]
+    fn append_backup_event_daily_stats_adds_missing_backup_day() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backup = tmp.path().join("sled.backup.test");
+        std::fs::create_dir_all(&backup).unwrap();
+        let db = sled::open(&backup).unwrap();
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 2, 17, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        let key = format!("event:{ts}:a");
+        let v = serde_json::json!({
+            "provider": "gateway",
+            "level": "warning",
+            "unix_ms": ts,
+            "code": "test_backup_day",
+            "message": "backup only",
+            "fields": {}
+        });
+        db.insert(key.as_bytes(), serde_json::to_vec(&v).unwrap()).unwrap();
+        db.flush().unwrap();
+        drop(db);
+
+        let mut rows: Vec<serde_json::Value> = Vec::new();
+        append_backup_event_daily_stats(&mut rows, tmp.path(), None, None);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("day").and_then(|v| v.as_str()), Some("2026-02-17"));
+        assert_eq!(rows[0].get("warnings").and_then(|v| v.as_u64()), Some(1));
+    }
+
+    #[test]
+    fn append_backup_event_daily_stats_does_not_duplicate_existing_day() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backup = tmp.path().join("sled.backup.test2");
+        std::fs::create_dir_all(&backup).unwrap();
+        let db = sled::open(&backup).unwrap();
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 2, 19, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        let key = format!("event:{ts}:b");
+        let v = serde_json::json!({
+            "provider": "gateway",
+            "level": "error",
+            "unix_ms": ts,
+            "code": "test_backup_day_dup",
+            "message": "duplicate day",
+            "fields": {}
+        });
+        db.insert(key.as_bytes(), serde_json::to_vec(&v).unwrap()).unwrap();
+        db.flush().unwrap();
+        drop(db);
+
+        let day_start = day_start_unix_ms_from_day_key("2026-02-19").unwrap();
+        let mut rows: Vec<serde_json::Value> = vec![serde_json::json!({
+            "day": "2026-02-19",
+            "day_start_unix_ms": day_start,
+            "total": 3,
+            "infos": 2,
+            "warnings": 1,
+            "errors": 0
+        })];
+        append_backup_event_daily_stats(&mut rows, tmp.path(), None, None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("total").and_then(|v| v.as_u64()), Some(3));
     }
 
     #[test]

@@ -27,6 +27,7 @@ import {
 import { AppMainContent } from './components/AppMainContent'
 import { AppModals } from './components/AppModals'
 import { AppTopNav } from './components/AppTopNav'
+import type { EventLogDailyStat, EventLogEntry } from './components/EventLogPanel'
 import type { LastErrorJump } from './components/ProvidersTable'
 import { useConfigDrag } from './hooks/useConfigDrag'
 import { useProviderActions } from './hooks/useProviderActions'
@@ -55,6 +56,8 @@ const RAW_DRAFT_STORAGE_KEY = 'ao.rawConfigDraft.shared.v1'
 const RAW_DRAFT_WINDOWS_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.windows.v1'
 const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.wsl2.v1'
 const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
+const EVENT_LOG_PRELOAD_REFRESH_MS = 15_000
+const EVENT_LOG_PRELOAD_LIMIT = 2000
 export default function App() {
   const isDevPreview = useMemo(() => {
     if (!import.meta.env.DEV) return false
@@ -130,6 +133,8 @@ export default function App() {
     message: string
     nonce: number
   } | null>(null)
+  const [eventLogPreloadEntries, setEventLogPreloadEntries] = useState<EventLogEntry[]>([])
+  const [eventLogPreloadDailyStats, setEventLogPreloadDailyStats] = useState<EventLogDailyStat[]>([])
   const [providerSwitchStatus, setProviderSwitchStatus] = useState<ProviderSwitchboardStatus | null>(null)
   const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(null)
   const [usageWindowHours, setUsageWindowHours] = useState<number>(24)
@@ -213,6 +218,7 @@ export default function App() {
   const usageScheduleLastSavedByProviderRef = useRef<Record<string, string>>({})
   const toastTimerRef = useRef<number | null>(null)
   const rawConfigTestFailOnceRef = useRef<Record<string, boolean>>({})
+  const eventLogPreloadSeqRef = useRef(0)
   const rawConfigTextsRef = useRef<Record<string, string>>({})
   const rawConfigDraftAutoSaveTimerRef = useRef<Record<string, number>>({})
   const setRawConfigTextsSync = (
@@ -241,6 +247,60 @@ export default function App() {
       return current.nonce === nonce ? null : current
     })
   }
+  useEffect(() => {
+    let cancelled = false
+    const loadEventLogPreload = async () => {
+      const reqId = ++eventLogPreloadSeqRef.current
+      try {
+        const [entriesRaw, dailyRaw] = await Promise.all([
+          invoke<EventLogEntry[]>('get_event_log_entries', {
+            fromUnixMs: null,
+            toUnixMs: null,
+            limit: EVENT_LOG_PRELOAD_LIMIT,
+          }),
+          invoke<EventLogDailyStat[]>('get_event_log_daily_stats', {
+            fromUnixMs: null,
+            toUnixMs: null,
+          }),
+        ])
+        if (cancelled || eventLogPreloadSeqRef.current !== reqId) return
+        if (Array.isArray(entriesRaw)) {
+          setEventLogPreloadEntries([...entriesRaw].sort((a, b) => b.unix_ms - a.unix_ms))
+        }
+        if (Array.isArray(dailyRaw)) {
+          const normalized = dailyRaw
+            .filter((row) =>
+              row != null &&
+              Number.isFinite(Number(row.day_start_unix_ms)) &&
+              Number.isFinite(Number(row.total)) &&
+              Number.isFinite(Number(row.infos)) &&
+              Number.isFinite(Number(row.warnings)) &&
+              Number.isFinite(Number(row.errors)),
+            )
+            .map((row) => ({
+              day: String(row.day ?? ''),
+              day_start_unix_ms: Number(row.day_start_unix_ms),
+              total: Number(row.total),
+              infos: Number(row.infos),
+              warnings: Number(row.warnings),
+              errors: Number(row.errors),
+            }))
+            .sort((a, b) => a.day_start_unix_ms - b.day_start_unix_ms)
+          setEventLogPreloadDailyStats(normalized)
+        }
+      } catch {
+        // Keep the last successful preload snapshot if refresh fails transiently.
+      }
+    }
+    void loadEventLogPreload()
+    const timer = window.setInterval(() => {
+      void loadEventLogPreload()
+    }, EVENT_LOG_PRELOAD_REFRESH_MS)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [])
   useEffect(() => {
     rawConfigTextsRef.current = rawConfigTexts
   }, [rawConfigTexts])
@@ -937,7 +997,8 @@ export default function App() {
               updatingSessionPref={updatingSessionPref}
               onSetSessionPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
               onOpenLastErrorInEventLog={handleOpenLastErrorInEventLog}
-              eventLogSeedEvents={status?.recent_events ?? []}
+              eventLogSeedEvents={eventLogPreloadEntries}
+              eventLogSeedDailyStats={eventLogPreloadDailyStats}
               eventLogFocusRequest={eventLogFocusRequest}
               onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
               usageProps={{

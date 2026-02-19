@@ -44,6 +44,7 @@ urlencoding = "2"
 fastrand = "2"
 open = "5"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [

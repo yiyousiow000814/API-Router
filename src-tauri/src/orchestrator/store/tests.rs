@@ -1,37 +1,34 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn list_events_reads_latest_without_full_scan() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
 
-        // Insert out-of-order timestamps; iteration should return newest-first by key order.
-        let mk = |ts: u64, id: &str| format!("event:{ts}:{id}");
-        let v = |ts: u64| {
-            serde_json::json!({
-                "provider": "p1",
-                "level": "info",
-                "unix_ms": ts,
-                "code": "test_event",
-                "message": "hello",
-                "fields": serde_json::json!({}),
-            })
-        };
-
-        let _ = store.db.insert(
-            mk(1000, "a").as_bytes(),
-            serde_json::to_vec(&v(1000)).unwrap(),
-        );
-        let _ = store.db.insert(
-            mk(3000, "c").as_bytes(),
-            serde_json::to_vec(&v(3000)).unwrap(),
-        );
-        let _ = store.db.insert(
-            mk(2000, "b").as_bytes(),
-            serde_json::to_vec(&v(2000)).unwrap(),
-        );
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('a', 1000, 'p1', 'info', 'test_event', 'hello', '{}')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('c', 3000, 'p1', 'info', 'test_event', 'hello', '{}')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('b', 2000, 'p1', 'info', 'test_event', 'hello', '{}')",
+                [],
+            )
+            .unwrap();
+        }
 
         let out = store.list_events(2);
         assert_eq!(out.len(), 2);
@@ -47,8 +44,6 @@ mod tests {
         // Create a DB with both expected and unexpected keys.
         {
             let db = sled::open(&dir).unwrap();
-            // Make the store look like a modern one (schema marker + valid event payload).
-            let _ = db.insert(Store::EVENTS_SCHEMA_KEY, Store::EVENTS_SCHEMA_VERSION);
             let _ = db.insert(
                 b"event:1:a",
                 &br#"{"provider":"p1","level":"info","unix_ms":1,"code":"test_event","message":"hello","fields":{}}"#[..],
@@ -79,5 +74,184 @@ mod tests {
             Store::model_for_usage(&response, Some("   ")),
             "gpt-5.3-codex"
         );
+    }
+
+    #[test]
+    fn add_event_updates_daily_materialized_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        store.add_event("p1", "warning", "test_event", "hello", serde_json::json!({}));
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.get("total").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(row.get("infos").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(row.get("warnings").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(row.get("errors").and_then(|v| v.as_u64()), Some(0));
+    }
+
+    #[test]
+    fn reopening_store_backfills_daily_index_from_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        let day1 = chrono::Local
+            .with_ymd_and_hms(2025, 6, 1, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        let day2 = chrono::Local
+            .with_ymd_and_hms(2025, 6, 2, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        let mk = |ts: u64, id: &str| format!("event:{ts}:{id}");
+        let payload = |ts: u64, level: &str| {
+            serde_json::json!({
+                "provider": "p1",
+                "level": level,
+                "unix_ms": ts,
+                "code": "test_event",
+                "message": "hello",
+                "fields": serde_json::json!({}),
+            })
+        };
+
+        let _ = store.db.insert(
+            mk(day1, "a").as_bytes(),
+            serde_json::to_vec(&payload(day1, "info")).unwrap(),
+        );
+        let _ = store.db.insert(
+            mk(day1 + 1, "b").as_bytes(),
+            serde_json::to_vec(&payload(day1 + 1, "error")).unwrap(),
+        );
+        let _ = store.db.insert(
+            mk(day2, "c").as_bytes(),
+            serde_json::to_vec(&payload(day2, "warning")).unwrap(),
+        );
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "UPDATE event_meta SET value='0' WHERE key=?1",
+                [Store::EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY],
+            )
+            .unwrap();
+        }
+        store.db.flush().unwrap();
+        drop(store);
+
+        let store = Store::open(tmp.path()).unwrap();
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("total").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(rows[0].get("infos").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(rows[0].get("errors").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(rows[1].get("warnings").and_then(|v| v.as_u64()), Some(1));
+    }
+
+    #[test]
+    fn legacy_sqlite_merge_runs_once_even_if_legacy_file_remains() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let sled_dir = root.join("sled");
+        std::fs::create_dir_all(&sled_dir).unwrap();
+
+        let canonical_sqlite = root.join("events.sqlite3");
+        let legacy_sqlite = sled_dir.join("events.sqlite3");
+
+        {
+            let conn = rusqlite::Connection::open(&canonical_sqlite).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS event_meta(
+                  key TEXT PRIMARY KEY,
+                  value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS events(
+                  id TEXT PRIMARY KEY,
+                  unix_ms INTEGER NOT NULL,
+                  provider TEXT NOT NULL,
+                  level TEXT NOT NULL,
+                  code TEXT NOT NULL,
+                  message TEXT NOT NULL,
+                  fields_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS event_day_counts(
+                  day_key TEXT PRIMARY KEY,
+                  day_start_unix_ms INTEGER NOT NULL,
+                  total INTEGER NOT NULL,
+                  infos INTEGER NOT NULL,
+                  warnings INTEGER NOT NULL,
+                  errors INTEGER NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES('schema_version', ?1)",
+                [Store::EVENTS_SQLITE_SCHEMA_VERSION],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')",
+                [Store::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('canonical-a', 1000, 'p1', 'info', 'test_event', 'canonical', '{}')",
+                [],
+            )
+            .unwrap();
+        }
+
+        {
+            let conn = rusqlite::Connection::open(&legacy_sqlite).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS events(
+                  id TEXT PRIMARY KEY,
+                  unix_ms INTEGER NOT NULL,
+                  provider TEXT NOT NULL,
+                  level TEXT NOT NULL,
+                  code TEXT NOT NULL,
+                  message TEXT NOT NULL,
+                  fields_json TEXT NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('legacy-a', 2000, 'p1', 'warning', 'test_event', 'legacy-a', '{}')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&sled_dir).unwrap();
+        assert_eq!(store.list_events_range(None, None, Some(10)).len(), 2);
+        drop(store);
+
+        {
+            let conn = rusqlite::Connection::open(&legacy_sqlite).unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('legacy-b', 3000, 'p1', 'error', 'test_event', 'legacy-b', '{}')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&sled_dir).unwrap();
+        let events = store.list_events_range(None, None, Some(10));
+        assert_eq!(events.len(), 2);
+        assert!(events
+            .iter()
+            .any(|event| event.get("message").and_then(|v| v.as_str()) == Some("legacy-a")));
+        assert!(!events
+            .iter()
+            .any(|event| event.get("message").and_then(|v| v.as_str()) == Some("legacy-b")));
     }
 }

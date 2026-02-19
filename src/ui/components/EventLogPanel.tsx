@@ -6,6 +6,7 @@ import './EventLogPanel.css'
 
 type Props = {
   events: Status['recent_events']
+  dailyStatsSeed?: EventLogDailyStat[]
   focusRequest: EventLogFocusRequest | null
   onFocusRequestHandled: (nonce: number) => void
 }
@@ -19,7 +20,15 @@ export type EventLogFocusRequest = {
 
 type EventLevel = 'info' | 'warning' | 'error'
 type DateAnchor = 'from' | 'to'
-type EventLogEntry = Status['recent_events'][number]
+export type EventLogEntry = Status['recent_events'][number]
+export type EventLogDailyStat = {
+  day: string
+  day_start_unix_ms: number
+  total: number
+  infos: number
+  warnings: number
+  errors: number
+}
 type EventLogChartHover = {
   x: number
   y: number
@@ -29,7 +38,6 @@ type EventLogChartHover = {
   errors: number
 }
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000
 const CHART_WINDOW_DAYS = 60
 const EVENT_LOG_TABLE_LIMIT = 200
 const EVENT_LOG_FETCH_LIMIT = 2000
@@ -74,11 +82,6 @@ function addDays(unixMs: number, delta: number): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate() + delta).getTime()
 }
 
-function dayIndex(unixMs: number): number {
-  const d = new Date(unixMs)
-  return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / MS_PER_DAY)
-}
-
 function dayStartToIso(unixMs: number): string {
   const d = new Date(unixMs)
   const y = d.getFullYear()
@@ -117,7 +120,7 @@ function parseDateInputToDayStart(dateText: string): number | null {
   return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime()
 }
 
-export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: Props) {
+export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFocusRequestHandled }: Props) {
   const [sourceEvents, setSourceEvents] = useState<EventLogEntry[]>(() =>
     [...events].sort((a, b) => b.unix_ms - a.unix_ms),
   )
@@ -139,12 +142,16 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
     for (const event of events) years.add(new Date(event.unix_ms).getFullYear())
     return [...years].sort((a, b) => a - b)
   })
+  const [dailyStats, setDailyStats] = useState<EventLogDailyStat[]>(() =>
+    [...dailyStatsSeed].sort((a, b) => a.day_start_unix_ms - b.day_start_unix_ms),
+  )
   const [chartHover, setChartHover] = useState<EventLogChartHover | null>(null)
   const [focusedEvent, setFocusedEvent] = useState<EventLogEntry | null>(null)
   const [focusNonce, setFocusNonce] = useState(0)
   const datePickerRef = useRef<HTMLDivElement | null>(null)
   const querySeqRef = useRef(0)
   const yearQuerySeqRef = useRef(0)
+  const dailyStatsSeqRef = useRef(0)
   const handledFocusNonceRef = useRef<number | null>(null)
   const fromDayStart = parseDateInputToDayStart(dateFrom)
   const toDayStart = parseDateInputToDayStart(dateTo)
@@ -170,6 +177,42 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
       })
     } catch {
       // Keep current year list on failure.
+    }
+  }, [])
+  const fetchEventLogDailyStats = useCallback(async (fromDay: number | null, toDay: number | null) => {
+    const fromUnixMs = fromDay == null ? null : fromDay
+    const toUnixMs = toDay == null ? null : addDays(toDay, 1) - 1
+    const reqId = ++dailyStatsSeqRef.current
+    try {
+      const rows = await invoke<EventLogDailyStat[]>('get_event_log_daily_stats', { fromUnixMs, toUnixMs })
+      if (dailyStatsSeqRef.current !== reqId) return
+      if (!Array.isArray(rows)) return
+      const normalized = rows
+        .filter((row) =>
+          row != null &&
+          Number.isFinite(Number(row.day_start_unix_ms)) &&
+          Number.isFinite(Number(row.total)) &&
+          Number.isFinite(Number(row.infos)) &&
+          Number.isFinite(Number(row.warnings)) &&
+          Number.isFinite(Number(row.errors)),
+        )
+        .map((row) => ({
+          day: String(row.day ?? ''),
+          day_start_unix_ms: Number(row.day_start_unix_ms),
+          total: Number(row.total),
+          infos: Number(row.infos),
+          warnings: Number(row.warnings),
+          errors: Number(row.errors),
+        }))
+        .sort((a, b) => a.day_start_unix_ms - b.day_start_unix_ms)
+      setDailyStats(normalized)
+      setKnownEventYears((prev) => {
+        const merged = new Set(prev)
+        for (const row of normalized) merged.add(new Date(row.day_start_unix_ms).getFullYear())
+        return [...merged].sort((a, b) => a - b)
+      })
+    } catch {
+      // Keep existing daily aggregates if refresh fails transiently.
     }
   }, [])
 
@@ -213,7 +256,18 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
     return timeFiltered.filter((e) => buildSearchText(e).includes(searchNeedle))
   }, [timeFiltered, searchNeedle])
 
-  const chartSourceEvents = useMemo(() => sourceEvents, [sourceEvents])
+  const dailyStatsByDay = useMemo(() => {
+    const out = new Map<number, { total: number; infos: number; warnings: number; errors: number }>()
+    for (const row of dailyStats) {
+      out.set(row.day_start_unix_ms, {
+        total: row.total,
+        infos: row.infos,
+        warnings: row.warnings,
+        errors: row.errors,
+      })
+    }
+    return out
+  }, [dailyStats])
 
   const selectedLevelSet = useMemo(() => new Set(selectedLevels), [selectedLevels])
   const filteredEvents = useMemo(
@@ -226,36 +280,57 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
   )
   const tableEvents = useMemo(() => filteredEvents.slice(0, EVENT_LOG_TABLE_LIMIT), [filteredEvents])
 
-  const dailyIssueCounts = useMemo(() => {
-    let minEventDay = Number.POSITIVE_INFINITY
-    let maxEventDay = Number.NEGATIVE_INFINITY
-    for (const e of chartSourceEvents) {
+  const fallbackDailyByDayFromEvents = useMemo(() => {
+    const out = new Map<number, { total: number; infos: number; warnings: number; errors: number }>()
+    for (const e of sourceEvents) {
       const day = startOfDayMs(e.unix_ms)
-      if (day < minEventDay) minEventDay = day
-      if (day > maxEventDay) maxEventDay = day
-    }
-    if (!Number.isFinite(minEventDay) || !Number.isFinite(maxEventDay)) {
-      minEventDay = defaultRangeEndDay
-      maxEventDay = defaultRangeEndDay
-    }
-    const spanDays = Math.max(1, dayIndex(maxEventDay) - dayIndex(minEventDay) + 1)
-    const chartStartDay = spanDays >= CHART_WINDOW_DAYS ? addDays(maxEventDay, -(CHART_WINDOW_DAYS - 1)) : minEventDay
-
-    const rows = Array.from({ length: CHART_WINDOW_DAYS }, (_, idx) => {
-      const dayStartMs = addDays(chartStartDay, idx)
-      return { dayStartMs, infos: 0, warnings: 0, errors: 0 }
-    })
-    const rowByDay = new Map(rows.map((r) => [r.dayStartMs, r]))
-    for (const e of chartSourceEvents) {
-      const dayStart = startOfDayMs(e.unix_ms)
-      const row = rowByDay.get(dayStart)
-      if (!row) continue
-      if (e.level !== 'error' && e.level !== 'warning') row.infos += 1
-      if (e.level === 'warning') row.warnings += 1
+      const row = out.get(day) ?? { total: 0, infos: 0, warnings: 0, errors: 0 }
+      row.total += 1
       if (e.level === 'error') row.errors += 1
+      else if (e.level === 'warning') row.warnings += 1
+      else row.infos += 1
+      out.set(day, row)
     }
-    return rows
-  }, [chartSourceEvents, defaultRangeEndDay])
+    return out
+  }, [sourceEvents])
+
+  const effectiveDailyByDay = useMemo(() => {
+    if (dailyStatsByDay.size === 0) return fallbackDailyByDayFromEvents
+    const out = new Map(fallbackDailyByDayFromEvents)
+    for (const [day, row] of dailyStatsByDay) out.set(day, row)
+    return out
+  }, [dailyStatsByDay, fallbackDailyByDayFromEvents])
+
+  const dailyMinMaxDay = useMemo(() => {
+    let minDay = Number.POSITIVE_INFINITY
+    let maxDay = Number.NEGATIVE_INFINITY
+    for (const day of effectiveDailyByDay.keys()) {
+      if (day < minDay) minDay = day
+      if (day > maxDay) maxDay = day
+    }
+    if (!Number.isFinite(minDay) || !Number.isFinite(maxDay)) {
+      return { minDay: null as number | null, maxDay: null as number | null }
+    }
+    return { minDay, maxDay }
+  }, [effectiveDailyByDay])
+  const latestEventDay = dailyMinMaxDay.maxDay
+
+  const dailyIssueCounts = useMemo(() => {
+    const minEventDay = dailyMinMaxDay.minDay ?? defaultRangeEndDay
+    const maxEventDay = dailyMinMaxDay.maxDay ?? defaultRangeEndDay
+    const spanDays = Math.max(1, ((maxEventDay - minEventDay) / (24 * 60 * 60 * 1000)) + 1)
+    const chartStartDay = spanDays >= CHART_WINDOW_DAYS ? addDays(maxEventDay, -(CHART_WINDOW_DAYS - 1)) : minEventDay
+    return Array.from({ length: CHART_WINDOW_DAYS }, (_, idx) => {
+      const dayStartMs = addDays(chartStartDay, idx)
+      const row = effectiveDailyByDay.get(dayStartMs) ?? { infos: 0, warnings: 0, errors: 0 }
+      return {
+        dayStartMs,
+        infos: row.infos,
+        warnings: row.warnings,
+        errors: row.errors,
+      }
+    })
+  }, [dailyMinMaxDay, defaultRangeEndDay, effectiveDailyByDay])
 
   const maxStackCount = useMemo(
     () => dailyIssueCounts.reduce((max, row) => Math.max(max, row.infos, row.warnings, row.errors), 0),
@@ -280,32 +355,16 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
 
   const eventDayCounts = useMemo(() => {
     const out = new Map<number, number>()
-    for (const e of sourceEvents) {
-      const day = startOfDayMs(e.unix_ms)
-      out.set(day, (out.get(day) ?? 0) + 1)
-    }
+    for (const [day, row] of effectiveDailyByDay) out.set(day, row.total)
     return out
-  }, [sourceEvents])
+  }, [effectiveDailyByDay])
   const eventDayLevelCounts = useMemo(() => {
     const out = new Map<number, { infos: number; warnings: number; errors: number }>()
-    for (const e of sourceEvents) {
-      const day = startOfDayMs(e.unix_ms)
-      const row = out.get(day) ?? { infos: 0, warnings: 0, errors: 0 }
-      if (e.level === 'error') row.errors += 1
-      else if (e.level === 'warning') row.warnings += 1
-      else row.infos += 1
-      out.set(day, row)
+    for (const [day, row] of effectiveDailyByDay) {
+      out.set(day, { infos: row.infos, warnings: row.warnings, errors: row.errors })
     }
     return out
-  }, [sourceEvents])
-  const latestEventDay = useMemo(() => {
-    if (!sourceEvents.length) return null
-    let maxUnixMs = sourceEvents[0]?.unix_ms ?? 0
-    for (const e of sourceEvents) {
-      if (e.unix_ms > maxUnixMs) maxUnixMs = e.unix_ms
-    }
-    return startOfDayMs(maxUnixMs)
-  }, [sourceEvents])
+  }, [effectiveDailyByDay])
 
   const monthCells = useMemo(() => {
     const targetMonth = new Date(pickerMonthStartMs).getMonth()
@@ -369,10 +428,24 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
     EVENT_LOG_UI_STATE.dateTo = dateTo
   }, [dateTo])
   useEffect(() => {
-    if (!sourceEvents.length && events.length) {
+    if (events.length && sourceEvents.length === 0) {
       setSourceEvents([...events].sort((a, b) => b.unix_ms - a.unix_ms))
     }
   }, [events, sourceEvents.length])
+  useEffect(() => {
+    if (!dailyStatsSeed.length) return
+    setDailyStats((prev) => {
+      const prevSig = prev
+        .map((row) => `${row.day_start_unix_ms}:${row.total}:${row.infos}:${row.warnings}:${row.errors}`)
+        .join('|')
+      const next = [...dailyStatsSeed].sort((a, b) => a.day_start_unix_ms - b.day_start_unix_ms)
+      const nextSig = next
+        .map((row) => `${row.day_start_unix_ms}:${row.total}:${row.infos}:${row.warnings}:${row.errors}`)
+        .join('|')
+      if (prevSig === nextSig) return prev
+      return next
+    })
+  }, [dailyStatsSeed])
   useEffect(() => {
     if (!events.length) return
     mergeKnownYears(events)
@@ -385,11 +458,15 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
     void fetchEventLogEntries(fromDayStart, toDayStart)
   }, [fetchEventLogEntries, fromDayStart, toDayStart])
   useEffect(() => {
+    void fetchEventLogDailyStats(fromDayStart, toDayStart)
+  }, [fetchEventLogDailyStats, fromDayStart, toDayStart])
+  useEffect(() => {
     const timer = window.setInterval(() => {
       void fetchEventLogEntries(fromDayStart, toDayStart)
+      void fetchEventLogDailyStats(fromDayStart, toDayStart)
     }, 15_000)
     return () => window.clearInterval(timer)
-  }, [fetchEventLogEntries, fromDayStart, toDayStart])
+  }, [fetchEventLogDailyStats, fetchEventLogEntries, fromDayStart, toDayStart])
   useEffect(() => {
     if (!openDatePicker) return
     setDateFrom(pickerDateFrom)
@@ -743,7 +820,7 @@ export function EventLogPanel({ events, focusRequest, onFocusRequestHandled }: P
                           } else {
                             setPickerDateTo(iso)
                           }
-                          setDateAnchor('to')
+                          setDateAnchor('from')
                           setOpenDatePicker(true)
                         }}
                         title={

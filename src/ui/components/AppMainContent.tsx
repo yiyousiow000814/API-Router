@@ -35,6 +35,7 @@ type Props = {
   onSetSessionPreferred: (sessionId: string, provider: string | null) => void
   onOpenLastErrorInEventLog: (payload: LastErrorJump) => void
   eventLogSeedEvents: any[]
+  eventLogSeedDailyStats: any[]
   eventLogFocusRequest: EventLogFocusRequest | null
   onEventLogFocusRequestHandled: (nonce: number) => void
   usageProps: any
@@ -72,6 +73,7 @@ export function AppMainContent(props: Props) {
     onSetSessionPreferred,
     onOpenLastErrorInEventLog,
     eventLogSeedEvents,
+    eventLogSeedDailyStats,
     eventLogFocusRequest,
     onEventLogFocusRequestHandled,
     usageProps,
@@ -90,6 +92,7 @@ export function AppMainContent(props: Props) {
     return (
       <EventLogPanel
         events={eventLogSeedEvents}
+        dailyStatsSeed={eventLogSeedDailyStats}
         focusRequest={eventLogFocusRequest}
         onFocusRequestHandled={onEventLogFocusRequestHandled}
       />

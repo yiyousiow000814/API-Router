@@ -268,6 +268,41 @@ export async function runUsageHistoryScrollCase(driver, screenshotPath) {
   )
 }
 
+export async function runEventLogCalendarDailyStatsCase(driver, directProvider, screenshotPath) {
+  const markerKey = `sk-ui-check-event-${Date.now()}`
+  await tauriInvoke(driver, 'set_provider_key', { provider: directProvider, key: markerKey })
+  const today = dayKeyFromOffset(0)
+
+  await clickTopNav(driver, 'Dashboard')
+  await waitSectionHeading(driver, 'Providers', 15000)
+  await clickTopNav(driver, 'Event Log')
+  await waitSectionHeading(driver, 'Event Log', 20000)
+
+  const daily = await tauriInvoke(driver, 'get_event_log_daily_stats')
+  const todayStat = Array.isArray(daily) ? daily.find((row) => String(row?.day || '') === today) : null
+  const total = Number(todayStat?.total || 0)
+  if (!todayStat || !(total > 0)) {
+    throw new Error(`Event Log daily stats missing today ${today} after emitting test event.`)
+  }
+
+  const fromDateBtn = await waitVisible(driver, By.css('.aoEventLogDateTrigger'), 12000)
+  await fromDateBtn.click()
+  await waitVisible(driver, By.css('.aoEventLogDatePopover'), 12000)
+
+  const check = await driver.executeScript(`
+    const cell = document.querySelector('.aoEventLogDatePopover .aoEventLogDateCell.is-today');
+    if (!cell) return { found: false, dotCount: 0 };
+    return { found: true, dotCount: cell.querySelectorAll('.aoEventLogDateDot').length };
+  `)
+  if (!check || !check.found || !(Number(check.dotCount) > 0)) {
+    const b64 = await driver.takeScreenshot()
+    fs.writeFileSync(screenshotPath.replace('.png', '-event-log-calendar-dot-missing.png'), Buffer.from(b64, 'base64'))
+    throw new Error(`Event Log today cell has no dot after daily stats update (today=${today}).`)
+  }
+
+  await clickButtonByText(driver, 'OK', 12000)
+}
+
 export async function runProviderStatisticsKeyStyleCase(driver, screenshotPath) {
   const showButtons = await driver.findElements(
     By.xpath(`//button[contains(@class,'aoTinyBtn') and normalize-space()='Show']`),
@@ -487,4 +522,3 @@ export function centerY(r) {
 export function centerX(r) {
   return r.left + r.width / 2
 }
-
