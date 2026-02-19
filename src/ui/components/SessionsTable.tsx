@@ -13,6 +13,8 @@ type SessionRow = {
   last_seen_unix_ms: number
   active: boolean
   preferred_provider?: string | null
+  current_provider?: string | null
+  current_reason?: string | null
   verified?: boolean
   is_agent?: boolean
   is_review?: boolean
@@ -108,7 +110,7 @@ export function SessionsTable({
           <th style={{ width: 150 }}>Last seen</th>
           <th style={{ width: 160 }}>Codex provider</th>
           <th style={{ width: 130 }}>Model</th>
-          <th>Routing provider</th>
+          <th>Current provider</th>
           <th style={{ width: 260 }}>Preferred provider</th>
         </tr>
       </thead>
@@ -118,7 +120,7 @@ export function SessionsTable({
             {verifiedRows.length ? (
               verifiedRows.map((s) => {
                 const verified = s.verified !== false
-                const routingTarget = s.preferred_provider ?? globalPreferred
+                const currentProvider = s.current_provider ?? '-'
                 const codexSession = codexSessionIdOnly(s.codex_session_id)
                 const wt = s.wt_session ?? '-'
                 const isAgent = s.is_agent === true
@@ -158,7 +160,7 @@ export function SessionsTable({
                     <td>{fmtWhen(s.last_seen_unix_ms)}</td>
                     <td className="aoSessionsMono">{codexProvider}</td>
                     <td className="aoSessionsMono">{modelName}</td>
-                    <td className="aoSessionsMono">{routingTarget}</td>
+                    <td className="aoSessionsMono" title={s.current_reason ?? ''}>{currentProvider}</td>
                     <td>
                       <select
                         className="aoSelect"
@@ -227,7 +229,7 @@ export function SessionsTable({
                 </tr>
                 {unverifiedRows.map((s) => {
                   const verified = s.verified !== false
-                  const routingTarget = s.preferred_provider ?? globalPreferred
+                  const currentProvider = s.current_provider ?? '-'
                   const codexSession = codexSessionIdOnly(s.codex_session_id)
                   const wt = s.wt_session ?? '-'
                   const isAgent = s.is_agent === true
@@ -267,7 +269,7 @@ export function SessionsTable({
                       <td>{fmtWhen(s.last_seen_unix_ms)}</td>
                       <td className="aoSessionsMono">{codexProvider}</td>
                       <td className="aoSessionsMono">{modelName}</td>
-                      <td className="aoSessionsMono">{routingTarget}</td>
+                      <td className="aoSessionsMono" title={s.current_reason ?? ''}>{currentProvider}</td>
                       <td>
                         <select
                           className="aoSelect"

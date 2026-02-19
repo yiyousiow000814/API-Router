@@ -188,6 +188,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
         }
 
         let map = state.gateway.client_sessions.read().clone();
+        let last_used_by_session = state.gateway.last_used_by_session.read().clone();
         let mut items: Vec<_> = map.into_iter().collect();
         items.sort_by_key(|(_k, v)| {
             std::cmp::Reverse(v.last_request_unix_ms.max(v.last_discovered_unix_ms))
@@ -207,6 +208,9 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     .get(&codex_id)
                     .cloned()
                     .filter(|p| cfg.providers.contains_key(p));
+                let current_route = last_used_by_session
+                    .get(&codex_id)
+                    .filter(|route| cfg.providers.contains_key(route.provider.as_str()));
                 let last_seen_unix_ms = v.last_request_unix_ms.max(v.last_discovered_unix_ms);
                 serde_json::json!({
                     "id": codex_id,
@@ -218,6 +222,8 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     "last_seen_unix_ms": last_seen_unix_ms,
                     "active": active,
                     "preferred_provider": pref,
+                    "current_provider": current_route.as_ref().map(|route| route.provider.clone()),
+                    "current_reason": current_route.as_ref().map(|route| route.reason.clone()),
                     "verified": v.confirmed_router,
                     "is_agent": v.is_agent,
                     "is_review": v.is_review
