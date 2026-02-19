@@ -1,4 +1,6 @@
 use chrono::{Datelike, Local, TimeZone};
+use parking_lot::Mutex;
+use rusqlite::{params, OptionalExtension};
 use serde_json::Value;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,6 +11,7 @@ mod usage_tracking;
 #[derive(Clone)]
 pub struct Store {
     db: sled::Db,
+    events_db: Arc<Mutex<rusqlite::Connection>>,
     usage_prune_seq: Arc<AtomicU64>,
 }
 
@@ -41,12 +44,8 @@ impl Store {
     const MAX_USAGE_REQUESTS: usize = 500_000;
     const USAGE_PRUNE_EVERY: u64 = 128;
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
-
-    // Breaking-change friendly: bump this to invalidate old persisted event shapes.
-    const EVENTS_SCHEMA_VERSION: &'static [u8] = b"1";
-    const EVENTS_SCHEMA_KEY: &'static [u8] = b"events:schema_version";
-    const EVENT_DAY_INDEX_VERSION: &'static [u8] = b"2";
-    const EVENT_DAY_INDEX_VERSION_KEY: &'static [u8] = b"events:day_index_version";
+    const EVENTS_SQLITE_SCHEMA_VERSION: &'static str = "1";
+    const EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str = "migrated_from_sled_v1";
 
     fn allowed_key_prefixes() -> [&'static [u8]; 10] {
         [
@@ -63,66 +62,80 @@ impl Store {
         ]
     }
 
-    fn allowed_exact_keys() -> [&'static [u8]; 4] {
-        [
-            b"codex_account:snapshot",
-            b"official_web:snapshot",
-            Self::EVENTS_SCHEMA_KEY,
-            Self::EVENT_DAY_INDEX_VERSION_KEY,
-        ]
+    fn allowed_exact_keys() -> [&'static [u8]; 2] {
+        [b"codex_account:snapshot", b"official_web:snapshot"]
     }
 
     pub fn open(path: &std::path::Path) -> Result<Self, sled::Error> {
         let db = sled::open(path)?;
+        let events_db_path = path.join("events.sqlite3");
+        let events_db = rusqlite::Connection::open(events_db_path)
+            .map_err(|e| sled::Error::Unsupported(format!("open events sqlite failed: {e}")))?;
         let store = Self {
             db,
+            events_db: Arc::new(Mutex::new(events_db)),
             usage_prune_seq: Arc::new(AtomicU64::new(0)),
         };
-        store.ensure_events_schema();
-        store.ensure_event_day_index();
+        store
+            .ensure_event_sqlite_schema()
+            .map_err(|e| sled::Error::Unsupported(format!("init events sqlite failed: {e}")))?;
         Ok(store)
     }
 
-    fn ensure_events_schema(&self) {
-        let cur = self
-            .db
-            .get(Self::EVENTS_SCHEMA_KEY)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        if cur.as_ref() != Self::EVENTS_SCHEMA_VERSION {
-            // Do not parse or migrate legacy events; drop them.
-            self.clear_events();
-            let _ = self
-                .db
-                .insert(Self::EVENTS_SCHEMA_KEY, Self::EVENTS_SCHEMA_VERSION);
-            let _ = self.db.flush();
+    fn ensure_event_sqlite_schema(&self) -> anyhow::Result<()> {
+        let conn = self.events_db.lock();
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS event_meta(
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS events(
+              id TEXT PRIMARY KEY,
+              unix_ms INTEGER NOT NULL,
+              provider TEXT NOT NULL,
+              level TEXT NOT NULL,
+              code TEXT NOT NULL,
+              message TEXT NOT NULL,
+              fields_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_unix_ms ON events(unix_ms DESC);
+            CREATE TABLE IF NOT EXISTS event_day_counts(
+              day_key TEXT PRIMARY KEY,
+              day_start_unix_ms INTEGER NOT NULL,
+              total INTEGER NOT NULL,
+              infos INTEGER NOT NULL,
+              warnings INTEGER NOT NULL,
+              errors INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_event_day_start ON event_day_counts(day_start_unix_ms ASC);
+            ",
+        )?;
+        let current_schema: Option<String> = conn
+            .query_row(
+                "SELECT value FROM event_meta WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current_schema.as_deref() != Some(Self::EVENTS_SQLITE_SCHEMA_VERSION) {
+            conn.execute("DELETE FROM events", [])?;
+            conn.execute("DELETE FROM event_day_counts", [])?;
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES('schema_version', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [Self::EVENTS_SQLITE_SCHEMA_VERSION],
+            )?;
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+                 ON CONFLICT(key) DO NOTHING",
+                [Self::EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY],
+            )?;
         }
-    }
-
-    fn ensure_event_day_index(&self) {
-        let cur = self
-            .db
-            .get(Self::EVENT_DAY_INDEX_VERSION_KEY)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        if cur.as_ref() == Self::EVENT_DAY_INDEX_VERSION {
-            return;
-        }
-        self.rebuild_event_day_index();
-        let _ = self.db.insert(
-            Self::EVENT_DAY_INDEX_VERSION_KEY,
-            Self::EVENT_DAY_INDEX_VERSION,
-        );
-        let _ = self.db.flush();
-    }
-
-    fn clear_events(&self) {
-        self.clear_prefix(b"event:");
-        self.clear_prefix(b"event_day:");
-        let _ = self.db.remove(Self::EVENT_DAY_INDEX_VERSION_KEY);
-        let _ = self.db.flush();
+        drop(conn);
+        self.migrate_legacy_events_from_sled_if_needed()?;
+        Ok(())
     }
 
     fn clear_prefix(&self, prefix: &[u8]) {
@@ -149,11 +162,6 @@ impl Store {
         Some(dt.format("%Y-%m-%d").to_string())
     }
 
-    fn parse_day_key_from_daily_key(key: &[u8]) -> Option<&str> {
-        let body = key.strip_prefix(b"event_day:")?;
-        std::str::from_utf8(body).ok()
-    }
-
     fn day_start_unix_ms_from_day_key(day_key: &str) -> Option<u64> {
         let date = chrono::NaiveDate::parse_from_str(day_key, "%Y-%m-%d").ok()?;
         let dt = Local
@@ -162,63 +170,83 @@ impl Store {
         u64::try_from(dt.timestamp_millis()).ok()
     }
 
-    fn event_day_counts_from_value(v: &[u8]) -> Option<(u64, u64, u64, u64)> {
-        let row = serde_json::from_slice::<Value>(v).ok()?;
-        let total = row.get("total").and_then(|x| x.as_u64()).unwrap_or(0);
-        let infos = row.get("infos").and_then(|x| x.as_u64()).unwrap_or(0);
-        let warnings = row.get("warnings").and_then(|x| x.as_u64()).unwrap_or(0);
-        let errors = row.get("errors").and_then(|x| x.as_u64()).unwrap_or(0);
-        Some((total, infos, warnings, errors))
+    fn parse_event_key_id(key: &[u8]) -> Option<String> {
+        let body = key.strip_prefix(b"event:")?;
+        let split_at = body.iter().position(|b| *b == b':')?;
+        let id_bytes = body.get(split_at + 1..)?;
+        std::str::from_utf8(id_bytes).ok().map(str::to_string)
     }
 
-    fn put_event_day_counts(
-        &self,
+    fn upsert_event_day_counts(
+        tx: &rusqlite::Transaction<'_>,
         day_key: &str,
-        total: u64,
-        infos: u64,
-        warnings: u64,
-        errors: u64,
-    ) {
-        let key = format!("event_day:{day_key}");
-        let row = serde_json::json!({
-            "day": day_key,
-            "total": total,
-            "infos": infos,
-            "warnings": warnings,
-            "errors": errors,
-        });
-        let _ = self
-            .db
-            .insert(key.as_bytes(), serde_json::to_vec(&row).unwrap_or_default());
+        day_start_unix_ms: i64,
+        level: &str,
+    ) -> rusqlite::Result<()> {
+        tx.execute(
+            "INSERT INTO event_day_counts(day_key, day_start_unix_ms, total, infos, warnings, errors)
+             VALUES (?1, ?2, 1,
+               CASE WHEN ?3='error' OR ?3='warning' THEN 0 ELSE 1 END,
+               CASE WHEN ?3='warning' THEN 1 ELSE 0 END,
+               CASE WHEN ?3='error' THEN 1 ELSE 0 END
+             )
+             ON CONFLICT(day_key) DO UPDATE SET
+               total=total+1,
+               infos=infos + CASE WHEN excluded.errors=0 AND excluded.warnings=0 THEN 1 ELSE 0 END,
+               warnings=warnings + excluded.warnings,
+               errors=errors + excluded.errors",
+            params![day_key, day_start_unix_ms, level],
+        )?;
+        Ok(())
     }
 
-    fn update_event_day_index(&self, unix_ms: u64, level: &str) {
-        let Some(day_key) = Self::local_day_key_from_unix_ms(unix_ms) else {
-            return;
+    fn event_from_sql_row(
+        unix_ms: i64,
+        provider: String,
+        level: String,
+        code: String,
+        message: String,
+        fields_json: String,
+    ) -> Option<Value> {
+        let unix_ms = u64::try_from(unix_ms).ok()?;
+        let fields = match serde_json::from_str::<Value>(&fields_json).ok() {
+            Some(Value::Object(obj)) => Value::Object(obj),
+            Some(Value::Null) => Value::Null,
+            Some(other) => serde_json::json!({ "value": other }),
+            None => Value::Null,
         };
-        let key = format!("event_day:{day_key}");
-        let (mut total, mut infos, mut warnings, mut errors) = self
-            .db
-            .get(key.as_bytes())
-            .ok()
-            .flatten()
-            .and_then(|v| Self::event_day_counts_from_value(&v))
-            .unwrap_or((0, 0, 0, 0));
-        total = total.saturating_add(1);
-        match level {
-            "error" => errors = errors.saturating_add(1),
-            "warning" => warnings = warnings.saturating_add(1),
-            _ => infos = infos.saturating_add(1),
-        }
-        self.put_event_day_counts(&day_key, total, infos, warnings, errors);
+        Some(serde_json::json!({
+            "provider": provider,
+            "level": level,
+            "unix_ms": unix_ms,
+            "code": code,
+            "message": message,
+            "fields": fields,
+        }))
     }
 
-    fn rebuild_event_day_index(&self) {
-        self.clear_prefix(b"event_day:");
-        let mut day_map: std::collections::BTreeMap<String, (u64, u64, u64, u64)> =
-            std::collections::BTreeMap::new();
+    fn migrate_legacy_events_from_sled_if_needed(&self) -> anyhow::Result<()> {
+        let already_migrated = {
+            let conn = self.events_db.lock();
+            conn.query_row(
+                "SELECT value FROM event_meta WHERE key=?1",
+                [Self::EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .as_deref()
+                == Some("1")
+        };
+        if already_migrated {
+            return Ok(());
+        }
+
+        let mut staged: Vec<(String, i64, String, String, String, String, String)> = Vec::new();
         for res in self.db.scan_prefix(b"event:") {
-            let Ok((_, v)) = res else {
+            let Ok((k, v)) = res else {
+                continue;
+            };
+            let Some(id) = Self::parse_event_key_id(k.as_ref()) else {
                 continue;
             };
             let Ok(j) = serde_json::from_slice::<Value>(&v) else {
@@ -227,24 +255,85 @@ impl Store {
             if !Self::is_valid_event(&j) {
                 continue;
             }
-            let Some(unix_ms) = j.get("unix_ms").and_then(|x| x.as_u64()) else {
+            let Some(unix_ms_u64) = j.get("unix_ms").and_then(|x| x.as_u64()) else {
                 continue;
             };
-            let Some(day_key) = Self::local_day_key_from_unix_ms(unix_ms) else {
+            let Ok(unix_ms) = i64::try_from(unix_ms_u64) else {
                 continue;
             };
-            let level = j.get("level").and_then(|x| x.as_str()).unwrap_or("info");
-            let row = day_map.entry(day_key).or_insert((0, 0, 0, 0));
-            row.0 = row.0.saturating_add(1);
-            match level {
-                "error" => row.3 = row.3.saturating_add(1),
-                "warning" => row.2 = row.2.saturating_add(1),
-                _ => row.1 = row.1.saturating_add(1),
+            let provider = j
+                .get("provider")
+                .and_then(|x| x.as_str())
+                .unwrap_or("gateway")
+                .to_string();
+            let level = j
+                .get("level")
+                .and_then(|x| x.as_str())
+                .unwrap_or("info")
+                .to_string();
+            let code = j
+                .get("code")
+                .and_then(|x| x.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let message = j
+                .get("message")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let fields = j.get("fields").cloned().unwrap_or(Value::Null);
+            let fields_json = serde_json::to_string(&fields).unwrap_or_else(|_| "null".to_string());
+            staged.push((id, unix_ms, provider, level, code, message, fields_json));
+            if staged.len() >= 2048 {
+                self.flush_staged_legacy_events(&staged)?;
+                staged.clear();
             }
         }
-        for (day_key, (total, infos, warnings, errors)) in day_map {
-            self.put_event_day_counts(&day_key, total, infos, warnings, errors);
+        if !staged.is_empty() {
+            self.flush_staged_legacy_events(&staged)?;
         }
+        {
+            let conn = self.events_db.lock();
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '1')
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [Self::EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY],
+            )?;
+        }
+        // Drop legacy sled event keys after migration to keep hot store compact.
+        self.clear_prefix(b"event:");
+        self.clear_prefix(b"event_day:");
+        let _ = self.db.flush();
+        Ok(())
+    }
+
+    fn flush_staged_legacy_events(
+        &self,
+        staged: &[(String, i64, String, String, String, String, String)],
+    ) -> anyhow::Result<()> {
+        let mut conn = self.events_db.lock();
+        let tx = conn.transaction()?;
+        for (id, unix_ms, provider, level, code, message, fields_json) in staged {
+            tx.execute(
+                "INSERT OR IGNORE INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![id, unix_ms, provider, level, code, message, fields_json],
+            )?;
+            let Ok(unix_ms_u64) = u64::try_from(*unix_ms) else {
+                continue;
+            };
+            let Some(day_key) = Self::local_day_key_from_unix_ms(unix_ms_u64) else {
+                continue;
+            };
+            let Some(day_start_unix_ms) =
+                Self::day_start_unix_ms_from_day_key(&day_key).and_then(|x| i64::try_from(x).ok())
+            else {
+                continue;
+            };
+            Self::upsert_event_day_counts(&tx, &day_key, day_start_unix_ms, level)?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     fn is_valid_event(j: &Value) -> bool {
@@ -330,25 +419,41 @@ impl Store {
     pub fn add_event(&self, provider: &str, level: &str, code: &str, message: &str, fields: Value) {
         let ts = unix_ms();
         let id = uuid::Uuid::new_v4().to_string();
-        let key = format!("event:{ts}:{id}");
         let fields = match fields {
             Value::Object(_) => fields,
             Value::Null => Value::Null,
             other => serde_json::json!({ "value": other }),
         };
-        let v = serde_json::json!({
-            "provider": provider,
-            "level": level,
-            "unix_ms": ts,
-            "code": code,
-            "message": message,
-            "fields": fields,
-        });
-        let _ = self
-            .db
-            .insert(key.as_bytes(), serde_json::to_vec(&v).unwrap_or_default());
-        self.update_event_day_index(ts, level);
-        let _ = self.db.flush();
+        let fields_json = serde_json::to_string(&fields).unwrap_or_else(|_| "null".to_string());
+        let Ok(ts_i64) = i64::try_from(ts) else {
+            return;
+        };
+        let Some(day_key) = Self::local_day_key_from_unix_ms(ts) else {
+            return;
+        };
+        let Some(day_start_unix_ms) =
+            Self::day_start_unix_ms_from_day_key(&day_key).and_then(|x| i64::try_from(x).ok())
+        else {
+            return;
+        };
+        let mut conn = self.events_db.lock();
+        let Ok(tx) = conn.transaction() else {
+            return;
+        };
+        let inserted = tx.execute(
+            "INSERT OR REPLACE INTO events(id, unix_ms, provider, level, code, message, fields_json)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, ts_i64, provider, level, code, message, fields_json],
+        );
+        if inserted.is_err() {
+            let _ = tx.rollback();
+            return;
+        }
+        if Self::upsert_event_day_counts(&tx, &day_key, day_start_unix_ms, level).is_err() {
+            let _ = tx.rollback();
+            return;
+        }
+        let _ = tx.commit();
     }
 
     pub fn record_success(
@@ -616,78 +721,95 @@ impl Store {
 
     #[allow(dead_code)]
     pub fn list_events(&self, limit: usize) -> Vec<Value> {
-        // Hot path: UI polls status frequently (e.g. every ~1.5s). Do not scan + sort the full
-        // event log each time; it becomes O(n log n) as the DB grows and causes visible stutter.
-        //
-        // Keys are `event:{unix_ms}:{uuid}`. `unix_ms` is 13 digits (until year 2286), so sled's
-        // lexicographic key order matches chronological order. We can iterate from the end and
-        // only deserialize up to `limit` items.
-        self.db
-            .scan_prefix(b"event:")
-            .rev()
-            .filter_map(|res| res.ok())
-            .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
-            .filter(Self::is_valid_event)
-            .take(limit)
+        let cap = limit.max(1);
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT unix_ms, provider, level, code, message, fields_json
+             FROM events
+             ORDER BY unix_ms DESC
+             LIMIT ?1",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([cap as i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        }) else {
+            return Vec::new();
+        };
+        rows.flatten()
+            .filter_map(|(unix_ms, provider, level, code, message, fields_json)| {
+                Self::event_from_sql_row(unix_ms, provider, level, code, message, fields_json)
+            })
             .collect()
     }
 
     pub fn list_events_split(&self, max_error: usize, max_other: usize) -> Vec<Value> {
-        // UI wants errors to stay visible even when info is noisy. Return up to
-        // `max_error` error events and `max_other` non-error events, newest-first.
         let mut out: Vec<Value> = Vec::with_capacity(max_error + max_other);
-        let mut seen_error = 0usize;
-        let mut seen_other = 0usize;
-
-        for res in self.db.scan_prefix(b"event:").rev() {
-            let Ok((_, v)) = res else {
-                continue;
+        let conn = self.events_db.lock();
+        let query_with_level = |where_clause: &str, cap: usize| -> Vec<Value> {
+            if cap == 0 {
+                return Vec::new();
+            }
+            let sql = format!(
+                "SELECT unix_ms, provider, level, code, message, fields_json
+                 FROM events
+                 WHERE {where_clause}
+                 ORDER BY unix_ms DESC
+                 LIMIT ?1"
+            );
+            let Ok(mut stmt) = conn.prepare(&sql) else {
+                return Vec::new();
             };
-            let Ok(j) = serde_json::from_slice::<Value>(&v) else {
-                continue;
+            let Ok(rows) = stmt.query_map([cap as i64], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            }) else {
+                return Vec::new();
             };
-            if !Self::is_valid_event(&j) {
-                continue;
-            }
-            let level = j.get("level").and_then(|v| v.as_str()).unwrap_or("info");
-            if level == "error" {
-                if seen_error >= max_error {
-                    continue;
-                }
-                seen_error += 1;
-                out.push(j);
-            } else {
-                if seen_other >= max_other {
-                    continue;
-                }
-                seen_other += 1;
-                out.push(j);
-            }
-
-            if seen_error >= max_error && seen_other >= max_other {
-                break;
-            }
-        }
-
+            rows.flatten()
+                .filter_map(|(unix_ms, provider, level, code, message, fields_json)| {
+                    Self::event_from_sql_row(unix_ms, provider, level, code, message, fields_json)
+                })
+                .collect()
+        };
+        out.extend(query_with_level("level = 'error'", max_error));
+        out.extend(query_with_level("level <> 'error'", max_other));
+        out.sort_by(|a, b| {
+            let a_ts = a.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            let b_ts = b.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+            b_ts.cmp(&a_ts)
+        });
         out
     }
 
     pub fn list_event_years(&self) -> std::collections::BTreeSet<i32> {
         let mut years = std::collections::BTreeSet::<i32>::new();
-        for res in self.db.scan_prefix(b"event_day:") {
-            let Ok((k, _)) = res else {
-                continue;
-            };
-            let Some(day_key) = Self::parse_day_key_from_daily_key(k.as_ref()) else {
-                continue;
-            };
-            let Some(year_str) = day_key.get(..4) else {
-                continue;
-            };
-            let Ok(year) = year_str.parse::<i32>() else {
-                continue;
-            };
-            years.insert(year);
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn
+            .prepare("SELECT DISTINCT substr(day_key, 1, 4) AS y FROM event_day_counts ORDER BY y")
+        else {
+            return years;
+        };
+        let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
+            return years;
+        };
+        for y in rows.flatten() {
+            if let Ok(v) = y.parse::<i32>() {
+                let _ = years.insert(v);
+            }
         }
         years
     }
@@ -704,44 +826,55 @@ impl Store {
             .and_then(Self::local_day_key_from_unix_ms)
             .and_then(|day_key| Self::day_start_unix_ms_from_day_key(&day_key));
         let mut out: Vec<Value> = Vec::new();
-        for res in self.db.scan_prefix(b"event_day:") {
-            let Ok((k, v)) = res else {
+        let from_i64 = from_day_start.and_then(|x| i64::try_from(x).ok());
+        let to_i64 = to_day_start.and_then(|x| i64::try_from(x).ok());
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT day_key, day_start_unix_ms, total, infos, warnings, errors
+             FROM event_day_counts
+             WHERE (?1 IS NULL OR day_start_unix_ms >= ?1)
+               AND (?2 IS NULL OR day_start_unix_ms <= ?2)
+             ORDER BY day_start_unix_ms ASC",
+        ) else {
+            return out;
+        };
+        let Ok(rows) = stmt.query_map(params![from_i64, to_i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        }) else {
+            return out;
+        };
+        for (day_key, day_start_unix_ms, total, infos, warnings, errors) in rows.flatten() {
+            let Ok(day_start_u64) = u64::try_from(day_start_unix_ms) else {
                 continue;
             };
-            let Some(day_key) = Self::parse_day_key_from_daily_key(k.as_ref()) else {
+            let Ok(total_u64) = u64::try_from(total) else {
                 continue;
             };
-            let Some(day_start_unix_ms) = Self::day_start_unix_ms_from_day_key(day_key) else {
+            let Ok(infos_u64) = u64::try_from(infos) else {
                 continue;
             };
-            if let Some(from) = from_day_start {
-                if day_start_unix_ms < from {
-                    continue;
-                }
-            }
-            if let Some(to) = to_day_start {
-                if day_start_unix_ms > to {
-                    continue;
-                }
-            }
-            let Some((total, infos, warnings, errors)) = Self::event_day_counts_from_value(&v)
-            else {
+            let Ok(warnings_u64) = u64::try_from(warnings) else {
+                continue;
+            };
+            let Ok(errors_u64) = u64::try_from(errors) else {
                 continue;
             };
             out.push(serde_json::json!({
                 "day": day_key,
-                "day_start_unix_ms": day_start_unix_ms,
-                "total": total,
-                "infos": infos,
-                "warnings": warnings,
-                "errors": errors,
+                "day_start_unix_ms": day_start_u64,
+                "total": total_u64,
+                "infos": infos_u64,
+                "warnings": warnings_u64,
+                "errors": errors_u64,
             }));
         }
-        out.sort_by_key(|row| {
-            row.get("day_start_unix_ms")
-                .and_then(|x| x.as_u64())
-                .unwrap_or(0)
-        });
         out
     }
 
@@ -752,36 +885,37 @@ impl Store {
         limit: Option<usize>,
     ) -> Vec<Value> {
         let cap = limit.unwrap_or(usize::MAX).max(1);
+        let from_i64 = from_unix_ms.and_then(|x| i64::try_from(x).ok());
+        let to_i64 = to_unix_ms.and_then(|x| i64::try_from(x).ok());
         let mut out: Vec<Value> = Vec::with_capacity(cap.min(1024));
-        for res in self.db.scan_prefix(b"event:").rev() {
-            let Ok((_, v)) = res else {
-                continue;
-            };
-            let Ok(j) = serde_json::from_slice::<Value>(&v) else {
-                continue;
-            };
-            if !Self::is_valid_event(&j) {
-                continue;
-            }
-            let Some(unix_ms) = j.get("unix_ms").and_then(|v| v.as_u64()) else {
-                continue;
-            };
-            if let Some(from) = from_unix_ms {
-                if unix_ms < from {
-                    // Keys are event:{unix_ms}:{uuid}, and add_event writes the same unix_ms
-                    // into both key and payload. Once we pass `from`, the remaining entries
-                    // in this reverse scan are older and can be skipped.
-                    break;
-                }
-            }
-            if let Some(to) = to_unix_ms {
-                if unix_ms > to {
-                    continue;
-                }
-            }
-            out.push(j);
-            if out.len() >= cap {
-                break;
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT unix_ms, provider, level, code, message, fields_json
+             FROM events
+             WHERE (?1 IS NULL OR unix_ms >= ?1)
+               AND (?2 IS NULL OR unix_ms <= ?2)
+             ORDER BY unix_ms DESC
+             LIMIT ?3",
+        ) else {
+            return out;
+        };
+        let Ok(rows) = stmt.query_map(params![from_i64, to_i64, cap as i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        }) else {
+            return out;
+        };
+        for (unix_ms, provider, level, code, message, fields_json) in rows.flatten() {
+            if let Some(v) =
+                Self::event_from_sql_row(unix_ms, provider, level, code, message, fields_json)
+            {
+                out.push(v);
             }
         }
         out

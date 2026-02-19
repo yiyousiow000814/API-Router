@@ -8,31 +8,27 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
 
-        // Insert out-of-order timestamps; iteration should return newest-first by key order.
-        let mk = |ts: u64, id: &str| format!("event:{ts}:{id}");
-        let v = |ts: u64| {
-            serde_json::json!({
-                "provider": "p1",
-                "level": "info",
-                "unix_ms": ts,
-                "code": "test_event",
-                "message": "hello",
-                "fields": serde_json::json!({}),
-            })
-        };
-
-        let _ = store.db.insert(
-            mk(1000, "a").as_bytes(),
-            serde_json::to_vec(&v(1000)).unwrap(),
-        );
-        let _ = store.db.insert(
-            mk(3000, "c").as_bytes(),
-            serde_json::to_vec(&v(3000)).unwrap(),
-        );
-        let _ = store.db.insert(
-            mk(2000, "b").as_bytes(),
-            serde_json::to_vec(&v(2000)).unwrap(),
-        );
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('a', 1000, 'p1', 'info', 'test_event', 'hello', '{}')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('c', 3000, 'p1', 'info', 'test_event', 'hello', '{}')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('b', 2000, 'p1', 'info', 'test_event', 'hello', '{}')",
+                [],
+            )
+            .unwrap();
+        }
 
         let out = store.list_events(2);
         assert_eq!(out.len(), 2);
@@ -48,8 +44,6 @@ mod tests {
         // Create a DB with both expected and unexpected keys.
         {
             let db = sled::open(&dir).unwrap();
-            // Make the store look like a modern one (schema marker + valid event payload).
-            let _ = db.insert(Store::EVENTS_SCHEMA_KEY, Store::EVENTS_SCHEMA_VERSION);
             let _ = db.insert(
                 b"event:1:a",
                 &br#"{"provider":"p1","level":"info","unix_ms":1,"code":"test_event","message":"hello","fields":{}}"#[..],
@@ -136,7 +130,14 @@ mod tests {
             mk(day2, "c").as_bytes(),
             serde_json::to_vec(&payload(day2, "warning")).unwrap(),
         );
-        let _ = store.db.remove(Store::EVENT_DAY_INDEX_VERSION_KEY);
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "UPDATE event_meta SET value='0' WHERE key=?1",
+                [Store::EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY],
+            )
+            .unwrap();
+        }
         store.db.flush().unwrap();
         drop(store);
 
