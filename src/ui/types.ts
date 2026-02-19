@@ -33,6 +33,8 @@ export type Status = {
     last_seen_unix_ms: number
     active: boolean
     preferred_provider?: string | null
+    current_provider?: string | null
+    current_reason?: string | null
     verified?: boolean
     is_agent?: boolean
     is_review?: boolean
