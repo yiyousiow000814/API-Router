@@ -510,8 +510,7 @@ fn append_backup_events(
         };
         let include = name.starts_with("sled.backup.")
             || name.starts_with("sled.manual-backup.")
-            || name.starts_with("sled.bak.")
-            || name.starts_with("sled.corrupt.");
+            || name.starts_with("sled.bak.");
         if !include {
             continue;
         }
@@ -544,6 +543,13 @@ fn append_backup_events(
     }
 }
 
+fn backup_data_root_from_config_path(config_path: &std::path::Path) -> std::path::PathBuf {
+    config_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("data")
+}
+
 fn append_backup_event_years(years: &mut std::collections::BTreeSet<i32>, backup_root: &std::path::Path) {
     let Ok(entries) = std::fs::read_dir(backup_root) else {
         return;
@@ -556,8 +562,7 @@ fn append_backup_event_years(years: &mut std::collections::BTreeSet<i32>, backup
         };
         let include = name.starts_with("sled.backup.")
             || name.starts_with("sled.manual-backup.")
-            || name.starts_with("sled.bak.")
-            || name.starts_with("sled.corrupt.");
+            || name.starts_with("sled.bak.");
         if include && path.is_dir() {
             dirs.push(path);
         }
@@ -615,8 +620,7 @@ fn append_backup_event_daily_stats(
         };
         let include = name.starts_with("sled.backup.")
             || name.starts_with("sled.manual-backup.")
-            || name.starts_with("sled.bak.")
-            || name.starts_with("sled.corrupt.");
+            || name.starts_with("sled.bak.");
         if include && path.is_dir() {
             dirs.push(path);
         }
@@ -698,9 +702,9 @@ pub(crate) fn get_event_log_entries(
     }
     let backup_root = state
         .config_path
-        .parent()
-        .unwrap_or(std::path::Path::new("."));
-    append_backup_events(&mut events, &mut dedup, backup_root, from, to, cap);
+        .as_path();
+    let backup_root = backup_data_root_from_config_path(backup_root);
+    append_backup_events(&mut events, &mut dedup, &backup_root, from, to, cap);
     events.sort_by(|a, b| {
         let a_ts = a.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
         let b_ts = b.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -713,11 +717,8 @@ pub(crate) fn get_event_log_entries(
 #[tauri::command]
 pub(crate) fn get_event_log_years(state: tauri::State<'_, app_state::AppState>) -> Vec<i32> {
     let mut years = state.gateway.store.list_event_years();
-    let backup_root = state
-        .config_path
-        .parent()
-        .unwrap_or(std::path::Path::new("."));
-    append_backup_event_years(&mut years, backup_root);
+    let backup_root = backup_data_root_from_config_path(state.config_path.as_path());
+    append_backup_event_years(&mut years, &backup_root);
     years.into_iter().collect()
 }
 
@@ -732,11 +733,8 @@ pub(crate) fn get_event_log_daily_stats(
         _ => (from_unix_ms, to_unix_ms),
     };
     let mut rows = state.gateway.store.list_event_daily_counts_range(from, to);
-    let backup_root = state
-        .config_path
-        .parent()
-        .unwrap_or(std::path::Path::new("."));
-    append_backup_event_daily_stats(&mut rows, backup_root, from, to);
+    let backup_root = backup_data_root_from_config_path(state.config_path.as_path());
+    append_backup_event_daily_stats(&mut rows, &backup_root, from, to);
     rows.sort_by_key(|row| row.get("day_start_unix_ms").and_then(|v| v.as_u64()).unwrap_or(0));
     serde_json::Value::Array(rows)
 }
