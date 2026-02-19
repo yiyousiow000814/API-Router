@@ -71,6 +71,8 @@ type Params = {
   autoSaveUsageScheduleRows: (rows: ProviderScheduleDraft[], signature: string) => Promise<void>
 }
 
+const USAGE_STATS_BACKGROUND_REFRESH_MS = 60_000
+
 export function useAppUsageEffects(params: Params) {
   const usageHistoryPrefetchStartedRef = useRef(false)
   const usageStatsPrefetchStartedRef = useRef(false)
@@ -138,15 +140,19 @@ export function useAppUsageEffects(params: Params) {
   }, [activePage])
 
   useEffect(() => {
-    if (usageStatsPrefetchStartedRef.current) return
     if (activePage === 'usage_statistics') return
-    const timer = window.setTimeout(() => {
+    const initialTimer = window.setTimeout(() => {
       if (activePageRef.current === 'usage_statistics') return
       usageStatsPrefetchStartedRef.current = true
       void refreshUsageStatisticsRef.current({ silent: true })
-    }, 500)
+    }, usageStatsPrefetchStartedRef.current ? 0 : 500)
+    const backgroundTimer = window.setInterval(() => {
+      if (activePageRef.current === 'usage_statistics') return
+      void refreshUsageStatisticsRef.current({ silent: true })
+    }, USAGE_STATS_BACKGROUND_REFRESH_MS)
     return () => {
-      window.clearTimeout(timer)
+      window.clearTimeout(initialTimer)
+      window.clearInterval(backgroundTimer)
     }
   }, [activePage])
 
