@@ -39,8 +39,9 @@ type EventLogChartHover = {
 }
 
 const CHART_WINDOW_DAYS = 60
-const EVENT_LOG_TABLE_LIMIT = 200
-const EVENT_LOG_FETCH_LIMIT = 2000
+const EVENT_LOG_TABLE_PAGE_SIZE = 200
+const EVENT_LOG_FETCH_DEFAULT_LIMIT = 2000
+const EVENT_LOG_FETCH_FILTERED_LIMIT = 5000
 const ALL_LEVELS: EventLevel[] = ['info', 'warning', 'error']
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 const EVENT_LOG_UI_STATE: {
@@ -145,6 +146,7 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
   const [dailyStats, setDailyStats] = useState<EventLogDailyStat[]>(() =>
     [...dailyStatsSeed].sort((a, b) => a.day_start_unix_ms - b.day_start_unix_ms),
   )
+  const [tableVisibleCount, setTableVisibleCount] = useState<number>(EVENT_LOG_TABLE_PAGE_SIZE)
   const [chartHover, setChartHover] = useState<EventLogChartHover | null>(null)
   const [focusedEvent, setFocusedEvent] = useState<EventLogEntry | null>(null)
   const [focusNonce, setFocusNonce] = useState(0)
@@ -219,12 +221,13 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
   const fetchEventLogEntries = useCallback(async (fromDay: number | null, toDay: number | null) => {
     const fromUnixMs = fromDay == null ? null : fromDay
     const toUnixMs = toDay == null ? null : addDays(toDay, 1) - 1
+    const limit = fromDay != null || toDay != null ? EVENT_LOG_FETCH_FILTERED_LIMIT : EVENT_LOG_FETCH_DEFAULT_LIMIT
     const reqId = ++querySeqRef.current
     try {
       const rows = await invoke<EventLogEntry[]>('get_event_log_entries', {
         fromUnixMs,
         toUnixMs,
-        limit: EVENT_LOG_FETCH_LIMIT,
+        limit,
       })
       if (querySeqRef.current !== reqId) return
       if (!Array.isArray(rows)) return
@@ -278,7 +281,21 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
       }),
     [searchFiltered, selectedLevelSet],
   )
-  const tableEvents = useMemo(() => filteredEvents.slice(0, EVENT_LOG_TABLE_LIMIT), [filteredEvents])
+  const tableEvents = useMemo(
+    () =>
+      filteredEvents.slice(
+        0,
+        hasDateFilter ? tableVisibleCount : EVENT_LOG_TABLE_PAGE_SIZE,
+      ),
+    [filteredEvents, hasDateFilter, tableVisibleCount],
+  )
+  const canLoadMoreTableEvents = hasDateFilter && tableEvents.length < filteredEvents.length
+  const loadMoreTableEvents = useCallback(() => {
+    if (!hasDateFilter) return
+    setTableVisibleCount((prev) =>
+      Math.min(prev + EVENT_LOG_TABLE_PAGE_SIZE, filteredEvents.length),
+    )
+  }, [filteredEvents.length, hasDateFilter])
 
   const fallbackDailyByDayFromEvents = useMemo(() => {
     const out = new Map<number, { total: number; infos: number; warnings: number; errors: number }>()
@@ -427,6 +444,9 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
   useEffect(() => {
     EVENT_LOG_UI_STATE.dateTo = dateTo
   }, [dateTo])
+  useEffect(() => {
+    setTableVisibleCount(EVENT_LOG_TABLE_PAGE_SIZE)
+  }, [dateFrom, dateTo, searchText, selectedLevels])
   useEffect(() => {
     if (events.length && sourceEvents.length === 0) {
       setSourceEvents([...events].sort((a, b) => b.unix_ms - a.unix_ms))
@@ -909,6 +929,7 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
         visibleEvents={tableEvents}
         focusEvent={focusedEvent}
         focusNonce={focusNonce}
+        onReachEnd={canLoadMoreTableEvents ? loadMoreTableEvents : undefined}
       />
     </div>
   )
