@@ -68,7 +68,13 @@ impl Store {
 
     pub fn open(path: &std::path::Path) -> Result<Self, sled::Error> {
         let db = sled::open(path)?;
-        let events_db_path = path.join("events.sqlite3");
+        // Keep the event SQLite file outside the sled directory. Sled maintenance/recovery
+        // may swap or recreate the whole sled dir, which would otherwise drop events.sqlite3.
+        let events_db_path = if path.file_name().and_then(|n| n.to_str()) == Some("sled") {
+            path.parent().unwrap_or(path).join("events.sqlite3")
+        } else {
+            path.join("events.sqlite3")
+        };
         let events_db = rusqlite::Connection::open(events_db_path)
             .map_err(|e| sled::Error::Unsupported(format!("open events sqlite failed: {e}")))?;
         let store = Self {
