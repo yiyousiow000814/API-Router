@@ -358,12 +358,12 @@ export default function App() {
     status,
     config,
   })
-  function flashToast(msg: string, kind: 'info' | 'error' = 'info') {
+  const flashToast = useCallback((msg: string, kind: 'info' | 'error' = 'info') => {
     setToast(msg)
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current)
     const ms = kind === 'error' ? 5200 : 2400
     toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
-  }
+  }, [])
 
   function draftStorageKeyForHome(home: string): string | null {
     if (home === RAW_DRAFT_WINDOWS_KEY || home === RAW_DRAFT_WSL_KEY) return RAW_DRAFT_STORAGE_KEY
