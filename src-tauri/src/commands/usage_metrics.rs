@@ -31,26 +31,11 @@ fn normalize_usage_origin_filter(origins: Option<Vec<String>>) -> BTreeSet<Strin
         .collect()
 }
 
-fn list_usage_requests_in_window(
+fn list_usage_requests_for_statistics(
     store: &crate::orchestrator::store::Store,
-    since_unix_ms: u64,
 ) -> Vec<Value> {
-    const PAGE_SIZE: usize = 2_000;
-    let mut out: Vec<Value> = Vec::new();
-    let mut offset = 0usize;
-    loop {
-        let (rows, has_more) =
-            store.list_usage_requests_page(since_unix_ms, &[], &[], &[], PAGE_SIZE, offset);
-        if rows.is_empty() {
-            break;
-        }
-        offset = offset.saturating_add(rows.len());
-        out.extend(rows);
-        if !has_more {
-            break;
-        }
-    }
-    out
+    // Keep historical backfill behavior bounded to the previous practical ceiling.
+    store.list_usage_requests(500_000)
 }
 
 #[tauri::command]
@@ -208,7 +193,7 @@ pub(crate) fn get_usage_statistics(
     let active_bucket_ms = 60 * 60 * 1000;
     let projection_hours = projection_hours_until_midnight_cap_16();
 
-    let records = list_usage_requests_in_window(&state.gateway.store, since_unix_ms);
+    let records = list_usage_requests_for_statistics(&state.gateway.store);
     let quota = state.gateway.store.list_quota_snapshots();
     let provider_pricing = state.secrets.list_provider_pricing();
 
