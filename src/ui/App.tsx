@@ -1092,6 +1092,7 @@ export default function App() {
                 onOpenConfigureDirs: () => setCodexSwapModalOpen(true),
                 onOpenRawConfig: () => void openRawConfigModal(),
               }}
+              onOpenUsageRequestsPage={() => switchPage('usage_requests')}
             />
           </div>
         </div>

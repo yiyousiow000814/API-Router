@@ -180,6 +180,11 @@
   outline-offset: 1px;
 }
 
+.aoUsageDetailsEntry {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .aoUsageDetailsTabs {
   display: inline-flex;
   align-items: center;

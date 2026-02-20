@@ -172,6 +172,8 @@ type Props = {
   usageProviderTotalsAndAverages: UsageProviderTotalsAndAverages | null
   forceDetailsTab?: UsageDetailsTab
   showDetailsTabs?: boolean
+  showFilters?: boolean
+  onOpenRequestDetails?: () => void
 }
 
 export function UsageStatisticsPanel({
@@ -228,6 +230,8 @@ export function UsageStatisticsPanel({
   usageProviderTotalsAndAverages,
   forceDetailsTab,
   showDetailsTabs = true,
+  showFilters = true,
+  onOpenRequestDetails,
 }: Props) {
   const [usageDetailsTab, setUsageDetailsTab] = useState<UsageDetailsTab>('overview')
   const [usageRequestRows, setUsageRequestRows] = useState<UsageRequestEntry[]>([])
@@ -351,23 +355,34 @@ export function UsageStatisticsPanel({
 
   return (
     <div className="aoCard aoUsageStatsPage">
-      <UsageStatsFiltersBar
-        usageWindowHours={usageWindowHours}
-        setUsageWindowHours={setUsageWindowHours}
-        usageStatisticsLoading={usageStatisticsLoading}
-        usageFilterProviders={usageFilterProviders}
-        setUsageFilterProviders={setUsageFilterProviders}
-        usageProviderFilterOptions={usageProviderFilterOptions}
-        toggleUsageProviderFilter={toggleUsageProviderFilter}
-        usageFilterModels={usageFilterModels}
-        setUsageFilterModels={setUsageFilterModels}
-        usageModelFilterOptions={usageModelFilterOptions}
-        toggleUsageModelFilter={toggleUsageModelFilter}
-        usageFilterOrigins={usageFilterOrigins}
-        setUsageFilterOrigins={setUsageFilterOrigins}
-        usageOriginFilterOptions={usageOriginFilterOptions}
-        toggleUsageOriginFilter={toggleUsageOriginFilter}
-      />
+      {showFilters ? (
+        <>
+          <UsageStatsFiltersBar
+            usageWindowHours={usageWindowHours}
+            setUsageWindowHours={setUsageWindowHours}
+            usageStatisticsLoading={usageStatisticsLoading}
+            usageFilterProviders={usageFilterProviders}
+            setUsageFilterProviders={setUsageFilterProviders}
+            usageProviderFilterOptions={usageProviderFilterOptions}
+            toggleUsageProviderFilter={toggleUsageProviderFilter}
+            usageFilterModels={usageFilterModels}
+            setUsageFilterModels={setUsageFilterModels}
+            usageModelFilterOptions={usageModelFilterOptions}
+            toggleUsageModelFilter={toggleUsageModelFilter}
+            usageFilterOrigins={usageFilterOrigins}
+            setUsageFilterOrigins={setUsageFilterOrigins}
+            usageOriginFilterOptions={usageOriginFilterOptions}
+            toggleUsageOriginFilter={toggleUsageOriginFilter}
+          />
+          {effectiveDetailsTab === 'overview' && onOpenRequestDetails ? (
+            <div className="aoUsageDetailsEntry">
+              <button type="button" className="aoTinyBtn" onClick={onOpenRequestDetails}>
+                Open Request Details
+              </button>
+            </div>
+          ) : null}
+        </>
+      ) : null}
       {showDetailsTabs ? (
         <div className="aoUsageDetailsTabs" role="tablist" aria-label="Usage details views">
         <button

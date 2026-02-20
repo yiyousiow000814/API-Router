@@ -43,20 +43,6 @@ export function AppTopNav({ activePage, onSwitchPage, onOpenGettingStarted, onUs
           <span>Usage Statistics</span>
         </button>
         <button
-          className={`aoTopNavBtn${activePage === 'usage_requests' ? ' is-active' : ''}`}
-          role="tab"
-          aria-selected={activePage === 'usage_requests'}
-          onClick={() => onSwitchPage('usage_requests')}
-        >
-          <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 6.5h16" />
-            <path d="M4 12h16" />
-            <path d="M4 17.5h10" />
-            <circle cx="18.5" cy="17.5" r="1.5" />
-          </svg>
-          <span>Request Details</span>
-        </button>
-        <button
           className={`aoTopNavBtn${activePage === 'provider_switchboard' ? ' is-active' : ''}`}
           role="tab"
           aria-selected={activePage === 'provider_switchboard'}
