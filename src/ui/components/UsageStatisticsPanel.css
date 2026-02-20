@@ -281,6 +281,11 @@
   gap: 8px;
 }
 
+.aoUsageRequestBackRow {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .aoUsageActionBtn {
   min-width: 64px;
   flex: 0 0 auto;

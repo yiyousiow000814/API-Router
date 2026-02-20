@@ -176,6 +176,7 @@ type Props = {
   showDetailsTabs?: boolean
   showFilters?: boolean
   onOpenRequestDetails?: () => void
+  onBackToUsageOverview?: () => void
 }
 
 export function UsageStatisticsPanel({
@@ -234,6 +235,7 @@ export function UsageStatisticsPanel({
   showDetailsTabs = true,
   showFilters = true,
   onOpenRequestDetails,
+  onBackToUsageOverview,
 }: Props) {
   const [usageDetailsTab, setUsageDetailsTab] = useState<UsageDetailsTab>('overview')
   const [usageRequestRows, setUsageRequestRows] = useState<UsageRequestEntry[]>([])
@@ -449,6 +451,13 @@ export function UsageStatisticsPanel({
             <div className="aoMiniLabel">Request Details</div>
             <div className="aoHint">Per-request rows (newest first), aligned with current filters/window.</div>
           </div>
+          {onBackToUsageOverview ? (
+            <div className="aoUsageRequestBackRow">
+              <button type="button" className="aoTinyBtn" onClick={onBackToUsageOverview}>
+                Back to Usage Statistics
+              </button>
+            </div>
+          ) : null}
           {usageRequestUsingTestFallback ? (
             <div className="aoHint">Test mode fallback rows are shown because backend request details are unavailable.</div>
           ) : null}

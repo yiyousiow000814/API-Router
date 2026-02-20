@@ -1093,6 +1093,7 @@ export default function App() {
                 onOpenRawConfig: () => void openRawConfigModal(),
               }}
               onOpenUsageRequestsPage={() => switchPage('usage_requests')}
+              onBackToUsageStatisticsPage={() => switchPage('usage_statistics')}
             />
           </div>
         </div>

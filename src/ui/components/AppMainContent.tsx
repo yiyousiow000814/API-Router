@@ -41,6 +41,7 @@ type Props = {
   usageProps: any
   switchboardProps: any
   onOpenUsageRequestsPage: () => void
+  onBackToUsageStatisticsPage: () => void
 }
 
 export function AppMainContent(props: Props) {
@@ -80,6 +81,7 @@ export function AppMainContent(props: Props) {
     usageProps,
     switchboardProps,
     onOpenUsageRequestsPage,
+    onBackToUsageStatisticsPage,
   } = props
 
   if (activePage === 'usage_statistics') {
@@ -95,7 +97,16 @@ export function AppMainContent(props: Props) {
   }
 
   if (activePage === 'usage_requests') {
-    return <UsageStatisticsPanel {...usageProps} fmtWhen={fmtWhen} forceDetailsTab="requests" showDetailsTabs={false} showFilters={false} />
+    return (
+      <UsageStatisticsPanel
+        {...usageProps}
+        fmtWhen={fmtWhen}
+        forceDetailsTab="requests"
+        showDetailsTabs={false}
+        showFilters={false}
+        onBackToUsageOverview={onBackToUsageStatisticsPage}
+      />
+    )
   }
 
   if (activePage === 'provider_switchboard') {

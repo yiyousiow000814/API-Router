@@ -8,6 +8,7 @@ type AppTopNavProps = {
 }
 
 export function AppTopNav({ activePage, onSwitchPage, onOpenGettingStarted, onUsageStatisticsIntent }: AppTopNavProps) {
+  const usageNavActive = activePage === 'usage_statistics' || activePage === 'usage_requests'
   return (
     <div className="aoBrandRight">
       <div className="aoTopNav" role="tablist" aria-label="Main pages">
@@ -26,9 +27,9 @@ export function AppTopNav({ activePage, onSwitchPage, onOpenGettingStarted, onUs
           <span>Dashboard</span>
         </button>
         <button
-          className={`aoTopNavBtn${activePage === 'usage_statistics' ? ' is-active' : ''}`}
+          className={`aoTopNavBtn${usageNavActive ? ' is-active' : ''}`}
           role="tab"
-          aria-selected={activePage === 'usage_statistics'}
+          aria-selected={usageNavActive}
           onClick={() => onSwitchPage('usage_statistics')}
           onMouseEnter={() => onUsageStatisticsIntent?.()}
           onFocus={() => onUsageStatisticsIntent?.()}
