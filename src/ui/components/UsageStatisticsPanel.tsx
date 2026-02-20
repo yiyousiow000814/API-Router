@@ -151,14 +151,11 @@ function normalizeUsageOrigin(origin: string): 'windows' | 'wsl2' | 'unknown' {
 
 function buildSmoothLinePath(
   points: Array<{ x: number; y: number }>,
-  yBounds?: { min: number; max: number },
+  yBounds: { min: number; max: number },
 ): string {
   if (points.length === 0) return ''
   if (points.length === 1) return `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`
-  const clampY = (value: number) => {
-    if (!yBounds) return value
-    return Math.max(yBounds.min, Math.min(yBounds.max, value))
-  }
+  const clampY = (value: number) => Math.max(yBounds.min, Math.min(yBounds.max, value))
   let d = `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`
   for (let i = 0; i < points.length - 1; i += 1) {
     const p0 = points[Math.max(0, i - 1)]
@@ -426,8 +423,9 @@ export function UsageStatisticsPanel({
     (forceDetailsTab ?? usageDetailsTab) === 'requests' && !showFilters
       ? 24 * 365 * 20
       : usageWindowHours
+  const hasExplicitTimeFilter = usageRequestTimeFilter.trim().length > 0
   const hasExplicitRequestFilters =
-    usageRequestTimeFilter.trim().length > 0 ||
+    hasExplicitTimeFilter ||
     usageRequestMultiFilters.provider !== null ||
     usageRequestMultiFilters.model !== null ||
     usageRequestMultiFilters.origin !== null ||
@@ -585,7 +583,7 @@ export function UsageStatisticsPanel({
       usageRequestTestRows,
     ],
   )
-  const initialRefreshLimit = hasExplicitRequestFilters
+  const initialRefreshLimit = hasExplicitTimeFilter
     ? USAGE_REQUEST_PAGE_SIZE
     : 1000
 
@@ -658,7 +656,7 @@ export function UsageStatisticsPanel({
 
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
-    if (hasExplicitRequestFilters) return
+    if (hasExplicitTimeFilter) return
     if (usageRequestLoading || !usageRequestHasMore || !usageRequestRows.length) return
     const oldestRow = usageRequestRows[usageRequestRows.length - 1]
     if (!oldestRow) return
@@ -666,7 +664,7 @@ export function UsageStatisticsPanel({
     void loadMoreUsageRequests()
   }, [
     effectiveDetailsTab,
-    hasExplicitRequestFilters,
+    hasExplicitTimeFilter,
     loadMoreUsageRequests,
     requestDefaultDay,
     usageRequestHasMore,
@@ -674,14 +672,9 @@ export function UsageStatisticsPanel({
     usageRequestRows,
   ])
 
-  const usageRequestChartRows = useMemo(
-    // Intentional: chart reflects the loaded request stream (not column-filtered table rows).
-    () => usageRequestRows.slice(0, USAGE_REQUEST_GRAPH_SOURCE_LIMIT),
-    [usageRequestRows],
-  )
   const usageRequestProviderOptions = useMemo(() => {
     const counts = new Map<string, number>()
-    for (const row of usageRequestChartRows) {
+    for (const row of usageRequestRows) {
       counts.set(row.provider, (counts.get(row.provider) ?? 0) + 1)
     }
     return [...counts.entries()]
@@ -692,30 +685,38 @@ export function UsageStatisticsPanel({
         return a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: 'base' })
       })
       .map(([provider]) => provider)
-  }, [usageRequestChartRows])
+  }, [usageRequestRows])
 
   const activeRequestGraphProviders = useMemo(
     () => usageRequestProviderOptions.slice(0, Math.min(3, USAGE_REQUEST_GRAPH_COLORS.length)),
     [usageRequestProviderOptions],
   )
 
-  const usageRequestGraphPointCount = useMemo(
-    () => Math.max(1, usageRequestChartRows.length),
-    [usageRequestChartRows.length],
-  )
+  const usageRequestGraphPointCount = USAGE_REQUEST_GRAPH_SOURCE_LIMIT
+
+  const usageRequestRowsByProvider = useMemo(() => {
+    const out = new Map<string, UsageRequestEntry[]>()
+    for (const provider of activeRequestGraphProviders) out.set(provider, [])
+    for (const row of usageRequestRows) {
+      const list = out.get(row.provider)
+      if (!list) continue
+      if (list.length >= USAGE_REQUEST_GRAPH_SOURCE_LIMIT) continue
+      list.push(row)
+    }
+    return out
+  }, [activeRequestGraphProviders, usageRequestRows])
 
   const usageRequestLineSeries = useMemo(() => {
     const providers = [...activeRequestGraphProviders].sort(compareUsageProvidersForDisplay)
     if (!providers.length) return []
-    const source = usageRequestChartRows
-    if (!source.length) return []
     const pointCount = usageRequestGraphPointCount
     const providerSeries = providers.map((provider, providerIndex) => {
       const values = new Array<number>(pointCount).fill(0)
       const present = new Array<boolean>(pointCount).fill(false)
+      const rows = usageRequestRowsByProvider.get(provider) ?? []
       for (let idx = 0; idx < pointCount; idx += 1) {
-        const row = source[idx]
-        if (row && row.provider === provider) {
+        const row = rows[idx]
+        if (row) {
           values[idx] = row.total_tokens
           present[idx] = true
         }
@@ -729,7 +730,7 @@ export function UsageStatisticsPanel({
       }
     })
     return providerSeries
-  }, [activeRequestGraphProviders, usageRequestChartRows, usageRequestGraphPointCount])
+  }, [activeRequestGraphProviders, usageRequestGraphPointCount, usageRequestRowsByProvider])
 
   const usageRequestLineMaxValue = useMemo(() => {
     let maxValue = 0
@@ -748,6 +749,14 @@ export function UsageStatisticsPanel({
     () => usageRequestLineSeries.filter((series) => series.kind === 'provider'),
     [usageRequestLineSeries],
   )
+  const usageRequestChartShownCount = useMemo(() => {
+    let maxCount = 0
+    for (const series of usageRequestLineSeries) {
+      const count = series.present.reduce((sum, present) => sum + (present ? 1 : 0), 0)
+      if (count > maxCount) maxCount = count
+    }
+    return maxCount
+  }, [usageRequestLineSeries])
 
   const usageRequestDailyBars = useMemo(() => {
     if (!activeRequestGraphProviders.length) return []
@@ -783,12 +792,29 @@ export function UsageStatisticsPanel({
     })
   }, [activeRequestGraphProviders, usageRequestRows])
 
+  const timeScopedUsageRequestRows = useMemo(() => {
+    const timeDay = parseDateInputToDayStart(usageRequestTimeFilter)
+    const defaultTodayOnly = effectiveDetailsTab === 'requests' && !hasExplicitTimeFilter
+    if (timeDay == null && !defaultTodayOnly) return usageRequestRows
+    return usageRequestRows.filter((row) =>
+      timeDay != null
+        ? startOfDayUnixMs(row.unix_ms) === timeDay
+        : startOfDayUnixMs(row.unix_ms) === requestDefaultDay,
+    )
+  }, [
+    effectiveDetailsTab,
+    hasExplicitTimeFilter,
+    requestDefaultDay,
+    usageRequestRows,
+    usageRequestTimeFilter,
+  ])
+
   const usageRequestFilterOptions = useMemo(() => {
     const providers = new Set<string>()
     const models = new Set<string>()
     const origins = new Set<string>()
     const sessions = new Set<string>()
-    for (const row of usageRequestRows) {
+    for (const row of timeScopedUsageRequestRows) {
       providers.add(row.provider)
       models.add(row.model)
       origins.add(row.origin)
@@ -800,7 +826,7 @@ export function UsageStatisticsPanel({
       origin: [...origins].sort((a, b) => a.localeCompare(b)),
       session: [...sessions].sort((a, b) => a.localeCompare(b)),
     }
-  }, [usageRequestRows])
+  }, [timeScopedUsageRequestRows])
   useEffect(() => {
     setUsageRequestMultiFilters((prev) => ({
       provider:
@@ -841,8 +867,7 @@ export function UsageStatisticsPanel({
     [usageRequestDailyBars],
   )
   const filteredUsageRequestRows = useMemo(() => {
-    const defaultTodayOnly = effectiveDetailsTab === 'requests' && !hasExplicitRequestFilters
-    if (!hasExplicitRequestFilters && !defaultTodayOnly) return usageRequestRows
+    const defaultTodayOnly = effectiveDetailsTab === 'requests' && !hasExplicitTimeFilter
     const timeDay = parseDateInputToDayStart(usageRequestTimeFilter)
     const timeNeedle = usageRequestTimeFilter.trim().toLowerCase()
     const contains = (text: string) => timeNeedle.length === 0 || text.toLowerCase().includes(timeNeedle)
@@ -863,7 +888,7 @@ export function UsageStatisticsPanel({
   }, [
     effectiveDetailsTab,
     fmtWhen,
-    hasExplicitRequestFilters,
+    hasExplicitTimeFilter,
     requestDefaultDay,
     usageRequestMultiFilters,
     usageRequestRows,
@@ -1149,7 +1174,7 @@ export function UsageStatisticsPanel({
           <div className="aoUsageRequestChartCard">
             <div className="aoSwitchboardSectionHead">
               <div className="aoMiniLabel">Latest 120 Requests (Total Tokens)</div>
-              <div className="aoHint">{filteredUsageRequestRows.length.toLocaleString()} requests shown</div>
+              <div className="aoHint">{usageRequestChartShownCount.toLocaleString()} requests shown</div>
             </div>
             {usageRequestLineSeries.length ? (
               <div className="aoUsageRequestLineGraphWrap">
