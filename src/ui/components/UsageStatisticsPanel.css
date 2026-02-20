@@ -338,6 +338,16 @@
   gap: 8px;
 }
 
+.aoUsageReqFilterMenu.is-time {
+  border-radius: 14px;
+  border-color: rgba(13, 18, 32, 0.12);
+  background: rgba(255, 255, 255, 0.99);
+  box-shadow:
+    0 18px 36px rgba(13, 18, 32, 0.2),
+    0 6px 12px rgba(13, 18, 32, 0.08);
+  padding: 10px;
+}
+
 .aoUsageReqFilterMenuFloating {
   position: fixed;
   z-index: 120;
@@ -405,83 +415,108 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  margin-bottom: 10px;
 }
 
 .aoUsageReqCalendarTitle {
-  font-size: 12px;
-  font-weight: 650;
-  color: rgba(13, 18, 32, 0.8);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.62);
 }
 
 .aoUsageReqCalendarNav {
-  width: 24px;
-  height: 24px;
-  border: 1px solid rgba(13, 18, 32, 0.14);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.96);
+  width: 36px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.16);
+  background: rgba(255, 255, 255, 0.94);
+  color: rgba(13, 18, 32, 0.78);
+  font-size: 12px;
   cursor: pointer;
+}
+
+.aoUsageReqCalendarNav:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.46);
+  background: rgba(var(--ao-accent-rgb), 0.1);
 }
 
 .aoUsageReqCalendarWeekdays {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px;
+  gap: 4px;
+  margin-bottom: 4px;
   font-size: 11px;
-  color: rgba(13, 18, 32, 0.55);
+  color: rgba(13, 18, 32, 0.58);
   text-align: center;
 }
 
 .aoUsageReqCalendarGrid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px;
+  gap: 4px;
 }
 
 .aoUsageReqCalendarCell {
-  position: relative;
-  height: 30px;
-  border: 1px solid rgba(13, 18, 32, 0.12);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.96);
-  font-size: 12px;
-  color: rgba(13, 18, 32, 0.8);
+  border: 1px solid rgba(13, 18, 32, 0.06);
+  border-radius: 8px;
+  min-height: 34px;
+  background: rgba(255, 255, 255, 0.94);
+  color: rgba(13, 18, 32, 0.9);
+  padding: 4px 2px 3px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
   cursor: pointer;
+  position: relative;
 }
 
 .aoUsageReqCalendarCell.is-out {
-  color: rgba(13, 18, 32, 0.38);
+  opacity: 0.45;
 }
 
 .aoUsageReqCalendarCell.is-selected {
-  border-color: rgba(33, 168, 183, 0.58);
-  background: linear-gradient(135deg, rgba(40, 199, 217, 0.24), rgba(242, 193, 77, 0.2));
+  border-color: rgba(var(--ao-accent-rgb), 0.34);
+  background: rgba(var(--ao-accent-rgb), 0.2);
+  box-shadow: none;
 }
 
 .aoUsageReqCalendarDots {
-  position: absolute;
-  left: 50%;
-  bottom: 3px;
-  transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 3px;
 }
 
 .aoUsageReqCalendarDot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 999px;
 }
 
 .aoUsageReqCalendarDotWin {
-  background: #0a63a5;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.72);
+  background: #38c4d7;
 }
 
 .aoUsageReqCalendarDotWsl {
-  background: #a05d08;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.72);
+  background: #f2b43f;
+}
+
+.aoUsageReqCalendarFoot {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.aoUsageReqCalendarFootGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .aoUsageReqColTime {
@@ -582,11 +617,7 @@
   height: 178px;
   border: 1px solid rgba(13, 18, 32, 0.08);
   border-radius: 10px;
-  background:
-    radial-gradient(120% 78% at 0% 0%, rgba(40, 199, 217, 0.12), rgba(40, 199, 217, 0) 44%),
-    radial-gradient(120% 78% at 100% 100%, rgba(242, 193, 77, 0.11), rgba(242, 193, 77, 0) 45%),
-    linear-gradient(180deg, rgba(246, 250, 255, 0.94), rgba(255, 255, 255, 0.96));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  background: rgba(249, 250, 252, 0.92);
 }
 
 .aoUsageRequestLegend {

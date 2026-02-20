@@ -751,8 +751,8 @@ export function UsageStatisticsPanel({
   }, [fmtWhen, usageRequestMultiFilters, usageRequestRows, usageRequestTimeFilter])
   const requestChartWidth = 1000
   const requestChartHeight = 176
-  const requestChartMinX = 34
-  const requestChartMaxX = 986
+  const requestChartMinX = 54
+  const requestChartMaxX = 982
   const requestChartTopY = 14
   const requestChartBottomY = 136
   const [lineHoverIndex, setLineHoverIndex] = useState<number | null>(null)
@@ -906,7 +906,6 @@ export function UsageStatisticsPanel({
           <div className="aoUsageRequestChartCard">
             <div className="aoSwitchboardSectionHead">
               <div className="aoMiniLabel">Latest 120 Requests (Total Tokens)</div>
-              <div className="aoHint">{usageRequestGraphPointCount} points, 1 point = 1 request.</div>
             </div>
             {usageRequestLineSeries.length ? (
               <div className="aoUsageRequestLineGraphWrap">
@@ -962,61 +961,7 @@ export function UsageStatisticsPanel({
                 <text x={requestChartMaxX} y={requestChartBottomY + 16} textAnchor="end" fill="rgba(13, 18, 32, 0.52)" fontSize="10">
                   Older
                 </text>
-                <defs>
-                  <linearGradient id="usageRequestAllStroke" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" stopColor="#415a73" />
-                    <stop offset="100%" stopColor="#2f3f56" />
-                  </linearGradient>
-                  <linearGradient id="usageRequestAllArea" x1="0%" y1="0%" x2="0%" y2="100%">
-                    <stop offset="0%" stopColor="rgba(95, 107, 122, 0.22)" />
-                    <stop offset="100%" stopColor="rgba(95, 107, 122, 0.02)" />
-                  </linearGradient>
-                  <filter id="usageRequestAllGlow" x="-20%" y="-20%" width="140%" height="140%">
-                    <feGaussianBlur stdDeviation="1.8" result="blur" />
-                    <feMerge>
-                      <feMergeNode in="blur" />
-                      <feMergeNode in="SourceGraphic" />
-                    </feMerge>
-                  </filter>
-                </defs>
-                {(() => {
-                  const allSeries = usageRequestLineSeries.find((item) => item.kind === 'all')
-                  if (!allSeries) return null
-                  const points = allSeries.values.map((value, idx) => {
-                    const x =
-                      requestChartMinX +
-                      (idx / Math.max(1, usageRequestGraphPointCount - 1)) * (requestChartMaxX - requestChartMinX)
-                    const y =
-                      requestChartBottomY -
-                      (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
-                    return { x, y }
-                  })
-                  const linePath = buildSmoothLinePath(points, {
-                    min: requestChartTopY,
-                    max: requestChartBottomY,
-                  })
-                  const areaPath =
-                    points.length >= 2
-                      ? `${linePath} L ${points[points.length - 1].x.toFixed(2)} ${requestChartBottomY.toFixed(2)} L ${points[0].x.toFixed(2)} ${requestChartBottomY.toFixed(2)} Z`
-                      : ''
-                  return (
-                    <>
-                      {areaPath ? <path d={areaPath} fill="url(#usageRequestAllArea)" opacity={0.95} /> : null}
-                      <path
-                        d={linePath}
-                        fill="none"
-                        stroke="url(#usageRequestAllStroke)"
-                        strokeWidth={2.6}
-                        opacity={0.96}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        filter="url(#usageRequestAllGlow)"
-                      />
-                    </>
-                  )
-                })()}
                 {usageRequestLineSeries.map((series) => {
-                  if (series.kind === 'all') return null
                   const points = series.values.map((value, idx) => {
                     const x =
                       requestChartMinX +
@@ -1026,41 +971,22 @@ export function UsageStatisticsPanel({
                       (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
                     return { x, y }
                   })
-                  const segments: Array<Array<{ x: number; y: number }>> = []
-                  let current: Array<{ x: number; y: number }> = []
-                  for (let idx = 0; idx < points.length; idx += 1) {
-                    if ((series.values[idx] ?? 0) > 0) {
-                      current.push(points[idx])
-                    } else if (current.length) {
-                      segments.push(current)
-                      current = []
-                    }
-                  }
-                  if (current.length) segments.push(current)
+                  const pathD = buildSmoothLinePath(points, {
+                    min: requestChartTopY,
+                    max: requestChartBottomY,
+                  })
                   return (
-                    <g key={`request-line-series-${series.provider}`}>
-                      {segments.map((segment, segmentIdx) => {
-                        if (segment.length === 1) {
-                          return <circle key={`request-line-series-dot-${series.provider}-${segmentIdx}`} cx={segment[0].x} cy={segment[0].y} r="2.2" fill={series.color} opacity={0.88} />
-                        }
-                        const pathD = buildSmoothLinePath(segment, {
-                          min: requestChartTopY,
-                          max: requestChartBottomY,
-                        })
-                        return (
-                          <path
-                            key={`request-line-series-path-${series.provider}-${segmentIdx}`}
-                            d={pathD}
-                            fill="none"
-                            stroke={series.color}
-                            strokeWidth={1.7}
-                            opacity={0.86}
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        )
-                      })}
-                    </g>
+                    <path
+                      key={`request-line-series-${series.provider}`}
+                      d={pathD}
+                      fill="none"
+                      stroke={series.color}
+                      strokeWidth={series.kind === 'all' ? 2.3 : 1.6}
+                      opacity={series.kind === 'all' ? 1 : 0.7}
+                      strokeDasharray={series.kind === 'all' ? '4 4' : undefined}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
                   )
                 })}
                 {lineHoverX != null ? (
@@ -1077,7 +1003,6 @@ export function UsageStatisticsPanel({
                 {lineHoverIndex != null
                   ? usageRequestLineSeries.map((series) => {
                       const value = series.values[lineHoverIndex] ?? 0
-                      if (series.kind === 'provider' && value <= 0) return null
                       const x =
                         requestChartMinX +
                         (lineHoverIndex / Math.max(1, usageRequestGraphPointCount - 1)) *
@@ -1197,13 +1122,13 @@ export function UsageStatisticsPanel({
             {activeUsageRequestFilterMenu ? (
               <div
                 ref={usageRequestFilterMenuRef}
-                className="aoUsageReqFilterMenu aoUsageReqFilterMenuFloating"
+                className={`aoUsageReqFilterMenu aoUsageReqFilterMenuFloating${activeUsageRequestFilterMenu.key === 'time' ? ' is-time' : ''}`}
                 style={{
                   left: `${activeUsageRequestFilterMenu.left}px`,
                   top: `${activeUsageRequestFilterMenu.top}px`,
                   width: `${
                     activeUsageRequestFilterMenu.key === 'time'
-                      ? 252
+                      ? 292
                       : activeUsageRequestFilterMenu.key === 'session'
                         ? Math.min(420, Math.max(activeUsageRequestFilterMenu.width + 180, 320))
                         : activeUsageRequestFilterMenu.key === 'model'
@@ -1255,6 +1180,25 @@ export function UsageStatisticsPanel({
                           </button>
                         )
                       })}
+                    </div>
+                    <div className="aoUsageReqCalendarFoot">
+                      <div className="aoUsageReqCalendarFootGroup">
+                        <button type="button" className="aoTinyBtn aoUsageActionBtn" onClick={() => setUsageRequestTimeFilter('')}>
+                          Clear
+                        </button>
+                        <button
+                          type="button"
+                          className="aoTinyBtn aoUsageActionBtn"
+                          onClick={() => setUsageRequestTimeFilter(dayStartToIso(startOfDayUnixMs(Date.now())))}
+                        >
+                          Today
+                        </button>
+                      </div>
+                      <div className="aoUsageReqCalendarFootGroup">
+                        <button type="button" className="aoTinyBtn aoUsageActionBtn" onClick={() => setActiveUsageRequestFilterMenu(null)}>
+                          OK
+                        </button>
+                      </div>
                     </div>
                   </>
                 ) : (
@@ -1362,27 +1306,25 @@ export function UsageStatisticsPanel({
                     </div>
                   </>
                 )}
-                <div className="aoUsageReqFilterMenuActions">
-                  <button
-                    type="button"
-                    className="aoTinyBtn"
-                    onClick={() => {
-                      if (activeUsageRequestFilterMenu.key === 'time') {
-                        setUsageRequestTimeFilter('')
-                      } else {
+                {activeUsageRequestFilterMenu.key !== 'time' ? (
+                  <div className="aoUsageReqFilterMenuActions">
+                    <button
+                      type="button"
+                      className="aoTinyBtn"
+                      onClick={() =>
                         setUsageRequestMultiFilters((prev) => ({
                           ...prev,
                           [activeUsageRequestFilterMenu.key]: [],
                         }))
                       }
-                    }}
-                  >
-                    Clear
-                  </button>
-                  <button type="button" className="aoTinyBtn" onClick={() => setActiveUsageRequestFilterMenu(null)}>
-                    Done
-                  </button>
-                </div>
+                    >
+                      Clear
+                    </button>
+                    <button type="button" className="aoTinyBtn" onClick={() => setActiveUsageRequestFilterMenu(null)}>
+                      Done
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ) : null}
             <div className="aoUsageHistoryTableBody">
