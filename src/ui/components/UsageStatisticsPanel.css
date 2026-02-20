@@ -219,36 +219,20 @@
 }
 
 .aoUsageRequestsTableWrap {
-  overflow: auto;
   max-height: min(56vh, 560px);
-  border: 1px solid rgba(13, 18, 32, 0.08);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.8);
+}
+
+.aoUsageRequestTableSurface {
+  max-height: min(56vh, 560px);
 }
 
 .aoUsageRequestsTable {
-  width: 100%;
-  border-collapse: collapse;
   min-width: 980px;
 }
 
 .aoUsageRequestsTable th,
 .aoUsageRequestsTable td {
-  border-top: 1px solid rgba(13, 18, 32, 0.08);
-  padding: 8px 10px;
-  font-size: 12px;
-  text-align: left;
   white-space: nowrap;
-}
-
-.aoUsageRequestsTable thead th {
-  border-top: none;
-  color: rgba(13, 18, 32, 0.62);
-  font-weight: 650;
-  position: sticky;
-  top: 0;
-  background: rgba(248, 250, 252, 0.96);
-  z-index: 1;
 }
 
 .aoUsageRequestsMono {

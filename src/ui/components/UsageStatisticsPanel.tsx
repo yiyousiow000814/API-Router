@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from
 import { invoke } from '@tauri-apps/api/core'
 import type { Config, UsageStatistics } from '../types'
 import './UsageStatisticsPanel.css'
+import './UsageHistoryModal.css'
 import {
   UsageProviderStatisticsSection,
   type UsageProviderDisplayGroup,
@@ -13,6 +14,7 @@ import {
   type UsageChartModel,
 } from './UsageTimelineChart'
 import { UsageStatsFiltersBar } from './UsageStatsFiltersBar'
+import { useUsageHistoryScrollbar } from '../hooks/useUsageHistoryScrollbar'
 
 type UsageSummary = UsageStatistics['summary']
 type UsageProviderRow = UsageSummary['by_provider'][number]
@@ -275,6 +277,42 @@ export function UsageStatisticsPanel({
     [anomalyEntries, dismissedAnomalyIds],
   )
   const effectiveDetailsTab = forceDetailsTab ?? usageDetailsTab
+  const {
+    usageHistoryTableSurfaceRef: usageRequestTableSurfaceRef,
+    usageHistoryTableWrapRef: usageRequestTableWrapRef,
+    usageHistoryScrollbarOverlayRef: usageRequestScrollbarOverlayRef,
+    usageHistoryScrollbarThumbRef: usageRequestScrollbarThumbRef,
+    scheduleUsageHistoryScrollbarSync: scheduleUsageRequestScrollbarSync,
+    activateUsageHistoryScrollbarUi: activateUsageRequestScrollbarUi,
+    onUsageHistoryScrollbarPointerDown: onUsageRequestScrollbarPointerDown,
+    onUsageHistoryScrollbarPointerMove: onUsageRequestScrollbarPointerMove,
+    onUsageHistoryScrollbarPointerUp: onUsageRequestScrollbarPointerUp,
+    onUsageHistoryScrollbarLostPointerCapture: onUsageRequestScrollbarLostPointerCapture,
+    clearUsageHistoryScrollbarTimers: clearUsageRequestScrollbarTimers,
+  } = useUsageHistoryScrollbar()
+
+  useEffect(() => {
+    if (effectiveDetailsTab !== 'requests' || typeof window === 'undefined') return
+    const sync = () => {
+      scheduleUsageRequestScrollbarSync()
+      activateUsageRequestScrollbarUi()
+    }
+    const raf = window.requestAnimationFrame(sync)
+    const onResize = () => sync()
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.cancelAnimationFrame(raf)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [
+    effectiveDetailsTab,
+    usageRequestRows,
+    usageRequestLoading,
+    scheduleUsageRequestScrollbarSync,
+    activateUsageRequestScrollbarUi,
+  ])
+
+  useEffect(() => () => clearUsageRequestScrollbarTimers(), [clearUsageRequestScrollbarTimers])
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
     let cancelled = false
@@ -415,47 +453,75 @@ export function UsageStatisticsPanel({
             <div className="aoHint">Test mode fallback rows are shown because backend request details are unavailable.</div>
           ) : null}
           {usageRequestError ? <div className="aoHint">Failed to load request details: {usageRequestError}</div> : null}
-          <div className="aoUsageRequestsTableWrap">
-            <table className="aoUsageRequestsTable">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Provider</th>
-                  <th>Model</th>
-                  <th>Input</th>
-                  <th>Output</th>
-                  <th>Total</th>
-                  <th>Cache Create</th>
-                  <th>Cache Read</th>
-                  <th>Origin</th>
-                  <th>Session</th>
-                </tr>
-              </thead>
-              <tbody>
-                {!usageRequestRows.length && !usageRequestLoading ? (
-                  <tr>
-                    <td colSpan={10} className="aoHint">
-                      No request rows in this window.
-                    </td>
-                  </tr>
-                ) : (
-                  usageRequestRows.map((row, idx) => (
-                    <tr key={`${row.unix_ms}-${row.provider}-${row.session_id}-${idx}`}>
-                      <td>{fmtWhen(row.unix_ms)}</td>
-                      <td className="aoUsageRequestsMono">{row.provider}</td>
-                      <td className="aoUsageRequestsMono">{row.model}</td>
-                      <td>{row.input_tokens.toLocaleString()}</td>
-                      <td>{row.output_tokens.toLocaleString()}</td>
-                      <td>{row.total_tokens.toLocaleString()}</td>
-                      <td>{row.cache_creation_input_tokens.toLocaleString()}</td>
-                      <td>{row.cache_read_input_tokens.toLocaleString()}</td>
-                      <td>{row.origin}</td>
-                      <td className="aoUsageRequestsMono">{row.session_id}</td>
+          <div ref={usageRequestTableSurfaceRef} className="aoUsageHistoryTableSurface aoUsageRequestTableSurface">
+            <div className="aoUsageHistoryTableBody">
+              <div
+                ref={usageRequestTableWrapRef}
+                className="aoUsageHistoryTableWrap aoUsageRequestsTableWrap"
+                onScroll={() => {
+                  scheduleUsageRequestScrollbarSync()
+                  activateUsageRequestScrollbarUi()
+                }}
+                onWheel={() => {
+                  scheduleUsageRequestScrollbarSync()
+                  activateUsageRequestScrollbarUi()
+                }}
+                onTouchMove={activateUsageRequestScrollbarUi}
+              >
+                <table className="aoUsageHistoryTable aoUsageRequestsTable">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Provider</th>
+                      <th>Model</th>
+                      <th>Input</th>
+                      <th>Output</th>
+                      <th>Total</th>
+                      <th>Cache Create</th>
+                      <th>Cache Read</th>
+                      <th>Origin</th>
+                      <th>Session</th>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody>
+                    {!usageRequestRows.length && !usageRequestLoading ? (
+                      <tr>
+                        <td colSpan={10} className="aoHint">
+                          No request rows in this window.
+                        </td>
+                      </tr>
+                    ) : (
+                      usageRequestRows.map((row, idx) => (
+                        <tr key={`${row.unix_ms}-${row.provider}-${row.session_id}-${idx}`}>
+                          <td>{fmtWhen(row.unix_ms)}</td>
+                          <td className="aoUsageRequestsMono">{row.provider}</td>
+                          <td className="aoUsageRequestsMono">{row.model}</td>
+                          <td>{row.input_tokens.toLocaleString()}</td>
+                          <td>{row.output_tokens.toLocaleString()}</td>
+                          <td>{row.total_tokens.toLocaleString()}</td>
+                          <td>{row.cache_creation_input_tokens.toLocaleString()}</td>
+                          <td>{row.cache_read_input_tokens.toLocaleString()}</td>
+                          <td>{row.origin}</td>
+                          <td className="aoUsageRequestsMono">{row.session_id}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div
+                ref={usageRequestScrollbarOverlayRef}
+                className="aoUsageHistoryScrollbarOverlay"
+                aria-hidden="true"
+                onPointerDown={onUsageRequestScrollbarPointerDown}
+                onPointerMove={onUsageRequestScrollbarPointerMove}
+                onPointerUp={onUsageRequestScrollbarPointerUp}
+                onPointerCancel={onUsageRequestScrollbarPointerUp}
+                onLostPointerCapture={onUsageRequestScrollbarLostPointerCapture}
+              >
+                <div ref={usageRequestScrollbarThumbRef} className="aoUsageHistoryScrollbarThumb" />
+              </div>
+            </div>
           </div>
           <div className="aoUsageRequestsFooter">
             <button
