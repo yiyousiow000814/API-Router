@@ -40,8 +40,6 @@ type Props = {
   onEventLogFocusRequestHandled: (nonce: number) => void
   usageProps: any
   switchboardProps: any
-  onOpenUsageRequestsPage: () => void
-  onBackToUsageStatisticsPage: () => void
 }
 
 export function AppMainContent(props: Props) {
@@ -80,20 +78,10 @@ export function AppMainContent(props: Props) {
     onEventLogFocusRequestHandled,
     usageProps,
     switchboardProps,
-    onOpenUsageRequestsPage,
-    onBackToUsageStatisticsPage,
   } = props
 
   if (activePage === 'usage_statistics') {
-    return (
-      <UsageStatisticsPanel
-        {...usageProps}
-        fmtWhen={fmtWhen}
-        forceDetailsTab="overview"
-        showDetailsTabs={false}
-        onOpenRequestDetails={onOpenUsageRequestsPage}
-      />
-    )
+    return <UsageStatisticsPanel {...usageProps} fmtWhen={fmtWhen} forceDetailsTab="overview" showDetailsTabs={false} />
   }
 
   if (activePage === 'usage_requests') {
@@ -104,7 +92,6 @@ export function AppMainContent(props: Props) {
         forceDetailsTab="requests"
         showDetailsTabs={false}
         showFilters={false}
-        onBackToUsageOverview={onBackToUsageStatisticsPage}
       />
     )
   }

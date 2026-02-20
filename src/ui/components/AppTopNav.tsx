@@ -8,7 +8,6 @@ type AppTopNavProps = {
 }
 
 export function AppTopNav({ activePage, onSwitchPage, onOpenGettingStarted, onUsageStatisticsIntent }: AppTopNavProps) {
-  const usageNavActive = activePage === 'usage_statistics' || activePage === 'usage_requests'
   return (
     <div className="aoBrandRight">
       <div className="aoTopNav" role="tablist" aria-label="Main pages">
@@ -27,9 +26,9 @@ export function AppTopNav({ activePage, onSwitchPage, onOpenGettingStarted, onUs
           <span>Dashboard</span>
         </button>
         <button
-          className={`aoTopNavBtn${usageNavActive ? ' is-active' : ''}`}
+          className={`aoTopNavBtn${activePage === 'usage_statistics' ? ' is-active' : ''}`}
           role="tab"
-          aria-selected={usageNavActive}
+          aria-selected={activePage === 'usage_statistics'}
           onClick={() => onSwitchPage('usage_statistics')}
           onMouseEnter={() => onUsageStatisticsIntent?.()}
           onFocus={() => onUsageStatisticsIntent?.()}
@@ -41,7 +40,21 @@ export function AppTopNav({ activePage, onSwitchPage, onOpenGettingStarted, onUs
             <path d="M17 17.5V12.5" />
             <path d="M5.5 6.5 9 9l4-3.5 4 2.5" />
           </svg>
-          <span>Usage Statistics</span>
+          <span>Usage</span>
+        </button>
+        <button
+          className={`aoTopNavBtn${activePage === 'usage_requests' ? ' is-active' : ''}`}
+          role="tab"
+          aria-selected={activePage === 'usage_requests'}
+          onClick={() => onSwitchPage('usage_requests')}
+        >
+          <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 6.5h16" />
+            <path d="M4 12h16" />
+            <path d="M4 17.5h10" />
+            <circle cx="18.5" cy="17.5" r="1.5" />
+          </svg>
+          <span>Requests</span>
         </button>
         <button
           className={`aoTopNavBtn${activePage === 'provider_switchboard' ? ' is-active' : ''}`}
@@ -69,7 +82,7 @@ export function AppTopNav({ activePage, onSwitchPage, onOpenGettingStarted, onUs
             <path d="M5 14.5h14" />
             <path d="M5 19.5h10" />
           </svg>
-          <span>Event Log</span>
+          <span>Events</span>
         </button>
       </div>
       <button className="aoTinyBtn" aria-label="Getting Started" onClick={onOpenGettingStarted}>
