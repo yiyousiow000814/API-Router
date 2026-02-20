@@ -215,6 +215,7 @@
 
 .aoUsageRequestsTableWrap {
   overflow: auto;
+  max-height: min(56vh, 560px);
   border: 1px solid rgba(13, 18, 32, 0.08);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.8);

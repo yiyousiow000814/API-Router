@@ -38,6 +38,71 @@ type UsageRequestEntriesResponse = {
 }
 const USAGE_REQUEST_PAGE_SIZE = 200
 
+function readTestFlagFromLocation(): boolean {
+  if (typeof window === 'undefined') return false
+  const raw = new URLSearchParams(window.location.search).get('test')
+  if (!raw) return false
+  const normalized = raw.trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on'
+}
+
+function buildUsageRequestTestRows(stats: UsageStatistics | null, usageWindowHours: number): UsageRequestEntry[] {
+  const summary = stats?.summary
+  const totalRequests = Math.max(0, Math.min(800, summary?.total_requests ?? 0))
+  if (!summary || totalRequests <= 0) return []
+  const providers = summary.by_provider.length
+    ? summary.by_provider
+        .filter((row) => row.requests > 0)
+        .map((row) => ({ provider: row.provider, model: 'unknown', requests: row.requests, apiKeyRef: row.api_key_ref ?? '-' }))
+    : [{ provider: 'unknown', model: 'unknown', requests: totalRequests, apiKeyRef: '-' }]
+  const models = summary.by_model.length
+    ? summary.by_model.filter((row) => row.requests > 0).map((row) => ({ model: row.model, requests: row.requests }))
+    : [{ model: 'unknown', requests: totalRequests }]
+  const generatedAt = stats?.generated_at_unix_ms ?? Date.now()
+  const windowMs = Math.max(1, usageWindowHours) * 60 * 60 * 1000
+  const avgTotalTokens = Math.max(1, Math.round((summary.total_tokens || totalRequests * 1200) / totalRequests))
+  let seed = (generatedAt + totalRequests * 13) >>> 0
+  const rand = () => {
+    seed = (seed * 1103515245 + 12345) >>> 0
+    return seed / 4294967296
+  }
+  const pick = <T extends { requests: number }>(rows: T[]) => {
+    const sum = rows.reduce((acc, row) => acc + Math.max(0, row.requests), 0)
+    if (sum <= 0) return rows[0]
+    let marker = rand() * sum
+    for (const row of rows) {
+      marker -= Math.max(0, row.requests)
+      if (marker <= 0) return row
+    }
+    return rows[rows.length - 1]
+  }
+  const rows: UsageRequestEntry[] = []
+  for (let i = 0; i < totalRequests; i += 1) {
+    const provider = pick(providers)
+    const model = pick(models)
+    const origin = i % 2 === 0 ? 'windows' : 'wsl2'
+    const total = Math.max(1, Math.round(avgTotalTokens * (0.65 + rand() * 0.8)))
+    const input = Math.max(1, Math.round(total * (0.62 + rand() * 0.24)))
+    const output = Math.max(0, total - input)
+    const cacheCreate = i % 7 === 0 ? Math.max(0, Math.round(total * 0.08)) : 0
+    const cacheRead = i % 4 === 0 ? Math.max(0, Math.round(total * 0.1)) : 0
+    rows.push({
+      provider: provider.provider,
+      api_key_ref: provider.apiKeyRef,
+      model: model.model,
+      origin,
+      session_id: `test-session-${(i % 24) + 1}`,
+      unix_ms: generatedAt - Math.floor(rand() * windowMs),
+      input_tokens: input,
+      output_tokens: output,
+      total_tokens: total,
+      cache_creation_input_tokens: cacheCreate,
+      cache_read_input_tokens: cacheRead,
+    })
+  }
+  return rows.sort((a, b) => b.unix_ms - a.unix_ms)
+}
+
 type Props = {
   config: Config | null
   usageWindowHours: number
@@ -165,6 +230,12 @@ export function UsageStatisticsPanel({
   const [usageRequestHasMore, setUsageRequestHasMore] = useState(false)
   const [usageRequestLoading, setUsageRequestLoading] = useState(false)
   const [usageRequestError, setUsageRequestError] = useState('')
+  const [usageRequestUsingTestFallback, setUsageRequestUsingTestFallback] = useState(false)
+  const usageRequestTestFallbackEnabled = useMemo(() => readTestFlagFromLocation(), [])
+  const usageRequestTestRows = useMemo(
+    () => buildUsageRequestTestRows(usageStatistics, usageWindowHours),
+    [usageStatistics, usageWindowHours],
+  )
   const [dismissedAnomalyIds, setDismissedAnomalyIds] = useState<Set<string>>(new Set())
   const anomalyEntries = useMemo(
     () => {
@@ -201,6 +272,7 @@ export function UsageStatisticsPanel({
     const fetchRequests = async () => {
       setUsageRequestLoading(true)
       setUsageRequestError('')
+      setUsageRequestUsingTestFallback(false)
       try {
         const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
           hours: usageWindowHours,
@@ -215,9 +287,17 @@ export function UsageStatisticsPanel({
         setUsageRequestHasMore(Boolean(res.has_more))
       } catch (e) {
         if (cancelled) return
-        setUsageRequestRows([])
-        setUsageRequestHasMore(false)
-        setUsageRequestError(String(e))
+        if (usageRequestTestFallbackEnabled) {
+          const next = usageRequestTestRows.slice(0, USAGE_REQUEST_PAGE_SIZE)
+          setUsageRequestRows(next)
+          setUsageRequestHasMore(usageRequestTestRows.length > next.length)
+          setUsageRequestUsingTestFallback(true)
+          setUsageRequestError('')
+        } else {
+          setUsageRequestRows([])
+          setUsageRequestHasMore(false)
+          setUsageRequestError(String(e))
+        }
       } finally {
         if (!cancelled) setUsageRequestLoading(false)
       }
@@ -226,10 +306,24 @@ export function UsageStatisticsPanel({
     return () => {
       cancelled = true
     }
-  }, [usageDetailsTab, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins])
+  }, [
+    usageDetailsTab,
+    usageWindowHours,
+    usageFilterProviders,
+    usageFilterModels,
+    usageFilterOrigins,
+    usageRequestTestFallbackEnabled,
+    usageRequestTestRows,
+  ])
 
   const loadMoreUsageRequests = async () => {
     if (usageRequestLoading || !usageRequestHasMore) return
+    if (usageRequestUsingTestFallback) {
+      const merged = usageRequestTestRows.slice(0, usageRequestRows.length + USAGE_REQUEST_PAGE_SIZE)
+      setUsageRequestRows(merged)
+      setUsageRequestHasMore(merged.length < usageRequestTestRows.length)
+      return
+    }
     setUsageRequestLoading(true)
     setUsageRequestError('')
     try {
@@ -295,6 +389,9 @@ export function UsageStatisticsPanel({
             <div className="aoMiniLabel">Request Details</div>
             <div className="aoHint">Per-request rows (newest first), aligned with current filters/window.</div>
           </div>
+          {usageRequestUsingTestFallback ? (
+            <div className="aoHint">Test mode fallback rows are shown because backend request details are unavailable.</div>
+          ) : null}
           {usageRequestError ? <div className="aoHint">Failed to load request details: {usageRequestError}</div> : null}
           <div className="aoUsageRequestsTableWrap">
             <table className="aoUsageRequestsTable">
