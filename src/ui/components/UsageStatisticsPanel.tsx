@@ -638,7 +638,6 @@ export function UsageStatisticsPanel({
 
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
-    if (!showFilters) return
     if (hasExplicitRequestFilters) return
     if (usageRequestLoading || !usageRequestHasMore || !usageRequestRows.length) return
     const oldestRow = usageRequestRows[usageRequestRows.length - 1]
@@ -650,7 +649,6 @@ export function UsageStatisticsPanel({
     hasExplicitRequestFilters,
     loadMoreUsageRequests,
     requestDefaultDay,
-    showFilters,
     usageRequestHasMore,
     usageRequestLoading,
     usageRequestRows,
