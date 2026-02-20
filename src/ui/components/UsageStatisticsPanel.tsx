@@ -432,6 +432,11 @@ export function UsageStatisticsPanel({
     usageRequestMultiFilters.model !== null ||
     usageRequestMultiFilters.origin !== null ||
     usageRequestMultiFilters.session !== null
+  const hasImpossibleRequestFilters =
+    (usageRequestMultiFilters.provider !== null && usageRequestMultiFilters.provider.length === 0) ||
+    (usageRequestMultiFilters.model !== null && usageRequestMultiFilters.model.length === 0) ||
+    (usageRequestMultiFilters.origin !== null && usageRequestMultiFilters.origin.length === 0) ||
+    (usageRequestMultiFilters.session !== null && usageRequestMultiFilters.session.length === 0)
   const [requestDefaultDay, setRequestDefaultDay] = useState<number>(() =>
     startOfDayUnixMs(Date.now()),
   )
@@ -867,6 +872,7 @@ export function UsageStatisticsPanel({
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
     if (!hasExplicitRequestFilters) return
+    if (hasImpossibleRequestFilters) return
     if (usageRequestLoading || !usageRequestHasMore) return
     if (filteredUsageRequestRows.length > 0) return
     void loadMoreUsageRequests()
@@ -874,6 +880,7 @@ export function UsageStatisticsPanel({
     effectiveDetailsTab,
     filteredUsageRequestRows.length,
     hasExplicitRequestFilters,
+    hasImpossibleRequestFilters,
     loadMoreUsageRequests,
     usageRequestHasMore,
     usageRequestLoading,
@@ -1208,20 +1215,12 @@ export function UsageStatisticsPanel({
                       (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
                     return { x, y, present: series.present[idx] }
                   })
+                  const providerPoints = points
+                    .filter((point) => point.present)
+                    .map((point) => ({ x: point.x, y: point.y }))
                   let pathD = ''
-                  let segment: Array<{ x: number; y: number }> = []
-                  for (const point of points) {
-                    if (!point.present) {
-                      if (segment.length > 1) {
-                        pathD += ` ${buildSmoothLinePath(segment, { min: requestChartTopY, max: requestChartBottomY })}`
-                      }
-                      segment = []
-                      continue
-                    }
-                    segment.push({ x: point.x, y: point.y })
-                  }
-                  if (segment.length > 1) {
-                    pathD += ` ${buildSmoothLinePath(segment, { min: requestChartTopY, max: requestChartBottomY })}`
+                  if (providerPoints.length > 1) {
+                    pathD = buildSmoothLinePath(providerPoints, { min: requestChartTopY, max: requestChartBottomY })
                   }
                   if (!pathD.trim()) return null
                   return (
@@ -1656,7 +1655,7 @@ export function UsageStatisticsPanel({
                   if (wrap) {
                     setUsageRequestTableScrollLeft(wrap.scrollLeft)
                     if (usageRequestHasMore && !usageRequestLoading) {
-                      if (hasExplicitRequestFilters) {
+                      if (hasExplicitRequestFilters && !hasImpossibleRequestFilters) {
                         const nearBottom = isNearBottom(wrap, 24)
                         if (nearBottom && !usageRequestWasNearBottomRef.current) {
                           void loadMoreUsageRequests()
