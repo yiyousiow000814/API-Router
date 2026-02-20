@@ -218,6 +218,9 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_usage_requests_provider ON usage_requests(provider);
             CREATE INDEX IF NOT EXISTS idx_usage_requests_model ON usage_requests(model);
             CREATE INDEX IF NOT EXISTS idx_usage_requests_origin ON usage_requests(origin);
+            CREATE INDEX IF NOT EXISTS idx_usage_requests_provider_lc ON usage_requests(lower(provider));
+            CREATE INDEX IF NOT EXISTS idx_usage_requests_model_lc ON usage_requests(lower(model));
+            CREATE INDEX IF NOT EXISTS idx_usage_requests_origin_lc ON usage_requests(lower(origin));
             ",
         )?;
         let current_schema: Option<String> = conn
@@ -998,6 +1001,13 @@ impl Store {
         for (key, encoded) in usage_req_updates {
             let _ = self.db.insert(key, encoded);
         }
+        {
+            let conn = self.events_db.lock();
+            let _ = conn.execute(
+                "UPDATE usage_requests SET provider=?1 WHERE provider=?2",
+                params![new, old],
+            );
+        }
 
         for prefix in ["usage_day:", "spend_day:", "spend_manual_day:"] {
             let old_prefix = format!("{prefix}{old}:");
@@ -1254,6 +1264,7 @@ impl Store {
         out
     }
 
+    #[allow(dead_code)]
     pub fn list_usage_requests(&self, limit: usize) -> Vec<Value> {
         let mut out: Vec<Value> = Vec::with_capacity(limit.min(1024));
         let conn = self.events_db.lock();

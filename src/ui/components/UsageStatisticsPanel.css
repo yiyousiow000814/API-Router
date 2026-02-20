@@ -448,6 +448,25 @@
   background: rgba(var(--ao-accent-rgb), 0.08);
 }
 
+.aoUsageReqFilterOptionBtn input[type='checkbox'] {
+  appearance: auto;
+  -webkit-appearance: checkbox;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: rgba(var(--ao-accent-rgb), 1);
+  -webkit-tap-highlight-color: transparent;
+  transition: none !important;
+}
+
+.aoUsageReqFilterOptionBtn input[type='checkbox']:focus,
+.aoUsageReqFilterOptionBtn input[type='checkbox']:active {
+  outline: none;
+  box-shadow: none;
+  filter: none;
+}
+
 .aoUsageReqFilterOptionSelectAll {
   font-weight: 650;
 }

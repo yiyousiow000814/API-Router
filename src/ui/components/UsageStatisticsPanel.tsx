@@ -579,7 +579,7 @@ export function UsageStatisticsPanel({
     void refreshUsageRequests(USAGE_REQUEST_PAGE_SIZE)
   }, [effectiveDetailsTab, usageActivityUnixMs, refreshUsageRequests])
 
-  const loadMoreUsageRequests = async () => {
+  const loadMoreUsageRequests = useCallback(async () => {
     if (usageRequestLoading || !usageRequestHasMore) return
     if (usageRequestUsingTestFallback) {
       const merged = usageRequestTestRows.slice(0, usageRequestRows.length + USAGE_REQUEST_PAGE_SIZE)
@@ -605,7 +605,17 @@ export function UsageStatisticsPanel({
     } finally {
       setUsageRequestLoading(false)
     }
-  }
+  }, [
+    requestFetchHours,
+    requestFetchModels,
+    requestFetchOrigins,
+    requestFetchProviders,
+    usageRequestHasMore,
+    usageRequestLoading,
+    usageRequestRows.length,
+    usageRequestTestRows,
+    usageRequestUsingTestFallback,
+  ])
 
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
@@ -618,6 +628,7 @@ export function UsageStatisticsPanel({
   }, [
     effectiveDetailsTab,
     hasExplicitRequestFilters,
+    loadMoreUsageRequests,
     requestDefaultDay,
     usageRequestHasMore,
     usageRequestLoading,
@@ -805,6 +816,21 @@ export function UsageStatisticsPanel({
     usageRequestRows,
     usageRequestTimeFilter,
   ])
+  useEffect(() => {
+    if (effectiveDetailsTab !== 'requests') return
+    if (!hasExplicitRequestFilters) return
+    if (usageRequestLoading || !usageRequestHasMore) return
+    if (filteredUsageRequestRows.length > 0) return
+    void loadMoreUsageRequests()
+  }, [
+    effectiveDetailsTab,
+    filteredUsageRequestRows.length,
+    hasExplicitRequestFilters,
+    loadMoreUsageRequests,
+    usageRequestHasMore,
+    usageRequestLoading,
+    usageRequestRows.length,
+  ])
   const requestChartWidth = 1000
   const requestChartHeight = 176
   const requestChartMinX = 54
@@ -880,6 +906,11 @@ export function UsageStatisticsPanel({
     )
     return { requests, ...totals }
   }, [filteredUsageRequestRows])
+  const filteredSelectionCount = useCallback((selectedCount: number, totalCount: number) => {
+    if (selectedCount <= 0) return 0
+    if (totalCount <= 0) return selectedCount
+    return selectedCount < totalCount ? selectedCount : 0
+  }, [])
   const openUsageRequestFilterMenu = useCallback(
     (columnKey: UsageRequestColumnFilterKey, trigger: HTMLButtonElement) => {
       const rect = trigger.getBoundingClientRect()
@@ -1163,21 +1194,58 @@ export function UsageStatisticsPanel({
                   <tr>
                     {USAGE_REQUEST_COLUMN_FILTERS.map((column) => {
                       const isOpen = activeUsageRequestFilterMenu?.key === column.key
-                      const hasFilter =
+                      const filterCount =
                         column.key === 'time'
                           ? usageRequestTimeFilter.trim().length > 0
+                            ? 1
+                            : 0
                           : column.key === 'provider'
-                            ? usageRequestMultiFilters.provider.length > 0 ||
-                              (useGlobalRequestFilters && usageFilterProviders.length > 0)
+                            ? Math.max(
+                                filteredSelectionCount(
+                                  usageRequestMultiFilters.provider.length,
+                                  usageRequestFilterOptions.provider.length,
+                                ),
+                                useGlobalRequestFilters
+                                  ? filteredSelectionCount(
+                                      usageFilterProviders.length,
+                                      usageProviderFilterOptions.length,
+                                    )
+                                  : 0,
+                              )
                             : column.key === 'model'
-                              ? usageRequestMultiFilters.model.length > 0 ||
-                                (useGlobalRequestFilters && usageFilterModels.length > 0)
+                              ? Math.max(
+                                  filteredSelectionCount(
+                                    usageRequestMultiFilters.model.length,
+                                    usageRequestFilterOptions.model.length,
+                                  ),
+                                  useGlobalRequestFilters
+                                    ? filteredSelectionCount(
+                                        usageFilterModels.length,
+                                        usageModelFilterOptions.length,
+                                      )
+                                    : 0,
+                                )
                               : column.key === 'origin'
-                                ? usageRequestMultiFilters.origin.length > 0 ||
-                                  (useGlobalRequestFilters && usageFilterOrigins.length > 0)
+                                ? Math.max(
+                                    filteredSelectionCount(
+                                      usageRequestMultiFilters.origin.length,
+                                      usageRequestFilterOptions.origin.length,
+                                    ),
+                                    useGlobalRequestFilters
+                                      ? filteredSelectionCount(
+                                          usageFilterOrigins.length,
+                                          usageOriginFilterOptions.length,
+                                        )
+                                      : 0,
+                                  )
                                 : column.key === 'session'
-                                  ? usageRequestMultiFilters.session.length > 0
-                                  : false
+                                  ? filteredSelectionCount(
+                                      usageRequestMultiFilters.session.length,
+                                      usageRequestFilterOptions.session.length,
+                                    )
+                                  : 0
+                      const hasFilter =
+                        filterCount > 0
                       return (
                         <th key={`usage-requests-head-${column.key}`}>
                           <div className="aoUsageReqHeadCell">
@@ -1193,10 +1261,12 @@ export function UsageStatisticsPanel({
                                 onClick={(event) => {
                                   event.stopPropagation()
                                   event.preventDefault()
-                              }}
+                                }}
                               >
                                 <span className="aoUsageReqHeadLabel">{column.label}</span>
-                                {hasFilter ? <span className="aoUsageReqHeadFilterBadge is-single">1</span> : null}
+                                {hasFilter ? (
+                                  <span className="aoUsageReqHeadFilterBadge is-single">{filterCount}</span>
+                                ) : null}
                                 <span className="aoUsageReqHeadChevron" aria-hidden="true">
                                   ▾
                                 </span>
@@ -1381,7 +1451,8 @@ export function UsageStatisticsPanel({
                           .slice(0, 40)
                         const selectedSet = new Set(usageRequestMultiFilters[key])
                         const allVisibleSelected =
-                          visibleOptions.length > 0 && visibleOptions.every((item) => selectedSet.has(item))
+                          selectedSet.size === 0 ||
+                          (visibleOptions.length > 0 && visibleOptions.every((item) => selectedSet.has(item)))
                         return (
                           <>
                             <label className="aoUsageReqFilterOptionBtn aoUsageReqFilterOptionSelectAll">
@@ -1390,7 +1461,8 @@ export function UsageStatisticsPanel({
                                 checked={allVisibleSelected}
                                 onChange={(event) =>
                                   setUsageRequestMultiFilters((prev) => {
-                                    const current = new Set(prev[key])
+                                    const current =
+                                      prev[key].length === 0 ? new Set(options) : new Set(prev[key])
                                     if (event.target.checked) {
                                       for (const item of visibleOptions) current.add(item)
                                     } else {
@@ -1410,20 +1482,22 @@ export function UsageStatisticsPanel({
                                 <input
                                   type="checkbox"
                                   checked={
-                                    activeUsageRequestFilterMenu.key === 'provider'
+                                    usageRequestMultiFilters[key].length === 0 ||
+                                    (activeUsageRequestFilterMenu.key === 'provider'
                                       ? usageRequestMultiFilters.provider.includes(item)
                                       : activeUsageRequestFilterMenu.key === 'model'
                                         ? usageRequestMultiFilters.model.includes(item)
                                         : activeUsageRequestFilterMenu.key === 'origin'
                                           ? usageRequestMultiFilters.origin.includes(item)
-                                          : usageRequestMultiFilters.session.includes(item)
+                                          : usageRequestMultiFilters.session.includes(item))
                                   }
                                   onChange={(event) =>
                                     setUsageRequestMultiFilters((prev) => {
-                                      const list = prev[key]
+                                      const baseList =
+                                        prev[key].length === 0 ? [...options] : prev[key]
                                       const nextList = event.target.checked
-                                        ? [...list, item]
-                                        : list.filter((entry) => entry !== item)
+                                        ? [...new Set([...baseList, item])]
+                                        : baseList.filter((entry) => entry !== item)
                                       return { ...prev, [key]: nextList }
                                     })
                                   }

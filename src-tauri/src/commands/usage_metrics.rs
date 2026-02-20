@@ -11,6 +11,48 @@ fn normalize_usage_origin(origin: Option<&str>) -> String {
     .to_string()
 }
 
+fn normalize_usage_origin_filter(origins: Option<Vec<String>>) -> BTreeSet<String> {
+    origins
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let normalized = normalize_usage_origin(Some(trimmed));
+            if normalized == crate::constants::USAGE_ORIGIN_UNKNOWN
+                && !trimmed.eq_ignore_ascii_case(crate::constants::USAGE_ORIGIN_UNKNOWN)
+            {
+                return None;
+            }
+            Some(normalized)
+        })
+        .collect()
+}
+
+fn list_usage_requests_in_window(
+    store: &crate::orchestrator::store::Store,
+    since_unix_ms: u64,
+) -> Vec<Value> {
+    const PAGE_SIZE: usize = 2_000;
+    let mut out: Vec<Value> = Vec::new();
+    let mut offset = 0usize;
+    loop {
+        let (rows, has_more) =
+            store.list_usage_requests_page(since_unix_ms, &[], &[], &[], PAGE_SIZE, offset);
+        if rows.is_empty() {
+            break;
+        }
+        offset = offset.saturating_add(rows.len());
+        out.extend(rows);
+        if !has_more {
+            break;
+        }
+    }
+    out
+}
+
 #[tauri::command]
 pub(crate) fn get_usage_request_entries(
     state: tauri::State<'_, app_state::AppState>,
@@ -37,11 +79,7 @@ pub(crate) fn get_usage_request_entries(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
-    let origin_filter: BTreeSet<String> = origins
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| normalize_usage_origin(Some(&s)))
-        .collect();
+    let origin_filter = normalize_usage_origin_filter(origins);
     let has_provider_filter = !provider_filter.is_empty();
     let has_model_filter = !model_filter.is_empty();
     let has_origin_filter = !origin_filter.is_empty();
@@ -158,11 +196,7 @@ pub(crate) fn get_usage_statistics(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
-    let origin_filter: BTreeSet<String> = origins
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| normalize_usage_origin(Some(&s)))
-        .collect();
+    let origin_filter = normalize_usage_origin_filter(origins);
     let has_provider_filter = !provider_filter.is_empty();
     let has_model_filter = !model_filter.is_empty();
     let has_origin_filter = !origin_filter.is_empty();
@@ -174,7 +208,7 @@ pub(crate) fn get_usage_statistics(
     let active_bucket_ms = 60 * 60 * 1000;
     let projection_hours = projection_hours_until_midnight_cap_16();
 
-    let records = state.gateway.store.list_usage_requests(usize::MAX);
+    let records = list_usage_requests_in_window(&state.gateway.store, since_unix_ms);
     let quota = state.gateway.store.list_quota_snapshots();
     let provider_pricing = state.secrets.list_provider_pricing();
 
