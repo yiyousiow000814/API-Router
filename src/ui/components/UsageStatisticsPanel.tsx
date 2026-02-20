@@ -580,14 +580,18 @@ export function UsageStatisticsPanel({
       usageRequestTestRows,
     ],
   )
+  const initialRefreshLimit = hasExplicitRequestFilters
+    ? USAGE_REQUEST_PAGE_SIZE
+    : 1000
 
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
     usageRequestWasNearBottomRef.current = false
     usageRequestLastActivityRef.current = usageActivityUnixMs ?? null
-    void refreshUsageRequests(USAGE_REQUEST_PAGE_SIZE)
+    void refreshUsageRequests(initialRefreshLimit)
   }, [
     effectiveDetailsTab,
+    initialRefreshLimit,
     refreshUsageRequests,
   ])
 
@@ -601,8 +605,8 @@ export function UsageStatisticsPanel({
     }
     if (usageActivityUnixMs <= last) return
     usageRequestLastActivityRef.current = usageActivityUnixMs
-    void refreshUsageRequests(USAGE_REQUEST_PAGE_SIZE)
-  }, [effectiveDetailsTab, usageActivityUnixMs, refreshUsageRequests])
+    void refreshUsageRequests(initialRefreshLimit)
+  }, [effectiveDetailsTab, initialRefreshLimit, usageActivityUnixMs, refreshUsageRequests])
 
   const loadMoreUsageRequests = useCallback(async () => {
     if (usageRequestLoading || !usageRequestHasMore || usageRequestRefreshInFlightRef.current) return
@@ -703,15 +707,20 @@ export function UsageStatisticsPanel({
     const pointCount = usageRequestGraphPointCount
     const providerSeries = providers.map((provider, providerIndex) => {
       const values = new Array<number>(pointCount).fill(0)
+      const present = new Array<boolean>(pointCount).fill(false)
       for (let idx = 0; idx < pointCount; idx += 1) {
         const row = source[idx]
-        values[idx] = row && row.provider === provider ? row.total_tokens : 0
+        if (row && row.provider === provider) {
+          values[idx] = row.total_tokens
+          present[idx] = true
+        }
       }
       return {
         kind: 'provider' as const,
         provider,
         color: USAGE_REQUEST_GRAPH_COLORS[providerIndex % USAGE_REQUEST_GRAPH_COLORS.length],
         values,
+        present,
       }
     })
     return providerSeries
@@ -754,7 +763,7 @@ export function UsageStatisticsPanel({
     const windowStart =
       loadedSpanDays >= dayWindow
         ? latestDay - (dayWindow - 1) * dayMs
-        : earliestDay
+        : latestDay - (dayWindow - 1) * dayMs
     const days = Array.from({ length: dayWindow }, (_, idx) => windowStart + idx * dayMs)
     const labelStride = days.length > 36 ? 3 : days.length > 24 ? 2 : 1
     return days.map((day, index) => {
@@ -1197,12 +1206,24 @@ export function UsageStatisticsPanel({
                     const y =
                       requestChartBottomY -
                       (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
-                    return { x, y }
+                    return { x, y, present: series.present[idx] }
                   })
-                  const pathD = buildSmoothLinePath(points, {
-                    min: requestChartTopY,
-                    max: requestChartBottomY,
-                  })
+                  let pathD = ''
+                  let segment: Array<{ x: number; y: number }> = []
+                  for (const point of points) {
+                    if (!point.present) {
+                      if (segment.length > 1) {
+                        pathD += ` ${buildSmoothLinePath(segment, { min: requestChartTopY, max: requestChartBottomY })}`
+                      }
+                      segment = []
+                      continue
+                    }
+                    segment.push({ x: point.x, y: point.y })
+                  }
+                  if (segment.length > 1) {
+                    pathD += ` ${buildSmoothLinePath(segment, { min: requestChartTopY, max: requestChartBottomY })}`
+                  }
+                  if (!pathD.trim()) return null
                   return (
                     <path
                       key={`request-line-series-${series.provider}`}
@@ -1229,6 +1250,7 @@ export function UsageStatisticsPanel({
                 ) : null}
                 {lineHoverIndex != null
                   ? usageRequestLineSeries.map((series) => {
+                      if (!series.present[lineHoverIndex]) return null
                       const value = series.values[lineHoverIndex] ?? 0
                       const x =
                         requestChartMinX +
