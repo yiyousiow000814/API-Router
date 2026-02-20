@@ -218,7 +218,9 @@
 }
 
 .aoUsageRequestTableSurface {
-  max-height: min(56vh, 560px);
+  height: auto;
+  max-height: none;
+  max-height: min(76vh, 920px);
 }
 
 .aoUsageRequestTableHead {

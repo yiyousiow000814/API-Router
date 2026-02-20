@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Config, UsageStatistics } from '../types'
 import './UsageStatisticsPanel.css'
@@ -243,6 +243,7 @@ export function UsageStatisticsPanel({
   const [usageRequestLoading, setUsageRequestLoading] = useState(false)
   const [usageRequestError, setUsageRequestError] = useState('')
   const [usageRequestUsingTestFallback, setUsageRequestUsingTestFallback] = useState(false)
+  const usageRequestRefreshInFlightRef = useRef(false)
   const usageRequestTestFallbackEnabled = useMemo(() => readTestFlagFromLocation() || import.meta.env.DEV, [])
   const usageRequestTestRows = useMemo(
     () => buildUsageRequestTestRows(usageStatistics, usageWindowHours),
@@ -315,10 +316,11 @@ export function UsageStatisticsPanel({
   ])
 
   useEffect(() => () => clearUsageRequestScrollbarTimers(), [clearUsageRequestScrollbarTimers])
-  useEffect(() => {
-    if (effectiveDetailsTab !== 'requests') return
-    let cancelled = false
-    const fetchRequests = async () => {
+
+  const refreshUsageRequests = useCallback(
+    async (limit: number) => {
+      if (usageRequestRefreshInFlightRef.current) return
+      usageRequestRefreshInFlightRef.current = true
       setUsageRequestLoading(true)
       setUsageRequestError('')
       setUsageRequestUsingTestFallback(false)
@@ -328,16 +330,14 @@ export function UsageStatisticsPanel({
           providers: usageFilterProviders.length ? usageFilterProviders : null,
           models: usageFilterModels.length ? usageFilterModels : null,
           origins: usageFilterOrigins.length ? usageFilterOrigins : null,
-          limit: USAGE_REQUEST_PAGE_SIZE,
+          limit,
           offset: 0,
         })
-        if (cancelled) return
         setUsageRequestRows(res.rows ?? [])
         setUsageRequestHasMore(Boolean(res.has_more))
       } catch (e) {
-        if (cancelled) return
         if (usageRequestTestFallbackEnabled) {
-          const next = usageRequestTestRows.slice(0, USAGE_REQUEST_PAGE_SIZE)
+          const next = usageRequestTestRows.slice(0, Math.min(limit, usageRequestTestRows.length))
           setUsageRequestRows(next)
           setUsageRequestHasMore(usageRequestTestRows.length > next.length)
           setUsageRequestUsingTestFallback(true)
@@ -348,21 +348,31 @@ export function UsageStatisticsPanel({
           setUsageRequestError(String(e))
         }
       } finally {
-        if (!cancelled) setUsageRequestLoading(false)
+        usageRequestRefreshInFlightRef.current = false
+        setUsageRequestLoading(false)
       }
-    }
-    void fetchRequests()
-    return () => {
-      cancelled = true
-    }
+    },
+    [
+      usageWindowHours,
+      usageFilterProviders,
+      usageFilterModels,
+      usageFilterOrigins,
+      usageRequestTestFallbackEnabled,
+      usageRequestTestRows,
+    ],
+  )
+
+  useEffect(() => {
+    if (effectiveDetailsTab !== 'requests') return
+    void refreshUsageRequests(Math.max(USAGE_REQUEST_PAGE_SIZE, usageRequestRows.length))
+    const timer = window.setInterval(() => {
+      void refreshUsageRequests(Math.max(USAGE_REQUEST_PAGE_SIZE, usageRequestRows.length))
+    }, 15_000)
+    return () => window.clearInterval(timer)
   }, [
     effectiveDetailsTab,
-    usageWindowHours,
-    usageFilterProviders,
-    usageFilterModels,
-    usageFilterOrigins,
-    usageRequestTestFallbackEnabled,
-    usageRequestTestRows,
+    usageRequestRows.length,
+    refreshUsageRequests,
   ])
 
   const loadMoreUsageRequests = async () => {
