@@ -798,7 +798,7 @@ export function UsageStatisticsPanel({
     [usageRequestDailyBars],
   )
   const filteredUsageRequestRows = useMemo(() => {
-    const defaultTodayOnly = effectiveDetailsTab === 'requests' && showFilters && !hasExplicitRequestFilters
+    const defaultTodayOnly = effectiveDetailsTab === 'requests' && !hasExplicitRequestFilters
     if (!hasExplicitRequestFilters && !defaultTodayOnly) return usageRequestRows
     const timeDay = parseDateInputToDayStart(usageRequestTimeFilter)
     const timeNeedle = usageRequestTimeFilter.trim().toLowerCase()
@@ -1082,9 +1082,7 @@ export function UsageStatisticsPanel({
             <div className="aoHint">
               {hasExplicitRequestFilters
                 ? 'Per-request rows (newest first), aligned with current filters/window.'
-                : showFilters
-                  ? 'Default view shows today only. Use column filters to query across all days.'
-                  : 'Per-request rows (newest first). Scroll to load more rows.'}
+                : 'Default view shows today only. Use column filters to query across all days.'}
             </div>
           </div>
           {onBackToUsageOverview ? (
@@ -1602,11 +1600,15 @@ export function UsageStatisticsPanel({
                   if (wrap) {
                     setUsageRequestTableScrollLeft(wrap.scrollLeft)
                     if (usageRequestHasMore && !usageRequestLoading) {
-                      const nearBottom = isNearBottom(wrap, 24)
-                      if (nearBottom && !usageRequestWasNearBottomRef.current) {
-                        void loadMoreUsageRequests()
+                      if (hasExplicitRequestFilters) {
+                        const nearBottom = isNearBottom(wrap, 24)
+                        if (nearBottom && !usageRequestWasNearBottomRef.current) {
+                          void loadMoreUsageRequests()
+                        }
+                        usageRequestWasNearBottomRef.current = nearBottom
+                      } else {
+                        usageRequestWasNearBottomRef.current = false
                       }
-                      usageRequestWasNearBottomRef.current = nearBottom
                     } else {
                       usageRequestWasNearBottomRef.current = false
                     }
@@ -1706,7 +1708,7 @@ export function UsageStatisticsPanel({
                 </colgroup>
                 <tbody>
                   <tr>
-                    <td>{hasExplicitRequestFilters ? 'Filtered' : showFilters ? 'Today' : 'Loaded'} Summary</td>
+                    <td>{hasExplicitRequestFilters ? 'Filtered' : 'Today'} Summary</td>
                     <td>Total {requestTableSummary.total.toLocaleString()}</td>
                     <td>Requests {requestTableSummary.requests.toLocaleString()}</td>
                     <td />
