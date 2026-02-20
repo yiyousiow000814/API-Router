@@ -1,3 +1,5 @@
+import { useCallback, useRef } from 'react'
+
 type TopPage = 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
 
 type AppTopNavProps = {
@@ -8,6 +10,19 @@ type AppTopNavProps = {
   onUsageRequestsIntent?: () => void
 }
 
+const PREFETCH_PROXIMITY_RADIUS_PX = 54
+
+function isPointerNearButton(event: React.MouseEvent<HTMLDivElement>, button: HTMLButtonElement | null): boolean {
+  if (!button) return false
+  const rect = button.getBoundingClientRect()
+  return (
+    event.clientX >= rect.left - PREFETCH_PROXIMITY_RADIUS_PX &&
+    event.clientX <= rect.right + PREFETCH_PROXIMITY_RADIUS_PX &&
+    event.clientY >= rect.top - PREFETCH_PROXIMITY_RADIUS_PX &&
+    event.clientY <= rect.bottom + PREFETCH_PROXIMITY_RADIUS_PX
+  )
+}
+
 export function AppTopNav({
   activePage,
   onSwitchPage,
@@ -15,13 +30,28 @@ export function AppTopNav({
   onUsageStatisticsIntent,
   onUsageRequestsIntent,
 }: AppTopNavProps) {
+  const usageBtnRef = useRef<HTMLButtonElement | null>(null)
+  const requestsBtnRef = useRef<HTMLButtonElement | null>(null)
+
+  const handleTopNavPointerIntent = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      if (isPointerNearButton(event, usageBtnRef.current)) onUsageStatisticsIntent?.()
+      if (isPointerNearButton(event, requestsBtnRef.current)) onUsageRequestsIntent?.()
+    },
+    [onUsageRequestsIntent, onUsageStatisticsIntent],
+  )
+
   return (
     <div className="aoBrandRight">
-      <div className="aoTopNav" role="tablist" aria-label="Main pages">
+      <div className="aoTopNav" role="tablist" aria-label="Main pages" onMouseMove={handleTopNavPointerIntent}>
         <button
           className={`aoTopNavBtn${activePage === 'dashboard' ? ' is-active' : ''}`}
           role="tab"
           aria-selected={activePage === 'dashboard'}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return
+            onSwitchPage('dashboard')
+          }}
           onClick={() => onSwitchPage('dashboard')}
         >
           <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
@@ -33,28 +63,15 @@ export function AppTopNav({
           <span>Dashboard</span>
         </button>
         <button
-          className={`aoTopNavBtn${activePage === 'usage_statistics' ? ' is-active' : ''}`}
-          role="tab"
-          aria-selected={activePage === 'usage_statistics'}
-          onClick={() => onSwitchPage('usage_statistics')}
-          onMouseEnter={() => onUsageStatisticsIntent?.()}
-          onFocus={() => onUsageStatisticsIntent?.()}
-        >
-          <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 19.5h16" />
-            <path d="M7 17.5V9.5" />
-            <path d="M12 17.5V5.5" />
-            <path d="M17 17.5V12.5" />
-            <path d="M5.5 6.5 9 9l4-3.5 4 2.5" />
-          </svg>
-          <span>Usage</span>
-        </button>
-        <button
+          ref={requestsBtnRef}
           className={`aoTopNavBtn${activePage === 'usage_requests' ? ' is-active' : ''}`}
           role="tab"
           aria-selected={activePage === 'usage_requests'}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return
+            onSwitchPage('usage_requests')
+          }}
           onClick={() => onSwitchPage('usage_requests')}
-          onMouseEnter={() => onUsageRequestsIntent?.()}
           onFocus={() => onUsageRequestsIntent?.()}
         >
           <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
@@ -71,9 +88,34 @@ export function AppTopNav({
           <span>Requests</span>
         </button>
         <button
+          ref={usageBtnRef}
+          className={`aoTopNavBtn${activePage === 'usage_statistics' ? ' is-active' : ''}`}
+          role="tab"
+          aria-selected={activePage === 'usage_statistics'}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return
+            onSwitchPage('usage_statistics')
+          }}
+          onClick={() => onSwitchPage('usage_statistics')}
+          onFocus={() => onUsageStatisticsIntent?.()}
+        >
+          <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 19.5h16" />
+            <path d="M7 17.5V9.5" />
+            <path d="M12 17.5V5.5" />
+            <path d="M17 17.5V12.5" />
+            <path d="M5.5 6.5 9 9l4-3.5 4 2.5" />
+          </svg>
+          <span>Analytics</span>
+        </button>
+        <button
           className={`aoTopNavBtn${activePage === 'provider_switchboard' ? ' is-active' : ''}`}
           role="tab"
           aria-selected={activePage === 'provider_switchboard'}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return
+            onSwitchPage('provider_switchboard')
+          }}
           onClick={() => onSwitchPage('provider_switchboard')}
         >
           <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
@@ -88,6 +130,10 @@ export function AppTopNav({
           className={`aoTopNavBtn${activePage === 'event_log' ? ' is-active' : ''}`}
           role="tab"
           aria-selected={activePage === 'event_log'}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return
+            onSwitchPage('event_log')
+          }}
           onClick={() => onSwitchPage('event_log')}
         >
           <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">

@@ -1,9 +1,8 @@
 use chrono::{Datelike, Local, TimeZone};
 use parking_lot::Mutex;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, params_from_iter, OptionalExtension};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 mod usage_tracking;
@@ -12,7 +11,6 @@ mod usage_tracking;
 pub struct Store {
     db: sled::Db,
     events_db: Arc<Mutex<rusqlite::Connection>>,
-    usage_prune_seq: Arc<AtomicU64>,
 }
 
 const LEDGER_DEFAULT: &str = r#"{"since_last_quota_refresh_input_tokens":0,"since_last_quota_refresh_output_tokens":0,"since_last_quota_refresh_total_tokens":0,"last_reset_unix_ms":0}"#;
@@ -25,6 +23,21 @@ struct UsageTokenIncrements {
     cache_creation_input_tokens: u64,
     cache_read_input_tokens: u64,
 }
+
+type UsageRequestSqlRow = (
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+);
 
 pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<String> {
     response_obj
@@ -41,12 +54,12 @@ pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<Stri
 }
 
 impl Store {
-    const MAX_USAGE_REQUESTS: usize = 500_000;
-    const USAGE_PRUNE_EVERY: u64 = 128;
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
     const EVENTS_SQLITE_SCHEMA_VERSION: &'static str = "1";
     const EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str = "migrated_from_sled_v1";
     const EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY: &'static str = "merged_legacy_sqlite_v1";
+    const USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str =
+        "usage_requests_migrated_from_sled_v1";
 
     fn allowed_key_prefixes() -> [&'static [u8]; 10] {
         [
@@ -119,7 +132,6 @@ impl Store {
         let store = Self {
             db,
             events_db: Arc::new(Mutex::new(events_db)),
-            usage_prune_seq: Arc::new(AtomicU64::new(0)),
         };
         store
             .ensure_event_sqlite_schema()
@@ -188,6 +200,24 @@ impl Store {
               errors INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_event_day_start ON event_day_counts(day_start_unix_ms ASC);
+            CREATE TABLE IF NOT EXISTS usage_requests(
+              id TEXT PRIMARY KEY,
+              unix_ms INTEGER NOT NULL,
+              provider TEXT NOT NULL,
+              api_key_ref TEXT NOT NULL,
+              model TEXT NOT NULL,
+              origin TEXT NOT NULL,
+              session_id TEXT NOT NULL,
+              input_tokens INTEGER NOT NULL,
+              output_tokens INTEGER NOT NULL,
+              total_tokens INTEGER NOT NULL,
+              cache_creation_input_tokens INTEGER NOT NULL,
+              cache_read_input_tokens INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_requests_unix_ms ON usage_requests(unix_ms DESC);
+            CREATE INDEX IF NOT EXISTS idx_usage_requests_provider ON usage_requests(provider);
+            CREATE INDEX IF NOT EXISTS idx_usage_requests_model ON usage_requests(model);
+            CREATE INDEX IF NOT EXISTS idx_usage_requests_origin ON usage_requests(origin);
             ",
         )?;
         let current_schema: Option<String> = conn
@@ -215,14 +245,25 @@ impl Store {
                  ON CONFLICT(key) DO UPDATE SET value='0'",
                 [Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY],
             )?;
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
+                [Self::USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY],
+            )?;
         }
         conn.execute(
             "INSERT INTO event_meta(key, value) VALUES(?1, '0')
              ON CONFLICT(key) DO NOTHING",
             [Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY],
         )?;
+        conn.execute(
+            "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+             ON CONFLICT(key) DO NOTHING",
+            [Self::USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY],
+        )?;
         drop(conn);
         self.migrate_legacy_events_from_sled_if_needed()?;
+        self.migrate_usage_requests_from_sled_if_needed()?;
         Ok(())
     }
 
@@ -514,64 +555,189 @@ impl Store {
             && j.get("total_tokens").and_then(|v| v.as_u64()).is_some()
     }
 
-    fn prune_usage_requests(&self) {
-        let boundary = self
-            .db
-            .scan_prefix(b"usage_req:")
-            .rev()
-            .nth(Self::MAX_USAGE_REQUESTS);
-
-        let Some(Ok((end_key, _))) = boundary else {
-            return;
-        };
-
-        let start = b"usage_req:".to_vec();
-        let end = end_key.to_vec();
-
-        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
-        for res in self.db.range(start..=end) {
-            let Ok((k, _)) = res else {
-                continue;
-            };
-            batch.push(k);
-            if batch.len() >= 1024 {
-                for key in batch.drain(..) {
-                    let _ = self.db.remove(key);
-                }
-            }
-        }
-        for key in batch.drain(..) {
-            let _ = self.db.remove(key);
-        }
+    fn parse_usage_request_key_id(key: &[u8]) -> Option<String> {
+        let body = key.strip_prefix(b"usage_req:")?;
+        let split_at = body.iter().position(|b| *b == b':')?;
+        let id_bytes = body.get(split_at + 1..)?;
+        std::str::from_utf8(id_bytes).ok().map(str::to_string)
     }
 
-    fn prune_usage_requests_db(db: &sled::Db) {
-        let boundary = db
-            .scan_prefix(b"usage_req:")
-            .rev()
-            .nth(Self::MAX_USAGE_REQUESTS);
-        let Some(Ok((end_key, _))) = boundary else {
-            return;
+    fn migrate_usage_requests_from_sled_if_needed(&self) -> anyhow::Result<()> {
+        let already_migrated = {
+            let conn = self.events_db.lock();
+            conn.query_row(
+                "SELECT value FROM event_meta WHERE key=?1",
+                [Self::USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .as_deref()
+                == Some("1")
         };
+        if already_migrated {
+            return Ok(());
+        }
 
-        let start = b"usage_req:".to_vec();
-        let end = end_key.to_vec();
-
-        let mut batch: Vec<sled::IVec> = Vec::with_capacity(1024);
-        for res in db.range(start..=end) {
-            let Ok((k, _)) = res else {
+        let mut staged: Vec<UsageRequestSqlRow> = Vec::new();
+        for res in self.db.scan_prefix(b"usage_req:") {
+            let Ok((k, v)) = res else {
                 continue;
             };
-            batch.push(k);
-            if batch.len() >= 1024 {
-                for key in batch.drain(..) {
-                    let _ = db.remove(key);
-                }
+            let Some(id) = Self::parse_usage_request_key_id(k.as_ref()) else {
+                continue;
+            };
+            let Ok(j) = serde_json::from_slice::<Value>(&v) else {
+                continue;
+            };
+            if !Self::is_valid_usage_request(&j) {
+                continue;
+            }
+            let Some(unix_ms_u64) = j.get("unix_ms").and_then(|x| x.as_u64()) else {
+                continue;
+            };
+            let Ok(unix_ms) = i64::try_from(unix_ms_u64) else {
+                continue;
+            };
+            let provider = j
+                .get("provider")
+                .and_then(|x| x.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let api_key_ref = j
+                .get("api_key_ref")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("-")
+                .to_string();
+            let model = j
+                .get("model")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("unknown")
+                .to_string();
+            let origin = j
+                .get("origin")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(crate::constants::USAGE_ORIGIN_UNKNOWN)
+                .to_ascii_lowercase();
+            let session_id = j
+                .get("session_id")
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("-")
+                .to_string();
+            let Ok(input_tokens) =
+                i64::try_from(j.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0))
+            else {
+                continue;
+            };
+            let Ok(output_tokens) =
+                i64::try_from(j.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0))
+            else {
+                continue;
+            };
+            let Ok(total_tokens) =
+                i64::try_from(j.get("total_tokens").and_then(|x| x.as_u64()).unwrap_or(0))
+            else {
+                continue;
+            };
+            let Ok(cache_creation_input_tokens) = i64::try_from(
+                j.get("cache_creation_input_tokens")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0),
+            ) else {
+                continue;
+            };
+            let Ok(cache_read_input_tokens) = i64::try_from(
+                j.get("cache_read_input_tokens")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0),
+            ) else {
+                continue;
+            };
+            staged.push((
+                id,
+                unix_ms,
+                provider,
+                api_key_ref,
+                model,
+                origin,
+                session_id,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+            ));
+            if staged.len() >= 2048 {
+                self.flush_staged_usage_requests(&staged)?;
+                staged.clear();
             }
         }
-        for key in batch.drain(..) {
-            let _ = db.remove(key);
+        if !staged.is_empty() {
+            self.flush_staged_usage_requests(&staged)?;
         }
+
+        {
+            let conn = self.events_db.lock();
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '1')
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [Self::USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY],
+            )?;
+        }
+        self.clear_prefix(b"usage_req:");
+        let _ = self.db.flush();
+        Ok(())
+    }
+
+    fn flush_staged_usage_requests(&self, staged: &[UsageRequestSqlRow]) -> anyhow::Result<()> {
+        let mut conn = self.events_db.lock();
+        let tx = conn.transaction()?;
+        for (
+            id,
+            unix_ms,
+            provider,
+            api_key_ref,
+            model,
+            origin,
+            session_id,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
+        ) in staged
+        {
+            tx.execute(
+                "INSERT OR IGNORE INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens,
+                    cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    id,
+                    unix_ms,
+                    provider,
+                    api_key_ref,
+                    model,
+                    origin,
+                    session_id,
+                    input_tokens,
+                    output_tokens,
+                    total_tokens,
+                    cache_creation_input_tokens,
+                    cache_read_input_tokens,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn add_event(&self, provider: &str, level: &str, code: &str, message: &str, fields: Value) {
@@ -666,7 +832,6 @@ impl Store {
             api_key_ref,
             origin,
             session_id,
-            true,
         );
     }
 
@@ -1090,14 +1255,126 @@ impl Store {
     }
 
     pub fn list_usage_requests(&self, limit: usize) -> Vec<Value> {
-        self.db
-            .scan_prefix(b"usage_req:")
-            .rev()
-            .filter_map(|res| res.ok())
-            .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
-            .filter(Self::is_valid_usage_request)
-            .take(limit)
-            .collect()
+        let mut out: Vec<Value> = Vec::with_capacity(limit.min(1024));
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT provider, api_key_ref, model, origin, session_id, unix_ms,
+                    input_tokens, output_tokens, total_tokens,
+                    cache_creation_input_tokens, cache_read_input_tokens
+             FROM usage_requests
+             ORDER BY unix_ms DESC
+             LIMIT ?1",
+        ) else {
+            return out;
+        };
+        let Ok(rows) = stmt.query_map([limit as i64], |row| {
+            Ok(serde_json::json!({
+                "provider": row.get::<_, String>(0)?,
+                "api_key_ref": row.get::<_, String>(1)?,
+                "model": row.get::<_, String>(2)?,
+                "origin": row.get::<_, String>(3)?,
+                "session_id": row.get::<_, String>(4)?,
+                "unix_ms": u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                "input_tokens": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                "output_tokens": u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                "total_tokens": u64::try_from(row.get::<_, i64>(8)?).unwrap_or(0),
+                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
+                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+            }))
+        }) else {
+            return out;
+        };
+        for row in rows.flatten() {
+            out.push(row);
+        }
+        out
+    }
+
+    pub fn list_usage_requests_page(
+        &self,
+        since_unix_ms: u64,
+        providers: &[String],
+        models: &[String],
+        origins: &[String],
+        limit: usize,
+        offset: usize,
+    ) -> (Vec<Value>, bool) {
+        let mut sql = String::from(
+            "SELECT provider, api_key_ref, model, origin, session_id, unix_ms,
+                    input_tokens, output_tokens, total_tokens,
+                    cache_creation_input_tokens, cache_read_input_tokens
+             FROM usage_requests
+             WHERE unix_ms >= ?",
+        );
+        let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(
+            i64::try_from(since_unix_ms).unwrap_or(i64::MAX),
+        )];
+
+        if !providers.is_empty() {
+            let placeholders = vec!["?"; providers.len()].join(", ");
+            sql.push_str(&format!(" AND lower(provider) IN ({placeholders})"));
+            for provider in providers {
+                params.push(rusqlite::types::Value::Text(
+                    provider.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
+        if !models.is_empty() {
+            let placeholders = vec!["?"; models.len()].join(", ");
+            sql.push_str(&format!(" AND lower(model) IN ({placeholders})"));
+            for model in models {
+                params.push(rusqlite::types::Value::Text(
+                    model.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
+        if !origins.is_empty() {
+            let placeholders = vec!["?"; origins.len()].join(", ");
+            sql.push_str(&format!(" AND lower(origin) IN ({placeholders})"));
+            for origin in origins {
+                params.push(rusqlite::types::Value::Text(
+                    origin.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
+        sql.push_str(" ORDER BY unix_ms DESC LIMIT ? OFFSET ?");
+        params.push(rusqlite::types::Value::Integer(
+            i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX),
+        ));
+        params.push(rusqlite::types::Value::Integer(
+            i64::try_from(offset).unwrap_or(i64::MAX),
+        ));
+
+        let mut out: Vec<Value> = Vec::with_capacity(limit.min(1024));
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            return (out, false);
+        };
+        let Ok(rows) = stmt.query_map(params_from_iter(params.iter()), |row| {
+            Ok(serde_json::json!({
+                "provider": row.get::<_, String>(0)?,
+                "api_key_ref": row.get::<_, String>(1)?,
+                "model": row.get::<_, String>(2)?,
+                "origin": row.get::<_, String>(3)?,
+                "session_id": row.get::<_, String>(4)?,
+                "unix_ms": u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                "input_tokens": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                "output_tokens": u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                "total_tokens": u64::try_from(row.get::<_, i64>(8)?).unwrap_or(0),
+                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
+                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+            }))
+        }) else {
+            return (out, false);
+        };
+        for row in rows.flatten() {
+            out.push(row);
+        }
+        let has_more = out.len() > limit;
+        if has_more {
+            out.truncate(limit);
+        }
+        (out, has_more)
     }
 
     pub fn backfill_api_key_ref_fields(
@@ -1116,33 +1393,43 @@ impl Store {
 
         let mut updated = 0usize;
 
-        for res in self.db.scan_prefix(b"usage_req:") {
-            let Ok((k, v)) = res else {
-                continue;
+        {
+            let mut conn = self.events_db.lock();
+            let Ok(tx) = conn.transaction() else {
+                return updated;
             };
-            let Ok(mut row) = serde_json::from_slice::<Value>(&v) else {
-                continue;
-            };
-            if has_key_ref(&row) {
-                continue;
+            {
+                let Ok(mut stmt) =
+                    tx.prepare("SELECT id, provider, api_key_ref FROM usage_requests")
+                else {
+                    return updated;
+                };
+                let Ok(rows) = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                }) else {
+                    return updated;
+                };
+                for (id, provider, existing_ref) in rows.flatten() {
+                    let existing_ref = existing_ref.trim();
+                    if !existing_ref.is_empty() && existing_ref != "-" {
+                        continue;
+                    }
+                    let key_ref = provider_api_key_ref
+                        .get(provider.trim())
+                        .cloned()
+                        .unwrap_or_else(|| "-".to_string());
+                    let _ = tx.execute(
+                        "UPDATE usage_requests SET api_key_ref=?1 WHERE id=?2",
+                        params![key_ref, id],
+                    );
+                    updated = updated.saturating_add(1);
+                }
             }
-            let provider = row
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty());
-            let Some(provider) = provider else {
-                continue;
-            };
-            let key_ref = provider_api_key_ref
-                .get(provider)
-                .cloned()
-                .unwrap_or_else(|| "-".to_string());
-            row["api_key_ref"] = serde_json::json!(key_ref);
-            let _ = self
-                .db
-                .insert(k, serde_json::to_vec(&row).unwrap_or_default());
-            updated = updated.saturating_add(1);
+            let _ = tx.commit();
         }
 
         for res in self.db.scan_prefix(b"spend_day:") {
@@ -1211,7 +1498,6 @@ pub fn maintain_store_dir(path: &Path) -> anyhow::Result<()> {
             let _ = db.remove(key);
         }
 
-        Store::prune_usage_requests_db(&db);
         db.flush()?;
     } // drop DB handle (important for Windows rename)
 

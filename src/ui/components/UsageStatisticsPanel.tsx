@@ -76,7 +76,6 @@ const USAGE_REQUEST_GRAPH_COLORS = [
   '#30c48d',
   '#ff8a3d',
 ] as const
-const USAGE_REQUEST_ALL_COLOR = '#5f6b7a'
 const isOfficialUsageProvider = (provider: string) => provider.trim().toLowerCase() === 'official'
 const compareUsageProvidersForDisplay = (left: string, right: string) => {
   const leftOfficial = isOfficialUsageProvider(left)
@@ -140,6 +139,13 @@ function startOfMonthMs(unixMs: number): number {
 function addMonths(unixMs: number, delta: number): number {
   const d = new Date(unixMs)
   return new Date(d.getFullYear(), d.getMonth() + delta, 1).getTime()
+}
+
+function normalizeUsageOrigin(origin: string): 'windows' | 'wsl2' | 'unknown' {
+  const lowered = origin.trim().toLowerCase()
+  if (lowered.includes('wsl')) return 'wsl2'
+  if (lowered.includes('win')) return 'windows'
+  return 'unknown'
 }
 
 function buildSmoothLinePath(
@@ -401,6 +407,30 @@ export function UsageStatisticsPanel({
     () => buildUsageRequestTestRows(usageStatistics, usageWindowHours),
     [usageStatistics, usageWindowHours],
   )
+  const useGlobalRequestFilters = showFilters
+  const requestFetchProviders = useMemo(
+    () => (useGlobalRequestFilters && usageFilterProviders.length ? usageFilterProviders : null),
+    [useGlobalRequestFilters, usageFilterProviders],
+  )
+  const requestFetchModels = useMemo(
+    () => (useGlobalRequestFilters && usageFilterModels.length ? usageFilterModels : null),
+    [useGlobalRequestFilters, usageFilterModels],
+  )
+  const requestFetchOrigins = useMemo(
+    () => (useGlobalRequestFilters && usageFilterOrigins.length ? usageFilterOrigins : null),
+    [useGlobalRequestFilters, usageFilterOrigins],
+  )
+  const requestFetchHours =
+    (forceDetailsTab ?? usageDetailsTab) === 'requests' && !showFilters
+      ? 24 * 365 * 20
+      : usageWindowHours
+  const hasExplicitRequestFilters =
+    usageRequestTimeFilter.trim().length > 0 ||
+    usageRequestMultiFilters.provider.length > 0 ||
+    usageRequestMultiFilters.model.length > 0 ||
+    usageRequestMultiFilters.origin.length > 0 ||
+    usageRequestMultiFilters.session.length > 0
+  const requestDefaultDay = useMemo(() => startOfDayUnixMs(Date.now()), [])
   const [dismissedAnomalyIds, setDismissedAnomalyIds] = useState<Set<string>>(new Set())
   const anomalyEntries = useMemo(
     () => {
@@ -478,10 +508,10 @@ export function UsageStatisticsPanel({
       setUsageRequestUsingTestFallback(false)
       try {
         const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-          hours: usageWindowHours,
-          providers: usageFilterProviders.length ? usageFilterProviders : null,
-          models: usageFilterModels.length ? usageFilterModels : null,
-          origins: usageFilterOrigins.length ? usageFilterOrigins : null,
+          hours: requestFetchHours,
+          providers: requestFetchProviders,
+          models: requestFetchModels,
+          origins: requestFetchOrigins,
           limit,
           offset: 0,
         })
@@ -506,9 +536,10 @@ export function UsageStatisticsPanel({
     },
     [
       usageWindowHours,
-      usageFilterProviders,
-      usageFilterModels,
-      usageFilterOrigins,
+      requestFetchHours,
+      requestFetchProviders,
+      requestFetchModels,
+      requestFetchOrigins,
       usageRequestTestFallbackEnabled,
       usageRequestTestRows,
     ],
@@ -518,10 +549,9 @@ export function UsageStatisticsPanel({
     if (effectiveDetailsTab !== 'requests') return
     usageRequestWasNearBottomRef.current = false
     usageRequestLastActivityRef.current = usageActivityUnixMs ?? null
-    void refreshUsageRequests(Math.max(USAGE_REQUEST_PAGE_SIZE, usageRequestRows.length))
+    void refreshUsageRequests(USAGE_REQUEST_PAGE_SIZE)
   }, [
     effectiveDetailsTab,
-    usageRequestRows.length,
     refreshUsageRequests,
   ])
 
@@ -535,8 +565,8 @@ export function UsageStatisticsPanel({
     }
     if (usageActivityUnixMs <= last) return
     usageRequestLastActivityRef.current = usageActivityUnixMs
-    void refreshUsageRequests(Math.max(USAGE_REQUEST_PAGE_SIZE, usageRequestRows.length))
-  }, [effectiveDetailsTab, usageActivityUnixMs, refreshUsageRequests, usageRequestRows.length])
+    void refreshUsageRequests(USAGE_REQUEST_PAGE_SIZE)
+  }, [effectiveDetailsTab, usageActivityUnixMs, refreshUsageRequests])
 
   const loadMoreUsageRequests = async () => {
     if (usageRequestLoading || !usageRequestHasMore) return
@@ -550,10 +580,10 @@ export function UsageStatisticsPanel({
     setUsageRequestError('')
     try {
       const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-        hours: usageWindowHours,
-        providers: usageFilterProviders.length ? usageFilterProviders : null,
-        models: usageFilterModels.length ? usageFilterModels : null,
-        origins: usageFilterOrigins.length ? usageFilterOrigins : null,
+        hours: requestFetchHours,
+        providers: requestFetchProviders,
+        models: requestFetchModels,
+        origins: requestFetchOrigins,
         limit: USAGE_REQUEST_PAGE_SIZE,
         offset: usageRequestRows.length,
       })
@@ -565,6 +595,23 @@ export function UsageStatisticsPanel({
       setUsageRequestLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (effectiveDetailsTab !== 'requests') return
+    if (hasExplicitRequestFilters) return
+    if (usageRequestLoading || !usageRequestHasMore || !usageRequestRows.length) return
+    const oldestRow = usageRequestRows[usageRequestRows.length - 1]
+    if (!oldestRow) return
+    if (startOfDayUnixMs(oldestRow.unix_ms) !== requestDefaultDay) return
+    void loadMoreUsageRequests()
+  }, [
+    effectiveDetailsTab,
+    hasExplicitRequestFilters,
+    requestDefaultDay,
+    usageRequestHasMore,
+    usageRequestLoading,
+    usageRequestRows,
+  ])
 
   const usageRequestChartRows = useMemo(
     () => usageRequestRows.slice(0, USAGE_REQUEST_GRAPH_SOURCE_LIMIT),
@@ -614,22 +661,7 @@ export function UsageStatisticsPanel({
         values,
       }
     })
-    if (providerSeries.length <= 1) return providerSeries
-    const allValues = new Array<number>(pointCount).fill(0)
-    for (let idx = 0; idx < pointCount; idx += 1) {
-      let sum = 0
-      for (const series of providerSeries) sum += series.values[idx] ?? 0
-      allValues[idx] = sum
-    }
-    return [
-      ...providerSeries,
-      {
-        kind: 'all' as const,
-        provider: 'all',
-        color: USAGE_REQUEST_ALL_COLOR,
-        values: allValues,
-      },
-    ]
+    return providerSeries
   }, [activeRequestGraphProviders, usageRequestChartRows, usageRequestGraphPointCount])
 
   const usageRequestLineMaxValue = useMemo(() => {
@@ -645,14 +677,10 @@ export function UsageStatisticsPanel({
     () => usageRequestLineSeries.filter((series) => series.kind === 'provider'),
     [usageRequestLineSeries],
   )
-  const usageRequestLegendSeries = useMemo(() => {
-    if (!usageRequestLineSeries.length) return []
-    const allSeries = usageRequestLineSeries.find((series) => series.kind === 'all') ?? null
-    const providerSeries = usageRequestLineSeries
-      .filter((series) => series.kind === 'provider')
-      .sort((a, b) => compareUsageProvidersForDisplay(a.provider, b.provider))
-    return allSeries ? [allSeries, ...providerSeries] : providerSeries
-  }, [usageRequestLineSeries])
+  const usageRequestLegendSeries = useMemo(
+    () => usageRequestLineSeries.filter((series) => series.kind === 'provider'),
+    [usageRequestLineSeries],
+  )
 
   const usageRequestDailyBars = useMemo(() => {
     if (!activeRequestGraphProviders.length) return []
@@ -664,7 +692,7 @@ export function UsageStatisticsPanel({
       slot[row.provider] = (slot[row.provider] ?? 0) + row.total_tokens
       byDay.set(day, slot)
     }
-    const days = [...byDay.keys()].sort((a, b) => a - b).slice(-30)
+    const days = [...byDay.keys()].sort((a, b) => a - b).slice(-45)
     return days.map((day) => {
       const providerTotals = byDay.get(day) ?? {}
       const total = activeRequestGraphProviders.reduce((sum, provider) => sum + (providerTotals[provider] ?? 0), 0)
@@ -726,19 +754,16 @@ export function UsageStatisticsPanel({
     [usageRequestDailyBars],
   )
   const filteredUsageRequestRows = useMemo(() => {
-    const hasActiveFilters =
-      usageRequestTimeFilter.trim().length > 0 ||
-      usageRequestMultiFilters.provider.length > 0 ||
-      usageRequestMultiFilters.model.length > 0 ||
-      usageRequestMultiFilters.origin.length > 0 ||
-      usageRequestMultiFilters.session.length > 0
-    if (!hasActiveFilters) return usageRequestRows
+    const defaultTodayOnly = effectiveDetailsTab === 'requests' && !hasExplicitRequestFilters
+    if (!hasExplicitRequestFilters && !defaultTodayOnly) return usageRequestRows
     const timeDay = parseDateInputToDayStart(usageRequestTimeFilter)
     const timeNeedle = usageRequestTimeFilter.trim().toLowerCase()
     const contains = (text: string) => timeNeedle.length === 0 || text.toLowerCase().includes(timeNeedle)
     return usageRequestRows.filter((row) => {
       if (timeDay != null) {
         if (startOfDayUnixMs(row.unix_ms) !== timeDay) return false
+      } else if (defaultTodayOnly) {
+        if (startOfDayUnixMs(row.unix_ms) !== requestDefaultDay) return false
       } else if (!contains(fmtWhen(row.unix_ms))) {
         return false
       }
@@ -748,7 +773,15 @@ export function UsageStatisticsPanel({
       if (usageRequestMultiFilters.session.length > 0 && !usageRequestMultiFilters.session.includes(row.session_id)) return false
       return true
     })
-  }, [fmtWhen, usageRequestMultiFilters, usageRequestRows, usageRequestTimeFilter])
+  }, [
+    effectiveDetailsTab,
+    fmtWhen,
+    hasExplicitRequestFilters,
+    requestDefaultDay,
+    usageRequestMultiFilters,
+    usageRequestRows,
+    usageRequestTimeFilter,
+  ])
   const requestChartWidth = 1000
   const requestChartHeight = 176
   const requestChartMinX = 54
@@ -809,7 +842,41 @@ export function UsageStatisticsPanel({
       rows,
     }
   }, [activeRequestGraphProviders, dailyHoverDay, usageRequestDailyBars])
+  const requestTableSummary = useMemo(() => {
+    const requests = filteredUsageRequestRows.length
+    const totals = filteredUsageRequestRows.reduce(
+      (acc, row) => {
+        acc.input += row.input_tokens
+        acc.output += row.output_tokens
+        acc.total += row.total_tokens
+        return acc
+      },
+      { input: 0, output: 0, total: 0 },
+    )
+    return { requests, ...totals }
+  }, [filteredUsageRequestRows])
   const isRequestsOnlyPage = effectiveDetailsTab === 'requests' && !showFilters && !showDetailsTabs
+  const openUsageRequestFilterMenu = useCallback(
+    (columnKey: UsageRequestColumnFilterKey, trigger: HTMLButtonElement) => {
+      const rect = trigger.getBoundingClientRect()
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - 236))
+      const top = rect.bottom + 6
+      const width = Math.max(160, rect.width)
+      setActiveUsageRequestFilterMenu((prev) => {
+        if (prev?.key === columnKey) return null
+        if (columnKey === 'time') {
+          setTimePickerMonthStartMs(startOfMonthMs(parseDateInputToDayStart(usageRequestTimeFilter) ?? Date.now()))
+        }
+        return {
+          key: columnKey,
+          left,
+          top,
+          width,
+        }
+      })
+    },
+    [usageRequestTimeFilter],
+  )
 
   useEffect(() => {
     if (!activeUsageRequestFilterMenu) return
@@ -819,8 +886,13 @@ export function UsageStatisticsPanel({
       return
     }
     const onMouseDown = (event: MouseEvent) => {
-      const target = event.target as Node
+      const target = event.target
+      if (!(target instanceof Element)) {
+        setActiveUsageRequestFilterMenu(null)
+        return
+      }
       if (usageRequestFilterMenuRef.current?.contains(target)) return
+      if (target.closest('.aoUsageReqHeadBtn')) return
       setActiveUsageRequestFilterMenu(null)
     }
     const onKeyDown = (event: KeyboardEvent) => {
@@ -890,7 +962,11 @@ export function UsageStatisticsPanel({
         <div className={`aoUsageRequestsCard${isRequestsOnlyPage ? ' is-page' : ''}`}>
           <div className="aoSwitchboardSectionHead">
             <div className="aoMiniLabel">Request Details</div>
-            <div className="aoHint">Per-request rows (newest first), aligned with current filters/window.</div>
+            <div className="aoHint">
+              {hasExplicitRequestFilters
+                ? 'Per-request rows (newest first), aligned with current filters/window.'
+                : 'Default view shows today only. Use column filters to query across all days.'}
+            </div>
           </div>
           {onBackToUsageOverview ? (
             <div className="aoUsageRequestBackRow">
@@ -906,6 +982,7 @@ export function UsageStatisticsPanel({
           <div className="aoUsageRequestChartCard">
             <div className="aoSwitchboardSectionHead">
               <div className="aoMiniLabel">Latest 120 Requests (Total Tokens)</div>
+              <div className="aoHint">{filteredUsageRequestRows.length.toLocaleString()} requests shown</div>
             </div>
             {usageRequestLineSeries.length ? (
               <div className="aoUsageRequestLineGraphWrap">
@@ -981,9 +1058,8 @@ export function UsageStatisticsPanel({
                       d={pathD}
                       fill="none"
                       stroke={series.color}
-                      strokeWidth={series.kind === 'all' ? 2.3 : 1.6}
-                      opacity={series.kind === 'all' ? 1 : 0.7}
-                      strokeDasharray={series.kind === 'all' ? '4 4' : undefined}
+                      strokeWidth={1.8}
+                      opacity={0.82}
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     />
@@ -1022,7 +1098,7 @@ export function UsageStatisticsPanel({
                     {lineHoverData.rows.map((row) => (
                       <span key={`hover-overlay-${row.provider}`} className="aoUsageRequestHoverSummaryItem">
                         <i style={{ background: row.color }} />
-                        {row.provider === 'all' ? 'all' : row.provider}: {row.value.toLocaleString()}
+                        {row.provider}: {row.value.toLocaleString()}
                       </span>
                     ))}
                   </div>
@@ -1036,7 +1112,7 @@ export function UsageStatisticsPanel({
                 {usageRequestLegendSeries.map((series) => (
                   <span key={`request-line-legend-${series.provider}`} className="aoUsageRequestLegendItem">
                     <i style={{ background: series.color }} />
-                    {series.kind === 'all' ? 'all' : series.provider}
+                    {series.provider}
                   </span>
                 ))}
               </div>
@@ -1082,25 +1158,14 @@ export function UsageStatisticsPanel({
                               <button
                                 type="button"
                                 className={`aoUsageReqHeadBtn${hasFilter ? ' is-filtered' : ''}${isOpen ? ' is-open' : ''}`}
-                                onMouseDown={(event) => event.stopPropagation()}
+                                onPointerDown={(event) => {
+                                  event.stopPropagation()
+                                  if (event.button !== 0) return
+                                  openUsageRequestFilterMenu(column.key, event.currentTarget as HTMLButtonElement)
+                                }}
                                 onClick={(event) => {
                                   event.stopPropagation()
-                                  const rect = (event.currentTarget as HTMLButtonElement).getBoundingClientRect()
-                                const left = Math.max(8, Math.min(rect.left, window.innerWidth - 236))
-                                const top = rect.bottom + 6
-                                const width = Math.max(160, rect.width)
-                                setActiveUsageRequestFilterMenu((prev) => {
-                                  if (prev?.key === column.key) return null
-                                  if (column.key === 'time') {
-                                    setTimePickerMonthStartMs(startOfMonthMs(parseDateInputToDayStart(usageRequestTimeFilter) ?? Date.now()))
-                                  }
-                                  return {
-                                    key: column.key,
-                                    left,
-                                    top,
-                                    width,
-                                  }
-                                })
+                                  event.preventDefault()
                               }}
                               >
                                 <span>{column.label}</span>
@@ -1141,13 +1206,29 @@ export function UsageStatisticsPanel({
                 {activeUsageRequestFilterMenu.key === 'time' ? (
                   <>
                     <div className="aoUsageReqCalendarHead">
-                      <button type="button" className="aoUsageReqCalendarNav" onClick={() => setTimePickerMonthStartMs((prev) => addMonths(prev, -1))}>
+                      <button
+                        type="button"
+                        className="aoUsageReqCalendarNav"
+                        onPointerDown={(event) => {
+                          if (event.button !== 0) return
+                          event.preventDefault()
+                          setTimePickerMonthStartMs((prev) => addMonths(prev, -1))
+                        }}
+                      >
                         ‹
                       </button>
                       <div className="aoUsageReqCalendarTitle">
                         {MONTH_NAMES[new Date(timePickerMonthStartMs).getMonth()]} {new Date(timePickerMonthStartMs).getFullYear()}
                       </div>
-                      <button type="button" className="aoUsageReqCalendarNav" onClick={() => setTimePickerMonthStartMs((prev) => addMonths(prev, 1))}>
+                      <button
+                        type="button"
+                        className="aoUsageReqCalendarNav"
+                        onPointerDown={(event) => {
+                          if (event.button !== 0) return
+                          event.preventDefault()
+                          setTimePickerMonthStartMs((prev) => addMonths(prev, 1))
+                        }}
+                      >
                         ›
                       </button>
                     </div>
@@ -1166,9 +1247,11 @@ export function UsageStatisticsPanel({
                             key={`time-cell-${cell.dayStartMs}`}
                             type="button"
                             className={`aoUsageReqCalendarCell${cell.inMonth ? '' : ' is-out'}${selected ? ' is-selected' : ''}`}
-                            onClick={() =>
+                            onPointerDown={(event) => {
+                              if (event.button !== 0) return
+                              event.preventDefault()
                               setUsageRequestTimeFilter(dayStartToIso(cell.dayStartMs))
-                            }
+                            }}
                           >
                             {cell.label}
                             {hasRecord ? (
@@ -1183,19 +1266,39 @@ export function UsageStatisticsPanel({
                     </div>
                     <div className="aoUsageReqCalendarFoot">
                       <div className="aoUsageReqCalendarFootGroup">
-                        <button type="button" className="aoTinyBtn aoUsageActionBtn" onClick={() => setUsageRequestTimeFilter('')}>
+                        <button
+                          type="button"
+                          className="aoTinyBtn aoUsageActionBtn"
+                          onPointerDown={(event) => {
+                            if (event.button !== 0) return
+                            event.preventDefault()
+                            setUsageRequestTimeFilter('')
+                          }}
+                        >
                           Clear
                         </button>
                         <button
                           type="button"
                           className="aoTinyBtn aoUsageActionBtn"
-                          onClick={() => setUsageRequestTimeFilter(dayStartToIso(startOfDayUnixMs(Date.now())))}
+                          onPointerDown={(event) => {
+                            if (event.button !== 0) return
+                            event.preventDefault()
+                            setUsageRequestTimeFilter(dayStartToIso(startOfDayUnixMs(Date.now())))
+                          }}
                         >
                           Today
                         </button>
                       </div>
                       <div className="aoUsageReqCalendarFootGroup">
-                        <button type="button" className="aoTinyBtn aoUsageActionBtn" onClick={() => setActiveUsageRequestFilterMenu(null)}>
+                        <button
+                          type="button"
+                          className="aoTinyBtn aoUsageActionBtn"
+                          onPointerDown={(event) => {
+                            if (event.button !== 0) return
+                            event.preventDefault()
+                            setActiveUsageRequestFilterMenu(null)
+                          }}
+                        >
                           OK
                         </button>
                       </div>
@@ -1336,6 +1439,7 @@ export function UsageStatisticsPanel({
                   if (wrap) {
                     setUsageRequestTableScrollLeft(wrap.scrollLeft)
                     if (usageRequestHasMore && !usageRequestLoading) {
+                      if (!hasExplicitRequestFilters) return
                       const nearBottom = isNearBottom(wrap, 24)
                       if (nearBottom && !usageRequestWasNearBottomRef.current) {
                         void loadMoreUsageRequests()
@@ -1380,15 +1484,24 @@ export function UsageStatisticsPanel({
                           <td className="aoUsageRequestsMono">{row.provider}</td>
                           <td className="aoUsageRequestsMono">{row.model}</td>
                           <td>
-                            {row.origin.toLowerCase().includes('wsl') ? (
-                              <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWsl">WSL2</span>
-                            ) : (
-                              <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWindows">WIN</span>
-                            )}
+                            {(() => {
+                              const normalizedOrigin = normalizeUsageOrigin(row.origin)
+                              if (normalizedOrigin === 'wsl2') {
+                                return <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWsl">WSL2</span>
+                              }
+                              if (normalizedOrigin === 'windows') {
+                                return <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWindows">WIN</span>
+                              }
+                              return <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeUnknown">UNK</span>
+                            })()}
                           </td>
                           <td
                             className={`aoUsageRequestsMono ${
-                              row.origin.toLowerCase().includes('wsl') ? 'aoUsageReqSessionWsl' : 'aoUsageReqSessionWindows'
+                              normalizeUsageOrigin(row.origin) === 'wsl2'
+                                ? 'aoUsageReqSessionWsl'
+                                : normalizeUsageOrigin(row.origin) === 'windows'
+                                  ? 'aoUsageReqSessionWindows'
+                                  : 'aoUsageReqSessionUnknown'
                             }`}
                           >
                             {row.session_id}
@@ -1416,25 +1529,32 @@ export function UsageStatisticsPanel({
                 <div ref={usageRequestScrollbarThumbRef} className="aoUsageHistoryScrollbarThumb" />
               </div>
             </div>
+            <div className="aoUsageRequestTableSummary" role="status" aria-live="polite">
+              <span>{hasExplicitRequestFilters ? 'Filtered' : 'Today'} Summary</span>
+              <span>Requests {requestTableSummary.requests.toLocaleString()}</span>
+              <span>Input {requestTableSummary.input.toLocaleString()}</span>
+              <span>Output {requestTableSummary.output.toLocaleString()}</span>
+              <span>Total {requestTableSummary.total.toLocaleString()}</span>
+            </div>
           </div>
           <div className="aoUsageRequestChartCard">
             <div className="aoSwitchboardSectionHead">
               <div className="aoMiniLabel">Daily Token Totals</div>
-              <div className="aoHint">Filtered providers, newest 30 days from loaded rows.</div>
+              <div className="aoHint">Filtered providers, newest 45 days from loaded rows.</div>
             </div>
             {usageRequestDailyBars.length ? (
-              <div className="aoUsageRequestDailyBarsWrap">
+              <div className="aoUsageRequestDailyBarsWrap" onMouseLeave={() => setDailyHoverDay(null)}>
                 <div
                   className="aoUsageRequestDailyBars"
                   role="img"
                   aria-label="Daily token totals by selected providers"
-                  onMouseLeave={() => setDailyHoverDay(null)}
                 >
                   {usageRequestDailyBars.map((row) => (
                     <div
                       key={`request-day-${row.day}`}
                       className="aoUsageRequestDailyBarGroup"
                       onMouseEnter={() => setDailyHoverDay(row.day)}
+                      onMouseLeave={() => setDailyHoverDay(null)}
                     >
                       <div className="aoUsageRequestDailyBarStack">
                         {[...activeRequestGraphProviders]

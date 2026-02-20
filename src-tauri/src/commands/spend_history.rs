@@ -69,7 +69,7 @@ pub(crate) fn get_spend_history(
         let mut usage_by_day_from_req: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
         let mut api_key_ref_counts_by_day: BTreeMap<String, BTreeMap<String, u64>> =
             BTreeMap::new();
-        for req in state.gateway.store.list_usage_requests(100_000) {
+        for req in state.gateway.store.list_usage_requests(usize::MAX) {
             let req_provider = req.get("provider").and_then(|v| v.as_str()).unwrap_or("");
             if req_provider != provider_name {
                 continue;
@@ -372,4 +372,3 @@ pub(crate) fn set_spend_history_entry(
     );
     Ok(())
 }
-
