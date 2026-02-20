@@ -15,6 +15,7 @@ import {
 } from './UsageTimelineChart'
 import { UsageStatsFiltersBar } from './UsageStatsFiltersBar'
 import { useUsageHistoryScrollbar } from '../hooks/useUsageHistoryScrollbar'
+import { isNearBottom } from '../utils/scroll'
 
 type UsageSummary = UsageStatistics['summary']
 type UsageProviderRow = UsageSummary['by_provider'][number]
@@ -38,7 +39,133 @@ type UsageRequestEntriesResponse = {
   has_more: boolean
   next_offset: number
 }
+type UsageRequestColumnFilterKey =
+  | 'time'
+  | 'provider'
+  | 'model'
+  | 'input'
+  | 'output'
+  | 'cacheCreate'
+  | 'cacheRead'
+  | 'origin'
+  | 'session'
+type UsageRequestMultiFilterKey = 'provider' | 'model' | 'origin' | 'session'
+const USAGE_REQUEST_COLUMN_FILTERS: Array<{
+  key: UsageRequestColumnFilterKey
+  label: string
+  filterable: boolean
+}> = [
+  { key: 'time', label: 'Time', filterable: true },
+  { key: 'provider', label: 'Provider', filterable: true },
+  { key: 'model', label: 'Model', filterable: true },
+  { key: 'origin', label: 'Origin', filterable: true },
+  { key: 'session', label: 'Session', filterable: true },
+  { key: 'input', label: 'Input', filterable: false },
+  { key: 'output', label: 'Output', filterable: false },
+  { key: 'cacheCreate', label: 'Cache Create', filterable: false },
+  { key: 'cacheRead', label: 'Cache Read', filterable: false },
+]
 const USAGE_REQUEST_PAGE_SIZE = 200
+const USAGE_REQUEST_GRAPH_SOURCE_LIMIT = 120
+const USAGE_REQUEST_TEST_MIN_ROWS = 360
+const USAGE_REQUEST_GRAPH_COLORS = [
+  '#21a8b7',
+  '#f2c14d',
+  '#ff6a88',
+  '#7f7dff',
+  '#30c48d',
+  '#ff8a3d',
+] as const
+const USAGE_REQUEST_ALL_COLOR = '#5f6b7a'
+const isOfficialUsageProvider = (provider: string) => provider.trim().toLowerCase() === 'official'
+const compareUsageProvidersForDisplay = (left: string, right: string) => {
+  const leftOfficial = isOfficialUsageProvider(left)
+  const rightOfficial = isOfficialUsageProvider(right)
+  if (leftOfficial !== rightOfficial) return leftOfficial ? -1 : 1
+  return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' })
+}
+const TEST_CODEX_SESSION_IDS = [
+  '019c4578-0f3c-7f82-a4f9-b41a1e65e242',
+  '019c03fd-6ea4-7121-961f-9f9b64d2c1b5',
+  '019c7f46-c5ec-7e2e-9205-4e00718a524e',
+  '019c600a-56f3-77b2-8465-f64a4f0566ec',
+  '019c7f4d-b7a5-7add-b7f9-f41049dbe667',
+  '019c9f18-3d72-7ce3-a9a1-2fd7f4d9d100',
+  '019c9f18-89aa-7b11-bc42-6fbe3dc89002',
+  '019ca04e-b5f1-73d8-89fd-13ae6de95021',
+] as const
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+const WEEKDAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']
+
+function startOfDayUnixMs(unixMs: number): number {
+  const date = new Date(unixMs)
+  date.setHours(0, 0, 0, 0)
+  return date.getTime()
+}
+
+function formatMonthDay(unixMs: number): string {
+  const date = new Date(unixMs)
+  const dd = String(date.getDate()).padStart(2, '0')
+  const mm = String(date.getMonth() + 1).padStart(2, '0')
+  return `${dd}-${mm}`
+}
+
+function dayStartToIso(unixMs: number): string {
+  const d = new Date(unixMs)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function parseDateInputToDayStart(dateText: string): number | null {
+  const t = dateText.trim()
+  if (!t) return null
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t)
+  if (!m) return null
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  const dt = new Date(year, month - 1, day)
+  if (Number.isNaN(dt.getTime())) return null
+  if (dt.getFullYear() !== year || dt.getMonth() + 1 !== month || dt.getDate() !== day) return null
+  return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime()
+}
+
+function startOfMonthMs(unixMs: number): number {
+  const d = new Date(unixMs)
+  return new Date(d.getFullYear(), d.getMonth(), 1).getTime()
+}
+
+function addMonths(unixMs: number, delta: number): number {
+  const d = new Date(unixMs)
+  return new Date(d.getFullYear(), d.getMonth() + delta, 1).getTime()
+}
+
+function buildSmoothLinePath(
+  points: Array<{ x: number; y: number }>,
+  yBounds?: { min: number; max: number },
+): string {
+  if (points.length === 0) return ''
+  if (points.length === 1) return `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`
+  const clampY = (value: number) => {
+    if (!yBounds) return value
+    return Math.max(yBounds.min, Math.min(yBounds.max, value))
+  }
+  let d = `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const p0 = points[Math.max(0, i - 1)]
+    const p1 = points[i]
+    const p2 = points[i + 1]
+    const p3 = points[Math.min(points.length - 1, i + 2)]
+    const cp1x = p1.x + (p2.x - p0.x) / 6
+    const cp1y = clampY(p1.y + (p2.y - p0.y) / 6)
+    const cp2x = p2.x - (p3.x - p1.x) / 6
+    const cp2y = clampY(p2.y - (p3.y - p1.y) / 6)
+    d += ` C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`
+  }
+  return d
+}
 
 function readTestFlagFromLocation(): boolean {
   if (typeof window === 'undefined') return false
@@ -50,19 +177,18 @@ function readTestFlagFromLocation(): boolean {
 
 function buildUsageRequestTestRows(stats: UsageStatistics | null, usageWindowHours: number): UsageRequestEntry[] {
   const summary = stats?.summary
-  const totalRequests = Math.max(0, Math.min(800, summary?.total_requests ?? 0))
-  if (!summary || totalRequests <= 0) return []
-  const providers = summary.by_provider.length
+  const summaryTotalRequests = summary?.total_requests ?? 0
+  const baseTotalRequests = Math.max(0, Math.min(800, summaryTotalRequests))
+  const totalRequests = Math.max(baseTotalRequests, USAGE_REQUEST_TEST_MIN_ROWS)
+  if (totalRequests <= 0) return []
+  const providers = summary?.by_provider?.length
     ? summary.by_provider
         .filter((row) => row.requests > 0)
         .map((row) => ({ provider: row.provider, model: 'unknown', requests: row.requests, apiKeyRef: row.api_key_ref ?? '-' }))
     : [{ provider: 'unknown', model: 'unknown', requests: totalRequests, apiKeyRef: '-' }]
-  const models = summary.by_model.length
-    ? summary.by_model.filter((row) => row.requests > 0).map((row) => ({ model: row.model, requests: row.requests }))
-    : [{ model: 'unknown', requests: totalRequests }]
+  const models = [{ model: 'gpt-5.2-codex', requests: totalRequests }]
   const generatedAt = stats?.generated_at_unix_ms ?? Date.now()
   const windowMs = Math.max(1, usageWindowHours) * 60 * 60 * 1000
-  const avgTotalTokens = Math.max(1, Math.round((summary.total_tokens || totalRequests * 1200) / totalRequests))
   let seed = (generatedAt + totalRequests * 13) >>> 0
   const rand = () => {
     seed = (seed * 1103515245 + 12345) >>> 0
@@ -83,17 +209,17 @@ function buildUsageRequestTestRows(stats: UsageStatistics | null, usageWindowHou
     const provider = pick(providers)
     const model = pick(models)
     const origin = i % 2 === 0 ? 'windows' : 'wsl2'
-    const total = Math.max(1, Math.round(avgTotalTokens * (0.65 + rand() * 0.8)))
-    const input = Math.max(1, Math.round(total * (0.62 + rand() * 0.24)))
-    const output = Math.max(0, total - input)
-    const cacheCreate = i % 7 === 0 ? Math.max(0, Math.round(total * 0.08)) : 0
-    const cacheRead = i % 4 === 0 ? Math.max(0, Math.round(total * 0.1)) : 0
+    const input = 100_000 + Math.floor(rand() * 900_000)
+    const output = 1_000 + Math.floor(rand() * 9_000)
+    const total = input + output
+    const cacheCreate = i % 7 === 0 ? 100_000 + Math.floor(rand() * 900_000) : 0
+    const cacheRead = i % 4 === 0 ? 100_000 + Math.floor(rand() * 900_000) : 0
     rows.push({
       provider: provider.provider,
       api_key_ref: provider.apiKeyRef,
       model: model.model,
       origin,
-      session_id: `test-session-${(i % 24) + 1}`,
+      session_id: TEST_CODEX_SESSION_IDS[i % TEST_CODEX_SESSION_IDS.length],
       unix_ms: generatedAt - Math.floor(rand() * windowMs),
       input_tokens: input,
       output_tokens: output,
@@ -172,6 +298,7 @@ type Props = {
   usageProviderRowKey: (row: UsageProviderRow) => string
   formatPricingSource: (source: string | null | undefined) => string
   usageProviderTotalsAndAverages: UsageProviderTotalsAndAverages | null
+  usageActivityUnixMs?: number | null
   forceDetailsTab?: UsageDetailsTab
   showDetailsTabs?: boolean
   showFilters?: boolean
@@ -231,19 +358,44 @@ export function UsageStatisticsPanel({
   usageProviderRowKey,
   formatPricingSource,
   usageProviderTotalsAndAverages,
+  usageActivityUnixMs = null,
   forceDetailsTab,
   showDetailsTabs = true,
   showFilters = true,
   onOpenRequestDetails,
   onBackToUsageOverview,
 }: Props) {
+  const [usageRequestTimeFilter, setUsageRequestTimeFilter] = useState('')
+  const [usageRequestMultiFilters, setUsageRequestMultiFilters] = useState<Record<UsageRequestMultiFilterKey, string[]>>({
+    provider: [],
+    model: [],
+    origin: [],
+    session: [],
+  })
+  const [usageRequestFilterSearch, setUsageRequestFilterSearch] = useState<Record<UsageRequestMultiFilterKey, string>>({
+    provider: '',
+    model: '',
+    origin: '',
+    session: '',
+  })
+  const [activeUsageRequestFilterMenu, setActiveUsageRequestFilterMenu] = useState<{
+    key: UsageRequestColumnFilterKey
+    left: number
+    top: number
+    width: number
+  } | null>(null)
+  const [timePickerMonthStartMs, setTimePickerMonthStartMs] = useState<number>(() => startOfMonthMs(Date.now()))
+  const usageRequestFilterMenuRef = useRef<HTMLDivElement | null>(null)
   const [usageDetailsTab, setUsageDetailsTab] = useState<UsageDetailsTab>('overview')
   const [usageRequestRows, setUsageRequestRows] = useState<UsageRequestEntry[]>([])
+  const [usageRequestTableScrollLeft, setUsageRequestTableScrollLeft] = useState(0)
   const [usageRequestHasMore, setUsageRequestHasMore] = useState(false)
   const [usageRequestLoading, setUsageRequestLoading] = useState(false)
   const [usageRequestError, setUsageRequestError] = useState('')
   const [usageRequestUsingTestFallback, setUsageRequestUsingTestFallback] = useState(false)
   const usageRequestRefreshInFlightRef = useRef(false)
+  const usageRequestLastActivityRef = useRef<number | null>(null)
+  const usageRequestWasNearBottomRef = useRef(false)
   const usageRequestTestFallbackEnabled = useMemo(() => readTestFlagFromLocation() || import.meta.env.DEV, [])
   const usageRequestTestRows = useMemo(
     () => buildUsageRequestTestRows(usageStatistics, usageWindowHours),
@@ -364,16 +516,27 @@ export function UsageStatisticsPanel({
 
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
+    usageRequestWasNearBottomRef.current = false
+    usageRequestLastActivityRef.current = usageActivityUnixMs ?? null
     void refreshUsageRequests(Math.max(USAGE_REQUEST_PAGE_SIZE, usageRequestRows.length))
-    const timer = window.setInterval(() => {
-      void refreshUsageRequests(Math.max(USAGE_REQUEST_PAGE_SIZE, usageRequestRows.length))
-    }, 15_000)
-    return () => window.clearInterval(timer)
   }, [
     effectiveDetailsTab,
     usageRequestRows.length,
     refreshUsageRequests,
   ])
+
+  useEffect(() => {
+    if (effectiveDetailsTab !== 'requests') return
+    if (usageActivityUnixMs == null) return
+    const last = usageRequestLastActivityRef.current
+    if (last == null) {
+      usageRequestLastActivityRef.current = usageActivityUnixMs
+      return
+    }
+    if (usageActivityUnixMs <= last) return
+    usageRequestLastActivityRef.current = usageActivityUnixMs
+    void refreshUsageRequests(Math.max(USAGE_REQUEST_PAGE_SIZE, usageRequestRows.length))
+  }, [effectiveDetailsTab, usageActivityUnixMs, refreshUsageRequests, usageRequestRows.length])
 
   const loadMoreUsageRequests = async () => {
     if (usageRequestLoading || !usageRequestHasMore) return
@@ -403,8 +566,276 @@ export function UsageStatisticsPanel({
     }
   }
 
+  const usageRequestChartRows = useMemo(
+    () => usageRequestRows.slice(0, USAGE_REQUEST_GRAPH_SOURCE_LIMIT),
+    [usageRequestRows],
+  )
+  const usageRequestProviderOptions = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const row of usageRequestChartRows) {
+      counts.set(row.provider, (counts.get(row.provider) ?? 0) + 1)
+    }
+    return [...counts.entries()]
+      .sort((a, b) => {
+        const providerOrder = compareUsageProvidersForDisplay(a[0], b[0])
+        if (providerOrder !== 0) return providerOrder
+        if (a[1] !== b[1]) return b[1] - a[1]
+        return a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: 'base' })
+      })
+      .map(([provider]) => provider)
+  }, [usageRequestChartRows])
+
+  const activeRequestGraphProviders = useMemo(
+    () => usageRequestProviderOptions.slice(0, Math.min(3, USAGE_REQUEST_GRAPH_COLORS.length)),
+    [usageRequestProviderOptions],
+  )
+
+  const usageRequestGraphPointCount = useMemo(
+    () => Math.max(1, usageRequestChartRows.length),
+    [usageRequestChartRows.length],
+  )
+
+  const usageRequestLineSeries = useMemo(() => {
+    const providers = [...activeRequestGraphProviders].sort(compareUsageProvidersForDisplay)
+    if (!providers.length) return []
+    const source = usageRequestChartRows
+    if (!source.length) return []
+    const pointCount = usageRequestGraphPointCount
+    const providerSeries = providers.map((provider, providerIndex) => {
+      const values = new Array<number>(pointCount).fill(0)
+      for (let idx = 0; idx < pointCount; idx += 1) {
+        const row = source[idx]
+        values[idx] = row && row.provider === provider ? row.total_tokens : 0
+      }
+      return {
+        kind: 'provider' as const,
+        provider,
+        color: USAGE_REQUEST_GRAPH_COLORS[providerIndex % USAGE_REQUEST_GRAPH_COLORS.length],
+        values,
+      }
+    })
+    if (providerSeries.length <= 1) return providerSeries
+    const allValues = new Array<number>(pointCount).fill(0)
+    for (let idx = 0; idx < pointCount; idx += 1) {
+      let sum = 0
+      for (const series of providerSeries) sum += series.values[idx] ?? 0
+      allValues[idx] = sum
+    }
+    return [
+      ...providerSeries,
+      {
+        kind: 'all' as const,
+        provider: 'all',
+        color: USAGE_REQUEST_ALL_COLOR,
+        values: allValues,
+      },
+    ]
+  }, [activeRequestGraphProviders, usageRequestChartRows, usageRequestGraphPointCount])
+
+  const usageRequestLineMaxValue = useMemo(() => {
+    let maxValue = 0
+    for (const series of usageRequestLineSeries) {
+      for (const value of series.values) {
+        if (value > maxValue) maxValue = value
+      }
+    }
+    return Math.max(1, maxValue)
+  }, [usageRequestLineSeries])
+  const usageRequestProviderSeries = useMemo(
+    () => usageRequestLineSeries.filter((series) => series.kind === 'provider'),
+    [usageRequestLineSeries],
+  )
+  const usageRequestLegendSeries = useMemo(() => {
+    if (!usageRequestLineSeries.length) return []
+    const allSeries = usageRequestLineSeries.find((series) => series.kind === 'all') ?? null
+    const providerSeries = usageRequestLineSeries
+      .filter((series) => series.kind === 'provider')
+      .sort((a, b) => compareUsageProvidersForDisplay(a.provider, b.provider))
+    return allSeries ? [allSeries, ...providerSeries] : providerSeries
+  }, [usageRequestLineSeries])
+
+  const usageRequestDailyBars = useMemo(() => {
+    if (!activeRequestGraphProviders.length) return []
+    const byDay = new Map<number, Record<string, number>>()
+    for (const row of usageRequestRows) {
+      if (!activeRequestGraphProviders.includes(row.provider)) continue
+      const day = startOfDayUnixMs(row.unix_ms)
+      const slot = byDay.get(day) ?? {}
+      slot[row.provider] = (slot[row.provider] ?? 0) + row.total_tokens
+      byDay.set(day, slot)
+    }
+    const days = [...byDay.keys()].sort((a, b) => a - b).slice(-30)
+    return days.map((day) => {
+      const providerTotals = byDay.get(day) ?? {}
+      const total = activeRequestGraphProviders.reduce((sum, provider) => sum + (providerTotals[provider] ?? 0), 0)
+      return {
+        day,
+        providerTotals,
+        total,
+      }
+    })
+  }, [activeRequestGraphProviders, usageRequestRows])
+
+  const usageRequestFilterOptions = useMemo(() => {
+    const providers = new Set<string>()
+    const models = new Set<string>()
+    const origins = new Set<string>()
+    const sessions = new Set<string>()
+    for (const row of usageRequestRows) {
+      providers.add(row.provider)
+      models.add(row.model)
+      origins.add(row.origin)
+      sessions.add(row.session_id)
+    }
+    return {
+      provider: [...providers].sort((a, b) => a.localeCompare(b)),
+      model: [...models].sort((a, b) => a.localeCompare(b)),
+      origin: [...origins].sort((a, b) => a.localeCompare(b)),
+      session: [...sessions].sort((a, b) => a.localeCompare(b)).slice(0, 120),
+    }
+  }, [usageRequestRows])
+  useEffect(() => {
+    setUsageRequestMultiFilters((prev) => ({
+      provider: prev.provider.filter((item) => usageRequestFilterOptions.provider.includes(item)),
+      model: prev.model.filter((item) => usageRequestFilterOptions.model.includes(item)),
+      origin: prev.origin.filter((item) => usageRequestFilterOptions.origin.includes(item)),
+      session: prev.session.filter((item) => usageRequestFilterOptions.session.includes(item)),
+    }))
+  }, [usageRequestFilterOptions])
+  const usageRequestDaysWithRecords = useMemo(() => {
+    const out = new Set<number>()
+    for (const row of usageRequestRows) out.add(startOfDayUnixMs(row.unix_ms))
+    return out
+  }, [usageRequestRows])
+  const usageRequestDayOriginFlags = useMemo(() => {
+    const out = new Map<number, { win: boolean; wsl: boolean }>()
+    for (const row of usageRequestRows) {
+      const day = startOfDayUnixMs(row.unix_ms)
+      const prev = out.get(day) ?? { win: false, wsl: false }
+      const isWsl = row.origin.toLowerCase().includes('wsl')
+      out.set(day, {
+        win: prev.win || !isWsl,
+        wsl: prev.wsl || isWsl,
+      })
+    }
+    return out
+  }, [usageRequestRows])
+
+  const usageRequestDailyMax = useMemo(
+    () => Math.max(1, ...usageRequestDailyBars.map((row) => row.total)),
+    [usageRequestDailyBars],
+  )
+  const filteredUsageRequestRows = useMemo(() => {
+    const hasActiveFilters =
+      usageRequestTimeFilter.trim().length > 0 ||
+      usageRequestMultiFilters.provider.length > 0 ||
+      usageRequestMultiFilters.model.length > 0 ||
+      usageRequestMultiFilters.origin.length > 0 ||
+      usageRequestMultiFilters.session.length > 0
+    if (!hasActiveFilters) return usageRequestRows
+    const timeDay = parseDateInputToDayStart(usageRequestTimeFilter)
+    const timeNeedle = usageRequestTimeFilter.trim().toLowerCase()
+    const contains = (text: string) => timeNeedle.length === 0 || text.toLowerCase().includes(timeNeedle)
+    return usageRequestRows.filter((row) => {
+      if (timeDay != null) {
+        if (startOfDayUnixMs(row.unix_ms) !== timeDay) return false
+      } else if (!contains(fmtWhen(row.unix_ms))) {
+        return false
+      }
+      if (usageRequestMultiFilters.provider.length > 0 && !usageRequestMultiFilters.provider.includes(row.provider)) return false
+      if (usageRequestMultiFilters.model.length > 0 && !usageRequestMultiFilters.model.includes(row.model)) return false
+      if (usageRequestMultiFilters.origin.length > 0 && !usageRequestMultiFilters.origin.includes(row.origin)) return false
+      if (usageRequestMultiFilters.session.length > 0 && !usageRequestMultiFilters.session.includes(row.session_id)) return false
+      return true
+    })
+  }, [fmtWhen, usageRequestMultiFilters, usageRequestRows, usageRequestTimeFilter])
+  const requestChartWidth = 1000
+  const requestChartHeight = 176
+  const requestChartMinX = 34
+  const requestChartMaxX = 986
+  const requestChartTopY = 14
+  const requestChartBottomY = 136
+  const [lineHoverIndex, setLineHoverIndex] = useState<number | null>(null)
+  const [lineHoverX, setLineHoverX] = useState<number | null>(null)
+  const [dailyHoverDay, setDailyHoverDay] = useState<number | null>(null)
+  const lineHoverData = useMemo(() => {
+    if (lineHoverIndex == null) return null
+    if (lineHoverIndex < 0 || lineHoverIndex >= usageRequestGraphPointCount) return null
+    const rows = usageRequestLineSeries.map((series) => ({
+      provider: series.provider,
+      color: series.color,
+      value: series.values[lineHoverIndex] ?? 0,
+    }))
+    return {
+      point: lineHoverIndex + 1,
+      rows,
+      total: rows.reduce((sum, row) => sum + row.value, 0),
+    }
+  }, [lineHoverIndex, usageRequestGraphPointCount, usageRequestLineSeries])
+  const selectedTimeFilterDay = useMemo(
+    () => parseDateInputToDayStart(usageRequestTimeFilter),
+    [usageRequestTimeFilter],
+  )
+  const timeFilterCalendarCells = useMemo(() => {
+    const monthStart = timePickerMonthStartMs
+    const monthDate = new Date(monthStart)
+    const firstWeekday = monthDate.getDay()
+    const firstGridDay = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1 - firstWeekday).getTime()
+    return Array.from({ length: 42 }, (_, idx) => {
+      const dayStartMs = firstGridDay + idx * 24 * 60 * 60 * 1000
+      const dayDate = new Date(dayStartMs)
+      return {
+        dayStartMs,
+        label: dayDate.getDate(),
+        inMonth: dayDate.getMonth() === monthDate.getMonth(),
+      }
+    })
+  }, [timePickerMonthStartMs])
+  const dailyHoverData = useMemo(() => {
+    if (dailyHoverDay == null) return null
+    const row = usageRequestDailyBars.find((item) => item.day === dailyHoverDay)
+    if (!row) return null
+    const rows = activeRequestGraphProviders
+      .map((provider, idx) => ({
+        provider,
+        value: row.providerTotals[provider] ?? 0,
+        color: USAGE_REQUEST_GRAPH_COLORS[idx % USAGE_REQUEST_GRAPH_COLORS.length],
+      }))
+      .filter((item) => item.value > 0)
+      .sort((a, b) => b.value - a.value)
+    return {
+      day: row.day,
+      total: row.total,
+      rows,
+    }
+  }, [activeRequestGraphProviders, dailyHoverDay, usageRequestDailyBars])
+  const isRequestsOnlyPage = effectiveDetailsTab === 'requests' && !showFilters && !showDetailsTabs
+
+  useEffect(() => {
+    if (!activeUsageRequestFilterMenu) return
+    const activeColumn = USAGE_REQUEST_COLUMN_FILTERS.find((item) => item.key === activeUsageRequestFilterMenu.key)
+    if (!activeColumn?.filterable) {
+      setActiveUsageRequestFilterMenu(null)
+      return
+    }
+    const onMouseDown = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (usageRequestFilterMenuRef.current?.contains(target)) return
+      setActiveUsageRequestFilterMenu(null)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setActiveUsageRequestFilterMenu(null)
+    }
+    window.addEventListener('mousedown', onMouseDown)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [activeUsageRequestFilterMenu])
+
   return (
-    <div className="aoCard aoUsageStatsPage">
+    <div className={`aoCard aoUsageStatsPage${isRequestsOnlyPage ? ' is-requests-only' : ''}`}>
       {showFilters ? (
         <>
           <UsageStatsFiltersBar
@@ -456,7 +887,7 @@ export function UsageStatisticsPanel({
         </div>
       ) : null}
       {effectiveDetailsTab === 'requests' ? (
-        <div className="aoUsageRequestsCard">
+        <div className={`aoUsageRequestsCard${isRequestsOnlyPage ? ' is-page' : ''}`}>
           <div className="aoSwitchboardSectionHead">
             <div className="aoMiniLabel">Request Details</div>
             <div className="aoHint">Per-request rows (newest first), aligned with current filters/window.</div>
@@ -472,40 +903,506 @@ export function UsageStatisticsPanel({
             <div className="aoHint">Test mode fallback rows are shown because backend request details are unavailable.</div>
           ) : null}
           {usageRequestError ? <div className="aoHint">Failed to load request details: {usageRequestError}</div> : null}
+          <div className="aoUsageRequestChartCard">
+            <div className="aoSwitchboardSectionHead">
+              <div className="aoMiniLabel">Latest 120 Requests (Total Tokens)</div>
+              <div className="aoHint">{usageRequestGraphPointCount} points, 1 point = 1 request.</div>
+            </div>
+            {usageRequestLineSeries.length ? (
+              <div className="aoUsageRequestLineGraphWrap">
+                <svg
+                  className="aoUsageRequestLineGraph"
+                  viewBox={`0 0 ${requestChartWidth} ${requestChartHeight}`}
+                  preserveAspectRatio="none"
+                  role="img"
+                  aria-label="Request token trend by provider"
+                  onMouseLeave={() => {
+                    setLineHoverIndex(null)
+                    setLineHoverX(null)
+                  }}
+                  onMouseMove={(event) => {
+                    const rect = (event.currentTarget as SVGElement).getBoundingClientRect()
+                    const ratio = (event.clientX - rect.left) / Math.max(1, rect.width)
+                    const rawX = ratio * requestChartWidth
+                    const clampedX = Math.max(requestChartMinX, Math.min(requestChartMaxX, rawX))
+                    const idx = Math.round(
+                      ((clampedX - requestChartMinX) / Math.max(1, requestChartMaxX - requestChartMinX)) *
+                        Math.max(1, usageRequestGraphPointCount - 1),
+                    )
+                    const snappedX =
+                      requestChartMinX +
+                      (idx / Math.max(1, usageRequestGraphPointCount - 1)) * (requestChartMaxX - requestChartMinX)
+                    setLineHoverIndex(Math.max(0, Math.min(usageRequestGraphPointCount - 1, idx)))
+                    setLineHoverX(snappedX)
+                  }}
+                >
+                <line x1={requestChartMinX} y1={requestChartTopY} x2={requestChartMinX} y2={requestChartBottomY} stroke="rgba(13, 18, 32, 0.24)" strokeWidth="1" />
+                <line x1={requestChartMinX} y1={requestChartBottomY} x2={requestChartMaxX} y2={requestChartBottomY} stroke="rgba(13, 18, 32, 0.24)" strokeWidth="1" />
+                <line
+                  x1={requestChartMinX}
+                  y1={(requestChartTopY + requestChartBottomY) / 2}
+                  x2={requestChartMaxX}
+                  y2={(requestChartTopY + requestChartBottomY) / 2}
+                  stroke="rgba(13, 18, 32, 0.14)"
+                  strokeWidth="1"
+                  strokeDasharray="4 4"
+                />
+                <text x={requestChartMinX - 4} y={requestChartTopY + 4} textAnchor="end" fill="rgba(13, 18, 32, 0.55)" fontSize="10">
+                  {usageRequestLineMaxValue.toLocaleString()}
+                </text>
+                <text x={requestChartMinX - 4} y={(requestChartTopY + requestChartBottomY) / 2 + 4} textAnchor="end" fill="rgba(13, 18, 32, 0.48)" fontSize="10">
+                  {Math.round(usageRequestLineMaxValue / 2).toLocaleString()}
+                </text>
+                <text x={requestChartMinX - 4} y={requestChartBottomY + 4} textAnchor="end" fill="rgba(13, 18, 32, 0.48)" fontSize="10">
+                  0
+                </text>
+                <text x={requestChartMinX} y={requestChartBottomY + 16} textAnchor="start" fill="rgba(13, 18, 32, 0.52)" fontSize="10">
+                  Newer
+                </text>
+                <text x={requestChartMaxX} y={requestChartBottomY + 16} textAnchor="end" fill="rgba(13, 18, 32, 0.52)" fontSize="10">
+                  Older
+                </text>
+                <defs>
+                  <linearGradient id="usageRequestAllStroke" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stopColor="#415a73" />
+                    <stop offset="100%" stopColor="#2f3f56" />
+                  </linearGradient>
+                  <linearGradient id="usageRequestAllArea" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" stopColor="rgba(95, 107, 122, 0.22)" />
+                    <stop offset="100%" stopColor="rgba(95, 107, 122, 0.02)" />
+                  </linearGradient>
+                  <filter id="usageRequestAllGlow" x="-20%" y="-20%" width="140%" height="140%">
+                    <feGaussianBlur stdDeviation="1.8" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                </defs>
+                {(() => {
+                  const allSeries = usageRequestLineSeries.find((item) => item.kind === 'all')
+                  if (!allSeries) return null
+                  const points = allSeries.values.map((value, idx) => {
+                    const x =
+                      requestChartMinX +
+                      (idx / Math.max(1, usageRequestGraphPointCount - 1)) * (requestChartMaxX - requestChartMinX)
+                    const y =
+                      requestChartBottomY -
+                      (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                    return { x, y }
+                  })
+                  const linePath = buildSmoothLinePath(points, {
+                    min: requestChartTopY,
+                    max: requestChartBottomY,
+                  })
+                  const areaPath =
+                    points.length >= 2
+                      ? `${linePath} L ${points[points.length - 1].x.toFixed(2)} ${requestChartBottomY.toFixed(2)} L ${points[0].x.toFixed(2)} ${requestChartBottomY.toFixed(2)} Z`
+                      : ''
+                  return (
+                    <>
+                      {areaPath ? <path d={areaPath} fill="url(#usageRequestAllArea)" opacity={0.95} /> : null}
+                      <path
+                        d={linePath}
+                        fill="none"
+                        stroke="url(#usageRequestAllStroke)"
+                        strokeWidth={2.6}
+                        opacity={0.96}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        filter="url(#usageRequestAllGlow)"
+                      />
+                    </>
+                  )
+                })()}
+                {usageRequestLineSeries.map((series) => {
+                  if (series.kind === 'all') return null
+                  const points = series.values.map((value, idx) => {
+                    const x =
+                      requestChartMinX +
+                      (idx / Math.max(1, usageRequestGraphPointCount - 1)) * (requestChartMaxX - requestChartMinX)
+                    const y =
+                      requestChartBottomY -
+                      (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                    return { x, y }
+                  })
+                  const segments: Array<Array<{ x: number; y: number }>> = []
+                  let current: Array<{ x: number; y: number }> = []
+                  for (let idx = 0; idx < points.length; idx += 1) {
+                    if ((series.values[idx] ?? 0) > 0) {
+                      current.push(points[idx])
+                    } else if (current.length) {
+                      segments.push(current)
+                      current = []
+                    }
+                  }
+                  if (current.length) segments.push(current)
+                  return (
+                    <g key={`request-line-series-${series.provider}`}>
+                      {segments.map((segment, segmentIdx) => {
+                        if (segment.length === 1) {
+                          return <circle key={`request-line-series-dot-${series.provider}-${segmentIdx}`} cx={segment[0].x} cy={segment[0].y} r="2.2" fill={series.color} opacity={0.88} />
+                        }
+                        const pathD = buildSmoothLinePath(segment, {
+                          min: requestChartTopY,
+                          max: requestChartBottomY,
+                        })
+                        return (
+                          <path
+                            key={`request-line-series-path-${series.provider}-${segmentIdx}`}
+                            d={pathD}
+                            fill="none"
+                            stroke={series.color}
+                            strokeWidth={1.7}
+                            opacity={0.86}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        )
+                      })}
+                    </g>
+                  )
+                })}
+                {lineHoverX != null ? (
+                  <line
+                    x1={lineHoverX}
+                    y1={requestChartTopY}
+                    x2={lineHoverX}
+                    y2={requestChartBottomY}
+                    stroke="rgba(13, 18, 32, 0.22)"
+                    strokeWidth="1"
+                    strokeDasharray="3 3"
+                  />
+                ) : null}
+                {lineHoverIndex != null
+                  ? usageRequestLineSeries.map((series) => {
+                      const value = series.values[lineHoverIndex] ?? 0
+                      if (series.kind === 'provider' && value <= 0) return null
+                      const x =
+                        requestChartMinX +
+                        (lineHoverIndex / Math.max(1, usageRequestGraphPointCount - 1)) *
+                          (requestChartMaxX - requestChartMinX)
+                      const y =
+                        requestChartBottomY -
+                        (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                      return <circle key={`line-hover-dot-${series.provider}`} cx={x} cy={y} r="2.6" fill={series.color} />
+                    })
+                  : null}
+                </svg>
+                {lineHoverData ? (
+                  <div className="aoUsageRequestHoverOverlay" aria-live="polite">
+                    <span>
+                      Point {lineHoverData.point}/{usageRequestGraphPointCount} · Total {lineHoverData.total.toLocaleString()}
+                    </span>
+                    {lineHoverData.rows.map((row) => (
+                      <span key={`hover-overlay-${row.provider}`} className="aoUsageRequestHoverSummaryItem">
+                        <i style={{ background: row.color }} />
+                        {row.provider === 'all' ? 'all' : row.provider}: {row.value.toLocaleString()}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="aoHint">No recent rows for line graph.</div>
+            )}
+            {usageRequestLegendSeries.length ? (
+              <div className="aoUsageRequestLegend">
+                {usageRequestLegendSeries.map((series) => (
+                  <span key={`request-line-legend-${series.provider}`} className="aoUsageRequestLegendItem">
+                    <i style={{ background: series.color }} />
+                    {series.kind === 'all' ? 'all' : series.provider}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <div ref={usageRequestTableSurfaceRef} className="aoUsageHistoryTableSurface aoUsageRequestTableSurface">
             <div className="aoUsageHistoryTableHead aoUsageRequestTableHead" aria-hidden="true">
-              <table className="aoUsageHistoryTable aoUsageRequestsTable">
+              <table
+                className="aoUsageHistoryTable aoUsageRequestsTable"
+                style={{ transform: `translateX(${-usageRequestTableScrollLeft}px)` }}
+              >
                 <colgroup>
                   <col className="aoUsageReqColTime" />
                   <col className="aoUsageReqColProvider" />
                   <col className="aoUsageReqColModel" />
+                  <col className="aoUsageReqColOrigin" />
+                  <col className="aoUsageReqColSession" />
                   <col className="aoUsageReqColInput" />
                   <col className="aoUsageReqColOutput" />
                   <col className="aoUsageReqColCacheCreate" />
                   <col className="aoUsageReqColCacheRead" />
-                  <col className="aoUsageReqColOrigin" />
-                  <col className="aoUsageReqColSession" />
                 </colgroup>
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Provider</th>
-                    <th>Model</th>
-                    <th>Input</th>
-                    <th>Output</th>
-                    <th>Cache Create</th>
-                    <th>Cache Read</th>
-                    <th>Origin</th>
-                    <th>Session</th>
+                    {USAGE_REQUEST_COLUMN_FILTERS.map((column) => {
+                      const isOpen = activeUsageRequestFilterMenu?.key === column.key
+                      const hasFilter =
+                        column.key === 'time'
+                          ? usageRequestTimeFilter.trim().length > 0
+                          : column.key === 'provider'
+                            ? usageRequestMultiFilters.provider.length > 0
+                            : column.key === 'model'
+                              ? usageRequestMultiFilters.model.length > 0
+                              : column.key === 'origin'
+                                ? usageRequestMultiFilters.origin.length > 0
+                                : column.key === 'session'
+                                  ? usageRequestMultiFilters.session.length > 0
+                                  : false
+                      return (
+                        <th key={`usage-requests-head-${column.key}`}>
+                          <div className="aoUsageReqHeadCell">
+                            {column.filterable ? (
+                              <button
+                                type="button"
+                                className={`aoUsageReqHeadBtn${hasFilter ? ' is-filtered' : ''}${isOpen ? ' is-open' : ''}`}
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  const rect = (event.currentTarget as HTMLButtonElement).getBoundingClientRect()
+                                const left = Math.max(8, Math.min(rect.left, window.innerWidth - 236))
+                                const top = rect.bottom + 6
+                                const width = Math.max(160, rect.width)
+                                setActiveUsageRequestFilterMenu((prev) => {
+                                  if (prev?.key === column.key) return null
+                                  if (column.key === 'time') {
+                                    setTimePickerMonthStartMs(startOfMonthMs(parseDateInputToDayStart(usageRequestTimeFilter) ?? Date.now()))
+                                  }
+                                  return {
+                                    key: column.key,
+                                    left,
+                                    top,
+                                    width,
+                                  }
+                                })
+                              }}
+                              >
+                                <span>{column.label}</span>
+                                <span className="aoUsageReqHeadChevron" aria-hidden="true">
+                                  ▾
+                                </span>
+                              </button>
+                            ) : (
+                              <span className="aoUsageReqHeadLabel">{column.label}</span>
+                            )}
+                          </div>
+                        </th>
+                      )
+                    })}
                   </tr>
                 </thead>
               </table>
             </div>
+            {activeUsageRequestFilterMenu ? (
+              <div
+                ref={usageRequestFilterMenuRef}
+                className="aoUsageReqFilterMenu aoUsageReqFilterMenuFloating"
+                style={{
+                  left: `${activeUsageRequestFilterMenu.left}px`,
+                  top: `${activeUsageRequestFilterMenu.top}px`,
+                  width: `${
+                    activeUsageRequestFilterMenu.key === 'time'
+                      ? 252
+                      : activeUsageRequestFilterMenu.key === 'session'
+                        ? Math.min(420, Math.max(activeUsageRequestFilterMenu.width + 180, 320))
+                        : activeUsageRequestFilterMenu.key === 'model'
+                          ? Math.min(360, Math.max(activeUsageRequestFilterMenu.width + 120, 280))
+                          : Math.min(320, Math.max(activeUsageRequestFilterMenu.width + 80, 240))
+                  }px`,
+                }}
+                onClick={(event) => event.stopPropagation()}
+              >
+                {activeUsageRequestFilterMenu.key === 'time' ? (
+                  <>
+                    <div className="aoUsageReqCalendarHead">
+                      <button type="button" className="aoUsageReqCalendarNav" onClick={() => setTimePickerMonthStartMs((prev) => addMonths(prev, -1))}>
+                        ‹
+                      </button>
+                      <div className="aoUsageReqCalendarTitle">
+                        {MONTH_NAMES[new Date(timePickerMonthStartMs).getMonth()]} {new Date(timePickerMonthStartMs).getFullYear()}
+                      </div>
+                      <button type="button" className="aoUsageReqCalendarNav" onClick={() => setTimePickerMonthStartMs((prev) => addMonths(prev, 1))}>
+                        ›
+                      </button>
+                    </div>
+                    <div className="aoUsageReqCalendarWeekdays">
+                      {WEEKDAY_NAMES.map((name) => (
+                        <span key={`weekday-${name}`}>{name}</span>
+                      ))}
+                    </div>
+                    <div className="aoUsageReqCalendarGrid">
+                      {timeFilterCalendarCells.map((cell) => {
+                        const selected = selectedTimeFilterDay != null && selectedTimeFilterDay === cell.dayStartMs
+                        const hasRecord = usageRequestDaysWithRecords.has(cell.dayStartMs)
+                        const originFlags = usageRequestDayOriginFlags.get(cell.dayStartMs) ?? { win: false, wsl: false }
+                        return (
+                          <button
+                            key={`time-cell-${cell.dayStartMs}`}
+                            type="button"
+                            className={`aoUsageReqCalendarCell${cell.inMonth ? '' : ' is-out'}${selected ? ' is-selected' : ''}`}
+                            onClick={() =>
+                              setUsageRequestTimeFilter(dayStartToIso(cell.dayStartMs))
+                            }
+                          >
+                            {cell.label}
+                            {hasRecord ? (
+                              <span className="aoUsageReqCalendarDots" aria-hidden="true">
+                                {originFlags.win ? <span className="aoUsageReqCalendarDot aoUsageReqCalendarDotWin" /> : null}
+                                {originFlags.wsl ? <span className="aoUsageReqCalendarDot aoUsageReqCalendarDotWsl" /> : null}
+                              </span>
+                            ) : null}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      className="aoUsageReqFilterInput"
+                      placeholder={`Filter ${
+                        USAGE_REQUEST_COLUMN_FILTERS.find((item) => item.key === activeUsageRequestFilterMenu.key)?.label ?? ''
+                      }`}
+                      value={
+                        activeUsageRequestFilterMenu.key === 'provider'
+                          ? usageRequestFilterSearch.provider
+                          : activeUsageRequestFilterMenu.key === 'model'
+                            ? usageRequestFilterSearch.model
+                            : activeUsageRequestFilterMenu.key === 'origin'
+                              ? usageRequestFilterSearch.origin
+                              : usageRequestFilterSearch.session
+                      }
+                      onChange={(event) =>
+                        setUsageRequestFilterSearch((prev) => ({
+                          ...prev,
+                          [activeUsageRequestFilterMenu.key]: event.target.value,
+                        }))
+                      }
+                      autoFocus
+                    />
+                    <div className="aoUsageReqFilterOptions">
+                      {(() => {
+                        const key = activeUsageRequestFilterMenu.key as UsageRequestMultiFilterKey
+                        const options =
+                          activeUsageRequestFilterMenu.key === 'provider'
+                            ? usageRequestFilterOptions.provider
+                            : activeUsageRequestFilterMenu.key === 'model'
+                              ? usageRequestFilterOptions.model
+                              : activeUsageRequestFilterMenu.key === 'origin'
+                                ? usageRequestFilterOptions.origin
+                                : usageRequestFilterOptions.session
+                        const searchNeedle = (
+                          activeUsageRequestFilterMenu.key === 'provider'
+                            ? usageRequestFilterSearch.provider
+                            : activeUsageRequestFilterMenu.key === 'model'
+                              ? usageRequestFilterSearch.model
+                              : activeUsageRequestFilterMenu.key === 'origin'
+                                ? usageRequestFilterSearch.origin
+                                : usageRequestFilterSearch.session
+                        ).toLowerCase()
+                        const visibleOptions = options
+                          .filter((item) => item.toLowerCase().includes(searchNeedle))
+                          .slice(0, 40)
+                        const selectedSet = new Set(usageRequestMultiFilters[key])
+                        const allVisibleSelected =
+                          visibleOptions.length > 0 && visibleOptions.every((item) => selectedSet.has(item))
+                        return (
+                          <>
+                            <label className="aoUsageReqFilterOptionBtn aoUsageReqFilterOptionSelectAll">
+                              <input
+                                type="checkbox"
+                                checked={allVisibleSelected}
+                                onChange={(event) =>
+                                  setUsageRequestMultiFilters((prev) => {
+                                    const current = new Set(prev[key])
+                                    if (event.target.checked) {
+                                      for (const item of visibleOptions) current.add(item)
+                                    } else {
+                                      for (const item of visibleOptions) current.delete(item)
+                                    }
+                                    return { ...prev, [key]: [...current] }
+                                  })
+                                }
+                              />
+                              <span>(Select All)</span>
+                            </label>
+                            {visibleOptions.map((item) => (
+                              <label
+                                key={`filter-option-${activeUsageRequestFilterMenu.key}-${item}`}
+                                className="aoUsageReqFilterOptionBtn"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={
+                                    activeUsageRequestFilterMenu.key === 'provider'
+                                      ? usageRequestMultiFilters.provider.includes(item)
+                                      : activeUsageRequestFilterMenu.key === 'model'
+                                        ? usageRequestMultiFilters.model.includes(item)
+                                        : activeUsageRequestFilterMenu.key === 'origin'
+                                          ? usageRequestMultiFilters.origin.includes(item)
+                                          : usageRequestMultiFilters.session.includes(item)
+                                  }
+                                  onChange={(event) =>
+                                    setUsageRequestMultiFilters((prev) => {
+                                      const list = prev[key]
+                                      const nextList = event.target.checked
+                                        ? [...list, item]
+                                        : list.filter((entry) => entry !== item)
+                                      return { ...prev, [key]: nextList }
+                                    })
+                                  }
+                                />
+                                <span>{item}</span>
+                              </label>
+                            ))}
+                          </>
+                        )
+                      })()}
+                    </div>
+                  </>
+                )}
+                <div className="aoUsageReqFilterMenuActions">
+                  <button
+                    type="button"
+                    className="aoTinyBtn"
+                    onClick={() => {
+                      if (activeUsageRequestFilterMenu.key === 'time') {
+                        setUsageRequestTimeFilter('')
+                      } else {
+                        setUsageRequestMultiFilters((prev) => ({
+                          ...prev,
+                          [activeUsageRequestFilterMenu.key]: [],
+                        }))
+                      }
+                    }}
+                  >
+                    Clear
+                  </button>
+                  <button type="button" className="aoTinyBtn" onClick={() => setActiveUsageRequestFilterMenu(null)}>
+                    Done
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="aoUsageHistoryTableBody">
               <div
                 ref={usageRequestTableWrapRef}
                 className="aoUsageHistoryTableWrap aoUsageRequestsTableWrap"
                 onScroll={() => {
+                  const wrap = usageRequestTableWrapRef.current
+                  if (wrap) {
+                    setUsageRequestTableScrollLeft(wrap.scrollLeft)
+                    if (usageRequestHasMore && !usageRequestLoading) {
+                      const nearBottom = isNearBottom(wrap, 24)
+                      if (nearBottom && !usageRequestWasNearBottomRef.current) {
+                        void loadMoreUsageRequests()
+                      }
+                      usageRequestWasNearBottomRef.current = nearBottom
+                    } else {
+                      usageRequestWasNearBottomRef.current = false
+                    }
+                  }
                   scheduleUsageRequestScrollbarSync()
                   activateUsageRequestScrollbarUi()
                 }}
@@ -520,32 +1417,44 @@ export function UsageStatisticsPanel({
                     <col className="aoUsageReqColTime" />
                     <col className="aoUsageReqColProvider" />
                     <col className="aoUsageReqColModel" />
+                    <col className="aoUsageReqColOrigin" />
+                    <col className="aoUsageReqColSession" />
                     <col className="aoUsageReqColInput" />
                     <col className="aoUsageReqColOutput" />
                     <col className="aoUsageReqColCacheCreate" />
                     <col className="aoUsageReqColCacheRead" />
-                    <col className="aoUsageReqColOrigin" />
-                    <col className="aoUsageReqColSession" />
                   </colgroup>
                   <tbody>
-                    {!usageRequestRows.length && !usageRequestLoading ? (
+                    {!filteredUsageRequestRows.length && !usageRequestLoading ? (
                       <tr>
                         <td colSpan={9} className="aoHint">
-                          No request rows in this window.
+                          No request rows match current filters.
                         </td>
                       </tr>
                     ) : (
-                      usageRequestRows.map((row, idx) => (
+                      filteredUsageRequestRows.map((row, idx) => (
                         <tr key={`${row.unix_ms}-${row.provider}-${row.session_id}-${idx}`}>
                           <td>{fmtWhen(row.unix_ms)}</td>
                           <td className="aoUsageRequestsMono">{row.provider}</td>
                           <td className="aoUsageRequestsMono">{row.model}</td>
+                          <td>
+                            {row.origin.toLowerCase().includes('wsl') ? (
+                              <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWsl">WSL2</span>
+                            ) : (
+                              <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWindows">WIN</span>
+                            )}
+                          </td>
+                          <td
+                            className={`aoUsageRequestsMono ${
+                              row.origin.toLowerCase().includes('wsl') ? 'aoUsageReqSessionWsl' : 'aoUsageReqSessionWindows'
+                            }`}
+                          >
+                            {row.session_id}
+                          </td>
                           <td>{row.input_tokens.toLocaleString()}</td>
                           <td>{row.output_tokens.toLocaleString()}</td>
                           <td>{row.cache_creation_input_tokens.toLocaleString()}</td>
                           <td>{row.cache_read_input_tokens.toLocaleString()}</td>
-                          <td>{row.origin}</td>
-                          <td className="aoUsageRequestsMono">{row.session_id}</td>
                         </tr>
                       ))
                     )}
@@ -566,19 +1475,87 @@ export function UsageStatisticsPanel({
               </div>
             </div>
           </div>
+          <div className="aoUsageRequestChartCard">
+            <div className="aoSwitchboardSectionHead">
+              <div className="aoMiniLabel">Daily Token Totals</div>
+              <div className="aoHint">Filtered providers, newest 30 days from loaded rows.</div>
+            </div>
+            {usageRequestDailyBars.length ? (
+              <div className="aoUsageRequestDailyBarsWrap">
+                <div
+                  className="aoUsageRequestDailyBars"
+                  role="img"
+                  aria-label="Daily token totals by selected providers"
+                  onMouseLeave={() => setDailyHoverDay(null)}
+                >
+                  {usageRequestDailyBars.map((row) => (
+                    <div
+                      key={`request-day-${row.day}`}
+                      className="aoUsageRequestDailyBarGroup"
+                      onMouseEnter={() => setDailyHoverDay(row.day)}
+                    >
+                      <div className="aoUsageRequestDailyBarStack">
+                        {[...activeRequestGraphProviders]
+                          .map((provider, idx) => ({
+                            provider,
+                            idx,
+                            value: row.providerTotals[provider] ?? 0,
+                          }))
+                          .filter((item) => item.value > 0)
+                          .sort((a, b) => b.value - a.value)
+                          .map((item) => {
+                            const heightPct = (item.value / usageRequestDailyMax) * 100
+                            const provider = item.provider
+                            const idx = item.idx
+                            return (
+                              <div
+                                key={`request-day-${row.day}-${provider}`}
+                                className="aoUsageRequestDailyBarSegment"
+                                style={{
+                                  height: `${heightPct}%`,
+                                  background: USAGE_REQUEST_GRAPH_COLORS[idx % USAGE_REQUEST_GRAPH_COLORS.length],
+                                }}
+                              />
+                            )
+                          })}
+                      </div>
+                      <div className="aoUsageRequestDailyLabel">{formatMonthDay(row.day)}</div>
+                    </div>
+                  ))}
+                </div>
+                {dailyHoverData ? (
+                  <div className="aoUsageRequestDailyHoverOverlay">
+                    <span>{formatMonthDay(dailyHoverData.day)} · Total {dailyHoverData.total.toLocaleString()}</span>
+                    {dailyHoverData.rows.map((row) => (
+                      <span key={`daily-hover-${row.provider}`} className="aoUsageRequestHoverSummaryItem">
+                        <i style={{ background: row.color }} />
+                        {row.provider}: {row.value.toLocaleString()}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="aoHint">No daily data for selected providers.</div>
+            )}
+            {usageRequestProviderSeries.length ? (
+              <div className="aoUsageRequestLegend">
+                {usageRequestProviderSeries.map((series) => (
+                  <span key={`request-daily-legend-${series.provider}`} className="aoUsageRequestLegendItem">
+                    <i style={{ background: series.color }} />
+                    {series.provider}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <div className="aoUsageRequestsFooter">
-            <button
-              type="button"
-              className="aoTinyBtn"
-              onClick={() => {
-                if (usageRequestLoading) return
-                void loadMoreUsageRequests()
-              }}
-              disabled={!usageRequestHasMore || usageRequestLoading}
-            >
-              {usageRequestLoading ? 'Loading...' : usageRequestHasMore ? 'Load 200 more' : 'All loaded'}
-            </button>
-            <span className="aoHint">{usageRequestRows.length.toLocaleString()} rows loaded</span>
+            <span className="aoHint">
+              {usageRequestLoading ? 'Loading more...' : usageRequestHasMore ? 'Scroll table to load more' : 'All loaded'}
+            </span>
+            <span className="aoHint">
+              {filteredUsageRequestRows.length.toLocaleString()} / {usageRequestRows.length.toLocaleString()} rows
+            </span>
           </div>
         </div>
       ) : null}

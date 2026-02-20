@@ -622,7 +622,14 @@ impl Store {
         origin: &str,
         session_id: Option<&str>,
     ) {
-        self.record_success_with_model(provider, response_obj, api_key_ref, None, origin, session_id);
+        self.record_success_with_model(
+            provider,
+            response_obj,
+            api_key_ref,
+            None,
+            origin,
+            session_id,
+        );
     }
 
     pub fn record_success_with_model(

@@ -145,8 +145,16 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
         |provider: &str, model: &str, count: usize, input_tokens: u64, output_tokens: u64| {
             for i in 0..count {
                 let total = input_tokens.saturating_add(output_tokens);
-                let cache_create = if i % 4 == 0 { 120 } else { 0 };
-                let cache_read = if i % 3 == 0 { 260 } else { 0 };
+                let cache_create = if i % 4 == 0 {
+                    100_000 + ((i as u64 * 137_731) % 900_000)
+                } else {
+                    0
+                };
+                let cache_read = if i % 3 == 0 {
+                    100_000 + ((i as u64 * 219_541) % 900_000)
+                } else {
+                    0
+                };
                 let origin = if i % 2 == 0 {
                     crate::constants::USAGE_ORIGIN_WINDOWS
                 } else {

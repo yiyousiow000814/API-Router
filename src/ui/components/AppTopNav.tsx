@@ -5,9 +5,16 @@ type AppTopNavProps = {
   onSwitchPage: (next: TopPage) => void
   onOpenGettingStarted: () => void
   onUsageStatisticsIntent?: () => void
+  onUsageRequestsIntent?: () => void
 }
 
-export function AppTopNav({ activePage, onSwitchPage, onOpenGettingStarted, onUsageStatisticsIntent }: AppTopNavProps) {
+export function AppTopNav({
+  activePage,
+  onSwitchPage,
+  onOpenGettingStarted,
+  onUsageStatisticsIntent,
+  onUsageRequestsIntent,
+}: AppTopNavProps) {
   return (
     <div className="aoBrandRight">
       <div className="aoTopNav" role="tablist" aria-label="Main pages">
@@ -47,12 +54,19 @@ export function AppTopNav({ activePage, onSwitchPage, onOpenGettingStarted, onUs
           role="tab"
           aria-selected={activePage === 'usage_requests'}
           onClick={() => onSwitchPage('usage_requests')}
+          onMouseEnter={() => onUsageRequestsIntent?.()}
+          onFocus={() => onUsageRequestsIntent?.()}
         >
           <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 6.5h16" />
-            <path d="M4 12h16" />
-            <path d="M4 17.5h10" />
-            <circle cx="18.5" cy="17.5" r="1.5" />
+            <rect x="4.5" y="4.5" width="10.5" height="15" rx="1.8" />
+            <path d="M7.5 8h4.5" />
+            <path d="M7.5 12h4.5" />
+            <path d="M17 9.5h3" />
+            <path d="M20 9.5 18.6 8.1" />
+            <path d="M20 9.5 18.6 10.9" />
+            <path d="M17 14.5h3" />
+            <path d="M20 14.5 18.6 13.1" />
+            <path d="M20 14.5 18.6 15.9" />
           </svg>
           <span>Requests</span>
         </button>

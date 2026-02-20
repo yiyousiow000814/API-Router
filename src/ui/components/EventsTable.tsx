@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import type { Status } from '../types'
 import { fmtAgo, fmtWhen } from '../utils/format'
+import { isNearBottom } from '../utils/scroll'
 import { ModalBackdrop } from './ModalBackdrop'
 import './EventsTable.css'
 
@@ -588,7 +589,7 @@ export function EventsTable({
             }
             if (onReachEnd && eventsTableWrapRef.current) {
               const wrap = eventsTableWrapRef.current
-              const nearBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 24
+              const nearBottom = isNearBottom(wrap, 24)
               if (nearBottom && !wasNearBottomRef.current) {
                 onReachEnd()
               }
