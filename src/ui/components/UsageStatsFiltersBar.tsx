@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react'
+
 type Props = {
   usageWindowHours: number
   setUsageWindowHours: (hours: number) => void
@@ -14,6 +16,7 @@ type Props = {
   setUsageFilterOrigins: (origins: string[]) => void
   usageOriginFilterOptions: string[]
   toggleUsageOriginFilter: (originName: string) => void
+  headerExtraAction?: ReactNode
 }
 
 export function UsageStatsFiltersBar({
@@ -32,6 +35,7 @@ export function UsageStatsFiltersBar({
   setUsageFilterOrigins,
   usageOriginFilterOptions,
   toggleUsageOriginFilter,
+  headerExtraAction,
 }: Props) {
   const originOptionsLoaded = usageOriginFilterOptions.length > 0
   return (
@@ -97,6 +101,14 @@ export function UsageStatsFiltersBar({
               1M
             </button>
           </div>
+          {headerExtraAction ? (
+            <>
+              <span className="aoUsageStatsActionsDivider" aria-hidden="true" />
+              <div className="aoUsageStatsActionGroup" role="group" aria-label="Usage extra action">
+                {headerExtraAction}
+              </div>
+            </>
+          ) : null}
         </div>
       </div>
       <div className="aoUsageFilterCard">

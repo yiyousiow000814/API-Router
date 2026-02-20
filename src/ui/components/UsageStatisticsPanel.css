@@ -180,11 +180,6 @@
   outline-offset: 1px;
 }
 
-.aoUsageDetailsEntry {
-  display: flex;
-  justify-content: flex-end;
-}
-
 .aoUsageDetailsTabs {
   display: inline-flex;
   align-items: center;
@@ -226,6 +221,10 @@
   max-height: min(56vh, 560px);
 }
 
+.aoUsageRequestTableHead {
+  padding-right: 0;
+}
+
 .aoUsageRequestsTable {
   min-width: 980px;
 }
@@ -233,6 +232,42 @@
 .aoUsageRequestsTable th,
 .aoUsageRequestsTable td {
   white-space: nowrap;
+}
+
+.aoUsageReqColTime {
+  width: 146px;
+}
+
+.aoUsageReqColProvider {
+  width: 132px;
+}
+
+.aoUsageReqColModel {
+  width: 126px;
+}
+
+.aoUsageReqColInput {
+  width: 110px;
+}
+
+.aoUsageReqColOutput {
+  width: 108px;
+}
+
+.aoUsageReqColCacheCreate {
+  width: 112px;
+}
+
+.aoUsageReqColCacheRead {
+  width: 108px;
+}
+
+.aoUsageReqColOrigin {
+  width: 88px;
+}
+
+.aoUsageReqColSession {
+  width: 320px;
 }
 
 .aoUsageRequestsMono {

@@ -411,14 +411,14 @@ export function UsageStatisticsPanel({
             setUsageFilterOrigins={setUsageFilterOrigins}
             usageOriginFilterOptions={usageOriginFilterOptions}
             toggleUsageOriginFilter={toggleUsageOriginFilter}
+            headerExtraAction={
+              effectiveDetailsTab === 'overview' && onOpenRequestDetails ? (
+                <button type="button" className="aoTinyBtn" onClick={onOpenRequestDetails}>
+                  Open Request Details
+                </button>
+              ) : undefined
+            }
           />
-          {effectiveDetailsTab === 'overview' && onOpenRequestDetails ? (
-            <div className="aoUsageDetailsEntry">
-              <button type="button" className="aoTinyBtn" onClick={onOpenRequestDetails}>
-                Open Request Details
-              </button>
-            </div>
-          ) : null}
         </>
       ) : null}
       {showDetailsTabs ? (
@@ -454,6 +454,34 @@ export function UsageStatisticsPanel({
           ) : null}
           {usageRequestError ? <div className="aoHint">Failed to load request details: {usageRequestError}</div> : null}
           <div ref={usageRequestTableSurfaceRef} className="aoUsageHistoryTableSurface aoUsageRequestTableSurface">
+            <div className="aoUsageHistoryTableHead aoUsageRequestTableHead" aria-hidden="true">
+              <table className="aoUsageHistoryTable aoUsageRequestsTable">
+                <colgroup>
+                  <col className="aoUsageReqColTime" />
+                  <col className="aoUsageReqColProvider" />
+                  <col className="aoUsageReqColModel" />
+                  <col className="aoUsageReqColInput" />
+                  <col className="aoUsageReqColOutput" />
+                  <col className="aoUsageReqColCacheCreate" />
+                  <col className="aoUsageReqColCacheRead" />
+                  <col className="aoUsageReqColOrigin" />
+                  <col className="aoUsageReqColSession" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Provider</th>
+                    <th>Model</th>
+                    <th>Input</th>
+                    <th>Output</th>
+                    <th>Cache Create</th>
+                    <th>Cache Read</th>
+                    <th>Origin</th>
+                    <th>Session</th>
+                  </tr>
+                </thead>
+              </table>
+            </div>
             <div className="aoUsageHistoryTableBody">
               <div
                 ref={usageRequestTableWrapRef}
@@ -469,24 +497,21 @@ export function UsageStatisticsPanel({
                 onTouchMove={activateUsageRequestScrollbarUi}
               >
                 <table className="aoUsageHistoryTable aoUsageRequestsTable">
-                  <thead>
-                    <tr>
-                      <th>Time</th>
-                      <th>Provider</th>
-                      <th>Model</th>
-                      <th>Input</th>
-                      <th>Output</th>
-                      <th>Total</th>
-                      <th>Cache Create</th>
-                      <th>Cache Read</th>
-                      <th>Origin</th>
-                      <th>Session</th>
-                    </tr>
-                  </thead>
+                  <colgroup>
+                    <col className="aoUsageReqColTime" />
+                    <col className="aoUsageReqColProvider" />
+                    <col className="aoUsageReqColModel" />
+                    <col className="aoUsageReqColInput" />
+                    <col className="aoUsageReqColOutput" />
+                    <col className="aoUsageReqColCacheCreate" />
+                    <col className="aoUsageReqColCacheRead" />
+                    <col className="aoUsageReqColOrigin" />
+                    <col className="aoUsageReqColSession" />
+                  </colgroup>
                   <tbody>
                     {!usageRequestRows.length && !usageRequestLoading ? (
                       <tr>
-                        <td colSpan={10} className="aoHint">
+                        <td colSpan={9} className="aoHint">
                           No request rows in this window.
                         </td>
                       </tr>
@@ -498,7 +523,6 @@ export function UsageStatisticsPanel({
                           <td className="aoUsageRequestsMono">{row.model}</td>
                           <td>{row.input_tokens.toLocaleString()}</td>
                           <td>{row.output_tokens.toLocaleString()}</td>
-                          <td>{row.total_tokens.toLocaleString()}</td>
                           <td>{row.cache_creation_input_tokens.toLocaleString()}</td>
                           <td>{row.cache_read_input_tokens.toLocaleString()}</td>
                           <td>{row.origin}</td>
