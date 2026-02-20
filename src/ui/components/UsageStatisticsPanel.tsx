@@ -1597,12 +1597,15 @@ export function UsageStatisticsPanel({
                   if (wrap) {
                     setUsageRequestTableScrollLeft(wrap.scrollLeft)
                     if (usageRequestHasMore && !usageRequestLoading) {
-                      if (!hasExplicitRequestFilters) return
-                      const nearBottom = isNearBottom(wrap, 24)
-                      if (nearBottom && !usageRequestWasNearBottomRef.current) {
-                        void loadMoreUsageRequests()
+                      if (hasExplicitRequestFilters) {
+                        const nearBottom = isNearBottom(wrap, 24)
+                        if (nearBottom && !usageRequestWasNearBottomRef.current) {
+                          void loadMoreUsageRequests()
+                        }
+                        usageRequestWasNearBottomRef.current = nearBottom
+                      } else {
+                        usageRequestWasNearBottomRef.current = false
                       }
-                      usageRequestWasNearBottomRef.current = nearBottom
                     } else {
                       usageRequestWasNearBottomRef.current = false
                     }
