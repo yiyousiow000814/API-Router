@@ -431,7 +431,26 @@ export function UsageStatisticsPanel({
     usageRequestMultiFilters.model !== null ||
     usageRequestMultiFilters.origin !== null ||
     usageRequestMultiFilters.session !== null
-  const requestDefaultDay = useMemo(() => startOfDayUnixMs(Date.now()), [])
+  const [requestDefaultDay, setRequestDefaultDay] = useState<number>(() =>
+    startOfDayUnixMs(Date.now()),
+  )
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    let timer: number | null = null
+    const schedule = () => {
+      const now = Date.now()
+      const nextDayStart = startOfDayUnixMs(now) + 24 * 60 * 60 * 1000
+      const delay = Math.max(1000, nextDayStart - now + 50)
+      timer = window.setTimeout(() => {
+        setRequestDefaultDay(startOfDayUnixMs(Date.now()))
+        schedule()
+      }, delay)
+    }
+    schedule()
+    return () => {
+      if (timer != null) window.clearTimeout(timer)
+    }
+  }, [])
   const [dismissedAnomalyIds, setDismissedAnomalyIds] = useState<Set<string>>(new Set())
   const anomalyEntries = useMemo(
     () => {

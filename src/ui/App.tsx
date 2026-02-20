@@ -59,7 +59,6 @@ const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
 const EVENT_LOG_PRELOAD_REFRESH_MS = 15_000
 const EVENT_LOG_PRELOAD_LIMIT = 2000
 const USAGE_STATS_INTENT_PREFETCH_COOLDOWN_MS = 60_000
-const USAGE_REQUESTS_INTENT_PREFETCH_COOLDOWN_MS = 60_000
 export default function App() {
   const isDevPreview = useMemo(() => {
     if (!import.meta.env.DEV) return false
@@ -220,8 +219,6 @@ export default function App() {
   const usageScheduleLastSavedByProviderRef = useRef<Record<string, string>>({})
   const usageStatsIntentPrefetchAtRef = useRef<number>(0)
   const usageStatsIntentPrefetchInFlightRef = useRef<boolean>(false)
-  const usageRequestsIntentPrefetchAtRef = useRef<number>(0)
-  const usageRequestsIntentPrefetchInFlightRef = useRef<boolean>(false)
   const toastTimerRef = useRef<number | null>(null)
   const rawConfigTestFailOnceRef = useRef<Record<string, boolean>>({})
   const eventLogPreloadSeqRef = useRef(0)
@@ -817,24 +814,6 @@ export default function App() {
       usageStatsIntentPrefetchInFlightRef.current = false
     })
   }, [activePage, refreshUsageStatistics])
-  const handleUsageRequestsIntentPrefetch = useCallback(() => {
-    if (activePage === 'usage_requests') return
-    if (usageRequestsIntentPrefetchInFlightRef.current) return
-    const now = Date.now()
-    if (now - usageRequestsIntentPrefetchAtRef.current < USAGE_REQUESTS_INTENT_PREFETCH_COOLDOWN_MS) return
-    usageRequestsIntentPrefetchAtRef.current = now
-    usageRequestsIntentPrefetchInFlightRef.current = true
-    void invoke('get_usage_request_entries', {
-      hours: usageWindowHours,
-      providers: usageFilterProviders.length ? usageFilterProviders : null,
-      models: usageFilterModels.length ? usageFilterModels : null,
-      origins: usageFilterOrigins.length ? usageFilterOrigins : null,
-      limit: 200,
-      offset: 0,
-    }).finally(() => {
-      usageRequestsIntentPrefetchInFlightRef.current = false
-    })
-  }, [activePage, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins])
   const {
     providerGroupLabelByName, linkedProvidersForApiKey, switchboardProviderCards, switchboardModeLabel,
     switchboardModelProviderLabel, switchboardTargetDirsLabel, usageSummary, usageByProvider, usageTotalInputTokens,
@@ -1009,7 +988,6 @@ export default function App() {
               onSwitchPage={switchPage}
               onOpenGettingStarted={() => setInstructionModalOpen(true)}
               onUsageStatisticsIntent={handleUsageStatisticsIntentPrefetch}
-              onUsageRequestsIntent={handleUsageRequestsIntentPrefetch}
             />
           </div>
           {/* Surface errors via toast to avoid layout shifts. */}
