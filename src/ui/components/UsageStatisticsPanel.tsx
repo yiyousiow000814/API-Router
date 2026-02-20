@@ -952,9 +952,15 @@ export function UsageStatisticsPanel({
     const monthStart = timePickerMonthStartMs
     const monthDate = new Date(monthStart)
     const firstWeekday = monthDate.getDay()
-    const firstGridDay = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1 - firstWeekday).getTime()
+    const firstGridDayDate = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1 - firstWeekday)
     return Array.from({ length: 42 }, (_, idx) => {
-      const dayStartMs = firstGridDay + idx * 24 * 60 * 60 * 1000
+      // Use calendar-day arithmetic instead of fixed 24h millis to avoid DST drift.
+      const cellDate = new Date(
+        firstGridDayDate.getFullYear(),
+        firstGridDayDate.getMonth(),
+        firstGridDayDate.getDate() + idx,
+      )
+      const dayStartMs = cellDate.getTime()
       const dayDate = new Date(dayStartMs)
       return {
         dayStartMs,
