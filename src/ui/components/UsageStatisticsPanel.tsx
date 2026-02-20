@@ -401,6 +401,7 @@ export function UsageStatisticsPanel({
   const [usageRequestError, setUsageRequestError] = useState('')
   const [usageRequestUsingTestFallback, setUsageRequestUsingTestFallback] = useState(false)
   const usageRequestRefreshInFlightRef = useRef(false)
+  const usageRequestFetchSeqRef = useRef(0)
   const usageRequestLastActivityRef = useRef<number | null>(null)
   const usageRequestWasNearBottomRef = useRef(false)
   const usageRequestTestFallbackEnabled = useMemo(() => readTestFlagFromLocation() || import.meta.env.DEV, [])
@@ -533,6 +534,8 @@ export function UsageStatisticsPanel({
     async (limit: number) => {
       if (usageRequestRefreshInFlightRef.current) return
       usageRequestRefreshInFlightRef.current = true
+      const requestSeq = usageRequestFetchSeqRef.current + 1
+      usageRequestFetchSeqRef.current = requestSeq
       setUsageRequestLoading(true)
       setUsageRequestError('')
       setUsageRequestUsingTestFallback(false)
@@ -545,9 +548,11 @@ export function UsageStatisticsPanel({
           limit,
           offset: 0,
         })
+        if (usageRequestFetchSeqRef.current !== requestSeq) return
         setUsageRequestRows(res.rows ?? [])
         setUsageRequestHasMore(Boolean(res.has_more))
       } catch (e) {
+        if (usageRequestFetchSeqRef.current !== requestSeq) return
         if (usageRequestTestFallbackEnabled) {
           const next = usageRequestTestRows.slice(0, Math.min(limit, usageRequestTestRows.length))
           setUsageRequestRows(next)
@@ -561,11 +566,12 @@ export function UsageStatisticsPanel({
         }
       } finally {
         usageRequestRefreshInFlightRef.current = false
-        setUsageRequestLoading(false)
+        if (usageRequestFetchSeqRef.current === requestSeq) {
+          setUsageRequestLoading(false)
+        }
       }
     },
     [
-      usageWindowHours,
       requestFetchHours,
       requestFetchProviders,
       requestFetchModels,
@@ -599,7 +605,8 @@ export function UsageStatisticsPanel({
   }, [effectiveDetailsTab, usageActivityUnixMs, refreshUsageRequests])
 
   const loadMoreUsageRequests = useCallback(async () => {
-    if (usageRequestLoading || !usageRequestHasMore) return
+    if (usageRequestLoading || !usageRequestHasMore || usageRequestRefreshInFlightRef.current) return
+    const requestSeq = usageRequestFetchSeqRef.current
     if (usageRequestUsingTestFallback) {
       const merged = usageRequestTestRows.slice(0, usageRequestRows.length + USAGE_REQUEST_PAGE_SIZE)
       setUsageRequestRows(merged)
@@ -617,12 +624,16 @@ export function UsageStatisticsPanel({
         limit: USAGE_REQUEST_PAGE_SIZE,
         offset: usageRequestRows.length,
       })
+      if (usageRequestFetchSeqRef.current !== requestSeq) return
       setUsageRequestRows((prev) => [...prev, ...(res.rows ?? [])])
       setUsageRequestHasMore(Boolean(res.has_more))
     } catch (e) {
+      if (usageRequestFetchSeqRef.current !== requestSeq) return
       setUsageRequestError(String(e))
     } finally {
-      setUsageRequestLoading(false)
+      if (usageRequestFetchSeqRef.current === requestSeq) {
+        setUsageRequestLoading(false)
+      }
     }
   }, [
     requestFetchHours,
@@ -655,6 +666,7 @@ export function UsageStatisticsPanel({
   ])
 
   const usageRequestChartRows = useMemo(
+    // Intentional: chart reflects the loaded request stream (not column-filtered table rows).
     () => usageRequestRows.slice(0, USAGE_REQUEST_GRAPH_SOURCE_LIMIT),
     [usageRequestRows],
   )
@@ -772,7 +784,7 @@ export function UsageStatisticsPanel({
       provider: [...providers].sort((a, b) => a.localeCompare(b)),
       model: [...models].sort((a, b) => a.localeCompare(b)),
       origin: [...origins].sort((a, b) => a.localeCompare(b)),
-      session: [...sessions].sort((a, b) => a.localeCompare(b)).slice(0, 120),
+      session: [...sessions].sort((a, b) => a.localeCompare(b)),
     }
   }, [usageRequestRows])
   useEffect(() => {
@@ -839,7 +851,6 @@ export function UsageStatisticsPanel({
     fmtWhen,
     hasExplicitRequestFilters,
     requestDefaultDay,
-    showFilters,
     usageRequestMultiFilters,
     usageRequestRows,
     usageRequestTimeFilter,
@@ -996,11 +1007,11 @@ export function UsageStatisticsPanel({
       const left = Math.max(8, Math.min(rect.left, window.innerWidth - 236))
       const top = rect.bottom + 6
       const width = Math.max(160, rect.width)
+      if (columnKey === 'time') {
+        setTimePickerMonthStartMs(startOfMonthMs(parseDateInputToDayStart(usageRequestTimeFilter) ?? Date.now()))
+      }
       setActiveUsageRequestFilterMenu((prev) => {
         if (prev?.key === columnKey) return null
-        if (columnKey === 'time') {
-          setTimePickerMonthStartMs(startOfMonthMs(parseDateInputToDayStart(usageRequestTimeFilter) ?? Date.now()))
-        }
         return {
           key: columnKey,
           left,

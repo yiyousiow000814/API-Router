@@ -1264,7 +1264,6 @@ impl Store {
         out
     }
 
-    #[allow(dead_code)]
     pub fn list_usage_requests(&self, limit: usize) -> Vec<Value> {
         let mut out: Vec<Value> = Vec::with_capacity(limit.min(1024));
         let conn = self.events_db.lock();
