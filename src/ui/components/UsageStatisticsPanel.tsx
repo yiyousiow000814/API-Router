@@ -373,11 +373,11 @@ export function UsageStatisticsPanel({
   onBackToUsageOverview,
 }: Props) {
   const [usageRequestTimeFilter, setUsageRequestTimeFilter] = useState('')
-  const [usageRequestMultiFilters, setUsageRequestMultiFilters] = useState<Record<UsageRequestMultiFilterKey, string[]>>({
-    provider: [],
-    model: [],
-    origin: [],
-    session: [],
+  const [usageRequestMultiFilters, setUsageRequestMultiFilters] = useState<Record<UsageRequestMultiFilterKey, string[] | null>>({
+    provider: null,
+    model: null,
+    origin: null,
+    session: null,
   })
   const [usageRequestFilterSearch, setUsageRequestFilterSearch] = useState<Record<UsageRequestMultiFilterKey, string>>({
     provider: '',
@@ -427,10 +427,10 @@ export function UsageStatisticsPanel({
       : usageWindowHours
   const hasExplicitRequestFilters =
     usageRequestTimeFilter.trim().length > 0 ||
-    usageRequestMultiFilters.provider.length > 0 ||
-    usageRequestMultiFilters.model.length > 0 ||
-    usageRequestMultiFilters.origin.length > 0 ||
-    usageRequestMultiFilters.session.length > 0
+    usageRequestMultiFilters.provider !== null ||
+    usageRequestMultiFilters.model !== null ||
+    usageRequestMultiFilters.origin !== null ||
+    usageRequestMultiFilters.session !== null
   const requestDefaultDay = useMemo(() => startOfDayUnixMs(Date.now()), [])
   const [dismissedAnomalyIds, setDismissedAnomalyIds] = useState<Set<string>>(new Set())
   const anomalyEntries = useMemo(
@@ -468,7 +468,7 @@ export function UsageStatisticsPanel({
   useEffect(() => {
     if (!isRequestsOnlyPage) return
     setUsageRequestTimeFilter('')
-    setUsageRequestMultiFilters({ provider: [], model: [], origin: [], session: [] })
+    setUsageRequestMultiFilters({ provider: null, model: null, origin: null, session: null })
     setUsageRequestFilterSearch({ provider: '', model: '', origin: '', session: '' })
     setActiveUsageRequestFilterMenu(null)
   }, [isRequestsOnlyPage])
@@ -758,10 +758,18 @@ export function UsageStatisticsPanel({
   }, [usageRequestRows])
   useEffect(() => {
     setUsageRequestMultiFilters((prev) => ({
-      provider: prev.provider.filter((item) => usageRequestFilterOptions.provider.includes(item)),
-      model: prev.model.filter((item) => usageRequestFilterOptions.model.includes(item)),
-      origin: prev.origin.filter((item) => usageRequestFilterOptions.origin.includes(item)),
-      session: prev.session.filter((item) => usageRequestFilterOptions.session.includes(item)),
+      provider:
+        prev.provider == null
+          ? null
+          : prev.provider.filter((item) => usageRequestFilterOptions.provider.includes(item)),
+      model:
+        prev.model == null ? null : prev.model.filter((item) => usageRequestFilterOptions.model.includes(item)),
+      origin:
+        prev.origin == null ? null : prev.origin.filter((item) => usageRequestFilterOptions.origin.includes(item)),
+      session:
+        prev.session == null
+          ? null
+          : prev.session.filter((item) => usageRequestFilterOptions.session.includes(item)),
     }))
   }, [usageRequestFilterOptions])
   const usageRequestDaysWithRecords = useMemo(() => {
@@ -801,10 +809,10 @@ export function UsageStatisticsPanel({
       } else if (!contains(fmtWhen(row.unix_ms))) {
         return false
       }
-      if (usageRequestMultiFilters.provider.length > 0 && !usageRequestMultiFilters.provider.includes(row.provider)) return false
-      if (usageRequestMultiFilters.model.length > 0 && !usageRequestMultiFilters.model.includes(row.model)) return false
-      if (usageRequestMultiFilters.origin.length > 0 && !usageRequestMultiFilters.origin.includes(row.origin)) return false
-      if (usageRequestMultiFilters.session.length > 0 && !usageRequestMultiFilters.session.includes(row.session_id)) return false
+      if (usageRequestMultiFilters.provider !== null && !usageRequestMultiFilters.provider.includes(row.provider)) return false
+      if (usageRequestMultiFilters.model !== null && !usageRequestMultiFilters.model.includes(row.model)) return false
+      if (usageRequestMultiFilters.origin !== null && !usageRequestMultiFilters.origin.includes(row.origin)) return false
+      if (usageRequestMultiFilters.session !== null && !usageRequestMultiFilters.session.includes(row.session_id)) return false
       return true
     })
   }, [
@@ -840,6 +848,57 @@ export function UsageStatisticsPanel({
   const [lineHoverIndex, setLineHoverIndex] = useState<number | null>(null)
   const [lineHoverX, setLineHoverX] = useState<number | null>(null)
   const [dailyHoverDay, setDailyHoverDay] = useState<number | null>(null)
+  const [dailyHoverPos, setDailyHoverPos] = useState<{ left: number; top: number } | null>(null)
+  const dailyHoverWrapRef = useRef<HTMLDivElement | null>(null)
+  const dailyHoverOverlayRef = useRef<HTMLDivElement | null>(null)
+  const updateDailyHoverPos = useCallback((clientX: number, clientY: number) => {
+    const wrap = dailyHoverWrapRef.current
+    if (!wrap) return
+    const wrapRect = wrap.getBoundingClientRect()
+    const overlay = dailyHoverOverlayRef.current
+    const overlayWidth = overlay?.offsetWidth ?? 260
+    const overlayHeight = overlay?.offsetHeight ?? 44
+    const offset = 12
+    const pad = 8
+    const maxLeft = Math.max(pad, wrapRect.width - overlayWidth - pad)
+    const maxTop = Math.max(pad, wrapRect.height - overlayHeight - pad)
+    const left = Math.max(pad, Math.min(clientX - wrapRect.left + offset, maxLeft))
+    const top = Math.max(pad, Math.min(clientY - wrapRect.top + offset, maxTop))
+    setDailyHoverPos({ left, top })
+  }, [])
+  const handleDailyBarsMouseMove = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      updateDailyHoverPos(event.clientX, event.clientY)
+      const wrap = dailyHoverWrapRef.current
+      if (!wrap) {
+        setDailyHoverDay(null)
+        return
+      }
+      const groups = wrap.querySelectorAll<HTMLElement>('.aoUsageRequestDailyBarGroup[data-day]')
+      if (!groups.length) {
+        setDailyHoverDay(null)
+        return
+      }
+      let nextDay: number | null = null
+      let bestDist = Number.POSITIVE_INFINITY
+      for (const group of groups) {
+        const dayValue = group.dataset.day
+        if (!dayValue) continue
+        const rect = group.getBoundingClientRect()
+        const centerX = rect.left + rect.width / 2
+        const dist = Math.abs(event.clientX - centerX)
+        if (dist < bestDist) {
+          const parsed = Number(dayValue)
+          if (Number.isFinite(parsed)) {
+            bestDist = dist
+            nextDay = parsed
+          }
+        }
+      }
+      setDailyHoverDay(nextDay)
+    },
+    [updateDailyHoverPos],
+  )
   const lineHoverData = useMemo(() => {
     if (lineHoverIndex == null) return null
     if (lineHoverIndex < 0 || lineHoverIndex >= usageRequestGraphPointCount) return null
@@ -1201,10 +1260,12 @@ export function UsageStatisticsPanel({
                             : 0
                           : column.key === 'provider'
                             ? Math.max(
-                                filteredSelectionCount(
-                                  usageRequestMultiFilters.provider.length,
-                                  usageRequestFilterOptions.provider.length,
-                                ),
+                                  filteredSelectionCount(
+                                    usageRequestMultiFilters.provider == null
+                                      ? usageRequestFilterOptions.provider.length
+                                      : usageRequestMultiFilters.provider.length,
+                                    usageRequestFilterOptions.provider.length,
+                                  ),
                                 useGlobalRequestFilters
                                   ? filteredSelectionCount(
                                       usageFilterProviders.length,
@@ -1215,7 +1276,9 @@ export function UsageStatisticsPanel({
                             : column.key === 'model'
                               ? Math.max(
                                   filteredSelectionCount(
-                                    usageRequestMultiFilters.model.length,
+                                    usageRequestMultiFilters.model == null
+                                      ? usageRequestFilterOptions.model.length
+                                      : usageRequestMultiFilters.model.length,
                                     usageRequestFilterOptions.model.length,
                                   ),
                                   useGlobalRequestFilters
@@ -1228,7 +1291,9 @@ export function UsageStatisticsPanel({
                               : column.key === 'origin'
                                 ? Math.max(
                                     filteredSelectionCount(
-                                      usageRequestMultiFilters.origin.length,
+                                      usageRequestMultiFilters.origin == null
+                                        ? usageRequestFilterOptions.origin.length
+                                        : usageRequestMultiFilters.origin.length,
                                       usageRequestFilterOptions.origin.length,
                                     ),
                                     useGlobalRequestFilters
@@ -1240,7 +1305,9 @@ export function UsageStatisticsPanel({
                                   )
                                 : column.key === 'session'
                                   ? filteredSelectionCount(
-                                      usageRequestMultiFilters.session.length,
+                                      usageRequestMultiFilters.session == null
+                                        ? usageRequestFilterOptions.session.length
+                                        : usageRequestMultiFilters.session.length,
                                       usageRequestFilterOptions.session.length,
                                     )
                                   : 0
@@ -1449,10 +1516,9 @@ export function UsageStatisticsPanel({
                         const visibleOptions = options
                           .filter((item) => item.toLowerCase().includes(searchNeedle))
                           .slice(0, 40)
-                        const selectedSet = new Set(usageRequestMultiFilters[key])
+                        const selectedSet = new Set(usageRequestMultiFilters[key] ?? options)
                         const allVisibleSelected =
-                          selectedSet.size === 0 ||
-                          (visibleOptions.length > 0 && visibleOptions.every((item) => selectedSet.has(item)))
+                          visibleOptions.length > 0 && visibleOptions.every((item) => selectedSet.has(item))
                         return (
                           <>
                             <label className="aoUsageReqFilterOptionBtn aoUsageReqFilterOptionSelectAll">
@@ -1461,14 +1527,14 @@ export function UsageStatisticsPanel({
                                 checked={allVisibleSelected}
                                 onChange={(event) =>
                                   setUsageRequestMultiFilters((prev) => {
-                                    const current =
-                                      prev[key].length === 0 ? new Set(options) : new Set(prev[key])
+                                    const current = new Set(prev[key] ?? options)
                                     if (event.target.checked) {
                                       for (const item of visibleOptions) current.add(item)
                                     } else {
                                       for (const item of visibleOptions) current.delete(item)
                                     }
-                                    return { ...prev, [key]: [...current] }
+                                    const next = [...current]
+                                    return { ...prev, [key]: next.length >= options.length ? null : next }
                                   })
                                 }
                               />
@@ -1481,24 +1547,14 @@ export function UsageStatisticsPanel({
                               >
                                 <input
                                   type="checkbox"
-                                  checked={
-                                    usageRequestMultiFilters[key].length === 0 ||
-                                    (activeUsageRequestFilterMenu.key === 'provider'
-                                      ? usageRequestMultiFilters.provider.includes(item)
-                                      : activeUsageRequestFilterMenu.key === 'model'
-                                        ? usageRequestMultiFilters.model.includes(item)
-                                        : activeUsageRequestFilterMenu.key === 'origin'
-                                          ? usageRequestMultiFilters.origin.includes(item)
-                                          : usageRequestMultiFilters.session.includes(item))
-                                  }
+                                  checked={selectedSet.has(item)}
                                   onChange={(event) =>
                                     setUsageRequestMultiFilters((prev) => {
-                                      const baseList =
-                                        prev[key].length === 0 ? [...options] : prev[key]
+                                      const baseList = prev[key] ?? options
                                       const nextList = event.target.checked
                                         ? [...new Set([...baseList, item])]
                                         : baseList.filter((entry) => entry !== item)
-                                      return { ...prev, [key]: nextList }
+                                      return { ...prev, [key]: nextList.length >= options.length ? null : nextList }
                                     })
                                   }
                                 />
@@ -1519,7 +1575,7 @@ export function UsageStatisticsPanel({
                       onClick={() =>
                         setUsageRequestMultiFilters((prev) => ({
                           ...prev,
-                          [activeUsageRequestFilterMenu.key]: [],
+                          [activeUsageRequestFilterMenu.key]: null,
                         }))
                       }
                     >
@@ -1666,7 +1722,15 @@ export function UsageStatisticsPanel({
               <div className="aoHint">Newest 45 days from loaded rows.</div>
             </div>
             {usageRequestDailyBars.length ? (
-              <div className="aoUsageRequestDailyBarsWrap" onMouseLeave={() => setDailyHoverDay(null)}>
+              <div
+                ref={dailyHoverWrapRef}
+                className="aoUsageRequestDailyBarsWrap"
+                onMouseMove={handleDailyBarsMouseMove}
+                onMouseLeave={() => {
+                  setDailyHoverDay(null)
+                  setDailyHoverPos(null)
+                }}
+              >
                 <div
                   className="aoUsageRequestDailyBars"
                   role="img"
@@ -1676,8 +1740,7 @@ export function UsageStatisticsPanel({
                     <div
                       key={`request-day-${row.day}`}
                       className="aoUsageRequestDailyBarGroup"
-                      onMouseEnter={() => setDailyHoverDay(row.day)}
-                      onMouseLeave={() => setDailyHoverDay(null)}
+                      data-day={row.day}
                     >
                       <div className="aoUsageRequestDailyBarStack">
                         {[...activeRequestGraphProviders]
@@ -1711,7 +1774,11 @@ export function UsageStatisticsPanel({
                   ))}
                 </div>
                 {dailyHoverData ? (
-                  <div className="aoUsageRequestDailyHoverOverlay">
+                  <div
+                    ref={dailyHoverOverlayRef}
+                    className="aoUsageRequestDailyHoverOverlay"
+                    style={dailyHoverPos ? { left: `${dailyHoverPos.left}px`, top: `${dailyHoverPos.top}px` } : undefined}
+                  >
                     <span>{formatMonthDay(dailyHoverData.day)} · Total {dailyHoverData.total.toLocaleString()}</span>
                     {dailyHoverData.rows.map((row) => (
                       <span key={`daily-hover-${row.provider}`} className="aoUsageRequestHoverSummaryItem">
