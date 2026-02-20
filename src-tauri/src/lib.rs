@@ -159,6 +159,7 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
                     Some("test"),
                     None,
                     crate::constants::USAGE_ORIGIN_UNKNOWN,
+                    None,
                 );
             }
         };
@@ -474,6 +475,7 @@ pub fn run() {
             commands::codex_account_logout,
             commands::codex_account_refresh,
             commands::get_usage_statistics,
+            commands::get_usage_request_entries,
             commands::get_spend_history,
             commands::set_spend_history_entry
         ])

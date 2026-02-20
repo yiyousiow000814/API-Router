@@ -763,6 +763,7 @@ async fn responses(
                         &response_obj,
                         Some(&api_key_ref),
                         request_origin,
+                        Some(session_key.as_str()),
                     );
 
                     // Avoid spamming the event log for routine successful requests; only surface

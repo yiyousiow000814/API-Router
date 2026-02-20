@@ -180,6 +180,82 @@
   outline-offset: 1px;
 }
 
+.aoUsageDetailsTabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aoUsageDetailsTabBtn {
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(255, 255, 255, 0.88);
+  color: rgba(13, 18, 32, 0.78);
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.aoUsageDetailsTabBtn.is-active {
+  border-color: rgba(33, 168, 183, 0.58);
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.24), rgba(242, 193, 77, 0.2));
+  color: rgba(13, 18, 32, 0.92);
+}
+
+.aoUsageRequestsCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageRequestsTableWrap {
+  overflow: auto;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.aoUsageRequestsTable {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 980px;
+}
+
+.aoUsageRequestsTable th,
+.aoUsageRequestsTable td {
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+  padding: 8px 10px;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.aoUsageRequestsTable thead th {
+  border-top: none;
+  color: rgba(13, 18, 32, 0.62);
+  font-weight: 650;
+  position: sticky;
+  top: 0;
+  background: rgba(248, 250, 252, 0.96);
+  z-index: 1;
+}
+
+.aoUsageRequestsMono {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+}
+
+.aoUsageRequestsFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .aoUsageActionBtn {
   min-width: 64px;
   flex: 0 0 auto;

@@ -12,6 +12,111 @@ fn normalize_usage_origin(origin: Option<&str>) -> String {
 }
 
 #[tauri::command]
+pub(crate) fn get_usage_request_entries(
+    state: tauri::State<'_, app_state::AppState>,
+    hours: Option<u64>,
+    providers: Option<Vec<String>>,
+    models: Option<Vec<String>>,
+    origins: Option<Vec<String>>,
+    limit: Option<u64>,
+    offset: Option<u64>,
+) -> serde_json::Value {
+    let now = unix_ms();
+    let window_hours = hours.unwrap_or(24).clamp(1, 24 * 30);
+    let window_ms = window_hours.saturating_mul(60 * 60 * 1000);
+    let since_unix_ms = now.saturating_sub(window_ms);
+    let provider_filter: BTreeSet<String> = providers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let model_filter: BTreeSet<String> = models
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let origin_filter: BTreeSet<String> = origins
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| normalize_usage_origin(Some(&s)))
+        .collect();
+    let has_provider_filter = !provider_filter.is_empty();
+    let has_model_filter = !model_filter.is_empty();
+    let has_origin_filter = !origin_filter.is_empty();
+
+    let page_limit = limit.unwrap_or(200).clamp(1, 1000) as usize;
+    let page_offset = offset.unwrap_or(0) as usize;
+
+    let mut rows: Vec<Value> = Vec::with_capacity(page_limit);
+    let mut matched = 0usize;
+    let mut has_more = false;
+
+    for rec in state.gateway.store.list_usage_requests(500_000) {
+        let ts = rec.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        if ts < since_unix_ms {
+            continue;
+        }
+        let provider = rec
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let model = rec
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown")
+            .to_string();
+        let origin = normalize_usage_origin(rec.get("origin").and_then(|v| v.as_str()));
+        let provider_lc = provider.to_ascii_lowercase();
+        let model_lc = model.to_ascii_lowercase();
+        let origin_lc = origin.to_ascii_lowercase();
+
+        if has_provider_filter && !provider_filter.contains(&provider_lc) {
+            continue;
+        }
+        if has_model_filter && !model_filter.contains(&model_lc) {
+            continue;
+        }
+        if has_origin_filter && !origin_filter.contains(&origin_lc) {
+            continue;
+        }
+
+        matched = matched.saturating_add(1);
+        if matched <= page_offset {
+            continue;
+        }
+        if rows.len() >= page_limit {
+            has_more = true;
+            break;
+        }
+        rows.push(serde_json::json!({
+            "provider": provider,
+            "api_key_ref": rec.get("api_key_ref").and_then(|v| v.as_str()).unwrap_or("-"),
+            "model": model,
+            "origin": origin,
+            "session_id": rec.get("session_id").and_then(|v| v.as_str()).unwrap_or("-"),
+            "unix_ms": ts,
+            "input_tokens": rec.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            "output_tokens": rec.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            "total_tokens": rec.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            "cache_creation_input_tokens": rec.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            "cache_read_input_tokens": rec.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        }));
+    }
+
+    serde_json::json!({
+        "ok": true,
+        "rows": rows,
+        "has_more": has_more,
+        "next_offset": page_offset.saturating_add(rows.len()),
+    })
+}
+
+#[tauri::command]
 pub(crate) fn get_usage_statistics(
     state: tauri::State<'_, app_state::AppState>,
     hours: Option<u64>,

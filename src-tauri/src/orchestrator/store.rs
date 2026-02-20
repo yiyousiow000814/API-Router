@@ -620,8 +620,9 @@ impl Store {
         response_obj: &Value,
         api_key_ref: Option<&str>,
         origin: &str,
+        session_id: Option<&str>,
     ) {
-        self.record_success_with_model(provider, response_obj, api_key_ref, None, origin);
+        self.record_success_with_model(provider, response_obj, api_key_ref, None, origin, session_id);
     }
 
     pub fn record_success_with_model(
@@ -631,6 +632,7 @@ impl Store {
         api_key_ref: Option<&str>,
         model_override: Option<&str>,
         origin: &str,
+        session_id: Option<&str>,
     ) {
         let (
             input_tokens,
@@ -656,6 +658,7 @@ impl Store {
             increments,
             api_key_ref,
             origin,
+            session_id,
             true,
         );
     }

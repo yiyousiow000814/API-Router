@@ -177,6 +177,7 @@ impl Store {
         increments: UsageTokenIncrements,
         api_key_ref: Option<&str>,
         origin: &str,
+        session_id: Option<&str>,
         flush: bool,
     ) {
         let origin = match origin.trim().to_ascii_lowercase().as_str() {
@@ -192,6 +193,10 @@ impl Store {
             "api_key_ref": api_key_ref.unwrap_or("-"),
             "model": model,
             "origin": origin,
+            "session_id": session_id
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("-"),
             "unix_ms": ts,
             "input_tokens": increments.input_tokens,
             "output_tokens": increments.output_tokens,

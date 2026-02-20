@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import type { Config, UsageStatistics } from '../types'
 import './UsageStatisticsPanel.css'
 import {
@@ -15,6 +16,27 @@ import { UsageStatsFiltersBar } from './UsageStatsFiltersBar'
 
 type UsageSummary = UsageStatistics['summary']
 type UsageProviderRow = UsageSummary['by_provider'][number]
+type UsageDetailsTab = 'overview' | 'requests'
+type UsageRequestEntry = {
+  provider: string
+  api_key_ref: string
+  model: string
+  origin: string
+  session_id: string
+  unix_ms: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  cache_creation_input_tokens: number
+  cache_read_input_tokens: number
+}
+type UsageRequestEntriesResponse = {
+  ok: boolean
+  rows: UsageRequestEntry[]
+  has_more: boolean
+  next_offset: number
+}
+const USAGE_REQUEST_PAGE_SIZE = 200
 
 type Props = {
   config: Config | null
@@ -138,6 +160,11 @@ export function UsageStatisticsPanel({
   formatPricingSource,
   usageProviderTotalsAndAverages,
 }: Props) {
+  const [usageDetailsTab, setUsageDetailsTab] = useState<UsageDetailsTab>('overview')
+  const [usageRequestRows, setUsageRequestRows] = useState<UsageRequestEntry[]>([])
+  const [usageRequestHasMore, setUsageRequestHasMore] = useState(false)
+  const [usageRequestLoading, setUsageRequestLoading] = useState(false)
+  const [usageRequestError, setUsageRequestError] = useState('')
   const [dismissedAnomalyIds, setDismissedAnomalyIds] = useState<Set<string>>(new Set())
   const anomalyEntries = useMemo(
     () => {
@@ -168,6 +195,60 @@ export function UsageStatisticsPanel({
     () => anomalyEntries.filter((entry) => !dismissedAnomalyIds.has(entry.id)),
     [anomalyEntries, dismissedAnomalyIds],
   )
+  useEffect(() => {
+    if (usageDetailsTab !== 'requests') return
+    let cancelled = false
+    const fetchRequests = async () => {
+      setUsageRequestLoading(true)
+      setUsageRequestError('')
+      try {
+        const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
+          hours: usageWindowHours,
+          providers: usageFilterProviders.length ? usageFilterProviders : null,
+          models: usageFilterModels.length ? usageFilterModels : null,
+          origins: usageFilterOrigins.length ? usageFilterOrigins : null,
+          limit: USAGE_REQUEST_PAGE_SIZE,
+          offset: 0,
+        })
+        if (cancelled) return
+        setUsageRequestRows(res.rows ?? [])
+        setUsageRequestHasMore(Boolean(res.has_more))
+      } catch (e) {
+        if (cancelled) return
+        setUsageRequestRows([])
+        setUsageRequestHasMore(false)
+        setUsageRequestError(String(e))
+      } finally {
+        if (!cancelled) setUsageRequestLoading(false)
+      }
+    }
+    void fetchRequests()
+    return () => {
+      cancelled = true
+    }
+  }, [usageDetailsTab, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins])
+
+  const loadMoreUsageRequests = async () => {
+    if (usageRequestLoading || !usageRequestHasMore) return
+    setUsageRequestLoading(true)
+    setUsageRequestError('')
+    try {
+      const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
+        hours: usageWindowHours,
+        providers: usageFilterProviders.length ? usageFilterProviders : null,
+        models: usageFilterModels.length ? usageFilterModels : null,
+        origins: usageFilterOrigins.length ? usageFilterOrigins : null,
+        limit: USAGE_REQUEST_PAGE_SIZE,
+        offset: usageRequestRows.length,
+      })
+      setUsageRequestRows((prev) => [...prev, ...(res.rows ?? [])])
+      setUsageRequestHasMore(Boolean(res.has_more))
+    } catch (e) {
+      setUsageRequestError(String(e))
+    } finally {
+      setUsageRequestLoading(false)
+    }
+  }
 
   return (
     <div className="aoCard aoUsageStatsPage">
@@ -188,6 +269,93 @@ export function UsageStatisticsPanel({
         usageOriginFilterOptions={usageOriginFilterOptions}
         toggleUsageOriginFilter={toggleUsageOriginFilter}
       />
+      <div className="aoUsageDetailsTabs" role="tablist" aria-label="Usage details views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={usageDetailsTab === 'overview'}
+          className={`aoUsageDetailsTabBtn${usageDetailsTab === 'overview' ? ' is-active' : ''}`}
+          onClick={() => setUsageDetailsTab('overview')}
+        >
+          Overview
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={usageDetailsTab === 'requests'}
+          className={`aoUsageDetailsTabBtn${usageDetailsTab === 'requests' ? ' is-active' : ''}`}
+          onClick={() => setUsageDetailsTab('requests')}
+        >
+          Requests
+        </button>
+      </div>
+      {usageDetailsTab === 'requests' ? (
+        <div className="aoUsageRequestsCard">
+          <div className="aoSwitchboardSectionHead">
+            <div className="aoMiniLabel">Request Details</div>
+            <div className="aoHint">Per-request rows (newest first), aligned with current filters/window.</div>
+          </div>
+          {usageRequestError ? <div className="aoHint">Failed to load request details: {usageRequestError}</div> : null}
+          <div className="aoUsageRequestsTableWrap">
+            <table className="aoUsageRequestsTable">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Provider</th>
+                  <th>Model</th>
+                  <th>Input</th>
+                  <th>Output</th>
+                  <th>Total</th>
+                  <th>Cache Create</th>
+                  <th>Cache Read</th>
+                  <th>Origin</th>
+                  <th>Session</th>
+                </tr>
+              </thead>
+              <tbody>
+                {!usageRequestRows.length && !usageRequestLoading ? (
+                  <tr>
+                    <td colSpan={10} className="aoHint">
+                      No request rows in this window.
+                    </td>
+                  </tr>
+                ) : (
+                  usageRequestRows.map((row, idx) => (
+                    <tr key={`${row.unix_ms}-${row.provider}-${row.session_id}-${idx}`}>
+                      <td>{fmtWhen(row.unix_ms)}</td>
+                      <td className="aoUsageRequestsMono">{row.provider}</td>
+                      <td className="aoUsageRequestsMono">{row.model}</td>
+                      <td>{row.input_tokens.toLocaleString()}</td>
+                      <td>{row.output_tokens.toLocaleString()}</td>
+                      <td>{row.total_tokens.toLocaleString()}</td>
+                      <td>{row.cache_creation_input_tokens.toLocaleString()}</td>
+                      <td>{row.cache_read_input_tokens.toLocaleString()}</td>
+                      <td>{row.origin}</td>
+                      <td className="aoUsageRequestsMono">{row.session_id}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="aoUsageRequestsFooter">
+            <button
+              type="button"
+              className="aoTinyBtn"
+              onClick={() => {
+                if (usageRequestLoading) return
+                void loadMoreUsageRequests()
+              }}
+              disabled={!usageRequestHasMore || usageRequestLoading}
+            >
+              {usageRequestLoading ? 'Loading...' : usageRequestHasMore ? 'Load 200 more' : 'All loaded'}
+            </button>
+            <span className="aoHint">{usageRequestRows.length.toLocaleString()} rows loaded</span>
+          </div>
+        </div>
+      ) : null}
+      {usageDetailsTab === 'overview' ? (
+        <>
       {visibleAnomalyEntries.length ? (
         <div className="aoUsageAnomalyBanner" role="status" aria-live="polite">
           <div className="aoMiniLabel">Anomaly Watch</div>
@@ -322,6 +490,8 @@ export function UsageStatisticsPanel({
         formatPricingSource={formatPricingSource}
         usageProviderTotalsAndAverages={usageProviderTotalsAndAverages}
       />
+        </>
+      ) : null}
     </div>
   )
 }
