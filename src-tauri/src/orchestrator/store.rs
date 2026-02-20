@@ -1348,7 +1348,7 @@ impl Store {
                 ));
             }
         }
-        sql.push_str(" ORDER BY unix_ms DESC LIMIT ? OFFSET ?");
+        sql.push_str(" ORDER BY unix_ms DESC, id DESC LIMIT ? OFFSET ?");
         params.push(rusqlite::types::Value::Integer(
             i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX),
         ));

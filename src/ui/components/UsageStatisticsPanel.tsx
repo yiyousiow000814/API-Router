@@ -796,7 +796,7 @@ export function UsageStatisticsPanel({
     [usageRequestDailyBars],
   )
   const filteredUsageRequestRows = useMemo(() => {
-    const defaultTodayOnly = effectiveDetailsTab === 'requests' && !hasExplicitRequestFilters
+    const defaultTodayOnly = effectiveDetailsTab === 'requests' && showFilters && !hasExplicitRequestFilters
     if (!hasExplicitRequestFilters && !defaultTodayOnly) return usageRequestRows
     const timeDay = parseDateInputToDayStart(usageRequestTimeFilter)
     const timeNeedle = usageRequestTimeFilter.trim().toLowerCase()
