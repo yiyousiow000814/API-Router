@@ -38,30 +38,74 @@ type UsageRequestEntriesResponse = {
 }
 const USAGE_REQUEST_PAGE_SIZE = 200
 
-function buildUsageRequestMockRows(): UsageRequestEntry[] {
-  const now = Date.now()
+function buildUsageRequestFallbackRows(stats: UsageStatistics | null, usageWindowHours: number): UsageRequestEntry[] {
+  const summary = stats?.summary
+  const generatedAt = stats?.generated_at_unix_ms ?? Date.now()
+  const totalRequests = Math.max(0, Math.min(1200, summary?.total_requests ?? 0))
+  if (!summary || totalRequests <= 0) return []
+
+  const providers = summary.by_provider.length
+    ? summary.by_provider
+        .filter((row) => row.requests > 0)
+        .map((row) => ({ provider: row.provider, apiKeyRef: row.api_key_ref ?? '-', requests: row.requests }))
+    : [{ provider: 'unknown', apiKeyRef: '-', requests: totalRequests }]
+  const models = summary.by_model.length
+    ? summary.by_model.filter((row) => row.requests > 0).map((row) => ({ model: row.model, requests: row.requests }))
+    : [{ model: 'unknown', requests: totalRequests }]
+  const origins = stats?.catalog?.origins?.length ? stats.catalog.origins : ['unknown']
+  const windowMs = Math.max(1, usageWindowHours) * 60 * 60 * 1000
+  const avgTotalTokens = Math.max(1, Math.round((summary.total_tokens || totalRequests * 1200) / totalRequests))
+  let remainingCacheCreate = Math.max(0, summary.cache_creation_tokens ?? 0)
+  let remainingCacheRead = Math.max(0, summary.cache_read_tokens ?? 0)
+  let seed = (generatedAt + totalRequests * 97) >>> 0
+  const nextRand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0
+    return seed / 4294967296
+  }
+  const pickByWeight = <T extends { requests: number }>(items: T[]): T => {
+    const total = items.reduce((sum, item) => sum + Math.max(0, item.requests), 0)
+    if (total <= 0) return items[0]
+    let marker = nextRand() * total
+    for (const item of items) {
+      marker -= Math.max(0, item.requests)
+      if (marker <= 0) return item
+    }
+    return items[items.length - 1]
+  }
   const rows: UsageRequestEntry[] = []
-  for (let i = 0; i < 240; i += 1) {
-    const origin = i % 2 === 0 ? 'windows' : 'wsl2'
-    const input = 1400 + i * 37
-    const output = 120 + (i % 11) * 23
-    const cacheCreate = i % 6 === 0 ? 180 + (i % 5) * 20 : 0
-    const cacheRead = i % 4 === 0 ? 240 + (i % 7) * 30 : 0
+  for (let i = 0; i < totalRequests; i += 1) {
+    const providerRow = pickByWeight(providers)
+    const modelRow = pickByWeight(models)
+    const origin = origins[Math.floor(nextRand() * origins.length)] ?? 'unknown'
+    const tokenScale = 0.62 + nextRand() * 0.96
+    const total = Math.max(1, Math.round(avgTotalTokens * tokenScale))
+    const input = Math.max(1, Math.round(total * (0.62 + nextRand() * 0.26)))
+    const output = Math.max(0, total - input)
+    let cacheCreate = 0
+    let cacheRead = 0
+    if (remainingCacheCreate > 0 && nextRand() < 0.2) {
+      cacheCreate = Math.min(remainingCacheCreate, Math.max(1, Math.round(avgTotalTokens * (0.05 + nextRand() * 0.1))))
+      remainingCacheCreate -= cacheCreate
+    }
+    if (remainingCacheRead > 0 && nextRand() < 0.28) {
+      cacheRead = Math.min(remainingCacheRead, Math.max(1, Math.round(avgTotalTokens * (0.08 + nextRand() * 0.12))))
+      remainingCacheRead -= cacheRead
+    }
     rows.push({
-      provider: i % 3 === 0 ? 'official' : i % 3 === 1 ? 'provider_1' : 'provider_2',
-      api_key_ref: i % 3 === 0 ? 'sk-offi******c123' : i % 3 === 1 ? 'sk-prov******a111' : 'sk-prov******b222',
-      model: i % 5 === 0 ? 'gpt-5.x' : 'gpt-4.1',
+      provider: providerRow.provider,
+      api_key_ref: providerRow.apiKeyRef || '-',
+      model: modelRow.model,
       origin,
-      session_id: `${origin === 'wsl2' ? 'wsl' : 'win'}-session-${(i % 12) + 1}`,
-      unix_ms: now - i * 43_000,
+      session_id: `${origin === 'wsl2' ? 'wsl' : 'win'}-session-${(i % 18) + 1}`,
+      unix_ms: generatedAt - Math.floor(nextRand() * windowMs),
       input_tokens: input,
       output_tokens: output,
-      total_tokens: input + output,
+      total_tokens: total,
       cache_creation_input_tokens: cacheCreate,
       cache_read_input_tokens: cacheRead,
     })
   }
-  return rows
+  return rows.sort((a, b) => b.unix_ms - a.unix_ms)
 }
 
 type Props = {
@@ -191,7 +235,10 @@ export function UsageStatisticsPanel({
   const [usageRequestHasMore, setUsageRequestHasMore] = useState(false)
   const [usageRequestLoading, setUsageRequestLoading] = useState(false)
   const [usageRequestError, setUsageRequestError] = useState('')
-  const usageRequestMockRows = useMemo(() => buildUsageRequestMockRows(), [])
+  const usageRequestMockRows = useMemo(
+    () => buildUsageRequestFallbackRows(usageStatistics, usageWindowHours),
+    [usageStatistics, usageWindowHours],
+  )
   const [dismissedAnomalyIds, setDismissedAnomalyIds] = useState<Set<string>>(new Set())
   const anomalyEntries = useMemo(
     () => {
@@ -282,8 +329,9 @@ export function UsageStatisticsPanel({
           usageRequestRows.length,
           usageRequestRows.length + USAGE_REQUEST_PAGE_SIZE,
         )
-        setUsageRequestRows((prev) => [...prev, ...next])
-        setUsageRequestHasMore(usageRequestRows.length + next.length < usageRequestMockRows.length)
+        const merged = [...usageRequestRows, ...next]
+        setUsageRequestRows(merged)
+        setUsageRequestHasMore(merged.length < usageRequestMockRows.length)
         return
       }
       const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
