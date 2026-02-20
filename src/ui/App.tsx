@@ -49,7 +49,7 @@ import {
   resolveCliHomes,
 } from './utils/switchboard'
 import { usageProviderRowKey } from './utils/usageStatisticsView'
-type TopPage = 'dashboard' | 'usage_statistics' | 'provider_switchboard' | 'event_log'
+type TopPage = 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
 const RAW_DRAFT_WINDOWS_KEY = '__draft_windows__'
 const RAW_DRAFT_WSL_KEY = '__draft_wsl2__'
 const RAW_DRAFT_STORAGE_KEY = 'ao.rawConfigDraft.shared.v1'

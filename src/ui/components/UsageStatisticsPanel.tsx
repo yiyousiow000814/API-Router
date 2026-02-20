@@ -170,6 +170,8 @@ type Props = {
   usageProviderRowKey: (row: UsageProviderRow) => string
   formatPricingSource: (source: string | null | undefined) => string
   usageProviderTotalsAndAverages: UsageProviderTotalsAndAverages | null
+  forceDetailsTab?: UsageDetailsTab
+  showDetailsTabs?: boolean
 }
 
 export function UsageStatisticsPanel({
@@ -224,6 +226,8 @@ export function UsageStatisticsPanel({
   usageProviderRowKey,
   formatPricingSource,
   usageProviderTotalsAndAverages,
+  forceDetailsTab,
+  showDetailsTabs = true,
 }: Props) {
   const [usageDetailsTab, setUsageDetailsTab] = useState<UsageDetailsTab>('overview')
   const [usageRequestRows, setUsageRequestRows] = useState<UsageRequestEntry[]>([])
@@ -231,7 +235,7 @@ export function UsageStatisticsPanel({
   const [usageRequestLoading, setUsageRequestLoading] = useState(false)
   const [usageRequestError, setUsageRequestError] = useState('')
   const [usageRequestUsingTestFallback, setUsageRequestUsingTestFallback] = useState(false)
-  const usageRequestTestFallbackEnabled = useMemo(() => readTestFlagFromLocation(), [])
+  const usageRequestTestFallbackEnabled = useMemo(() => readTestFlagFromLocation() || import.meta.env.DEV, [])
   const usageRequestTestRows = useMemo(
     () => buildUsageRequestTestRows(usageStatistics, usageWindowHours),
     [usageStatistics, usageWindowHours],
@@ -266,8 +270,9 @@ export function UsageStatisticsPanel({
     () => anomalyEntries.filter((entry) => !dismissedAnomalyIds.has(entry.id)),
     [anomalyEntries, dismissedAnomalyIds],
   )
+  const effectiveDetailsTab = forceDetailsTab ?? usageDetailsTab
   useEffect(() => {
-    if (usageDetailsTab !== 'requests') return
+    if (effectiveDetailsTab !== 'requests') return
     let cancelled = false
     const fetchRequests = async () => {
       setUsageRequestLoading(true)
@@ -307,7 +312,7 @@ export function UsageStatisticsPanel({
       cancelled = true
     }
   }, [
-    usageDetailsTab,
+    effectiveDetailsTab,
     usageWindowHours,
     usageFilterProviders,
     usageFilterModels,
@@ -363,7 +368,8 @@ export function UsageStatisticsPanel({
         usageOriginFilterOptions={usageOriginFilterOptions}
         toggleUsageOriginFilter={toggleUsageOriginFilter}
       />
-      <div className="aoUsageDetailsTabs" role="tablist" aria-label="Usage details views">
+      {showDetailsTabs ? (
+        <div className="aoUsageDetailsTabs" role="tablist" aria-label="Usage details views">
         <button
           type="button"
           role="tab"
@@ -382,8 +388,9 @@ export function UsageStatisticsPanel({
         >
           Requests
         </button>
-      </div>
-      {usageDetailsTab === 'requests' ? (
+        </div>
+      ) : null}
+      {effectiveDetailsTab === 'requests' ? (
         <div className="aoUsageRequestsCard">
           <div className="aoSwitchboardSectionHead">
             <div className="aoMiniLabel">Request Details</div>
@@ -451,7 +458,7 @@ export function UsageStatisticsPanel({
           </div>
         </div>
       ) : null}
-      {usageDetailsTab === 'overview' ? (
+      {effectiveDetailsTab === 'overview' ? (
         <>
       {visibleAnomalyEntries.length ? (
         <div className="aoUsageAnomalyBanner" role="status" aria-live="polite">
