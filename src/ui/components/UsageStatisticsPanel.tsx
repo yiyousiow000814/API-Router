@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Config, UsageStatistics } from '../types'
 import './UsageStatisticsPanel.css'
@@ -39,6 +39,26 @@ type UsageRequestEntriesResponse = {
   has_more: boolean
   next_offset: number
 }
+type UsageRequestsPageCache = {
+  queryKey: string
+  rows: UsageRequestEntry[]
+  hasMore: boolean
+  usingTestFallback: boolean
+}
+const usageRequestRowIdentity = (row: UsageRequestEntry) =>
+  [
+    row.unix_ms,
+    row.provider,
+    row.api_key_ref,
+    row.model,
+    row.origin,
+    row.session_id,
+    row.input_tokens,
+    row.output_tokens,
+    row.total_tokens,
+    row.cache_creation_input_tokens,
+    row.cache_read_input_tokens,
+  ].join('|')
 type UsageRequestColumnFilterKey =
   | 'time'
   | 'provider'
@@ -96,6 +116,7 @@ const TEST_CODEX_SESSION_IDS = [
 ] as const
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 const WEEKDAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']
+let usageRequestsPageCache: UsageRequestsPageCache | null = null
 
 function startOfDayUnixMs(unixMs: number): number {
   const date = new Date(unixMs)
@@ -397,8 +418,10 @@ export function UsageStatisticsPanel({
   const [usageRequestLoading, setUsageRequestLoading] = useState(false)
   const [usageRequestError, setUsageRequestError] = useState('')
   const [usageRequestUsingTestFallback, setUsageRequestUsingTestFallback] = useState(false)
+  const [usageRequestMergeTick, setUsageRequestMergeTick] = useState(0)
   const usageRequestRefreshInFlightRef = useRef(false)
   const usageRequestFetchSeqRef = useRef(0)
+  const usageRequestLoadedQueryKeyRef = useRef<string | null>(null)
   const usageRequestLastActivityRef = useRef<number | null>(null)
   const usageRequestWasNearBottomRef = useRef(false)
   const usageRequestTestFallbackEnabled = useMemo(() => readTestFlagFromLocation() || import.meta.env.DEV, [])
@@ -423,6 +446,16 @@ export function UsageStatisticsPanel({
     (forceDetailsTab ?? usageDetailsTab) === 'requests' && !showFilters
       ? 24 * 365 * 20
       : usageWindowHours
+  const requestQueryKey = useMemo(
+    () =>
+      JSON.stringify({
+        hours: requestFetchHours,
+        providers: requestFetchProviders ?? [],
+        models: requestFetchModels ?? [],
+        origins: requestFetchOrigins ?? [],
+      }),
+    [requestFetchHours, requestFetchModels, requestFetchOrigins, requestFetchProviders],
+  )
   const hasExplicitTimeFilter = usageRequestTimeFilter.trim().length > 0
   const hasExplicitRequestFilters =
     hasExplicitTimeFilter ||
@@ -583,19 +616,93 @@ export function UsageStatisticsPanel({
       usageRequestTestRows,
     ],
   )
-  const initialRefreshLimit = hasExplicitTimeFilter
-    ? USAGE_REQUEST_PAGE_SIZE
-    : 1000
+  const mergeLatestUsageRequests = useCallback(
+    async (limit: number) => {
+      if (usageRequestRefreshInFlightRef.current) return
+      usageRequestRefreshInFlightRef.current = true
+      const requestSeq = usageRequestFetchSeqRef.current + 1
+      usageRequestFetchSeqRef.current = requestSeq
+      try {
+        const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
+          hours: requestFetchHours,
+          providers: requestFetchProviders,
+          models: requestFetchModels,
+          origins: requestFetchOrigins,
+          limit,
+          offset: 0,
+        })
+        if (usageRequestFetchSeqRef.current !== requestSeq) return
+        const incoming = res.rows ?? []
+        if (!incoming.length) return
+        setUsageRequestRows((prev) => {
+          if (!prev.length) return incoming
+          const seen = new Set(prev.map(usageRequestRowIdentity))
+          const prepend: UsageRequestEntry[] = []
+          for (const row of incoming) {
+            const id = usageRequestRowIdentity(row)
+            if (seen.has(id)) continue
+            prepend.push(row)
+          }
+          return prepend.length ? [...prepend, ...prev] : prev
+        })
+      } catch {
+        // Keep current rows when background merge fails.
+      } finally {
+        usageRequestRefreshInFlightRef.current = false
+        setUsageRequestMergeTick((tick) => tick + 1)
+      }
+    },
+    [requestFetchHours, requestFetchModels, requestFetchOrigins, requestFetchProviders],
+  )
+  const initialRefreshLimit = 1000
 
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
     usageRequestWasNearBottomRef.current = false
     usageRequestLastActivityRef.current = usageActivityUnixMs ?? null
-    void refreshUsageRequests(initialRefreshLimit)
+    const cached =
+      usageRequestsPageCache != null && usageRequestsPageCache.queryKey === requestQueryKey
+        ? usageRequestsPageCache
+        : null
+    if (usageRequestRows.length === 0 && cached != null) {
+      usageRequestLoadedQueryKeyRef.current = requestQueryKey
+      setUsageRequestRows(cached.rows)
+      setUsageRequestHasMore(cached.hasMore)
+      setUsageRequestUsingTestFallback(cached.usingTestFallback)
+      void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
+      return
+    }
+    const shouldRefresh =
+      usageRequestLoadedQueryKeyRef.current !== requestQueryKey || usageRequestRows.length === 0
+    if (shouldRefresh) {
+      usageRequestLoadedQueryKeyRef.current = requestQueryKey
+      void refreshUsageRequests(initialRefreshLimit)
+      return
+    }
+    void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
   }, [
     effectiveDetailsTab,
     initialRefreshLimit,
+    mergeLatestUsageRequests,
+    requestQueryKey,
     refreshUsageRequests,
+    usageRequestRows.length,
+  ])
+  useEffect(() => {
+    if (effectiveDetailsTab !== 'requests') return
+    if (!usageRequestRows.length) return
+    usageRequestsPageCache = {
+      queryKey: requestQueryKey,
+      rows: usageRequestRows,
+      hasMore: usageRequestHasMore,
+      usingTestFallback: usageRequestUsingTestFallback,
+    }
+  }, [
+    effectiveDetailsTab,
+    requestQueryKey,
+    usageRequestHasMore,
+    usageRequestRows,
+    usageRequestUsingTestFallback,
   ])
 
   useEffect(() => {
@@ -608,8 +715,8 @@ export function UsageStatisticsPanel({
     }
     if (usageActivityUnixMs <= last) return
     usageRequestLastActivityRef.current = usageActivityUnixMs
-    void refreshUsageRequests(initialRefreshLimit)
-  }, [effectiveDetailsTab, initialRefreshLimit, usageActivityUnixMs, refreshUsageRequests])
+    void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
+  }, [effectiveDetailsTab, usageActivityUnixMs, mergeLatestUsageRequests])
 
   const loadMoreUsageRequests = useCallback(async () => {
     if (usageRequestLoading || !usageRequestHasMore || usageRequestRefreshInFlightRef.current) return
@@ -658,15 +765,15 @@ export function UsageStatisticsPanel({
     if (effectiveDetailsTab !== 'requests') return
     if (hasExplicitTimeFilter) return
     if (usageRequestLoading || !usageRequestHasMore || !usageRequestRows.length) return
-    const oldestRow = usageRequestRows[usageRequestRows.length - 1]
-    if (!oldestRow) return
-    if (startOfDayUnixMs(oldestRow.unix_ms) !== requestDefaultDay) return
+    const loadedDays = new Set<number>()
+    for (const row of usageRequestRows) loadedDays.add(startOfDayUnixMs(row.unix_ms))
+    if (loadedDays.size >= 45) return
     void loadMoreUsageRequests()
   }, [
     effectiveDetailsTab,
     hasExplicitTimeFilter,
     loadMoreUsageRequests,
-    requestDefaultDay,
+    usageRequestMergeTick,
     usageRequestHasMore,
     usageRequestLoading,
     usageRequestRows,
@@ -710,16 +817,18 @@ export function UsageStatisticsPanel({
     const providers = [...activeRequestGraphProviders].sort(compareUsageProvidersForDisplay)
     if (!providers.length) return []
     const pointCount = usageRequestGraphPointCount
-    const providerSeries = providers.map((provider, providerIndex) => {
-      const values = new Array<number>(pointCount).fill(0)
-      const present = new Array<boolean>(pointCount).fill(false)
-      const rows = usageRequestRowsByProvider.get(provider) ?? []
-      for (let idx = 0; idx < pointCount; idx += 1) {
-        const row = rows[idx]
-        if (row) {
-          values[idx] = row.total_tokens
-          present[idx] = true
-        }
+      const providerSeries = providers.map((provider, providerIndex) => {
+        const values = new Array<number>(pointCount).fill(0)
+        const present = new Array<boolean>(pointCount).fill(false)
+        const rows = usageRequestRowsByProvider.get(provider) ?? []
+      const count = Math.min(pointCount, rows.length)
+      // Plot request points as left-old/right-new:
+      // point 1 is the oldest entry within the latest-N window,
+      // and the rightmost plotted point is the newest entry.
+      for (let idx = 0; idx < count; idx += 1) {
+        const row = rows[count - 1 - idx]
+        values[idx] = row.total_tokens
+        present[idx] = true
       }
       return {
         kind: 'provider' as const,
@@ -777,7 +886,7 @@ export function UsageStatisticsPanel({
     const windowStart =
       loadedSpanDays >= dayWindow
         ? latestDay - (dayWindow - 1) * dayMs
-        : latestDay - (dayWindow - 1) * dayMs
+        : earliestDay
     const days = Array.from({ length: dayWindow }, (_, idx) => windowStart + idx * dayMs)
     const labelStride = days.length > 36 ? 3 : days.length > 24 ? 2 : 1
     return days.map((day, index) => {
@@ -871,6 +980,14 @@ export function UsageStatisticsPanel({
     const timeDay = parseDateInputToDayStart(usageRequestTimeFilter)
     const timeNeedle = usageRequestTimeFilter.trim().toLowerCase()
     const contains = (text: string) => timeNeedle.length === 0 || text.toLowerCase().includes(timeNeedle)
+    const providerFilterSet =
+      usageRequestMultiFilters.provider == null ? null : new Set(usageRequestMultiFilters.provider)
+    const modelFilterSet =
+      usageRequestMultiFilters.model == null ? null : new Set(usageRequestMultiFilters.model)
+    const originFilterSet =
+      usageRequestMultiFilters.origin == null ? null : new Set(usageRequestMultiFilters.origin)
+    const sessionFilterSet =
+      usageRequestMultiFilters.session == null ? null : new Set(usageRequestMultiFilters.session)
     return usageRequestRows.filter((row) => {
       if (timeDay != null) {
         if (startOfDayUnixMs(row.unix_ms) !== timeDay) return false
@@ -879,10 +996,10 @@ export function UsageStatisticsPanel({
       } else if (!contains(fmtWhen(row.unix_ms))) {
         return false
       }
-      if (usageRequestMultiFilters.provider !== null && !usageRequestMultiFilters.provider.includes(row.provider)) return false
-      if (usageRequestMultiFilters.model !== null && !usageRequestMultiFilters.model.includes(row.model)) return false
-      if (usageRequestMultiFilters.origin !== null && !usageRequestMultiFilters.origin.includes(row.origin)) return false
-      if (usageRequestMultiFilters.session !== null && !usageRequestMultiFilters.session.includes(row.session_id)) return false
+      if (providerFilterSet && !providerFilterSet.has(row.provider)) return false
+      if (modelFilterSet && !modelFilterSet.has(row.model)) return false
+      if (originFilterSet && !originFilterSet.has(row.origin)) return false
+      if (sessionFilterSet && !sessionFilterSet.has(row.session_id)) return false
       return true
     })
   }, [
@@ -894,9 +1011,10 @@ export function UsageStatisticsPanel({
     usageRequestRows,
     usageRequestTimeFilter,
   ])
+  const deferredFilteredUsageRequestRows = useDeferredValue(filteredUsageRequestRows)
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
-    if (!hasExplicitRequestFilters) return
+    if (!hasExplicitTimeFilter) return
     if (hasImpossibleRequestFilters) return
     if (usageRequestLoading || !usageRequestHasMore) return
     if (filteredUsageRequestRows.length > 0) return
@@ -904,12 +1022,11 @@ export function UsageStatisticsPanel({
   }, [
     effectiveDetailsTab,
     filteredUsageRequestRows.length,
-    hasExplicitRequestFilters,
+    hasExplicitTimeFilter,
     hasImpossibleRequestFilters,
     loadMoreUsageRequests,
     usageRequestHasMore,
     usageRequestLoading,
-    usageRequestRows.length,
   ])
   const requestChartWidth = 1000
   const requestChartHeight = 176
@@ -1029,8 +1146,8 @@ export function UsageStatisticsPanel({
     }
   }, [activeRequestGraphProviders, dailyHoverDay, usageRequestDailyBars])
   const requestTableSummary = useMemo(() => {
-    const requests = filteredUsageRequestRows.length
-    const totals = filteredUsageRequestRows.reduce(
+    const requests = deferredFilteredUsageRequestRows.length
+    const totals = deferredFilteredUsageRequestRows.reduce(
       (acc, row) => {
         acc.input += row.input_tokens
         acc.output += row.output_tokens
@@ -1042,7 +1159,7 @@ export function UsageStatisticsPanel({
       { input: 0, output: 0, total: 0, cacheCreate: 0, cacheRead: 0 },
     )
     return { requests, ...totals }
-  }, [filteredUsageRequestRows])
+  }, [deferredFilteredUsageRequestRows])
   const filteredSelectionCount = useCallback((selectedCount: number, totalCount: number) => {
     if (selectedCount <= 0) return 0
     if (totalCount <= 0) return selectedCount
@@ -1090,11 +1207,16 @@ export function UsageStatisticsPanel({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setActiveUsageRequestFilterMenu(null)
     }
+    const onAnyScroll = () => {
+      setActiveUsageRequestFilterMenu(null)
+    }
     window.addEventListener('mousedown', onMouseDown)
     window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('scroll', onAnyScroll, true)
     return () => {
       window.removeEventListener('mousedown', onMouseDown)
       window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('scroll', onAnyScroll, true)
     }
   }, [activeUsageRequestFilterMenu])
 
@@ -1225,10 +1347,10 @@ export function UsageStatisticsPanel({
                   0
                 </text>
                 <text x={requestChartMinX} y={requestChartBottomY + 16} textAnchor="start" fill="rgba(13, 18, 32, 0.52)" fontSize="10">
-                  Newer
+                  Older
                 </text>
                 <text x={requestChartMaxX} y={requestChartBottomY + 16} textAnchor="end" fill="rgba(13, 18, 32, 0.52)" fontSize="10">
-                  Older
+                  Newer
                 </text>
                 {usageRequestLineSeries.map((series) => {
                   const points = series.values.map((value, idx) => {
@@ -1715,14 +1837,14 @@ export function UsageStatisticsPanel({
                     <col className="aoUsageReqColCacheRead" />
                   </colgroup>
                   <tbody>
-                    {!filteredUsageRequestRows.length && !usageRequestLoading ? (
+                    {!deferredFilteredUsageRequestRows.length && !usageRequestLoading ? (
                       <tr>
                         <td colSpan={9} className="aoHint">
                           No request rows match current filters.
                         </td>
                       </tr>
                     ) : (
-                      filteredUsageRequestRows.map((row, idx) => (
+                      deferredFilteredUsageRequestRows.map((row, idx) => (
                         <tr key={`${row.unix_ms}-${row.provider}-${row.session_id}-${idx}`}>
                           <td>{fmtWhen(row.unix_ms)}</td>
                           <td className="aoUsageRequestsMono">{row.provider}</td>
@@ -1891,10 +2013,16 @@ export function UsageStatisticsPanel({
           </div>
           <div className="aoUsageRequestsFooter">
             <span className="aoHint">
-              {usageRequestLoading ? 'Loading more...' : usageRequestHasMore ? 'Scroll table to load more' : 'All loaded'}
+              {usageRequestLoading
+                ? 'Loading more...'
+                : usageRequestHasMore
+                  ? hasExplicitRequestFilters
+                    ? 'Scroll table to load more'
+                    : 'Loading history in background...'
+                  : 'All loaded'}
             </span>
             <span className="aoHint">
-              {filteredUsageRequestRows.length.toLocaleString()} / {usageRequestRows.length.toLocaleString()} rows
+              {deferredFilteredUsageRequestRows.length.toLocaleString()} / {usageRequestRows.length.toLocaleString()} rows
             </span>
           </div>
         </div>
