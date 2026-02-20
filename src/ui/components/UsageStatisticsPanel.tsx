@@ -38,6 +38,32 @@ type UsageRequestEntriesResponse = {
 }
 const USAGE_REQUEST_PAGE_SIZE = 200
 
+function buildUsageRequestMockRows(): UsageRequestEntry[] {
+  const now = Date.now()
+  const rows: UsageRequestEntry[] = []
+  for (let i = 0; i < 240; i += 1) {
+    const origin = i % 2 === 0 ? 'windows' : 'wsl2'
+    const input = 1400 + i * 37
+    const output = 120 + (i % 11) * 23
+    const cacheCreate = i % 6 === 0 ? 180 + (i % 5) * 20 : 0
+    const cacheRead = i % 4 === 0 ? 240 + (i % 7) * 30 : 0
+    rows.push({
+      provider: i % 3 === 0 ? 'official' : i % 3 === 1 ? 'provider_1' : 'provider_2',
+      api_key_ref: i % 3 === 0 ? 'sk-offi******c123' : i % 3 === 1 ? 'sk-prov******a111' : 'sk-prov******b222',
+      model: i % 5 === 0 ? 'gpt-5.x' : 'gpt-4.1',
+      origin,
+      session_id: `${origin === 'wsl2' ? 'wsl' : 'win'}-session-${(i % 12) + 1}`,
+      unix_ms: now - i * 43_000,
+      input_tokens: input,
+      output_tokens: output,
+      total_tokens: input + output,
+      cache_creation_input_tokens: cacheCreate,
+      cache_read_input_tokens: cacheRead,
+    })
+  }
+  return rows
+}
+
 type Props = {
   config: Config | null
   usageWindowHours: number
@@ -165,6 +191,7 @@ export function UsageStatisticsPanel({
   const [usageRequestHasMore, setUsageRequestHasMore] = useState(false)
   const [usageRequestLoading, setUsageRequestLoading] = useState(false)
   const [usageRequestError, setUsageRequestError] = useState('')
+  const usageRequestMockRows = useMemo(() => buildUsageRequestMockRows(), [])
   const [dismissedAnomalyIds, setDismissedAnomalyIds] = useState<Set<string>>(new Set())
   const anomalyEntries = useMemo(
     () => {
@@ -202,6 +229,18 @@ export function UsageStatisticsPanel({
       setUsageRequestLoading(true)
       setUsageRequestError('')
       try {
+        const tauriInvoke =
+          typeof window !== 'undefined'
+            ? ((window as unknown as { __TAURI__?: { core?: { invoke?: unknown } } }).__TAURI__?.core
+                ?.invoke as unknown)
+            : undefined
+        if (typeof tauriInvoke !== 'function') {
+          const mockRows = usageRequestMockRows.slice(0, USAGE_REQUEST_PAGE_SIZE)
+          if (cancelled) return
+          setUsageRequestRows(mockRows)
+          setUsageRequestHasMore(usageRequestMockRows.length > mockRows.length)
+          return
+        }
         const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
           hours: usageWindowHours,
           providers: usageFilterProviders.length ? usageFilterProviders : null,
@@ -226,13 +265,27 @@ export function UsageStatisticsPanel({
     return () => {
       cancelled = true
     }
-  }, [usageDetailsTab, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins])
+  }, [usageDetailsTab, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins, usageRequestMockRows])
 
   const loadMoreUsageRequests = async () => {
     if (usageRequestLoading || !usageRequestHasMore) return
     setUsageRequestLoading(true)
     setUsageRequestError('')
     try {
+      const tauriInvoke =
+        typeof window !== 'undefined'
+          ? ((window as unknown as { __TAURI__?: { core?: { invoke?: unknown } } }).__TAURI__?.core
+              ?.invoke as unknown)
+          : undefined
+      if (typeof tauriInvoke !== 'function') {
+        const next = usageRequestMockRows.slice(
+          usageRequestRows.length,
+          usageRequestRows.length + USAGE_REQUEST_PAGE_SIZE,
+        )
+        setUsageRequestRows((prev) => [...prev, ...next])
+        setUsageRequestHasMore(usageRequestRows.length + next.length < usageRequestMockRows.length)
+        return
+      }
       const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
         hours: usageWindowHours,
         providers: usageFilterProviders.length ? usageFilterProviders : null,
