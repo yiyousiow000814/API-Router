@@ -40,6 +40,19 @@ function eventIdentity(event: Status['recent_events'][number]): string {
   return `${event.unix_ms}|${event.provider}|${event.level}|${event.code}|${event.message}`
 }
 
+function withStableRowKeys(
+  rows: Status['recent_events'],
+  scope: string,
+): Array<{ event: Status['recent_events'][number]; key: string }> {
+  const seen = new Map<string, number>()
+  return rows.map((event) => {
+    const id = eventIdentity(event)
+    const occurrence = seen.get(id) ?? 0
+    seen.set(id, occurrence + 1)
+    return { event, key: `${id}-${scope}-${occurrence}` }
+  })
+}
+
 export function isEventMessageOverflow(metrics: OverflowMetrics): boolean {
   return metrics.scrollHeight - metrics.clientHeight > 1 || metrics.scrollWidth - metrics.clientWidth > 1
 }
@@ -506,9 +519,10 @@ export function EventsTable({
   const renderBodyRows = () =>
     !splitByLevel ? (
       [...allEvents].sort((a, b) => b.unix_ms - a.unix_ms).length ? (
-        [...allEvents]
-          .sort((a, b) => b.unix_ms - a.unix_ms)
-          .map((e) => renderRow(e, `${eventIdentity(e)}-all`))
+        withStableRowKeys(
+          [...allEvents].sort((a, b) => b.unix_ms - a.unix_ms),
+          'all',
+        ).map(({ event, key }) => renderRow(event, key))
       ) : (
         <tr>
           <td colSpan={5} className="aoHint">
@@ -524,7 +538,7 @@ export function EventsTable({
           </td>
         </tr>
         {infos.length ? (
-          infos.map((e) => renderRow(e, `${eventIdentity(e)}-info`))
+          withStableRowKeys(infos, 'info').map(({ event, key }) => renderRow(event, key))
         ) : (
           <tr>
             <td colSpan={5} className="aoHint">
@@ -549,10 +563,12 @@ export function EventsTable({
           </td>
         </tr>
         {(errors.length || warnings.length) ? (
-          [...warnings, ...errors]
-            .sort((a, b) => b.unix_ms - a.unix_ms)
-            .slice(0, 5)
-            .map((e) => renderRow(e, `${eventIdentity(e)}-issue`))
+          withStableRowKeys(
+            [...warnings, ...errors]
+              .sort((a, b) => b.unix_ms - a.unix_ms)
+              .slice(0, 5),
+            'issue',
+          ).map(({ event, key }) => renderRow(event, key))
         ) : (
           <tr>
             <td colSpan={5} className="aoHint">
