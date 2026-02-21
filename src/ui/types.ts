@@ -1,5 +1,5 @@
 export type ProviderHealth = {
-  status: 'unknown' | 'healthy' | 'unhealthy' | 'cooldown'
+  status: 'unknown' | 'healthy' | 'unhealthy' | 'cooldown' | 'closed'
   consecutive_failures: number
   cooldown_until_unix_ms: number
   last_error: string

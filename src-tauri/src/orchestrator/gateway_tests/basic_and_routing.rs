@@ -357,6 +357,7 @@ fn decide_provider_skips_fallback_when_daily_budget_exhausted() {
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://p1.example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -367,6 +368,7 @@ fn decide_provider_skips_fallback_when_daily_budget_exhausted() {
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://p2.example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -377,6 +379,7 @@ fn decide_provider_skips_fallback_when_daily_budget_exhausted() {
         ProviderConfig {
             display_name: "P3".to_string(),
             base_url: "https://p3.example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -434,6 +437,89 @@ fn decide_provider_skips_fallback_when_daily_budget_exhausted() {
     let (picked, reason) = decide_provider(&state, &cfg, "p1", "s1");
     assert_eq!(picked, "p3");
     assert_eq!(reason, "preferred_unhealthy");
+}
+
+#[test]
+fn decide_provider_manual_override_falls_back_when_daily_budget_exhausted() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut providers = std::collections::BTreeMap::new();
+    providers.insert(
+        "p1".to_string(),
+        ProviderConfig {
+            display_name: "P1".to_string(),
+            base_url: "https://p1.example.com".to_string(),
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        },
+    );
+    providers.insert(
+        "p2".to_string(),
+        ProviderConfig {
+            display_name: "P2".to_string(),
+            base_url: "https://p2.example.com".to_string(),
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        },
+    );
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 4000,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 3600,
+            failure_threshold: 1,
+            cooldown_seconds: 30,
+            request_timeout_seconds: 300,
+        },
+        providers,
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    router.set_manual_override(Some("p2".to_string()));
+
+    store
+        .put_quota_snapshot(
+            "p2",
+            &json!({
+                "kind": "budget_info",
+                "daily_spent_usd": 120.181,
+                "daily_budget_usd": 120.0,
+                "weekly_spent_usd": 198.776,
+                "weekly_budget_usd": 360.0,
+                "updated_at_unix_ms": unix_ms()
+            }),
+        )
+        .expect("quota snapshot");
+
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg.clone())),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let (picked, reason) = decide_provider(&state, &cfg, "p1", "s1");
+    assert_eq!(picked, "p1");
+    assert_eq!(reason, "manual_override_unhealthy");
 }
 
 #[test]

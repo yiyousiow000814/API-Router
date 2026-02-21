@@ -33,12 +33,12 @@ export function HeroRoutingCard({
       {config ? (
         <div className="aoRoutingGrid">
           <label className="aoRoutingRow">
-            <span className="aoMiniLabel">Mode</span>
+            <span className="aoMiniLabel">Route mode</span>
             <select className="aoSelect" value={override} onChange={(e) => onOverrideChange(e.target.value)}>
-              <option value="">Auto</option>
+              <option value="">Follow Preferred (Auto)</option>
               {providers.map((p) => (
                 <option key={p} value={p}>
-                  {p}
+                  {`Lock to ${p}`}
                 </option>
               ))}
             </select>

@@ -64,7 +64,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
           const h = status.providers[p]
           const q = status.quota?.[p]
           const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
-          const isClosed = quotaIsClosed(q)
+          const isClosed = quotaIsClosed(q) || h.status === 'closed'
           const cooldownActive = !isClosed && h.cooldown_until_unix_ms > Date.now()
           const isActive = (status.active_provider_counts?.[p] ?? 0) > 0
           const healthLabel =
@@ -78,6 +78,8 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                     ? 'no'
                     : h.status === 'cooldown'
                       ? 'cooldown'
+                      : h.status === 'closed'
+                        ? 'closed'
                       : 'unknown'
           const dotClass =
             isClosed
@@ -228,6 +230,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
             // We only show timestamp + View when we can guarantee the exact error row is in the current
             // dashboard snapshot window (`status.recent_events`) and therefore jumpable from UI.
             const showLastError = lastErrorAt > 0 && lastErrorMessage.length > 0 && hasMatchingRecentError
+            const showJumpableError = !isClosed && showLastError
 
             return (
               <tr key={p}>
@@ -244,7 +247,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                 <td className="aoCellCenter">{cooldownActive ? fmtWhen(h.cooldown_until_unix_ms) : '-'}</td>
                 <td>{fmtWhen(h.last_ok_at_unix_ms)}</td>
                 <td>
-                  {showLastError ? (
+                  {showJumpableError ? (
                     <span className="aoLastErrorCell">
                       <span className="aoLastErrorTime">{fmtWhen(lastErrorAt)}</span>
                       <button
