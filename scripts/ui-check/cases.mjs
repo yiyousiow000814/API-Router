@@ -205,6 +205,184 @@ export async function ensureCodexAuthForSwitchboard(uiProfileDir) {
   fs.writeFileSync(appAuthPath, `${JSON.stringify(next, null, 2)}\n`, 'utf-8')
 }
 
+function ensureUiCheckCliHome(uiProfileDir) {
+  const cliHome = path.join(uiProfileDir, 'ui-check', '.codex')
+  fs.mkdirSync(cliHome, { recursive: true })
+
+  const authPath = path.join(cliHome, 'auth.json')
+  fs.writeFileSync(
+    authPath,
+    `${JSON.stringify({ OPENAI_API_KEY: 'sk-ui-check-cli-home' }, null, 2)}\n`,
+    'utf-8',
+  )
+
+  const cfgPath = path.join(cliHome, 'config.toml')
+  const cfg = [
+    'model = "gpt-5"',
+    '',
+    '[model_providers.openai]',
+    'name = "openai"',
+    'base_url = "https://api.openai.com/v1"',
+    'wire_api = "responses"',
+    'requires_openai_auth = true',
+    '',
+  ].join('\n')
+  fs.writeFileSync(cfgPath, cfg, 'utf-8')
+
+  return cliHome
+}
+
+function normalizeCliPath(input) {
+  return path.win32.normalize(String(input || '').trim()).toLowerCase()
+}
+
+async function applyUiCheckCliHomeInConfigureDirs(driver, cliHome) {
+  await clickButtonByText(driver, 'Configure Dirs', 12000)
+  await waitVisible(
+    driver,
+    By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Codex CLI directories']]`),
+    12000,
+  )
+  const applied = await driver.executeScript(
+    `
+      const target = arguments[0];
+      const modals = Array.from(document.querySelectorAll('.aoModal'));
+      const modal = modals.find((m) => {
+        const t = m.querySelector('.aoModalTitle');
+        return t && (t.textContent || '').trim() === 'Codex CLI directories';
+      });
+      if (!modal) return { ok: false, reason: 'modal_not_found' };
+      const cardByLabel = (label) =>
+        Array.from(modal.querySelectorAll('.aoCardInset')).find((card) => {
+          const mini = card.querySelector('.aoMiniLabel');
+          return mini && (mini.textContent || '').trim() === label;
+        });
+      const windowsCard = cardByLabel('Windows');
+      const wslCard = cardByLabel('WSL2');
+      if (!windowsCard) return { ok: false, reason: 'windows_card_not_found' };
+      if (!wslCard) return { ok: false, reason: 'wsl_card_not_found' };
+      const windowsCheck = windowsCard.querySelector('input[type="checkbox"]');
+      const wslCheck = wslCard.querySelector('input[type="checkbox"]');
+      const windowsInput = windowsCard.querySelector('input.aoInput');
+      const wslInput = wslCard.querySelector('input.aoInput');
+      if (!windowsCheck) return { ok: false, reason: 'windows_checkbox_not_found' };
+      if (!wslCheck) return { ok: false, reason: 'wsl_checkbox_not_found' };
+      if (!windowsInput) return { ok: false, reason: 'windows_input_not_found' };
+      if (!wslInput) return { ok: false, reason: 'wsl_input_not_found' };
+      const setVal = (el, value) => {
+        if (!el) return;
+        const desc =
+          Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value') ||
+          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+        if (desc && typeof desc.set === 'function') {
+          desc.set.call(el, value);
+        } else {
+          el.value = value;
+        }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      setVal(windowsInput, target);
+      setVal(wslInput, '');
+      return { ok: true, windowsChecked: windowsCheck.checked, windowsDisabled: windowsCheck.disabled };
+    `,
+    cliHome,
+  )
+  if (!applied?.ok) {
+    throw new Error(`Failed to apply ui check cli home in Codex CLI directories modal: ${applied?.reason || 'unknown'}`)
+  }
+  await driver.wait(
+    async () => {
+      const state = await driver.executeScript(`
+        const modals = Array.from(document.querySelectorAll('.aoModal'));
+        const modal = modals.find((m) => {
+          const t = m.querySelector('.aoModalTitle');
+          return t && (t.textContent || '').trim() === 'Codex CLI directories';
+        });
+        if (!modal) return { ok: false };
+        const windowsCard = Array.from(modal.querySelectorAll('.aoCardInset')).find((card) => {
+          const mini = card.querySelector('.aoMiniLabel');
+          return mini && (mini.textContent || '').trim() === 'Windows';
+        });
+        const wslCard = Array.from(modal.querySelectorAll('.aoCardInset')).find((card) => {
+          const mini = card.querySelector('.aoMiniLabel');
+          return mini && (mini.textContent || '').trim() === 'WSL2';
+        });
+        const windowsCheck = windowsCard ? windowsCard.querySelector('input[type="checkbox"]') : null;
+        const wslCheck = wslCard ? wslCard.querySelector('input[type="checkbox"]') : null;
+        if (!windowsCheck || !wslCheck) return { ok: false };
+        return { ok: true, ready: windowsCheck.disabled === false };
+      `)
+      return state?.ok === true && state?.ready === true
+    },
+    10000,
+    'Codex CLI directories modal should enable Windows target checkbox',
+  )
+  const targetState = await driver.executeScript(`
+    const modals = Array.from(document.querySelectorAll('.aoModal'));
+    const modal = modals.find((m) => {
+      const t = m.querySelector('.aoModalTitle');
+      return t && (t.textContent || '').trim() === 'Codex CLI directories';
+    });
+    if (!modal) return { ok: false, reason: 'modal_not_found' };
+    const cardByLabel = (label) =>
+      Array.from(modal.querySelectorAll('.aoCardInset')).find((card) => {
+        const mini = card.querySelector('.aoMiniLabel');
+        return mini && (mini.textContent || '').trim() === label;
+      });
+    const windowsCard = cardByLabel('Windows');
+    const wslCard = cardByLabel('WSL2');
+    const windowsCheck = windowsCard ? windowsCard.querySelector('input[type="checkbox"]') : null;
+    const wslCheck = wslCard ? wslCard.querySelector('input[type="checkbox"]') : null;
+    if (!windowsCheck) return { ok: false, reason: 'windows_checkbox_not_found' };
+    if (!wslCheck) return { ok: false, reason: 'wsl_checkbox_not_found' };
+    if (windowsCheck.disabled) return { ok: false, reason: 'windows_checkbox_disabled' };
+    if (!windowsCheck.checked) windowsCheck.click();
+    if (wslCheck.checked) wslCheck.click();
+    return { ok: true };
+  `)
+  if (!targetState?.ok) {
+    throw new Error(`Failed to set Windows-only target state in Codex CLI directories modal: ${targetState?.reason || 'unknown'}`)
+  }
+  await driver.wait(
+    async () => {
+      const state = await driver.executeScript(`
+        const modals = Array.from(document.querySelectorAll('.aoModal'));
+        const modal = modals.find((m) => {
+          const t = m.querySelector('.aoModalTitle');
+          return t && (t.textContent || '').trim() === 'Codex CLI directories';
+        });
+        if (!modal) return { ok: false };
+        const cardByLabel = (label) =>
+          Array.from(modal.querySelectorAll('.aoCardInset')).find((card) => {
+            const mini = card.querySelector('.aoMiniLabel');
+            return mini && (mini.textContent || '').trim() === label;
+          });
+        const windowsCard = cardByLabel('Windows');
+        const wslCard = cardByLabel('WSL2');
+        const windowsCheck = windowsCard ? windowsCard.querySelector('input[type="checkbox"]') : null;
+        const wslCheck = wslCard ? wslCard.querySelector('input[type="checkbox"]') : null;
+        if (!windowsCheck || !wslCheck) return { ok: false };
+        return { ok: true, ready: windowsCheck.checked === true && wslCheck.checked === false };
+      `)
+      return state?.ok === true && state?.ready === true
+    },
+    10000,
+    'Codex CLI directories modal should apply Windows-only target state',
+  )
+  await clickButtonByText(driver, 'Apply', 12000)
+  await driver.wait(
+    async () => {
+      const found = await driver.findElements(
+        By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Codex CLI directories']]`),
+      )
+      return found.length === 0
+    },
+    10000,
+    'Codex CLI directories modal should close after Apply',
+  )
+}
+
 export async function runUsageHistoryScrollCase(driver, screenshotPath) {
   await clickButtonByText(driver, 'Daily History', 12000)
   const modal = await waitVisible(
@@ -800,6 +978,7 @@ export async function runPricingTimelineModalCase(driver, screenshotPath) {
 
 export async function runSwitchboardSwitchCase(driver, directProvider, uiProfileDir) {
   await ensureCodexAuthForSwitchboard(uiProfileDir)
+  const cliHome = ensureUiCheckCliHome(uiProfileDir)
   const cfg = await tauriInvoke(driver, 'get_config', {})
   const providerCfg = cfg?.providers?.[directProvider]
   if (!providerCfg || !String(providerCfg.base_url || '').trim()) {
@@ -813,15 +992,29 @@ export async function runSwitchboardSwitchCase(driver, directProvider, uiProfile
 
   await clickTopNav(driver, 'Provider Switchboard')
   await waitPageTitle(driver, 'Provider Switchboard')
-  const cliHomes = await driver.executeScript(`
-    const raw = (document.querySelector('.aoSwitchMetaDirs')?.textContent || '').trim();
-    if (!raw || raw === '-') return null;
-    const homes = raw
-      .split('|')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    return homes.length ? homes : null;
-  `)
+  await applyUiCheckCliHomeInConfigureDirs(driver, cliHome)
+  const readCliHomes = async () =>
+    await driver.executeScript(`
+      return Array.from(document.querySelectorAll('.aoSwitchMetaDirs'))
+        .map((el) => (el.textContent || '').trim())
+        .filter(Boolean);
+    `)
+  const expectedCliHomeNorm = normalizeCliPath(cliHome)
+  await driver.wait(
+    async () => {
+      const homes = await readCliHomes()
+      return Array.isArray(homes) && homes.length === 1 && normalizeCliPath(homes[0]) === expectedCliHomeNorm
+    },
+    10000,
+    'Switchboard target dirs should converge to isolated ui check cli home',
+  )
+  const cliHomes = await readCliHomes()
+  if (!Array.isArray(cliHomes) || cliHomes.length !== 1) {
+    throw new Error(`Switchboard target dirs should be exactly one isolated dir, got: ${Array.isArray(cliHomes) ? cliHomes.join(' | ') : 'invalid'}`)
+  }
+  if (normalizeCliPath(cliHomes[0]) !== normalizeCliPath(cliHome)) {
+    throw new Error(`Switchboard target dirs mismatch: expected ${cliHome}, got ${cliHomes.join(' | ')}`)
+  }
   const statusProvider = await tauriInvoke(driver, 'provider_switchboard_set_target', {
     cliHomes,
     target: 'provider',
