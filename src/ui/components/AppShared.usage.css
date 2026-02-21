@@ -254,29 +254,36 @@
   width: 56px;
   height: 28px;
   border-radius: 999px;
-  border: 1px solid rgba(13, 18, 32, 0.18);
+  border: 1px solid rgba(13, 18, 32, 0.14);
   position: relative;
   display: inline-flex;
   align-items: center;
   padding: 0 8px;
   cursor: pointer;
-  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+  overflow: hidden;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 120ms ease, background 160ms ease;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.08);
 }
 
 .aoStatusSwitch.is-on {
-  background: #10c95f;
-  border-color: #0ba74f;
+  background: linear-gradient(180deg, #28d975 0%, #15be61 100%);
+  border-color: rgba(16, 132, 70, 0.75);
   justify-content: flex-start;
 }
 
 .aoStatusSwitch.is-off {
-  background: #f62c2c;
-  border-color: #d32020;
+  background: linear-gradient(180deg, #f44a4a 0%, #e33131 100%);
+  border-color: rgba(169, 30, 30, 0.78);
   justify-content: flex-end;
 }
 
 .aoStatusSwitch:hover {
-  box-shadow: 0 0 0 2px rgba(13, 18, 32, 0.08);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.48),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.08),
+    0 0 0 2px rgba(13, 18, 32, 0.08);
 }
 
 .aoStatusSwitch:active {
@@ -301,21 +308,25 @@
   width: 13px;
   height: 13px;
   fill: none;
-  stroke: rgba(12, 16, 30, 0.45);
+  stroke: rgba(255, 255, 255, 0.75);
   stroke-width: 2.4;
   stroke-linecap: round;
   stroke-linejoin: round;
+  filter: drop-shadow(0 0.5px 0 rgba(0, 0, 0, 0.2));
 }
 
 .aoStatusSwitchKnob {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: #f2f2f2;
-  border: 1px solid rgba(13, 18, 32, 0.12);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  background: radial-gradient(circle at 35% 30%, #ffffff 0%, #f3f5f8 70%, #e6e9ee 100%);
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
   position: absolute;
   top: 2px;
+  transition: left 160ms ease, right 160ms ease;
 }
 
 .aoStatusSwitch.is-on .aoStatusSwitchKnob {
