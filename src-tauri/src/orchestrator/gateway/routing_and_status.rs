@@ -2,10 +2,34 @@ async fn health() -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-fn provider_has_remaining_quota(quota_snapshots: &Value, provider: &str) -> bool {
+pub(crate) fn provider_has_remaining_quota(quota_snapshots: &Value, provider: &str) -> bool {
     let Some(snap) = quota_snapshots.get(provider) else {
         return true;
     };
+
+    // Budget caps are hard limits. If any configured cap is exhausted,
+    // provider is closed regardless of token-style remaining fields.
+    let budget_pairs = [
+        (
+            snap.get("daily_spent_usd").and_then(|v| v.as_f64()),
+            snap.get("daily_budget_usd").and_then(|v| v.as_f64()),
+        ),
+        (
+            snap.get("weekly_spent_usd").and_then(|v| v.as_f64()),
+            snap.get("weekly_budget_usd").and_then(|v| v.as_f64()),
+        ),
+        (
+            snap.get("monthly_spent_usd").and_then(|v| v.as_f64()),
+            snap.get("monthly_budget_usd").and_then(|v| v.as_f64()),
+        ),
+    ];
+    for (spent, budget) in budget_pairs {
+        if let (Some(spent), Some(budget)) = (spent, budget) {
+            if budget <= 0.0 || spent >= budget {
+                return false;
+            }
+        }
+    }
 
     if let Some(remaining) = snap.get("remaining").and_then(|v| v.as_f64()) {
         return remaining > 0.0;
@@ -50,12 +74,18 @@ pub(crate) fn decide_provider(
     preferred: &str,
     session_key: &str,
 ) -> (String, &'static str) {
-    // Manual override always wins (and is handled by RouterState).
-    if st.router.manual_override.read().is_some() {
-        return st.router.decide_with_preferred(cfg, preferred);
-    }
-
     let quota_snapshots = st.store.list_quota_snapshots();
+    // Manual override wins only when the target is still routable under current
+    // config/quota constraints; otherwise we fail over.
+    if let Some(manual) = st.router.manual_override.read().clone() {
+        if provider_is_routable_for_selection(st, cfg, &quota_snapshots, &manual) {
+            return (manual, "manual_override");
+        }
+        return (
+            fallback_with_quota(st, cfg, preferred, &quota_snapshots),
+            "manual_override_unhealthy",
+        );
+    }
 
     if cfg.routing.auto_return_to_preferred {
         let last_provider = st
@@ -98,12 +128,18 @@ pub(crate) fn decide_provider(
 async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let cfg = st.cfg.read().clone();
     let now = unix_ms();
-    let providers = st.router.snapshot(now);
+    let mut providers = st.router.snapshot(now);
     let manual_override = st.router.manual_override.read().clone();
 
     let recent_events = st.store.list_events_split(5, 5);
     let metrics = st.store.get_metrics();
     let quota = st.store.list_quota_snapshots();
+    for (provider_name, snapshot) in providers.iter_mut() {
+        if !provider_has_remaining_quota(&quota, provider_name) {
+            snapshot.status = "closed".to_string();
+            snapshot.cooldown_until_unix_ms = 0;
+        }
+    }
     let ledgers = st.store.list_ledgers();
     let last_activity = st.last_activity_unix_ms.load(Ordering::Relaxed);
     let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
@@ -199,4 +235,3 @@ async fn models(
         _ => (StatusCode::OK, Json(json!({"object":"list","data":[]}))).into_response(),
     }
 }
-

@@ -12,6 +12,13 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
     let recent_events = state.gateway.store.list_events_split(5, 5);
     let metrics = state.gateway.store.get_metrics();
     let quota = state.gateway.store.list_quota_snapshots();
+    let mut providers = providers;
+    for (provider_name, snapshot) in providers.iter_mut() {
+        if !crate::orchestrator::gateway::provider_has_remaining_quota(&quota, provider_name) {
+            snapshot.status = "closed".to_string();
+            snapshot.cooldown_until_unix_ms = 0;
+        }
+    }
     let ledgers = state.gateway.store.list_ledgers();
     let last_activity = state.gateway.last_activity_unix_ms.load(Ordering::Relaxed);
     let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;

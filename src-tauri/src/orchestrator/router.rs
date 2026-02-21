@@ -141,24 +141,6 @@ impl RouterState {
         health.retain(|name, _| cfg.providers.contains_key(name));
     }
 
-    pub fn decide_with_preferred(
-        &self,
-        cfg: &AppConfig,
-        preferred: &str,
-    ) -> (String, &'static str) {
-        if let Some(p) = self.manual_override.read().clone() {
-            if provider_is_enabled(cfg, &p) && self.is_routable(&p) {
-                return (p, "manual_override");
-            }
-            return (self.fallback(cfg, preferred), "manual_override_unhealthy");
-        }
-
-        if provider_is_enabled(cfg, preferred) && self.is_routable(preferred) {
-            return (preferred.to_string(), "preferred_healthy");
-        }
-        (self.fallback(cfg, preferred), "preferred_unhealthy")
-    }
-
     pub fn mark_success(&self, provider: &str, now_ms: u64) {
         let mut health = self.health.write();
         if let Some(h) = health.get_mut(provider) {
@@ -244,10 +226,6 @@ impl RouterState {
         }
         let stable_ms = stable_seconds.saturating_mul(1000);
         now_ms < h.last_fail_at_unix_ms.saturating_add(stable_ms)
-    }
-
-    pub fn fallback(&self, cfg: &AppConfig, preferred: &str) -> String {
-        select_fallback_provider(cfg, preferred, |name| self.is_routable(name))
     }
 }
 
