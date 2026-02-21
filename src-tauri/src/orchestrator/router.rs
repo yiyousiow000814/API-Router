@@ -227,7 +227,6 @@ impl RouterState {
         let stable_ms = stable_seconds.saturating_mul(1000);
         now_ms < h.last_fail_at_unix_ms.saturating_add(stable_ms)
     }
-
 }
 
 pub(crate) fn provider_group(cfg: &AppConfig, name: &str) -> Option<String> {
