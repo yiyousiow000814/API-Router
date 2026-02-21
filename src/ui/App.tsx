@@ -803,6 +803,31 @@ export default function App() {
     activePage,
     refreshUsageStatistics,
   })
+  const usageRequestsWarmupStartedRef = useRef(false)
+  useEffect(() => {
+    if (usageRequestsWarmupStartedRef.current) return
+    usageRequestsWarmupStartedRef.current = true
+    if (typeof window === 'undefined') return
+
+    const runWarmup = () => {
+      handleUsageRequestsIntentPrefetch()
+    }
+
+    const w = window as unknown as {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
+      cancelIdleCallback?: (id: number) => void
+      setTimeout: typeof window.setTimeout
+      clearTimeout: typeof window.clearTimeout
+    }
+
+    if (typeof w.requestIdleCallback === 'function') {
+      const id = w.requestIdleCallback(runWarmup, { timeout: 1500 })
+      return () => w.cancelIdleCallback?.(id)
+    }
+
+    const timer = w.setTimeout(runWarmup, 450)
+    return () => w.clearTimeout(timer)
+  }, [handleUsageRequestsIntentPrefetch])
   const {
     providerGroupLabelByName, linkedProvidersForApiKey, switchboardProviderCards, switchboardModeLabel,
     switchboardModelProviderLabel, switchboardTargetDirsLabel, usageSummary, usageByProvider, usageTotalInputTokens,

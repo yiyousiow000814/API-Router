@@ -773,7 +773,7 @@ export function UsageStatisticsPanel({
   const isAnalyticsTab = effectiveDetailsTab === 'analytics'
   const prevIsRequestsTabRef = useRef(isRequestsTab)
   const justEnteredRequestsTab = isRequestsTab && !prevIsRequestsTabRef.current
-  const shouldPrepareRequestsData = isRequestsTab || isAnalyticsTab
+  const shouldPrepareRequestsData = isRequestsTab
   const isRequestsOnlyPage = effectiveDetailsTab === 'requests' && !showFilters
   const cachedRequestsPage =
     usageRequestsPageCache != null && usageRequestsPageCache.queryKey === requestQueryKey
@@ -1302,24 +1302,35 @@ export function UsageStatisticsPanel({
       requestPageCached?.usingTestFallback === true &&
       requestPageCached.rows.length > 0 &&
       requestPageCached.rows.every((row) => isUnknownUsageProvider(row.provider))
-    if (isRequestsTab && usageRequestRows.length === 0 && requestPageCached != null) {
-      if (isOnlyUnknownFallbackCache) {
-        usageRequestsPageCache = null
-      } else {
+    const hasUsableRequestPageCache =
+      requestPageCached != null && requestPageCached.rows.length > 0 && !isOnlyUnknownFallbackCache
+    if (isRequestsTab && hasUsableRequestPageCache) {
+      // Prefer showing cached rows immediately when entering Requests, even if previous state belonged to a different query.
+      if (usageRequestLoadedQueryKeyRef.current !== requestQueryKey || usageRequestRows.length === 0) {
         usageRequestLoadedQueryKeyRef.current = requestQueryKey
         setUsageRequestRows(requestPageCached.rows)
         setUsageRequestHasMore(requestPageCached.hasMore)
         setUsageRequestUsingTestFallback(requestPageCached.usingTestFallback)
-        void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
-        return
       }
+    } else if (isRequestsTab && isOnlyUnknownFallbackCache) {
+      usageRequestsPageCache = null
     }
     const cachedGraphProviderCount = cachedGraph != null ? Object.keys(cachedGraph.rowsByProvider).length : 0
     const graphSnapshotReady =
       (usageRequestGraphBaseRows.length > 0 && usageRequestGraphProviderCount > 0) || cachedGraphProviderCount > 0
     if (isRequestsTab) {
-      const shouldRefresh =
-        usageRequestLoadedQueryKeyRef.current !== requestQueryKey || usageRequestRows.length === 0
+      if (hasUsableRequestPageCache) {
+        if (
+          !graphSnapshotReady ||
+          Date.now() - usageRequestGraphLastRefreshAtRef.current > USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS
+        ) {
+          void refreshUsageRequestGraphRows()
+        }
+        void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
+        return
+      }
+
+      const shouldRefresh = usageRequestLoadedQueryKeyRef.current !== requestQueryKey || usageRequestRows.length === 0
       if (shouldRefresh) {
         usageRequestLoadedQueryKeyRef.current = requestQueryKey
         void refreshUsageRequests(initialRefreshLimit)
@@ -1334,13 +1345,6 @@ export function UsageStatisticsPanel({
       }
       void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
       return
-    }
-    // On analytics tab, keep graph cache warm so requests tab opens with ready content.
-    if (
-      !graphSnapshotReady ||
-      Date.now() - usageRequestGraphLastRefreshAtRef.current > USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS
-    ) {
-      void refreshUsageRequestGraphRows()
     }
   }, [
     initialRefreshLimit,
@@ -1935,11 +1939,8 @@ export function UsageStatisticsPanel({
           />
         </>
       ) : null}
-      <div
-        className="aoUsageDetailsPane aoUsageDetailsPaneRequests"
-        hidden={effectiveDetailsTab !== 'requests'}
-        aria-hidden={effectiveDetailsTab !== 'requests'}
-      >
+      {effectiveDetailsTab === 'requests' ? (
+        <div className="aoUsageDetailsPane aoUsageDetailsPaneRequests">
         <div className={`aoUsageRequestsCard${isRequestsOnlyPage ? ' is-page' : ''}`}>
           <div className="aoSwitchboardSectionHead">
             <div className="aoMiniLabel">Request Details</div>
@@ -2505,8 +2506,8 @@ export function UsageStatisticsPanel({
                         </td>
                       </tr>
                     ) : (
-                      displayedFilteredUsageRequestRows.map((row, idx) => (
-                        <tr key={`${row.unix_ms}-${row.provider}-${row.session_id}-${idx}`}>
+                      displayedFilteredUsageRequestRows.map((row) => (
+                        <tr key={usageRequestRowIdentity(row)}>
                           <td>{fmtWhen(row.unix_ms)}</td>
                           <td className="aoUsageRequestsMono">{row.provider}</td>
                           <td className="aoUsageRequestsMono">{row.model}</td>
@@ -2607,12 +2608,10 @@ export function UsageStatisticsPanel({
             </span>
           </div>
         </div>
-      </div>
-      <div
-        className="aoUsageDetailsPane aoUsageDetailsPaneAnalytics"
-        hidden={effectiveDetailsTab !== 'analytics'}
-        aria-hidden={effectiveDetailsTab !== 'analytics'}
-      >
+        </div>
+      ) : null}
+      {effectiveDetailsTab === 'analytics' ? (
+        <div className="aoUsageDetailsPane aoUsageDetailsPaneAnalytics">
       {visibleAnomalyEntries.length ? (
         <div className="aoUsageAnomalyBanner" role="status" aria-live="polite">
           <div className="aoMiniLabel">Anomaly Watch</div>
@@ -2748,6 +2747,7 @@ export function UsageStatisticsPanel({
         usageProviderTotalsAndAverages={usageProviderTotalsAndAverages}
       />
       </div>
+      ) : null}
     </div>
   )
 }
