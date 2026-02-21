@@ -870,12 +870,13 @@ export default function App() {
     usageOriginFilterOptions,
   })
   const {
-    saveProvider, deleteProvider, saveKey, clearKey, refreshQuota, refreshQuotaAll,
+    saveProvider, setProviderDisabled, deleteProvider, saveKey, clearKey, refreshQuota, refreshQuotaAll,
     saveUsageBaseUrl, clearUsageBaseUrl, openKeyModal, openUsageBaseModal, addProvider,
   } = useProviderActions({
     config,
     status,
     isDevPreview,
+    setConfig,
     keyModal,
     usageBaseModal,
     newProviderName,
@@ -972,6 +973,7 @@ export default function App() {
     setConfig,
     baselineBaseUrls,
     saveProvider,
+    setProviderDisabled,
     deleteProvider,
     openKeyModal,
     clearKey,

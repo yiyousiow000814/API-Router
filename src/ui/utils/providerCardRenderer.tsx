@@ -19,6 +19,7 @@ type CreateProviderCardRendererOptions = {
   beginRenameProvider: (name: string) => void
   commitRenameProvider: (name: string) => Promise<void>
   saveProvider: (name: string) => Promise<void>
+  setProviderDisabled: (name: string, disabled: boolean) => Promise<void>
   openKeyModal: (provider: string) => Promise<void>
   clearKey: (provider: string) => Promise<void>
   deleteProvider: (provider: string) => Promise<void>
@@ -32,6 +33,8 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
   return (name: string, overlay = false) => {
     const p = options.config?.providers?.[name]
     if (!p) return null
+    const activeProviderCount = Object.values(options.config?.providers ?? {}).filter((provider) => !provider.disabled).length
+    const canDeactivate = p.disabled || activeProviderCount > 1
     const isDragOver = options.dragOverProvider === name
     const dragStyle = overlay
       ? {
@@ -44,7 +47,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
       : undefined
     return (
       <div
-        className={`aoProviderConfigCard${overlay ? ' aoProviderConfigDragging' : ''}${isDragOver && !overlay ? ' aoProviderConfigDragOver' : ''}${!options.isProviderOpen(name) ? ' aoProviderConfigCollapsed' : ''}`}
+        className={`aoProviderConfigCard${overlay ? ' aoProviderConfigDragging' : ''}${isDragOver && !overlay ? ' aoProviderConfigDragOver' : ''}${!options.isProviderOpen(name) ? ' aoProviderConfigCollapsed' : ''}${p.disabled ? ' aoProviderConfigDisabled' : ''}`}
         key={overlay ? `${name}-drag` : name}
         data-provider={overlay ? undefined : name}
         ref={overlay ? undefined : options.registerProviderCardRef(name)}
@@ -149,6 +152,29 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     <path d="M10 11v6" />
                     <path d="M14 11v6" />
                   </svg>
+                </button>
+                <button
+                  className={`aoStatusSwitch ${p.disabled ? 'aoStatusSwitchOff' : 'aoStatusSwitchOn'}`}
+                  title={
+                    p.disabled
+                      ? 'Click to activate provider'
+                      : canDeactivate
+                        ? 'Click to deactivate provider'
+                        : 'At least one provider must stay active'
+                  }
+                  aria-label={p.disabled ? 'Activate provider' : 'Deactivate provider'}
+                  aria-pressed={!p.disabled}
+                  disabled={!p.disabled && !canDeactivate}
+                  onClick={() => {
+                    const nextDisabled = !Boolean(p.disabled)
+                    if (nextDisabled && !canDeactivate) return
+                    if (nextDisabled && options.isProviderOpen(name)) {
+                      options.toggleProviderOpen(name)
+                    }
+                    void options.setProviderDisabled(name, nextDisabled)
+                  }}
+                >
+                  <span className="aoStatusSwitchThumb" aria-hidden="true" />
                 </button>
               </div>
             </div>

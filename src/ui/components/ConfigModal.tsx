@@ -70,7 +70,7 @@ export function ConfigModal({
                   />
                   <input
                     className="aoInput"
-                    placeholder="Base URL (e.g. http://127.0.0.1:4001)"
+                    placeholder="Base URL (e.g. https://api.openai.com/v1)"
                     value={newProviderBaseUrl}
                     onChange={(e) => setNewProviderBaseUrl(e.target.value)}
                   />

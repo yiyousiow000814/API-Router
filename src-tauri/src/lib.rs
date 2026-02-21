@@ -456,6 +456,7 @@ pub fn run() {
             commands::set_session_preferred_provider,
             commands::clear_session_preferred_provider,
             commands::upsert_provider,
+            commands::set_provider_disabled,
             commands::delete_provider,
             commands::rename_provider,
             commands::get_provider_key,
