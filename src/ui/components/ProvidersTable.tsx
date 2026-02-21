@@ -30,10 +30,13 @@ function quotaIsClosed(
     [quota.weekly_spent_usd, quota.weekly_budget_usd],
     [quota.monthly_spent_usd, quota.monthly_budget_usd],
   ]
+  let sawBudget = false
   for (const [spent, budget] of budgets) {
     if (spent == null || budget == null) continue
+    sawBudget = true
     if (budget <= 0 || spent >= budget) return true
   }
+  if (sawBudget) return false
   if (quota.remaining != null) return quota.remaining <= 0
   if (quota.today_used != null && quota.today_added != null) return quota.today_used >= quota.today_added
   return false
