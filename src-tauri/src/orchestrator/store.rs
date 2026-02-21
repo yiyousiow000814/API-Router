@@ -1387,10 +1387,7 @@ impl Store {
         (out, has_more)
     }
 
-    pub fn list_usage_request_daily_totals(
-        &self,
-        day_limit: usize,
-    ) -> Vec<(String, String, u64)> {
+    pub fn list_usage_request_daily_totals(&self, day_limit: usize) -> Vec<(String, String, u64)> {
         let mut out: Vec<(String, String, u64)> = Vec::new();
         let limit = day_limit.clamp(1, 180);
         let conn = self.events_db.lock();
