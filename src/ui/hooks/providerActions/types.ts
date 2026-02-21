@@ -40,6 +40,7 @@ export type RefreshQuotaOptions = {
 
 export type UseProviderActionsResult = {
   saveProvider: (name: string) => Promise<void>
+  setProviderDisabled: (name: string, disabled: boolean) => Promise<void>
   deleteProvider: (name: string) => Promise<void>
   saveKey: () => Promise<void>
   clearKey: (name: string) => Promise<void>

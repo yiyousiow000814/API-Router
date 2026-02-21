@@ -55,18 +55,24 @@ pub struct RouterState {
     health: RwLock<HashMap<String, ProviderHealth>>,
 }
 
+fn provider_is_enabled(cfg: &AppConfig, name: &str) -> bool {
+    cfg.providers
+        .get(name)
+        .is_some_and(|provider| !provider.disabled)
+}
+
 pub(crate) fn provider_iteration_order(cfg: &AppConfig) -> Vec<String> {
     let mut ordered: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
     for name in &cfg.provider_order {
-        if cfg.providers.contains_key(name) && seen.insert(name.clone()) {
+        if provider_is_enabled(cfg, name) && seen.insert(name.clone()) {
             ordered.push(name.clone());
         }
     }
 
     for name in cfg.providers.keys() {
-        if seen.insert(name.clone()) {
+        if provider_is_enabled(cfg, name) && seen.insert(name.clone()) {
             ordered.push(name.clone());
         }
     }
@@ -141,13 +147,13 @@ impl RouterState {
         preferred: &str,
     ) -> (String, &'static str) {
         if let Some(p) = self.manual_override.read().clone() {
-            if self.is_routable(&p) {
+            if provider_is_enabled(cfg, &p) && self.is_routable(&p) {
                 return (p, "manual_override");
             }
             return (self.fallback(cfg, preferred), "manual_override_unhealthy");
         }
 
-        if self.is_routable(preferred) {
+        if provider_is_enabled(cfg, preferred) && self.is_routable(preferred) {
             return (preferred.to_string(), "preferred_healthy");
         }
         (self.fallback(cfg, preferred), "preferred_unhealthy")

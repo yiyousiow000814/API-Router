@@ -4,8 +4,12 @@ pub(crate) fn set_manual_override(
     provider: Option<String>,
 ) -> Result<(), String> {
     if let Some(ref p) = provider {
-        if !state.gateway.cfg.read().providers.contains_key(p) {
+        let cfg = state.gateway.cfg.read();
+        if !cfg.providers.contains_key(p) {
             return Err(format!("unknown provider: {p}"));
+        }
+        if cfg.providers.get(p).is_some_and(|provider_cfg| provider_cfg.disabled) {
+            return Err(format!("provider is deactivated: {p}"));
         }
     }
     state.gateway.router.set_manual_override(provider.clone());
@@ -52,6 +56,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                 serde_json::json!({
                   "display_name": p.display_name,
                   "base_url": p.base_url,
+                  "disabled": p.disabled,
                   "usage_adapter": p.usage_adapter.clone(),
                   "usage_base_url": p.usage_base_url.clone(),
                   "manual_pricing_mode": manual_mode.filter(|m| m != "none"),
@@ -134,6 +139,9 @@ pub(crate) fn set_preferred_provider(
         if !cfg.providers.contains_key(&provider) {
             return Err(format!("unknown provider: {provider}"));
         }
+        if cfg.providers.get(&provider).is_some_and(|p| p.disabled) {
+            return Err(format!("provider is deactivated: {provider}"));
+        }
         cfg.routing.preferred_provider = provider.clone();
     }
     persist_config(&state).map_err(|e| e.to_string())?;
@@ -184,6 +192,9 @@ pub(crate) fn set_session_preferred_provider(
         let mut cfg = state.gateway.cfg.write();
         if !cfg.providers.contains_key(&provider) {
             return Err(format!("unknown provider: {provider}"));
+        }
+        if cfg.providers.get(&provider).is_some_and(|p| p.disabled) {
+            return Err(format!("provider is deactivated: {provider}"));
         }
         let prev = cfg
             .routing
@@ -266,15 +277,25 @@ pub(crate) fn upsert_provider(
     }
     {
         let mut cfg = state.gateway.cfg.write();
-        let is_new = !cfg.providers.contains_key(&name);
+        let existing = cfg.providers.get(&name).cloned();
+        let is_new = existing.is_none();
         cfg.providers.insert(
             name.clone(),
             crate::orchestrator::config::ProviderConfig {
                 display_name,
                 base_url,
-                usage_adapter: String::new(),
-                usage_base_url: None,
-                api_key: String::new(),
+                disabled: existing.as_ref().is_some_and(|provider| provider.disabled),
+                usage_adapter: existing
+                    .as_ref()
+                    .map(|provider| provider.usage_adapter.clone())
+                    .unwrap_or_default(),
+                usage_base_url: existing
+                    .as_ref()
+                    .and_then(|provider| provider.usage_base_url.clone()),
+                api_key: existing
+                    .as_ref()
+                    .map(|provider| provider.api_key.clone())
+                    .unwrap_or_default(),
             },
         );
         if is_new {
@@ -290,6 +311,102 @@ pub(crate) fn upsert_provider(
         "provider upserted",
         serde_json::Value::Null,
     );
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn set_provider_disabled(
+    state: tauri::State<'_, app_state::AppState>,
+    name: String,
+    disabled: bool,
+) -> Result<(), String> {
+    let mut switched_preferred = false;
+    {
+        let mut cfg = state.gateway.cfg.write();
+        let current_disabled = match cfg.providers.get(&name) {
+            Some(provider) => provider.disabled,
+            None => return Err(format!("unknown provider: {name}")),
+        };
+        if current_disabled == disabled {
+            return Ok(());
+        }
+
+        if disabled && cfg.providers.values().filter(|p| !p.disabled).count() <= 1 {
+            return Err("cannot deactivate the last active provider".to_string());
+        }
+
+        if let Some(provider) = cfg.providers.get_mut(&name) {
+            provider.disabled = disabled;
+        }
+
+        if disabled {
+            cfg.routing
+                .session_preferred_providers
+                .retain(|_, pref| pref != &name);
+
+            if cfg.routing.preferred_provider == name {
+                let fallback = cfg
+                    .provider_order
+                    .iter()
+                    .find(|provider_name| {
+                        cfg.providers
+                            .get(*provider_name)
+                            .is_some_and(|provider| !provider.disabled)
+                    })
+                    .cloned()
+                    .or_else(|| {
+                        cfg.providers
+                            .iter()
+                            .find_map(|(provider_name, provider)| {
+                                if provider.disabled {
+                                    None
+                                } else {
+                                    Some(provider_name.clone())
+                                }
+                            })
+                    });
+                if let Some(provider) = fallback {
+                    cfg.routing.preferred_provider = provider;
+                    switched_preferred = true;
+                }
+            }
+        }
+
+        app_state::normalize_provider_order(&mut cfg);
+    }
+
+    if disabled {
+        let mut manual = state.gateway.router.manual_override.write();
+        if manual.as_deref() == Some(name.as_str()) {
+            *manual = None;
+        }
+    }
+
+    persist_config(&state).map_err(|e| e.to_string())?;
+    state.gateway.store.add_event(
+        &name,
+        "info",
+        if disabled {
+            "config.provider_deactivated"
+        } else {
+            "config.provider_activated"
+        },
+        if disabled {
+            "provider deactivated"
+        } else {
+            "provider activated"
+        },
+        serde_json::Value::Null,
+    );
+    if switched_preferred {
+        state.gateway.store.add_event(
+            "gateway",
+            "info",
+            "config.preferred_provider_updated",
+            "preferred_provider updated (deactivated old preferred)",
+            serde_json::Value::Null,
+        );
+    }
     Ok(())
 }
 
@@ -319,8 +436,17 @@ pub(crate) fn delete_provider(
             next_preferred = cfg
                 .provider_order
                 .iter()
-                .find(|provider| cfg.providers.contains_key(*provider))
-                .cloned()
+                .find_map(|provider| {
+                    cfg.providers
+                        .get(provider)
+                        .is_some_and(|provider_cfg| !provider_cfg.disabled)
+                        .then(|| provider.clone())
+                })
+                .or_else(|| {
+                    cfg.providers.iter().find_map(|(provider_name, provider_cfg)| {
+                        (!provider_cfg.disabled).then(|| provider_name.clone())
+                    })
+                })
                 .or_else(|| cfg.providers.keys().next().cloned());
             debug_assert!(
                 next_preferred.is_some(),

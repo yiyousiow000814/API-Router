@@ -109,6 +109,7 @@ fn decide_provider_holds_fallback_during_preferred_stabilizing_window() {
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -119,6 +120,7 @@ fn decide_provider_holds_fallback_during_preferred_stabilizing_window() {
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -185,6 +187,7 @@ fn decide_provider_keeps_fallback_when_last_reason_already_preferred_stabilizing
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -195,6 +198,7 @@ fn decide_provider_keeps_fallback_when_last_reason_already_preferred_stabilizing
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -260,6 +264,7 @@ fn decide_provider_skips_fallback_with_no_remaining_quota() {
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://p1.example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -270,6 +275,7 @@ fn decide_provider_skips_fallback_with_no_remaining_quota() {
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://p2.example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -280,6 +286,7 @@ fn decide_provider_skips_fallback_with_no_remaining_quota() {
         ProviderConfig {
             display_name: "P3".to_string(),
             base_url: "https://p3.example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -350,6 +357,7 @@ fn decide_provider_stabilizing_skips_last_provider_with_no_remaining_quota() {
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://p1.example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -360,6 +368,7 @@ fn decide_provider_stabilizing_skips_last_provider_with_no_remaining_quota() {
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://p2.example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -370,6 +379,7 @@ fn decide_provider_stabilizing_skips_last_provider_with_no_remaining_quota() {
         ProviderConfig {
             display_name: "P3".to_string(),
             base_url: "https://p3.example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -448,6 +458,7 @@ fn decide_provider_respects_provider_order_for_fallback() {
         ProviderConfig {
             display_name: "Alpha".to_string(),
             base_url: "https://alpha.example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -458,6 +469,7 @@ fn decide_provider_respects_provider_order_for_fallback() {
         ProviderConfig {
             display_name: "Beta".to_string(),
             base_url: "https://beta.example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -468,6 +480,7 @@ fn decide_provider_respects_provider_order_for_fallback() {
         ProviderConfig {
             display_name: "Zeta".to_string(),
             base_url: "https://zeta.example.com".to_string(),
+            disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),

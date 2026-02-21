@@ -68,6 +68,20 @@ export function useProviderCrudActions({
     [flashToast, refreshConfig, refreshStatus],
   )
 
+  const setProviderDisabled = useCallback(
+    async (name: string, disabled: boolean) => {
+      try {
+        await invoke('set_provider_disabled', { name, disabled })
+        flashToast(`${disabled ? 'Deactivated' : 'Activated'}: ${name}`)
+        await refreshStatus()
+        await refreshConfig()
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+    },
+    [flashToast, refreshConfig, refreshStatus],
+  )
+
   const addProvider = useCallback(async () => {
     const name = newProviderName.trim()
     const baseUrl = newProviderBaseUrl.trim()
@@ -99,6 +113,7 @@ export function useProviderCrudActions({
 
   return {
     saveProvider,
+    setProviderDisabled,
     deleteProvider,
     addProvider,
   }

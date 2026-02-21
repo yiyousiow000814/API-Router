@@ -20,7 +20,7 @@ export function useProviderActions({
   refreshConfig,
   flashToast,
 }: UseProviderActionsParams): UseProviderActionsResult {
-  const { saveProvider, deleteProvider, addProvider } = useProviderCrudActions({
+  const { saveProvider, setProviderDisabled, deleteProvider, addProvider } = useProviderCrudActions({
     config,
     newProviderName,
     newProviderBaseUrl,
@@ -59,6 +59,7 @@ export function useProviderActions({
 
   return {
     saveProvider,
+    setProviderDisabled,
     deleteProvider,
     saveKey,
     clearKey,

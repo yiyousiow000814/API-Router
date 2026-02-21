@@ -19,6 +19,7 @@ type CreateProviderCardRendererOptions = {
   beginRenameProvider: (name: string) => void
   commitRenameProvider: (name: string) => Promise<void>
   saveProvider: (name: string) => Promise<void>
+  setProviderDisabled: (name: string, disabled: boolean) => Promise<void>
   openKeyModal: (provider: string) => Promise<void>
   clearKey: (provider: string) => Promise<void>
   deleteProvider: (provider: string) => Promise<void>
@@ -137,6 +138,17 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   <span>Clear</span>
                 </button>
                 <button
+                  className="aoActionBtn"
+                  title={p.disabled ? 'Activate provider' : 'Deactivate provider'}
+                  onClick={() => void options.setProviderDisabled(name, !Boolean(p.disabled))}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    {p.disabled ? <path d="M5 12h14" /> : <path d="M12 5v14" />}
+                    <path d="M5 12h14" />
+                  </svg>
+                  <span>{p.disabled ? 'Activate' : 'Deactivate'}</span>
+                </button>
+                <button
                   className="aoActionBtn aoActionBtnDanger"
                   title="Delete provider"
                   aria-label="Delete provider"
@@ -174,6 +186,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 />
                 <div className="aoMiniLabel">Key</div>
                 <div className="aoKeyValue">{p.has_key ? (p.key_preview ? p.key_preview : 'set') : 'empty'}</div>
+                {p.disabled ? <div className="aoHint">Provider is deactivated and excluded from routing/dashboard.</div> : null}
               </>
             ) : null}
           </div>

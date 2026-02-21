@@ -130,10 +130,11 @@ export function buildManagedProviderNames(
   providerSwitchStatus: ProviderSwitchboardStatus | null,
   status: Status | null,
 ): string[] {
+  const isActiveConfigProvider = (name: string) => Boolean(config?.providers?.[name]) && !Boolean(config?.providers?.[name]?.disabled)
   if (config?.providers) {
-    const fromOrder = orderedConfigProviders.filter((name) => Boolean(config.providers[name]))
+    const fromOrder = orderedConfigProviders.filter((name) => isActiveConfigProvider(name))
     const leftovers = Object.keys(config.providers)
-      .filter((name) => !fromOrder.includes(name))
+      .filter((name) => isActiveConfigProvider(name) && !fromOrder.includes(name))
       .sort((a, b) => a.localeCompare(b))
     return [...fromOrder, ...leftovers].filter((name) => name !== 'official')
   }
