@@ -23,6 +23,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .aoDragHandle {
@@ -97,6 +99,8 @@
 
 .aoNameInput {
   height: 24px;
+  width: clamp(120px, 24vw, 180px);
+  min-width: 0;
   border-radius: 8px;
   border: 1px solid rgba(13, 18, 32, 0.18);
   padding: 0 8px;
@@ -292,7 +296,8 @@
 .aoProviderHeadActions {
   display: flex;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  flex: 0 0 auto;
 }
 
 .aoToggleBtn {
