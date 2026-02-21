@@ -7,16 +7,8 @@ pub(crate) fn provider_has_remaining_quota(quota_snapshots: &Value, provider: &s
         return true;
     };
 
-    if let Some(remaining) = snap.get("remaining").and_then(|v| v.as_f64()) {
-        return remaining > 0.0;
-    }
-
-    let today_used = snap.get("today_used").and_then(|v| v.as_f64());
-    let today_added = snap.get("today_added").and_then(|v| v.as_f64());
-    if let (Some(used), Some(added)) = (today_used, today_added) {
-        return used < added;
-    }
-
+    // Budget caps are hard limits. If any configured cap is exhausted,
+    // provider is closed regardless of token-style remaining fields.
     let budget_pairs = [
         (
             snap.get("daily_spent_usd").and_then(|v| v.as_f64()),
@@ -42,6 +34,16 @@ pub(crate) fn provider_has_remaining_quota(quota_snapshots: &Value, provider: &s
     }
     if saw_budget {
         return true;
+    }
+
+    if let Some(remaining) = snap.get("remaining").and_then(|v| v.as_f64()) {
+        return remaining > 0.0;
+    }
+
+    let today_used = snap.get("today_used").and_then(|v| v.as_f64());
+    let today_added = snap.get("today_added").and_then(|v| v.as_f64());
+    if let (Some(used), Some(added)) = (today_used, today_added) {
+        return used < added;
     }
 
     true

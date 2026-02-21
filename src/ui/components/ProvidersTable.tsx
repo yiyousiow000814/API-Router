@@ -24,8 +24,6 @@ function quotaIsClosed(
     | undefined,
 ): boolean {
   if (!quota) return false
-  if (quota.remaining != null) return quota.remaining <= 0
-  if (quota.today_used != null && quota.today_added != null) return quota.today_used >= quota.today_added
 
   const budgets: Array<[number | null | undefined, number | null | undefined]> = [
     [quota.daily_spent_usd, quota.daily_budget_usd],
@@ -36,6 +34,8 @@ function quotaIsClosed(
     if (spent == null || budget == null) continue
     if (budget <= 0 || spent >= budget) return true
   }
+  if (quota.remaining != null) return quota.remaining <= 0
+  if (quota.today_used != null && quota.today_added != null) return quota.today_used >= quota.today_added
   return false
 }
 
@@ -78,8 +78,6 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                     ? 'no'
                     : h.status === 'cooldown'
                       ? 'cooldown'
-                      : h.status === 'closed'
-                        ? 'closed'
                       : 'unknown'
           const dotClass =
             isClosed

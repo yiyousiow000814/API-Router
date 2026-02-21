@@ -567,6 +567,23 @@ fn decide_provider_skips_fallback_when_monthly_budget_exhausted() {
 }
 
 #[test]
+fn decide_provider_budget_cap_wins_over_positive_remaining_field() {
+    let (picked, reason) = decide_with_budget_snapshot_for_p2(json!({
+        "kind": "budget_info",
+        "remaining": 999.0,
+        "daily_spent_usd": 120.1,
+        "daily_budget_usd": 120.0,
+        "weekly_spent_usd": 180.0,
+        "weekly_budget_usd": 360.0,
+        "monthly_spent_usd": 200.0,
+        "monthly_budget_usd": 400.0,
+        "updated_at_unix_ms": unix_ms()
+    }));
+    assert_eq!(picked, "p3");
+    assert_eq!(reason, "preferred_unhealthy");
+}
+
+#[test]
 fn decide_provider_manual_override_falls_back_when_daily_budget_exhausted() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = open_store_dir(tmp.path().join("data")).expect("store");
