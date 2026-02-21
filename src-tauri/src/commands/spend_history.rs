@@ -64,58 +64,72 @@ pub(crate) fn get_spend_history(
                 })
                 .or_insert((req_count, total_tokens, updated_at));
         }
-        // Backfill from raw usage requests so History can show days that existed
-        // before `usage_day:*` aggregation was introduced or when day aggregates are missing.
         let mut usage_by_day_from_req: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
         let mut api_key_ref_counts_by_day: BTreeMap<String, BTreeMap<String, u64>> =
             BTreeMap::new();
-        for req in state.gateway.store.list_usage_requests(100_000) {
-            let req_provider = req.get("provider").and_then(|v| v.as_str()).unwrap_or("");
-            if req_provider != provider_name {
-                continue;
+        const PAGE_SIZE: usize = 2_000;
+        let provider_only = vec![provider_name.clone()];
+        let mut req_offset = 0usize;
+        loop {
+            let (req_rows, has_more) = state.gateway.store.list_usage_requests_page(
+                since,
+                &provider_only,
+                &[],
+                &[],
+                PAGE_SIZE,
+                req_offset,
+            );
+            if req_rows.is_empty() {
+                break;
             }
-            let ts = req.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-            if ts == 0 {
-                continue;
+            req_offset = req_offset.saturating_add(req_rows.len());
+            for req in req_rows {
+                let ts = req.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                if ts == 0 {
+                    continue;
+                }
+                let Some(day_key) = local_day_key_from_unix_ms(ts) else {
+                    continue;
+                };
+                let total_tokens = req
+                    .get("total_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_else(|| {
+                        let input_tokens = req
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let output_tokens = req
+                            .get("output_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        input_tokens.saturating_add(output_tokens)
+                    });
+                usage_by_day_from_req
+                    .entry(day_key.clone())
+                    .and_modify(|(r, t, u)| {
+                        *r = r.saturating_add(1);
+                        *t = t.saturating_add(total_tokens);
+                        *u = (*u).max(ts);
+                    })
+                    .or_insert((1, total_tokens, ts));
+                let req_api_key_ref = req
+                    .get("api_key_ref")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty() && *s != "-")
+                    .map(|s| s.to_string());
+                if let Some(key_ref) = req_api_key_ref {
+                    api_key_ref_counts_by_day
+                        .entry(day_key)
+                        .or_default()
+                        .entry(key_ref)
+                        .and_modify(|v| *v = v.saturating_add(1))
+                        .or_insert(1);
+                }
             }
-            let Some(day_key) = local_day_key_from_unix_ms(ts) else {
-                continue;
-            };
-            let total_tokens = req
-                .get("total_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or_else(|| {
-                    let input_tokens = req
-                        .get("input_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let output_tokens = req
-                        .get("output_tokens")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    input_tokens.saturating_add(output_tokens)
-                });
-            usage_by_day_from_req
-                .entry(day_key.clone())
-                .and_modify(|(r, t, u)| {
-                    *r = r.saturating_add(1);
-                    *t = t.saturating_add(total_tokens);
-                    *u = (*u).max(ts);
-                })
-                .or_insert((1, total_tokens, ts));
-            let req_api_key_ref = req
-                .get("api_key_ref")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty() && *s != "-")
-                .map(|s| s.to_string());
-            if let Some(key_ref) = req_api_key_ref {
-                api_key_ref_counts_by_day
-                    .entry(day_key)
-                    .or_default()
-                    .entry(key_ref)
-                    .and_modify(|v| *v = v.saturating_add(1))
-                    .or_insert(1);
+            if !has_more {
+                break;
             }
         }
         // Backfill only missing days from raw requests; keep existing usage_day aggregation
@@ -372,4 +386,3 @@ pub(crate) fn set_spend_history_entry(
     );
     Ok(())
 }
-

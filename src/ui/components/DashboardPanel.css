@@ -195,6 +195,7 @@
 
 .aoMiniLabel {
   font-size: 11px;
+  font-weight: 650;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(13, 18, 32, 0.52);

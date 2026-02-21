@@ -254,4 +254,131 @@ mod tests {
             .iter()
             .any(|event| event.get("message").and_then(|v| v.as_str()) == Some("legacy-b")));
     }
+
+    #[test]
+    fn list_usage_requests_page_is_stable_on_same_timestamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 2, 21, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 100, 10, 110, 0, 0)",
+                rusqlite::params![
+                    "00000000-0000-0000-0000-000000000001",
+                    ts,
+                    "provider_a",
+                    "-",
+                    "gpt-5.2-codex",
+                    "windows",
+                    "session_a"
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 200, 20, 220, 0, 0)",
+                rusqlite::params![
+                    "00000000-0000-0000-0000-000000000002",
+                    ts,
+                    "provider_b",
+                    "-",
+                    "gpt-5.2-codex",
+                    "windows",
+                    "session_b"
+                ],
+            )
+            .unwrap();
+        }
+
+        let (page1, has_more1) =
+            store.list_usage_requests_page(0, &[], &[], &[], 1, 0);
+        let (page2, has_more2) =
+            store.list_usage_requests_page(0, &[], &[], &[], 1, 1);
+        assert_eq!(page1.len(), 1);
+        assert_eq!(page2.len(), 1);
+        assert!(has_more1);
+        assert!(!has_more2);
+
+        let provider1 = page1[0]
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let provider2 = page2[0]
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert_eq!(provider1, "provider_b");
+        assert_eq!(provider2, "provider_a");
+    }
+
+    #[test]
+    fn list_usage_request_daily_totals_aggregates_and_limits_days() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let day1 = chrono::Local
+            .with_ymd_and_hms(2026, 2, 19, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day2 = chrono::Local
+            .with_ymd_and_hms(2026, 2, 20, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day3 = chrono::Local
+            .with_ymd_and_hms(2026, 2, 21, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            let insert = |id: &str, ts: i64, provider: &str, total: i64| {
+                conn.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                        input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     ) VALUES(?1, ?2, ?3, '-', 'gpt-5.2-codex', 'windows', 's', ?4, 0, ?4, 0, 0)",
+                    rusqlite::params![id, ts, provider, total],
+                )
+                .unwrap();
+            };
+            insert("id-1", day1, "official", 100);
+            insert("id-2", day1 + 1_000, "provider_1", 200);
+            insert("id-3", day2, "official", 300);
+            insert("id-4", day3, "provider_1", 400);
+            insert("id-5", day3 + 1_000, "provider_2", 500);
+        }
+
+        let out = store.list_usage_request_daily_totals(2);
+        assert!(!out.is_empty());
+        let day_keys: Vec<String> = out.iter().map(|(day, _, _)| day.clone()).collect();
+        assert!(day_keys.iter().all(|k| k.as_str() >= "2026-02-20"));
+        assert!(day_keys.iter().all(|k| k.as_str() <= "2026-02-21"));
+        assert!(!day_keys.iter().any(|k| k == "2026-02-19"));
+
+        let sum_2026_02_21: u64 = out
+            .iter()
+            .filter(|(day, _, _)| day == "2026-02-21")
+            .map(|(_, _, total)| *total)
+            .sum();
+        let sum_2026_02_20: u64 = out
+            .iter()
+            .filter(|(day, _, _)| day == "2026-02-20")
+            .map(|(_, _, total)| *total)
+            .sum();
+        assert_eq!(sum_2026_02_21, 900);
+        assert_eq!(sum_2026_02_20, 300);
+    }
 }

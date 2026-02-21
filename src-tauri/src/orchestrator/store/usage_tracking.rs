@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::params;
 
 impl Store {
     pub fn list_usage_days(&self, provider: &str) -> Vec<Value> {
@@ -177,7 +178,7 @@ impl Store {
         increments: UsageTokenIncrements,
         api_key_ref: Option<&str>,
         origin: &str,
-        flush: bool,
+        session_id: Option<&str>,
     ) {
         let origin = match origin.trim().to_ascii_lowercase().as_str() {
             crate::constants::USAGE_ORIGIN_WINDOWS => crate::constants::USAGE_ORIGIN_WINDOWS,
@@ -186,31 +187,36 @@ impl Store {
         };
         let ts = unix_ms();
         let id = uuid::Uuid::new_v4().to_string();
-        let key = format!("usage_req:{ts}:{id}");
-        let v = serde_json::json!({
-            "provider": provider,
-            "api_key_ref": api_key_ref.unwrap_or("-"),
-            "model": model,
-            "origin": origin,
-            "unix_ms": ts,
-            "input_tokens": increments.input_tokens,
-            "output_tokens": increments.output_tokens,
-            "total_tokens": increments.total_tokens,
-            "cache_creation_input_tokens": increments.cache_creation_input_tokens,
-            "cache_read_input_tokens": increments.cache_read_input_tokens,
-        });
-        let _ = self
-            .db
-            .insert(key.as_bytes(), serde_json::to_vec(&v).unwrap_or_default());
+        let session_id = session_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("-");
+        if let Ok(ts_i64) = i64::try_from(ts) {
+            let conn = self.events_db.lock();
+            let _ = conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens,
+                    cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    id,
+                    ts_i64,
+                    provider,
+                    api_key_ref.unwrap_or("-"),
+                    model,
+                    origin,
+                    session_id,
+                    i64::try_from(increments.input_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(increments.output_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(increments.total_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(increments.cache_creation_input_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(increments.cache_read_input_tokens).unwrap_or(i64::MAX),
+                ],
+            );
+        }
         self.bump_usage_day(provider, ts, increments);
-        // Avoid full usage_req scan on every request; keep storage bounded with periodic pruning.
-        let seq = self.usage_prune_seq.fetch_add(1, Ordering::Relaxed) + 1;
-        if seq % Self::USAGE_PRUNE_EVERY == 0 {
-            self.prune_usage_requests();
-        }
-        if flush {
-            let _ = self.db.flush();
-        }
+        let _ = self.db.flush();
     }
 
     fn local_day_key(ts_unix_ms: u64) -> String {

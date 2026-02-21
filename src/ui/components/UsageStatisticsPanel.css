@@ -5,6 +5,21 @@
   align-content: start;
 }
 
+.aoUsageStatsPage.is-requests-only {
+  padding: 10px 10px 8px;
+  gap: 8px;
+}
+
+.aoUsageDetailsPane {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.aoUsageDetailsPane[hidden] {
+  display: none;
+}
+
 .aoUsageStatsHeader {
   display: flex;
   align-items: flex-start;
@@ -178,6 +193,679 @@
 .aoUsageAnomalyDismissIcon:focus-visible {
   outline: 2px solid rgba(198, 36, 70, 0.35);
   outline-offset: 1px;
+}
+
+.aoUsageDetailsTabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aoUsageDetailsTabBtn {
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(255, 255, 255, 0.88);
+  color: rgba(13, 18, 32, 0.78);
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.aoUsageDetailsTabBtn.is-active {
+  border-color: rgba(33, 168, 183, 0.58);
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.24), rgba(242, 193, 77, 0.2));
+  color: rgba(13, 18, 32, 0.92);
+}
+
+.aoUsageRequestsCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageRequestsCard.is-page {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.aoUsageRequestsTableWrap {
+  max-height: min(46vh, 520px);
+  overflow-x: auto;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.aoUsageRequestTableSurface {
+  height: auto;
+  max-height: min(78vh, 1040px);
+}
+
+.aoUsageRequestTableHead {
+  padding-right: 0;
+  overflow: visible;
+}
+
+.aoUsageHistoryTableWrap.aoUsageRequestsTableWrap::-webkit-scrollbar {
+  width: 0;
+  height: 10px;
+}
+
+.aoUsageHistoryTableWrap.aoUsageRequestsTableWrap::-webkit-scrollbar-track {
+  background: rgba(13, 18, 32, 0.08);
+  border-radius: 999px;
+}
+
+.aoUsageHistoryTableWrap.aoUsageRequestsTableWrap::-webkit-scrollbar-thumb {
+  background: rgba(13, 18, 32, 0.3);
+  border-radius: 999px;
+}
+
+.aoUsageRequestsTable {
+  min-width: 980px;
+}
+
+.aoUsageRequestsTable th,
+.aoUsageRequestsTable td {
+  white-space: nowrap;
+}
+
+.aoUsageRequestTableSummary {
+  position: relative;
+  z-index: 1;
+  padding: 0;
+  border-top: 1px solid rgba(13, 18, 32, 0.12);
+  background: rgba(255, 255, 255, 0.96);
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.76);
+}
+
+.aoUsageRequestTableSummary .aoUsageRequestsTable td {
+  padding-top: 6px;
+  padding-bottom: 6px;
+  white-space: nowrap;
+}
+
+.aoUsageReqFilterInput {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  border: 1px solid rgba(13, 18, 32, 0.16);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.94);
+  color: rgba(13, 18, 32, 0.82);
+  font-size: 11px;
+  padding: 0 6px;
+}
+
+.aoUsageReqFilterInput:focus {
+  outline: none;
+  border-color: rgba(var(--ao-accent-rgb), 0.48);
+  box-shadow: 0 0 0 2px rgba(var(--ao-accent-rgb), 0.14);
+}
+
+.aoUsageReqHeadCell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.aoUsageReqHeadBtn {
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+
+.aoUsageReqHeadBtn.is-filtered {
+  color: rgba(13, 18, 32, 0.95);
+}
+
+.aoUsageReqHeadBtn.is-open .aoUsageReqHeadChevron {
+  transform: rotate(180deg);
+}
+
+.aoUsageReqHeadLabel {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 700;
+}
+
+.aoUsageReqHeadFilterBadge {
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.aoUsageReqHeadFilterBadge.is-single {
+  border: 1px solid rgba(83, 92, 110, 0.32);
+  background: rgba(83, 92, 110, 0.16);
+  color: rgba(35, 40, 49, 0.9);
+}
+
+.aoUsageReqHeadFilterBadge.is-multi {
+  border: 1px solid rgba(var(--ao-accent-rgb), 0.42);
+  background: rgba(var(--ao-accent-rgb), 0.16);
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoUsageReqHeadChevron {
+  font-size: 10px;
+  color: rgba(13, 18, 32, 0.52);
+  transition: transform 120ms ease;
+  transform: translateY(0.5px);
+}
+
+.aoUsageReqFilterMenu {
+  width: 232px;
+  z-index: 4;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 8px 20px rgba(13, 18, 32, 0.14);
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageReqFilterMenu.is-time {
+  border-radius: 14px;
+  border-color: rgba(13, 18, 32, 0.12);
+  background: rgba(255, 255, 255, 0.99);
+  box-shadow:
+    0 18px 36px rgba(13, 18, 32, 0.2),
+    0 6px 12px rgba(13, 18, 32, 0.08);
+  padding: 10px;
+}
+
+.aoUsageReqFilterMenuFloating {
+  position: fixed;
+  z-index: 120;
+}
+
+.aoUsageReqFilterMenuActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.aoUsageReqFilterOptions {
+  max-height: 180px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: grid;
+  gap: 4px;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(13, 18, 32, 0.22) rgba(13, 18, 32, 0.05);
+}
+
+.aoUsageReqFilterOptions::-webkit-scrollbar {
+  width: 4px;
+}
+
+.aoUsageReqFilterOptions::-webkit-scrollbar-track {
+  background: rgba(13, 18, 32, 0.04);
+  border-radius: 999px;
+}
+
+.aoUsageReqFilterOptions::-webkit-scrollbar-thumb {
+  background: rgba(13, 18, 32, 0.2);
+  border-radius: 999px;
+}
+
+.aoUsageReqFilterOptions::-webkit-scrollbar-thumb:hover {
+  background: rgba(13, 18, 32, 0.32);
+}
+
+.aoUsageReqFilterOptionBtn {
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.96);
+  color: rgba(13, 18, 32, 0.82);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.aoUsageReqFilterOptionBtn:hover {
+  background: rgba(var(--ao-accent-rgb), 0.08);
+}
+
+.aoUsageReqFilterOptionBtn input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  cursor: pointer;
+  border: 1px solid rgba(13, 18, 32, 0.2);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 1);
+  display: inline-grid;
+  place-content: center;
+  position: relative;
+  box-shadow: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: none !important;
+}
+
+.aoUsageReqFilterOptionBtn input[type='checkbox']:checked {
+  border-color: #9ab7ea;
+  background-color: #ecf3ff;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3.2 7.3 5.8 9.8 10.9 4.9' fill='none' stroke='%233d6ec8' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 9px 9px;
+  box-shadow: none;
+}
+
+.aoUsageReqFilterOptionBtn input[type='checkbox']:checked:hover,
+.aoUsageReqFilterOptionBtn input[type='checkbox']:checked:active,
+.aoUsageReqFilterOptionBtn input[type='checkbox']:checked:focus {
+  border-color: #9ab7ea;
+  background-color: #ecf3ff;
+}
+
+.aoUsageReqFilterOptionBtn input[type='checkbox']:focus,
+.aoUsageReqFilterOptionBtn input[type='checkbox']:active {
+  outline: none;
+  box-shadow: none;
+  filter: none;
+}
+
+.aoUsageReqFilterOptionSelectAll {
+  font-weight: 650;
+}
+
+.aoUsageReqCalendarHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.aoUsageReqCalendarTitle {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.62);
+}
+
+.aoUsageReqCalendarNav {
+  width: 36px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.16);
+  background: rgba(255, 255, 255, 0.94);
+  color: rgba(13, 18, 32, 0.78);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.aoUsageReqCalendarNav:hover {
+  border-color: rgba(var(--ao-accent-rgb), 0.46);
+  background: rgba(var(--ao-accent-rgb), 0.1);
+}
+
+.aoUsageReqCalendarWeekdays {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.58);
+  text-align: center;
+}
+
+.aoUsageReqCalendarGrid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.aoUsageReqCalendarCell {
+  border: 1px solid rgba(13, 18, 32, 0.06);
+  border-radius: 8px;
+  min-height: 34px;
+  background: rgba(255, 255, 255, 0.94);
+  color: rgba(13, 18, 32, 0.9);
+  padding: 4px 2px 3px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  cursor: pointer;
+  position: relative;
+}
+
+.aoUsageReqCalendarCell.is-out {
+  opacity: 0.45;
+}
+
+.aoUsageReqCalendarCell.is-selected {
+  border-color: rgba(var(--ao-accent-rgb), 0.34);
+  background: rgba(var(--ao-accent-rgb), 0.2);
+  box-shadow: none;
+}
+
+.aoUsageReqCalendarDots {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.aoUsageReqCalendarDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+}
+
+.aoUsageReqCalendarDotWin {
+  background: #38c4d7;
+}
+
+.aoUsageReqCalendarDotWsl {
+  background: #f2b43f;
+}
+
+.aoUsageReqCalendarFoot {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.aoUsageReqCalendarFootGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoUsageReqColTime {
+  width: 134px;
+}
+
+.aoUsageReqColProvider {
+  width: 104px;
+}
+
+.aoUsageReqColModel {
+  width: 114px;
+}
+
+.aoUsageReqColInput {
+  width: 80px;
+}
+
+.aoUsageReqColOutput {
+  width: 80px;
+}
+
+.aoUsageReqColCacheCreate {
+  width: 116px;
+}
+
+.aoUsageReqColCacheRead {
+  width: 96px;
+}
+
+.aoUsageReqColOrigin {
+  width: 72px;
+}
+
+.aoUsageReqColSession {
+  width: 260px;
+}
+
+.aoUsageRequestsMono {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+}
+
+.aoUsageReqOriginBadge {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.aoUsageReqOriginBadgeWindows {
+  border: 1px solid rgba(23, 91, 145, 0.28);
+  background: rgba(23, 91, 145, 0.12);
+  color: rgba(23, 91, 145, 0.95);
+}
+
+.aoUsageReqOriginBadgeWsl {
+  border: 1px solid rgba(126, 84, 24, 0.28);
+  background: rgba(126, 84, 24, 0.12);
+  color: rgba(126, 84, 24, 0.95);
+}
+
+.aoUsageReqOriginBadgeUnknown {
+  border: 1px solid rgba(83, 92, 110, 0.28);
+  background: rgba(83, 92, 110, 0.12);
+  color: rgba(62, 70, 84, 0.92);
+}
+
+.aoUsageReqSessionWindows {
+  color: rgba(23, 91, 145, 0.9);
+}
+
+.aoUsageReqSessionWsl {
+  color: rgba(126, 84, 24, 0.9);
+}
+
+.aoUsageReqSessionUnknown {
+  color: rgba(83, 92, 110, 0.9);
+}
+
+.aoUsageRequestsFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aoUsageRequestBackRow {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.aoUsageRequestChartCard {
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+  padding: 9px 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.aoUsageRequestLineGraphWrap {
+  position: relative;
+}
+
+.aoUsageRequestLineGraph {
+  width: 100%;
+  height: 178px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 10px;
+  background: rgba(249, 250, 252, 0.92);
+}
+
+.aoUsageRequestLegend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.aoUsageRequestLegendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.7);
+  padding: 3px 8px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.aoUsageRequestLegendItem i {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.aoUsageRequestHoverOverlay {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: calc(100% - 16px);
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 4px 8px;
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.75);
+}
+
+.aoUsageRequestHoverSummaryItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.aoUsageRequestHoverSummaryItem i {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.aoUsageRequestDailyBars {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(14px, 1fr);
+  align-items: flex-end;
+  justify-content: stretch;
+  gap: 2px;
+  min-height: 124px;
+  padding: 8px 4px 6px;
+  overflow-x: hidden;
+  width: 100%;
+  max-width: 100%;
+}
+
+.aoUsageRequestDailyBarsWrap {
+  position: relative;
+}
+
+.aoUsageRequestDailyBarGroup {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.aoUsageRequestDailyBarStack {
+  width: 100%;
+  max-width: none;
+  height: 88px;
+  position: relative;
+}
+
+.aoUsageRequestDailyBarSegment {
+  width: 100%;
+  border-radius: 2px 2px 0 0;
+  min-height: 2px;
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  opacity: 0.9;
+}
+
+.aoUsageRequestDailyLabel {
+  position: relative;
+  width: 100%;
+  height: 14px;
+  font-size: 10px;
+  line-height: 1;
+  color: rgba(13, 18, 32, 0.58);
+}
+
+.aoUsageRequestDailyLabel > span {
+  position: absolute;
+  left: 50%;
+  top: 1px;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.aoUsageRequestDailyLabel.is-hidden {
+  height: 14px;
+}
+
+.aoUsageRequestDailyHover {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.72);
+}
+
+.aoUsageRequestDailyHoverOverlay {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  padding: 4px 8px;
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.75);
+  pointer-events: none;
+  max-width: calc(100% - 16px);
+  box-shadow: 0 4px 14px rgba(13, 18, 32, 0.08);
 }
 
 .aoUsageActionBtn {

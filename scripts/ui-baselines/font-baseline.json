@@ -1,20 +1,9 @@
 {
   "checks": [
     {
-      "name": "swap_main_button",
-      "selector": ".aoSplitBtnBtn",
-      "text": "Swap",
-      "expect": {
-        "fontSize": "13.3333px",
-        "fontWeight": "620",
-        "letterSpacing": "0.125px",
-        "fontFamilyIncludesAny": ["Segoe", "Arial"]
-      }
-    },
-    {
       "name": "show_rotate_button",
       "selector": ".aoHeroStatus .aoBtn",
-      "text": "Show / Rotate",
+      "text": "Rotate",
       "expect": {
         "fontSize": "13.3333px",
         "fontWeight": "620",
