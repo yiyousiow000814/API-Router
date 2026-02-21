@@ -199,12 +199,31 @@
 }
 
 .aoProviderConfigDisabled {
-  filter: grayscale(0.98) saturate(0.35);
-  opacity: 0.56;
   border-color: rgba(13, 18, 32, 0.2);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.55),
     inset 0 0 0 9999px rgba(237, 240, 245, 0.35);
+}
+
+.aoProviderConfigDisabled .aoProviderName,
+.aoProviderConfigDisabled .aoProviderStateBadge,
+.aoProviderConfigDisabled .aoMiniLabel,
+.aoProviderConfigDisabled .aoHint,
+.aoProviderConfigDisabled .aoKeyValue,
+.aoProviderConfigDisabled .aoInput,
+.aoProviderConfigDisabled .aoTinyBtn,
+.aoProviderConfigDisabled .aoIconGhost,
+.aoProviderConfigDisabled .aoDragHandle,
+.aoProviderConfigDisabled .aoActionBtn:not(.aoActionBtnStatus) {
+  filter: grayscale(1) saturate(0.35);
+  opacity: 0.48;
+}
+
+.aoProviderConfigDisabled .aoActionBtnStatus {
+  filter: none;
+  opacity: 1;
+  position: relative;
+  z-index: 1;
 }
 
 .aoProviderStateBadge {
