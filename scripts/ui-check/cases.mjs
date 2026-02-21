@@ -269,8 +269,6 @@ async function applyUiCheckCliHomeInConfigureDirs(driver, cliHome) {
       if (!wslCheck) return { ok: false, reason: 'wsl_checkbox_not_found' };
       if (!windowsInput) return { ok: false, reason: 'windows_input_not_found' };
       if (!wslInput) return { ok: false, reason: 'wsl_input_not_found' };
-      if (windowsCheck.checked !== true) windowsCheck.click();
-      if (wslCheck.checked !== false) wslCheck.click();
       const setVal = (el, value) => {
         if (!el) return;
         const desc =
@@ -286,13 +284,43 @@ async function applyUiCheckCliHomeInConfigureDirs(driver, cliHome) {
       };
       setVal(windowsInput, target);
       setVal(wslInput, '');
-      return { ok: true };
+      return { ok: true, windowsChecked: windowsCheck.checked, windowsDisabled: windowsCheck.disabled };
     `,
     cliHome,
   )
   if (!applied?.ok) {
     throw new Error(`Failed to apply ui check cli home in Codex CLI directories modal: ${applied?.reason || 'unknown'}`)
   }
+  await driver.wait(
+    async () => {
+      const state = await driver.executeScript(`
+        const modals = Array.from(document.querySelectorAll('.aoModal'));
+        const modal = modals.find((m) => {
+          const t = m.querySelector('.aoModalTitle');
+          return t && (t.textContent || '').trim() === 'Codex CLI directories';
+        });
+        if (!modal) return { ok: false };
+        const windowsCard = Array.from(modal.querySelectorAll('.aoCardInset')).find((card) => {
+          const mini = card.querySelector('.aoMiniLabel');
+          return mini && (mini.textContent || '').trim() === 'Windows';
+        });
+        const wslCard = Array.from(modal.querySelectorAll('.aoCardInset')).find((card) => {
+          const mini = card.querySelector('.aoMiniLabel');
+          return mini && (mini.textContent || '').trim() === 'WSL2';
+        });
+        const windowsCheck = windowsCard ? windowsCard.querySelector('input[type="checkbox"]') : null;
+        const wslCheck = wslCard ? wslCard.querySelector('input[type="checkbox"]') : null;
+        if (!windowsCheck || !wslCheck) return { ok: false };
+        if (windowsCheck.disabled) return { ok: true, ready: false };
+        if (!windowsCheck.checked) windowsCheck.click();
+        if (wslCheck.checked) wslCheck.click();
+        return { ok: true, ready: windowsCheck.checked === true && wslCheck.checked === false };
+      `)
+      return state?.ok === true && state?.ready === true
+    },
+    10000,
+    'Codex CLI directories modal should enable and apply Windows-only target state',
+  )
   await clickButtonByText(driver, 'Apply', 12000)
   await driver.wait(
     async () => {
