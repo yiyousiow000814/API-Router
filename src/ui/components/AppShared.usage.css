@@ -234,7 +234,7 @@
 }
 
 .aoActionBtnStatus {
-  min-width: 112px;
+  min-width: 98px;
   justify-content: center;
 }
 
@@ -259,10 +259,10 @@
 }
 
 .aoStatusDot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  box-shadow: 0 0 0 1px rgba(13, 18, 32, 0.08);
+  box-shadow: 0 0 0 0.5px rgba(13, 18, 32, 0.08);
 }
 
 .aoStatusDotOn {
