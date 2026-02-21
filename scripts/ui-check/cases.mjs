@@ -205,6 +205,92 @@ export async function ensureCodexAuthForSwitchboard(uiProfileDir) {
   fs.writeFileSync(appAuthPath, `${JSON.stringify(next, null, 2)}\n`, 'utf-8')
 }
 
+function ensureUiCheckCliHome(uiProfileDir) {
+  const cliHome = path.join(uiProfileDir, 'ui-check', '.codex')
+  fs.mkdirSync(cliHome, { recursive: true })
+
+  const authPath = path.join(cliHome, 'auth.json')
+  fs.writeFileSync(
+    authPath,
+    `${JSON.stringify({ OPENAI_API_KEY: 'sk-ui-check-cli-home' }, null, 2)}\n`,
+    'utf-8',
+  )
+
+  const cfgPath = path.join(cliHome, 'config.toml')
+  const cfg = [
+    'model = "gpt-5"',
+    '',
+    '[model_providers.openai]',
+    'name = "openai"',
+    'base_url = "https://api.openai.com/v1"',
+    'wire_api = "responses"',
+    'requires_openai_auth = true',
+    '',
+  ].join('\n')
+  fs.writeFileSync(cfgPath, cfg, 'utf-8')
+
+  return cliHome
+}
+
+function normalizeCliPath(input) {
+  return path.win32.normalize(String(input || '').trim()).toLowerCase()
+}
+
+async function applyUiCheckCliHomeInConfigureDirs(driver, cliHome) {
+  await clickButtonByText(driver, 'Configure Dirs', 12000)
+  await waitVisible(
+    driver,
+    By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Codex CLI directories']]`),
+    12000,
+  )
+  const applied = await driver.executeScript(
+    `
+      const target = arguments[0];
+      const modals = Array.from(document.querySelectorAll('.aoModal'));
+      const modal = modals.find((m) => {
+        const t = m.querySelector('.aoModalTitle');
+        return t && (t.textContent || '').trim() === 'Codex CLI directories';
+      });
+      if (!modal) return false;
+      const inputs = Array.from(modal.querySelectorAll('input.aoInput'));
+      const checks = Array.from(modal.querySelectorAll('input[type="checkbox"]'));
+      if (checks[0] && checks[0].checked !== true) checks[0].click();
+      if (checks[1] && checks[1].checked !== false) checks[1].click();
+      const setVal = (el, value) => {
+        if (!el) return;
+        const desc =
+          Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value') ||
+          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+        if (desc && typeof desc.set === 'function') {
+          desc.set.call(el, value);
+        } else {
+          el.value = value;
+        }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      setVal(inputs[0], target);
+      setVal(inputs[1], '');
+      return true;
+    `,
+    cliHome,
+  )
+  if (!applied) {
+    throw new Error('Codex CLI directories modal not found while applying ui check cli home.')
+  }
+  await clickButtonByText(driver, 'Apply', 12000)
+  await driver.wait(
+    async () => {
+      const found = await driver.findElements(
+        By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Codex CLI directories']]`),
+      )
+      return found.length === 0
+    },
+    10000,
+    'Codex CLI directories modal should close after Apply',
+  )
+}
+
 export async function runUsageHistoryScrollCase(driver, screenshotPath) {
   await clickButtonByText(driver, 'Daily History', 12000)
   const modal = await waitVisible(
@@ -634,6 +720,7 @@ export async function runPricingTimelineModalCase(driver, screenshotPath) {
 
 export async function runSwitchboardSwitchCase(driver, directProvider, uiProfileDir) {
   await ensureCodexAuthForSwitchboard(uiProfileDir)
+  const cliHome = ensureUiCheckCliHome(uiProfileDir)
   const cfg = await tauriInvoke(driver, 'get_config', {})
   const providerCfg = cfg?.providers?.[directProvider]
   if (!providerCfg || !String(providerCfg.base_url || '').trim()) {
@@ -647,15 +734,43 @@ export async function runSwitchboardSwitchCase(driver, directProvider, uiProfile
 
   await clickTopNav(driver, 'Provider Switchboard')
   await waitPageTitle(driver, 'Provider Switchboard')
+  await applyUiCheckCliHomeInConfigureDirs(driver, cliHome)
+  await driver.wait(
+    async () => {
+      const homes = await driver.executeScript(`
+        return Array.from(document.querySelectorAll('.aoSwitchMetaDirs'))
+          .map((el) => (el.textContent || '').trim())
+          .filter(Boolean);
+      `)
+      return Array.isArray(homes) && homes.some((item) => item && item.trim().length > 0)
+    },
+    10000,
+    'Switchboard target dirs should appear after Configure Dirs apply',
+  )
   const cliHomes = await driver.executeScript(`
-    const raw = (document.querySelector('.aoSwitchMetaDirs')?.textContent || '').trim();
-    if (!raw || raw === '-') return null;
-    const homes = raw
-      .split('|')
-      .map((s) => s.trim())
+    return Array.from(document.querySelectorAll('.aoSwitchMetaDirs'))
+      .map((el) => (el.textContent || '').trim())
       .filter(Boolean);
-    return homes.length ? homes : null;
   `)
+  if (!Array.isArray(cliHomes) || !cliHomes.length) {
+    throw new Error('Switchboard target dirs are empty after Configure Dirs apply.')
+  }
+  const expectedCliHomeNorm = normalizeCliPath(cliHome)
+  await driver.wait(
+    async () => {
+      const homes = await driver.executeScript(`
+        return Array.from(document.querySelectorAll('.aoSwitchMetaDirs'))
+          .map((el) => (el.textContent || '').trim())
+          .filter(Boolean);
+      `)
+      return Array.isArray(homes) && homes.some((item) => normalizeCliPath(item) === expectedCliHomeNorm)
+    },
+    10000,
+    'Switchboard target dirs should match ui check cli home',
+  )
+  if (!cliHomes.some((item) => normalizeCliPath(item) === normalizeCliPath(cliHome))) {
+    throw new Error(`Switchboard target dirs mismatch: expected ${cliHome}, got ${cliHomes.join(' | ')}`)
+  }
   const statusProvider = await tauriInvoke(driver, 'provider_switchboard_set_target', {
     cliHomes,
     target: 'provider',
