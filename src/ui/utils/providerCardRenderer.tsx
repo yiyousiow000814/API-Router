@@ -141,7 +141,13 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 <button
                   className={`aoActionBtn${p.disabled ? ' aoActionBtnPrimary' : ''}`}
                   title={p.disabled ? 'Activate provider' : 'Deactivate provider'}
-                  onClick={() => void options.setProviderDisabled(name, !Boolean(p.disabled))}
+                  onClick={() => {
+                    const nextDisabled = !Boolean(p.disabled)
+                    if (nextDisabled && options.isProviderOpen(name)) {
+                      options.toggleProviderOpen(name)
+                    }
+                    void options.setProviderDisabled(name, nextDisabled)
+                  }}
                 >
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     {p.disabled ? <path d="M5 12h14" /> : <path d="M12 5v14" />}
@@ -187,7 +193,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 />
                 <div className="aoMiniLabel">Key</div>
                 <div className="aoKeyValue">{p.has_key ? (p.key_preview ? p.key_preview : 'set') : 'empty'}</div>
-                {p.disabled ? <div className="aoHint">Provider is deactivated and excluded from routing/dashboard.</div> : null}
               </>
             ) : null}
           </div>
