@@ -735,26 +735,6 @@ export async function runSwitchboardSwitchCase(driver, directProvider, uiProfile
   await clickTopNav(driver, 'Provider Switchboard')
   await waitPageTitle(driver, 'Provider Switchboard')
   await applyUiCheckCliHomeInConfigureDirs(driver, cliHome)
-  await driver.wait(
-    async () => {
-      const homes = await driver.executeScript(`
-        return Array.from(document.querySelectorAll('.aoSwitchMetaDirs'))
-          .map((el) => (el.textContent || '').trim())
-          .filter(Boolean);
-      `)
-      return Array.isArray(homes) && homes.some((item) => item && item.trim().length > 0)
-    },
-    10000,
-    'Switchboard target dirs should appear after Configure Dirs apply',
-  )
-  const cliHomes = await driver.executeScript(`
-    return Array.from(document.querySelectorAll('.aoSwitchMetaDirs'))
-      .map((el) => (el.textContent || '').trim())
-      .filter(Boolean);
-  `)
-  if (!Array.isArray(cliHomes) || !cliHomes.length) {
-    throw new Error('Switchboard target dirs are empty after Configure Dirs apply.')
-  }
   const expectedCliHomeNorm = normalizeCliPath(cliHome)
   await driver.wait(
     async () => {
@@ -768,6 +748,14 @@ export async function runSwitchboardSwitchCase(driver, directProvider, uiProfile
     10000,
     'Switchboard target dirs should match ui check cli home',
   )
+  const cliHomes = await driver.executeScript(`
+    return Array.from(document.querySelectorAll('.aoSwitchMetaDirs'))
+      .map((el) => (el.textContent || '').trim())
+      .filter(Boolean);
+  `)
+  if (!Array.isArray(cliHomes) || !cliHomes.length) {
+    throw new Error('Switchboard target dirs are empty after Configure Dirs apply.')
+  }
   if (!cliHomes.some((item) => normalizeCliPath(item) === normalizeCliPath(cliHome))) {
     throw new Error(`Switchboard target dirs mismatch: expected ${cliHome}, got ${cliHomes.join(' | ')}`)
   }
