@@ -44,13 +44,12 @@ import { useAppActions } from './hooks/useAppActions'
 import { useUsageOpsBridge } from './hooks/useUsageOpsBridge'
 import { useUsageUiDerived } from './hooks/useUsageUiDerived'
 import { useMainContentCallbacks } from './hooks/useMainContentCallbacks'
-import { useTopNavIntentPrefetch } from './hooks/useTopNavIntentPrefetch'
 import {
   buildCodexSwapBadge,
   resolveCliHomes,
 } from './utils/switchboard'
 import { usageProviderRowKey } from './utils/usageStatisticsView'
-type TopPage = 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
+type TopPage = 'dashboard' | 'usage_statistics' | 'provider_switchboard' | 'event_log'
 const RAW_DRAFT_WINDOWS_KEY = '__draft_windows__'
 const RAW_DRAFT_WSL_KEY = '__draft_wsl2__'
 const RAW_DRAFT_STORAGE_KEY = 'ao.rawConfigDraft.shared.v1'
@@ -796,13 +795,10 @@ export default function App() {
     setUsageHistoryEditCell,
     usageHistoryDrafts,
   })
-  const {
-    handleUsageStatisticsIntentPrefetch,
-    handleUsageRequestsIntentPrefetch,
-  } = useTopNavIntentPrefetch({
-    activePage,
-    refreshUsageStatistics,
-  })
+  const handleUsageStatisticsIntentPrefetch = useCallback(() => {
+    if (activePage === 'usage_statistics') return
+    void refreshUsageStatistics({ silent: true })
+  }, [activePage, refreshUsageStatistics])
   const {
     providerGroupLabelByName, linkedProvidersForApiKey, switchboardProviderCards, switchboardModeLabel,
     switchboardModelProviderLabel, switchboardTargetDirsLabel, usageSummary, usageByProvider, usageTotalInputTokens,
@@ -978,7 +974,6 @@ export default function App() {
               onSwitchPage={switchPage}
               onOpenGettingStarted={() => setInstructionModalOpen(true)}
               onUsageStatisticsIntent={handleUsageStatisticsIntentPrefetch}
-              onUsageRequestsIntent={handleUsageRequestsIntentPrefetch}
             />
           </div>
           {/* Surface errors via toast to avoid layout shifts. */}
