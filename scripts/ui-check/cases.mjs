@@ -311,15 +311,64 @@ async function applyUiCheckCliHomeInConfigureDirs(driver, cliHome) {
         const windowsCheck = windowsCard ? windowsCard.querySelector('input[type="checkbox"]') : null;
         const wslCheck = wslCard ? wslCard.querySelector('input[type="checkbox"]') : null;
         if (!windowsCheck || !wslCheck) return { ok: false };
-        if (windowsCheck.disabled) return { ok: true, ready: false };
-        if (!windowsCheck.checked) windowsCheck.click();
-        if (wslCheck.checked) wslCheck.click();
+        return { ok: true, ready: windowsCheck.disabled === false };
+      `)
+      return state?.ok === true && state?.ready === true
+    },
+    10000,
+    'Codex CLI directories modal should enable Windows target checkbox',
+  )
+  const targetState = await driver.executeScript(`
+    const modals = Array.from(document.querySelectorAll('.aoModal'));
+    const modal = modals.find((m) => {
+      const t = m.querySelector('.aoModalTitle');
+      return t && (t.textContent || '').trim() === 'Codex CLI directories';
+    });
+    if (!modal) return { ok: false, reason: 'modal_not_found' };
+    const cardByLabel = (label) =>
+      Array.from(modal.querySelectorAll('.aoCardInset')).find((card) => {
+        const mini = card.querySelector('.aoMiniLabel');
+        return mini && (mini.textContent || '').trim() === label;
+      });
+    const windowsCard = cardByLabel('Windows');
+    const wslCard = cardByLabel('WSL2');
+    const windowsCheck = windowsCard ? windowsCard.querySelector('input[type="checkbox"]') : null;
+    const wslCheck = wslCard ? wslCard.querySelector('input[type="checkbox"]') : null;
+    if (!windowsCheck) return { ok: false, reason: 'windows_checkbox_not_found' };
+    if (!wslCheck) return { ok: false, reason: 'wsl_checkbox_not_found' };
+    if (windowsCheck.disabled) return { ok: false, reason: 'windows_checkbox_disabled' };
+    if (!windowsCheck.checked) windowsCheck.click();
+    if (wslCheck.checked) wslCheck.click();
+    return { ok: true };
+  `)
+  if (!targetState?.ok) {
+    throw new Error(`Failed to set Windows-only target state in Codex CLI directories modal: ${targetState?.reason || 'unknown'}`)
+  }
+  await driver.wait(
+    async () => {
+      const state = await driver.executeScript(`
+        const modals = Array.from(document.querySelectorAll('.aoModal'));
+        const modal = modals.find((m) => {
+          const t = m.querySelector('.aoModalTitle');
+          return t && (t.textContent || '').trim() === 'Codex CLI directories';
+        });
+        if (!modal) return { ok: false };
+        const cardByLabel = (label) =>
+          Array.from(modal.querySelectorAll('.aoCardInset')).find((card) => {
+            const mini = card.querySelector('.aoMiniLabel');
+            return mini && (mini.textContent || '').trim() === label;
+          });
+        const windowsCard = cardByLabel('Windows');
+        const wslCard = cardByLabel('WSL2');
+        const windowsCheck = windowsCard ? windowsCard.querySelector('input[type="checkbox"]') : null;
+        const wslCheck = wslCard ? wslCard.querySelector('input[type="checkbox"]') : null;
+        if (!windowsCheck || !wslCheck) return { ok: false };
         return { ok: true, ready: windowsCheck.checked === true && wslCheck.checked === false };
       `)
       return state?.ok === true && state?.ready === true
     },
     10000,
-    'Codex CLI directories modal should enable and apply Windows-only target state',
+    'Codex CLI directories modal should apply Windows-only target state',
   )
   await clickButtonByText(driver, 'Apply', 12000)
   await driver.wait(
@@ -778,28 +827,26 @@ export async function runSwitchboardSwitchCase(driver, directProvider, uiProfile
   await clickTopNav(driver, 'Provider Switchboard')
   await waitPageTitle(driver, 'Provider Switchboard')
   await applyUiCheckCliHomeInConfigureDirs(driver, cliHome)
+  const readCliHomes = async () =>
+    await driver.executeScript(`
+      return Array.from(document.querySelectorAll('.aoSwitchMetaDirs'))
+        .map((el) => (el.textContent || '').trim())
+        .filter(Boolean);
+    `)
   const expectedCliHomeNorm = normalizeCliPath(cliHome)
   await driver.wait(
     async () => {
-      const homes = await driver.executeScript(`
-        return Array.from(document.querySelectorAll('.aoSwitchMetaDirs'))
-          .map((el) => (el.textContent || '').trim())
-          .filter(Boolean);
-      `)
-      return Array.isArray(homes) && homes.some((item) => normalizeCliPath(item) === expectedCliHomeNorm)
+      const homes = await readCliHomes()
+      return Array.isArray(homes) && homes.length === 1 && normalizeCliPath(homes[0]) === expectedCliHomeNorm
     },
     10000,
-    'Switchboard target dirs should match ui check cli home',
+    'Switchboard target dirs should converge to isolated ui check cli home',
   )
-  const cliHomes = await driver.executeScript(`
-    return Array.from(document.querySelectorAll('.aoSwitchMetaDirs'))
-      .map((el) => (el.textContent || '').trim())
-      .filter(Boolean);
-  `)
-  if (!Array.isArray(cliHomes) || !cliHomes.length) {
-    throw new Error('Switchboard target dirs are empty after Configure Dirs apply.')
+  const cliHomes = await readCliHomes()
+  if (!Array.isArray(cliHomes) || cliHomes.length !== 1) {
+    throw new Error(`Switchboard target dirs should be exactly one isolated dir, got: ${Array.isArray(cliHomes) ? cliHomes.join(' | ') : 'invalid'}`)
   }
-  if (!cliHomes.some((item) => normalizeCliPath(item) === normalizeCliPath(cliHome))) {
+  if (normalizeCliPath(cliHomes[0]) !== normalizeCliPath(cliHome)) {
     throw new Error(`Switchboard target dirs mismatch: expected ${cliHome}, got ${cliHomes.join(' | ')}`)
   }
   const statusProvider = await tauriInvoke(driver, 'provider_switchboard_set_target', {
