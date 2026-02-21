@@ -214,12 +214,12 @@
 .aoProviderConfigDisabled .aoTinyBtn,
 .aoProviderConfigDisabled .aoIconGhost,
 .aoProviderConfigDisabled .aoDragHandle,
-.aoProviderConfigDisabled .aoActionBtn:not(.aoActionBtnStatus) {
+.aoProviderConfigDisabled .aoActionBtn {
   filter: grayscale(1) saturate(0.35);
   opacity: 0.48;
 }
 
-.aoProviderConfigDisabled .aoActionBtnStatus {
+.aoProviderConfigDisabled .aoStatusSwitch {
   filter: none;
   opacity: 1;
 }
@@ -250,44 +250,80 @@
   border-color: rgba(var(--ao-accent-rgb), 0.75);
 }
 
-.aoActionBtnStatus {
-  min-width: 112px;
+.aoStatusSwitch {
+  width: 70px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.18);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.aoStatusSwitch.is-on {
+  background: #10c95f;
+  border-color: #0ba74f;
+  justify-content: flex-start;
+}
+
+.aoStatusSwitch.is-off {
+  background: #f62c2c;
+  border-color: #d32020;
+  justify-content: flex-end;
+}
+
+.aoStatusSwitch:hover {
+  box-shadow: 0 0 0 2px rgba(13, 18, 32, 0.08);
+}
+
+.aoStatusSwitch:active {
+  transform: translateY(0.5px);
+}
+
+.aoStatusSwitch:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: grayscale(0.35);
+}
+
+.aoStatusSwitchIcon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
 }
 
-.aoActionBtnStatusOn {
-  border-color: rgba(13, 18, 32, 0.18);
-  background: rgba(255, 255, 255, 0.9);
+.aoStatusSwitchIcon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: rgba(12, 16, 30, 0.45);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-.aoActionBtnStatusOn:hover {
-  border-color: rgba(13, 18, 32, 0.4);
-  background: rgba(var(--ao-accent-rgb), 0.06);
-}
-
-.aoActionBtnStatusOff {
-  border-color: rgba(13, 18, 32, 0.18);
-  background: rgba(255, 255, 255, 0.9);
-}
-
-.aoActionBtnStatusOff:hover {
-  border-color: rgba(13, 18, 32, 0.4);
-  background: rgba(var(--ao-accent-rgb), 0.06);
-}
-
-.aoStatusDot {
-  width: 5px;
-  height: 5px;
+.aoStatusSwitchKnob {
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
-  box-shadow: 0 0 0 0.5px rgba(13, 18, 32, 0.08);
+  background: #f2f2f2;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  position: absolute;
+  top: 2px;
 }
 
-.aoStatusDotOn {
-  background: #22c16f;
+.aoStatusSwitch.is-on .aoStatusSwitchKnob {
+  right: 2px;
 }
 
-.aoStatusDotOff {
-  background: #d64a66;
+.aoStatusSwitch.is-off .aoStatusSwitchKnob {
+  left: 2px;
 }
 
 .aoProviderConfigHeader {

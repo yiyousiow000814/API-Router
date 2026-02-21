@@ -155,7 +155,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   </svg>
                 </button>
                 <button
-                  className={`aoActionBtn aoActionBtnStatus ${p.disabled ? 'aoActionBtnStatusOff' : 'aoActionBtnStatusOn'}`}
+                  className={`aoStatusSwitch ${p.disabled ? 'is-off' : 'is-on'}`}
                   title={
                     p.disabled
                       ? 'Click to activate provider'
@@ -173,11 +173,19 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     void options.setProviderDisabled(name, nextDisabled)
                   }}
                 >
-                  <span
-                    className={`aoStatusDot ${p.disabled ? 'aoStatusDotOff' : 'aoStatusDotOn'}`}
-                    aria-hidden="true"
-                  />
-                  <span>{p.disabled ? 'Deactivated' : 'Activated'}</span>
+                  <span className="aoStatusSwitchIcon" aria-hidden="true">
+                    {p.disabled ? (
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M7 7l10 10" />
+                        <path d="M17 7l-10 10" />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="m4 12 5 5 11-11" />
+                      </svg>
+                    )}
+                  </span>
+                  <span className="aoStatusSwitchKnob" aria-hidden="true" />
                 </button>
               </div>
             </div>
