@@ -36,8 +36,16 @@ function formatEventMessageDialog(message: string): string {
   return message.replace(/;\s+/g, ';\n')
 }
 
+function stableFieldsIdentity(fields: Record<string, unknown> | null): string {
+  if (!fields) return ''
+  const keys = Object.keys(fields).sort()
+  const ordered: Record<string, unknown> = {}
+  for (const key of keys) ordered[key] = fields[key]
+  return JSON.stringify(ordered)
+}
+
 function eventIdentity(event: Status['recent_events'][number]): string {
-  return `${event.unix_ms}|${event.provider}|${event.level}|${event.code}|${event.message}`
+  return `${event.unix_ms}|${event.provider}|${event.level}|${event.code}|${event.message}|${stableFieldsIdentity(event.fields)}`
 }
 
 function withStableRowKeys(
@@ -85,6 +93,7 @@ export function EventsTable({
   const prevScrollHeightRef = useRef<number | null>(null)
   const prevFirstEventIdRef = useRef('')
   const scrollRestoreKeyRef = useRef<string | null>(null)
+  const pendingRestoreTopRef = useRef<number | null>(null)
 
   const setEventsScrollbarVisible = useCallback((visible: boolean) => {
     eventsTableSurfaceRef.current?.classList.toggle('aoEventsTableSurfaceScrollbarVisible', visible)
@@ -289,6 +298,7 @@ export function EventsTable({
     if (wrap && scrollPersistKey && scrollRestoreKeyRef.current !== scrollPersistKey) {
       scrollRestoreKeyRef.current = scrollPersistKey
       const savedTop = SCROLL_TOP_BY_KEY.get(scrollPersistKey) ?? 0
+      pendingRestoreTopRef.current = savedTop
       const applySavedTop = () => {
         if (!eventsTableWrapRef.current) return
         eventsTableWrapRef.current.scrollTop = savedTop
@@ -349,13 +359,27 @@ export function EventsTable({
     const nextFirstId = nextCount > 0 ? eventIdentity(allEvents[0]) : ''
     const prevHeight = prevScrollHeightRef.current
     const prevFirstId = prevFirstEventIdRef.current
+    const pendingRestoreTop = pendingRestoreTopRef.current
+
+    if (pendingRestoreTop != null) {
+      const maxScroll = Math.max(0, wrap.scrollHeight - wrap.clientHeight)
+      const shouldApply = pendingRestoreTop <= 0 || maxScroll > 0
+      if (shouldApply) {
+        const clamped = Math.max(0, Math.min(pendingRestoreTop, maxScroll))
+        wrap.scrollTop = clamped
+        scheduleEventsScrollbarSync()
+        if (pendingRestoreTop <= 0 || maxScroll > 0) {
+          pendingRestoreTopRef.current = null
+        }
+      }
+    }
 
     const prevFirstIndexInNext = prevFirstId ? allEvents.findIndex((row) => eventIdentity(row) === prevFirstId) : -1
     const prependedCount = prevFirstIndexInNext > 0 ? prevFirstIndexInNext : 0
     const prepended = prependedCount > 0
     const grew = prevHeight != null && nextHeight > prevHeight + 1
     const nearTop = wrap.scrollTop <= 4
-    if (prepended && !nearTop) {
+    if (pendingRestoreTopRef.current == null && prepended && !nearTop) {
       const firstRow = wrap.querySelector('tbody tr')
       const fallbackRowHeight = firstRow instanceof HTMLElement ? firstRow.offsetHeight : 36
       const delta = grew && prevHeight != null ? (nextHeight - prevHeight) : (fallbackRowHeight * prependedCount)
@@ -399,7 +423,7 @@ export function EventsTable({
     </colgroup>
   )
 
-  const renderRow = (e: Status['recent_events'][number], key: string) => {
+  const renderRow = (e: Status['recent_events'][number], key: string, isFocus: boolean) => {
     const isError = e.level === 'error'
     const isWarning = e.level === 'warning'
     const canExpandMessage = !!expandableMessageKeys[key]
@@ -431,8 +455,6 @@ export function EventsTable({
           .filter(Boolean)
           .join('\n')
       : ''
-
-    const isFocus = !!focusEventId && eventIdentity(e) === focusEventId
 
     return (
       <tr
@@ -519,10 +541,14 @@ export function EventsTable({
   const renderBodyRows = () =>
     !splitByLevel ? (
       [...allEvents].sort((a, b) => b.unix_ms - a.unix_ms).length ? (
-        withStableRowKeys(
-          [...allEvents].sort((a, b) => b.unix_ms - a.unix_ms),
-          'all',
-        ).map(({ event, key }) => renderRow(event, key))
+        (() => {
+          const keyedAll = withStableRowKeys(
+            [...allEvents].sort((a, b) => b.unix_ms - a.unix_ms),
+            'all',
+          )
+          const focusKey = focusEventId ? keyedAll.find((row) => eventIdentity(row.event) === focusEventId)?.key ?? null : null
+          return keyedAll.map(({ event, key }) => renderRow(event, key, key === focusKey))
+        })()
       ) : (
         <tr>
           <td colSpan={5} className="aoHint">
@@ -531,52 +557,63 @@ export function EventsTable({
         </tr>
       )
     ) : (
-      <>
-        <tr className="aoEventsSection">
-          <td colSpan={5}>
-            <span>Info</span>
-          </td>
-        </tr>
-        {infos.length ? (
-          withStableRowKeys(infos, 'info').map(({ event, key }) => renderRow(event, key))
-        ) : (
-          <tr>
-            <td colSpan={5} className="aoHint">
-              No info events
-            </td>
-          </tr>
-        )}
+      (() => {
+        const keyedInfos = withStableRowKeys(infos, 'info')
+        const keyedIssues = withStableRowKeys(
+          [...warnings, ...errors]
+            .sort((a, b) => b.unix_ms - a.unix_ms)
+            .slice(0, 5),
+          'issue',
+        )
+        const focusKey = focusEventId
+          ? keyedInfos.find((row) => eventIdentity(row.event) === focusEventId)?.key
+            ?? keyedIssues.find((row) => eventIdentity(row.event) === focusEventId)?.key
+            ?? null
+          : null
+        return (
+          <>
+            <tr className="aoEventsSection">
+              <td colSpan={5}>
+                <span>Info</span>
+              </td>
+            </tr>
+            {keyedInfos.length ? (
+              keyedInfos.map(({ event, key }) => renderRow(event, key, key === focusKey))
+            ) : (
+              <tr>
+                <td colSpan={5} className="aoHint">
+                  No info events
+                </td>
+              </tr>
+            )}
 
-        {infos.length ? (
-          <tr className="aoEventsGap" aria-hidden="true">
-            <td colSpan={5} />
-          </tr>
-        ) : null}
+            {keyedInfos.length ? (
+              <tr className="aoEventsGap" aria-hidden="true">
+                <td colSpan={5} />
+              </tr>
+            ) : null}
 
-        <tr className="aoEventsSection">
-          <td colSpan={5}>
-            <div className="aoEventsSectionRow">
-              <div>
-                <span>Errors / Warnings</span>
-              </div>
-            </div>
-          </td>
-        </tr>
-        {(errors.length || warnings.length) ? (
-          withStableRowKeys(
-            [...warnings, ...errors]
-              .sort((a, b) => b.unix_ms - a.unix_ms)
-              .slice(0, 5),
-            'issue',
-          ).map(({ event, key }) => renderRow(event, key))
-        ) : (
-          <tr>
-            <td colSpan={5} className="aoHint">
-              No errors or warnings
-            </td>
-          </tr>
-        )}
-      </>
+            <tr className="aoEventsSection">
+              <td colSpan={5}>
+                <div className="aoEventsSectionRow">
+                  <div>
+                    <span>Errors / Warnings</span>
+                  </div>
+                </div>
+              </td>
+            </tr>
+            {keyedIssues.length ? (
+              keyedIssues.map(({ event, key }) => renderRow(event, key, key === focusKey))
+            ) : (
+              <tr>
+                <td colSpan={5} className="aoHint">
+                  No errors or warnings
+                </td>
+              </tr>
+            )}
+          </>
+        )
+      })()
     )
 
   if (!scrollInside) {
