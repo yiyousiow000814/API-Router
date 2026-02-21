@@ -230,6 +230,9 @@ export function evolveDevStatus(current: Status | null): Status {
   if (level === 'info' && providers[selectedProvider] && providers[selectedProvider].status !== 'closed') {
     providers[selectedProvider] = {
       ...providers[selectedProvider],
+      status: 'healthy',
+      consecutive_failures: 0,
+      last_error: '',
       last_ok_at_unix_ms: now,
     }
   }

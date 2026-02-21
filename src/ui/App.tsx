@@ -232,7 +232,7 @@ export default function App() {
     })
   }
   const { switchPage } = usePageScroll({ containerRef, mainAreaRef, activePage, setActivePage: (next) => setActivePage(next as TopPage) })
-  const handleOpenLastErrorInEventLog = (payload: LastErrorJump) => {
+  const handleOpenLastErrorInEventLog = useCallback((payload: LastErrorJump) => {
     const nonce = Date.now()
     setEventLogFocusRequest({
       provider: payload.provider,
@@ -241,7 +241,7 @@ export default function App() {
       nonce,
     })
     switchPage('event_log')
-  }
+  }, [switchPage])
   const handleEventLogFocusRequestHandled = (nonce: number) => {
     setEventLogFocusRequest((current) => {
       if (!current) return current
