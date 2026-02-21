@@ -23,17 +23,12 @@ pub(crate) fn provider_has_remaining_quota(quota_snapshots: &Value, provider: &s
             snap.get("monthly_budget_usd").and_then(|v| v.as_f64()),
         ),
     ];
-    let mut saw_budget = false;
     for (spent, budget) in budget_pairs {
         if let (Some(spent), Some(budget)) = (spent, budget) {
-            saw_budget = true;
             if budget <= 0.0 || spent >= budget {
                 return false;
             }
         }
-    }
-    if saw_budget {
-        return true;
     }
 
     if let Some(remaining) = snap.get("remaining").and_then(|v| v.as_f64()) {
