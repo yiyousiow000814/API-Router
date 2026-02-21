@@ -219,7 +219,7 @@
   opacity: 0.48;
 }
 
-.aoProviderConfigDisabled .aoStatusSwitch {
+.aoProviderConfigDisabled .aoActionBtnStatus {
   filter: none;
   opacity: 1;
 }
@@ -250,71 +250,44 @@
   border-color: rgba(var(--ao-accent-rgb), 0.75);
 }
 
-.aoStatusSwitch {
-  width: 52px;
-  height: 30px;
-  border-radius: 999px;
-  border: 1px solid rgba(13, 18, 32, 0.18);
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 3px;
-  box-sizing: border-box;
-  flex: 0 0 auto;
-  cursor: pointer;
-  overflow: hidden;
-  transition: border-color 140ms ease, box-shadow 140ms ease, transform 100ms ease, background 140ms ease;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
+.aoActionBtnStatus {
+  min-width: 112px;
+  justify-content: center;
 }
 
-.aoStatusSwitch.is-on {
-  background: #24c66f;
-  border-color: #17a85b;
-  justify-content: flex-start;
+.aoActionBtnStatusOn {
+  border-color: rgba(13, 18, 32, 0.18);
+  background: rgba(255, 255, 255, 0.9);
 }
 
-.aoStatusSwitch.is-off {
-  background: #efeff2;
-  border-color: rgba(13, 18, 32, 0.22);
-  justify-content: flex-end;
+.aoActionBtnStatusOn:hover {
+  border-color: rgba(13, 18, 32, 0.4);
+  background: rgba(var(--ao-accent-rgb), 0.06);
 }
 
-.aoStatusSwitch:hover {
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.5),
-    0 0 0 2px rgba(13, 18, 32, 0.08);
+.aoActionBtnStatusOff {
+  border-color: rgba(13, 18, 32, 0.18);
+  background: rgba(255, 255, 255, 0.9);
 }
 
-.aoStatusSwitch:active {
-  transform: translateY(0.5px);
+.aoActionBtnStatusOff:hover {
+  border-color: rgba(13, 18, 32, 0.4);
+  background: rgba(var(--ao-accent-rgb), 0.06);
 }
 
-.aoStatusSwitch:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-  filter: grayscale(0.35);
-}
-
-.aoStatusSwitchKnob {
-  width: 22px;
-  height: 22px;
+.aoStatusDot {
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: #ffffff;
-  border: 1px solid rgba(13, 18, 32, 0.1);
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.92);
-  position: absolute;
-  top: 3px;
-  transition: left 140ms ease, right 140ms ease;
+  box-shadow: 0 0 0 0.5px rgba(13, 18, 32, 0.08);
 }
 
-.aoStatusSwitch.is-on .aoStatusSwitchKnob {
-  right: 2px;
+.aoStatusDotOn {
+  background: #22c16f;
 }
 
-.aoStatusSwitch.is-off .aoStatusSwitchKnob {
-  left: 2px;
+.aoStatusDotOff {
+  background: #d64a66;
 }
 
 .aoProviderConfigHeader {
