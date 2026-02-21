@@ -285,11 +285,13 @@
 }
 
 .aoStatusDotOn {
-  background: #2ca066;
+  background: #1fcf79;
+  box-shadow: 0 0 0 0.5px rgba(17, 104, 63, 0.22), 0 0 6px rgba(31, 207, 121, 0.45);
 }
 
 .aoStatusDotOff {
-  background: #b01e3a;
+  background: #e04364;
+  box-shadow: 0 0 0 0.5px rgba(129, 24, 47, 0.22), 0 0 6px rgba(224, 67, 100, 0.45);
 }
 
 .aoProviderConfigHeader {
