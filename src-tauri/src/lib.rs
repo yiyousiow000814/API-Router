@@ -145,6 +145,22 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
         |provider: &str, model: &str, count: usize, input_tokens: u64, output_tokens: u64| {
             for i in 0..count {
                 let total = input_tokens.saturating_add(output_tokens);
+                let cache_create = if i % 4 == 0 {
+                    100_000 + ((i as u64 * 137_731) % 900_000)
+                } else {
+                    0
+                };
+                let cache_read = if i % 3 == 0 {
+                    100_000 + ((i as u64 * 219_541) % 900_000)
+                } else {
+                    0
+                };
+                let origin = if i % 2 == 0 {
+                    crate::constants::USAGE_ORIGIN_WINDOWS
+                } else {
+                    crate::constants::USAGE_ORIGIN_WSL2
+                };
+                let session_id = format!("test-session-{}", (i % 9) + 1);
                 state.gateway.store.record_success_with_model(
                     provider,
                     &json!({
@@ -154,11 +170,14 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
                             "input_tokens": input_tokens,
                             "output_tokens": output_tokens,
                             "total_tokens": total,
+                            "cache_creation_input_tokens": cache_create,
+                            "cache_read_input_tokens": cache_read,
                         }
                     }),
                     Some("test"),
                     None,
-                    crate::constants::USAGE_ORIGIN_UNKNOWN,
+                    origin,
+                    Some(session_id.as_str()),
                 );
             }
         };
@@ -474,6 +493,8 @@ pub fn run() {
             commands::codex_account_logout,
             commands::codex_account_refresh,
             commands::get_usage_statistics,
+            commands::get_usage_request_entries,
+            commands::get_usage_request_daily_totals,
             commands::get_spend_history,
             commands::set_spend_history_entry
         ])

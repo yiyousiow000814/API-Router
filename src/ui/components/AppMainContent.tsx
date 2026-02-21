@@ -6,7 +6,7 @@ import { UsageStatisticsPanel } from './UsageStatisticsPanel'
 import type { LastErrorJump } from './ProvidersTable'
 
 type Props = {
-  activePage: 'dashboard' | 'usage_statistics' | 'provider_switchboard' | 'event_log'
+  activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
   status: any
   config: any
   providers: any[]
@@ -80,8 +80,15 @@ export function AppMainContent(props: Props) {
     switchboardProps,
   } = props
 
-  if (activePage === 'usage_statistics') {
-    return <UsageStatisticsPanel {...usageProps} fmtWhen={fmtWhen} />
+  if (activePage === 'usage_statistics' || activePage === 'usage_requests') {
+    return (
+      <UsageStatisticsPanel
+        {...usageProps}
+        fmtWhen={fmtWhen}
+        forceDetailsTab={activePage === 'usage_requests' ? 'requests' : 'analytics'}
+        showFilters={activePage !== 'usage_requests'}
+      />
+    )
   }
 
   if (activePage === 'provider_switchboard') {

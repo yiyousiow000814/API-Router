@@ -25,7 +25,7 @@ type ScheduleCurrencyMenuState = {
 } | null
 
 type Params = {
-  activePage: 'dashboard' | 'usage_statistics' | 'provider_switchboard' | 'event_log'
+  activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
   refreshUsageStatistics: (options?: { silent?: boolean }) => Promise<void>
   usageWindowHours: number
   usageFilterProviders: string[]

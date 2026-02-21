@@ -44,12 +44,13 @@ import { useAppActions } from './hooks/useAppActions'
 import { useUsageOpsBridge } from './hooks/useUsageOpsBridge'
 import { useUsageUiDerived } from './hooks/useUsageUiDerived'
 import { useMainContentCallbacks } from './hooks/useMainContentCallbacks'
+import { useTopNavIntentPrefetch } from './hooks/useTopNavIntentPrefetch'
 import {
   buildCodexSwapBadge,
   resolveCliHomes,
 } from './utils/switchboard'
 import { usageProviderRowKey } from './utils/usageStatisticsView'
-type TopPage = 'dashboard' | 'usage_statistics' | 'provider_switchboard' | 'event_log'
+type TopPage = 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
 const RAW_DRAFT_WINDOWS_KEY = '__draft_windows__'
 const RAW_DRAFT_WSL_KEY = '__draft_wsl2__'
 const RAW_DRAFT_STORAGE_KEY = 'ao.rawConfigDraft.shared.v1'
@@ -58,7 +59,6 @@ const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.wsl2.v1'
 const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
 const EVENT_LOG_PRELOAD_REFRESH_MS = 15_000
 const EVENT_LOG_PRELOAD_LIMIT = 2000
-const USAGE_STATS_INTENT_PREFETCH_COOLDOWN_MS = 60_000
 export default function App() {
   const isDevPreview = useMemo(() => {
     if (!import.meta.env.DEV) return false
@@ -217,8 +217,6 @@ export default function App() {
   const usagePricingLastSavedSigRef = useRef<Record<string, string>>({})
   const usageScheduleLastSavedSigRef = useRef<string>('')
   const usageScheduleLastSavedByProviderRef = useRef<Record<string, string>>({})
-  const usageStatsIntentPrefetchAtRef = useRef<number>(0)
-  const usageStatsIntentPrefetchInFlightRef = useRef<boolean>(false)
   const toastTimerRef = useRef<number | null>(null)
   const rawConfigTestFailOnceRef = useRef<Record<string, boolean>>({})
   const eventLogPreloadSeqRef = useRef(0)
@@ -798,22 +796,38 @@ export default function App() {
     setUsageHistoryEditCell,
     usageHistoryDrafts,
   })
-  const handleUsageStatisticsIntentPrefetch = useCallback(() => {
-    if (activePage === 'usage_statistics') return
-    if (usageStatsIntentPrefetchInFlightRef.current) return
-    const now = Date.now()
-    if (
-      now - usageStatsIntentPrefetchAtRef.current <
-      USAGE_STATS_INTENT_PREFETCH_COOLDOWN_MS
-    ) {
-      return
+  const {
+    handleUsageStatisticsIntentPrefetch,
+    handleUsageRequestsIntentPrefetch,
+  } = useTopNavIntentPrefetch({
+    activePage,
+    refreshUsageStatistics,
+  })
+  const usageRequestsWarmupStartedRef = useRef(false)
+  useEffect(() => {
+    if (usageRequestsWarmupStartedRef.current) return
+    usageRequestsWarmupStartedRef.current = true
+    if (typeof window === 'undefined') return
+
+    const runWarmup = () => {
+      handleUsageRequestsIntentPrefetch()
     }
-    usageStatsIntentPrefetchAtRef.current = now
-    usageStatsIntentPrefetchInFlightRef.current = true
-    void refreshUsageStatistics({ silent: true }).finally(() => {
-      usageStatsIntentPrefetchInFlightRef.current = false
-    })
-  }, [activePage, refreshUsageStatistics])
+
+    const w = window as unknown as {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
+      cancelIdleCallback?: (id: number) => void
+      setTimeout: typeof window.setTimeout
+      clearTimeout: typeof window.clearTimeout
+    }
+
+    if (typeof w.requestIdleCallback === 'function') {
+      const id = w.requestIdleCallback(runWarmup, { timeout: 1500 })
+      return () => w.cancelIdleCallback?.(id)
+    }
+
+    const timer = w.setTimeout(runWarmup, 450)
+    return () => w.clearTimeout(timer)
+  }, [handleUsageRequestsIntentPrefetch])
   const {
     providerGroupLabelByName, linkedProvidersForApiKey, switchboardProviderCards, switchboardModeLabel,
     switchboardModelProviderLabel, switchboardTargetDirsLabel, usageSummary, usageByProvider, usageTotalInputTokens,
@@ -988,6 +1002,7 @@ export default function App() {
               onSwitchPage={switchPage}
               onOpenGettingStarted={() => setInstructionModalOpen(true)}
               onUsageStatisticsIntent={handleUsageStatisticsIntentPrefetch}
+              onUsageRequestsIntent={handleUsageRequestsIntentPrefetch}
             />
           </div>
           {/* Surface errors via toast to avoid layout shifts. */}
@@ -1076,6 +1091,7 @@ export default function App() {
                 usageProviderRowKey,
                 formatPricingSource,
                 usageProviderTotalsAndAverages,
+                usageActivityUnixMs: status?.last_activity_unix_ms ?? null,
               }}
               switchboardProps={{
                 providerSwitchStatus,

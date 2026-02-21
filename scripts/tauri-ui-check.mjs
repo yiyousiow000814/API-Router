@@ -33,6 +33,8 @@ import {
   runEventLogCalendarDailyStatsCase,
   runPricingTimelineModalCase,
   runProviderStatisticsKeyStyleCase,
+  runRequestsFirstPaintStabilityCase,
+  runTopNavSwitchResponsivenessCase,
   runSwitchboardSwitchCase,
   runUsageHistoryScrollCase,
   seedHistoryRows,
@@ -277,7 +279,7 @@ async function main() {
 
       await waitSectionHeading(driver, 'Providers', 45000)
       await waitSectionHeading(driver, 'Sessions')
-      await waitSectionHeading(driver, 'Events')
+      await waitVisible(driver, By.xpath(`//button[contains(@class,'aoTopNavBtn')][.//span[normalize-space()='Events']]`), 15000)
 
       console.log('[ui:tauri] Subtest A: getting started modal')
       await openModalAndCloseOptional(
@@ -291,7 +293,7 @@ async function main() {
       await clickButtonByText(driver, 'Rotate', 15000)
 
       console.log('[ui:tauri] Subtest A: usage statistics page')
-      await clickTopNav(driver, 'Usage Statistics')
+      await clickTopNav(driver, 'Analytics')
       await waitPageTitle(driver, 'Usage Statistics')
       await waitVisible(driver, By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Provider Statistics']`), 12000)
       await runProviderStatisticsKeyStyleCase(driver, screenshotPath)
@@ -314,6 +316,15 @@ async function main() {
       await runSwitchboardSwitchCase(driver, directProvider, uiProfileDir)
 
       console.log('[ui:tauri] Subtest A: back to dashboard')
+      await clickTopNav(driver, 'Dashboard')
+      await waitSectionHeading(driver, 'Providers')
+      console.log('[ui:tauri] Subtest A2b: top nav responsiveness contract')
+      const topNavProbe = await runTopNavSwitchResponsivenessCase(driver, screenshotPath)
+      console.log(
+        `[ui:tauri] Top nav probe: stepLatencies=${topNavProbe.stepLatencies.map((v) => `${v.toFixed(1)}ms`).join(', ')} max=${topNavProbe.maxLatency.toFixed(1)}ms frameGap=${topNavProbe.maxFrameGap.toFixed(1)}ms`,
+      )
+      console.log('[ui:tauri] Subtest A2c: requests first paint stability')
+      await runRequestsFirstPaintStabilityCase(driver, screenshotPath)
       await clickTopNav(driver, 'Dashboard')
       await waitSectionHeading(driver, 'Providers')
       console.log('[ui:tauri] Subtest A3: font baseline snapshot contract')
