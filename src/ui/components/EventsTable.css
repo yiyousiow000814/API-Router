@@ -32,6 +32,14 @@
   text-align: center;
 }
 
+.aoEventsTable tbody tr td {
+  background: transparent;
+}
+
+.aoEventsTable tbody tr:nth-child(even) td {
+  background: transparent;
+}
+
 .aoTable th.aoEventsLevelCell {
   text-align: center;
 }

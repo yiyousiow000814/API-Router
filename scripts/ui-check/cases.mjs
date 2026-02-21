@@ -341,6 +341,172 @@ export async function runEventLogCalendarDailyStatsCase(driver, directProvider, 
   await clickButtonByText(driver, 'OK', 12000)
 }
 
+export async function runDashboardViewJumpFocusStabilityCase(driver, screenshotPath) {
+  await clickTopNav(driver, 'Dashboard')
+  await waitSectionHeading(driver, 'Providers', 15000)
+
+  const allRows = await tauriInvoke(driver, 'get_event_log_entries', {
+    fromUnixMs: null,
+    toUnixMs: null,
+    limit: 2000,
+  })
+  const sortedRows = Array.isArray(allRows) ? [...allRows].sort((a, b) => Number(b?.unix_ms || 0) - Number(a?.unix_ms || 0)) : []
+  const candidate = sortedRows.slice(0, 200).find((row) => row?.level === 'error') || sortedRows.find((row) => row?.level === 'error')
+  if (!candidate) {
+    warnOrFail('Dashboard view jump focus test skipped: no error row in event log entries.')
+    return { skipped: true }
+  }
+
+  const jumped = await driver.executeScript(`
+    const payload = arguments[0];
+    const hook = window.__ui_check__;
+    if (!hook || typeof hook.jumpToEventLogError !== 'function') return false;
+    return Boolean(hook.jumpToEventLogError(payload));
+  `, {
+    provider: String(candidate.provider || ''),
+    unixMs: Number(candidate.unix_ms || 0),
+    message: String(candidate.message || ''),
+  })
+  if (!jumped) {
+    warnOrFail('Dashboard view jump focus test skipped: ui-check hook did not find an error event.')
+    return { skipped: true }
+  }
+  await waitSectionHeading(driver, 'Event Log', 20000)
+  await waitVisible(driver, By.css('.aoEventsTableWrap'), 12000)
+
+  const directProvider = await pickDirectProvider(driver)
+
+  const probe = await driver.executeAsyncScript(`
+    const provider = arguments[0];
+    const done = arguments[arguments.length - 1];
+    const minFlashMs = 900;
+    const timeoutMs = 4500;
+    const start = performance.now();
+    let seenAt = null;
+    let endedAt = null;
+    let updatesStarted = false;
+
+    const invokeFn =
+      (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) ||
+      (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke);
+    const emitUpdates = async () => {
+      if (typeof invokeFn !== 'function') return;
+      for (let i = 0; i < 3; i += 1) {
+        try {
+          await invokeFn('set_provider_key', {
+            provider,
+            key: 'sk-ui-check-focus-refresh-' + Date.now() + '-' + i,
+          });
+        } catch {}
+        await new Promise((r) => setTimeout(r, 120));
+      }
+    };
+
+    const loop = (ts) => {
+      const active = document.querySelector('tr.aoEventRowFocusFlash');
+      if (active && seenAt == null) seenAt = ts;
+      if (active && !updatesStarted) {
+        updatesStarted = true;
+        void emitUpdates();
+      }
+      if (!active && seenAt != null && endedAt == null) endedAt = ts;
+
+      if (seenAt != null && ts - seenAt >= minFlashMs) {
+        done({
+          ok: Boolean(active),
+          seenAt,
+          endedAt,
+          elapsed: ts - seenAt,
+        });
+        return;
+      }
+
+      if (ts - start >= timeoutMs) {
+        done({
+          ok: false,
+          seenAt,
+          endedAt,
+          timeout: true,
+        });
+        return;
+      }
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  `, directProvider)
+
+  if (!probe?.ok) {
+    const b64 = await driver.takeScreenshot()
+    fs.writeFileSync(screenshotPath.replace('.png', '-dashboard-view-focus-interrupted.png'), Buffer.from(b64, 'base64'))
+    const detail = JSON.stringify(probe || {})
+    throw new Error(`Dashboard->Events focus flash interrupted or missing: ${detail}`)
+  }
+
+  return probe
+}
+
+export async function runEventLogScrollAnchorStabilityCase(driver, screenshotPath, directProvider) {
+  await clickTopNav(driver, 'Events')
+  await waitSectionHeading(driver, 'Event Log', 20000)
+  await waitVisible(driver, By.css('.aoEventsTableWrap'), 12000)
+
+  const before = await driver.executeScript(`
+    const wrap = document.querySelector('.aoEventsTableWrap');
+    if (!wrap) return null;
+    const maxScroll = Math.max(0, wrap.scrollHeight - wrap.clientHeight);
+    wrap.scrollTop = Math.floor(maxScroll * 0.45);
+    const wrapRect = wrap.getBoundingClientRect();
+    const rows = Array.from(wrap.querySelectorAll('tbody tr'));
+    const firstVisible = rows.find((row) => row.getBoundingClientRect().bottom > wrapRect.top + 1) || null;
+    if (!firstVisible) return null;
+    return {
+      key: (firstVisible.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 220),
+      top: firstVisible.getBoundingClientRect().top - wrapRect.top,
+      scrollTop: wrap.scrollTop,
+    };
+  `)
+  if (!before?.key) {
+    warnOrFail('Event log scroll anchor test skipped: no visible row found.')
+    return { skipped: true }
+  }
+
+  for (let i = 0; i < 4; i += 1) {
+    await tauriInvoke(driver, 'set_provider_key', {
+      provider: directProvider,
+      key: `sk-ui-check-scroll-anchor-${Date.now()}-${i}`,
+    })
+    await new Promise((r) => setTimeout(r, 180))
+  }
+  await new Promise((r) => setTimeout(r, 220))
+
+  const after = await driver.executeScript(`
+    const wrap = document.querySelector('.aoEventsTableWrap');
+    if (!wrap) return null;
+    const wrapRect = wrap.getBoundingClientRect();
+    const rows = Array.from(wrap.querySelectorAll('tbody tr'));
+    const firstVisible = rows.find((row) => row.getBoundingClientRect().bottom > wrapRect.top + 1) || null;
+    if (!firstVisible) return null;
+    return {
+      key: (firstVisible.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 220),
+      top: firstVisible.getBoundingClientRect().top - wrapRect.top,
+      scrollTop: wrap.scrollTop,
+    };
+  `)
+  if (!after?.key) {
+    warnOrFail('Event log scroll anchor test skipped: no visible row found after updates.')
+    return { skipped: true }
+  }
+
+  if (before.key !== after.key || Math.abs(Number(after.top) - Number(before.top)) > 6) {
+    const b64 = await driver.takeScreenshot()
+    fs.writeFileSync(screenshotPath.replace('.png', '-event-log-scroll-anchor-drift.png'), Buffer.from(b64, 'base64'))
+    throw new Error(
+      `Event Log scroll anchor drifted during prepend updates (before="${before.key}", after="${after.key}", topDelta=${(Number(after.top) - Number(before.top)).toFixed(1)})`,
+    )
+  }
+  return { before, after }
+}
+
 export async function runProviderStatisticsKeyStyleCase(driver, screenshotPath) {
   const showButtons = await driver.findElements(
     By.xpath(`//button[contains(@class,'aoTinyBtn') and normalize-space()='Show']`),

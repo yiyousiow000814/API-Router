@@ -14,6 +14,7 @@ type UseAppPollingOptions = {
   refreshProviderSwitchStatus: () => Promise<void>
   refreshQuotaAll: (options?: { silent?: boolean }) => Promise<unknown>
   onDevPreviewBootstrap: () => void
+  onDevPreviewTick: () => void
 }
 
 export function useAppPolling({
@@ -28,6 +29,7 @@ export function useAppPolling({
   refreshProviderSwitchStatus,
   refreshQuotaAll,
   onDevPreviewBootstrap,
+  onDevPreviewTick,
 }: UseAppPollingOptions) {
   const refreshStatusRef = useRef(refreshStatus)
   const refreshConfigRef = useRef(refreshConfig)
@@ -50,8 +52,9 @@ export function useAppPolling({
   useEffect(() => {
     if (isDevPreview) {
       onDevPreviewBootstrap()
+      const timer = window.setInterval(() => onDevPreviewTick(), 1800)
       void refreshProviderSwitchStatusRef.current()
-      return
+      return () => window.clearInterval(timer)
     }
     void refreshStatusRef.current()
     void refreshConfigRef.current()
@@ -94,7 +97,7 @@ export function useAppPolling({
       }
       idleUsageSchedulerRef.current = null
     }
-  }, [isDevPreview, onDevPreviewBootstrap])
+  }, [isDevPreview, onDevPreviewBootstrap, onDevPreviewTick])
 
   useEffect(() => {
     if (isDevPreview) return

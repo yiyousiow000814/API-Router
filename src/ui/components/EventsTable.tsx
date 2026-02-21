@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import type { Status } from '../types'
 import { fmtAgo, fmtWhen } from '../utils/format'
@@ -36,6 +36,31 @@ function formatEventMessageDialog(message: string): string {
   return message.replace(/;\s+/g, ';\n')
 }
 
+function stableFieldsIdentity(fields: Record<string, unknown> | null): string {
+  if (!fields) return ''
+  const keys = Object.keys(fields).sort()
+  const ordered: Record<string, unknown> = {}
+  for (const key of keys) ordered[key] = fields[key]
+  return JSON.stringify(ordered)
+}
+
+function eventIdentity(event: Status['recent_events'][number]): string {
+  return `${event.unix_ms}|${event.provider}|${event.level}|${event.code}|${event.message}|${stableFieldsIdentity(event.fields)}`
+}
+
+function withStableRowKeys(
+  rows: Status['recent_events'],
+  scope: string,
+): Array<{ event: Status['recent_events'][number]; key: string }> {
+  const seen = new Map<string, number>()
+  return rows.map((event) => {
+    const id = eventIdentity(event)
+    const occurrence = seen.get(id) ?? 0
+    seen.set(id, occurrence + 1)
+    return { event, key: `${id}-${scope}-${occurrence}` }
+  })
+}
+
 export function isEventMessageOverflow(metrics: OverflowMetrics): boolean {
   return metrics.scrollHeight - metrics.clientHeight > 1 || metrics.scrollWidth - metrics.clientWidth > 1
 }
@@ -53,6 +78,15 @@ export function EventsTable({
   const [messageDialog, setMessageDialog] = useState<{ title: string; text: string } | null>(null)
   const [expandableMessageKeys, setExpandableMessageKeys] = useState<Record<string, true>>({})
   const allEvents = events ?? []
+  const allEventIds = useMemo(() => allEvents.map((event) => eventIdentity(event)), [allEvents])
+  const firstIndexByEventId = useMemo(() => {
+    const out = new Map<string, number>()
+    allEventIds.forEach((id, idx) => {
+      if (!out.has(id)) out.set(id, idx)
+    })
+    return out
+  }, [allEventIds])
+  const focusEventId = focusEvent ? eventIdentity(focusEvent) : ''
   const eventsTableSurfaceRef = useRef<HTMLDivElement | null>(null)
   const eventsTableWrapRef = useRef<HTMLDivElement | null>(null)
   const eventsScrollbarOverlayRef = useRef<HTMLDivElement | null>(null)
@@ -64,6 +98,10 @@ export function EventsTable({
   const focusFlashTimerRef = useRef<number | null>(null)
   const wasNearBottomRef = useRef(false)
   const messageTextRefs = useRef(new Map<string, HTMLSpanElement>())
+  const prevScrollHeightRef = useRef<number | null>(null)
+  const prevFirstEventIdRef = useRef('')
+  const scrollRestoreKeyRef = useRef<string | null>(null)
+  const pendingRestoreTopRef = useRef<number | null>(null)
 
   const setEventsScrollbarVisible = useCallback((visible: boolean) => {
     eventsTableSurfaceRef.current?.classList.toggle('aoEventsTableSurfaceScrollbarVisible', visible)
@@ -265,8 +303,10 @@ export function EventsTable({
   useEffect(() => {
     if (!scrollInside || typeof window === 'undefined') return
     const wrap = eventsTableWrapRef.current
-    if (wrap && scrollPersistKey) {
+    if (wrap && scrollPersistKey && scrollRestoreKeyRef.current !== scrollPersistKey) {
+      scrollRestoreKeyRef.current = scrollPersistKey
       const savedTop = SCROLL_TOP_BY_KEY.get(scrollPersistKey) ?? 0
+      pendingRestoreTopRef.current = savedTop
       const applySavedTop = () => {
         if (!eventsTableWrapRef.current) return
         eventsTableWrapRef.current.scrollTop = savedTop
@@ -287,7 +327,7 @@ export function EventsTable({
       }
       window.removeEventListener('resize', onResize)
     }
-  }, [scrollInside, scheduleEventsScrollbarSync, allEvents.length, splitByLevel, scrollPersistKey])
+  }, [scrollInside, scheduleEventsScrollbarSync, splitByLevel, scrollPersistKey])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -317,6 +357,46 @@ export function EventsTable({
   useEffect(() => {
     wasNearBottomRef.current = false
   }, [allEvents.length])
+
+  useLayoutEffect(() => {
+    if (!scrollInside) return
+    const wrap = eventsTableWrapRef.current
+    if (!wrap) return
+    const nextHeight = wrap.scrollHeight
+    const nextCount = allEvents.length
+    const nextFirstId = nextCount > 0 ? allEventIds[0] ?? '' : ''
+    const prevHeight = prevScrollHeightRef.current
+    const prevFirstId = prevFirstEventIdRef.current
+    const pendingRestoreTop = pendingRestoreTopRef.current
+
+    if (pendingRestoreTop != null) {
+      const maxScroll = Math.max(0, wrap.scrollHeight - wrap.clientHeight)
+      const shouldApply = pendingRestoreTop <= 0 || maxScroll > 0
+      if (shouldApply) {
+        const clamped = Math.max(0, Math.min(pendingRestoreTop, maxScroll))
+        wrap.scrollTop = clamped
+        scheduleEventsScrollbarSync()
+        pendingRestoreTopRef.current = null
+      }
+    }
+
+    const prevFirstIndexInNext = prevFirstId ? (firstIndexByEventId.get(prevFirstId) ?? -1) : -1
+    const prependedCount = prevFirstIndexInNext > 0 ? prevFirstIndexInNext : 0
+    const prepended = prependedCount > 0
+    const grew = prevHeight != null && nextHeight > prevHeight + 1
+    const nearTop = wrap.scrollTop <= 4
+    if (pendingRestoreTopRef.current == null && prepended && !nearTop) {
+      const firstRow = wrap.querySelector('tbody tr')
+      const fallbackRowHeight = firstRow instanceof HTMLElement ? firstRow.offsetHeight : 36
+      const delta = grew && prevHeight != null ? (nextHeight - prevHeight) : (fallbackRowHeight * prependedCount)
+      wrap.scrollTop += Math.max(0, delta)
+      if (scrollPersistKey) SCROLL_TOP_BY_KEY.set(scrollPersistKey, wrap.scrollTop ?? 0)
+      scheduleEventsScrollbarSync()
+    }
+
+    prevScrollHeightRef.current = wrap.scrollHeight
+    prevFirstEventIdRef.current = nextFirstId
+  }, [allEventIds, allEvents.length, firstIndexByEventId, scheduleEventsScrollbarSync, scrollInside, scrollPersistKey])
 
   useEffect(() => {
     if (!focusNonce || !focusEvent) return
@@ -349,7 +429,7 @@ export function EventsTable({
     </colgroup>
   )
 
-  const renderRow = (e: Status['recent_events'][number], key: string) => {
+  const renderRow = (e: Status['recent_events'][number], key: string, isFocus: boolean) => {
     const isError = e.level === 'error'
     const isWarning = e.level === 'warning'
     const canExpandMessage = !!expandableMessageKeys[key]
@@ -381,8 +461,6 @@ export function EventsTable({
           .filter(Boolean)
           .join('\n')
       : ''
-
-    const isFocus = focusEvent != null && e === focusEvent
 
     return (
       <tr
@@ -469,9 +547,14 @@ export function EventsTable({
   const renderBodyRows = () =>
     !splitByLevel ? (
       [...allEvents].sort((a, b) => b.unix_ms - a.unix_ms).length ? (
-        [...allEvents]
-          .sort((a, b) => b.unix_ms - a.unix_ms)
-          .map((e, idx) => renderRow(e, `${e.unix_ms}-all-${idx}`))
+        (() => {
+          const keyedAll = withStableRowKeys(
+            [...allEvents].sort((a, b) => b.unix_ms - a.unix_ms),
+            'all',
+          )
+          const focusKey = focusEventId ? keyedAll.find((row) => eventIdentity(row.event) === focusEventId)?.key ?? null : null
+          return keyedAll.map(({ event, key }) => renderRow(event, key, key === focusKey))
+        })()
       ) : (
         <tr>
           <td colSpan={5} className="aoHint">
@@ -480,57 +563,70 @@ export function EventsTable({
         </tr>
       )
     ) : (
-      <>
-        <tr className="aoEventsSection">
-          <td colSpan={5}>
-            <span>Info</span>
-          </td>
-        </tr>
-        {infos.length ? (
-          infos.map((e, idx) => renderRow(e, `${e.unix_ms}-info-${idx}`))
-        ) : (
-          <tr>
-            <td colSpan={5} className="aoHint">
-              No info events
-            </td>
-          </tr>
-        )}
-
-        {infos.length ? (
-          <tr className="aoEventsGap" aria-hidden="true">
-            <td colSpan={5} />
-          </tr>
-        ) : null}
-
-        <tr className="aoEventsSection">
-          <td colSpan={5}>
-            <div className="aoEventsSectionRow">
-              <div>
-                <span>Errors / Warnings</span>
-              </div>
-            </div>
-          </td>
-        </tr>
-        {(errors.length || warnings.length) ? (
+      (() => {
+        const keyedInfos = withStableRowKeys(infos, 'info')
+        const keyedIssues = withStableRowKeys(
           [...warnings, ...errors]
             .sort((a, b) => b.unix_ms - a.unix_ms)
-            .slice(0, 5)
-            .map((e, idx) => renderRow(e, `${e.unix_ms}-issue-${idx}`))
-        ) : (
-          <tr>
-            <td colSpan={5} className="aoHint">
-              No errors or warnings
-            </td>
-          </tr>
-        )}
-      </>
+            .slice(0, 5),
+          'issue',
+        )
+        const focusKey = focusEventId
+          ? keyedInfos.find((row) => eventIdentity(row.event) === focusEventId)?.key
+            ?? keyedIssues.find((row) => eventIdentity(row.event) === focusEventId)?.key
+            ?? null
+          : null
+        return (
+          <>
+            <tr className="aoEventsSection">
+              <td colSpan={5}>
+                <span>Info</span>
+              </td>
+            </tr>
+            {keyedInfos.length ? (
+              keyedInfos.map(({ event, key }) => renderRow(event, key, key === focusKey))
+            ) : (
+              <tr>
+                <td colSpan={5} className="aoHint">
+                  No info events
+                </td>
+              </tr>
+            )}
+
+            {keyedInfos.length ? (
+              <tr className="aoEventsGap" aria-hidden="true">
+                <td colSpan={5} />
+              </tr>
+            ) : null}
+
+            <tr className="aoEventsSection">
+              <td colSpan={5}>
+                <div className="aoEventsSectionRow">
+                  <div>
+                    <span>Errors / Warnings</span>
+                  </div>
+                </div>
+              </td>
+            </tr>
+            {keyedIssues.length ? (
+              keyedIssues.map(({ event, key }) => renderRow(event, key, key === focusKey))
+            ) : (
+              <tr>
+                <td colSpan={5} className="aoHint">
+                  No errors or warnings
+                </td>
+              </tr>
+            )}
+          </>
+        )
+      })()
     )
 
   if (!scrollInside) {
     return (
       <>
         <div className="aoEventsTablePlain">
-          <table className="aoTable aoTableFixed">
+          <table className="aoTable aoTableFixed aoEventsTable">
             {renderColGroup()}
             <thead>
               <tr>
@@ -604,7 +700,7 @@ export function EventsTable({
           }}
           onTouchMove={activateEventsScrollbarUi}
         >
-          <table className="aoTable aoTableFixed">
+          <table className="aoTable aoTableFixed aoEventsTable">
             {renderColGroup()}
             <tbody>{renderBodyRows()}</tbody>
           </table>

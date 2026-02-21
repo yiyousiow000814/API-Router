@@ -10,7 +10,7 @@ import {
   fmtUsdMaybe as formatUsdMaybe,
   fmtUsageBucketLabel as formatUsageBucketLabel,
 } from './utils/usageDisplay'
-import { devConfig, devStatus, parseDevFlag, type SpendHistoryRow } from './devMockData'
+import { devConfig, devStatus, evolveDevStatus, parseDevFlag, type SpendHistoryRow } from './devMockData'
 import type {
   ProviderScheduleDraft,
   UsageHistoryDraft,
@@ -232,7 +232,7 @@ export default function App() {
     })
   }
   const { switchPage } = usePageScroll({ containerRef, mainAreaRef, activePage, setActivePage: (next) => setActivePage(next as TopPage) })
-  const handleOpenLastErrorInEventLog = (payload: LastErrorJump) => {
+  const handleOpenLastErrorInEventLog = useCallback((payload: LastErrorJump) => {
     const nonce = Date.now()
     setEventLogFocusRequest({
       provider: payload.provider,
@@ -241,7 +241,7 @@ export default function App() {
       nonce,
     })
     switchPage('event_log')
-  }
+  }, [switchPage])
   const handleEventLogFocusRequestHandled = (nonce: number) => {
     setEventLogFocusRequest((current) => {
       if (!current) return current
@@ -252,6 +252,39 @@ export default function App() {
     () => (eventLogPreloadEntries.length > 0 ? eventLogPreloadEntries : status?.recent_events ?? []),
     [eventLogPreloadEntries, status?.recent_events],
   )
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const w = window as Window & {
+      __ui_check__?: {
+        jumpToEventLogError?: ((payload?: { provider: string; unixMs: number; message: string }) => boolean) | undefined
+      }
+    }
+    const prev = w.__ui_check__?.jumpToEventLogError
+    const next = w.__ui_check__ ?? {}
+    next.jumpToEventLogError = (payload) => {
+      const candidate =
+        payload
+          ? {
+              provider: payload.provider,
+              unix_ms: payload.unixMs,
+              message: payload.message,
+            }
+          : eventLogSeedEvents.find((row) => row.level === 'error')
+      if (!candidate) return false
+      handleOpenLastErrorInEventLog({
+        provider: candidate.provider,
+        unixMs: candidate.unix_ms,
+        message: candidate.message,
+      })
+      return true
+    }
+    w.__ui_check__ = next
+    return () => {
+      if (!w.__ui_check__) return
+      if (prev) w.__ui_check__.jumpToEventLogError = prev
+      else delete w.__ui_check__.jumpToEventLogError
+    }
+  }, [eventLogSeedEvents, handleOpenLastErrorInEventLog])
   useEffect(() => {
     let cancelled = false
     const loadEventLogPreload = async () => {
@@ -661,6 +694,9 @@ export default function App() {
     devStatus,
     devConfig,
   })
+  const onDevPreviewTick = useCallback(() => {
+    setStatus((prev) => evolveDevStatus(prev))
+  }, [])
   const codexSwapBadge = useMemo(() => {
     const windowsHome = codexSwapUseWindows ? codexSwapDir1.trim() : ''
     const wslHome = codexSwapUseWsl ? codexSwapDir2.trim() : ''
@@ -902,6 +938,7 @@ export default function App() {
     refreshProviderSwitchStatus,
     refreshQuotaAll,
     onDevPreviewBootstrap,
+    onDevPreviewTick,
   })
   useAppUsageEffects({
     activePage,

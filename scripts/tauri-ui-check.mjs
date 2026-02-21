@@ -31,6 +31,8 @@ import {
   pickDirectProvider,
   runFontBaselineCase,
   runEventLogCalendarDailyStatsCase,
+  runDashboardViewJumpFocusStabilityCase,
+  runEventLogScrollAnchorStabilityCase,
   runPricingTimelineModalCase,
   runProviderStatisticsKeyStyleCase,
   runRequestsFirstPaintStabilityCase,
@@ -304,6 +306,10 @@ async function main() {
       await runPricingTimelineModalCase(driver, screenshotPath)
       console.log('[ui:tauri] Subtest A1b: event log calendar daily stats contract')
       await runEventLogCalendarDailyStatsCase(driver, directProvider, screenshotPath)
+      console.log('[ui:tauri] Subtest A1c: dashboard view jump focus stability')
+      await runDashboardViewJumpFocusStabilityCase(driver, screenshotPath)
+      console.log('[ui:tauri] Subtest A1d: event log scroll anchor stability')
+      await runEventLogScrollAnchorStabilityCase(driver, screenshotPath, directProvider)
 
       console.log('[ui:tauri] Subtest A: provider switchboard page')
       await clickTopNav(driver, 'Provider Switchboard')
