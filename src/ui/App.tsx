@@ -253,6 +253,39 @@ export default function App() {
     [eventLogPreloadEntries, status?.recent_events],
   )
   useEffect(() => {
+    if (typeof window === 'undefined') return
+    const w = window as Window & {
+      __ui_check__?: {
+        jumpToEventLogError?: ((payload?: { provider: string; unixMs: number; message: string }) => boolean) | undefined
+      }
+    }
+    const prev = w.__ui_check__?.jumpToEventLogError
+    const next = w.__ui_check__ ?? {}
+    next.jumpToEventLogError = (payload) => {
+      const candidate =
+        payload
+          ? {
+              provider: payload.provider,
+              unix_ms: payload.unixMs,
+              message: payload.message,
+            }
+          : eventLogSeedEvents.find((row) => row.level === 'error')
+      if (!candidate) return false
+      handleOpenLastErrorInEventLog({
+        provider: candidate.provider,
+        unixMs: candidate.unix_ms,
+        message: candidate.message,
+      })
+      return true
+    }
+    w.__ui_check__ = next
+    return () => {
+      if (!w.__ui_check__) return
+      if (prev) w.__ui_check__.jumpToEventLogError = prev
+      else delete w.__ui_check__.jumpToEventLogError
+    }
+  }, [eventLogSeedEvents, handleOpenLastErrorInEventLog])
+  useEffect(() => {
     let cancelled = false
     const loadEventLogPreload = async () => {
       const reqId = ++eventLogPreloadSeqRef.current
@@ -645,6 +678,7 @@ export default function App() {
     setPreferred,
     applyProviderOrder,
     onDevPreviewBootstrap,
+    onDevPreviewTick,
   } = useAppActions({
     status,
     config,
@@ -902,6 +936,7 @@ export default function App() {
     refreshProviderSwitchStatus,
     refreshQuotaAll,
     onDevPreviewBootstrap,
+    onDevPreviewTick,
   })
   useAppUsageEffects({
     activePage,

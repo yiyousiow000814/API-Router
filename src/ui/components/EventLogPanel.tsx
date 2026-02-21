@@ -122,6 +122,11 @@ function parseDateInputToDayStart(dateText: string): number | null {
 }
 
 export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFocusRequestHandled }: Props) {
+  const hasTauriInvoke = useMemo(() => {
+    if (typeof window === 'undefined') return false
+    const w = window as unknown as { __TAURI__?: { core?: { invoke?: unknown } } }
+    return typeof w.__TAURI__?.core?.invoke === 'function'
+  }, [])
   const [sourceEvents, setSourceEvents] = useState<EventLogEntry[]>(() =>
     [...events].sort((a, b) => b.unix_ms - a.unix_ms),
   )
@@ -448,10 +453,14 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
     setTableVisibleCount(EVENT_LOG_TABLE_PAGE_SIZE)
   }, [dateFrom, dateTo, searchText, selectedLevels])
   useEffect(() => {
-    if (events.length && sourceEvents.length === 0) {
-      setSourceEvents([...events].sort((a, b) => b.unix_ms - a.unix_ms))
+    if (hasTauriInvoke) {
+      if (events.length && sourceEvents.length === 0) {
+        setSourceEvents([...events].sort((a, b) => b.unix_ms - a.unix_ms))
+      }
+      return
     }
-  }, [events, sourceEvents.length])
+    setSourceEvents([...events].sort((a, b) => b.unix_ms - a.unix_ms))
+  }, [events, hasTauriInvoke, sourceEvents.length])
   useEffect(() => {
     if (!dailyStatsSeed.length) return
     setDailyStats((prev) => {
@@ -475,18 +484,21 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
     mergeKnownYears(sourceEvents)
   }, [sourceEvents, mergeKnownYears])
   useEffect(() => {
+    if (!hasTauriInvoke) return
     void fetchEventLogEntries(fromDayStart, toDayStart)
-  }, [fetchEventLogEntries, fromDayStart, toDayStart])
+  }, [fetchEventLogEntries, fromDayStart, toDayStart, hasTauriInvoke])
   useEffect(() => {
+    if (!hasTauriInvoke) return
     void fetchEventLogDailyStats(fromDayStart, toDayStart)
-  }, [fetchEventLogDailyStats, fromDayStart, toDayStart])
+  }, [fetchEventLogDailyStats, fromDayStart, toDayStart, hasTauriInvoke])
   useEffect(() => {
+    if (!hasTauriInvoke) return
     const timer = window.setInterval(() => {
       void fetchEventLogEntries(fromDayStart, toDayStart)
       void fetchEventLogDailyStats(fromDayStart, toDayStart)
     }, 15_000)
     return () => window.clearInterval(timer)
-  }, [fetchEventLogDailyStats, fetchEventLogEntries, fromDayStart, toDayStart])
+  }, [fetchEventLogDailyStats, fetchEventLogEntries, fromDayStart, toDayStart, hasTauriInvoke])
   useEffect(() => {
     if (!openDatePicker) return
     setDateFrom(pickerDateFrom)
@@ -496,8 +508,9 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
     if (!openDatePicker) setPickerHeaderEditOpen(false)
   }, [openDatePicker])
   useEffect(() => {
+    if (!hasTauriInvoke) return
     void refreshKnownEventYears()
-  }, [refreshKnownEventYears])
+  }, [refreshKnownEventYears, hasTauriInvoke])
   useEffect(() => {
     if (!focusRequest) return
     // Ensure the target row is not hidden by level/search/date filters.

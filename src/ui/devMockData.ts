@@ -18,6 +18,14 @@ export type SpendHistoryRow = {
 }
 
 const DEV_NOW = Date.now()
+const DEV_MAX_EVENTS = 800
+const DEV_LIVE_PROVIDERS = ['provider_1', 'provider_2', 'provider_3']
+const DEV_LIVE_SESSIONS = [
+  { codex: '019c4578-0f3c-7f82-a4f9-b41a1e65e242', wt: 'wt-8f42f1' },
+  { codex: '019c03fd-6ea4-7121-961f-9f9b64d2c1b5', wt: '7c757b99-7a1f-455a-b301-3e0271e7f615' },
+  { codex: '019c7f46-c5ec-7e2e-9205-4e00718a524e', wt: 'wsl:4504a762-cce0-40c8-ba5e-310424165b01' },
+  { codex: '019c9f18-3d72-7ce3-a9a1-2fd7f4d9d100', wt: '3f9d88a2-5f14-4f8e-a3be-214eb4f6c2b1' },
+]
 
 function buildDevRecentEvents(count = 200): NonNullable<Status['recent_events']> {
   const providers = ['provider_1', 'provider_2', 'provider_3']
@@ -104,6 +112,150 @@ function buildDevRecentEvents(count = 200): NonNullable<Status['recent_events']>
   }
 
   return out
+}
+
+function hasJumpableLastError(status: Status): boolean {
+  return Object.entries(status.providers).some(([providerName, provider]) => {
+    if (provider.status === 'closed') return false
+    const message = provider.last_error?.trim() ?? ''
+    if (!message || provider.last_fail_at_unix_ms <= 0) return false
+    return status.recent_events.some((row) => (
+      row.level === 'error' &&
+      row.provider === providerName &&
+      row.unix_ms === provider.last_fail_at_unix_ms &&
+      row.message.trim() === message
+    ))
+  })
+}
+
+function injectDashboardLastError(status: Status): Status {
+  const provider = status.providers['provider_1'] && status.providers['provider_1'].status !== 'closed'
+    ? 'provider_1'
+    : Object.keys(status.providers).find((name) => status.providers[name].status !== 'closed')
+  if (!provider) return status
+  const unixMs = Date.now()
+  const message = `simulated dashboard error for View jump (${unixMs})`
+  const event = {
+    provider,
+    level: 'error',
+    unix_ms: unixMs,
+    code: 'dev.simulated.last_error',
+    message,
+    fields: {
+      codex_session_id: DEV_LIVE_SESSIONS[unixMs % DEV_LIVE_SESSIONS.length].codex,
+      wt_session: DEV_LIVE_SESSIONS[unixMs % DEV_LIVE_SESSIONS.length].wt,
+      simulated: true,
+    },
+  }
+  return {
+    ...status,
+    last_activity_unix_ms: unixMs,
+    providers: {
+      ...status.providers,
+      [provider]: {
+        ...status.providers[provider],
+        status: status.providers[provider].status === 'closed' ? 'closed' : 'unhealthy',
+        consecutive_failures: (status.providers[provider].consecutive_failures ?? 0) + 1,
+        last_error: message,
+        last_fail_at_unix_ms: unixMs,
+      },
+    },
+    recent_events: [event, ...status.recent_events].slice(0, DEV_MAX_EVENTS),
+  }
+}
+
+function randomChoice<T>(rows: T[]): T {
+  return rows[Math.floor(Math.random() * rows.length)]
+}
+
+export function evolveDevStatus(current: Status | null): Status {
+  const base = current ?? devStatus
+  const providers = { ...base.providers }
+  const metrics = { ...base.metrics }
+  const openProviders = DEV_LIVE_PROVIDERS.filter((name) => providers[name] && providers[name].status !== 'closed')
+  const selectedProvider = openProviders.length > 0 ? randomChoice(openProviders) : DEV_LIVE_PROVIDERS[0]
+  const session = randomChoice(DEV_LIVE_SESSIONS)
+  const now = Date.now()
+  const levelRoll = Math.random()
+  const level = levelRoll < 0.58 ? 'info' : levelRoll < 0.82 ? 'warning' : 'error'
+  const event = level === 'info'
+    ? {
+        provider: selectedProvider,
+        level,
+        unix_ms: now,
+        code: 'dev.live.route',
+        message: `live simulated route selected ${selectedProvider}`,
+        fields: {
+          codex_session_id: session.codex,
+          wt_session: session.wt,
+          simulated: true,
+        },
+      }
+    : level === 'warning'
+      ? {
+          provider: selectedProvider,
+          level,
+          unix_ms: now,
+          code: 'dev.live.quota_warning',
+          message: `live simulated quota warning on ${selectedProvider}`,
+          fields: {
+            codex_session_id: session.codex,
+            wt_session: session.wt,
+            remaining_percent: 10 + Math.floor(Math.random() * 25),
+            simulated: true,
+          },
+        }
+      : {
+          provider: selectedProvider,
+          level,
+          unix_ms: now,
+          code: 'dev.live.upstream_error',
+          message: `live simulated upstream timeout on ${selectedProvider} (${now})`,
+          fields: {
+            codex_session_id: session.codex,
+            wt_session: session.wt,
+            simulated: true,
+          },
+        }
+
+  if (level === 'error' && providers[selectedProvider]) {
+    providers[selectedProvider] = {
+      ...providers[selectedProvider],
+      status: providers[selectedProvider].status === 'closed' ? 'closed' : 'unhealthy',
+      consecutive_failures: (providers[selectedProvider].consecutive_failures ?? 0) + 1,
+      last_error: event.message,
+      last_fail_at_unix_ms: now,
+    }
+  }
+  if (level === 'info' && providers[selectedProvider] && providers[selectedProvider].status !== 'closed') {
+    providers[selectedProvider] = {
+      ...providers[selectedProvider],
+      last_ok_at_unix_ms: now,
+    }
+  }
+
+  if (metrics[selectedProvider]) {
+    const deltaTokens = 120 + Math.floor(Math.random() * 900)
+    metrics[selectedProvider] = {
+      ...metrics[selectedProvider],
+      total_tokens: metrics[selectedProvider].total_tokens + deltaTokens,
+      ok_requests: metrics[selectedProvider].ok_requests + (level === 'error' ? 0 : 1),
+      error_requests: metrics[selectedProvider].error_requests + (level === 'error' ? 1 : 0),
+    }
+  }
+
+  const next: Status = {
+    ...base,
+    providers,
+    metrics,
+    active_provider: selectedProvider,
+    active_reason: level === 'error' ? 'simulated_failover' : 'simulated_activity',
+    last_activity_unix_ms: now,
+    recent_events: [event, ...base.recent_events].slice(0, DEV_MAX_EVENTS),
+  }
+
+  if (hasJumpableLastError(next)) return next
+  return injectDashboardLastError(next)
 }
 
 export const devStatus: Status = {

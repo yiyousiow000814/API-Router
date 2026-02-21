@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import type { Status } from '../types'
 import { fmtAgo, fmtWhen } from '../utils/format'
@@ -36,6 +36,10 @@ function formatEventMessageDialog(message: string): string {
   return message.replace(/;\s+/g, ';\n')
 }
 
+function eventIdentity(event: Status['recent_events'][number]): string {
+  return `${event.unix_ms}|${event.provider}|${event.level}|${event.code}|${event.message}`
+}
+
 export function isEventMessageOverflow(metrics: OverflowMetrics): boolean {
   return metrics.scrollHeight - metrics.clientHeight > 1 || metrics.scrollWidth - metrics.clientWidth > 1
 }
@@ -53,6 +57,7 @@ export function EventsTable({
   const [messageDialog, setMessageDialog] = useState<{ title: string; text: string } | null>(null)
   const [expandableMessageKeys, setExpandableMessageKeys] = useState<Record<string, true>>({})
   const allEvents = events ?? []
+  const focusEventId = focusEvent ? eventIdentity(focusEvent) : ''
   const eventsTableSurfaceRef = useRef<HTMLDivElement | null>(null)
   const eventsTableWrapRef = useRef<HTMLDivElement | null>(null)
   const eventsScrollbarOverlayRef = useRef<HTMLDivElement | null>(null)
@@ -64,6 +69,9 @@ export function EventsTable({
   const focusFlashTimerRef = useRef<number | null>(null)
   const wasNearBottomRef = useRef(false)
   const messageTextRefs = useRef(new Map<string, HTMLSpanElement>())
+  const prevScrollHeightRef = useRef<number | null>(null)
+  const prevFirstEventIdRef = useRef('')
+  const scrollRestoreKeyRef = useRef<string | null>(null)
 
   const setEventsScrollbarVisible = useCallback((visible: boolean) => {
     eventsTableSurfaceRef.current?.classList.toggle('aoEventsTableSurfaceScrollbarVisible', visible)
@@ -265,7 +273,8 @@ export function EventsTable({
   useEffect(() => {
     if (!scrollInside || typeof window === 'undefined') return
     const wrap = eventsTableWrapRef.current
-    if (wrap && scrollPersistKey) {
+    if (wrap && scrollPersistKey && scrollRestoreKeyRef.current !== scrollPersistKey) {
+      scrollRestoreKeyRef.current = scrollPersistKey
       const savedTop = SCROLL_TOP_BY_KEY.get(scrollPersistKey) ?? 0
       const applySavedTop = () => {
         if (!eventsTableWrapRef.current) return
@@ -287,7 +296,7 @@ export function EventsTable({
       }
       window.removeEventListener('resize', onResize)
     }
-  }, [scrollInside, scheduleEventsScrollbarSync, allEvents.length, splitByLevel, scrollPersistKey])
+  }, [scrollInside, scheduleEventsScrollbarSync, splitByLevel, scrollPersistKey])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -317,6 +326,34 @@ export function EventsTable({
   useEffect(() => {
     wasNearBottomRef.current = false
   }, [allEvents.length])
+
+  useLayoutEffect(() => {
+    if (!scrollInside) return
+    const wrap = eventsTableWrapRef.current
+    if (!wrap) return
+    const nextHeight = wrap.scrollHeight
+    const nextCount = allEvents.length
+    const nextFirstId = nextCount > 0 ? eventIdentity(allEvents[0]) : ''
+    const prevHeight = prevScrollHeightRef.current
+    const prevFirstId = prevFirstEventIdRef.current
+
+    const prevFirstIndexInNext = prevFirstId ? allEvents.findIndex((row) => eventIdentity(row) === prevFirstId) : -1
+    const prependedCount = prevFirstIndexInNext > 0 ? prevFirstIndexInNext : 0
+    const prepended = prependedCount > 0
+    const grew = prevHeight != null && nextHeight > prevHeight + 1
+    const nearTop = wrap.scrollTop <= 4
+    if (prepended && !nearTop) {
+      const firstRow = wrap.querySelector('tbody tr')
+      const fallbackRowHeight = firstRow instanceof HTMLElement ? firstRow.offsetHeight : 36
+      const delta = grew && prevHeight != null ? (nextHeight - prevHeight) : (fallbackRowHeight * prependedCount)
+      wrap.scrollTop += Math.max(0, delta)
+      if (scrollPersistKey) SCROLL_TOP_BY_KEY.set(scrollPersistKey, wrap.scrollTop ?? 0)
+      scheduleEventsScrollbarSync()
+    }
+
+    prevScrollHeightRef.current = wrap.scrollHeight
+    prevFirstEventIdRef.current = nextFirstId
+  }, [allEvents, scheduleEventsScrollbarSync, scrollInside, scrollPersistKey])
 
   useEffect(() => {
     if (!focusNonce || !focusEvent) return
@@ -382,7 +419,7 @@ export function EventsTable({
           .join('\n')
       : ''
 
-    const isFocus = focusEvent != null && e === focusEvent
+    const isFocus = !!focusEventId && eventIdentity(e) === focusEventId
 
     return (
       <tr
@@ -471,7 +508,7 @@ export function EventsTable({
       [...allEvents].sort((a, b) => b.unix_ms - a.unix_ms).length ? (
         [...allEvents]
           .sort((a, b) => b.unix_ms - a.unix_ms)
-          .map((e, idx) => renderRow(e, `${e.unix_ms}-all-${idx}`))
+          .map((e) => renderRow(e, `${eventIdentity(e)}-all`))
       ) : (
         <tr>
           <td colSpan={5} className="aoHint">
@@ -487,7 +524,7 @@ export function EventsTable({
           </td>
         </tr>
         {infos.length ? (
-          infos.map((e, idx) => renderRow(e, `${e.unix_ms}-info-${idx}`))
+          infos.map((e) => renderRow(e, `${eventIdentity(e)}-info`))
         ) : (
           <tr>
             <td colSpan={5} className="aoHint">
@@ -515,7 +552,7 @@ export function EventsTable({
           [...warnings, ...errors]
             .sort((a, b) => b.unix_ms - a.unix_ms)
             .slice(0, 5)
-            .map((e, idx) => renderRow(e, `${e.unix_ms}-issue-${idx}`))
+            .map((e) => renderRow(e, `${eventIdentity(e)}-issue`))
         ) : (
           <tr>
             <td colSpan={5} className="aoHint">
@@ -530,7 +567,7 @@ export function EventsTable({
     return (
       <>
         <div className="aoEventsTablePlain">
-          <table className="aoTable aoTableFixed">
+          <table className="aoTable aoTableFixed aoEventsTable">
             {renderColGroup()}
             <thead>
               <tr>
@@ -604,7 +641,7 @@ export function EventsTable({
           }}
           onTouchMove={activateEventsScrollbarUi}
         >
-          <table className="aoTable aoTableFixed">
+          <table className="aoTable aoTableFixed aoEventsTable">
             {renderColGroup()}
             <tbody>{renderBodyRows()}</tbody>
           </table>

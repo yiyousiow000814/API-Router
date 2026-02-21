@@ -1,6 +1,7 @@
 import { useCallback, useMemo, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Config, Status } from '../types'
+import { evolveDevStatus } from '../devMockData'
 
 type Params = {
   status: Status | null
@@ -124,6 +125,10 @@ export function useAppActions(params: Params) {
     setGatewayTokenPreview('ao_dev********7f2a')
   }, [devConfig, devStatus, setBaselineBaseUrls, setConfig, setGatewayTokenPreview, setStatus])
 
+  const onDevPreviewTick = useCallback(() => {
+    setStatus((prev) => evolveDevStatus(prev))
+  }, [setStatus])
+
   return {
     setSessionPreferred,
     orderedConfigProviders,
@@ -132,5 +137,6 @@ export function useAppActions(params: Params) {
     setPreferred,
     applyProviderOrder,
     onDevPreviewBootstrap,
+    onDevPreviewTick,
   }
 }
