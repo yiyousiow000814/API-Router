@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import type { Status } from '../types'
 import { fmtAgo, fmtWhen } from '../utils/format'
@@ -78,6 +78,14 @@ export function EventsTable({
   const [messageDialog, setMessageDialog] = useState<{ title: string; text: string } | null>(null)
   const [expandableMessageKeys, setExpandableMessageKeys] = useState<Record<string, true>>({})
   const allEvents = events ?? []
+  const allEventIds = useMemo(() => allEvents.map((event) => eventIdentity(event)), [allEvents])
+  const firstIndexByEventId = useMemo(() => {
+    const out = new Map<string, number>()
+    allEventIds.forEach((id, idx) => {
+      if (!out.has(id)) out.set(id, idx)
+    })
+    return out
+  }, [allEventIds])
   const focusEventId = focusEvent ? eventIdentity(focusEvent) : ''
   const eventsTableSurfaceRef = useRef<HTMLDivElement | null>(null)
   const eventsTableWrapRef = useRef<HTMLDivElement | null>(null)
@@ -356,7 +364,7 @@ export function EventsTable({
     if (!wrap) return
     const nextHeight = wrap.scrollHeight
     const nextCount = allEvents.length
-    const nextFirstId = nextCount > 0 ? eventIdentity(allEvents[0]) : ''
+    const nextFirstId = nextCount > 0 ? allEventIds[0] ?? '' : ''
     const prevHeight = prevScrollHeightRef.current
     const prevFirstId = prevFirstEventIdRef.current
     const pendingRestoreTop = pendingRestoreTopRef.current
@@ -368,13 +376,11 @@ export function EventsTable({
         const clamped = Math.max(0, Math.min(pendingRestoreTop, maxScroll))
         wrap.scrollTop = clamped
         scheduleEventsScrollbarSync()
-        if (pendingRestoreTop <= 0 || maxScroll > 0) {
-          pendingRestoreTopRef.current = null
-        }
+        pendingRestoreTopRef.current = null
       }
     }
 
-    const prevFirstIndexInNext = prevFirstId ? allEvents.findIndex((row) => eventIdentity(row) === prevFirstId) : -1
+    const prevFirstIndexInNext = prevFirstId ? (firstIndexByEventId.get(prevFirstId) ?? -1) : -1
     const prependedCount = prevFirstIndexInNext > 0 ? prevFirstIndexInNext : 0
     const prepended = prependedCount > 0
     const grew = prevHeight != null && nextHeight > prevHeight + 1
@@ -390,7 +396,7 @@ export function EventsTable({
 
     prevScrollHeightRef.current = wrap.scrollHeight
     prevFirstEventIdRef.current = nextFirstId
-  }, [allEvents, scheduleEventsScrollbarSync, scrollInside, scrollPersistKey])
+  }, [allEventIds, allEvents.length, firstIndexByEventId, scheduleEventsScrollbarSync, scrollInside, scrollPersistKey])
 
   useEffect(() => {
     if (!focusNonce || !focusEvent) return

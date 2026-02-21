@@ -10,7 +10,7 @@ import {
   fmtUsdMaybe as formatUsdMaybe,
   fmtUsageBucketLabel as formatUsageBucketLabel,
 } from './utils/usageDisplay'
-import { devConfig, devStatus, parseDevFlag, type SpendHistoryRow } from './devMockData'
+import { devConfig, devStatus, evolveDevStatus, parseDevFlag, type SpendHistoryRow } from './devMockData'
 import type {
   ProviderScheduleDraft,
   UsageHistoryDraft,
@@ -678,7 +678,6 @@ export default function App() {
     setPreferred,
     applyProviderOrder,
     onDevPreviewBootstrap,
-    onDevPreviewTick,
   } = useAppActions({
     status,
     config,
@@ -695,6 +694,9 @@ export default function App() {
     devStatus,
     devConfig,
   })
+  const onDevPreviewTick = useCallback(() => {
+    setStatus((prev) => evolveDevStatus(prev))
+  }, [])
   const codexSwapBadge = useMemo(() => {
     const windowsHome = codexSwapUseWindows ? codexSwapDir1.trim() : ''
     const wslHome = codexSwapUseWsl ? codexSwapDir2.trim() : ''
