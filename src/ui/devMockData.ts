@@ -20,7 +20,7 @@ export type SpendHistoryRow = {
 const DEV_NOW = Date.now()
 
 function buildDevRecentEvents(count = 200): NonNullable<Status['recent_events']> {
-  const providers = ['provider_1', 'provider_2']
+  const providers = ['provider_1', 'provider_2', 'provider_3']
   const mockSessions = [
     { codex: '019c4578-0f3c-7f82-a4f9-b41a1e65e242', wt: 'wt-8f42f1' },
     { codex: '019c03fd-6ea4-7121-961f-9f9b64d2c1b5', wt: '7c757b99-7a1f-455a-b301-3e0271e7f615' },
@@ -127,10 +127,19 @@ export const devStatus: Status = {
       last_ok_at_unix_ms: DEV_NOW - 3600000,
       last_fail_at_unix_ms: DEV_NOW - 240000,
     },
+    provider_3: {
+      status: 'healthy',
+      consecutive_failures: 0,
+      cooldown_until_unix_ms: 0,
+      last_error: '',
+      last_ok_at_unix_ms: DEV_NOW - 240000,
+      last_fail_at_unix_ms: 0,
+    },
   },
   metrics: {
     provider_1: { ok_requests: 210, error_requests: 3, total_tokens: 128400 },
     provider_2: { ok_requests: 12, error_requests: 2, total_tokens: 3400 },
+    provider_3: { ok_requests: 98, error_requests: 1, total_tokens: 56400 },
   },
   recent_events: buildDevRecentEvents(520),
   client_sessions: [
@@ -275,6 +284,21 @@ export const devStatus: Status = {
       last_error: '',
       effective_usage_base: null,
     },
+    provider_3: {
+      kind: 'token_stats',
+      updated_at_unix_ms: DEV_NOW - 150000,
+      remaining: 4210,
+      today_used: 1890,
+      today_added: 6100,
+      daily_spent_usd: null,
+      daily_budget_usd: null,
+      weekly_spent_usd: null,
+      weekly_budget_usd: null,
+      monthly_spent_usd: null,
+      monthly_budget_usd: null,
+      last_error: '',
+      effective_usage_base: null,
+    },
   },
   ledgers: {},
   last_activity_unix_ms: DEV_NOW - 30000,
@@ -321,8 +345,17 @@ export const devConfig: Config = {
       key_preview: 'sk-pk********mN5',
       has_usage_token: true,
     },
+    provider_3: {
+      display_name: 'provider_3',
+      base_url: 'https://code.pumpkinai.vip/v1',
+      usage_adapter: 'pumpkinai',
+      usage_base_url: 'https://code.pumpkinai.vip',
+      has_key: true,
+      key_preview: 'sk-pu********x7Q',
+      has_usage_token: false,
+    },
   },
-  provider_order: ['provider_1', 'provider_2'],
+  provider_order: ['provider_1', 'provider_2', 'provider_3'],
 }
 
 const DEV_MOCK_DAY_MS = 24 * 60 * 60 * 1000
