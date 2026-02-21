@@ -141,6 +141,20 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   <span>Clear</span>
                 </button>
                 <button
+                  className="aoActionBtn aoActionBtnDanger"
+                  title="Delete provider"
+                  aria-label="Delete provider"
+                  onClick={() => void options.deleteProvider(name)}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 6h18" />
+                    <path d="M8 6V4h8v2" />
+                    <path d="M19 6 18 20H6L5 6" />
+                    <path d="M10 11v6" />
+                    <path d="M14 11v6" />
+                  </svg>
+                </button>
+                <button
                   className={`aoActionBtn aoActionBtnStatus ${p.disabled ? 'aoActionBtnStatusOff' : 'aoActionBtnStatusOn'}`}
                   title={
                     p.disabled
@@ -164,20 +178,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     aria-hidden="true"
                   />
                   <span>{p.disabled ? 'Deactivated' : 'Activated'}</span>
-                </button>
-                <button
-                  className="aoActionBtn aoActionBtnDanger"
-                  title="Delete provider"
-                  aria-label="Delete provider"
-                  onClick={() => void options.deleteProvider(name)}
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M3 6h18" />
-                    <path d="M8 6V4h8v2" />
-                    <path d="M19 6 18 20H6L5 6" />
-                    <path d="M10 11v6" />
-                    <path d="M14 11v6" />
-                  </svg>
                 </button>
               </div>
             </div>
