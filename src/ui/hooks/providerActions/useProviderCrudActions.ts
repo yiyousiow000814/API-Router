@@ -75,6 +75,13 @@ export function useProviderCrudActions({
   const setProviderDisabled = useCallback(
     async (name: string, disabled: boolean) => {
       if (isDevPreview) {
+        if (disabled) {
+          const activeCount = Object.values(config?.providers ?? {}).filter((provider) => !provider.disabled).length
+          if (activeCount <= 1) {
+            flashToast('[TEST] At least one provider must remain active.', 'error')
+            return
+          }
+        }
         setConfig((prev) => {
           if (!prev?.providers?.[name]) return prev
           return {
@@ -100,7 +107,7 @@ export function useProviderCrudActions({
         flashToast(String(e), 'error')
       }
     },
-    [flashToast, isDevPreview, refreshConfig, refreshStatus, setConfig],
+    [config?.providers, flashToast, isDevPreview, refreshConfig, refreshStatus, setConfig],
   )
 
   const addProvider = useCallback(async () => {

@@ -33,6 +33,8 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
   return (name: string, overlay = false) => {
     const p = options.config?.providers?.[name]
     if (!p) return null
+    const activeProviderCount = Object.values(options.config?.providers ?? {}).filter((provider) => !provider.disabled).length
+    const canDeactivate = p.disabled || activeProviderCount > 1
     const isDragOver = options.dragOverProvider === name
     const dragStyle = overlay
       ? {
@@ -140,9 +142,11 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 </button>
                 <button
                   className={`aoActionBtn${p.disabled ? ' aoActionBtnPrimary' : ''}`}
-                  title={p.disabled ? 'Activate provider' : 'Deactivate provider'}
+                  title={p.disabled ? 'Activate provider' : canDeactivate ? 'Deactivate provider' : 'At least one provider must stay active'}
+                  disabled={!p.disabled && !canDeactivate}
                   onClick={() => {
                     const nextDisabled = !Boolean(p.disabled)
+                    if (nextDisabled && !canDeactivate) return
                     if (nextDisabled && options.isProviderOpen(name)) {
                       options.toggleProviderOpen(name)
                     }
