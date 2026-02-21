@@ -95,7 +95,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 ) : (
                   <>
                     <span className="aoProviderName">{name}</span>
-                    {p.disabled ? <span className="aoProviderStateBadge">Off</span> : null}
                     <button
                       className="aoIconGhost"
                       title="Rename"
@@ -155,7 +154,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   </svg>
                 </button>
                 <button
-                  className={`aoActionBtn aoActionBtnStatus ${p.disabled ? 'aoActionBtnStatusOff' : 'aoActionBtnStatusOn'}`}
+                  className={`aoStatusSwitch ${p.disabled ? 'aoStatusSwitchOff' : 'aoStatusSwitchOn'}`}
                   title={
                     p.disabled
                       ? 'Click to activate provider'
@@ -163,6 +162,8 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                         ? 'Click to deactivate provider'
                         : 'At least one provider must stay active'
                   }
+                  aria-label={p.disabled ? 'Activate provider' : 'Deactivate provider'}
+                  aria-pressed={!p.disabled}
                   disabled={!p.disabled && !canDeactivate}
                   onClick={() => {
                     const nextDisabled = !Boolean(p.disabled)
@@ -173,11 +174,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     void options.setProviderDisabled(name, nextDisabled)
                   }}
                 >
-                  <span
-                    className={`aoStatusDot ${p.disabled ? 'aoStatusDotOff' : 'aoStatusDotOn'}`}
-                    aria-hidden="true"
-                  />
-                  <span>{p.disabled ? 'Deactivated' : 'Activated'}</span>
+                  <span className="aoStatusSwitchThumb" aria-hidden="true" />
                 </button>
               </div>
             </div>
