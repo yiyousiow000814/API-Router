@@ -15,6 +15,12 @@ export function HeroRoutingCard({
   onOverrideChange,
   onPreferredChange,
 }: HeroRoutingProps) {
+  const preferredProviders = config
+    ? Object.entries(config.providers)
+        .filter(([, provider]) => !provider.disabled)
+        .map(([name]) => name)
+    : []
+
   return (
     <div className="aoCard aoHeroCard aoHeroRouting">
       <div className="aoCardHeader">
@@ -44,7 +50,7 @@ export function HeroRoutingCard({
               value={config.routing.preferred_provider}
               onChange={(e) => onPreferredChange(e.target.value)}
             >
-              {Object.keys(config.providers).map((p) => (
+              {preferredProviders.map((p) => (
                 <option key={p} value={p}>
                   {p}
                 </option>

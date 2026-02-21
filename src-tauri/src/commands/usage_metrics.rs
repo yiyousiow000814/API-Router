@@ -11,6 +11,158 @@ fn normalize_usage_origin(origin: Option<&str>) -> String {
     .to_string()
 }
 
+fn normalize_usage_origin_filter(origins: Option<Vec<String>>) -> BTreeSet<String> {
+    origins
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let normalized = normalize_usage_origin(Some(trimmed));
+            if normalized == crate::constants::USAGE_ORIGIN_UNKNOWN
+                && !trimmed.eq_ignore_ascii_case(crate::constants::USAGE_ORIGIN_UNKNOWN)
+            {
+                return None;
+            }
+            Some(normalized)
+        })
+        .collect()
+}
+
+fn list_usage_requests_for_statistics(
+    store: &crate::orchestrator::store::Store,
+) -> Vec<Value> {
+    // Keep historical backfill behavior bounded to the previous practical ceiling.
+    store.list_usage_requests(500_000)
+}
+
+#[tauri::command]
+pub(crate) fn get_usage_request_entries(
+    state: tauri::State<'_, app_state::AppState>,
+    hours: Option<u64>,
+    providers: Option<Vec<String>>,
+    models: Option<Vec<String>>,
+    origins: Option<Vec<String>>,
+    limit: Option<u64>,
+    offset: Option<u64>,
+) -> serde_json::Value {
+    let now = unix_ms();
+    let window_hours = hours.unwrap_or(24).clamp(1, 24 * 365 * 20);
+    let window_ms = window_hours.saturating_mul(60 * 60 * 1000);
+    let since_unix_ms = now.saturating_sub(window_ms);
+    let provider_filter: BTreeSet<String> = providers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let model_filter: BTreeSet<String> = models
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let origin_filter = normalize_usage_origin_filter(origins);
+    let has_provider_filter = !provider_filter.is_empty();
+    let has_model_filter = !model_filter.is_empty();
+    let has_origin_filter = !origin_filter.is_empty();
+
+    let page_limit = limit.unwrap_or(200).clamp(1, 1000) as usize;
+    let page_offset = offset.unwrap_or(0) as usize;
+
+    let provider_filter_list: Vec<String> = if has_provider_filter {
+        provider_filter.iter().cloned().collect()
+    } else {
+        Vec::new()
+    };
+    let model_filter_list: Vec<String> = if has_model_filter {
+        model_filter.iter().cloned().collect()
+    } else {
+        Vec::new()
+    };
+    let origin_filter_list: Vec<String> = if has_origin_filter {
+        origin_filter.iter().cloned().collect()
+    } else {
+        Vec::new()
+    };
+    let (rows, has_more) = state.gateway.store.list_usage_requests_page(
+        since_unix_ms,
+        &provider_filter_list,
+        &model_filter_list,
+        &origin_filter_list,
+        page_limit,
+        page_offset,
+    );
+
+    serde_json::json!({
+        "ok": true,
+        "rows": rows,
+        "has_more": has_more,
+        "next_offset": page_offset.saturating_add(rows.len()),
+    })
+}
+
+#[tauri::command]
+pub(crate) fn get_usage_request_daily_totals(
+    state: tauri::State<'_, app_state::AppState>,
+    days: Option<u64>,
+) -> serde_json::Value {
+    let day_limit = days.unwrap_or(45).clamp(1, 180) as usize;
+    let rows = state
+        .gateway
+        .store
+        .list_usage_request_daily_totals(day_limit);
+    let mut by_day: BTreeMap<u64, BTreeMap<String, u64>> = BTreeMap::new();
+    let mut provider_totals: BTreeMap<String, u64> = BTreeMap::new();
+    for (day_key, provider, total_tokens) in rows {
+        let Some((day_start_unix_ms, _)) = local_day_range_from_key(&day_key) else {
+            continue;
+        };
+        by_day
+            .entry(day_start_unix_ms)
+            .or_default()
+            .entry(provider.clone())
+            .and_modify(|v| *v = v.saturating_add(total_tokens))
+            .or_insert(total_tokens);
+        provider_totals
+            .entry(provider)
+            .and_modify(|v| *v = v.saturating_add(total_tokens))
+            .or_insert(total_tokens);
+    }
+    let days_json: Vec<Value> = by_day
+        .into_iter()
+        .map(|(day_start_unix_ms, provider_totals)| {
+            let total_tokens = provider_totals.values().copied().sum::<u64>();
+            serde_json::json!({
+                "day_start_unix_ms": day_start_unix_ms,
+                "provider_totals": provider_totals,
+                "total_tokens": total_tokens,
+            })
+        })
+        .collect();
+    let mut providers_json: Vec<Value> = provider_totals
+        .into_iter()
+        .map(|(provider, total_tokens)| {
+            serde_json::json!({
+                "provider": provider,
+                "total_tokens": total_tokens,
+            })
+        })
+        .collect();
+    providers_json.sort_by(|a, b| {
+        let at = a.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let bt = b.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        bt.cmp(&at)
+    });
+    serde_json::json!({
+        "ok": true,
+        "days": days_json,
+        "providers": providers_json,
+    })
+}
+
 #[tauri::command]
 pub(crate) fn get_usage_statistics(
     state: tauri::State<'_, app_state::AppState>,
@@ -88,11 +240,7 @@ pub(crate) fn get_usage_statistics(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
-    let origin_filter: BTreeSet<String> = origins
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| normalize_usage_origin(Some(&s)))
-        .collect();
+    let origin_filter = normalize_usage_origin_filter(origins);
     let has_provider_filter = !provider_filter.is_empty();
     let has_model_filter = !model_filter.is_empty();
     let has_origin_filter = !origin_filter.is_empty();
@@ -104,7 +252,7 @@ pub(crate) fn get_usage_statistics(
     let active_bucket_ms = 60 * 60 * 1000;
     let projection_hours = projection_hours_until_midnight_cap_16();
 
-    let records = state.gateway.store.list_usage_requests(500_000);
+    let records = list_usage_requests_for_statistics(&state.gateway.store);
     let quota = state.gateway.store.list_quota_snapshots();
     let provider_pricing = state.secrets.list_provider_pricing();
 

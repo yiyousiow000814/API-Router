@@ -49,10 +49,14 @@ fn provider_has_remaining_quota(quota_snapshots: &Value, provider: &str) -> bool
 
 fn provider_is_routable_for_selection(
     st: &GatewayState,
+    cfg: &AppConfig,
     quota_snapshots: &Value,
     provider: &str,
 ) -> bool {
-    st.router.is_provider_routable(provider)
+    cfg.providers
+        .get(provider)
+        .is_some_and(|provider_cfg| !provider_cfg.disabled)
+        && st.router.is_provider_routable(provider)
         && provider_has_remaining_quota(quota_snapshots, provider)
 }
 
@@ -63,7 +67,7 @@ fn fallback_with_quota(
     quota_snapshots: &Value,
 ) -> String {
     select_fallback_provider(cfg, preferred, |name| {
-        provider_is_routable_for_selection(st, quota_snapshots, name)
+        provider_is_routable_for_selection(st, cfg, quota_snapshots, name)
     })
 }
 
@@ -95,7 +99,7 @@ pub(crate) fn decide_provider(
                 .should_suppress_preferred(preferred, cfg, unix_ms())
         {
             if let Some(p) = last_provider {
-                if provider_is_routable_for_selection(st, &quota_snapshots, &p) {
+                if provider_is_routable_for_selection(st, cfg, &quota_snapshots, &p) {
                     return (p, "preferred_stabilizing");
                 }
             }
@@ -106,7 +110,7 @@ pub(crate) fn decide_provider(
         }
     }
 
-    if provider_is_routable_for_selection(st, &quota_snapshots, preferred) {
+    if provider_is_routable_for_selection(st, cfg, &quota_snapshots, preferred) {
         return (preferred.to_string(), "preferred_healthy");
     }
     (

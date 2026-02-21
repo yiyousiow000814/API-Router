@@ -122,6 +122,7 @@ export type Config = {
       base_url: string
       usage_adapter?: string
       usage_base_url?: string | null
+      disabled?: boolean
       manual_pricing_mode?: 'per_request' | 'package_total' | null
       manual_pricing_amount_usd?: number | null
       manual_pricing_expires_at_unix_ms?: number | null

@@ -322,6 +322,7 @@ fn passthrough_sse_and_persist(
                     Some(&api_key_ref2),
                     created_model_for_usage.as_deref(),
                     &request_origin2,
+                    Some(session_key2.as_str()),
                 );
         }
     };

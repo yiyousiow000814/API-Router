@@ -24,9 +24,6 @@ export function usePageScroll(options: {
       if (root) root.scrollTop = top
       const main = options.mainAreaRef.current
       if (main) main.scrollTop = 0
-      if (typeof window !== 'undefined') {
-        window.scrollTo({ top, left: 0, behavior: 'auto' })
-      }
     },
     [getRoot, options.mainAreaRef],
   )
@@ -67,6 +64,7 @@ export function usePageScroll(options: {
   const switchPage = useCallback(
     (next: string) => {
       const current = prevPageRef.current
+      if (next === current) return
       saveCurrentPageScroll(current)
       prevPageRef.current = next
       options.setActivePage(next)

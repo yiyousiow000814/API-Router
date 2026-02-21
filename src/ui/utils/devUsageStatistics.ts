@@ -20,14 +20,16 @@ export function buildDevUsageStatistics(params: {
   const timelineCount = usageWindowHours <= 48 ? 24 : 7
   const timeline = Array.from({ length: timelineCount }).map((_, index) => {
     const requests = Math.max(1, Math.round((6 + Math.sin(index / 2) * 4) * usageOriginFactor))
+    const cacheCreationTokens = Math.max(0, Math.round((index % 5 === 0 ? 140 : 0) * usageOriginFactor))
+    const cacheReadTokens = Math.max(0, Math.round((index % 3 === 0 ? 320 : 80) * usageOriginFactor))
     return {
       bucket_unix_ms:
         now -
         (usageWindowHours <= 48 ? (timelineCount - 1 - index) * 60 * 60 * 1000 : (timelineCount - 1 - index) * 24 * 60 * 60 * 1000),
       requests,
       total_tokens: Math.max(100, Math.round((3200 + Math.cos(index / 2.2) * 1600) * usageOriginFactor)),
-      cache_creation_tokens: 0,
-      cache_read_tokens: 0,
+      cache_creation_tokens: cacheCreationTokens,
+      cache_read_tokens: cacheReadTokens,
     }
   })
   // Ensure dev preview always has at least one clear anomaly candidate.
@@ -206,6 +208,8 @@ export function buildDevUsageStatistics(params: {
   const totalRequests = byProvider.reduce((sum, row) => sum + row.requests, 0)
   const totalTokens = byProvider.reduce((sum, row) => sum + row.total_tokens, 0)
   const totalCost = byProvider.reduce((sum, row) => sum + row.estimated_total_cost_usd, 0)
+  const totalCacheCreation = timeline.reduce((sum, row) => sum + (row.cache_creation_tokens ?? 0), 0)
+  const totalCacheRead = timeline.reduce((sum, row) => sum + (row.cache_read_tokens ?? 0), 0)
 
   return {
     ok: true,
@@ -225,8 +229,8 @@ export function buildDevUsageStatistics(params: {
     summary: {
       total_requests: totalRequests,
       total_tokens: totalTokens,
-      cache_creation_tokens: 0,
-      cache_read_tokens: 0,
+      cache_creation_tokens: totalCacheCreation,
+      cache_read_tokens: totalCacheRead,
       unique_models: byModel.length,
       estimated_total_cost_usd: Number(totalCost.toFixed(2)),
       estimated_daily_cost_usd: Number(totalCost.toFixed(2)),

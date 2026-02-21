@@ -11,7 +11,7 @@ export function useStatusDerivations({
   config,
 }: UseStatusDerivationsOptions) {
   const providers = useMemo(() => {
-    const statusProviders = Object.keys(status?.providers ?? {})
+    const statusProviders = Object.keys(status?.providers ?? {}).filter((name) => !config?.providers?.[name]?.disabled)
     if (!config) return statusProviders
     const order = config.provider_order ?? []
     const seen = new Set<string>()
