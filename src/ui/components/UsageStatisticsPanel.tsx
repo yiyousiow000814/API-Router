@@ -190,8 +190,8 @@ const USAGE_REQUESTS_PAGE_QUERY_KEY = JSON.stringify({
   models: [],
   origins: [],
 })
+const USAGE_REQUESTS_CACHE_PRIMED_EVENT = 'ao:usage-requests-cache-primed'
 const USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS = 4_000
-const USAGE_REQUEST_GRAPH_FETCH_LIMIT = 4000
 const USAGE_REQUEST_GRAPH_FETCH_HOURS = 24 * 365 * 20
 const USAGE_REQUEST_GRAPH_QUERY_KEY = 'usage_request_graph:v1:all-history'
 const USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS = 15_000
@@ -199,6 +199,15 @@ let usageRequestsPageCache: UsageRequestsPageCache | null = null
 let usageRequestsLastNonEmptyPageCache: UsageRequestsPageCache | null = null
 let usageRequestDailyTotalsCache: UsageRequestDailyTotalsCache | null = null
 let usageRequestGraphRowsCache: UsageRequestGraphRowsCache | null = null
+
+function emitUsageRequestsCachePrimed(queryKey: string) {
+  if (typeof window === 'undefined') return
+  try {
+    window.dispatchEvent(new CustomEvent(USAGE_REQUESTS_CACHE_PRIMED_EVENT, { detail: { queryKey } }))
+  } catch {
+    // ignore
+  }
+}
 
 function groupUsageRequestRowsByProvider(
   rows: UsageRequestEntry[],
@@ -212,6 +221,54 @@ function groupUsageRequestRowsByProvider(
     grouped.set(row.provider, list)
   }
   return Object.fromEntries(grouped.entries())
+}
+
+function mergeUsageRequestRowsUniqueNewestFirst(
+  primary: UsageRequestEntry[],
+  secondary: UsageRequestEntry[],
+  limit: number,
+): UsageRequestEntry[] {
+  if (primary.length === 0) return secondary.slice(0, limit)
+  if (secondary.length === 0) return primary.slice(0, limit)
+  const seen = new Set<string>()
+  const merged: UsageRequestEntry[] = []
+  for (const row of [...primary, ...secondary]) {
+    const id = usageRequestRowIdentity(row)
+    if (seen.has(id)) continue
+    seen.add(id)
+    merged.push(row)
+  }
+  return merged.sort((a, b) => b.unix_ms - a.unix_ms).slice(0, limit)
+}
+
+function primeUsageRequestGraphCacheFromBaseRows(baseRows: UsageRequestEntry[]) {
+  if (!baseRows.length) return
+  const grouped = groupUsageRequestRowsByProvider(baseRows)
+  const existing =
+    usageRequestGraphRowsCache != null && usageRequestGraphRowsCache.queryKey === USAGE_REQUEST_GRAPH_QUERY_KEY
+      ? usageRequestGraphRowsCache
+      : null
+  if (!existing) {
+    usageRequestGraphRowsCache = {
+      queryKey: USAGE_REQUEST_GRAPH_QUERY_KEY,
+      baseRows,
+      rowsByProvider: grouped,
+    }
+    return
+  }
+  const mergedRowsByProvider: Record<string, UsageRequestEntry[]> = { ...existing.rowsByProvider }
+  for (const [provider, rows] of Object.entries(grouped)) {
+    mergedRowsByProvider[provider] = mergeUsageRequestRowsUniqueNewestFirst(
+      rows,
+      mergedRowsByProvider[provider] ?? [],
+      USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
+    )
+  }
+  usageRequestGraphRowsCache = {
+    queryKey: USAGE_REQUEST_GRAPH_QUERY_KEY,
+    baseRows,
+    rowsByProvider: mergedRowsByProvider,
+  }
 }
 
 export function primeUsageRequestsPrefetchCache(payload: {
@@ -237,11 +294,8 @@ export function primeUsageRequestsPrefetchCache(payload: {
   if (payload.dailyTotals) {
     usageRequestDailyTotalsCache = payload.dailyTotals
   }
-  usageRequestGraphRowsCache = {
-    queryKey: USAGE_REQUEST_GRAPH_QUERY_KEY,
-    baseRows: payload.rows ?? [],
-    rowsByProvider: groupUsageRequestRowsByProvider(payload.rows ?? []),
-  }
+  primeUsageRequestGraphCacheFromBaseRows(payload.rows ?? [])
+  emitUsageRequestsCachePrimed(payload.queryKey)
 }
 
 function startOfDayUnixMs(unixMs: number): number {
@@ -605,6 +659,7 @@ export function UsageStatisticsPanel({
     UsageRequestDailyTotalsResponse['providers']
   >([])
   const [usageRequestDailyTotalsLoading, setUsageRequestDailyTotalsLoading] = useState(false)
+  const [usageRequestsCachePrimedTick, setUsageRequestsCachePrimedTick] = useState(0)
   const usageRequestRefreshInFlightRef = useRef(false)
   const usageRequestGraphRefreshInFlightRef = useRef(false)
   const usageRequestGraphLastRefreshAtRef = useRef(0)
@@ -716,6 +771,8 @@ export function UsageStatisticsPanel({
   const effectiveDetailsTab = forceDetailsTab ?? 'requests'
   const isRequestsTab = effectiveDetailsTab === 'requests'
   const isAnalyticsTab = effectiveDetailsTab === 'analytics'
+  const prevIsRequestsTabRef = useRef(isRequestsTab)
+  const justEnteredRequestsTab = isRequestsTab && !prevIsRequestsTabRef.current
   const shouldPrepareRequestsData = isRequestsTab || isAnalyticsTab
   const isRequestsOnlyPage = effectiveDetailsTab === 'requests' && !showFilters
   const cachedRequestsPage =
@@ -762,6 +819,19 @@ export function UsageStatisticsPanel({
     () => Object.keys(usageRequestGraphRowsByProvider).length,
     [usageRequestGraphRowsByProvider],
   )
+
+  useEffect(() => {
+    prevIsRequestsTabRef.current = isRequestsTab
+  }, [isRequestsTab])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onPrimed = () => {
+      setUsageRequestsCachePrimedTick((tick) => tick + 1)
+    }
+    window.addEventListener(USAGE_REQUESTS_CACHE_PRIMED_EVENT, onPrimed)
+    return () => window.removeEventListener(USAGE_REQUESTS_CACHE_PRIMED_EVENT, onPrimed)
+  }, [])
 
   useEffect(() => {
     if (!isRequestsOnlyPage) return
@@ -935,62 +1005,127 @@ export function UsageStatisticsPanel({
         limit,
         offset: 0,
       })
+      const nextRows = res.rows ?? []
       usageRequestsPageCache = {
         queryKey: USAGE_REQUESTS_PAGE_QUERY_KEY,
-        rows: res.rows ?? [],
+        rows: nextRows,
         hasMore: Boolean(res.has_more),
         usingTestFallback: false,
       }
-      if ((res.rows ?? []).length > 0) {
+      if (nextRows.length > 0) {
         usageRequestsLastNonEmptyPageCache = {
           queryKey: USAGE_REQUESTS_PAGE_QUERY_KEY,
-          rows: res.rows ?? [],
+          rows: nextRows,
           hasMore: Boolean(res.has_more),
           usingTestFallback: false,
         }
+        primeUsageRequestGraphCacheFromBaseRows(nextRows)
       }
+      emitUsageRequestsCachePrimed(USAGE_REQUESTS_PAGE_QUERY_KEY)
     } catch {
-      // Best-effort prefetch only.
+      if (usageRequestTestFallbackEnabled) {
+        const nextRows = usageRequestTestRows.slice(0, Math.max(1, limit))
+        usageRequestsPageCache = {
+          queryKey: USAGE_REQUESTS_PAGE_QUERY_KEY,
+          rows: nextRows,
+          hasMore: usageRequestTestRows.length > nextRows.length,
+          usingTestFallback: true,
+        }
+        if (nextRows.length > 0) {
+          usageRequestsLastNonEmptyPageCache = usageRequestsPageCache
+          primeUsageRequestGraphCacheFromBaseRows(nextRows)
+        }
+        emitUsageRequestsCachePrimed(USAGE_REQUESTS_PAGE_QUERY_KEY)
+      }
     } finally {
       usageRequestsPagePrefetchInFlightRef.current = false
     }
-  }, [])
+  }, [usageRequestTestFallbackEnabled, usageRequestTestRows])
   const refreshUsageRequestGraphRows = useCallback(async () => {
     if (usageRequestGraphRefreshInFlightRef.current) return
     usageRequestGraphRefreshInFlightRef.current = true
     const requestSeq = usageRequestGraphBaseFetchSeqRef.current + 1
     usageRequestGraphBaseFetchSeqRef.current = requestSeq
     try {
-      const baseRes = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-        hours: USAGE_REQUEST_GRAPH_FETCH_HOURS,
-        providers: null,
-        models: null,
-        origins: null,
-        limit: USAGE_REQUEST_GRAPH_FETCH_LIMIT,
-        offset: 0,
-      })
+      const cachedGraph =
+        usageRequestGraphRowsCache != null && usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
+          ? usageRequestGraphRowsCache
+          : null
+      const canonicalPageRows =
+        usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_PAGE_QUERY_KEY
+          ? usageRequestsPageCache.rows
+          : EMPTY_USAGE_REQUEST_ROWS
+      const baseRows =
+        cachedGraph?.baseRows?.length
+          ? cachedGraph.baseRows
+          : canonicalPageRows.length
+            ? canonicalPageRows
+            : usageRequestRows.length
+              ? usageRequestRows
+              : usageRequestTestFallbackEnabled
+                ? usageRequestTestRows
+                : EMPTY_USAGE_REQUEST_ROWS
       if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
-      const baseRows = baseRes.rows ?? []
-      setUsageRequestGraphBaseRows(baseRows)
+
+      if (usageRequestTestFallbackEnabled && baseRows === usageRequestTestRows && usageRequestTestRows.length > 0) {
+        const fallbackRowsByProvider = groupUsageRequestRowsByProvider(usageRequestTestRows)
+        setUsageRequestGraphBaseRows(usageRequestTestRows)
+        setUsageRequestGraphRowsByProvider(fallbackRowsByProvider)
+        usageRequestGraphRowsCache = {
+          queryKey: requestGraphQueryKey,
+          baseRows: usageRequestTestRows,
+          rowsByProvider: fallbackRowsByProvider,
+        }
+        usageRequestGraphLastRefreshAtRef.current = Date.now()
+        return
+      }
+
+      if (!usageRequestGraphBaseRows.length && baseRows.length) {
+        setUsageRequestGraphBaseRows(baseRows)
+      }
       const providerTargets = pickUsageRequestDisplayProviders({
         selectedProviders: usageRequestMultiFilters.provider,
-        graphProviders: listTopUsageProvidersFromRows(baseRows),
+        graphProviders: baseRows.length ? listTopUsageProvidersFromRows(baseRows) : EMPTY_STRING_LIST,
         dailyProviders: usageRequestDailyTotalsProviders.map((row) => row.provider),
         analyticsProviders: usageByProvider.map((row) => row.provider),
         limit: Math.min(3, USAGE_REQUEST_GRAPH_COLORS.length),
       })
+      if (providerTargets.length === 0) {
+        usageRequestGraphLastRefreshAtRef.current = Date.now()
+        return
+      }
       const targetSet = new Set(providerTargets)
+      const bootstrapRowsByProvider = baseRows.length ? groupUsageRequestRowsByProvider(baseRows) : EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER
+      const seedRowsByProvider: Record<string, UsageRequestEntry[]> = {}
+      for (const provider of providerTargets) {
+        const fromCache = usageRequestGraphRowsCache?.rowsByProvider?.[provider] ?? EMPTY_USAGE_REQUEST_ROWS
+        const fromBootstrap = bootstrapRowsByProvider[provider] ?? EMPTY_USAGE_REQUEST_ROWS
+        seedRowsByProvider[provider] = mergeUsageRequestRowsUniqueNewestFirst(
+          fromBootstrap,
+          fromCache,
+          USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
+        )
+      }
       setUsageRequestGraphRowsByProvider((prev) => {
-        const nextEntries = Object.entries(prev).filter(([provider]) => targetSet.has(provider))
-        return Object.fromEntries(nextEntries)
+        const next: Record<string, UsageRequestEntry[]> = {}
+        let changed = false
+        for (const provider of providerTargets) {
+          const existingRows = prev[provider]
+          const seedRows = seedRowsByProvider[provider]
+          if (existingRows && existingRows.length) {
+            next[provider] = existingRows
+          } else if (seedRows && seedRows.length) {
+            next[provider] = seedRows
+            changed = true
+          }
+        }
+        if (!changed && Object.keys(prev).every((provider) => targetSet.has(provider))) return prev
+        return next
       })
-      const cachedProviderEntries = Object.entries(usageRequestGraphRowsCache?.rowsByProvider ?? {}).filter(
-        ([provider]) => targetSet.has(provider),
-      )
       usageRequestGraphRowsCache = {
         queryKey: requestGraphQueryKey,
         baseRows,
-        rowsByProvider: Object.fromEntries(cachedProviderEntries),
+        rowsByProvider: seedRowsByProvider,
       }
       for (const provider of providerTargets) {
         const nextProviderSeq = (usageRequestGraphProviderFetchSeqRef.current.get(provider) ?? 0) + 1
@@ -1053,6 +1188,8 @@ export function UsageStatisticsPanel({
     usageByProvider,
     usageRequestDailyTotalsProviders,
     usageRequestMultiFilters.provider,
+    usageRequestGraphBaseRows.length,
+    usageRequestRows,
     usageRequestTestFallbackEnabled,
     usageRequestTestRows,
   ])
@@ -1110,18 +1247,26 @@ export function UsageStatisticsPanel({
   }, [initialRefreshLimit, isAnalyticsTab, prefetchUsageRequestsPageCache])
 
   useEffect(() => {
-    if (!isAnalyticsTab) return
+    if (!isAnalyticsTab && !isRequestsTab) return
     if (usageRequestRows.length > 0) return
     const cached =
+      usageRequestsPageCache != null && usageRequestsPageCache.queryKey === requestQueryKey
+        ? usageRequestsPageCache
+        : null
+    const canonicalCached =
       usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_PAGE_QUERY_KEY
         ? usageRequestsPageCache
         : null
-    const source = cached?.rows.length ? cached : usageRequestsLastNonEmptyPageCache
+    const source =
+      (cached?.rows.length ? cached : null) ??
+      (canonicalCached?.rows.length ? canonicalCached : null) ??
+      usageRequestsLastNonEmptyPageCache
     if (!source || source.rows.length === 0) return
+    usageRequestLoadedQueryKeyRef.current = source.queryKey
     setUsageRequestRows(source.rows)
     setUsageRequestHasMore(source.hasMore)
     setUsageRequestUsingTestFallback(source.usingTestFallback)
-  }, [isAnalyticsTab, usageRequestRows.length])
+  }, [isAnalyticsTab, isRequestsTab, requestQueryKey, usageRequestRows.length, usageRequestsCachePrimedTick])
 
   useEffect(() => {
     if (!isRequestsTab && !isAnalyticsTab) return
@@ -1161,17 +1306,17 @@ export function UsageStatisticsPanel({
       if (isOnlyUnknownFallbackCache) {
         usageRequestsPageCache = null
       } else {
-      usageRequestLoadedQueryKeyRef.current = requestQueryKey
-      setUsageRequestRows(requestPageCached.rows)
-      setUsageRequestHasMore(requestPageCached.hasMore)
-      setUsageRequestUsingTestFallback(requestPageCached.usingTestFallback)
-      void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
-      return
+        usageRequestLoadedQueryKeyRef.current = requestQueryKey
+        setUsageRequestRows(requestPageCached.rows)
+        setUsageRequestHasMore(requestPageCached.hasMore)
+        setUsageRequestUsingTestFallback(requestPageCached.usingTestFallback)
+        void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
+        return
       }
     }
+    const cachedGraphProviderCount = cachedGraph != null ? Object.keys(cachedGraph.rowsByProvider).length : 0
     const graphSnapshotReady =
-      usageRequestGraphBaseRows.length > 0 &&
-      usageRequestGraphProviderCount > 0
+      (usageRequestGraphBaseRows.length > 0 && usageRequestGraphProviderCount > 0) || cachedGraphProviderCount > 0
     if (isRequestsTab) {
       const shouldRefresh =
         usageRequestLoadedQueryKeyRef.current !== requestQueryKey || usageRequestRows.length === 0
@@ -1210,6 +1355,7 @@ export function UsageStatisticsPanel({
     refreshUsageRequestGraphRows,
     refreshUsageRequests,
     usageRequestRows.length,
+    usageRequestsCachePrimedTick,
   ])
   useEffect(() => {
     if (!isRequestsTab) return
@@ -1599,7 +1745,7 @@ export function UsageStatisticsPanel({
     usageRequestTimeFilter,
   ])
   const deferredFilteredUsageRequestRows = useDeferredValue(filteredUsageRequestRows)
-  const displayedFilteredUsageRequestRows = deferredFilteredUsageRequestRows
+  const displayedFilteredUsageRequestRows = justEnteredRequestsTab ? filteredUsageRequestRows : deferredFilteredUsageRequestRows
   const defaultTodayOnly = effectiveDetailsTab === 'requests' && !hasExplicitTimeFilter
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
