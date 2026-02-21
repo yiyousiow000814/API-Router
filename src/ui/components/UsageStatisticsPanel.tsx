@@ -1601,11 +1601,8 @@ export function UsageStatisticsPanel({
     return maxCount
   }, [usageRequestLineSeries])
 
-  const dailyTotalsProviders = usageRequestDisplayProviders
-
-  const usageRequestDailyBars = useMemo(() => {
-    if (!isRequestsTab) return []
-    if (!dailyTotalsProviders.length || !usageRequestDailyTotalsDays.length) return []
+  const usageRequestDailyWindowRows = useMemo(() => {
+    if (!isRequestsTab || !usageRequestDailyTotalsDays.length) return []
     const byDay = new Map<number, Record<string, number>>()
     for (const row of usageRequestDailyTotalsDays) {
       if (!row || typeof row.day_start_unix_ms !== 'number') continue
@@ -1622,18 +1619,45 @@ export function UsageStatisticsPanel({
         ? latestDay - (dayWindow - 1) * dayMs
         : earliestDay
     const days = Array.from({ length: dayWindow }, (_, idx) => windowStart + idx * dayMs)
-    const labelStride = days.length > 36 ? 3 : days.length > 24 ? 2 : 1
-    return days.map((day, index) => {
-      const providerTotals = byDay.get(day) ?? {}
-      const total = dailyTotalsProviders.reduce((sum, provider) => sum + (providerTotals[provider] ?? 0), 0)
+    return days.map((day) => ({
+      day,
+      providerTotals: byDay.get(day) ?? {},
+    }))
+  }, [isRequestsTab, usageRequestDailyTotalsDays])
+
+  const dailyTotalsProviders = useMemo(() => {
+    if (!usageRequestDailyWindowRows.length) return EMPTY_STRING_LIST
+    const totals = new Map<string, number>()
+    for (const row of usageRequestDailyWindowRows) {
+      for (const [provider, value] of Object.entries(row.providerTotals)) {
+        if (value <= 0) continue
+        totals.set(provider, (totals.get(provider) ?? 0) + value)
+      }
+    }
+    return [...totals.entries()]
+      .sort((a, b) => {
+        const providerOrder = compareUsageProvidersForDisplay(a[0], b[0])
+        if (providerOrder !== 0) return providerOrder
+        if (a[1] !== b[1]) return b[1] - a[1]
+        return a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: 'base' })
+      })
+      .map(([provider]) => provider)
+  }, [usageRequestDailyWindowRows])
+
+  const usageRequestDailyBars = useMemo(() => {
+    if (!usageRequestDailyWindowRows.length || !dailyTotalsProviders.length) return []
+    const labelStride =
+      usageRequestDailyWindowRows.length > 36 ? 3 : usageRequestDailyWindowRows.length > 24 ? 2 : 1
+    return usageRequestDailyWindowRows.map((row, index) => {
+      const total = dailyTotalsProviders.reduce((sum, provider) => sum + (row.providerTotals[provider] ?? 0), 0)
       return {
-        day,
-        providerTotals,
+        day: row.day,
+        providerTotals: row.providerTotals,
         total,
-        showLabel: (total > 0 && index % labelStride === 0) || index === days.length - 1,
+        showLabel: (total > 0 && index % labelStride === 0) || index === usageRequestDailyWindowRows.length - 1,
       }
     })
-  }, [dailyTotalsProviders, isRequestsTab, usageRequestDailyTotalsDays])
+  }, [dailyTotalsProviders, usageRequestDailyWindowRows])
 
   const timeScopedUsageRequestRows = useMemo(() => {
     if (!isRequestsTab) return EMPTY_USAGE_REQUEST_ROWS
