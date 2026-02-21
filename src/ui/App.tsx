@@ -50,6 +50,7 @@ import {
   resolveCliHomes,
 } from './utils/switchboard'
 import { usageProviderRowKey } from './utils/usageStatisticsView'
+import { primeUsageRequestsPrefetchCache } from './components/UsageStatisticsPanel'
 type TopPage = 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
 const RAW_DRAFT_WINDOWS_KEY = '__draft_windows__'
 const RAW_DRAFT_WSL_KEY = '__draft_wsl2__'
@@ -59,6 +60,13 @@ const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.wsl2.v1'
 const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
 const EVENT_LOG_PRELOAD_REFRESH_MS = 15_000
 const EVENT_LOG_PRELOAD_LIMIT = 2000
+const USAGE_REQUESTS_PREFETCH_HOURS = 24 * 365 * 20
+const USAGE_REQUESTS_PREFETCH_QUERY_KEY = JSON.stringify({
+  hours: USAGE_REQUESTS_PREFETCH_HOURS,
+  providers: [],
+  models: [],
+  origins: [],
+})
 export default function App() {
   const isDevPreview = useMemo(() => {
     if (!import.meta.env.DEV) return false
@@ -257,9 +265,37 @@ export default function App() {
     const w = window as Window & {
       __ui_check__?: {
         jumpToEventLogError?: ((payload?: { provider: string; unixMs: number; message: string }) => boolean) | undefined
+        primeRequestsPrefetchCache?: ((payload: {
+          rows: Array<{
+            provider: string
+            api_key_ref: string
+            model: string
+            origin: string
+            session_id: string
+            unix_ms: number
+            input_tokens: number
+            output_tokens: number
+            total_tokens: number
+            cache_creation_input_tokens: number
+            cache_read_input_tokens: number
+          }>
+          hasMore?: boolean
+          dailyTotals?: {
+            days: Array<{
+              day_start_unix_ms: number
+              provider_totals: Record<string, number>
+              total_tokens: number
+            }>
+            providers: Array<{
+              provider: string
+              total_tokens: number
+            }>
+          }
+        }) => void) | undefined
       }
     }
     const prev = w.__ui_check__?.jumpToEventLogError
+    const prevPrime = w.__ui_check__?.primeRequestsPrefetchCache
     const next = w.__ui_check__ ?? {}
     next.jumpToEventLogError = (payload) => {
       const candidate =
@@ -278,11 +314,21 @@ export default function App() {
       })
       return true
     }
+    next.primeRequestsPrefetchCache = (payload) => {
+      primeUsageRequestsPrefetchCache({
+        queryKey: USAGE_REQUESTS_PREFETCH_QUERY_KEY,
+        rows: payload?.rows ?? [],
+        hasMore: Boolean(payload?.hasMore),
+        dailyTotals: payload?.dailyTotals ?? null,
+      })
+    }
     w.__ui_check__ = next
     return () => {
       if (!w.__ui_check__) return
       if (prev) w.__ui_check__.jumpToEventLogError = prev
       else delete w.__ui_check__.jumpToEventLogError
+      if (prevPrime) w.__ui_check__.primeRequestsPrefetchCache = prevPrime
+      else delete w.__ui_check__.primeRequestsPrefetchCache
     }
   }, [eventLogSeedEvents, handleOpenLastErrorInEventLog])
   useEffect(() => {

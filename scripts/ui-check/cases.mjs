@@ -914,6 +914,129 @@ export async function runRequestsFirstPaintStabilityCase(driver, screenshotPath)
   }
 }
 
+export async function runRequestsAnalyticsSwitchNoReloadCase(driver, screenshotPath) {
+  await driver.executeScript(`
+    const globalObj = window;
+    const bucket = (globalObj.__ui_check__ = globalObj.__ui_check__ || {});
+    bucket.__requestsEntriesInvokeCount = 0;
+
+    const now = Date.now();
+    const yesterday = now - 24 * 60 * 60 * 1000;
+    const dayAgo = yesterday - (6 * 60 * 60 * 1000);
+    const rows = Array.from({ length: 180 }, (_, idx) => ({
+      provider: idx % 2 === 0 ? 'official' : 'provider_1',
+      api_key_ref: '-',
+      model: 'gpt-5.2-codex',
+      origin: idx % 2 === 0 ? 'windows' : 'wsl2',
+      session_id: 'ui-check-session-' + String(idx + 1).padStart(3, '0'),
+      unix_ms: dayAgo - idx * 60 * 1000,
+      input_tokens: 1000 + idx,
+      output_tokens: 100 + idx,
+      total_tokens: 1100 + idx * 2,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    }));
+    const daily = [{
+      day_start_unix_ms: new Date(yesterday).setHours(0, 0, 0, 0),
+      provider_totals: { official: 80000, provider_1: 70000 },
+      total_tokens: 150000,
+    }];
+    const providers = [
+      { provider: 'official', total_tokens: 80000 },
+      { provider: 'provider_1', total_tokens: 70000 },
+    ];
+
+    if (!bucket.primeRequestsPrefetchCache || typeof bucket.primeRequestsPrefetchCache !== 'function') {
+      throw new Error('primeRequestsPrefetchCache is not available on window.__ui_check__.');
+    }
+    bucket.primeRequestsPrefetchCache({
+      rows,
+      hasMore: true,
+      dailyTotals: { days: daily, providers },
+    });
+
+    const patchInvoke = (target, key) => {
+      if (!target || typeof target[key] !== 'function') return;
+      if (target.__uiCheckRequestsInvokePatched) return;
+      const original = target[key].bind(target);
+      target.__uiCheckRequestsOriginalInvoke = original;
+      target[key] = function patchedInvoke(cmd, payload) {
+        if (cmd === 'get_usage_request_entries') {
+          bucket.__requestsEntriesInvokeCount = (bucket.__requestsEntriesInvokeCount || 0) + 1;
+        }
+        return original(cmd, payload);
+      };
+      target.__uiCheckRequestsInvokePatched = true;
+    };
+
+    patchInvoke(globalObj.__TAURI_INTERNALS__, 'invoke');
+    patchInvoke(globalObj.__TAURI__ && globalObj.__TAURI__.core, 'invoke');
+  `)
+
+  try {
+    await clickTopNav(driver, 'Requests')
+    await waitVisible(
+      driver,
+      By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Request Details']`),
+      15000,
+    )
+    await new Promise((r) => setTimeout(r, 700))
+
+    await driver.executeScript(`
+      const bucket = (window.__ui_check__ = window.__ui_check__ || {});
+      bucket.__requestsEntriesInvokeCount = 0;
+    `)
+
+    await clickTopNav(driver, 'Analytics')
+    await waitVisible(
+      driver,
+      By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Provider Statistics']`),
+      15000,
+    )
+
+    await clickTopNav(driver, 'Requests')
+    await waitVisible(
+      driver,
+      By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Request Details']`),
+      15000,
+    )
+    await new Promise((r) => setTimeout(r, 550))
+
+    const probe = await driver.executeScript(`
+      const bucket = (window.__ui_check__ = window.__ui_check__ || {});
+      const invokeCount = Number(bucket.__requestsEntriesInvokeCount || 0);
+      const footerHints = Array.from(document.querySelectorAll('.aoUsageRequestsFooter .aoHint'))
+        .map((el) => (el.textContent || '').trim());
+      const tableHint = document.querySelector('.aoUsageHistoryTableBody td.aoHint');
+      const tableHintText = tableHint ? (tableHint.textContent || '').trim() : '';
+      return { invokeCount, footerHints, tableHintText };
+    `)
+    const hasReloadHint = String(probe?.tableHintText || '') === "Loading today's rows..."
+    const rowsHint = Array.isArray(probe?.footerHints) ? String(probe.footerHints[1] || '') : ''
+    const collapsedToZeroRows = /^0\s*\/\s*\d+\s+rows$/i.test(rowsHint)
+    if (hasReloadHint || Number(probe?.invokeCount || 0) > 0 || collapsedToZeroRows) {
+      const b64 = await driver.takeScreenshot()
+      fs.writeFileSync(screenshotPath.replace('.png', '-requests-analytics-switch-reload.png'), Buffer.from(b64, 'base64'))
+      throw new Error(
+        `Requests tab should not collapse visible rows after returning from Analytics, but detected reload-like state (hint="${probe.tableHintText}", invokeCount=${probe.invokeCount}, rowsHint="${rowsHint}"). footer=${JSON.stringify(probe.footerHints || [])}`,
+      )
+    }
+  } finally {
+    await driver.executeScript(`
+      const globalObj = window;
+      const restore = (target, key) => {
+        if (!target || !target.__uiCheckRequestsInvokePatched) return;
+        const original = target.__uiCheckRequestsOriginalInvoke;
+        if (typeof original === 'function') target[key] = original;
+        target.__uiCheckRequestsInvokePatched = false;
+        target.__uiCheckRequestsOriginalInvoke = undefined;
+      };
+      restore(globalObj.__TAURI_INTERNALS__, 'invoke');
+      restore(globalObj.__TAURI__ && globalObj.__TAURI__.core, 'invoke');
+    `)
+  }
+}
+
 export async function runPricingTimelineModalCase(driver, screenshotPath) {
   await clickButtonByText(driver, 'Pricing Timeline', 12000)
   const modal = await waitVisible(

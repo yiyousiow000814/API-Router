@@ -1658,11 +1658,18 @@ export function UsageStatisticsPanel({
       }
     })
   }, [dailyTotalsProviders, usageRequestDailyWindowRows])
+  const defaultTodayOnly = useMemo(() => {
+    if (effectiveDetailsTab !== 'requests') return false
+    if (hasExplicitTimeFilter) return false
+    for (const row of rowsForRequestRender) {
+      if (startOfDayUnixMs(row.unix_ms) === requestDefaultDay) return true
+    }
+    return false
+  }, [effectiveDetailsTab, hasExplicitTimeFilter, requestDefaultDay, rowsForRequestRender])
 
   const timeScopedUsageRequestRows = useMemo(() => {
     if (!isRequestsTab) return EMPTY_USAGE_REQUEST_ROWS
     const timeDay = parseDateInputToDayStart(usageRequestTimeFilter)
-    const defaultTodayOnly = effectiveDetailsTab === 'requests' && !hasExplicitTimeFilter
     if (timeDay == null && !defaultTodayOnly) return rowsForRequestRender
     return rowsForRequestRender.filter((row) =>
       timeDay != null
@@ -1670,8 +1677,7 @@ export function UsageStatisticsPanel({
         : startOfDayUnixMs(row.unix_ms) === requestDefaultDay,
     )
   }, [
-    effectiveDetailsTab,
-    hasExplicitTimeFilter,
+    defaultTodayOnly,
     isRequestsTab,
     requestDefaultDay,
     rowsForRequestRender,
@@ -1733,10 +1739,8 @@ export function UsageStatisticsPanel({
     }
     return out
   }, [isRequestsTab, rowsForRequestRender])
-
   const filteredUsageRequestRows = useMemo(() => {
     if (!isRequestsTab) return EMPTY_USAGE_REQUEST_ROWS
-    const defaultTodayOnly = effectiveDetailsTab === 'requests' && !hasExplicitTimeFilter
     const timeDay = parseDateInputToDayStart(usageRequestTimeFilter)
     const timeNeedle = usageRequestTimeFilter.trim().toLowerCase()
     const contains = (text: string) => timeNeedle.length === 0 || text.toLowerCase().includes(timeNeedle)
@@ -1763,7 +1767,7 @@ export function UsageStatisticsPanel({
       return true
     })
   }, [
-    effectiveDetailsTab,
+    defaultTodayOnly,
     fmtWhen,
     hasExplicitTimeFilter,
     isRequestsTab,
@@ -1774,7 +1778,6 @@ export function UsageStatisticsPanel({
   ])
   const deferredFilteredUsageRequestRows = useDeferredValue(filteredUsageRequestRows)
   const displayedFilteredUsageRequestRows = justEnteredRequestsTab ? filteredUsageRequestRows : deferredFilteredUsageRequestRows
-  const defaultTodayOnly = effectiveDetailsTab === 'requests' && !hasExplicitTimeFilter
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
     if (!hasExplicitTimeFilter) return
