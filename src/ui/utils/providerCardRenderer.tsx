@@ -173,18 +173,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     void options.setProviderDisabled(name, nextDisabled)
                   }}
                 >
-                  <span className="aoStatusSwitchIcon" aria-hidden="true">
-                    {p.disabled ? (
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M7 7l10 10" />
-                        <path d="M17 7l-10 10" />
-                      </svg>
-                    ) : (
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="m4 12 5 5 11-11" />
-                      </svg>
-                    )}
-                  </span>
                   <span className="aoStatusSwitchKnob" aria-hidden="true" />
                 </button>
               </div>
