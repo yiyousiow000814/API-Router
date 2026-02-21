@@ -214,9 +214,14 @@
 .aoProviderConfigDisabled .aoTinyBtn,
 .aoProviderConfigDisabled .aoIconGhost,
 .aoProviderConfigDisabled .aoDragHandle,
-.aoProviderConfigDisabled .aoActionBtn {
+.aoProviderConfigDisabled .aoActionBtn:not(.aoActionBtnStatus) {
   filter: grayscale(1) saturate(0.35);
   opacity: 0.48;
+}
+
+.aoProviderConfigDisabled .aoActionBtnStatus {
+  filter: none;
+  opacity: 1;
 }
 
 .aoProviderStateBadge {
@@ -278,11 +283,11 @@
 }
 
 .aoStatusDotOn {
-  background: #32b36f;
+  background: #22c16f;
 }
 
 .aoStatusDotOff {
-  background: #c95069;
+  background: #d64a66;
 }
 
 .aoProviderConfigHeader {
