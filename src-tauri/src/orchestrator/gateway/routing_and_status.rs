@@ -17,6 +17,33 @@ fn provider_has_remaining_quota(quota_snapshots: &Value, provider: &str) -> bool
         return used < added;
     }
 
+    let budget_pairs = [
+        (
+            snap.get("daily_spent_usd").and_then(|v| v.as_f64()),
+            snap.get("daily_budget_usd").and_then(|v| v.as_f64()),
+        ),
+        (
+            snap.get("weekly_spent_usd").and_then(|v| v.as_f64()),
+            snap.get("weekly_budget_usd").and_then(|v| v.as_f64()),
+        ),
+        (
+            snap.get("monthly_spent_usd").and_then(|v| v.as_f64()),
+            snap.get("monthly_budget_usd").and_then(|v| v.as_f64()),
+        ),
+    ];
+    let mut saw_budget = false;
+    for (spent, budget) in budget_pairs {
+        if let (Some(spent), Some(budget)) = (spent, budget) {
+            saw_budget = true;
+            if budget <= 0.0 || spent >= budget {
+                return false;
+            }
+        }
+    }
+    if saw_budget {
+        return true;
+    }
+
     true
 }
 

@@ -17,6 +17,28 @@ type Props = {
   onOpenLastErrorInEventLog: (payload: LastErrorJump) => void
 }
 
+
+function quotaIsClosed(
+  quota:
+    | Status['quota'][string]
+    | undefined,
+): boolean {
+  if (!quota) return false
+  if (quota.remaining != null) return quota.remaining <= 0
+  if (quota.today_used != null && quota.today_added != null) return quota.today_used >= quota.today_added
+
+  const budgets: Array<[number | null | undefined, number | null | undefined]> = [
+    [quota.daily_spent_usd, quota.daily_budget_usd],
+    [quota.weekly_spent_usd, quota.weekly_budget_usd],
+    [quota.monthly_spent_usd, quota.monthly_budget_usd],
+  ]
+  for (const [spent, budget] of budgets) {
+    if (spent == null || budget == null) continue
+    if (budget <= 0 || spent >= budget) return true
+  }
+  return false
+}
+
 export function ProvidersTable({ providers, status, refreshingProviders, onRefreshQuota, onOpenLastErrorInEventLog }: Props) {
   return (
     <table className="aoTable aoTableFixed">
@@ -42,28 +64,33 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
           const h = status.providers[p]
           const q = status.quota?.[p]
           const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
-          const cooldownActive = h.cooldown_until_unix_ms > Date.now()
+          const isClosed = quotaIsClosed(q)
+          const cooldownActive = !isClosed && h.cooldown_until_unix_ms > Date.now()
           const isActive = (status.active_provider_counts?.[p] ?? 0) > 0
           const healthLabel =
-            isActive
-              ? 'effective'
-              : h.status === 'healthy'
-                ? 'yes'
-                : h.status === 'unhealthy'
-                  ? 'no'
-                  : h.status === 'cooldown'
-                    ? 'cooldown'
-                    : 'unknown'
+            isClosed
+              ? 'closed'
+              : isActive
+                ? 'effective'
+                : h.status === 'healthy'
+                  ? 'yes'
+                  : h.status === 'unhealthy'
+                    ? 'no'
+                    : h.status === 'cooldown'
+                      ? 'cooldown'
+                      : 'unknown'
           const dotClass =
-            isActive
-              ? 'aoDot'
-              : h.status === 'healthy'
+            isClosed
+              ? 'aoDot aoDotBad'
+              : isActive
                 ? 'aoDot'
-                : h.status === 'cooldown'
+                : h.status === 'healthy'
                   ? 'aoDot'
-                : h.status === 'unhealthy'
-                  ? 'aoDot aoDotBad'
-                  : 'aoDot aoDotMuted'
+                  : h.status === 'cooldown'
+                    ? 'aoDot'
+                  : h.status === 'unhealthy'
+                    ? 'aoDot aoDotBad'
+                    : 'aoDot aoDotMuted'
 
           const usageNode =
             kind === 'token_stats' ? (
