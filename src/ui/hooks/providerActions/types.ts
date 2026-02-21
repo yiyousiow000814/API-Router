@@ -20,6 +20,7 @@ export type UseProviderActionsParams = {
   config: Config | null
   status: Status | null
   isDevPreview: boolean
+  setConfig: Dispatch<SetStateAction<Config | null>>
   keyModal: KeyModalState
   usageBaseModal: UsageBaseModalState
   newProviderName: string

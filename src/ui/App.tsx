@@ -876,6 +876,7 @@ export default function App() {
     config,
     status,
     isDevPreview,
+    setConfig,
     keyModal,
     usageBaseModal,
     newProviderName,

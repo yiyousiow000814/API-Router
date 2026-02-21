@@ -5,6 +5,8 @@ import type { UseProviderActionsParams } from './types'
 type ProviderCrudActions = Pick<
   UseProviderActionsParams,
   | 'config'
+  | 'isDevPreview'
+  | 'setConfig'
   | 'newProviderName'
   | 'newProviderBaseUrl'
   | 'setNewProviderName'
@@ -16,6 +18,8 @@ type ProviderCrudActions = Pick<
 
 export function useProviderCrudActions({
   config,
+  isDevPreview,
+  setConfig,
   newProviderName,
   newProviderBaseUrl,
   setNewProviderName,
@@ -70,6 +74,23 @@ export function useProviderCrudActions({
 
   const setProviderDisabled = useCallback(
     async (name: string, disabled: boolean) => {
+      if (isDevPreview) {
+        setConfig((prev) => {
+          if (!prev?.providers?.[name]) return prev
+          return {
+            ...prev,
+            providers: {
+              ...prev.providers,
+              [name]: {
+                ...prev.providers[name],
+                disabled,
+              },
+            },
+          }
+        })
+        flashToast(`[TEST] ${disabled ? 'Deactivated' : 'Activated'}: ${name}`)
+        return
+      }
       try {
         await invoke('set_provider_disabled', { name, disabled })
         flashToast(`${disabled ? 'Deactivated' : 'Activated'}: ${name}`)
@@ -79,7 +100,7 @@ export function useProviderCrudActions({
         flashToast(String(e), 'error')
       }
     },
-    [flashToast, refreshConfig, refreshStatus],
+    [flashToast, isDevPreview, refreshConfig, refreshStatus, setConfig],
   )
 
   const addProvider = useCallback(async () => {
