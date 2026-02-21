@@ -93,6 +93,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 ) : (
                   <>
                     <span className="aoProviderName">{name}</span>
+                    {p.disabled ? <span className="aoProviderStateBadge">Deactivated</span> : null}
                     <button
                       className="aoIconGhost"
                       title="Rename"
@@ -138,7 +139,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   <span>Clear</span>
                 </button>
                 <button
-                  className="aoActionBtn"
+                  className={`aoActionBtn${p.disabled ? ' aoActionBtnPrimary' : ''}`}
                   title={p.disabled ? 'Activate provider' : 'Deactivate provider'}
                   onClick={() => void options.setProviderDisabled(name, !Boolean(p.disabled))}
                 >
