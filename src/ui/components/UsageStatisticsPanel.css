@@ -10,6 +10,16 @@
   gap: 8px;
 }
 
+.aoUsageDetailsPane {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.aoUsageDetailsPane[hidden] {
+  display: none;
+}
+
 .aoUsageStatsHeader {
   display: flex;
   align-items: flex-start;

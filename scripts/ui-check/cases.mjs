@@ -3,10 +3,17 @@ import path from 'node:path'
 import { By, until } from 'selenium-webdriver'
 import { warnOrFail } from './runtime-utils.mjs'
 
+const TOP_NAV_MAX_STEP_LATENCY_MS = 10
+
 export async function waitVisible(driver, locator, timeoutMs = 12000) {
-  const el = await driver.wait(until.elementLocated(locator), timeoutMs)
-  await driver.wait(until.elementIsVisible(el), timeoutMs)
-  return el
+  try {
+    const el = await driver.wait(until.elementLocated(locator), timeoutMs)
+    await driver.wait(until.elementIsVisible(el), timeoutMs)
+    return el
+  } catch (error) {
+    const detail = locator?.toString ? locator.toString() : String(locator)
+    throw new Error(`waitVisible timeout for locator: ${detail} (${String(error?.message || error)})`)
+  }
 }
 
 export async function clickButtonByText(driver, label, timeoutMs = 12000) {
@@ -51,6 +58,14 @@ export async function clickTopNav(driver, label) {
     15000,
   )
   await btn.click()
+}
+
+export async function waitTopNavLabel(driver, label, timeoutMs = 12000) {
+  await waitVisible(
+    driver,
+    By.xpath(`//button[contains(@class,'aoTopNavBtn')][.//span[normalize-space()='${label}']]`),
+    timeoutMs,
+  )
 }
 
 export async function waitPageTitle(driver, title, timeoutMs = 12000) {
@@ -197,12 +212,32 @@ export async function runUsageHistoryScrollCase(driver, screenshotPath) {
     By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Daily History']]`),
     15000,
   )
-  await waitVisible(driver, By.css('.aoUsageHistoryTableWrap'), 12000)
+  await driver.wait(
+    async () => {
+      const state = await driver.executeScript(`
+        const root = arguments[0];
+        const wrap = root ? root.querySelector('.aoUsageHistoryTableWrap') : null;
+        const hint = root ? root.querySelector('.aoUsageHistoryHint') : null;
+        return {
+          hasWrap: Boolean(wrap),
+          loadingText: hint ? (hint.textContent || '').toLowerCase() : '',
+        };
+      `, modal)
+      if (state?.hasWrap) return true
+      if (String(state?.loadingText || '').includes('loading')) return false
+      return false
+    },
+    30000,
+    'Daily History table did not become ready in time',
+  )
+  const wrapEl = await modal.findElement(By.css('.aoUsageHistoryTableWrap'))
+  await driver.wait(until.elementIsVisible(wrapEl), 12000)
 
   const scrollState = await driver.executeScript(`
-    const wrap = document.querySelector('.aoUsageHistoryTableWrap');
-    const head = document.querySelector('.aoUsageHistoryTableHead');
-    const rows = document.querySelectorAll('.aoUsageHistoryTableBody tbody tr').length;
+    const root = arguments[0];
+    const wrap = root ? root.querySelector('.aoUsageHistoryTableWrap') : null;
+    const head = root ? root.querySelector('.aoUsageHistoryTableHead') : null;
+    const rows = root ? root.querySelectorAll('.aoUsageHistoryTableBody tbody tr').length : 0;
     if (!wrap || !head) return null;
     return {
       rows,
@@ -210,31 +245,33 @@ export async function runUsageHistoryScrollCase(driver, screenshotPath) {
       wrapTop: wrap.getBoundingClientRect().top,
       headTop: head.getBoundingClientRect().top
     };
-  `)
+  `, modal)
   if (!scrollState) throw new Error('Daily History elements missing.')
   if (scrollState.rows < 20) throw new Error(`Daily History rows too few for scroll test: ${scrollState.rows}`)
   if (!(scrollState.maxScroll > 40)) throw new Error('Daily History list is not scrollable after seeding.')
 
   await driver.executeScript(`
-    const wrap = document.querySelector('.aoUsageHistoryTableWrap');
+    const root = arguments[0];
+    const wrap = root ? root.querySelector('.aoUsageHistoryTableWrap') : null;
     if (!wrap) return;
     const next = Math.floor((wrap.scrollHeight - wrap.clientHeight) * 0.58);
     wrap.scrollTop = Math.max(0, next);
     wrap.dispatchEvent(new Event('scroll', { bubbles: true }));
-  `)
+  `, modal)
   await new Promise((r) => setTimeout(r, 120))
 
   const afterScroll = await driver.executeScript(`
-    const wrap = document.querySelector('.aoUsageHistoryTableWrap');
-    const head = document.querySelector('.aoUsageHistoryTableHead');
-    const overlay = document.querySelector('.aoUsageHistoryScrollbarOverlay');
+    const root = arguments[0];
+    const wrap = root ? root.querySelector('.aoUsageHistoryTableWrap') : null;
+    const head = root ? root.querySelector('.aoUsageHistoryTableHead') : null;
+    const overlay = root ? root.querySelector('.aoUsageHistoryScrollbarOverlay') : null;
     if (!wrap || !head || !overlay) return null;
     return {
       scrollTop: wrap.scrollTop,
       headTop: head.getBoundingClientRect().top,
       overlayVisible: overlay.classList.contains('aoUsageHistoryScrollbarOverlayVisible')
     };
-  `)
+  `, modal)
   if (!afterScroll) throw new Error('Daily History scroll state unavailable after scroll.')
   if (!(afterScroll.scrollTop > 0)) throw new Error('Daily History did not scroll.')
   if (Math.abs(afterScroll.headTop - scrollState.headTop) > 1.5) {
@@ -249,9 +286,10 @@ export async function runUsageHistoryScrollCase(driver, screenshotPath) {
   await driver.actions({ async: true }).move({ origin: 'viewport', x: 24, y: 24 }).perform()
   await new Promise((r) => setTimeout(r, 1350))
   const overlayLater = await driver.executeScript(`
-    const overlay = document.querySelector('.aoUsageHistoryScrollbarOverlay');
+    const root = arguments[0];
+    const overlay = root ? root.querySelector('.aoUsageHistoryScrollbarOverlay') : null;
     return overlay ? overlay.classList.contains('aoUsageHistoryScrollbarOverlayVisible') : null;
-  `)
+  `, modal)
   if (overlayLater !== false) throw new Error('Daily History overlay scrollbar did not auto-hide.')
 
   const closeBtn = await modal.findElement(By.xpath(`.//button[normalize-space()='Close']`))
@@ -275,7 +313,7 @@ export async function runEventLogCalendarDailyStatsCase(driver, directProvider, 
 
   await clickTopNav(driver, 'Dashboard')
   await waitSectionHeading(driver, 'Providers', 15000)
-  await clickTopNav(driver, 'Event Log')
+  await clickTopNav(driver, 'Events')
   await waitSectionHeading(driver, 'Event Log', 20000)
 
   const daily = await tauriInvoke(driver, 'get_event_log_daily_stats')
@@ -347,6 +385,188 @@ export async function runProviderStatisticsKeyStyleCase(driver, screenshotPath) 
     const b64 = await driver.takeScreenshot()
     fs.writeFileSync(screenshotPath.replace('.png', '-provider-key-bold.png'), Buffer.from(b64, 'base64'))
     throw new Error(`Provider Statistics key should not be bold (weight=${probe.weight}, text="${probe.text}").`)
+  }
+}
+
+export async function runTopNavSwitchResponsivenessCase(driver, screenshotPath) {
+  await waitTopNavLabel(driver, 'Analytics', 15000)
+  await waitTopNavLabel(driver, 'Requests', 15000)
+  await waitTopNavLabel(driver, 'Dashboard', 15000)
+  await waitTopNavLabel(driver, 'Events', 15000)
+  await waitTopNavLabel(driver, 'Provider Switchboard', 15000)
+
+  const result = await driver.executeAsyncScript(`
+    const done = arguments[arguments.length - 1];
+    const readNavLabels = () => {
+      const buttons = Array.from(document.querySelectorAll('button.aoTopNavBtn'));
+      return buttons
+        .map((btn) => (btn.querySelector('span')?.textContent || '').trim())
+        .filter(Boolean);
+    };
+    const navLabels = readNavLabels();
+    const core = ['Analytics', 'Requests', 'Dashboard', 'Events', 'Provider Switchboard'];
+    const existingCore = core.filter((label) => navLabels.includes(label));
+    const extra = navLabels.filter((label) => !existingCore.includes(label));
+    const labels = [...existingCore, ...extra, 'Analytics'];
+    const buttonByLabel = (label) => {
+      const buttons = Array.from(document.querySelectorAll('button.aoTopNavBtn'));
+      return buttons.find((btn) => {
+        const span = btn.querySelector('span');
+        return (span?.textContent || '').trim() === label;
+      }) || null;
+    };
+    const isVisible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const hasText = (selector, expected) => {
+      const nodes = Array.from(document.querySelectorAll(selector));
+      return nodes.some((n) => isVisible(n) && ((n.textContent || '').replace(/\\s+/g, ' ').trim()) === expected);
+    };
+    const isPageReadyForLabel = (label) => {
+      if (label === 'Dashboard') return hasText('.aoH3', 'Providers');
+      if (label === 'Analytics') return hasText('.aoMiniLabel', 'Provider Statistics');
+      if (label === 'Requests') return hasText('.aoMiniLabel', 'Request Details');
+      if (label === 'Events') return hasText('.aoH3', 'Event Log');
+      if (label === 'Provider Switchboard') {
+        return hasText('.aoPagePlaceholderTitle', 'Provider Switchboard');
+      }
+      // For future tabs: require active nav + any visible page placeholder title or section heading.
+      const active = buttonByLabel(label);
+      if (!active) return false;
+      if (!(active.getAttribute('aria-selected') === 'true' || active.classList.contains('is-active'))) return false;
+      const titles = Array.from(document.querySelectorAll('.aoPagePlaceholderTitle, .aoH3'));
+      return titles.some((n) => (n.textContent || '').trim().length > 0);
+    };
+    const clickButton = (btn) => {
+      if (!btn) return;
+      try {
+        btn.dispatchEvent(new PointerEvent('pointerdown', { button: 0, bubbles: true }));
+      } catch {}
+      btn.click();
+    };
+    const stepLatencies = [];
+    let stepIndex = 0;
+    let waitingSince = 0;
+    let rafStarted = performance.now();
+    let prevTs = rafStarted;
+    let maxFrameGap = 0;
+    const clickGapMs = 80;
+    let rafCount = 0;
+
+    const loop = (ts) => {
+      rafCount += 1;
+      const gap = ts - prevTs;
+      if (gap > maxFrameGap) maxFrameGap = gap;
+      prevTs = ts;
+
+      if (stepIndex < labels.length && ts - rafStarted >= stepIndex * clickGapMs && waitingSince === 0) {
+        const btn = buttonByLabel(labels[stepIndex]);
+        clickButton(btn);
+        waitingSince = performance.now();
+      }
+
+      if (waitingSince > 0 && isPageReadyForLabel(labels[stepIndex])) {
+        stepLatencies.push(performance.now() - waitingSince);
+        waitingSince = 0;
+        stepIndex += 1;
+      }
+
+      const doneSteps = stepIndex >= labels.length;
+      const elapsed = ts - rafStarted;
+      if (doneSteps && elapsed > labels.length * clickGapMs + 220) {
+        done({ ok: true, labels, stepLatencies, maxFrameGap, rafCount });
+        return;
+      }
+      if (elapsed > 5000) {
+        done({ ok: false, labels, stepLatencies, maxFrameGap, rafCount, reason: 'timeout' });
+        return;
+      }
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  `)
+
+  if (!result?.ok) {
+    const b64 = await driver.takeScreenshot()
+    fs.writeFileSync(screenshotPath.replace('.png', '-top-nav-switch-timeout.png'), Buffer.from(b64, 'base64'))
+    throw new Error(`Top nav responsiveness probe failed: ${String(result?.reason || 'unknown')}`)
+  }
+
+  const latencies = Array.isArray(result.stepLatencies) ? result.stepLatencies : []
+  const expectedSteps = Array.isArray(result?.labels) ? result.labels.length : 6
+  if (latencies.length < expectedSteps) {
+    const b64 = await driver.takeScreenshot()
+    fs.writeFileSync(screenshotPath.replace('.png', '-top-nav-switch-incomplete.png'), Buffer.from(b64, 'base64'))
+    throw new Error(`Top nav responsiveness probe incomplete: ${latencies.length}/${expectedSteps}`)
+  }
+
+  const maxLatency = Math.max(...latencies)
+  const maxFrameGap = Number(result.maxFrameGap || 0)
+  if (maxLatency > TOP_NAV_MAX_STEP_LATENCY_MS) {
+    throw new Error(
+      `Top nav switch latency exceeded contract: max=${maxLatency.toFixed(1)}ms > ${TOP_NAV_MAX_STEP_LATENCY_MS}ms, steps=${latencies.map((v) => v.toFixed(1)).join(',')}ms`,
+    )
+  }
+  if (maxFrameGap > 120) {
+    warnOrFail(`Top nav frame gap high during rapid switch: maxFrameGap=${maxFrameGap.toFixed(1)}ms`)
+  }
+  return {
+    stepLatencies: latencies,
+    maxLatency,
+    maxFrameGap,
+  }
+}
+
+export async function runRequestsFirstPaintStabilityCase(driver, screenshotPath) {
+  await clickTopNav(driver, 'Analytics')
+  await waitVisible(
+    driver,
+    By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Provider Statistics']`),
+    15000,
+  )
+  await clickTopNav(driver, 'Requests')
+  await waitVisible(
+    driver,
+    By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Request Details']`),
+    15000,
+  )
+
+  const probe = await driver.executeAsyncScript(`
+    const done = arguments[arguments.length - 1];
+    const readShown = () => {
+      const heads = Array.from(document.querySelectorAll('.aoUsageRequestChartCard .aoSwitchboardSectionHead .aoHint'));
+      for (const el of heads) {
+        const txt = (el.textContent || '').trim();
+        const m = txt.match(/([\\d,]+)\\s+requests shown/i);
+        if (m) return Number(String(m[1]).replaceAll(',', ''));
+      }
+      return null;
+    };
+    const start = performance.now();
+    const samples = [];
+    const loop = () => {
+      const v = readShown();
+      if (v != null) samples.push(v);
+      if (performance.now() - start >= 1200) {
+        done({ ok: true, samples });
+        return;
+      }
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  `)
+
+  const samples = Array.isArray(probe?.samples) ? probe.samples : []
+  const maxShown = samples.length ? Math.max(...samples) : 0
+  const sawZero = samples.includes(0)
+  if (maxShown > 0 && sawZero) {
+    const b64 = await driver.takeScreenshot()
+    fs.writeFileSync(screenshotPath.replace('.png', '-requests-first-paint-flash-zero.png'), Buffer.from(b64, 'base64'))
+    throw new Error(`Requests first paint unstable: saw 0 before non-zero (${samples.join(',')})`)
   }
 }
 

@@ -135,7 +135,7 @@ export function InstructionModal({
           </button>
         </div>
         <div className="aoModalBody aoGsBody">
-          <section className="aoGsHero" role="note" aria-label="getting started overview">
+          <section className="aoGsHero" role="note" aria-label="getting started summary">
             <div className="aoGsHeroTitle">Connect Codex to API Router</div>
             <div className="aoGsHeroDesc">Follow these steps in order. Most users finish in 3-5 minutes.</div>
           </section>

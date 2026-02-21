@@ -80,18 +80,13 @@ export function AppMainContent(props: Props) {
     switchboardProps,
   } = props
 
-  if (activePage === 'usage_statistics') {
-    return <UsageStatisticsPanel {...usageProps} fmtWhen={fmtWhen} forceDetailsTab="overview" showDetailsTabs={false} />
-  }
-
-  if (activePage === 'usage_requests') {
+  if (activePage === 'usage_statistics' || activePage === 'usage_requests') {
     return (
       <UsageStatisticsPanel
         {...usageProps}
         fmtWhen={fmtWhen}
-        forceDetailsTab="requests"
-        showDetailsTabs={false}
-        showFilters={false}
+        forceDetailsTab={activePage === 'usage_requests' ? 'requests' : 'analytics'}
+        showFilters={activePage !== 'usage_requests'}
       />
     )
   }

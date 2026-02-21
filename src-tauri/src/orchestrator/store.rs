@@ -1387,6 +1387,44 @@ impl Store {
         (out, has_more)
     }
 
+    pub fn list_usage_request_daily_totals(
+        &self,
+        day_limit: usize,
+    ) -> Vec<(String, String, u64)> {
+        let mut out: Vec<(String, String, u64)> = Vec::new();
+        let limit = day_limit.clamp(1, 180);
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "WITH latest_days AS (
+                SELECT strftime('%Y-%m-%d', unix_ms / 1000, 'unixepoch', 'localtime') AS day_key
+                FROM usage_requests
+                GROUP BY day_key
+                ORDER BY day_key DESC
+                LIMIT ?1
+             )
+             SELECT d.day_key, u.provider, SUM(u.total_tokens) AS total_tokens
+             FROM usage_requests u
+             JOIN latest_days d
+               ON strftime('%Y-%m-%d', u.unix_ms / 1000, 'unixepoch', 'localtime') = d.day_key
+             GROUP BY d.day_key, u.provider
+             ORDER BY d.day_key ASC, total_tokens DESC",
+        ) else {
+            return out;
+        };
+        let Ok(rows) = stmt.query_map([i64::try_from(limit).unwrap_or(45)], |row| {
+            let day_key = row.get::<_, String>(0)?;
+            let provider = row.get::<_, String>(1)?;
+            let total_tokens = u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0);
+            Ok((day_key, provider, total_tokens))
+        }) else {
+            return out;
+        };
+        for row in rows.flatten() {
+            out.push(row);
+        }
+        out
+    }
+
     pub fn backfill_api_key_ref_fields(
         &self,
         provider_api_key_ref: &std::collections::BTreeMap<String, String>,
