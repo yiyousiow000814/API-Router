@@ -93,7 +93,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 ) : (
                   <>
                     <span className="aoProviderName">{name}</span>
-                    {p.disabled ? <span className="aoProviderStateBadge">Deactivated</span> : null}
+                    {p.disabled ? <span className="aoProviderStateBadge">Off</span> : null}
                     <button
                       className="aoIconGhost"
                       title="Rename"
