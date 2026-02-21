@@ -251,11 +251,26 @@ async function applyUiCheckCliHomeInConfigureDirs(driver, cliHome) {
         const t = m.querySelector('.aoModalTitle');
         return t && (t.textContent || '').trim() === 'Codex CLI directories';
       });
-      if (!modal) return false;
-      const inputs = Array.from(modal.querySelectorAll('input.aoInput'));
-      const checks = Array.from(modal.querySelectorAll('input[type="checkbox"]'));
-      if (checks[0] && checks[0].checked !== true) checks[0].click();
-      if (checks[1] && checks[1].checked !== false) checks[1].click();
+      if (!modal) return { ok: false, reason: 'modal_not_found' };
+      const cardByLabel = (label) =>
+        Array.from(modal.querySelectorAll('.aoCardInset')).find((card) => {
+          const mini = card.querySelector('.aoMiniLabel');
+          return mini && (mini.textContent || '').trim() === label;
+        });
+      const windowsCard = cardByLabel('Windows');
+      const wslCard = cardByLabel('WSL2');
+      if (!windowsCard) return { ok: false, reason: 'windows_card_not_found' };
+      if (!wslCard) return { ok: false, reason: 'wsl_card_not_found' };
+      const windowsCheck = windowsCard.querySelector('input[type="checkbox"]');
+      const wslCheck = wslCard.querySelector('input[type="checkbox"]');
+      const windowsInput = windowsCard.querySelector('input.aoInput');
+      const wslInput = wslCard.querySelector('input.aoInput');
+      if (!windowsCheck) return { ok: false, reason: 'windows_checkbox_not_found' };
+      if (!wslCheck) return { ok: false, reason: 'wsl_checkbox_not_found' };
+      if (!windowsInput) return { ok: false, reason: 'windows_input_not_found' };
+      if (!wslInput) return { ok: false, reason: 'wsl_input_not_found' };
+      if (windowsCheck.checked !== true) windowsCheck.click();
+      if (wslCheck.checked !== false) wslCheck.click();
       const setVal = (el, value) => {
         if (!el) return;
         const desc =
@@ -269,14 +284,14 @@ async function applyUiCheckCliHomeInConfigureDirs(driver, cliHome) {
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
       };
-      setVal(inputs[0], target);
-      setVal(inputs[1], '');
-      return true;
+      setVal(windowsInput, target);
+      setVal(wslInput, '');
+      return { ok: true };
     `,
     cliHome,
   )
-  if (!applied) {
-    throw new Error('Codex CLI directories modal not found while applying ui check cli home.')
+  if (!applied?.ok) {
+    throw new Error(`Failed to apply ui check cli home in Codex CLI directories modal: ${applied?.reason || 'unknown'}`)
   }
   await clickButtonByText(driver, 'Apply', 12000)
   await driver.wait(
