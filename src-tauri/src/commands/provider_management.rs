@@ -415,8 +415,7 @@ pub(crate) fn delete_provider(
     state: tauri::State<'_, app_state::AppState>,
     name: String,
 ) -> Result<(), String> {
-    let mut next_preferred: Option<String> = None;
-    {
+    let next_preferred: Option<String> = {
         let mut cfg = state.gateway.cfg.write();
         if !cfg.providers.contains_key(&name) {
             return Err(format!("unknown provider: {name}"));
@@ -425,6 +424,8 @@ pub(crate) fn delete_provider(
             return Err("cannot delete the last provider".to_string());
         }
 
+        let preferred_after_delete = next_preferred_after_delete(&cfg, &name)?;
+
         cfg.providers.remove(&name);
         cfg.provider_order.retain(|p| p != &name);
         cfg.routing
@@ -432,31 +433,12 @@ pub(crate) fn delete_provider(
             .retain(|_, pref| pref != &name);
         app_state::normalize_provider_order(&mut cfg);
 
-        if cfg.routing.preferred_provider == name {
-            next_preferred = cfg
-                .provider_order
-                .iter()
-                .find_map(|provider| {
-                    cfg.providers
-                        .get(provider)
-                        .is_some_and(|provider_cfg| !provider_cfg.disabled)
-                        .then(|| provider.clone())
-                })
-                .or_else(|| {
-                    cfg.providers.iter().find_map(|(provider_name, provider_cfg)| {
-                        (!provider_cfg.disabled).then(|| provider_name.clone())
-                    })
-                })
-                .or_else(|| cfg.providers.keys().next().cloned());
-            debug_assert!(
-                next_preferred.is_some(),
-                "preferred provider deleted but no fallback provider available"
-            );
-            if let Some(p) = next_preferred.clone() {
-                cfg.routing.preferred_provider = p;
-            }
+        let next_preferred = preferred_after_delete.clone();
+        if let Some(p) = preferred_after_delete {
+            cfg.routing.preferred_provider = p;
         }
-    }
+        next_preferred
+    };
 
     // If the deleted provider was manually locked, return to auto.
     {
@@ -485,6 +467,48 @@ pub(crate) fn delete_provider(
         );
     }
     Ok(())
+}
+
+fn next_preferred_after_delete(
+    cfg: &crate::orchestrator::config::AppConfig,
+    deleting_provider: &str,
+) -> Result<Option<String>, String> {
+    let remaining_active = cfg
+        .providers
+        .iter()
+        .filter(|(name, provider_cfg)| name.as_str() != deleting_provider && !provider_cfg.disabled)
+        .count();
+    if remaining_active == 0 {
+        return Err("cannot delete the last active provider".to_string());
+    }
+    if cfg.routing.preferred_provider != deleting_provider {
+        return Ok(None);
+    }
+
+    let next = cfg
+        .provider_order
+        .iter()
+        .find_map(|provider_name| {
+            if provider_name == deleting_provider {
+                return None;
+            }
+            cfg.providers
+                .get(provider_name)
+                .is_some_and(|provider_cfg| !provider_cfg.disabled)
+                .then(|| provider_name.clone())
+        })
+        .or_else(|| {
+            cfg.providers.iter().find_map(|(provider_name, provider_cfg)| {
+                (provider_name.as_str() != deleting_provider && !provider_cfg.disabled)
+                    .then(|| provider_name.clone())
+            })
+        });
+
+    debug_assert!(
+        next.is_some(),
+        "remaining_active > 0 implies there must be a next preferred provider"
+    );
+    Ok(next)
 }
 
 #[tauri::command]
@@ -651,4 +675,43 @@ pub(crate) fn clear_provider_key(
         serde_json::Value::Null,
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod provider_management_tests {
+    use super::next_preferred_after_delete;
+    use crate::orchestrator::config::AppConfig;
+
+    #[test]
+    fn delete_provider_rejects_removing_last_active_provider() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.preferred_provider = "provider_1".to_string();
+        cfg.providers
+            .get_mut("official")
+            .expect("official exists")
+            .disabled = true;
+        cfg.providers
+            .get_mut("provider_2")
+            .expect("provider_2 exists")
+            .disabled = true;
+
+        let result = next_preferred_after_delete(&cfg, "provider_1");
+        assert_eq!(
+            result,
+            Err("cannot delete the last active provider".to_string())
+        );
+    }
+
+    #[test]
+    fn delete_preferred_selects_next_active_provider_only() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.preferred_provider = "provider_1".to_string();
+        cfg.providers
+            .get_mut("official")
+            .expect("official exists")
+            .disabled = true;
+
+        let result = next_preferred_after_delete(&cfg, "provider_1");
+        assert_eq!(result, Ok(Some("provider_2".to_string())));
+    }
 }
