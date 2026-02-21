@@ -214,16 +214,9 @@
 .aoProviderConfigDisabled .aoTinyBtn,
 .aoProviderConfigDisabled .aoIconGhost,
 .aoProviderConfigDisabled .aoDragHandle,
-.aoProviderConfigDisabled .aoActionBtn:not(.aoActionBtnStatus) {
+.aoProviderConfigDisabled .aoActionBtn {
   filter: grayscale(1) saturate(0.35);
   opacity: 0.48;
-}
-
-.aoProviderConfigDisabled .aoActionBtnStatus {
-  filter: none;
-  opacity: 1;
-  position: relative;
-  z-index: 1;
 }
 
 .aoProviderStateBadge {
@@ -258,23 +251,23 @@
 }
 
 .aoActionBtnStatusOn {
-  border-color: rgba(44, 160, 102, 0.36);
-  background: rgba(44, 160, 102, 0.08);
+  border-color: rgba(13, 18, 32, 0.18);
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .aoActionBtnStatusOn:hover {
-  border-color: rgba(44, 160, 102, 0.55);
-  background: rgba(44, 160, 102, 0.14);
+  border-color: rgba(13, 18, 32, 0.4);
+  background: rgba(var(--ao-accent-rgb), 0.06);
 }
 
 .aoActionBtnStatusOff {
-  border-color: rgba(176, 30, 58, 0.36);
-  background: rgba(176, 30, 58, 0.08);
+  border-color: rgba(13, 18, 32, 0.18);
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .aoActionBtnStatusOff:hover {
-  border-color: rgba(176, 30, 58, 0.55);
-  background: rgba(176, 30, 58, 0.14);
+  border-color: rgba(13, 18, 32, 0.4);
+  background: rgba(var(--ao-accent-rgb), 0.06);
 }
 
 .aoStatusDot {
@@ -285,13 +278,11 @@
 }
 
 .aoStatusDotOn {
-  background: #1fcf79;
-  box-shadow: 0 0 0 0.5px rgba(17, 104, 63, 0.22), 0 0 6px rgba(31, 207, 121, 0.45);
+  background: #32b36f;
 }
 
 .aoStatusDotOff {
-  background: #e04364;
-  box-shadow: 0 0 0 0.5px rgba(129, 24, 47, 0.22), 0 0 6px rgba(224, 67, 100, 0.45);
+  background: #c95069;
 }
 
 .aoProviderConfigHeader {
