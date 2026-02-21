@@ -141,8 +141,14 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   <span>Clear</span>
                 </button>
                 <button
-                  className={`aoActionBtn${p.disabled ? ' aoActionBtnPrimary' : ''}`}
-                  title={p.disabled ? 'Activate provider' : canDeactivate ? 'Deactivate provider' : 'At least one provider must stay active'}
+                  className={`aoActionBtn aoActionBtnStatus ${p.disabled ? 'aoActionBtnStatusOff' : 'aoActionBtnStatusOn'}`}
+                  title={
+                    p.disabled
+                      ? 'Click to activate provider'
+                      : canDeactivate
+                        ? 'Click to deactivate provider'
+                        : 'At least one provider must stay active'
+                  }
                   disabled={!p.disabled && !canDeactivate}
                   onClick={() => {
                     const nextDisabled = !Boolean(p.disabled)
@@ -153,11 +159,11 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     void options.setProviderDisabled(name, nextDisabled)
                   }}
                 >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    {p.disabled ? <path d="M5 12h14" /> : <path d="M12 5v14" />}
-                    <path d="M5 12h14" />
-                  </svg>
-                  <span>{p.disabled ? 'Activate' : 'Deactivate'}</span>
+                  <span
+                    className={`aoStatusDot ${p.disabled ? 'aoStatusDotOff' : 'aoStatusDotOn'}`}
+                    aria-hidden="true"
+                  />
+                  <span>{p.disabled ? 'Deactivated' : 'Activated'}</span>
                 </button>
                 <button
                   className="aoActionBtn aoActionBtnDanger"

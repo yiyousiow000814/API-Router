@@ -233,6 +233,46 @@
   border-color: rgba(var(--ao-accent-rgb), 0.75);
 }
 
+.aoActionBtnStatus {
+  min-width: 112px;
+  justify-content: center;
+}
+
+.aoActionBtnStatusOn {
+  border-color: rgba(44, 160, 102, 0.36);
+  background: rgba(44, 160, 102, 0.08);
+}
+
+.aoActionBtnStatusOn:hover {
+  border-color: rgba(44, 160, 102, 0.55);
+  background: rgba(44, 160, 102, 0.14);
+}
+
+.aoActionBtnStatusOff {
+  border-color: rgba(176, 30, 58, 0.36);
+  background: rgba(176, 30, 58, 0.08);
+}
+
+.aoActionBtnStatusOff:hover {
+  border-color: rgba(176, 30, 58, 0.55);
+  background: rgba(176, 30, 58, 0.14);
+}
+
+.aoStatusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(13, 18, 32, 0.08);
+}
+
+.aoStatusDotOn {
+  background: #2ca066;
+}
+
+.aoStatusDotOff {
+  background: #b01e3a;
+}
+
 .aoProviderConfigHeader {
   display: grid;
   grid-template-columns: minmax(140px, 1fr) auto;
