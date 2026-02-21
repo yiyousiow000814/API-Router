@@ -124,8 +124,11 @@ function parseDateInputToDayStart(dateText: string): number | null {
 export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFocusRequestHandled }: Props) {
   const hasTauriInvoke = useMemo(() => {
     if (typeof window === 'undefined') return false
-    const w = window as unknown as { __TAURI__?: { core?: { invoke?: unknown } } }
-    return typeof w.__TAURI__?.core?.invoke === 'function'
+    const w = window as unknown as {
+      __TAURI__?: { core?: { invoke?: unknown } }
+      __TAURI_INTERNALS__?: { invoke?: unknown }
+    }
+    return typeof w.__TAURI__?.core?.invoke === 'function' || typeof w.__TAURI_INTERNALS__?.invoke === 'function'
   }, [])
   const [sourceEvents, setSourceEvents] = useState<EventLogEntry[]>(() =>
     [...events].sort((a, b) => b.unix_ms - a.unix_ms),
