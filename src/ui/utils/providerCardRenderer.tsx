@@ -45,7 +45,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
       : undefined
     return (
       <div
-        className={`aoProviderConfigCard${overlay ? ' aoProviderConfigDragging' : ''}${isDragOver && !overlay ? ' aoProviderConfigDragOver' : ''}${!options.isProviderOpen(name) ? ' aoProviderConfigCollapsed' : ''}`}
+        className={`aoProviderConfigCard${overlay ? ' aoProviderConfigDragging' : ''}${isDragOver && !overlay ? ' aoProviderConfigDragOver' : ''}${!options.isProviderOpen(name) ? ' aoProviderConfigCollapsed' : ''}${p.disabled ? ' aoProviderConfigDisabled' : ''}`}
         key={overlay ? `${name}-drag` : name}
         data-provider={overlay ? undefined : name}
         ref={overlay ? undefined : options.registerProviderCardRef(name)}

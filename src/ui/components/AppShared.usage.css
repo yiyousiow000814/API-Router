@@ -194,6 +194,11 @@
     0 0 0 2px rgba(var(--ao-accent-rgb), 0.18);
 }
 
+.aoProviderConfigDisabled {
+  filter: grayscale(0.85) saturate(0.55);
+  opacity: 0.7;
+}
+
 .aoProviderConfigHeader {
   display: grid;
   grid-template-columns: minmax(140px, 1fr) auto;
@@ -695,4 +700,3 @@
   text-transform: uppercase;
   transition: background 120ms ease, border-color 120ms ease;
 }
-
