@@ -46,7 +46,7 @@ export function UsageProviderStatsTable({
           <th>tok/req</th>
           <th>$ / req</th>
           <th>$ / M tok</th>
-          <th>Est $ / day</th>
+          <th>Est $ / workday</th>
           <th>Total $ Used</th>
           <th>Source</th>
         </tr>
