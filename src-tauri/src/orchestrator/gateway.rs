@@ -229,9 +229,38 @@ async fn refresh_usage_once_after_first_failure(
     }
     *usage_refreshed_after_first_failure = true;
 
-    let _ = super::quota::refresh_quota_for_provider(st, provider_name).await;
+    st.router.require_usage_confirmation(provider_name);
+    let snap = super::quota::refresh_quota_for_provider(st, provider_name).await;
+    let refresh_ok = snap.updated_at_unix_ms > 0 && snap.last_error.trim().is_empty();
+    if !refresh_ok {
+        let err = snap.last_error.trim();
+        let is_config_gap = err == "missing credentials for quota refresh"
+            || err == "missing usage token"
+            || err == "missing quota base"
+            || err == "missing base_url"
+            || err == "usage endpoint not found (set Usage base URL)";
+        if is_config_gap {
+            // If this provider does not support usage refresh in current config,
+            // fall back to normal retry behavior instead of blocking indefinitely.
+            st.router
+                .clear_usage_confirmation_requirement(provider_name);
+        } else {
+            st.store.add_event(
+                provider_name,
+                "warning",
+                "routing.usage_refresh_unconfirmed_after_failure",
+                "usage refresh failed after first failure; provider kept out of routing until confirmation",
+                json!({ "error": snap.last_error }),
+            );
+        }
+        return;
+    }
+
     let quota_snapshots = st.store.list_quota_snapshots();
-    if !provider_has_remaining_quota(&quota_snapshots, provider_name) {
+    if quota_snapshot_confirms_available(&quota_snapshots, provider_name) {
+        st.router
+            .clear_usage_confirmation_requirement(provider_name);
+    } else if !provider_has_remaining_quota(&quota_snapshots, provider_name) {
         st.store.add_event(
             provider_name,
             "warning",
