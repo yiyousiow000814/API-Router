@@ -52,6 +52,7 @@ export function useProviderActions({
     openUsageBaseModal,
   } = useProviderUsageActions({
     status,
+    setConfig,
     isDevPreview,
     usageBaseModal,
     setUsageBaseModal,

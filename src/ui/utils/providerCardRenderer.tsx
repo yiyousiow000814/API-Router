@@ -29,7 +29,8 @@ type CreateProviderCardRendererOptions = {
   clearUsageBaseUrl: (provider: string) => Promise<void>
   setProviderQuotaHardCap: (
     provider: string,
-    hardCap: { daily: boolean; weekly: boolean; monthly: boolean },
+    field: 'daily' | 'weekly' | 'monthly',
+    enabled: boolean,
   ) => Promise<void>
 }
 
@@ -250,16 +251,11 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   <div className="aoUsageHardCapGrid">
                     {budgetHardCapWindows.map(({ key: period }) => (
                       <label key={period} className="aoUsageHardCapItem">
-                        <input
-                          type="checkbox"
-                          checked={quotaHardCap[period]}
-                          onChange={(event) =>
-                            void options.setProviderQuotaHardCap(name, {
-                              ...quotaHardCap,
-                              [period]: event.target.checked,
-                            })
-                          }
-                        />
+                      <input
+                        type="checkbox"
+                        checked={quotaHardCap[period]}
+                        onChange={(event) => void options.setProviderQuotaHardCap(name, period, event.target.checked)}
+                      />
                         <span>{period} hard cap</span>
                       </label>
                     ))}

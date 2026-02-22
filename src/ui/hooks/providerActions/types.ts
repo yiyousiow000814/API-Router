@@ -51,7 +51,8 @@ export type UseProviderActionsResult = {
   clearUsageBaseUrl: (name: string) => Promise<void>
   setProviderQuotaHardCap: (
     provider: string,
-    hardCap: { daily: boolean; weekly: boolean; monthly: boolean },
+    field: 'daily' | 'weekly' | 'monthly',
+    enabled: boolean,
   ) => Promise<void>
   openKeyModal: (provider: string) => Promise<void>
   openUsageBaseModal: (provider: string, current: string | null | undefined) => Promise<void>

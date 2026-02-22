@@ -32,7 +32,8 @@ type Params = {
   clearUsageBaseUrl: (provider: string) => Promise<void>
   setProviderQuotaHardCap: (
     provider: string,
-    hardCap: { daily: boolean; weekly: boolean; monthly: boolean },
+    field: 'daily' | 'weekly' | 'monthly',
+    enabled: boolean,
   ) => Promise<void>
   editingProviderName: string | null
 }

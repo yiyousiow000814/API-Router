@@ -202,6 +202,8 @@ impl SecretStore {
         hard_cap: ProviderQuotaHardCapConfig,
     ) -> Result<(), String> {
         let mut data = self.inner.lock();
+        // Canonical storage invariant: all-true means "no override", so we
+        // remove the row and let readers fall back to ProviderQuotaHardCapConfig::default().
         if hard_cap == ProviderQuotaHardCapConfig::default() {
             data.provider_quota_hard_cap.remove(provider);
         } else {

@@ -5,6 +5,7 @@ import type { UseProviderActionsParams } from './types'
 type ProviderUsageActions = Pick<
   UseProviderActionsParams,
   | 'status'
+  | 'setConfig'
   | 'isDevPreview'
   | 'usageBaseModal'
   | 'setUsageBaseModal'
@@ -16,6 +17,7 @@ type ProviderUsageActions = Pick<
 
 export function useProviderUsageActions({
   status,
+  setConfig,
   isDevPreview,
   usageBaseModal,
   setUsageBaseModal,
@@ -100,25 +102,46 @@ export function useProviderUsageActions({
   )
 
   const setProviderQuotaHardCap = useCallback(
-    async (
-      provider: string,
-      hardCap: { daily: boolean; weekly: boolean; monthly: boolean },
-    ) => {
+    async (provider: string, field: 'daily' | 'weekly' | 'monthly', enabled: boolean) => {
+      setConfig((prev) => {
+        if (!prev) return prev
+        const current = prev.providers?.[provider]
+        if (!current) return prev
+        const currentHardCap = current.quota_hard_cap ?? {
+          daily: true,
+          weekly: true,
+          monthly: true,
+        }
+        return {
+          ...prev,
+          providers: {
+            ...prev.providers,
+            [provider]: {
+              ...current,
+              quota_hard_cap: {
+                ...currentHardCap,
+                [field]: enabled,
+              },
+            },
+          },
+        }
+      })
       try {
-        await invoke('set_provider_quota_hard_cap', {
+        await invoke('set_provider_quota_hard_cap_field', {
           provider,
-          daily: hardCap.daily,
-          weekly: hardCap.weekly,
-          monthly: hardCap.monthly,
+          field,
+          enabled,
         })
-        flashToast(`Hard cap updated: ${provider}`)
+        flashToast(`Hard cap updated: ${provider}.${field}`)
         await refreshConfig()
         await refreshStatus()
       } catch (e) {
         flashToast(String(e), 'error')
+        await refreshConfig()
+        await refreshStatus()
       }
     },
-    [flashToast, refreshConfig, refreshStatus],
+    [flashToast, refreshConfig, refreshStatus, setConfig],
   )
 
   const openUsageBaseModal = useCallback(

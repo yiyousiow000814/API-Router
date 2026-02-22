@@ -471,6 +471,7 @@ pub fn run() {
             commands::set_usage_base_url,
             commands::clear_usage_base_url,
             commands::set_provider_quota_hard_cap,
+            commands::set_provider_quota_hard_cap_field,
             commands::set_provider_manual_pricing,
             commands::get_provider_timeline,
             commands::set_provider_timeline,

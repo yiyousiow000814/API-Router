@@ -303,6 +303,42 @@ pub(crate) fn set_provider_quota_hard_cap(
 }
 
 #[tauri::command]
+pub(crate) fn set_provider_quota_hard_cap_field(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    field: String,
+    enabled: bool,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let mut hard_cap = state.secrets.get_provider_quota_hard_cap(&provider);
+    match field.trim().to_ascii_lowercase().as_str() {
+        "daily" => hard_cap.daily = enabled,
+        "weekly" => hard_cap.weekly = enabled,
+        "monthly" => hard_cap.monthly = enabled,
+        _ => return Err("field must be one of: daily, weekly, monthly".to_string()),
+    }
+    state
+        .secrets
+        .set_provider_quota_hard_cap(&provider, hard_cap)?;
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        "config.provider_quota_hard_cap_updated",
+        "provider quota hard cap updated",
+        serde_json::json!({
+            "field": field,
+            "enabled": enabled,
+            "daily": hard_cap.daily,
+            "weekly": hard_cap.weekly,
+            "monthly": hard_cap.monthly,
+        }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) fn set_provider_manual_pricing(
     state: tauri::State<'_, app_state::AppState>,
     provider: String,
