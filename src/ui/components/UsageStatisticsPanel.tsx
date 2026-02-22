@@ -535,8 +535,6 @@ export function buildUsageRequestCalendarIndex(input: {
   for (const day of input.usageRequestDailyTotalsDays) {
     if (!day || typeof day.day_start_unix_ms !== 'number') continue
     const dayStart = day.day_start_unix_ms
-    const totalTokens = Number(day.total_tokens ?? 0)
-    if (!Number.isFinite(totalTokens) || totalTokens <= 0) continue
     daysWithRecords.add(dayStart)
     const winCount = Number(day.windows_request_count ?? 0)
     const wslCount = Number(day.wsl_request_count ?? 0)

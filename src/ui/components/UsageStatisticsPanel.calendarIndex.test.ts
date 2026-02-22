@@ -48,4 +48,25 @@ describe('buildUsageRequestCalendarIndex', () => {
     expect(index.daysWithRecords.size).toBe(0)
     expect(index.dayOriginFlags.size).toBe(0)
   })
+
+  it('keeps days with zero-token requests from daily totals in calendar index', () => {
+    const day = new Date(2026, 1, 23).setHours(0, 0, 0, 0)
+    const index = buildUsageRequestCalendarIndex({
+      isRequestsTab: true,
+      rowsForRequestRender: [],
+      usageRequestDailyTotalsDays: [
+        {
+          day_start_unix_ms: day,
+          provider_totals: { official: 0 },
+          total_tokens: 0,
+          total_requests: 3,
+          windows_request_count: 0,
+          wsl_request_count: 0,
+        },
+      ],
+    })
+
+    expect(index.daysWithRecords.has(day)).toBe(true)
+    expect(index.dayOriginFlags.get(day)).toEqual({ win: true, wsl: false })
+  })
 })

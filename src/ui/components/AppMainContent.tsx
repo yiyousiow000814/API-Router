@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import { DashboardPanel } from './DashboardPanel'
 import { EventLogPanel, type EventLogFocusRequest } from './EventLogPanel'
 import { ProviderSwitchboardPanel } from './ProviderSwitchboardPanel'
@@ -80,31 +79,12 @@ export function AppMainContent(props: Props) {
     usageProps,
     switchboardProps,
   } = props
-  const [keepRequestsPanelMounted, setKeepRequestsPanelMounted] = useState(activePage === 'usage_requests')
-
-  useEffect(() => {
-    if (activePage === 'usage_requests') {
-      setKeepRequestsPanelMounted(true)
-    }
-  }, [activePage])
-
-  const renderRequestsPanel = (visible: boolean) => (
-    <div style={visible ? undefined : { display: 'none' }} aria-hidden={visible ? undefined : true}>
-      <UsageRequestsPanel usageProps={usageProps} />
-    </div>
-  )
-
   if (activePage === 'usage_statistics') {
-    return (
-      <>
-        <UsageAnalyticsPanel usageProps={usageProps} />
-        {keepRequestsPanelMounted ? renderRequestsPanel(false) : null}
-      </>
-    )
+    return <UsageAnalyticsPanel usageProps={usageProps} />
   }
 
   if (activePage === 'usage_requests') {
-    return renderRequestsPanel(true)
+    return <UsageRequestsPanel usageProps={usageProps} />
   }
 
   if (activePage === 'provider_switchboard') {
@@ -123,17 +103,11 @@ export function AppMainContent(props: Props) {
   }
 
   if (!status) {
-    return (
-      <>
-        {keepRequestsPanelMounted ? renderRequestsPanel(false) : null}
-        <div className="aoHint">Loading...</div>
-      </>
-    )
+    return <div className="aoHint">Loading...</div>
   }
 
   return (
     <>
-      {keepRequestsPanelMounted ? renderRequestsPanel(false) : null}
       <DashboardPanel
         status={status}
         config={config}
