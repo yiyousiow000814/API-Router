@@ -42,6 +42,8 @@ fn list_usage_requests_for_statistics(
 pub(crate) fn get_usage_request_entries(
     state: tauri::State<'_, app_state::AppState>,
     hours: Option<u64>,
+    from_unix_ms: Option<u64>,
+    to_unix_ms: Option<u64>,
     providers: Option<Vec<String>>,
     models: Option<Vec<String>>,
     origins: Option<Vec<String>>,
@@ -71,6 +73,18 @@ pub(crate) fn get_usage_request_entries(
 
     let page_limit = limit.unwrap_or(200).clamp(1, 1000) as usize;
     let page_offset = offset.unwrap_or(0) as usize;
+    let range_from = from_unix_ms;
+    let range_to = to_unix_ms;
+    if let (Some(from), Some(to)) = (range_from, range_to) {
+        if to <= from {
+            return serde_json::json!({
+                "ok": true,
+                "rows": [],
+                "has_more": false,
+                "next_offset": page_offset,
+            });
+        }
+    }
 
     let provider_filter_list: Vec<String> = if has_provider_filter {
         provider_filter.iter().cloned().collect()
@@ -89,6 +103,8 @@ pub(crate) fn get_usage_request_entries(
     };
     let (rows, has_more) = state.gateway.store.list_usage_requests_page(
         since_unix_ms,
+        range_from,
+        range_to,
         &provider_filter_list,
         &model_filter_list,
         &origin_filter_list,
@@ -114,18 +130,31 @@ pub(crate) fn get_usage_request_daily_totals(
         .gateway
         .store
         .list_usage_request_daily_totals(day_limit);
-    let mut by_day: BTreeMap<u64, BTreeMap<String, u64>> = BTreeMap::new();
+    let mut by_day: BTreeMap<u64, (BTreeMap<String, u64>, u64, u64, u64)> = BTreeMap::new();
     let mut provider_totals: BTreeMap<String, u64> = BTreeMap::new();
-    for (day_key, provider, total_tokens) in rows {
+    for (
+        day_key,
+        provider,
+        total_tokens,
+        request_count,
+        windows_request_count,
+        wsl_request_count,
+    ) in rows
+    {
         let Some((day_start_unix_ms, _)) = local_day_range_from_key(&day_key) else {
             continue;
         };
-        by_day
+        let day_entry = by_day
             .entry(day_start_unix_ms)
-            .or_default()
+            .or_insert_with(|| (BTreeMap::new(), 0, 0, 0));
+        day_entry
+            .0
             .entry(provider.clone())
             .and_modify(|v| *v = v.saturating_add(total_tokens))
             .or_insert(total_tokens);
+        day_entry.1 = day_entry.1.saturating_add(request_count);
+        day_entry.2 = day_entry.2.saturating_add(windows_request_count);
+        day_entry.3 = day_entry.3.saturating_add(wsl_request_count);
         provider_totals
             .entry(provider)
             .and_modify(|v| *v = v.saturating_add(total_tokens))
@@ -133,14 +162,27 @@ pub(crate) fn get_usage_request_daily_totals(
     }
     let days_json: Vec<Value> = by_day
         .into_iter()
-        .map(|(day_start_unix_ms, provider_totals)| {
+        .map(
+            |(
+                day_start_unix_ms,
+                (
+                    provider_totals,
+                    total_requests,
+                    windows_request_count,
+                    wsl_request_count,
+                ),
+            )| {
             let total_tokens = provider_totals.values().copied().sum::<u64>();
             serde_json::json!({
                 "day_start_unix_ms": day_start_unix_ms,
                 "provider_totals": provider_totals,
                 "total_tokens": total_tokens,
+                "total_requests": total_requests,
+                "windows_request_count": windows_request_count,
+                "wsl_request_count": wsl_request_count,
             })
-        })
+        },
+        )
         .collect();
     let mut providers_json: Vec<Value> = provider_totals
         .into_iter()

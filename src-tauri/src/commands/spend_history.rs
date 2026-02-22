@@ -73,6 +73,8 @@ pub(crate) fn get_spend_history(
         loop {
             let (req_rows, has_more) = state.gateway.store.list_usage_requests_page(
                 since,
+                None,
+                None,
                 &provider_only,
                 &[],
                 &[],

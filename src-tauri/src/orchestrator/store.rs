@@ -221,6 +221,42 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_usage_requests_provider_lc ON usage_requests(lower(provider));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_model_lc ON usage_requests(lower(model));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_origin_lc ON usage_requests(lower(origin));
+            CREATE TABLE IF NOT EXISTS usage_request_day_provider_totals(
+              day_key TEXT NOT NULL,
+              provider TEXT NOT NULL,
+              total_tokens INTEGER NOT NULL,
+              request_count INTEGER NOT NULL,
+              windows_request_count INTEGER NOT NULL,
+              wsl_request_count INTEGER NOT NULL,
+              PRIMARY KEY(day_key, provider)
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_request_day_provider_day_key
+              ON usage_request_day_provider_totals(day_key ASC);
+            CREATE TRIGGER IF NOT EXISTS trg_usage_requests_daily_index_after_insert
+            AFTER INSERT ON usage_requests
+            BEGIN
+              INSERT INTO usage_request_day_provider_totals(
+                day_key,
+                provider,
+                total_tokens,
+                request_count,
+                windows_request_count,
+                wsl_request_count
+              )
+              VALUES(
+                strftime('%Y-%m-%d', NEW.unix_ms / 1000, 'unixepoch', 'localtime'),
+                NEW.provider,
+                NEW.total_tokens,
+                1,
+                CASE WHEN lower(NEW.origin) = 'windows' THEN 1 ELSE 0 END,
+                CASE WHEN lower(NEW.origin) = 'wsl2' THEN 1 ELSE 0 END
+              )
+              ON CONFLICT(day_key, provider) DO UPDATE SET
+                total_tokens = usage_request_day_provider_totals.total_tokens + excluded.total_tokens,
+                request_count = usage_request_day_provider_totals.request_count + excluded.request_count,
+                windows_request_count = usage_request_day_provider_totals.windows_request_count + excluded.windows_request_count,
+                wsl_request_count = usage_request_day_provider_totals.wsl_request_count + excluded.wsl_request_count;
+            END;
             ",
         )?;
         let current_schema: Option<String> = conn
@@ -267,6 +303,43 @@ impl Store {
         drop(conn);
         self.migrate_legacy_events_from_sled_if_needed()?;
         self.migrate_usage_requests_from_sled_if_needed()?;
+        self.backfill_usage_request_daily_index_if_needed()?;
+        Ok(())
+    }
+
+    fn backfill_usage_request_daily_index_if_needed(&self) -> anyhow::Result<()> {
+        let conn = self.events_db.lock();
+        let has_rows: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM usage_request_day_provider_totals LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if has_rows.is_some() {
+            return Ok(());
+        }
+        conn.execute_batch(
+            "
+            INSERT INTO usage_request_day_provider_totals(
+              day_key,
+              provider,
+              total_tokens,
+              request_count,
+              windows_request_count,
+              wsl_request_count
+            )
+            SELECT
+              strftime('%Y-%m-%d', unix_ms / 1000, 'unixepoch', 'localtime') AS day_key,
+              provider,
+              SUM(total_tokens) AS total_tokens,
+              COUNT(*) AS request_count,
+              SUM(CASE WHEN lower(origin) = 'windows' THEN 1 ELSE 0 END) AS windows_request_count,
+              SUM(CASE WHEN lower(origin) = 'wsl2' THEN 1 ELSE 0 END) AS wsl_request_count
+            FROM usage_requests
+            GROUP BY day_key, provider;
+            ",
+        )?;
         Ok(())
     }
 
@@ -1303,6 +1376,8 @@ impl Store {
     pub fn list_usage_requests_page(
         &self,
         since_unix_ms: u64,
+        from_unix_ms: Option<u64>,
+        to_unix_ms: Option<u64>,
         providers: &[String],
         models: &[String],
         origins: &[String],
@@ -1314,11 +1389,33 @@ impl Store {
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
              FROM usage_requests
-             WHERE unix_ms >= ?",
+             WHERE (? IS NULL OR ? IS NOT NULL OR unix_ms >= ?)
+               AND (? IS NULL OR unix_ms >= ?)
+               AND (? IS NULL OR unix_ms < ?)",
         );
-        let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(
-            i64::try_from(since_unix_ms).unwrap_or(i64::MAX),
-        )];
+        let from_i64 = from_unix_ms.and_then(|x| i64::try_from(x).ok());
+        let to_i64 = to_unix_ms.and_then(|x| i64::try_from(x).ok());
+        let mut params: Vec<rusqlite::types::Value> = vec![
+            from_i64
+                .map(rusqlite::types::Value::Integer)
+                .unwrap_or(rusqlite::types::Value::Null),
+            to_i64
+                .map(rusqlite::types::Value::Integer)
+                .unwrap_or(rusqlite::types::Value::Null),
+            rusqlite::types::Value::Integer(i64::try_from(since_unix_ms).unwrap_or(i64::MAX)),
+            from_i64
+                .map(rusqlite::types::Value::Integer)
+                .unwrap_or(rusqlite::types::Value::Null),
+            from_i64
+                .map(rusqlite::types::Value::Integer)
+                .unwrap_or(rusqlite::types::Value::Null),
+            to_i64
+                .map(rusqlite::types::Value::Integer)
+                .unwrap_or(rusqlite::types::Value::Null),
+            to_i64
+                .map(rusqlite::types::Value::Integer)
+                .unwrap_or(rusqlite::types::Value::Null),
+        ];
 
         if !providers.is_empty() {
             let placeholders = vec!["?"; providers.len()].join(", ");
@@ -1387,24 +1484,31 @@ impl Store {
         (out, has_more)
     }
 
-    pub fn list_usage_request_daily_totals(&self, day_limit: usize) -> Vec<(String, String, u64)> {
-        let mut out: Vec<(String, String, u64)> = Vec::new();
+    pub fn list_usage_request_daily_totals(
+        &self,
+        day_limit: usize,
+    ) -> Vec<(String, String, u64, u64, u64, u64)> {
+        let mut out: Vec<(String, String, u64, u64, u64, u64)> = Vec::new();
         let limit = day_limit.clamp(1, 180);
         let conn = self.events_db.lock();
         let Ok(mut stmt) = conn.prepare(
             "WITH latest_days AS (
-                SELECT strftime('%Y-%m-%d', unix_ms / 1000, 'unixepoch', 'localtime') AS day_key
-                FROM usage_requests
+                SELECT day_key
+                FROM usage_request_day_provider_totals
                 GROUP BY day_key
                 ORDER BY day_key DESC
                 LIMIT ?1
              )
-             SELECT d.day_key, u.provider, SUM(u.total_tokens) AS total_tokens
-             FROM usage_requests u
-             JOIN latest_days d
-               ON strftime('%Y-%m-%d', u.unix_ms / 1000, 'unixepoch', 'localtime') = d.day_key
-             GROUP BY d.day_key, u.provider
-             ORDER BY d.day_key ASC, total_tokens DESC",
+             SELECT
+               u.day_key,
+               u.provider,
+               u.total_tokens,
+               u.request_count,
+               u.windows_request_count,
+               u.wsl_request_count
+             FROM usage_request_day_provider_totals u
+             JOIN latest_days d ON d.day_key = u.day_key
+             ORDER BY u.day_key ASC, u.total_tokens DESC",
         ) else {
             return out;
         };
@@ -1412,7 +1516,17 @@ impl Store {
             let day_key = row.get::<_, String>(0)?;
             let provider = row.get::<_, String>(1)?;
             let total_tokens = u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0);
-            Ok((day_key, provider, total_tokens))
+            let request_count = u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0);
+            let windows_request_count = u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0);
+            let wsl_request_count = u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0);
+            Ok((
+                day_key,
+                provider,
+                total_tokens,
+                request_count,
+                windows_request_count,
+                wsl_request_count,
+            ))
         }) else {
             return out;
         };

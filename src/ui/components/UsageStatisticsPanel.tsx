@@ -46,6 +46,9 @@ type UsageRequestDailyTotalsResponse = {
     day_start_unix_ms: number
     provider_totals: Record<string, number>
     total_tokens: number
+    total_requests?: number
+    windows_request_count?: number
+    wsl_request_count?: number
   }>
   providers: Array<{
     provider: string
@@ -200,6 +203,38 @@ let usageRequestsLastNonEmptyPageCache: UsageRequestsPageCache | null = null
 let usageRequestDailyTotalsCache: UsageRequestDailyTotalsCache | null = null
 let usageRequestGraphRowsCache: UsageRequestGraphRowsCache | null = null
 
+export function resolveRequestFetchHours(input: {
+  effectiveDetailsTab: UsageDetailsTab
+  showFilters: boolean
+  usageWindowHours: number
+}): number {
+  if (input.effectiveDetailsTab !== 'requests') return input.usageWindowHours
+  if (!input.showFilters) return USAGE_REQUESTS_PAGE_FETCH_HOURS
+  return input.usageWindowHours
+}
+
+export function buildUsageRequestEntriesArgs(input: {
+  hours: number
+  fromUnixMs: number | null
+  toUnixMs: number | null
+  providers: string[] | null
+  models: string[] | null
+  origins: string[] | null
+  limit: number
+  offset: number
+}) {
+  return {
+    hours: input.hours,
+    fromUnixMs: input.fromUnixMs,
+    toUnixMs: input.toUnixMs,
+    providers: input.providers,
+    models: input.models,
+    origins: input.origins,
+    limit: input.limit,
+    offset: input.offset,
+  }
+}
+
 function emitUsageRequestsCachePrimed(queryKey: string) {
   if (typeof window === 'undefined') return
   try {
@@ -348,6 +383,46 @@ function normalizeUsageOrigin(origin: string): 'windows' | 'wsl2' | 'unknown' {
   if (lowered.includes('wsl')) return 'wsl2'
   if (lowered.includes('win')) return 'windows'
   return 'unknown'
+}
+
+export function buildUsageRequestCalendarIndex(input: {
+  isRequestsTab: boolean
+  rowsForRequestRender: UsageRequestEntry[]
+  usageRequestDailyTotalsDays: UsageRequestDailyTotalsResponse['days']
+}): {
+  daysWithRecords: Set<number>
+  dayOriginFlags: Map<number, { win: boolean; wsl: boolean }>
+} {
+  const daysWithRecords = new Set<number>()
+  const dayOriginFlags = new Map<number, { win: boolean; wsl: boolean }>()
+  if (!input.isRequestsTab) return { daysWithRecords, dayOriginFlags }
+
+  for (const day of input.usageRequestDailyTotalsDays) {
+    if (!day || typeof day.day_start_unix_ms !== 'number') continue
+    const dayStart = day.day_start_unix_ms
+    const totalTokens = Number(day.total_tokens ?? 0)
+    if (!Number.isFinite(totalTokens) || totalTokens <= 0) continue
+    daysWithRecords.add(dayStart)
+    const winCount = Number(day.windows_request_count ?? 0)
+    const wslCount = Number(day.wsl_request_count ?? 0)
+    const win = Number.isFinite(winCount) && winCount > 0
+    const wsl = Number.isFinite(wslCount) && wslCount > 0
+    // Preserve a visible marker even when old payloads do not carry origin split counts.
+    dayOriginFlags.set(dayStart, win || wsl ? { win, wsl } : { win: true, wsl: false })
+  }
+
+  for (const row of input.rowsForRequestRender) {
+    const dayStart = startOfDayUnixMs(row.unix_ms)
+    daysWithRecords.add(dayStart)
+    const prev = dayOriginFlags.get(dayStart) ?? { win: false, wsl: false }
+    const origin = normalizeUsageOrigin(row.origin)
+    dayOriginFlags.set(dayStart, {
+      win: prev.win || origin === 'windows' || origin === 'unknown',
+      wsl: prev.wsl || origin === 'wsl2',
+    })
+  }
+
+  return { daysWithRecords, dayOriginFlags }
 }
 
 function buildSmoothLinePath(
@@ -692,28 +767,46 @@ export function UsageStatisticsPanel({
     () => (useGlobalRequestFilters && usageFilterOrigins.length ? usageFilterOrigins : null),
     [useGlobalRequestFilters, usageFilterOrigins],
   )
-  const requestFetchHours =
-    (forceDetailsTab ?? 'requests') === 'requests' && !showFilters
-      ? USAGE_REQUESTS_PAGE_FETCH_HOURS
-      : usageWindowHours
+  const hasExplicitTimeFilter = usageRequestTimeFilter.trim().length > 0
+  const selectedRequestTimeFilterDay = useMemo(
+    () => parseDateInputToDayStart(usageRequestTimeFilter),
+    [usageRequestTimeFilter],
+  )
+  const requestFetchFromUnixMs = selectedRequestTimeFilterDay
+  const requestFetchToUnixMs =
+    selectedRequestTimeFilterDay == null ? null : selectedRequestTimeFilterDay + 24 * 60 * 60 * 1000
+  const requestFetchHours = resolveRequestFetchHours({
+    effectiveDetailsTab: forceDetailsTab ?? 'requests',
+    showFilters,
+    usageWindowHours,
+  })
   const requestQueryKey = useMemo(
     () =>
       JSON.stringify({
         hours: requestFetchHours,
+        from_unix_ms: requestFetchFromUnixMs,
+        to_unix_ms: requestFetchToUnixMs,
         providers: requestFetchProviders ?? [],
         models: requestFetchModels ?? [],
         origins: requestFetchOrigins ?? [],
       }),
-    [requestFetchHours, requestFetchModels, requestFetchOrigins, requestFetchProviders],
+    [
+      requestFetchFromUnixMs,
+      requestFetchHours,
+      requestFetchModels,
+      requestFetchOrigins,
+      requestFetchProviders,
+      requestFetchToUnixMs,
+    ],
   )
   const requestGraphQueryKey = USAGE_REQUEST_GRAPH_QUERY_KEY
-  const hasExplicitTimeFilter = usageRequestTimeFilter.trim().length > 0
   const hasExplicitRequestFilters =
     hasExplicitTimeFilter ||
     usageRequestMultiFilters.provider !== null ||
     usageRequestMultiFilters.model !== null ||
     usageRequestMultiFilters.origin !== null ||
     usageRequestMultiFilters.session !== null
+  const hasStrictRequestQuery = hasExplicitRequestFilters
   const hasImpossibleRequestFilters =
     (usageRequestMultiFilters.provider !== null && usageRequestMultiFilters.provider.length === 0) ||
     (usageRequestMultiFilters.model !== null && usageRequestMultiFilters.model.length === 0) ||
@@ -891,12 +984,16 @@ export function UsageStatisticsPanel({
       setUsageRequestUsingTestFallback(false)
       try {
         const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-          hours: requestFetchHours,
-          providers: requestFetchProviders,
-          models: requestFetchModels,
-          origins: requestFetchOrigins,
-          limit,
-          offset: 0,
+          ...buildUsageRequestEntriesArgs({
+            hours: requestFetchHours,
+            fromUnixMs: requestFetchFromUnixMs,
+            toUnixMs: requestFetchToUnixMs,
+            providers: requestFetchProviders,
+            models: requestFetchModels,
+            origins: requestFetchOrigins,
+            limit,
+            offset: 0,
+          }),
         })
         if (usageRequestFetchSeqRef.current !== requestSeq) return
         const nextRows = res.rows ?? []
@@ -940,9 +1037,11 @@ export function UsageStatisticsPanel({
     },
     [
       requestFetchHours,
+      requestFetchFromUnixMs,
       requestFetchProviders,
       requestFetchModels,
       requestFetchOrigins,
+      requestFetchToUnixMs,
       usageRequestTestFallbackEnabled,
       usageRequestTestRows,
     ],
@@ -955,12 +1054,16 @@ export function UsageStatisticsPanel({
       usageRequestFetchSeqRef.current = requestSeq
       try {
         const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-          hours: requestFetchHours,
-          providers: requestFetchProviders,
-          models: requestFetchModels,
-          origins: requestFetchOrigins,
-          limit,
-          offset: 0,
+          ...buildUsageRequestEntriesArgs({
+            hours: requestFetchHours,
+            fromUnixMs: requestFetchFromUnixMs,
+            toUnixMs: requestFetchToUnixMs,
+            providers: requestFetchProviders,
+            models: requestFetchModels,
+            origins: requestFetchOrigins,
+            limit,
+            offset: 0,
+          }),
         })
         if (usageRequestFetchSeqRef.current !== requestSeq) return
         const incoming = res.rows ?? []
@@ -989,7 +1092,14 @@ export function UsageStatisticsPanel({
         setUsageRequestMergeTick((tick) => tick + 1)
       }
     },
-    [requestFetchHours, requestFetchModels, requestFetchOrigins, requestFetchProviders],
+    [
+      requestFetchFromUnixMs,
+      requestFetchHours,
+      requestFetchModels,
+      requestFetchOrigins,
+      requestFetchProviders,
+      requestFetchToUnixMs,
+    ],
   )
   const prefetchUsageRequestsPageCache = useCallback(async (limit: number) => {
     if (usageRequestsPagePrefetchInFlightRef.current) return
@@ -1263,16 +1373,24 @@ export function UsageStatisticsPanel({
       usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_PAGE_QUERY_KEY
         ? usageRequestsPageCache
         : null
-    const source =
-      (cached?.rows.length ? cached : null) ??
-      (canonicalCached?.rows.length ? canonicalCached : null) ??
-      usageRequestsLastNonEmptyPageCache
+    const source = hasStrictRequestQuery
+      ? (cached?.rows.length ? cached : null)
+      : (cached?.rows.length ? cached : null) ??
+        (canonicalCached?.rows.length ? canonicalCached : null) ??
+        usageRequestsLastNonEmptyPageCache
     if (!source || source.rows.length === 0) return
     usageRequestLoadedQueryKeyRef.current = source.queryKey
     setUsageRequestRows(source.rows)
     setUsageRequestHasMore(source.hasMore)
     setUsageRequestUsingTestFallback(source.usingTestFallback)
-  }, [isAnalyticsTab, isRequestsTab, requestQueryKey, usageRequestRows.length, usageRequestsCachePrimedTick])
+  }, [
+    hasStrictRequestQuery,
+    isAnalyticsTab,
+    isRequestsTab,
+    requestQueryKey,
+    usageRequestRows.length,
+    usageRequestsCachePrimedTick,
+  ])
 
   useEffect(() => {
     if (!isRequestsTab && !isAnalyticsTab) return
@@ -1286,7 +1404,9 @@ export function UsageStatisticsPanel({
       usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_PAGE_QUERY_KEY
         ? usageRequestsPageCache
         : null
-    const requestPageCached = cached ?? canonicalCached ?? usageRequestsLastNonEmptyPageCache
+    const requestPageCached = hasStrictRequestQuery
+      ? cached
+      : cached ?? canonicalCached ?? usageRequestsLastNonEmptyPageCache
     const cachedGraph =
       usageRequestGraphRowsCache != null && usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
         ? usageRequestGraphRowsCache
@@ -1339,12 +1459,12 @@ export function UsageStatisticsPanel({
       const shouldRefresh = usageRequestLoadedQueryKeyRef.current !== requestQueryKey || usageRequestRows.length === 0
       if (shouldRefresh) {
         usageRequestLoadedQueryKeyRef.current = requestQueryKey
-        if (usageRequestRows.length === 0) {
-          void refreshUsageRequests(initialRefreshLimit)
-        } else {
-          // Keep current table rows visible while switching query context; sync in background.
-          void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
+        if (hasStrictRequestQuery && usageRequestRows.length > 0) {
+          // Strict filters (date/provider/model/origin/session) must not render stale rows.
+          setUsageRequestRows([])
+          setUsageRequestHasMore(false)
         }
+        void refreshUsageRequests(initialRefreshLimit)
         void refreshUsageRequestGraphRows()
         return
       }
@@ -1359,6 +1479,7 @@ export function UsageStatisticsPanel({
     }
   }, [
     initialRefreshLimit,
+    hasStrictRequestQuery,
     isAnalyticsTab,
     isRequestsTab,
     mergeLatestUsageRequests,
@@ -1456,12 +1577,16 @@ export function UsageStatisticsPanel({
     setUsageRequestError('')
     try {
       const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-        hours: requestFetchHours,
-        providers: requestFetchProviders,
-        models: requestFetchModels,
-        origins: requestFetchOrigins,
-        limit: USAGE_REQUEST_PAGE_SIZE,
-        offset: usageRequestRows.length,
+        ...buildUsageRequestEntriesArgs({
+          hours: requestFetchHours,
+          fromUnixMs: requestFetchFromUnixMs,
+          toUnixMs: requestFetchToUnixMs,
+          providers: requestFetchProviders,
+          models: requestFetchModels,
+          origins: requestFetchOrigins,
+          limit: USAGE_REQUEST_PAGE_SIZE,
+          offset: usageRequestRows.length,
+        }),
       })
       if (usageRequestFetchSeqRef.current !== requestSeq) return
       const incoming = res.rows ?? []
@@ -1484,9 +1609,11 @@ export function UsageStatisticsPanel({
     }
   }, [
     requestFetchHours,
+    requestFetchFromUnixMs,
     requestFetchModels,
     requestFetchOrigins,
     requestFetchProviders,
+    requestFetchToUnixMs,
     usageRequestHasMore,
     usageRequestLoading,
     usageRequestRows.length,
@@ -1731,26 +1858,17 @@ export function UsageStatisticsPanel({
           : prev.session.filter((item) => usageRequestFilterOptions.session.includes(item)),
     }))
   }, [isRequestsTab, usageRequestFilterOptions])
-  const usageRequestDaysWithRecords = useMemo(() => {
-    if (!isRequestsTab) return new Set<number>()
-    const out = new Set<number>()
-    for (const row of rowsForRequestRender) out.add(startOfDayUnixMs(row.unix_ms))
-    return out
-  }, [isRequestsTab, rowsForRequestRender])
-  const usageRequestDayOriginFlags = useMemo(() => {
-    if (!isRequestsTab) return new Map<number, { win: boolean; wsl: boolean }>()
-    const out = new Map<number, { win: boolean; wsl: boolean }>()
-    for (const row of rowsForRequestRender) {
-      const day = startOfDayUnixMs(row.unix_ms)
-      const prev = out.get(day) ?? { win: false, wsl: false }
-      const isWsl = row.origin.toLowerCase().includes('wsl')
-      out.set(day, {
-        win: prev.win || !isWsl,
-        wsl: prev.wsl || isWsl,
-      })
-    }
-    return out
-  }, [isRequestsTab, rowsForRequestRender])
+  const usageRequestCalendarIndex = useMemo(
+    () =>
+      buildUsageRequestCalendarIndex({
+        isRequestsTab,
+        rowsForRequestRender,
+        usageRequestDailyTotalsDays,
+      }),
+    [isRequestsTab, rowsForRequestRender, usageRequestDailyTotalsDays],
+  )
+  const usageRequestDaysWithRecords = usageRequestCalendarIndex.daysWithRecords
+  const usageRequestDayOriginFlags = usageRequestCalendarIndex.dayOriginFlags
   const filteredUsageRequestRows = useMemo(() => {
     if (!isRequestsTab) return EMPTY_USAGE_REQUEST_ROWS
     const timeDay = parseDateInputToDayStart(usageRequestTimeFilter)
@@ -1857,10 +1975,7 @@ export function UsageStatisticsPanel({
       total: rows.reduce((sum, row) => sum + row.value, 0),
     }
   }, [isRequestsTab, lineHoverIndex, usageRequestGraphPointCount, usageRequestLineSeries])
-  const selectedTimeFilterDay = useMemo(
-    () => parseDateInputToDayStart(usageRequestTimeFilter),
-    [usageRequestTimeFilter],
-  )
+  const selectedTimeFilterDay = selectedRequestTimeFilterDay
   const timeFilterCalendarCells = useMemo(() => {
     const monthStart = timePickerMonthStartMs
     const monthDate = new Date(monthStart)
