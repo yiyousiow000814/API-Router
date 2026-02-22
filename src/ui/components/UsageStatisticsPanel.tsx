@@ -1525,6 +1525,7 @@ export function UsageStatisticsPanel({
     void loadMoreUsageRequests()
   }, [
     isRequestsTab,
+    hasExplicitRequestFilters,
     hasExplicitTimeFilter,
     loadMoreUsageRequests,
     usageRequestHasMore,
