@@ -448,7 +448,7 @@ pub(crate) async fn probe_provider(
             &provider,
             "info",
             "health.probe_ok",
-            "health probe ok",
+            "Provider is reachable and responding",
             serde_json::Value::Null,
         );
         return Ok(());
