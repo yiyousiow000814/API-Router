@@ -8,12 +8,24 @@
 .aoUsageStatsPage.is-requests-only {
   padding: 10px 10px 8px;
   gap: 8px;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .aoUsageDetailsPane {
   display: grid;
   gap: 12px;
   align-content: start;
+}
+
+.aoUsageDetailsPaneRequests {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .aoUsageDetailsPane[hidden] {
@@ -233,6 +245,11 @@
   border-radius: 0;
   background: transparent;
   padding: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .aoUsageRequestsTableWrap {
@@ -245,6 +262,24 @@
 .aoUsageRequestTableSurface {
   height: auto;
   max-height: min(78vh, 1040px);
+}
+
+.aoUsageRequestsCard.is-page .aoUsageRequestTableSurface {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.aoUsageRequestsCard.is-page .aoUsageHistoryTableBody {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.aoUsageRequestsCard.is-page .aoUsageRequestsTableWrap {
+  height: 100%;
+  max-height: none;
 }
 
 .aoUsageRequestTableHead {

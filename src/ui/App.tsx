@@ -1091,7 +1091,12 @@ export default function App() {
             />
           </div>
           {/* Surface errors via toast to avoid layout shifts. */}
-          <div className={`aoMainArea${activePage === 'dashboard' ? '' : ' aoMainAreaFill'}`} ref={mainAreaRef}>
+          <div
+            className={`aoMainArea${activePage === 'dashboard' ? '' : ' aoMainAreaFill'}${
+              activePage === 'usage_requests' ? ' aoMainAreaRequestsFill' : ''
+            }`}
+            ref={mainAreaRef}
+          >
             <AppMainContent
               activePage={activePage}
               status={status}
