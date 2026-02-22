@@ -155,6 +155,28 @@ pub(crate) fn set_preferred_provider(
     Ok(())
 }
 
+#[tauri::command]
+pub(crate) fn set_route_mode(
+    state: tauri::State<'_, app_state::AppState>,
+    mode: String,
+) -> Result<(), String> {
+    let next_mode = crate::orchestrator::config::RouteMode::from_wire(&mode)
+        .ok_or_else(|| format!("unknown route mode: {mode}"))?;
+    {
+        let mut cfg = state.gateway.cfg.write();
+        cfg.routing.route_mode = next_mode;
+    }
+    persist_config(&state).map_err(|e| e.to_string())?;
+    state.gateway.store.add_event(
+        "gateway",
+        "info",
+        "config.route_mode_updated",
+        "route_mode updated",
+        serde_json::json!({ "route_mode": mode }),
+    );
+    Ok(())
+}
+
 fn session_is_agent(state: &app_state::AppState, codex_session_id: &str) -> bool {
     if state
         .gateway

@@ -475,6 +475,7 @@ export const devConfig: Config = {
   listen: { host: '127.0.0.1', port: 4000 },
   routing: {
     preferred_provider: 'provider_1',
+    route_mode: 'follow_preferred_auto',
     auto_return_to_preferred: true,
     preferred_stable_seconds: 120,
     failure_threshold: 2,

@@ -41,6 +41,7 @@ async fn assert_closed_provider_not_used_e2e(tag: &str, p2_snapshot: serde_json:
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 30,
             failure_threshold: 1,
@@ -313,6 +314,7 @@ async fn e2e_first_failure_refreshes_usage_once_and_closes_provider_before_retry
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 30,
             failure_threshold: 5,
@@ -523,6 +525,7 @@ async fn e2e_failure_usage_refresh_only_runs_once_per_request() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 30,
             failure_threshold: 5,
@@ -725,6 +728,7 @@ async fn e2e_provider_stays_skipped_until_usage_refresh_confirms_available() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 30,
             failure_threshold: 5,

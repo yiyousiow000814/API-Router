@@ -39,6 +39,13 @@ type UsageRequestSqlRow = (
     i64,
 );
 
+#[derive(Clone, Debug)]
+pub struct SessionRouteAssignment {
+    pub session_id: String,
+    pub provider: String,
+    pub assigned_at_unix_ms: u64,
+}
+
 pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<String> {
     response_obj
         .get("model")
@@ -315,6 +322,15 @@ impl Store {
                 AND provider = OLD.provider
                 AND request_count <= 0;
             END;
+            CREATE TABLE IF NOT EXISTS session_route_assignments(
+              session_id TEXT PRIMARY KEY,
+              provider TEXT NOT NULL,
+              assigned_at_unix_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_route_assignments_provider
+              ON session_route_assignments(provider);
+            CREATE INDEX IF NOT EXISTS idx_session_route_assignments_assigned_at
+              ON session_route_assignments(assigned_at_unix_ms DESC);
             ",
         )?;
         let current_schema: Option<String> = conn
@@ -1053,6 +1069,121 @@ impl Store {
             }
         }
         Value::Object(out)
+    }
+
+    pub fn get_session_route_assignment(&self, session_id: &str) -> Option<SessionRouteAssignment> {
+        let sid = session_id.trim();
+        if sid.is_empty() {
+            return None;
+        }
+        let conn = self.events_db.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT session_id, provider, assigned_at_unix_ms
+                 FROM session_route_assignments
+                 WHERE session_id=?1",
+            )
+            .ok()?;
+        let row = stmt
+            .query_row(params![sid], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .optional()
+            .ok()
+            .flatten()?;
+        Some(SessionRouteAssignment {
+            session_id: row.0,
+            provider: row.1,
+            assigned_at_unix_ms: u64::try_from(row.2).unwrap_or(0),
+        })
+    }
+
+    pub fn list_session_route_assignments_since(
+        &self,
+        min_assigned_at_unix_ms: u64,
+    ) -> Vec<SessionRouteAssignment> {
+        let Ok(min_assigned_at_i64) = i64::try_from(min_assigned_at_unix_ms) else {
+            return Vec::new();
+        };
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT session_id, provider, assigned_at_unix_ms
+             FROM session_route_assignments
+             WHERE assigned_at_unix_ms >= ?1",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([min_assigned_at_i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        }) else {
+            return Vec::new();
+        };
+        rows.flatten()
+            .map(
+                |(session_id, provider, assigned_at_unix_ms)| SessionRouteAssignment {
+                    session_id,
+                    provider,
+                    assigned_at_unix_ms: u64::try_from(assigned_at_unix_ms).unwrap_or(0),
+                },
+            )
+            .collect()
+    }
+
+    pub fn put_session_route_assignment(
+        &self,
+        session_id: &str,
+        provider: &str,
+        assigned_at_unix_ms: u64,
+    ) {
+        let sid = session_id.trim();
+        let p = provider.trim();
+        if sid.is_empty() || p.is_empty() {
+            return;
+        }
+        let Ok(assigned_at_i64) = i64::try_from(assigned_at_unix_ms) else {
+            return;
+        };
+        let conn = self.events_db.lock();
+        let _ = conn.execute(
+            "INSERT INTO session_route_assignments(session_id, provider, assigned_at_unix_ms)
+             VALUES(?1, ?2, ?3)
+             ON CONFLICT(session_id) DO UPDATE SET
+               provider=excluded.provider,
+               assigned_at_unix_ms=excluded.assigned_at_unix_ms",
+            params![sid, p, assigned_at_i64],
+        );
+    }
+
+    pub fn delete_session_route_assignment(&self, session_id: &str) {
+        let sid = session_id.trim();
+        if sid.is_empty() {
+            return;
+        }
+        let conn = self.events_db.lock();
+        let _ = conn.execute(
+            "DELETE FROM session_route_assignments WHERE session_id=?1",
+            params![sid],
+        );
+    }
+
+    pub fn delete_session_route_assignments_before(&self, cutoff_unix_ms: u64) -> usize {
+        let Ok(cutoff_i64) = i64::try_from(cutoff_unix_ms) else {
+            return 0;
+        };
+        let conn = self.events_db.lock();
+        conn.execute(
+            "DELETE FROM session_route_assignments WHERE assigned_at_unix_ms < ?1",
+            [cutoff_i64],
+        )
+        .unwrap_or(0)
     }
 
     pub fn get_ledger(&self, provider: &str) -> Value {

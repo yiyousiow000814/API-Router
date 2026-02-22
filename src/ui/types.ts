@@ -109,6 +109,7 @@ export type Config = {
   routing: {
     preferred_provider: string
     session_preferred_providers?: Record<string, string>
+    route_mode?: 'follow_preferred_auto' | 'balanced_auto'
     auto_return_to_preferred: boolean
     preferred_stable_seconds: number
     failure_threshold: number
