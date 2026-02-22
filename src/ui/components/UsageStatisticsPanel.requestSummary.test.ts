@@ -15,6 +15,7 @@ describe('resolveRequestTableSummary', () => {
       },
       displayedRows: [],
       hasMore: true,
+      preferBackendSummary: true,
     })
 
     expect(summary).toEqual({
@@ -46,6 +47,7 @@ describe('resolveRequestTableSummary', () => {
         },
       ],
       hasMore: true,
+      preferBackendSummary: true,
     })
 
     expect(summary).toBeNull()
@@ -83,6 +85,7 @@ describe('resolveRequestTableSummary', () => {
         },
       ],
       hasMore: false,
+      preferBackendSummary: true,
     })
 
     expect(summary).toEqual({

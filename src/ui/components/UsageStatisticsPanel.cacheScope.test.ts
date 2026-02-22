@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { resolveRequestPageCached, resolveSummaryFetchWindow } from './UsageStatisticsPanel'
+import {
+  resolveRequestPageCached,
+  resolveRequestTableSummary,
+  resolveSummaryFetchWindow,
+} from './UsageStatisticsPanel'
 
 describe('resolveRequestPageCached', () => {
   const exact = { queryKey: 'exact', rows: [], hasMore: false, usingTestFallback: false }
@@ -65,5 +69,65 @@ describe('resolveSummaryFetchWindow', () => {
     })
     expect(window.fromUnixMs).toBe(day)
     expect(window.toUnixMs).toBe(day + 24 * 60 * 60 * 1000)
+  })
+})
+
+describe('resolveRequestTableSummary', () => {
+  const row = {
+    input_tokens: 100,
+    output_tokens: 10,
+    total_tokens: 110,
+    cache_creation_input_tokens: 3,
+    cache_read_input_tokens: 7,
+  } as unknown as Parameters<typeof resolveRequestTableSummary>[0]['displayedRows'][number]
+
+  it('uses displayed row totals when backend summary is not preferred', () => {
+    const summary = resolveRequestTableSummary({
+      usageRequestSummary: {
+        ok: true,
+        requests: 999,
+        input_tokens: 9999,
+        output_tokens: 8888,
+        total_tokens: 7777,
+        cache_creation_input_tokens: 6666,
+        cache_read_input_tokens: 5555,
+      },
+      displayedRows: [row],
+      hasMore: false,
+      preferBackendSummary: false,
+    })
+    expect(summary).toEqual({
+      requests: 1,
+      input: 100,
+      output: 10,
+      total: 110,
+      cacheCreate: 3,
+      cacheRead: 7,
+    })
+  })
+
+  it('uses backend summary when preferred', () => {
+    const summary = resolveRequestTableSummary({
+      usageRequestSummary: {
+        ok: true,
+        requests: 5,
+        input_tokens: 500,
+        output_tokens: 50,
+        total_tokens: 550,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 30,
+      },
+      displayedRows: [row],
+      hasMore: false,
+      preferBackendSummary: true,
+    })
+    expect(summary).toEqual({
+      requests: 5,
+      input: 500,
+      output: 50,
+      total: 550,
+      cacheCreate: 20,
+      cacheRead: 30,
+    })
   })
 })

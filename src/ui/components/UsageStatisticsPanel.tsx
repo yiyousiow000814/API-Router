@@ -360,8 +360,9 @@ export function resolveRequestTableSummary(input: {
   usageRequestSummary: UsageRequestSummaryResponse | null
   displayedRows: UsageRequestEntry[]
   hasMore: boolean
+  preferBackendSummary: boolean
 }): UsageRequestTableSummary | null {
-  if (input.usageRequestSummary?.ok) {
+  if (input.preferBackendSummary && input.usageRequestSummary?.ok) {
     return {
       requests: input.usageRequestSummary.requests ?? 0,
       input: input.usageRequestSummary.input_tokens ?? 0,
@@ -2208,8 +2209,15 @@ export function UsageStatisticsPanel({
         usageRequestSummary,
         displayedRows: displayedFilteredUsageRequestRows,
         hasMore: usageRequestHasMore,
+        preferBackendSummary: !hasExplicitTimeFilter || selectedRequestTimeFilterDay != null,
       }),
-    [displayedFilteredUsageRequestRows, usageRequestHasMore, usageRequestSummary],
+    [
+      displayedFilteredUsageRequestRows,
+      hasExplicitTimeFilter,
+      selectedRequestTimeFilterDay,
+      usageRequestHasMore,
+      usageRequestSummary,
+    ],
   )
   const formatRequestSummaryValue = useCallback((value: number | null | undefined) => {
     if (value == null) return '-'
