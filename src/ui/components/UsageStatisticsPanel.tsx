@@ -427,6 +427,24 @@ export function resolveRequestPageCached(input: {
   return input.cached ?? input.canonicalCached ?? input.lastNonEmpty
 }
 
+export function resolveSummaryFetchWindow(input: {
+  requestFetchFromUnixMs: number | null
+  hasExplicitRequestFilters: boolean
+  rowsForRequestRender: UsageRequestEntry[]
+  requestDefaultDay: number
+}): { fromUnixMs: number | null; toUnixMs: number | null } {
+  const hasTodayRowsInRender = input.rowsForRequestRender.some(
+    (row) => startOfDayUnixMs(row.unix_ms) === input.requestDefaultDay,
+  )
+  const fromUnixMs =
+    input.requestFetchFromUnixMs ??
+    (!input.hasExplicitRequestFilters && hasTodayRowsInRender ? input.requestDefaultDay : null)
+  return {
+    fromUnixMs,
+    toUnixMs: fromUnixMs == null ? null : fromUnixMs + 24 * 60 * 60 * 1000,
+  }
+}
+
 function startOfDayUnixMs(unixMs: number): number {
   const date = new Date(unixMs)
   date.setHours(0, 0, 0, 0)
@@ -925,10 +943,6 @@ export function UsageStatisticsPanel({
   const [requestDefaultDay, setRequestDefaultDay] = useState<number>(() =>
     startOfDayUnixMs(Date.now()),
   )
-  const summaryFetchFromUnixMs =
-    requestFetchFromUnixMs ?? (!hasExplicitRequestFilters ? requestDefaultDay : null)
-  const summaryFetchToUnixMs =
-    summaryFetchFromUnixMs == null ? null : summaryFetchFromUnixMs + 24 * 60 * 60 * 1000
   useEffect(() => {
     if (typeof window === 'undefined') return
     let timer: number | null = null
@@ -1176,6 +1190,13 @@ export function UsageStatisticsPanel({
       })
       return
     }
+    const { fromUnixMs: summaryFetchFromUnixMs, toUnixMs: summaryFetchToUnixMs } =
+      resolveSummaryFetchWindow({
+        requestFetchFromUnixMs,
+        hasExplicitRequestFilters,
+        rowsForRequestRender,
+        requestDefaultDay,
+      })
     try {
       const res = await invoke<UsageRequestSummaryResponse>(
         'get_usage_request_summary',
@@ -1197,12 +1218,14 @@ export function UsageStatisticsPanel({
     hasImpossibleRequestFilters,
     isRequestsTab,
     requestFetchHours,
+    requestFetchFromUnixMs,
     requestFetchModels,
     requestFetchOrigins,
     requestFetchProviders,
     requestFetchSessions,
-    summaryFetchFromUnixMs,
-    summaryFetchToUnixMs,
+    hasExplicitRequestFilters,
+    requestDefaultDay,
+    rowsForRequestRender,
   ])
   const mergeLatestUsageRequests = useCallback(
     async (limit: number) => {
@@ -1543,11 +1566,13 @@ export function UsageStatisticsPanel({
       usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_PAGE_QUERY_KEY
         ? usageRequestsPageCache
         : null
-    const source = hasStrictRequestQuery
-      ? (cached?.rows.length ? cached : null)
-      : (cached?.rows.length ? cached : null) ??
-        (canonicalCached?.rows.length ? canonicalCached : null) ??
-        usageRequestsLastNonEmptyPageCache
+    const source = resolveRequestPageCached({
+      isRequestsTab,
+      hasStrictRequestQuery,
+      cached,
+      canonicalCached,
+      lastNonEmpty: usageRequestsLastNonEmptyPageCache,
+    })
     if (!source || source.rows.length === 0) return
     usageRequestLoadedQueryKeyRef.current = source.queryKey
     setUsageRequestRows(source.rows)
@@ -2906,7 +2931,14 @@ export function UsageStatisticsPanel({
                 </colgroup>
                 <tbody>
                   <tr>
-                    <td>{hasExplicitRequestFilters ? 'Filtered' : 'Today'} Summary</td>
+                    <td>
+                      {hasExplicitRequestFilters
+                        ? 'Filtered'
+                        : defaultTodayOnly
+                          ? 'Today'
+                          : 'Window'}{' '}
+                      Summary
+                    </td>
                     <td>Total {formatRequestSummaryValue(requestTableSummary?.total)}</td>
                     <td>Requests {formatRequestSummaryValue(requestTableSummary?.requests)}</td>
                     <td />

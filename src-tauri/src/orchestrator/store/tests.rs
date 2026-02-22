@@ -393,6 +393,55 @@ mod tests {
     }
 
     #[test]
+    fn rename_provider_keeps_daily_totals_index_in_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let day = chrono::Local
+            .with_ymd_and_hms(2026, 2, 21, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, 'provider_old', '-', 'gpt-5.2-codex', 'windows', 's1', 100, 10, 110, 0, 0)",
+                rusqlite::params!["rename-id-1", day],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, 'provider_new', '-', 'gpt-5.2-codex', 'wsl2', 's2', 200, 20, 220, 0, 0)",
+                rusqlite::params!["rename-id-2", day + 1_000],
+            )
+            .unwrap();
+        }
+
+        store.rename_provider("provider_old", "provider_new");
+        let out = store.list_usage_request_daily_totals(5);
+
+        assert!(
+            !out.iter()
+                .any(|(_, provider, _, _, _, _)| provider == "provider_old")
+        );
+
+        let merged = out
+            .iter()
+            .find(|(day_key, provider, _, _, _, _)| day_key == "2026-02-21" && provider == "provider_new")
+            .cloned()
+            .unwrap();
+        assert_eq!(merged.2, 330);
+        assert_eq!(merged.3, 2);
+        assert_eq!(merged.4, 1);
+        assert_eq!(merged.5, 1);
+    }
+
+    #[test]
     fn list_usage_requests_page_supports_day_range() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();

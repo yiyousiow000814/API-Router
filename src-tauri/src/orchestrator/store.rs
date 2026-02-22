@@ -258,6 +258,63 @@ impl Store {
                 windows_request_count = usage_request_day_provider_totals.windows_request_count + excluded.windows_request_count,
                 wsl_request_count = usage_request_day_provider_totals.wsl_request_count + excluded.wsl_request_count;
             END;
+            CREATE TRIGGER IF NOT EXISTS trg_usage_requests_daily_index_after_update
+            AFTER UPDATE OF unix_ms, provider, total_tokens, origin ON usage_requests
+            BEGIN
+              UPDATE usage_request_day_provider_totals
+              SET
+                total_tokens = total_tokens - OLD.total_tokens,
+                request_count = request_count - 1,
+                windows_request_count = windows_request_count - CASE WHEN lower(OLD.origin) = 'windows' THEN 1 ELSE 0 END,
+                wsl_request_count = wsl_request_count - CASE WHEN lower(OLD.origin) = 'wsl2' THEN 1 ELSE 0 END
+              WHERE
+                day_key = strftime('%Y-%m-%d', OLD.unix_ms / 1000, 'unixepoch', 'localtime')
+                AND provider = OLD.provider;
+              DELETE FROM usage_request_day_provider_totals
+              WHERE
+                day_key = strftime('%Y-%m-%d', OLD.unix_ms / 1000, 'unixepoch', 'localtime')
+                AND provider = OLD.provider
+                AND request_count <= 0;
+              INSERT INTO usage_request_day_provider_totals(
+                day_key,
+                provider,
+                total_tokens,
+                request_count,
+                windows_request_count,
+                wsl_request_count
+              )
+              VALUES(
+                strftime('%Y-%m-%d', NEW.unix_ms / 1000, 'unixepoch', 'localtime'),
+                NEW.provider,
+                NEW.total_tokens,
+                1,
+                CASE WHEN lower(NEW.origin) = 'windows' THEN 1 ELSE 0 END,
+                CASE WHEN lower(NEW.origin) = 'wsl2' THEN 1 ELSE 0 END
+              )
+              ON CONFLICT(day_key, provider) DO UPDATE SET
+                total_tokens = usage_request_day_provider_totals.total_tokens + excluded.total_tokens,
+                request_count = usage_request_day_provider_totals.request_count + excluded.request_count,
+                windows_request_count = usage_request_day_provider_totals.windows_request_count + excluded.windows_request_count,
+                wsl_request_count = usage_request_day_provider_totals.wsl_request_count + excluded.wsl_request_count;
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_usage_requests_daily_index_after_delete
+            AFTER DELETE ON usage_requests
+            BEGIN
+              UPDATE usage_request_day_provider_totals
+              SET
+                total_tokens = total_tokens - OLD.total_tokens,
+                request_count = request_count - 1,
+                windows_request_count = windows_request_count - CASE WHEN lower(OLD.origin) = 'windows' THEN 1 ELSE 0 END,
+                wsl_request_count = wsl_request_count - CASE WHEN lower(OLD.origin) = 'wsl2' THEN 1 ELSE 0 END
+              WHERE
+                day_key = strftime('%Y-%m-%d', OLD.unix_ms / 1000, 'unixepoch', 'localtime')
+                AND provider = OLD.provider;
+              DELETE FROM usage_request_day_provider_totals
+              WHERE
+                day_key = strftime('%Y-%m-%d', OLD.unix_ms / 1000, 'unixepoch', 'localtime')
+                AND provider = OLD.provider
+                AND request_count <= 0;
+            END;
             ",
         )?;
         let current_schema: Option<String> = conn
