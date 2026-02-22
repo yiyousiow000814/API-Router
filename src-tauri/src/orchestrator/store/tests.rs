@@ -302,9 +302,9 @@ mod tests {
         }
 
         let (page1, has_more1) =
-            store.list_usage_requests_page(0, None, None, &[], &[], &[], 1, 0);
+            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], 1, 0);
         let (page2, has_more2) =
-            store.list_usage_requests_page(0, None, None, &[], &[], &[], 1, 1);
+            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], 1, 1);
         assert_eq!(page1.len(), 1);
         assert_eq!(page2.len(), 1);
         assert!(has_more1);
@@ -443,6 +443,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             50,
             0,
         );
@@ -450,5 +451,57 @@ mod tests {
         assert_eq!(rows.len(), 1);
         let unix_ms = rows[0].get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
         assert!(unix_ms >= day1_start && unix_ms < day1_end);
+    }
+
+    #[test]
+    fn summarize_usage_requests_is_not_limited_by_page_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let day = chrono::Local
+            .with_ymd_and_hms(2026, 2, 22, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day_start = chrono::Local
+            .with_ymd_and_hms(2026, 2, 22, 0, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        let day_end = chrono::Local
+            .with_ymd_and_hms(2026, 2, 23, 0, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+
+        {
+            let conn = store.events_db.lock();
+            for i in 0..3 {
+                conn.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                        input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                    ) VALUES(?1, ?2, 'official', '-', 'gpt-5.2-codex', 'wsl2', 's1', 100, 10, 110, 0, 0)",
+                    rusqlite::params![format!("id-{i}"), day + i * 1000],
+                )
+                .unwrap();
+            }
+        }
+
+        let (requests, input, output, total, cache_create, cache_read) = store
+            .summarize_usage_requests(
+                0,
+                Some(day_start),
+                Some(day_end),
+                &[],
+                &[],
+                &[],
+                &[],
+            );
+        assert_eq!(requests, 3);
+        assert_eq!(input, 300);
+        assert_eq!(output, 30);
+        assert_eq!(total, 330);
+        assert_eq!(cache_create, 0);
+        assert_eq!(cache_read, 0);
     }
 }

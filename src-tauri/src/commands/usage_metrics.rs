@@ -47,6 +47,7 @@ pub(crate) fn get_usage_request_entries(
     providers: Option<Vec<String>>,
     models: Option<Vec<String>>,
     origins: Option<Vec<String>>,
+    sessions: Option<Vec<String>>,
     limit: Option<u64>,
     offset: Option<u64>,
 ) -> serde_json::Value {
@@ -67,6 +68,12 @@ pub(crate) fn get_usage_request_entries(
         .filter(|s| !s.is_empty())
         .collect();
     let origin_filter = normalize_usage_origin_filter(origins);
+    let session_filter: BTreeSet<String> = sessions
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
     let has_provider_filter = !provider_filter.is_empty();
     let has_model_filter = !model_filter.is_empty();
     let has_origin_filter = !origin_filter.is_empty();
@@ -101,6 +108,11 @@ pub(crate) fn get_usage_request_entries(
     } else {
         Vec::new()
     };
+    let session_filter_list: Vec<String> = if !session_filter.is_empty() {
+        session_filter.iter().cloned().collect()
+    } else {
+        Vec::new()
+    };
     let (rows, has_more) = state.gateway.store.list_usage_requests_page(
         since_unix_ms,
         range_from,
@@ -108,6 +120,7 @@ pub(crate) fn get_usage_request_entries(
         &provider_filter_list,
         &model_filter_list,
         &origin_filter_list,
+        &session_filter_list,
         page_limit,
         page_offset,
     );
@@ -117,6 +130,67 @@ pub(crate) fn get_usage_request_entries(
         "rows": rows,
         "has_more": has_more,
         "next_offset": page_offset.saturating_add(rows.len()),
+    })
+}
+
+#[tauri::command]
+pub(crate) fn get_usage_request_summary(
+    state: tauri::State<'_, app_state::AppState>,
+    hours: Option<u64>,
+    from_unix_ms: Option<u64>,
+    to_unix_ms: Option<u64>,
+    providers: Option<Vec<String>>,
+    models: Option<Vec<String>>,
+    origins: Option<Vec<String>>,
+    sessions: Option<Vec<String>>,
+) -> serde_json::Value {
+    let now = unix_ms();
+    let window_hours = hours.unwrap_or(24).clamp(1, 24 * 365 * 20);
+    let window_ms = window_hours.saturating_mul(60 * 60 * 1000);
+    let since_unix_ms = now.saturating_sub(window_ms);
+    let provider_filter: BTreeSet<String> = providers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let model_filter: BTreeSet<String> = models
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let origin_filter = normalize_usage_origin_filter(origins);
+    let session_filter: BTreeSet<String> = sessions
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let provider_filter_list: Vec<String> = provider_filter.iter().cloned().collect();
+    let model_filter_list: Vec<String> = model_filter.iter().cloned().collect();
+    let origin_filter_list: Vec<String> = origin_filter.iter().cloned().collect();
+    let session_filter_list: Vec<String> = session_filter.iter().cloned().collect();
+
+    let (requests, input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens) =
+        state.gateway.store.summarize_usage_requests(
+            since_unix_ms,
+            from_unix_ms,
+            to_unix_ms,
+            &provider_filter_list,
+            &model_filter_list,
+            &origin_filter_list,
+            &session_filter_list,
+        );
+
+    serde_json::json!({
+        "ok": true,
+        "requests": requests,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "cache_creation_input_tokens": cache_creation_input_tokens,
+        "cache_read_input_tokens": cache_read_input_tokens,
     })
 }
 

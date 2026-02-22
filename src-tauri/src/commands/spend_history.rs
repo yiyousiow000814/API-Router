@@ -78,6 +78,7 @@ pub(crate) fn get_spend_history(
                 &provider_only,
                 &[],
                 &[],
+                &[],
                 PAGE_SIZE,
                 req_offset,
             );

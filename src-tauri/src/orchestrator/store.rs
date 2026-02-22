@@ -221,6 +221,7 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_usage_requests_provider_lc ON usage_requests(lower(provider));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_model_lc ON usage_requests(lower(model));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_origin_lc ON usage_requests(lower(origin));
+            CREATE INDEX IF NOT EXISTS idx_usage_requests_session_lc ON usage_requests(lower(session_id));
             CREATE TABLE IF NOT EXISTS usage_request_day_provider_totals(
               day_key TEXT NOT NULL,
               provider TEXT NOT NULL,
@@ -1381,6 +1382,7 @@ impl Store {
         providers: &[String],
         models: &[String],
         origins: &[String],
+        sessions: &[String],
         limit: usize,
         offset: usize,
     ) -> (Vec<Value>, bool) {
@@ -1444,6 +1446,15 @@ impl Store {
                 ));
             }
         }
+        if !sessions.is_empty() {
+            let placeholders = vec!["?"; sessions.len()].join(", ");
+            sql.push_str(&format!(" AND lower(session_id) IN ({placeholders})"));
+            for session in sessions {
+                params.push(rusqlite::types::Value::Text(
+                    session.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
         sql.push_str(" ORDER BY unix_ms DESC, id DESC LIMIT ? OFFSET ?");
         params.push(rusqlite::types::Value::Integer(
             i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX),
@@ -1482,6 +1493,107 @@ impl Store {
             out.truncate(limit);
         }
         (out, has_more)
+    }
+
+    pub fn summarize_usage_requests(
+        &self,
+        since_unix_ms: u64,
+        from_unix_ms: Option<u64>,
+        to_unix_ms: Option<u64>,
+        providers: &[String],
+        models: &[String],
+        origins: &[String],
+        sessions: &[String],
+    ) -> (u64, u64, u64, u64, u64, u64) {
+        let mut sql = String::from(
+            "SELECT
+                COUNT(*),
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(total_tokens), 0),
+                COALESCE(SUM(cache_creation_input_tokens), 0),
+                COALESCE(SUM(cache_read_input_tokens), 0)
+             FROM usage_requests
+             WHERE (? IS NULL OR ? IS NOT NULL OR unix_ms >= ?)
+               AND (? IS NULL OR unix_ms >= ?)
+               AND (? IS NULL OR unix_ms < ?)",
+        );
+        let from_i64 = from_unix_ms.and_then(|x| i64::try_from(x).ok());
+        let to_i64 = to_unix_ms.and_then(|x| i64::try_from(x).ok());
+        let mut params: Vec<rusqlite::types::Value> = vec![
+            from_i64
+                .map(rusqlite::types::Value::Integer)
+                .unwrap_or(rusqlite::types::Value::Null),
+            to_i64
+                .map(rusqlite::types::Value::Integer)
+                .unwrap_or(rusqlite::types::Value::Null),
+            rusqlite::types::Value::Integer(i64::try_from(since_unix_ms).unwrap_or(i64::MAX)),
+            from_i64
+                .map(rusqlite::types::Value::Integer)
+                .unwrap_or(rusqlite::types::Value::Null),
+            from_i64
+                .map(rusqlite::types::Value::Integer)
+                .unwrap_or(rusqlite::types::Value::Null),
+            to_i64
+                .map(rusqlite::types::Value::Integer)
+                .unwrap_or(rusqlite::types::Value::Null),
+            to_i64
+                .map(rusqlite::types::Value::Integer)
+                .unwrap_or(rusqlite::types::Value::Null),
+        ];
+        if !providers.is_empty() {
+            let placeholders = vec!["?"; providers.len()].join(", ");
+            sql.push_str(&format!(" AND lower(provider) IN ({placeholders})"));
+            for provider in providers {
+                params.push(rusqlite::types::Value::Text(
+                    provider.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
+        if !models.is_empty() {
+            let placeholders = vec!["?"; models.len()].join(", ");
+            sql.push_str(&format!(" AND lower(model) IN ({placeholders})"));
+            for model in models {
+                params.push(rusqlite::types::Value::Text(
+                    model.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
+        if !origins.is_empty() {
+            let placeholders = vec!["?"; origins.len()].join(", ");
+            sql.push_str(&format!(" AND lower(origin) IN ({placeholders})"));
+            for origin in origins {
+                params.push(rusqlite::types::Value::Text(
+                    origin.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
+        if !sessions.is_empty() {
+            let placeholders = vec!["?"; sessions.len()].join(", ");
+            sql.push_str(&format!(" AND lower(session_id) IN ({placeholders})"));
+            for session in sessions {
+                params.push(rusqlite::types::Value::Text(
+                    session.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            return (0, 0, 0, 0, 0, 0);
+        };
+        let Ok(row) = stmt.query_row(params_from_iter(params.iter()), |row| {
+            Ok((
+                u64::try_from(row.get::<_, i64>(0)?).unwrap_or(0),
+                u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
+                u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+            ))
+        }) else {
+            return (0, 0, 0, 0, 0, 0);
+        };
+        row
     }
 
     pub fn list_usage_request_daily_totals(

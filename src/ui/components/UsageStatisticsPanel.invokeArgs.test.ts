@@ -10,6 +10,7 @@ describe('buildUsageRequestEntriesArgs', () => {
       providers: ['official'],
       models: null,
       origins: null,
+      sessions: null,
       limit: 200,
       offset: 0,
     })
