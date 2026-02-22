@@ -92,6 +92,37 @@ mod tests {
     }
 
     #[test]
+    fn list_session_route_assignments_since_filters_old_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        store.put_session_route_assignment("s-old", "p1", 1_000);
+        store.put_session_route_assignment("s-new", "p2", 2_000);
+
+        let rows = store.list_session_route_assignments_since(1_500);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].session_id, "s-new");
+        assert_eq!(rows[0].provider, "p2");
+    }
+
+    #[test]
+    fn delete_session_route_assignments_before_removes_old_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        store.put_session_route_assignment("s1", "p1", 1_000);
+        store.put_session_route_assignment("s2", "p1", 2_000);
+        store.put_session_route_assignment("s3", "p2", 3_000);
+
+        let deleted = store.delete_session_route_assignments_before(2_500);
+        assert_eq!(deleted, 2);
+
+        let rows = store.list_session_route_assignments_since(0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].session_id, "s3");
+    }
+
+    #[test]
     fn reopening_store_backfills_daily_index_from_events() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();

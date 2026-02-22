@@ -4,9 +4,9 @@ type HeroRoutingProps = {
   config: Config | null
   providers: string[]
   routeMode: 'follow_preferred_auto' | 'balanced_auto'
-  onRouteModeChange: (next: 'follow_preferred_auto' | 'balanced_auto') => void
+  onRouteModeChange: (next: 'follow_preferred_auto' | 'balanced_auto') => Promise<boolean>
   override: string
-  onOverrideChange: (next: string) => void
+  onOverrideChange: (next: string) => Promise<boolean>
   onPreferredChange: (next: string) => void
 }
 
@@ -30,14 +30,21 @@ export function HeroRoutingCard({
     label: `Lock to ${provider}`,
   }))
   const hasCurrentLockOption = override !== '' && lockOptions.some((option) => option.value === routeSelection)
-  const onRouteSelectionChange = (value: string) => {
+  const onRouteSelectionChange = async (value: string) => {
     if (value === 'follow_preferred_auto' || value === 'balanced_auto') {
-      if (override !== '') onOverrideChange('')
-      onRouteModeChange(value)
+      if (override !== '') {
+        const unlocked = await onOverrideChange('')
+        if (!unlocked) return
+      }
+      await onRouteModeChange(value)
       return
     }
     if (value.startsWith('lock:')) {
-      onOverrideChange(value.slice('lock:'.length))
+      const locked = await onOverrideChange(value.slice('lock:'.length))
+      if (!locked) return
+      if (routeMode !== 'follow_preferred_auto') {
+        await onRouteModeChange('follow_preferred_auto')
+      }
     }
   }
 
@@ -54,7 +61,13 @@ export function HeroRoutingCard({
         <div className="aoRoutingGrid">
           <label className="aoRoutingRow">
             <span className="aoMiniLabel">Route mode</span>
-            <select className="aoSelect" value={routeSelection} onChange={(e) => onRouteSelectionChange(e.target.value)}>
+            <select
+              className="aoSelect"
+              value={routeSelection}
+              onChange={(e) => {
+                void onRouteSelectionChange(e.target.value)
+              }}
+            >
               <option value="follow_preferred_auto">Follow Preferred (Auto)</option>
               <option value="balanced_auto">Balanced Mode (Auto)</option>
               {hasCurrentLockOption ? null : override !== '' ? (

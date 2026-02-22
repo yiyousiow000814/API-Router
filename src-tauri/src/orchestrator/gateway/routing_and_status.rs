@@ -109,6 +109,13 @@ fn balanced_session_provider_score(session_key: &str, provider: &str) -> u64 {
 
 const BALANCED_ASSIGNMENT_STICKY_MS: u64 = 24 * 60 * 60 * 1000;
 const BALANCED_REBALANCE_MARGIN: usize = 2;
+const BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS: u64 = 15 * 60 * 1000;
+
+#[derive(Default)]
+struct BalancedAssignmentCounts {
+    provider_loads: HashMap<String, usize>,
+    bucket_loads: HashMap<String, usize>,
+}
 
 fn provider_key_fingerprint(st: &GatewayState, provider: &str) -> Option<u64> {
     st.secrets
@@ -156,14 +163,33 @@ fn load_balanced_assignment_counts(
     st: &GatewayState,
     cfg: &AppConfig,
     now_ms: u64,
-) -> (HashMap<String, usize>, HashMap<String, usize>) {
-    let mut provider_loads: HashMap<String, usize> = HashMap::new();
-    let mut bucket_loads: HashMap<String, usize> = HashMap::new();
-    for row in st.store.list_session_route_assignments() {
+) -> BalancedAssignmentCounts {
+    static LAST_BALANCED_ASSIGNMENT_CLEANUP_UNIX_MS: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
+    let cutoff_unix_ms = now_ms.saturating_sub(BALANCED_ASSIGNMENT_STICKY_MS);
+    let last_cleanup = LAST_BALANCED_ASSIGNMENT_CLEANUP_UNIX_MS.load(std::sync::atomic::Ordering::Relaxed);
+    if now_ms.saturating_sub(last_cleanup) >= BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS
+        && LAST_BALANCED_ASSIGNMENT_CLEANUP_UNIX_MS
+            .compare_exchange(
+                last_cleanup,
+                now_ms,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
+    {
+        let _ = st
+            .store
+            .delete_session_route_assignments_before(cutoff_unix_ms);
+    }
+
+    let mut counts = BalancedAssignmentCounts::default();
+    for row in st
+        .store
+        .list_session_route_assignments_since(cutoff_unix_ms)
+    {
         if row.session_id.starts_with("peer:") {
-            continue;
-        }
-        if now_ms.saturating_sub(row.assigned_at_unix_ms) >= BALANCED_ASSIGNMENT_STICKY_MS {
             continue;
         }
         if !cfg
@@ -173,11 +199,11 @@ fn load_balanced_assignment_counts(
         {
             continue;
         }
-        *provider_loads.entry(row.provider.clone()).or_insert(0) += 1;
+        *counts.provider_loads.entry(row.provider.clone()).or_insert(0) += 1;
         let bucket = provider_balance_bucket(st, &row.provider);
-        *bucket_loads.entry(bucket).or_insert(0) += 1;
+        *counts.bucket_loads.entry(bucket).or_insert(0) += 1;
     }
-    (provider_loads, bucket_loads)
+    counts
 }
 
 fn pick_balanced_provider(
@@ -185,6 +211,7 @@ fn pick_balanced_provider(
     cfg: &AppConfig,
     quota_snapshots: &Value,
     router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
+    assignment_counts: &BalancedAssignmentCounts,
     session_key: &str,
     preferred: &str,
 ) -> Option<(String, usize, usize)> {
@@ -197,14 +224,20 @@ fn pick_balanced_provider(
     if candidates.is_empty() {
         return None;
     }
-
-    let (provider_loads, bucket_loads) = load_balanced_assignment_counts(st, cfg, unix_ms());
     candidates
         .into_iter()
         .map(|provider| {
-            let provider_load = provider_loads.get(&provider).copied().unwrap_or(0);
+            let provider_load = assignment_counts
+                .provider_loads
+                .get(&provider)
+                .copied()
+                .unwrap_or(0);
             let bucket = provider_balance_bucket(st, &provider);
-            let bucket_load = bucket_loads.get(&bucket).copied().unwrap_or(0);
+            let bucket_load = assignment_counts
+                .bucket_loads
+                .get(&bucket)
+                .copied()
+                .unwrap_or(0);
             let preferred_rank = if provider == preferred { 0_u8 } else { 1_u8 };
             let hash_rank = balanced_session_provider_score(session_key, &provider);
             (
@@ -228,6 +261,7 @@ fn pick_balanced_provider_for_verified_main_session(
 ) -> Option<String> {
     let now_ms = unix_ms();
     let mut assignment = st.store.get_session_route_assignment(session_key);
+    let assignment_counts = load_balanced_assignment_counts(st, cfg, now_ms);
     if assignment.as_ref().is_some_and(|row| {
         !cfg.providers
             .get(&row.provider)
@@ -254,6 +288,7 @@ fn pick_balanced_provider_for_verified_main_session(
         cfg,
         quota_snapshots,
         router_snapshot,
+        &assignment_counts,
         session_key,
         preferred,
     );
@@ -261,9 +296,6 @@ fn pick_balanced_provider_for_verified_main_session(
         let current_usable =
             provider_is_balanced_candidate(st, cfg, quota_snapshots, router_snapshot, &row.provider);
         if current_usable {
-            if assignment_is_fresh {
-                return Some(row.provider.clone());
-            }
             if let Some((best_provider, _, best_bucket_load)) = best.as_ref() {
                 if best_provider == &row.provider || providers_share_api_key(st, &row.provider, best_provider)
                 {
@@ -271,8 +303,8 @@ fn pick_balanced_provider_for_verified_main_session(
                         .put_session_route_assignment(session_key, &row.provider, now_ms);
                     return Some(row.provider.clone());
                 }
-                let (_, bucket_loads) = load_balanced_assignment_counts(st, cfg, now_ms);
-                let current_bucket_load = bucket_loads
+                let current_bucket_load = assignment_counts
+                    .bucket_loads
                     .get(&provider_balance_bucket(st, &row.provider))
                     .copied()
                     .unwrap_or(0);

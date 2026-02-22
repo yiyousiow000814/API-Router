@@ -48,7 +48,7 @@ describe('useMainContentCallbacks', () => {
       setCodexSwapModalOpen: vi.fn(),
       setOverride: vi.fn(),
       overrideDirtyRef: { current: false },
-      applyOverride: vi.fn(async () => {}),
+      applyOverride: vi.fn(async () => true),
     })
 
     callbacks.onShowGatewayRotate()
@@ -82,7 +82,7 @@ describe('useMainContentCallbacks', () => {
       setCodexSwapModalOpen: vi.fn(),
       setOverride: vi.fn(),
       overrideDirtyRef: { current: false },
-      applyOverride: vi.fn(async () => {}),
+      applyOverride: vi.fn(async () => true),
     })
 
     callbacks.onCodexSwapAuthConfig()

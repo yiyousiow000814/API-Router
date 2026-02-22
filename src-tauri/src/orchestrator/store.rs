@@ -1102,15 +1102,22 @@ impl Store {
         })
     }
 
-    pub fn list_session_route_assignments(&self) -> Vec<SessionRouteAssignment> {
+    pub fn list_session_route_assignments_since(
+        &self,
+        min_assigned_at_unix_ms: u64,
+    ) -> Vec<SessionRouteAssignment> {
+        let Ok(min_assigned_at_i64) = i64::try_from(min_assigned_at_unix_ms) else {
+            return Vec::new();
+        };
         let conn = self.events_db.lock();
         let Ok(mut stmt) = conn.prepare(
             "SELECT session_id, provider, assigned_at_unix_ms
-             FROM session_route_assignments",
+             FROM session_route_assignments
+             WHERE assigned_at_unix_ms >= ?1",
         ) else {
             return Vec::new();
         };
-        let Ok(rows) = stmt.query_map([], |row| {
+        let Ok(rows) = stmt.query_map([min_assigned_at_i64], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -1165,6 +1172,18 @@ impl Store {
             "DELETE FROM session_route_assignments WHERE session_id=?1",
             params![sid],
         );
+    }
+
+    pub fn delete_session_route_assignments_before(&self, cutoff_unix_ms: u64) -> usize {
+        let Ok(cutoff_i64) = i64::try_from(cutoff_unix_ms) else {
+            return 0;
+        };
+        let conn = self.events_db.lock();
+        conn.execute(
+            "DELETE FROM session_route_assignments WHERE assigned_at_unix_ms < ?1",
+            [cutoff_i64],
+        )
+        .unwrap_or(0)
     }
 
     pub fn get_ledger(&self, provider: &str) -> Value {

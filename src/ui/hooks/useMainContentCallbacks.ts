@@ -31,7 +31,7 @@ type Params = {
   setCodexSwapModalOpen: Dispatch<SetStateAction<boolean>>
   setOverride: Dispatch<SetStateAction<string>>
   overrideDirtyRef: MutableRefObject<boolean>
-  applyOverride: (next: string) => Promise<void>
+  applyOverride: (next: string) => Promise<boolean>
 }
 
 export function useMainContentCallbacks(params: Params) {
@@ -169,10 +169,10 @@ export function useMainContentCallbacks(params: Params) {
 
   const onOpenCodexSwapOptions = () => setCodexSwapModalOpen(true)
 
-  const onOverrideChange = (next: string) => {
+  const onOverrideChange = async (next: string): Promise<boolean> => {
     setOverride(next)
     overrideDirtyRef.current = true
-    void applyOverride(next)
+    return applyOverride(next)
   }
 
   return {

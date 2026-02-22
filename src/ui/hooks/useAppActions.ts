@@ -86,27 +86,41 @@ export function useAppActions(params: Params) {
     return `provider${maxN + 1}`
   }, [config])
 
-  async function applyOverride(next: string) {
+  async function applyOverride(next: string): Promise<boolean> {
     try {
       await invoke('set_manual_override', { provider: next === '' ? null : next })
       overrideDirtyRef.current = false
       flashToast(next === '' ? 'Routing: auto' : 'Routing locked')
       await refreshStatus()
+      return true
     } catch (e) {
       flashToast(String(e), 'error')
+      return false
     }
   }
 
-  async function setPreferred(next: string) {
-    await invoke('set_preferred_provider', { provider: next })
-    await refreshStatus()
-    await refreshConfig()
+  async function setPreferred(next: string): Promise<boolean> {
+    try {
+      await invoke('set_preferred_provider', { provider: next })
+      await refreshStatus()
+      await refreshConfig()
+      return true
+    } catch (e) {
+      flashToast(String(e), 'error')
+      return false
+    }
   }
 
-  async function setRouteMode(next: 'follow_preferred_auto' | 'balanced_auto') {
-    await invoke('set_route_mode', { mode: next })
-    await refreshStatus()
-    await refreshConfig()
+  async function setRouteMode(next: 'follow_preferred_auto' | 'balanced_auto'): Promise<boolean> {
+    try {
+      await invoke('set_route_mode', { mode: next })
+      await refreshStatus()
+      await refreshConfig()
+      return true
+    } catch (e) {
+      flashToast(String(e), 'error')
+      return false
+    }
   }
 
   async function applyProviderOrder(next: string[]) {

@@ -1117,7 +1117,7 @@ export default function App() {
               codexSwapBadgeText={codexSwapBadge.badgeText}
               codexSwapBadgeTitle={codexSwapBadge.badgeTitle}
               routeMode={routeMode}
-              onRouteModeChange={(next) => void setRouteMode(next)}
+              onRouteModeChange={setRouteMode}
               override={override}
               onOverrideChange={onOverrideChange}
               onPreferredChange={(next) => void setPreferred(next)}

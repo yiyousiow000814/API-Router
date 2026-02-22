@@ -25,9 +25,9 @@ type Props = {
   codexSwapBadgeText: string
   codexSwapBadgeTitle: string
   routeMode: 'follow_preferred_auto' | 'balanced_auto'
-  onRouteModeChange: (next: 'follow_preferred_auto' | 'balanced_auto') => void
+  onRouteModeChange: (next: 'follow_preferred_auto' | 'balanced_auto') => Promise<boolean>
   override: string
-  onOverrideChange: (next: string) => void
+  onOverrideChange: (next: string) => Promise<boolean>
   onPreferredChange: (next: string) => void
   onOpenConfigModal: () => void
   refreshingProviders: Record<string, boolean>
