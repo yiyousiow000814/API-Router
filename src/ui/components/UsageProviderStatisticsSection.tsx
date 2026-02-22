@@ -69,7 +69,7 @@ export function UsageProviderStatisticsSection({
       <div className="aoSwitchboardSectionHead">
         <div className="aoMiniLabel">Provider Statistics</div>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
-          <div className="aoHint">Includes tok/req, $/M tokens, est/day, and selected-window total used cost.</div>
+          <div className="aoHint">Includes tok/req, $/M tokens, est/day (16h projection), and selected-window total used cost.</div>
           <button className="aoTinyBtn" onClick={() => setUsageHistoryModalOpen(true)}>
             Daily History
           </button>

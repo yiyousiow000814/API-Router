@@ -38,6 +38,10 @@ fn list_usage_requests_for_statistics(
     store.list_usage_requests(500_000)
 }
 
+fn projection_hours_for_day_estimate() -> f64 {
+    16.0
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_usage_request_entries(
@@ -303,15 +307,6 @@ pub(crate) fn get_usage_statistics(
         (v * 1000.0).round() / 1000.0
     }
 
-    fn projection_hours_until_midnight_cap_16() -> f64 {
-        let now = Local::now();
-        let secs_since_midnight =
-            now.hour() as u64 * 3600 + now.minute() as u64 * 60 + now.second() as u64;
-        let secs_to_midnight = 24 * 3600_u64 - secs_since_midnight.min(24 * 3600_u64);
-        let hours_to_midnight = secs_to_midnight as f64 / 3600.0;
-        hours_to_midnight.clamp(0.0, 16.0)
-    }
-
     #[derive(Clone)]
     struct UsageRow {
         provider: String,
@@ -368,7 +363,7 @@ pub(crate) fn get_usage_statistics(
         24 * 60 * 60 * 1000
     };
     let active_bucket_ms = 60 * 60 * 1000;
-    let projection_hours = projection_hours_until_midnight_cap_16();
+    let projection_hours = projection_hours_for_day_estimate();
 
     let records = list_usage_requests_for_statistics(&state.gateway.store);
     let quota = state.gateway.store.list_quota_snapshots();
@@ -741,7 +736,8 @@ pub(crate) fn get_usage_statistics(
                     if let Some(v) = active_package_total {
                         estimated_daily_cost_usd = Some(v / 30.0);
                     } else if window_hours > 0 {
-                        estimated_daily_cost_usd = Some(total_used * 24.0 / window_hours as f64);
+                        estimated_daily_cost_usd =
+                            Some(total_used * projection_hours / window_hours as f64);
                     }
                     pricing_source = if scheduled_in_window > 0.0 && manual_in_window > 0.0 {
                         "manual_package_timeline+manual_history".to_string()
@@ -1131,7 +1127,7 @@ pub(crate) fn get_usage_statistics(
 
 #[cfg(test)]
 mod usage_metrics_tests {
-    use super::normalize_usage_origin;
+    use super::{normalize_usage_origin, projection_hours_for_day_estimate};
 
     #[test]
     fn normalize_usage_origin_maps_known_values() {
@@ -1144,5 +1140,10 @@ mod usage_metrics_tests {
         assert_eq!(normalize_usage_origin(None), "unknown");
         assert_eq!(normalize_usage_origin(Some("  ")), "unknown");
         assert_eq!(normalize_usage_origin(Some("linux")), "unknown");
+    }
+
+    #[test]
+    fn projection_hours_uses_fixed_16h_workday() {
+        assert_eq!(projection_hours_for_day_estimate(), 16.0);
     }
 }
