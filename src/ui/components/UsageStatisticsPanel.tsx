@@ -1274,12 +1274,17 @@ export function UsageStatisticsPanel({
     usageRequestsPagePrefetchInFlightRef.current = true
     try {
       const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-        hours: USAGE_REQUESTS_PAGE_FETCH_HOURS,
-        providers: null,
-        models: null,
-        origins: null,
-        limit,
-        offset: 0,
+        ...buildUsageRequestEntriesArgs({
+          hours: USAGE_REQUESTS_PAGE_FETCH_HOURS,
+          fromUnixMs: null,
+          toUnixMs: null,
+          providers: null,
+          models: null,
+          origins: null,
+          sessions: null,
+          limit,
+          offset: 0,
+        }),
       })
       const nextRows = res.rows ?? []
       usageRequestsPageCache = {
