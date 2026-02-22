@@ -1,6 +1,10 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useCallback, useRef } from 'react'
-import { primeUsageRequestsPrefetchCache } from '../components/UsageStatisticsPanel'
+import {
+  buildUsageRequestEntriesArgs,
+  buildUsageRequestsQueryKey,
+  primeUsageRequestsPrefetchCache,
+} from '../components/UsageStatisticsPanel'
 
 const USAGE_STATS_INTENT_PREFETCH_COOLDOWN_MS = 60_000
 const USAGE_REQUESTS_INTENT_PREFETCH_COOLDOWN_MS = 2_000
@@ -141,23 +145,31 @@ export function useTopNavIntentPrefetch({
     }
     usageRequestsIntentPrefetchAtRef.current = now
     usageRequestsIntentPrefetchInFlightRef.current = true
-    const requestQueryKey = JSON.stringify({
+    const requestQueryKey = buildUsageRequestsQueryKey({
       hours: USAGE_REQUESTS_PREFETCH_HOURS,
-      providers: [],
-      models: [],
-      origins: [],
+      fromUnixMs: null,
+      toUnixMs: null,
+      providers: null,
+      models: null,
+      origins: null,
+      sessions: null,
     })
 
     void (async () => {
       try {
         const [rowsRes, dailyRes] = await Promise.all([
           invoke<{ ok: boolean; rows: UsageRequestEntry[]; has_more: boolean }>('get_usage_request_entries', {
-            hours: USAGE_REQUESTS_PREFETCH_HOURS,
-            providers: null,
-            models: null,
-            origins: null,
-            limit: USAGE_REQUESTS_PREFETCH_LIMIT,
-            offset: 0,
+            ...buildUsageRequestEntriesArgs({
+              hours: USAGE_REQUESTS_PREFETCH_HOURS,
+              fromUnixMs: null,
+              toUnixMs: null,
+              providers: null,
+              models: null,
+              origins: null,
+              sessions: null,
+              limit: USAGE_REQUESTS_PREFETCH_LIMIT,
+              offset: 0,
+            }),
           }),
           invoke<{
             ok: boolean
