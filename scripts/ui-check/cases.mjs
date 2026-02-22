@@ -921,36 +921,57 @@ export async function runRequestsAnalyticsSwitchNoReloadCase(driver, screenshotP
     bucket.__requestsEntriesInvokeCount = 0;
 
     const now = Date.now();
-    const yesterday = now - 24 * 60 * 60 * 1000;
-    const dayAgo = yesterday - (6 * 60 * 60 * 1000);
-    const rows = Array.from({ length: 180 }, (_, idx) => ({
-      provider: idx % 2 === 0 ? 'official' : 'provider_1',
-      api_key_ref: '-',
-      model: 'gpt-5.2-codex',
-      origin: idx % 2 === 0 ? 'windows' : 'wsl2',
-      session_id: 'ui-check-session-' + String(idx + 1).padStart(3, '0'),
-      unix_ms: dayAgo - idx * 60 * 1000,
-      input_tokens: 1000 + idx,
-      output_tokens: 100 + idx,
-      total_tokens: 1100 + idx * 2,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-    }));
-    const daily = [{
-      day_start_unix_ms: new Date(yesterday).setHours(0, 0, 0, 0),
-      provider_totals: { official: 80000, provider_1: 70000 },
-      total_tokens: 150000,
-    }];
+    const TOTAL_ROWS = 34515;
+    const TODAY_ROWS = 520;
+    const rowsVirtual = Array.from({ length: TOTAL_ROWS }, (_, idx) => {
+      const inToday = idx < TODAY_ROWS;
+      const unixMs = inToday
+        ? now - idx * 45 * 1000
+        : now - 24 * 60 * 60 * 1000 - (idx - TODAY_ROWS) * 90 * 1000;
+      const provider = idx % 3 === 0 ? 'official' : idx % 3 === 1 ? 'provider_1' : 'provider_2';
+      return {
+        provider,
+        api_key_ref: '-',
+        model: 'gpt-5.2-codex',
+        origin: idx % 2 === 0 ? 'windows' : 'wsl2',
+        session_id: 'ui-check-session-' + String(idx + 1).padStart(6, '0'),
+        unix_ms: unixMs,
+        input_tokens: 1000 + (idx % 300),
+        output_tokens: 100 + (idx % 80),
+        total_tokens: 1100 + (idx % 380),
+        cache_creation_input_tokens: idx % 11 === 0 ? 60 : 0,
+        cache_read_input_tokens: idx % 7 === 0 ? 40 : 0,
+      };
+    });
+    const slicePage = (offset, limit) => {
+      const start = Math.max(0, Number(offset || 0));
+      const page = Math.max(1, Number(limit || 200));
+      const end = Math.min(rowsVirtual.length, start + page);
+      return rowsVirtual.slice(start, end);
+    };
+    const daily = [
+      {
+        day_start_unix_ms: new Date(now).setHours(0, 0, 0, 0),
+        provider_totals: { official: 120000, provider_1: 100000, provider_2: 90000 },
+        total_tokens: 310000,
+      },
+      {
+        day_start_unix_ms: new Date(now - 24 * 60 * 60 * 1000).setHours(0, 0, 0, 0),
+        provider_totals: { official: 80000, provider_1: 70000, provider_2: 65000 },
+        total_tokens: 215000,
+      },
+    ];
     const providers = [
-      { provider: 'official', total_tokens: 80000 },
-      { provider: 'provider_1', total_tokens: 70000 },
+      { provider: 'official', total_tokens: 200000 },
+      { provider: 'provider_1', total_tokens: 170000 },
+      { provider: 'provider_2', total_tokens: 155000 },
     ];
 
     if (!bucket.primeRequestsPrefetchCache || typeof bucket.primeRequestsPrefetchCache !== 'function') {
       throw new Error('primeRequestsPrefetchCache is not available on window.__ui_check__.');
     }
     bucket.primeRequestsPrefetchCache({
-      rows,
+      rows: slicePage(0, 200),
       hasMore: true,
       dailyTotals: { days: daily, providers },
     });
@@ -963,12 +984,15 @@ export async function runRequestsAnalyticsSwitchNoReloadCase(driver, screenshotP
       target[key] = function patchedInvoke(cmd, payload) {
         if (cmd === 'get_usage_request_entries') {
           bucket.__requestsEntriesInvokeCount = (bucket.__requestsEntriesInvokeCount || 0) + 1;
-          // Stretch transient UI flashes (50-100ms) so the e2e sampler can detect them reliably.
-          return new Promise((resolve, reject) => {
-            setTimeout(() => {
-              Promise.resolve(original(cmd, payload)).then(resolve).catch(reject);
-            }, 220);
-          });
+          const limit = Number(payload?.limit || 200);
+          const offset = Number(payload?.offset || 0);
+          const rows = slicePage(offset, limit);
+          const nextOffset = offset + rows.length;
+          const hasMore = nextOffset < rowsVirtual.length;
+          return Promise.resolve({ ok: true, rows, has_more: hasMore, next_offset: nextOffset });
+        }
+        if (cmd === 'get_usage_request_daily_totals') {
+          return Promise.resolve({ ok: true, days: daily, providers });
         }
         return original(cmd, payload);
       };
@@ -1096,12 +1120,13 @@ export async function runRequestsAnalyticsSwitchNoReloadCase(driver, screenshotP
       probe?.sawSingleFrameCollapse ||
       Number(probe?.invokeCount || 0) > 0 ||
       firstNonZeroRowsMs > 180 ||
-      fullRowsVisibleMs > 220
+      fullRowsVisibleMs > 220 ||
+      Number(probe?.last?.totalRows || 0) > 600
     ) {
       const b64 = await driver.takeScreenshot()
       fs.writeFileSync(screenshotPath.replace('.png', '-requests-analytics-switch-reload.png'), Buffer.from(b64, 'base64'))
       throw new Error(
-        `Requests tab switch latency/state regression (invokeCount=${probe.invokeCount}, sawLoadingHint=${probe.sawLoadingHint}, sawZeroRowsHint=${probe.sawZeroRowsHint}, sawSingleFrameCollapse=${probe.sawSingleFrameCollapse}, firstNonZeroRowsMs=${probe.firstNonZeroRowsMs}, fullRowsVisibleMs=${probe.fullRowsVisibleMs}, first=${JSON.stringify(probe.first)}, last=${JSON.stringify(probe.last)}, sampleCount=${probe.sampleCount})`,
+        `Requests tab switch latency/state regression under 34515-row dataset (invokeCount=${probe.invokeCount}, sawLoadingHint=${probe.sawLoadingHint}, sawZeroRowsHint=${probe.sawZeroRowsHint}, sawSingleFrameCollapse=${probe.sawSingleFrameCollapse}, firstNonZeroRowsMs=${probe.firstNonZeroRowsMs}, fullRowsVisibleMs=${probe.fullRowsVisibleMs}, first=${JSON.stringify(probe.first)}, last=${JSON.stringify(probe.last)}, sampleCount=${probe.sampleCount})`,
       )
     }
     console.log(

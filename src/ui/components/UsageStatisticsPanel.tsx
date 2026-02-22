@@ -671,6 +671,7 @@ export function UsageStatisticsPanel({
   const usageRequestLastActivityRef = useRef<number | null>(null)
   const usageRequestWasNearBottomRef = useRef(false)
   const usageRequestWarmupAtRef = useRef(0)
+  const usageRequestDefaultTodayAutoPageRef = useRef(false)
   const usageRequestsPagePrefetchInFlightRef = useRef(false)
   const usageRequestsPagePrefetchAtRef = useRef(0)
   const usageRequestTestFallbackEnabled = useMemo(() => readTestFlagFromLocation() || import.meta.env.DEV, [])
@@ -823,6 +824,11 @@ export function UsageStatisticsPanel({
   useEffect(() => {
     prevIsRequestsTabRef.current = isRequestsTab
   }, [isRequestsTab])
+
+  useEffect(() => {
+    if (!isRequestsTab) return
+    usageRequestDefaultTodayAutoPageRef.current = false
+  }, [isRequestsTab, requestQueryKey, requestDefaultDay])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -1491,6 +1497,7 @@ export function UsageStatisticsPanel({
   useEffect(() => {
     if (!isRequestsTab) return
     if (hasExplicitTimeFilter) return
+    if (!hasExplicitRequestFilters) return
     if (usageRequestLoading || !usageRequestHasMore || !usageRequestRows.length) return
     const loadedDays = new Set<number>()
     for (const row of usageRequestRows) loadedDays.add(startOfDayUnixMs(row.unix_ms))
@@ -1812,7 +1819,9 @@ export function UsageStatisticsPanel({
       void refreshUsageRequests(initialRefreshLimit)
       return
     }
-    // Keep existing table rows and continue paging forward instead of resetting from offset 0.
+    if (usageRequestDefaultTodayAutoPageRef.current) return
+    usageRequestDefaultTodayAutoPageRef.current = true
+    // At most one automatic extra page in default-today mode; avoid repeated 200-row paging loops.
     void loadMoreUsageRequests()
   }, [
     defaultTodayOnly,
