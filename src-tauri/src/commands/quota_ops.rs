@@ -312,23 +312,17 @@ pub(crate) fn set_provider_quota_hard_cap_field(
     if !state.gateway.cfg.read().providers.contains_key(&provider) {
         return Err(format!("unknown provider: {provider}"));
     }
-    let mut hard_cap = state.secrets.get_provider_quota_hard_cap(&provider);
-    match field.trim().to_ascii_lowercase().as_str() {
-        "daily" => hard_cap.daily = enabled,
-        "weekly" => hard_cap.weekly = enabled,
-        "monthly" => hard_cap.monthly = enabled,
-        _ => return Err("field must be one of: daily, weekly, monthly".to_string()),
-    }
-    state
+    let normalized_field = field.trim().to_ascii_lowercase();
+    let hard_cap = state
         .secrets
-        .set_provider_quota_hard_cap(&provider, hard_cap)?;
+        .set_provider_quota_hard_cap_field(&provider, normalized_field.as_str(), enabled)?;
     state.gateway.store.add_event(
         &provider,
         "info",
         "config.provider_quota_hard_cap_updated",
         "provider quota hard cap updated",
         serde_json::json!({
-            "field": field,
+            "field": normalized_field,
             "enabled": enabled,
             "daily": hard_cap.daily,
             "weekly": hard_cap.weekly,

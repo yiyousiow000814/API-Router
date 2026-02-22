@@ -92,6 +92,25 @@ pub struct SecretStore {
 const GATEWAY_TOKEN_KEY: &str = "__gateway_token__";
 
 impl SecretStore {
+    fn apply_provider_quota_hard_cap(
+        data: &mut SecretsFile,
+        provider: &str,
+        hard_cap: ProviderQuotaHardCapConfig,
+    ) {
+        if hard_cap == ProviderQuotaHardCapConfig::default() {
+            data.provider_quota_hard_cap.remove(provider);
+        } else {
+            data.provider_quota_hard_cap.insert(
+                provider.to_string(),
+                ProviderQuotaHardCapOverride {
+                    daily: hard_cap.daily,
+                    weekly: hard_cap.weekly,
+                    monthly: hard_cap.monthly,
+                },
+            );
+        }
+    }
+
     pub fn new(path: PathBuf) -> Self {
         let inner = Self::load_from_disk(&path).unwrap_or_default();
         Self {
@@ -204,19 +223,34 @@ impl SecretStore {
         let mut data = self.inner.lock();
         // Canonical storage invariant: all-true means "no override", so we
         // remove the row and let readers fall back to ProviderQuotaHardCapConfig::default().
-        if hard_cap == ProviderQuotaHardCapConfig::default() {
-            data.provider_quota_hard_cap.remove(provider);
-        } else {
-            data.provider_quota_hard_cap.insert(
-                provider.to_string(),
-                ProviderQuotaHardCapOverride {
-                    daily: hard_cap.daily,
-                    weekly: hard_cap.weekly,
-                    monthly: hard_cap.monthly,
-                },
-            );
-        }
+        Self::apply_provider_quota_hard_cap(&mut data, provider, hard_cap);
         self.persist(&data)
+    }
+
+    pub fn set_provider_quota_hard_cap_field(
+        &self,
+        provider: &str,
+        field: &str,
+        enabled: bool,
+    ) -> Result<ProviderQuotaHardCapConfig, String> {
+        let mut data = self.inner.lock();
+        let mut hard_cap = data
+            .provider_quota_hard_cap
+            .get(provider)
+            .map(|v| ProviderQuotaHardCapConfig {
+                daily: v.daily,
+                weekly: v.weekly,
+                monthly: v.monthly,
+            })
+            .unwrap_or_default();
+        match field {
+            "daily" => hard_cap.daily = enabled,
+            "weekly" => hard_cap.weekly = enabled,
+            "monthly" => hard_cap.monthly = enabled,
+            _ => return Err("field must be one of: daily, weekly, monthly".to_string()),
+        }
+        Self::apply_provider_quota_hard_cap(&mut data, provider, hard_cap);
+        self.persist(&data).map(|_| hard_cap)
     }
 
     pub fn clear_provider_quota_hard_cap(&self, provider: &str) -> Result<(), String> {

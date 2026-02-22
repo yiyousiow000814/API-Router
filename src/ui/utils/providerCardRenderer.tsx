@@ -55,6 +55,8 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
       },
     ].filter((window) => window.visible)
     const budgetHardCapLabel = budgetHardCapWindows.map(({ key }) => key).join('/')
+    const allVisibleHardCapsDisabled =
+      budgetHardCapWindows.length > 0 && budgetHardCapWindows.every(({ key }) => !quotaHardCap[key])
     const activeProviderCount = Object.values(options.config?.providers ?? {}).filter((provider) => !provider.disabled).length
     const canDeactivate = p.disabled || activeProviderCount > 1
     const isDragOver = options.dragOverProvider === name
@@ -251,11 +253,11 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   <div className="aoUsageHardCapGrid">
                     {budgetHardCapWindows.map(({ key: period }) => (
                       <label key={period} className="aoUsageHardCapItem">
-                      <input
-                        type="checkbox"
-                        checked={quotaHardCap[period]}
-                        onChange={(event) => void options.setProviderQuotaHardCap(name, period, event.target.checked)}
-                      />
+                        <input
+                          type="checkbox"
+                          checked={quotaHardCap[period]}
+                          onChange={(event) => void options.setProviderQuotaHardCap(name, period, event.target.checked)}
+                        />
                         <span>{period} hard cap</span>
                       </label>
                     ))}
@@ -267,6 +269,11 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 ) : (
                   <div className="aoHint">No budget windows detected for this provider, so hard cap toggles are hidden.</div>
                 )}
+                {allVisibleHardCapsDisabled ? (
+                  <div className="aoHint" style={{ color: 'rgba(145, 12, 43, 0.92)' }}>
+                    All visible hard caps are disabled, so this provider will not auto-close on budget exhaustion.
+                  </div>
+                ) : null}
                 <div className="aoHint">
                   updated:{' '}
                   {options.status?.quota?.[name]?.updated_at_unix_ms
