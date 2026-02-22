@@ -227,7 +227,7 @@
   }
 }
 .aoModalWide {
-  width: min(980px, 92vw);
+  width: min(1120px, 96vw);
   max-height: min(80vh, 860px);
   display: flex;
   flex-direction: column;

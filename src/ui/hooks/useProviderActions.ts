@@ -48,6 +48,7 @@ export function useProviderActions({
     refreshQuotaAll,
     saveUsageBaseUrl,
     clearUsageBaseUrl,
+    setProviderQuotaHardCap,
     openUsageBaseModal,
   } = useProviderUsageActions({
     status,
@@ -70,6 +71,7 @@ export function useProviderActions({
     refreshQuotaAll,
     saveUsageBaseUrl,
     clearUsageBaseUrl,
+    setProviderQuotaHardCap,
     openKeyModal,
     openUsageBaseModal,
     addProvider,

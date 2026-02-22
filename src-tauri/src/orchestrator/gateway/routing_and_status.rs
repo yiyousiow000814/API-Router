@@ -2,7 +2,11 @@ async fn health() -> impl IntoResponse {
     Json(json!({"ok": true}))
 }
 
-pub(crate) fn provider_has_remaining_quota(quota_snapshots: &Value, provider: &str) -> bool {
+pub(crate) fn provider_has_remaining_quota_with_hard_cap(
+    quota_snapshots: &Value,
+    provider: &str,
+    hard_cap: &crate::orchestrator::secrets::ProviderQuotaHardCapConfig,
+) -> bool {
     let Some(snap) = quota_snapshots.get(provider) else {
         return true;
     };
@@ -11,19 +15,25 @@ pub(crate) fn provider_has_remaining_quota(quota_snapshots: &Value, provider: &s
     // provider is closed regardless of token-style remaining fields.
     let budget_pairs = [
         (
+            hard_cap.daily,
             snap.get("daily_spent_usd").and_then(|v| v.as_f64()),
             snap.get("daily_budget_usd").and_then(|v| v.as_f64()),
         ),
         (
+            hard_cap.weekly,
             snap.get("weekly_spent_usd").and_then(|v| v.as_f64()),
             snap.get("weekly_budget_usd").and_then(|v| v.as_f64()),
         ),
         (
+            hard_cap.monthly,
             snap.get("monthly_spent_usd").and_then(|v| v.as_f64()),
             snap.get("monthly_budget_usd").and_then(|v| v.as_f64()),
         ),
     ];
-    for (spent, budget) in budget_pairs {
+    for (enabled, spent, budget) in budget_pairs {
+        if !enabled {
+            continue;
+        }
         if let (Some(spent), Some(budget)) = (spent, budget) {
             if budget <= 0.0 || spent >= budget {
                 return false;
@@ -44,7 +54,11 @@ pub(crate) fn provider_has_remaining_quota(quota_snapshots: &Value, provider: &s
     true
 }
 
-pub(crate) fn quota_snapshot_confirms_available(quota_snapshots: &Value, provider: &str) -> bool {
+pub(crate) fn quota_snapshot_confirms_available(
+    quota_snapshots: &Value,
+    provider: &str,
+    hard_cap: &crate::orchestrator::secrets::ProviderQuotaHardCapConfig,
+) -> bool {
     let Some(snap) = quota_snapshots.get(provider) else {
         return false;
     };
@@ -58,7 +72,7 @@ pub(crate) fn quota_snapshot_confirms_available(quota_snapshots: &Value, provide
         .unwrap_or("");
     updated_at_unix_ms > 0
         && last_error.trim().is_empty()
-        && provider_has_remaining_quota(quota_snapshots, provider)
+        && provider_has_remaining_quota_with_hard_cap(quota_snapshots, provider, hard_cap)
 }
 
 fn provider_is_routable_for_selection(
@@ -67,8 +81,9 @@ fn provider_is_routable_for_selection(
     quota_snapshots: &Value,
     provider: &str,
 ) -> bool {
+    let hard_cap = st.secrets.get_provider_quota_hard_cap(provider);
     if st.router.is_waiting_usage_confirmation(provider) {
-        if quota_snapshot_confirms_available(quota_snapshots, provider) {
+        if quota_snapshot_confirms_available(quota_snapshots, provider, &hard_cap) {
             st.router.clear_usage_confirmation_requirement(provider);
         } else {
             return false;
@@ -78,7 +93,7 @@ fn provider_is_routable_for_selection(
         .get(provider)
         .is_some_and(|provider_cfg| !provider_cfg.disabled)
         && st.router.is_provider_routable(provider)
-        && provider_has_remaining_quota(quota_snapshots, provider)
+        && provider_has_remaining_quota_with_hard_cap(quota_snapshots, provider, &hard_cap)
 }
 
 fn fallback_with_quota(
@@ -493,7 +508,8 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let metrics = st.store.get_metrics();
     let quota = st.store.list_quota_snapshots();
     for (provider_name, snapshot) in providers.iter_mut() {
-        if !provider_has_remaining_quota(&quota, provider_name) {
+        let hard_cap = st.secrets.get_provider_quota_hard_cap(provider_name);
+        if !provider_has_remaining_quota_with_hard_cap(&quota, provider_name, &hard_cap) {
             snapshot.status = "closed".to_string();
             snapshot.cooldown_until_unix_ms = 0;
         }

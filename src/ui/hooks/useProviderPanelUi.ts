@@ -30,6 +30,10 @@ type Params = {
   clearKey: (provider: string) => Promise<void>
   openUsageBaseModal: (provider: string, current: string | null | undefined) => Promise<void>
   clearUsageBaseUrl: (provider: string) => Promise<void>
+  setProviderQuotaHardCap: (
+    provider: string,
+    hardCap: { daily: boolean; weekly: boolean; monthly: boolean },
+  ) => Promise<void>
   editingProviderName: string | null
 }
 
@@ -60,6 +64,7 @@ export function useProviderPanelUi(params: Params) {
     clearKey,
     openUsageBaseModal,
     clearUsageBaseUrl,
+    setProviderQuotaHardCap,
     editingProviderName,
   } = params
 
@@ -136,6 +141,7 @@ export function useProviderPanelUi(params: Params) {
         clearKey,
         openUsageBaseModal,
         clearUsageBaseUrl,
+        setProviderQuotaHardCap,
         isProviderOpen,
         toggleProviderOpen,
         beginRenameProvider: beginRename,
@@ -162,6 +168,7 @@ export function useProviderPanelUi(params: Params) {
       clearKey,
       openUsageBaseModal,
       clearUsageBaseUrl,
+      setProviderQuotaHardCap,
       isProviderOpen,
       toggleProviderOpen,
       beginRename,

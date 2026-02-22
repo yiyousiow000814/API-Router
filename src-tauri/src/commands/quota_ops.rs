@@ -270,6 +270,39 @@ pub(crate) fn clear_usage_base_url(
 }
 
 #[tauri::command]
+pub(crate) fn set_provider_quota_hard_cap(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    daily: bool,
+    weekly: bool,
+    monthly: bool,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig {
+        daily,
+        weekly,
+        monthly,
+    };
+    state
+        .secrets
+        .set_provider_quota_hard_cap(&provider, hard_cap)?;
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        "config.provider_quota_hard_cap_updated",
+        "provider quota hard cap updated",
+        serde_json::json!({
+            "daily": daily,
+            "weekly": weekly,
+            "monthly": monthly,
+        }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) fn set_provider_manual_pricing(
     state: tauri::State<'_, app_state::AppState>,
     provider: String,

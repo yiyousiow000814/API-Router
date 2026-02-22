@@ -49,6 +49,10 @@ export type UseProviderActionsResult = {
   refreshQuotaAll: (opts?: RefreshQuotaOptions) => Promise<void>
   saveUsageBaseUrl: () => Promise<void>
   clearUsageBaseUrl: (name: string) => Promise<void>
+  setProviderQuotaHardCap: (
+    provider: string,
+    hardCap: { daily: boolean; weekly: boolean; monthly: boolean },
+  ) => Promise<void>
   openKeyModal: (provider: string) => Promise<void>
   openUsageBaseModal: (provider: string, current: string | null | undefined) => Promise<void>
   addProvider: () => Promise<void>

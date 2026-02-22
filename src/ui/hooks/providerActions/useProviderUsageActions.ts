@@ -99,6 +99,28 @@ export function useProviderUsageActions({
     [flashToast, refreshConfig, refreshStatus],
   )
 
+  const setProviderQuotaHardCap = useCallback(
+    async (
+      provider: string,
+      hardCap: { daily: boolean; weekly: boolean; monthly: boolean },
+    ) => {
+      try {
+        await invoke('set_provider_quota_hard_cap', {
+          provider,
+          daily: hardCap.daily,
+          weekly: hardCap.weekly,
+          monthly: hardCap.monthly,
+        })
+        flashToast(`Hard cap updated: ${provider}`)
+        await refreshConfig()
+        await refreshStatus()
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+    },
+    [flashToast, refreshConfig, refreshStatus],
+  )
+
   const openUsageBaseModal = useCallback(
     async (provider: string, current: string | null | undefined) => {
       const explicit = (current ?? '').trim()
@@ -133,6 +155,7 @@ export function useProviderUsageActions({
     refreshQuotaAll,
     saveUsageBaseUrl,
     clearUsageBaseUrl,
+    setProviderQuotaHardCap,
     openUsageBaseModal,
   }
 }

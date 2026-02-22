@@ -123,6 +123,11 @@ export type Config = {
       base_url: string
       usage_adapter?: string
       usage_base_url?: string | null
+      quota_hard_cap?: {
+        daily: boolean
+        weekly: boolean
+        monthly: boolean
+      }
       disabled?: boolean
       manual_pricing_mode?: 'per_request' | 'package_total' | null
       manual_pricing_amount_usd?: number | null

@@ -15,6 +15,8 @@ struct SecretsFile {
     usage_tokens: BTreeMap<String, String>,
     #[serde(default)]
     provider_pricing: BTreeMap<String, ProviderPricingOverride>,
+    #[serde(default)]
+    provider_quota_hard_cap: BTreeMap<String, ProviderQuotaHardCapOverride>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +29,37 @@ struct ProviderPricingOverride {
     gap_fill_mode: Option<String>,
     #[serde(default)]
     gap_fill_amount_usd: Option<f64>,
+}
+
+fn default_hard_cap_enabled() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct ProviderQuotaHardCapOverride {
+    #[serde(default = "default_hard_cap_enabled")]
+    daily: bool,
+    #[serde(default = "default_hard_cap_enabled")]
+    weekly: bool,
+    #[serde(default = "default_hard_cap_enabled")]
+    monthly: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderQuotaHardCapConfig {
+    pub daily: bool,
+    pub weekly: bool,
+    pub monthly: bool,
+}
+
+impl Default for ProviderQuotaHardCapConfig {
+    fn default() -> Self {
+        Self {
+            daily: true,
+            weekly: true,
+            monthly: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +161,65 @@ impl SecretStore {
         if let Some(v) = data.provider_pricing.remove(old) {
             data.provider_pricing.insert(new.to_string(), v);
         }
+        if let Some(v) = data.provider_quota_hard_cap.remove(old) {
+            data.provider_quota_hard_cap.insert(new.to_string(), v);
+        }
+        self.persist(&data)
+    }
+
+    pub fn get_provider_quota_hard_cap(&self, provider: &str) -> ProviderQuotaHardCapConfig {
+        let data = self.inner.lock();
+        data.provider_quota_hard_cap
+            .get(provider)
+            .map(|v| ProviderQuotaHardCapConfig {
+                daily: v.daily,
+                weekly: v.weekly,
+                monthly: v.monthly,
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn list_provider_quota_hard_cap(&self) -> BTreeMap<String, ProviderQuotaHardCapConfig> {
+        let data = self.inner.lock();
+        data.provider_quota_hard_cap
+            .iter()
+            .map(|(provider, value)| {
+                (
+                    provider.clone(),
+                    ProviderQuotaHardCapConfig {
+                        daily: value.daily,
+                        weekly: value.weekly,
+                        monthly: value.monthly,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub fn set_provider_quota_hard_cap(
+        &self,
+        provider: &str,
+        hard_cap: ProviderQuotaHardCapConfig,
+    ) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        if hard_cap == ProviderQuotaHardCapConfig::default() {
+            data.provider_quota_hard_cap.remove(provider);
+        } else {
+            data.provider_quota_hard_cap.insert(
+                provider.to_string(),
+                ProviderQuotaHardCapOverride {
+                    daily: hard_cap.daily,
+                    weekly: hard_cap.weekly,
+                    monthly: hard_cap.monthly,
+                },
+            );
+        }
+        self.persist(&data)
+    }
+
+    pub fn clear_provider_quota_hard_cap(&self, provider: &str) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        data.provider_quota_hard_cap.remove(provider);
         self.persist(&data)
     }
 

@@ -787,6 +787,35 @@
   gap: 6px;
 }
 
+.aoUsageHardCapGrid {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 14px;
+  margin-top: 8px;
+  margin-bottom: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.aoUsageHardCapItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.82);
+  white-space: nowrap;
+}
+
+.aoUsageHardCapItem input {
+  margin: 0;
+}
+
+.aoUsageHardCapGrid::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 .aoTinyBtn {
   height: 24px;
   border-radius: 999px;
