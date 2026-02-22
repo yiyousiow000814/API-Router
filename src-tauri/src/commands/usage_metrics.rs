@@ -135,6 +135,7 @@ pub(crate) fn get_usage_request_entries(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn get_usage_request_summary(
     state: tauri::State<'_, app_state::AppState>,
     hours: Option<u64>,

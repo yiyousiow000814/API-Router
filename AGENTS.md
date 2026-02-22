@@ -18,6 +18,7 @@
 - **PR summary scope**: Titles and bodies must describe the overall changes relative to `main`, not just the latest commit.
 - **Resolve review threads**: After addressing review comments, resolve the corresponding review conversations (click "Resolve conversation").
 - **Format before commit**: Ensure formatting checks pass before committing.
+- **Pre-commit/push gate (required)**: Before every `git commit` and `git push`, run `npm run check:ci-local` (or at minimum run `cargo fmt --manifest-path src-tauri/Cargo.toml --check` and `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`). Do not commit/push when these fail.
 - **PowerShell gotcha**: When using `gh pr create` / `gh pr edit` in PowerShell, avoid Markdown inline code using backticks (PowerShell uses backtick as an escape). Prefer plain text, single-quoted strings, or a here-string (`@' ... '@`).
 
 ## Safety & Data Handling

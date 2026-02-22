@@ -1496,6 +1496,7 @@ impl Store {
         (out, has_more)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn summarize_usage_requests(
         &self,
         since_unix_ms: u64,

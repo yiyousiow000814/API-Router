@@ -49,6 +49,14 @@ type UsageRequestSummaryResponse = {
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
 }
+type UsageRequestTableSummary = {
+  requests: number
+  input: number
+  output: number
+  total: number
+  cacheCreate: number
+  cacheRead: number
+}
 type UsageRequestDailyTotalsResponse = {
   ok: boolean
   days: Array<{
@@ -346,6 +354,38 @@ function primeUsageRequestGraphCacheFromBaseRows(baseRows: UsageRequestEntry[]) 
     baseRows,
     rowsByProvider: mergedRowsByProvider,
   }
+}
+
+export function resolveRequestTableSummary(input: {
+  usageRequestSummary: UsageRequestSummaryResponse | null
+  displayedRows: UsageRequestEntry[]
+  hasMore: boolean
+}): UsageRequestTableSummary | null {
+  if (input.usageRequestSummary?.ok) {
+    return {
+      requests: input.usageRequestSummary.requests ?? 0,
+      input: input.usageRequestSummary.input_tokens ?? 0,
+      output: input.usageRequestSummary.output_tokens ?? 0,
+      total: input.usageRequestSummary.total_tokens ?? 0,
+      cacheCreate: input.usageRequestSummary.cache_creation_input_tokens ?? 0,
+      cacheRead: input.usageRequestSummary.cache_read_input_tokens ?? 0,
+    }
+  }
+  // Avoid showing partial totals from the first page when backend summary is unavailable.
+  if (input.hasMore) return null
+  const requests = input.displayedRows.length
+  const totals = input.displayedRows.reduce(
+    (acc, row) => {
+      acc.input += row.input_tokens
+      acc.output += row.output_tokens
+      acc.total += row.total_tokens
+      acc.cacheCreate += row.cache_creation_input_tokens
+      acc.cacheRead += row.cache_read_input_tokens
+      return acc
+    },
+    { input: 0, output: 0, total: 0, cacheCreate: 0, cacheRead: 0 },
+  )
+  return { requests, ...totals }
 }
 
 export function primeUsageRequestsPrefetchCache(payload: {
@@ -2116,31 +2156,19 @@ export function UsageStatisticsPanel({
       }
     })
   }, [timePickerMonthStartMs])
-  const requestTableSummary = useMemo(() => {
-    if (usageRequestSummary?.ok) {
-      return {
-        requests: usageRequestSummary.requests ?? 0,
-        input: usageRequestSummary.input_tokens ?? 0,
-        output: usageRequestSummary.output_tokens ?? 0,
-        total: usageRequestSummary.total_tokens ?? 0,
-        cacheCreate: usageRequestSummary.cache_creation_input_tokens ?? 0,
-        cacheRead: usageRequestSummary.cache_read_input_tokens ?? 0,
-      }
-    }
-    const requests = displayedFilteredUsageRequestRows.length
-    const totals = displayedFilteredUsageRequestRows.reduce(
-      (acc, row) => {
-        acc.input += row.input_tokens
-        acc.output += row.output_tokens
-        acc.total += row.total_tokens
-        acc.cacheCreate += row.cache_creation_input_tokens
-        acc.cacheRead += row.cache_read_input_tokens
-        return acc
-      },
-      { input: 0, output: 0, total: 0, cacheCreate: 0, cacheRead: 0 },
-    )
-    return { requests, ...totals }
-  }, [displayedFilteredUsageRequestRows, usageRequestSummary])
+  const requestTableSummary = useMemo(
+    () =>
+      resolveRequestTableSummary({
+        usageRequestSummary,
+        displayedRows: displayedFilteredUsageRequestRows,
+        hasMore: usageRequestHasMore,
+      }),
+    [displayedFilteredUsageRequestRows, usageRequestHasMore, usageRequestSummary],
+  )
+  const formatRequestSummaryValue = useCallback((value: number | null | undefined) => {
+    if (value == null) return '-'
+    return value.toLocaleString()
+  }, [])
   const filteredSelectionCount = useCallback((selectedCount: number, totalCount: number) => {
     if (selectedCount <= 0) return 0
     if (totalCount <= 0) return selectedCount
@@ -2858,14 +2886,14 @@ export function UsageStatisticsPanel({
                 <tbody>
                   <tr>
                     <td>{hasExplicitRequestFilters ? 'Filtered' : 'Today'} Summary</td>
-                    <td>Total {requestTableSummary.total.toLocaleString()}</td>
-                    <td>Requests {requestTableSummary.requests.toLocaleString()}</td>
+                    <td>Total {formatRequestSummaryValue(requestTableSummary?.total)}</td>
+                    <td>Requests {formatRequestSummaryValue(requestTableSummary?.requests)}</td>
                     <td />
                     <td />
-                    <td>{requestTableSummary.input.toLocaleString()}</td>
-                    <td>{requestTableSummary.output.toLocaleString()}</td>
-                    <td>{requestTableSummary.cacheCreate.toLocaleString()}</td>
-                    <td>{requestTableSummary.cacheRead.toLocaleString()}</td>
+                    <td>{formatRequestSummaryValue(requestTableSummary?.input)}</td>
+                    <td>{formatRequestSummaryValue(requestTableSummary?.output)}</td>
+                    <td>{formatRequestSummaryValue(requestTableSummary?.cacheCreate)}</td>
+                    <td>{formatRequestSummaryValue(requestTableSummary?.cacheRead)}</td>
                   </tr>
                 </tbody>
               </table>
