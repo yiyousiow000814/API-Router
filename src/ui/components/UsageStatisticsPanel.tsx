@@ -871,6 +871,7 @@ export function UsageStatisticsPanel({
   const [usageRequestsCachePrimedTick, setUsageRequestsCachePrimedTick] = useState(0)
   const usageRequestRefreshInFlightRef = useRef(false)
   const usageRequestGraphRefreshInFlightRef = useRef(false)
+  const usageRequestGraphRefreshPendingRef = useRef(false)
   const usageRequestGraphLastRefreshAtRef = useRef(0)
   const usageRequestFetchSeqRef = useRef(0)
   const usageRequestSummaryFetchSeqRef = useRef(0)
@@ -1014,8 +1015,8 @@ export function UsageStatisticsPanel({
   const effectiveDetailsTab = forceDetailsTab ?? 'requests'
   const isRequestsTab = effectiveDetailsTab === 'requests'
   const isAnalyticsTab = effectiveDetailsTab === 'analytics'
-  const prevIsRequestsTabRef = useRef(isRequestsTab)
-  const justEnteredRequestsTab = isRequestsTab && !prevIsRequestsTabRef.current
+  const requestsTabSeenRef = useRef(false)
+  const justEnteredRequestsTab = isRequestsTab && !requestsTabSeenRef.current
   const shouldPrepareRequestsData = isRequestsTab
   const isRequestsOnlyPage = effectiveDetailsTab === 'requests' && !showFilters
   const cachedRequestsPage =
@@ -1064,7 +1065,7 @@ export function UsageStatisticsPanel({
   )
 
   useEffect(() => {
-    prevIsRequestsTabRef.current = isRequestsTab
+    requestsTabSeenRef.current = isRequestsTab
   }, [isRequestsTab])
 
   useEffect(() => {
@@ -1372,7 +1373,10 @@ export function UsageStatisticsPanel({
     }
   }, [usageRequestTestFallbackEnabled, usageRequestTestRows])
   const refreshUsageRequestGraphRows = useCallback(async () => {
-    if (usageRequestGraphRefreshInFlightRef.current) return
+    if (usageRequestGraphRefreshInFlightRef.current) {
+      usageRequestGraphRefreshPendingRef.current = true
+      return
+    }
     usageRequestGraphRefreshInFlightRef.current = true
     const requestSeq = usageRequestGraphBaseFetchSeqRef.current + 1
     usageRequestGraphBaseFetchSeqRef.current = requestSeq
@@ -1525,6 +1529,10 @@ export function UsageStatisticsPanel({
       usageRequestGraphLastRefreshAtRef.current = Date.now()
     } finally {
       usageRequestGraphRefreshInFlightRef.current = false
+      if (usageRequestGraphRefreshPendingRef.current) {
+        usageRequestGraphRefreshPendingRef.current = false
+        void refreshUsageRequestGraphRows()
+      }
     }
   }, [
     requestGraphQueryKey,
@@ -1536,6 +1544,10 @@ export function UsageStatisticsPanel({
     usageRequestTestFallbackEnabled,
     usageRequestTestRows,
   ])
+  useEffect(() => {
+    if (!justEnteredRequestsTab) return
+    void refreshUsageRequestGraphRows()
+  }, [justEnteredRequestsTab, refreshUsageRequestGraphRows])
   const refreshUsageRequestDailyTotals = useCallback(async () => {
     const requestSeq = usageRequestDailyTotalsFetchSeqRef.current + 1
     usageRequestDailyTotalsFetchSeqRef.current = requestSeq
@@ -1680,11 +1692,30 @@ export function UsageStatisticsPanel({
       usageRequestsPageCache = null
     }
     const cachedGraphProviderCount = cachedGraph != null ? Object.keys(cachedGraph.rowsByProvider).length : 0
+    const graphBaseCandidate =
+      cachedGraph?.baseRows?.length
+        ? cachedGraph.baseRows
+        : requestPageCached?.rows?.length
+          ? requestPageCached.rows
+          : usageRequestRows
+    const expectedGraphProviders = pickUsageRequestDisplayProviders({
+      selectedProviders: usageRequestMultiFilters.provider,
+      graphProviders: listTopUsageProvidersFromRows(graphBaseCandidate),
+      dailyProviders: usageRequestDailyTotalsProviders.map((row) => row.provider),
+      analyticsProviders: usageByProvider.map((row) => row.provider),
+      limit: Math.min(3, USAGE_REQUEST_GRAPH_COLORS.length),
+    })
+    const visibleGraphProviderCount = Math.max(usageRequestGraphProviderCount, cachedGraphProviderCount)
+    const graphProvidersIncomplete =
+      expectedGraphProviders.length > 0 && visibleGraphProviderCount < expectedGraphProviders.length
     const graphSnapshotReady =
       (usageRequestGraphBaseRows.length > 0 && usageRequestGraphProviderCount > 0) || cachedGraphProviderCount > 0
     if (isRequestsTab) {
       if (hasUsableRequestPageCache) {
+        const forceGraphRefreshOnEntry = justEnteredRequestsTab
         if (
+          forceGraphRefreshOnEntry ||
+          graphProvidersIncomplete ||
           !graphSnapshotReady ||
           Date.now() - usageRequestGraphLastRefreshAtRef.current > USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS
         ) {
@@ -1707,6 +1738,7 @@ export function UsageStatisticsPanel({
         return
       }
       if (
+        graphProvidersIncomplete ||
         !graphSnapshotReady ||
         Date.now() - usageRequestGraphLastRefreshAtRef.current > USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS
       ) {
@@ -1720,12 +1752,16 @@ export function UsageStatisticsPanel({
     hasStrictRequestQuery,
     isAnalyticsTab,
     isRequestsTab,
+    justEnteredRequestsTab,
     mergeLatestUsageRequests,
     requestQueryKey,
     requestGraphQueryKey,
     usageRequestRows,
     usageRequestGraphBaseRows.length,
     usageRequestGraphProviderCount,
+    usageRequestDailyTotalsProviders,
+    usageRequestMultiFilters.provider,
+    usageByProvider,
     refreshUsageRequestGraphRows,
     refreshUsageRequests,
     usageRequestRows.length,

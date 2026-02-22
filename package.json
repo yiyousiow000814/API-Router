@@ -19,6 +19,7 @@
     "check:all": "npm run test && npm run check:line-endings && npm run backend:check && npm run ui:check",
     "build:root-exe:checked": "node scripts/run-ui-tauri-if-windows.mjs && npm run build:root-exe",
     "ui:e2e:requests-reload": "node scripts/tauri-e2e-requests-reload.mjs",
+    "ui:e2e:requests-graph-hydration": "node scripts/tauri-e2e-requests-graph-hydration.mjs",
     "test": "npm run check:gateway-provider-id && vitest run"
   },
   "devDependencies": {

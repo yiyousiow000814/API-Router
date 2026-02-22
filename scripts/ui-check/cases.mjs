@@ -918,6 +918,7 @@ export async function runRequestsAnalyticsSwitchNoReloadCase(driver, screenshotP
   await driver.executeScript(`
     const globalObj = window;
     const bucket = (globalObj.__ui_check__ = globalObj.__ui_check__ || {});
+    bucket.__graphHydrationInvokes = [];
     bucket.__requestsEntriesInvokeCount = 0;
 
     const now = Date.now();
@@ -1141,6 +1142,159 @@ export async function runRequestsAnalyticsSwitchNoReloadCase(driver, screenshotP
         if (typeof original === 'function') target[key] = original;
         target.__uiCheckRequestsInvokePatched = false;
         target.__uiCheckRequestsOriginalInvoke = undefined;
+      };
+      restore(globalObj.__TAURI_INTERNALS__, 'invoke');
+      restore(globalObj.__TAURI__ && globalObj.__TAURI__.core, 'invoke');
+    `)
+  }
+}
+
+export async function runRequestsGraphProviderHydrationCase(driver, screenshotPath) {
+  await driver.executeScript(`
+    const globalObj = window;
+    const bucket = (globalObj.__ui_check__ = globalObj.__ui_check__ || {});
+    const now = Date.now();
+    const providers = ['official', 'provider_1', 'provider_2'];
+    const mkRow = (provider, idx) => ({
+      provider,
+      api_key_ref: '-',
+      model: 'gpt-5.2-codex',
+      origin: idx % 2 === 0 ? 'windows' : 'wsl2',
+      session_id: 'ui-graph-' + provider + '-' + String(idx).padStart(4, '0'),
+      unix_ms: now - idx * 45 * 1000,
+      input_tokens: 100000 + ((idx * 67) % 90000),
+      output_tokens: 1000 + ((idx * 29) % 5000),
+      total_tokens: 110000 + ((idx * 97) % 95000),
+      cache_creation_input_tokens: idx % 8 === 0 ? 1200 : 0,
+      cache_read_input_tokens: idx % 5 === 0 ? 900 : 0,
+    });
+    const rowsByProvider = Object.fromEntries(
+      providers.map((provider, pIdx) => [
+        provider,
+        Array.from({ length: 120 }, (_, idx) => mkRow(provider, idx + pIdx * 3)).sort((a, b) => b.unix_ms - a.unix_ms),
+      ]),
+    );
+    const seedRows = rowsByProvider['provider_2'].slice(0, 120);
+    const dayStart = new Date(now).setHours(0, 0, 0, 0);
+    const daily = [
+      {
+        day_start_unix_ms: dayStart,
+        provider_totals: { official: 220000, provider_1: 200000, provider_2: 180000 },
+        total_tokens: 600000,
+      },
+    ];
+    const dailyProviders = [
+      { provider: 'official', total_tokens: 220000 },
+      { provider: 'provider_1', total_tokens: 200000 },
+      { provider: 'provider_2', total_tokens: 180000 },
+    ];
+
+    if (!bucket.primeRequestsPrefetchCache || typeof bucket.primeRequestsPrefetchCache !== 'function') {
+      throw new Error('primeRequestsPrefetchCache is not available on window.__ui_check__.');
+    }
+    bucket.primeRequestsPrefetchCache({
+      rows: seedRows,
+      hasMore: true,
+      dailyTotals: { days: daily, providers: dailyProviders },
+    });
+
+    const patchInvoke = (target, key) => {
+      if (!target || typeof target[key] !== 'function') return;
+      if (target.__uiCheckGraphHydrationPatched) return;
+      const original = target[key].bind(target);
+      target.__uiCheckGraphHydrationOriginalInvoke = original;
+      target[key] = function patchedInvoke(cmd, payload) {
+        if (cmd === 'get_usage_request_entries') {
+          bucket.__graphHydrationInvokes.push({
+            providers: Array.isArray(payload?.providers) ? payload.providers.slice() : null,
+            fromUnixMs: payload?.fromUnixMs ?? null,
+            toUnixMs: payload?.toUnixMs ?? null,
+            limit: payload?.limit ?? null,
+          });
+        }
+        if (cmd === 'get_usage_request_daily_totals') {
+          return Promise.resolve({ ok: true, days: daily, providers: dailyProviders });
+        }
+        if (cmd === 'get_usage_request_entries') {
+          const reqProviders = Array.isArray(payload?.providers) ? payload.providers : null;
+          if (reqProviders && reqProviders.length === 1) {
+            const provider = String(reqProviders[0]);
+            const rows = rowsByProvider[provider] || [];
+            const delay = provider === 'provider_2' ? 600 : 120;
+            return new Promise((resolve) =>
+              setTimeout(() => resolve({ ok: true, rows, has_more: false, next_offset: rows.length }), delay),
+            );
+          }
+          // Canonical rows request seeds only one provider line.
+          return Promise.resolve({ ok: true, rows: seedRows, has_more: true, next_offset: seedRows.length });
+        }
+        return original(cmd, payload);
+      };
+      target.__uiCheckGraphHydrationPatched = true;
+    };
+
+    patchInvoke(globalObj.__TAURI_INTERNALS__, 'invoke');
+    patchInvoke(globalObj.__TAURI__ && globalObj.__TAURI__.core, 'invoke');
+  `)
+
+  try {
+    await clickTopNav(driver, 'Analytics')
+    await waitVisible(
+      driver,
+      By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Provider Statistics']`),
+      15000,
+    )
+    await clickTopNav(driver, 'Requests')
+    await waitVisible(
+      driver,
+      By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Request Details']`),
+      15000,
+    )
+    const probe = await driver.executeAsyncScript(`
+      const done = arguments[arguments.length - 1];
+      const start = performance.now();
+      const sample = () => {
+        const legendCount = document.querySelectorAll('.aoUsageRequestLegend .aoUsageRequestLegendItem').length;
+        const lineCount = document.querySelectorAll('.aoUsageRequestLineGraph path').length;
+        return { t: performance.now() - start, legendCount, lineCount };
+      };
+      const snaps = [];
+      const loop = () => {
+        snaps.push(sample());
+        if (performance.now() - start >= 2500) {
+          done({ snaps });
+          return;
+        }
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    `)
+    const snaps = Array.isArray(probe?.snaps) ? probe.snaps : []
+    const invokeLog = await driver.executeScript(`
+      const bucket = (window.__ui_check__ = window.__ui_check__ || {});
+      return Array.isArray(bucket.__graphHydrationInvokes) ? bucket.__graphHydrationInvokes : [];
+    `)
+    const fullAt = snaps.find((s) => Number(s.lineCount) >= 3 || Number(s.legendCount) >= 3)
+    if (!fullAt || Number(fullAt.t) > 1200) {
+      const b64 = await driver.takeScreenshot()
+      fs.writeFileSync(
+        screenshotPath.replace('.png', '-requests-graph-provider-hydration-fail.png'),
+        Buffer.from(b64, 'base64'),
+      )
+      throw new Error(
+        `Requests graph providers hydrated too slowly (firstFullAt=${fullAt ? Number(fullAt.t).toFixed(1) : 'never'}ms, invokes=${JSON.stringify(invokeLog.slice(0, 20))}, samples=${JSON.stringify(snaps.slice(0, 20))})`,
+      )
+    }
+    console.log(`[ui:requests-graph-hydration] firstFullAt=${Number(fullAt.t).toFixed(1)}ms`)
+  } finally {
+    await driver.executeScript(`
+      const globalObj = window;
+      const restore = (target, key) => {
+        if (!target || !target.__uiCheckGraphHydrationPatched) return;
+        const original = target.__uiCheckGraphHydrationOriginalInvoke;
+        if (typeof original === 'function') target[key] = original;
+        target.__uiCheckGraphHydrationPatched = false;
+        target.__uiCheckGraphHydrationOriginalInvoke = undefined;
       };
       restore(globalObj.__TAURI_INTERNALS__, 'invoke');
       restore(globalObj.__TAURI__ && globalObj.__TAURI__.core, 'invoke');
