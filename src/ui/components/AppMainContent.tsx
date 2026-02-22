@@ -1,8 +1,8 @@
-import { fmtWhen } from '../utils/format'
 import { DashboardPanel } from './DashboardPanel'
 import { EventLogPanel, type EventLogFocusRequest } from './EventLogPanel'
 import { ProviderSwitchboardPanel } from './ProviderSwitchboardPanel'
-import { UsageStatisticsPanel } from './UsageStatisticsPanel'
+import { UsageAnalyticsPanel } from './UsageAnalyticsPanel'
+import { UsageRequestsPanel } from './UsageRequestsPanel'
 import type { LastErrorJump } from './ProvidersTable'
 
 type Props = {
@@ -80,15 +80,12 @@ export function AppMainContent(props: Props) {
     switchboardProps,
   } = props
 
-  if (activePage === 'usage_statistics' || activePage === 'usage_requests') {
-    return (
-      <UsageStatisticsPanel
-        {...usageProps}
-        fmtWhen={fmtWhen}
-        forceDetailsTab={activePage === 'usage_requests' ? 'requests' : 'analytics'}
-        showFilters={activePage !== 'usage_requests'}
-      />
-    )
+  if (activePage === 'usage_statistics') {
+    return <UsageAnalyticsPanel usageProps={usageProps} />
+  }
+
+  if (activePage === 'usage_requests') {
+    return <UsageRequestsPanel usageProps={usageProps} />
   }
 
   if (activePage === 'provider_switchboard') {

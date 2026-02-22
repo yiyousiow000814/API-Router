@@ -1000,60 +1000,113 @@ export async function runRequestsAnalyticsSwitchNoReloadCase(driver, screenshotP
       15000,
     )
 
-    await clickTopNav(driver, 'Requests')
-    await waitVisible(
-      driver,
-      By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Request Details']`),
-      15000,
-    )
-    const probe = await driver.executeAsyncScript(`
-      const done = arguments[arguments.length - 1];
+    await driver.executeScript(`
       const bucket = (window.__ui_check__ = window.__ui_check__ || {});
-      const samples = [];
-      let sawLoadingHint = false;
-      let sawZeroRowsHint = false;
-
+      bucket.__requestsSwitchFrameProbe = {
+        startedAt: performance.now(),
+        samples: [],
+        active: true,
+      };
+      const probe = bucket.__requestsSwitchFrameProbe;
       const read = () => {
         const footerHints = Array.from(document.querySelectorAll('.aoUsageRequestsFooter .aoHint'))
           .map((el) => (el.textContent || '').trim());
+        const rowsHint = String(footerHints[1] || '');
+        const m = rowsHint.match(/^([\\d,]+)\\s*\\/\\s*([\\d,]+)\\s+rows$/i);
+        const shownRows = m ? Number(String(m[1]).replaceAll(',', '')) : null;
+        const totalRows = m ? Number(String(m[2]).replaceAll(',', '')) : null;
         const tableHint = document.querySelector('.aoUsageHistoryTableBody td.aoHint');
         const tableHintText = tableHint ? (tableHint.textContent || '').trim() : '';
-        const rowsHint = String(footerHints[1] || '');
-        return { footerHints, tableHintText, rowsHint };
+        const dataRowCount = document.querySelectorAll('.aoUsageHistoryTableBody tbody tr').length;
+        return { footerHints, rowsHint, shownRows, totalRows, tableHintText, dataRowCount };
       };
-
-      const start = performance.now();
       const loop = () => {
-        const snap = read();
-        samples.push(snap);
-        if (snap.tableHintText === "Loading today's rows..." || snap.footerHints[0] === 'Loading more...') {
-          sawLoadingHint = true;
-        }
-        if (/^0\\s*\\/\\s*\\d+\\s+rows$/i.test(snap.rowsHint)) {
-          sawZeroRowsHint = true;
-        }
-        if (performance.now() - start >= 1400) {
-          done({
-            invokeCount: Number(bucket.__requestsEntriesInvokeCount || 0),
-            sawLoadingHint,
-            sawZeroRowsHint,
-            first: samples[0] || null,
-            last: samples[samples.length - 1] || null,
-            sampleCount: samples.length,
-          });
+        const t = performance.now() - probe.startedAt;
+        if (!probe.active) return;
+        probe.samples.push({ ...read(), t });
+        if (performance.now() - probe.startedAt >= 1600) {
+          probe.active = false;
           return;
         }
         requestAnimationFrame(loop);
       };
       requestAnimationFrame(loop);
     `)
-    if (probe?.sawLoadingHint || probe?.sawZeroRowsHint) {
+
+    await clickTopNav(driver, 'Requests')
+    await waitVisible(
+      driver,
+      By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Request Details']`),
+      15000,
+    )
+    await new Promise((r) => setTimeout(r, 1300))
+
+    const probe = await driver.executeScript(`
+      const bucket = (window.__ui_check__ = window.__ui_check__ || {});
+      const p = bucket.__requestsSwitchFrameProbe || { samples: [] };
+      const samples = Array.isArray(p.samples) ? p.samples : [];
+      let sawLoadingHint = false;
+      let sawZeroRowsHint = false;
+      let sawSingleFrameCollapse = false;
+      let firstNonZeroRowsMs = null;
+      let fullRowsVisibleMs = null;
+      for (const snap of samples) {
+        if (!snap || typeof snap !== 'object') continue;
+        if (snap.tableHintText === "Loading today's rows..." || String(snap.footerHints?.[0] || '') === 'Loading more...') {
+          sawLoadingHint = true;
+        }
+        if (/^0\\s*\\/\\s*\\d+\\s+rows$/i.test(String(snap.rowsHint || ''))) {
+          sawZeroRowsHint = true;
+        }
+        if (Number.isFinite(snap.totalRows) && snap.totalRows > 0 && Number(snap.shownRows) === 0) {
+          sawSingleFrameCollapse = true;
+        }
+        if (firstNonZeroRowsMs == null && Number.isFinite(snap.shownRows) && snap.shownRows > 0) {
+          firstNonZeroRowsMs = Number(snap.t);
+        }
+        if (
+          fullRowsVisibleMs == null &&
+          Number.isFinite(snap.shownRows) &&
+          Number.isFinite(snap.totalRows) &&
+          snap.totalRows > 0 &&
+          snap.shownRows === snap.totalRows
+        ) {
+          fullRowsVisibleMs = Number(snap.t);
+        }
+      }
+      return {
+        invokeCount: Number(bucket.__requestsEntriesInvokeCount || 0),
+        sawLoadingHint,
+        sawZeroRowsHint,
+        sawSingleFrameCollapse,
+        firstNonZeroRowsMs,
+        fullRowsVisibleMs,
+        first: samples[0] || null,
+        last: samples[samples.length - 1] || null,
+        sampleCount: samples.length,
+      };
+    `)
+    const firstNonZeroRowsMs =
+      probe?.firstNonZeroRowsMs == null ? Number.POSITIVE_INFINITY : Number(probe.firstNonZeroRowsMs)
+    const fullRowsVisibleMs =
+      probe?.fullRowsVisibleMs == null ? Number.POSITIVE_INFINITY : Number(probe.fullRowsVisibleMs)
+    if (
+      probe?.sawLoadingHint ||
+      probe?.sawZeroRowsHint ||
+      probe?.sawSingleFrameCollapse ||
+      Number(probe?.invokeCount || 0) > 0 ||
+      firstNonZeroRowsMs > 180 ||
+      fullRowsVisibleMs > 220
+    ) {
       const b64 = await driver.takeScreenshot()
       fs.writeFileSync(screenshotPath.replace('.png', '-requests-analytics-switch-reload.png'), Buffer.from(b64, 'base64'))
       throw new Error(
-        `Requests tab should not show reload state after returning from Analytics, but detected transient reload state (invokeCount=${probe.invokeCount}, sawLoadingHint=${probe.sawLoadingHint}, sawZeroRowsHint=${probe.sawZeroRowsHint}, first=${JSON.stringify(probe.first)}, last=${JSON.stringify(probe.last)}, sampleCount=${probe.sampleCount})`,
+        `Requests tab switch latency/state regression (invokeCount=${probe.invokeCount}, sawLoadingHint=${probe.sawLoadingHint}, sawZeroRowsHint=${probe.sawZeroRowsHint}, sawSingleFrameCollapse=${probe.sawSingleFrameCollapse}, firstNonZeroRowsMs=${probe.firstNonZeroRowsMs}, fullRowsVisibleMs=${probe.fullRowsVisibleMs}, first=${JSON.stringify(probe.first)}, last=${JSON.stringify(probe.last)}, sampleCount=${probe.sampleCount})`,
       )
     }
+    console.log(
+      `[ui:requests-reload] latency firstNonZeroRowsMs=${Number(probe.firstNonZeroRowsMs).toFixed(1)} fullRowsVisibleMs=${Number(probe.fullRowsVisibleMs).toFixed(1)} sampleCount=${probe.sampleCount}`,
+    )
   } finally {
     await driver.executeScript(`
       const globalObj = window;

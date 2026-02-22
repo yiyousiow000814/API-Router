@@ -2778,7 +2778,7 @@ export function UsageStatisticsPanel({
         formatPricingSource={formatPricingSource}
         usageProviderTotalsAndAverages={usageProviderTotalsAndAverages}
       />
-      </div>
+        </div>
       ) : null}
     </div>
   )
