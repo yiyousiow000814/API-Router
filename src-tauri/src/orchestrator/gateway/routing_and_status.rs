@@ -107,7 +107,7 @@ fn balanced_session_provider_score(session_key: &str, provider: &str) -> u64 {
     hash
 }
 
-const BALANCED_ASSIGNMENT_STICKY_MS: u64 = 24 * 60 * 60 * 1000;
+const BALANCED_ASSIGNMENT_STICKY_MS: u64 = 8 * 60 * 60 * 1000;
 const BALANCED_REBALANCE_MARGIN: usize = 2;
 const BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS: u64 = 15 * 60 * 1000;
 

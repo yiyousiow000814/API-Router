@@ -767,7 +767,7 @@ fn decide_provider_balanced_auto_keeps_provider_when_alternative_shares_same_api
     state.store.put_session_route_assignment(
         "session-main",
         "p1",
-        now.saturating_sub(24 * 60 * 60 * 1000 + 60_000),
+        now.saturating_sub(8 * 60 * 60 * 1000 + 60_000),
     );
     cfg.routing.preferred_provider = "p2".to_string();
     let (picked, _) = decide_provider(&state, &cfg, "p2", "session-main");
@@ -775,7 +775,7 @@ fn decide_provider_balanced_auto_keeps_provider_when_alternative_shares_same_api
 }
 
 #[test]
-fn decide_provider_balanced_auto_rebalances_after_24h_when_assignment_is_skewed() {
+fn decide_provider_balanced_auto_rebalances_after_sticky_window_when_assignment_is_skewed() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = open_store_dir(tmp.path().join("data")).expect("store");
     let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -845,7 +845,7 @@ fn decide_provider_balanced_auto_rebalances_after_24h_when_assignment_is_skewed(
         )]))),
     };
 
-    let stale_ms = now.saturating_sub(24 * 60 * 60 * 1000 + 60_000);
+    let stale_ms = now.saturating_sub(8 * 60 * 60 * 1000 + 60_000);
     state
         .store
         .put_session_route_assignment("session-main", "p1", stale_ms);

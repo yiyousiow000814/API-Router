@@ -171,17 +171,32 @@ pub(crate) fn set_route_mode(
 ) -> Result<(), String> {
     let next_mode = crate::orchestrator::config::RouteMode::from_wire(&mode)
         .ok_or_else(|| format!("unknown route mode: {mode}"))?;
+    let prev_mode = state.gateway.cfg.read().routing.route_mode;
+    if prev_mode == next_mode {
+        return Ok(());
+    }
+
     {
         let mut cfg = state.gateway.cfg.write();
         cfg.routing.route_mode = next_mode;
     }
+
+    let cleared_assignments = state.gateway.store.delete_all_session_route_assignments();
+
     persist_config(&state).map_err(|e| e.to_string())?;
     state.gateway.store.add_event(
         "gateway",
         "info",
         "config.route_mode_updated",
         "route_mode updated",
-        serde_json::json!({ "route_mode": mode }),
+        serde_json::json!({
+            "route_mode": mode,
+            "previous_route_mode": match prev_mode {
+                crate::orchestrator::config::RouteMode::FollowPreferredAuto => "follow_preferred_auto",
+                crate::orchestrator::config::RouteMode::BalancedAuto => "balanced_auto",
+            },
+            "cleared_session_route_assignments": cleared_assignments,
+        }),
     );
     Ok(())
 }
