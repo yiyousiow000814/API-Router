@@ -107,34 +107,262 @@ fn balanced_session_provider_score(session_key: &str, provider: &str) -> u64 {
     hash
 }
 
-fn active_session_count_for_balancing(st: &GatewayState, session_key: &str, now_ms: u64) -> usize {
-    const ACTIVE_WINDOW_MS: u64 = 60_000;
-    let map = st.last_used_by_session.read();
-    let active_others = map
-        .iter()
-        .filter(|(sid, route)| {
-            sid.as_str() != session_key && now_ms.saturating_sub(route.unix_ms) < ACTIVE_WINDOW_MS
-        })
-        .count();
-    active_others.saturating_add(1)
+const BALANCED_ASSIGNMENT_STICKY_MS: u64 = 24 * 60 * 60 * 1000;
+const BALANCED_REBALANCE_MARGIN: usize = 2;
+
+fn provider_key_fingerprint(st: &GatewayState, provider: &str) -> Option<u64> {
+    st.secrets
+        .get_provider_key(provider)
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .map(|key| balanced_session_provider_score("provider_api_key", &key))
+}
+
+fn provider_balance_bucket(st: &GatewayState, provider: &str) -> String {
+    match provider_key_fingerprint(st, provider) {
+        Some(fp) => format!("key:{fp:016x}"),
+        None => format!("provider:{provider}"),
+    }
+}
+
+fn providers_share_api_key(st: &GatewayState, left: &str, right: &str) -> bool {
+    match (
+        provider_key_fingerprint(st, left),
+        provider_key_fingerprint(st, right),
+    ) {
+        (Some(l), Some(r)) => l == r,
+        _ => false,
+    }
+}
+
+fn provider_is_balanced_candidate(
+    st: &GatewayState,
+    cfg: &AppConfig,
+    quota_snapshots: &Value,
+    router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
+    provider: &str,
+) -> bool {
+    if !provider_is_routable_for_selection(st, cfg, quota_snapshots, provider) {
+        return false;
+    }
+    // Keep "single-session one provider" stable, but once provider enters explicit unhealthy
+    // state we should rebalance immediately.
+    !router_snapshot
+        .get(provider)
+        .is_some_and(|snapshot| snapshot.status == "unhealthy")
+}
+
+fn load_balanced_assignment_counts(
+    st: &GatewayState,
+    cfg: &AppConfig,
+    now_ms: u64,
+) -> (HashMap<String, usize>, HashMap<String, usize>) {
+    let mut provider_loads: HashMap<String, usize> = HashMap::new();
+    let mut bucket_loads: HashMap<String, usize> = HashMap::new();
+    for row in st.store.list_session_route_assignments() {
+        if row.session_id.starts_with("peer:") {
+            continue;
+        }
+        if now_ms.saturating_sub(row.assigned_at_unix_ms) >= BALANCED_ASSIGNMENT_STICKY_MS {
+            continue;
+        }
+        if !cfg
+            .providers
+            .get(&row.provider)
+            .is_some_and(|provider_cfg| !provider_cfg.disabled)
+        {
+            continue;
+        }
+        *provider_loads.entry(row.provider.clone()).or_insert(0) += 1;
+        let bucket = provider_balance_bucket(st, &row.provider);
+        *bucket_loads.entry(bucket).or_insert(0) += 1;
+    }
+    (provider_loads, bucket_loads)
 }
 
 fn pick_balanced_provider(
     st: &GatewayState,
     cfg: &AppConfig,
     quota_snapshots: &Value,
+    router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     session_key: &str,
-) -> Option<String> {
+    preferred: &str,
+) -> Option<(String, usize, usize)> {
     let candidates = provider_iteration_order(cfg)
         .into_iter()
-        .filter(|name| provider_is_routable_for_selection(st, cfg, quota_snapshots, name))
+        .filter(|name| {
+            provider_is_balanced_candidate(st, cfg, quota_snapshots, router_snapshot, name)
+        })
         .collect::<Vec<_>>();
     if candidates.is_empty() {
         return None;
     }
+
+    let (provider_loads, bucket_loads) = load_balanced_assignment_counts(st, cfg, unix_ms());
     candidates
         .into_iter()
-        .max_by_key(|provider| balanced_session_provider_score(session_key, provider))
+        .map(|provider| {
+            let provider_load = provider_loads.get(&provider).copied().unwrap_or(0);
+            let bucket = provider_balance_bucket(st, &provider);
+            let bucket_load = bucket_loads.get(&bucket).copied().unwrap_or(0);
+            let preferred_rank = if provider == preferred { 0_u8 } else { 1_u8 };
+            let hash_rank = balanced_session_provider_score(session_key, &provider);
+            (
+                provider,
+                (bucket_load, preferred_rank, provider_load, hash_rank),
+                provider_load,
+                bucket_load,
+            )
+        })
+        .min_by_key(|(_, score, _, _)| *score)
+        .map(|(provider, _, provider_load, bucket_load)| (provider, provider_load, bucket_load))
+}
+
+fn pick_balanced_provider_for_verified_main_session(
+    st: &GatewayState,
+    cfg: &AppConfig,
+    quota_snapshots: &Value,
+    router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
+    session_key: &str,
+    preferred: &str,
+) -> Option<String> {
+    let now_ms = unix_ms();
+    let mut assignment = st.store.get_session_route_assignment(session_key);
+    if assignment.as_ref().is_some_and(|row| {
+        !cfg.providers
+            .get(&row.provider)
+            .is_some_and(|provider_cfg| !provider_cfg.disabled)
+    }) {
+        st.store.delete_session_route_assignment(session_key);
+        assignment = None;
+    }
+
+    let assignment_is_fresh = assignment.as_ref().is_some_and(|row| {
+        now_ms.saturating_sub(row.assigned_at_unix_ms) < BALANCED_ASSIGNMENT_STICKY_MS
+    });
+
+    if let Some(row) = assignment.as_ref() {
+        if assignment_is_fresh
+            && provider_is_balanced_candidate(st, cfg, quota_snapshots, router_snapshot, &row.provider)
+        {
+            return Some(row.provider.clone());
+        }
+    }
+
+    let best = pick_balanced_provider(
+        st,
+        cfg,
+        quota_snapshots,
+        router_snapshot,
+        session_key,
+        preferred,
+    );
+    if let Some(row) = assignment.as_ref() {
+        let current_usable =
+            provider_is_balanced_candidate(st, cfg, quota_snapshots, router_snapshot, &row.provider);
+        if current_usable {
+            if assignment_is_fresh {
+                return Some(row.provider.clone());
+            }
+            if let Some((best_provider, _, best_bucket_load)) = best.as_ref() {
+                if best_provider == &row.provider || providers_share_api_key(st, &row.provider, best_provider)
+                {
+                    st.store
+                        .put_session_route_assignment(session_key, &row.provider, now_ms);
+                    return Some(row.provider.clone());
+                }
+                let (_, bucket_loads) = load_balanced_assignment_counts(st, cfg, now_ms);
+                let current_bucket_load = bucket_loads
+                    .get(&provider_balance_bucket(st, &row.provider))
+                    .copied()
+                    .unwrap_or(0);
+                if current_bucket_load
+                    <= (*best_bucket_load).saturating_add(BALANCED_REBALANCE_MARGIN)
+                {
+                    st.store
+                        .put_session_route_assignment(session_key, &row.provider, now_ms);
+                    return Some(row.provider.clone());
+                }
+            } else {
+                return Some(row.provider.clone());
+            }
+        }
+    }
+
+    let (best_provider, _, _) = best?;
+    st.store
+        .put_session_route_assignment(session_key, &best_provider, now_ms);
+    Some(best_provider)
+}
+
+fn pick_balanced_provider_for_verified_session(
+    st: &GatewayState,
+    cfg: &AppConfig,
+    quota_snapshots: &Value,
+    router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
+    session_key: &str,
+    preferred: &str,
+    depth: u8,
+) -> Option<String> {
+    if depth > 2 || session_key.starts_with("peer:") {
+        return None;
+    }
+    let session = st.client_sessions.read().get(session_key).cloned()?;
+    if !session.confirmed_router {
+        return None;
+    }
+    if session.is_agent || session.is_review {
+        let parent_sid_value = session
+            .agent_parent_session_id
+            .clone()
+            .or_else(|| {
+                let sessions = st.client_sessions.read();
+                sessions
+                    .values()
+                    .filter(|candidate| {
+                        candidate.codex_session_id != session_key
+                            && candidate.confirmed_router
+                            && !candidate.is_agent
+                            && !candidate.is_review
+                    })
+                    .filter(|candidate| {
+                        if let (Some(agent_wt), Some(main_wt)) =
+                            (session.wt_session.as_deref(), candidate.wt_session.as_deref())
+                        {
+                            agent_wt.eq_ignore_ascii_case(main_wt)
+                        } else {
+                            false
+                        }
+                    })
+                    .max_by_key(|candidate| {
+                        candidate
+                            .last_request_unix_ms
+                            .max(candidate.last_discovered_unix_ms)
+                    })
+                    .map(|candidate| candidate.codex_session_id.clone())
+            });
+        let parent_sid = parent_sid_value
+            .as_deref()
+            .map(str::trim)
+            .filter(|sid| !sid.is_empty() && *sid != session_key)?;
+        return pick_balanced_provider_for_verified_session(
+            st,
+            cfg,
+            quota_snapshots,
+            router_snapshot,
+            parent_sid,
+            preferred,
+            depth.saturating_add(1),
+        );
+    }
+    pick_balanced_provider_for_verified_main_session(
+        st,
+        cfg,
+        quota_snapshots,
+        router_snapshot,
+        session_key,
+        preferred,
+    )
 }
 
 pub(crate) fn decide_provider(
@@ -144,6 +372,7 @@ pub(crate) fn decide_provider(
     session_key: &str,
 ) -> (String, &'static str) {
     let quota_snapshots = st.store.list_quota_snapshots();
+    let now_ms = unix_ms();
     // Manual override wins only when the target is still routable under current
     // config/quota constraints; otherwise we fail over.
     if let Some(manual) = st.router.manual_override.read().clone() {
@@ -163,11 +392,17 @@ pub(crate) fn decide_provider(
     if cfg.routing.route_mode == crate::orchestrator::config::RouteMode::BalancedAuto
         && !session_has_explicit_preferred
     {
-        let active_sessions = active_session_count_for_balancing(st, session_key, unix_ms());
-        if active_sessions > 1 {
-            if let Some(provider) = pick_balanced_provider(st, cfg, &quota_snapshots, session_key) {
-                return (provider, "balanced_auto");
-            }
+        let router_snapshot = st.router.snapshot(now_ms);
+        if let Some(provider) = pick_balanced_provider_for_verified_session(
+            st,
+            cfg,
+            &quota_snapshots,
+            &router_snapshot,
+            session_key,
+            preferred,
+            0,
+        ) {
+            return (provider, "balanced_auto");
         }
     }
 
@@ -183,7 +418,7 @@ pub(crate) fn decide_provider(
         if last_provider.as_deref().is_some_and(|p| p != preferred)
             && st
                 .router
-                .should_suppress_preferred(preferred, cfg, unix_ms())
+                .should_suppress_preferred(preferred, cfg, now_ms)
         {
             if let Some(p) = last_provider {
                 if provider_is_routable_for_selection(st, cfg, &quota_snapshots, &p) {
