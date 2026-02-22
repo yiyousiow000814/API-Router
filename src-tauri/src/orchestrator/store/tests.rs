@@ -504,4 +504,62 @@ mod tests {
         assert_eq!(cache_create, 0);
         assert_eq!(cache_read, 0);
     }
+
+    #[test]
+    fn since_window_applies_when_date_range_is_unbounded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let older = chrono::Local
+            .with_ymd_and_hms(2026, 2, 10, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let newer = chrono::Local
+            .with_ymd_and_hms(2026, 2, 21, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, 'official', '-', 'gpt-5.2-codex', 'windows', 's-older', 10, 1, 11, 0, 0)",
+                rusqlite::params!["older-row", older],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, 'official', '-', 'gpt-5.2-codex', 'windows', 's-newer', 20, 2, 22, 0, 0)",
+                rusqlite::params!["newer-row", newer],
+            )
+            .unwrap();
+        }
+
+        let since = (newer - 3_600_000) as u64;
+        let (rows, has_more) =
+            store.list_usage_requests_page(since, None, None, &[], &[], &[], &[], 50, 0);
+        assert!(!has_more);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0]
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default(),
+            "s-newer"
+        );
+
+        let (requests, input, output, total, cache_create, cache_read) = store
+            .summarize_usage_requests(since, None, None, &[], &[], &[], &[]);
+        assert_eq!(requests, 1);
+        assert_eq!(input, 20);
+        assert_eq!(output, 2);
+        assert_eq!(total, 22);
+        assert_eq!(cache_create, 0);
+        assert_eq!(cache_read, 0);
+    }
 }

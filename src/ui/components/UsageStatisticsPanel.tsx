@@ -415,6 +415,18 @@ export function primeUsageRequestsPrefetchCache(payload: {
   emitUsageRequestsCachePrimed(payload.queryKey)
 }
 
+export function resolveRequestPageCached(input: {
+  isRequestsTab: boolean
+  hasStrictRequestQuery: boolean
+  cached: UsageRequestsPageCache | null
+  canonicalCached: UsageRequestsPageCache | null
+  lastNonEmpty: UsageRequestsPageCache | null
+}): UsageRequestsPageCache | null {
+  if (input.hasStrictRequestQuery) return input.cached
+  if (input.isRequestsTab) return input.cached
+  return input.cached ?? input.canonicalCached ?? input.lastNonEmpty
+}
+
 function startOfDayUnixMs(unixMs: number): number {
   const date = new Date(unixMs)
   date.setHours(0, 0, 0, 0)
@@ -1557,9 +1569,13 @@ export function UsageStatisticsPanel({
       usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_PAGE_QUERY_KEY
         ? usageRequestsPageCache
         : null
-    const requestPageCached = hasStrictRequestQuery
-      ? cached
-      : cached ?? canonicalCached ?? usageRequestsLastNonEmptyPageCache
+    const requestPageCached = resolveRequestPageCached({
+      isRequestsTab,
+      hasStrictRequestQuery,
+      cached,
+      canonicalCached,
+      lastNonEmpty: usageRequestsLastNonEmptyPageCache,
+    })
     const cachedGraph =
       usageRequestGraphRowsCache != null && usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
         ? usageRequestGraphRowsCache

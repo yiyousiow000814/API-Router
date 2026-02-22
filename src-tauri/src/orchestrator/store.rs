@@ -1392,8 +1392,7 @@ impl Store {
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
              FROM usage_requests
-             WHERE (? IS NULL OR ? IS NOT NULL OR unix_ms >= ?)
-               AND (? IS NULL OR unix_ms >= ?)
+             WHERE unix_ms >= COALESCE(?, ?)
                AND (? IS NULL OR unix_ms < ?)",
         );
         let from_i64 = from_unix_ms.and_then(|x| i64::try_from(x).ok());
@@ -1402,16 +1401,7 @@ impl Store {
             from_i64
                 .map(rusqlite::types::Value::Integer)
                 .unwrap_or(rusqlite::types::Value::Null),
-            to_i64
-                .map(rusqlite::types::Value::Integer)
-                .unwrap_or(rusqlite::types::Value::Null),
             rusqlite::types::Value::Integer(i64::try_from(since_unix_ms).unwrap_or(i64::MAX)),
-            from_i64
-                .map(rusqlite::types::Value::Integer)
-                .unwrap_or(rusqlite::types::Value::Null),
-            from_i64
-                .map(rusqlite::types::Value::Integer)
-                .unwrap_or(rusqlite::types::Value::Null),
             to_i64
                 .map(rusqlite::types::Value::Integer)
                 .unwrap_or(rusqlite::types::Value::Null),
@@ -1516,8 +1506,7 @@ impl Store {
                 COALESCE(SUM(cache_creation_input_tokens), 0),
                 COALESCE(SUM(cache_read_input_tokens), 0)
              FROM usage_requests
-             WHERE (? IS NULL OR ? IS NOT NULL OR unix_ms >= ?)
-               AND (? IS NULL OR unix_ms >= ?)
+             WHERE unix_ms >= COALESCE(?, ?)
                AND (? IS NULL OR unix_ms < ?)",
         );
         let from_i64 = from_unix_ms.and_then(|x| i64::try_from(x).ok());
@@ -1526,16 +1515,7 @@ impl Store {
             from_i64
                 .map(rusqlite::types::Value::Integer)
                 .unwrap_or(rusqlite::types::Value::Null),
-            to_i64
-                .map(rusqlite::types::Value::Integer)
-                .unwrap_or(rusqlite::types::Value::Null),
             rusqlite::types::Value::Integer(i64::try_from(since_unix_ms).unwrap_or(i64::MAX)),
-            from_i64
-                .map(rusqlite::types::Value::Integer)
-                .unwrap_or(rusqlite::types::Value::Null),
-            from_i64
-                .map(rusqlite::types::Value::Integer)
-                .unwrap_or(rusqlite::types::Value::Null),
             to_i64
                 .map(rusqlite::types::Value::Integer)
                 .unwrap_or(rusqlite::types::Value::Null),
