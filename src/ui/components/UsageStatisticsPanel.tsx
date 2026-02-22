@@ -875,7 +875,6 @@ export function UsageStatisticsPanel({
   const usageRequestFetchSeqRef = useRef(0)
   const usageRequestSummaryFetchSeqRef = useRef(0)
   const usageRequestGraphBaseFetchSeqRef = useRef(0)
-  const usageRequestGraphProviderFetchSeqRef = useRef(new Map<string, number>())
   const usageRequestDailyTotalsFetchSeqRef = useRef(0)
   const usageRequestLoadedQueryKeyRef = useRef<string | null>(null)
   const usageRequestLastActivityRef = useRef<number | null>(null)
@@ -1387,10 +1386,10 @@ export function UsageStatisticsPanel({
           ? usageRequestsPageCache.rows
           : EMPTY_USAGE_REQUEST_ROWS
       const baseRows =
-        cachedGraph?.baseRows?.length
-          ? cachedGraph.baseRows
-          : canonicalPageRows.length
-            ? canonicalPageRows
+        canonicalPageRows.length
+          ? canonicalPageRows
+          : cachedGraph?.baseRows?.length
+            ? cachedGraph.baseRows
             : usageRequestRows.length
               ? usageRequestRows
               : usageRequestTestFallbackEnabled
@@ -1458,42 +1457,55 @@ export function UsageStatisticsPanel({
         baseRows,
         rowsByProvider: seedRowsByProvider,
       }
-      for (const provider of providerTargets) {
-        const nextProviderSeq = (usageRequestGraphProviderFetchSeqRef.current.get(provider) ?? 0) + 1
-        usageRequestGraphProviderFetchSeqRef.current.set(provider, nextProviderSeq)
-        void (async () => {
+      const providerResults = await Promise.all(
+        providerTargets.map(async (provider) => {
           try {
             const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-              hours: USAGE_REQUEST_GRAPH_FETCH_HOURS,
-              providers: [provider],
-              models: null,
-              origins: null,
-              limit: USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
-              offset: 0,
+              ...buildUsageRequestEntriesArgs({
+                hours: USAGE_REQUEST_GRAPH_FETCH_HOURS,
+                fromUnixMs: null,
+                toUnixMs: null,
+                providers: [provider],
+                models: null,
+                origins: null,
+                sessions: null,
+                limit: USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
+                offset: 0,
+              }),
             })
-            const providerSeq = usageRequestGraphProviderFetchSeqRef.current.get(provider)
-            if (providerSeq !== nextProviderSeq) return
-            const providerRows = (res.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms)
-            setUsageRequestGraphRowsByProvider((prev) => {
-              const currentRows = prev[provider] ?? []
-              const same =
-                currentRows.length === providerRows.length &&
-                currentRows.every((row, idx) => usageRequestRowIdentity(row) === usageRequestRowIdentity(providerRows[idx]))
-              if (same) return prev
-              const next = { ...prev, [provider]: providerRows }
-              if (usageRequestGraphRowsCache?.queryKey === requestGraphQueryKey) {
-                usageRequestGraphRowsCache = {
-                  ...usageRequestGraphRowsCache,
-                  rowsByProvider: next,
-                }
-              }
-              return next
-            })
+            return { provider, rows: (res.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms) }
           } catch {
-            // Keep previous provider line on partial refresh failures.
+            return { provider, rows: null as UsageRequestEntry[] | null }
           }
-        })()
-      }
+        }),
+      )
+      if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
+      setUsageRequestGraphRowsByProvider((prev) => {
+        const next: Record<string, UsageRequestEntry[]> = {}
+        let changed = false
+        for (const provider of providerTargets) {
+          const resolved = providerResults.find((item) => item.provider === provider)
+          const providerRows = resolved?.rows
+          const currentRows = prev[provider] ?? EMPTY_USAGE_REQUEST_ROWS
+          if (!providerRows) {
+            next[provider] = currentRows
+            continue
+          }
+          const same =
+            currentRows.length === providerRows.length &&
+            currentRows.every((row, idx) => usageRequestRowIdentity(row) === usageRequestRowIdentity(providerRows[idx]))
+          next[provider] = providerRows
+          if (!same) changed = true
+        }
+        if (!changed && Object.keys(prev).every((provider) => targetSet.has(provider))) return prev
+        if (usageRequestGraphRowsCache?.queryKey === requestGraphQueryKey) {
+          usageRequestGraphRowsCache = {
+            ...usageRequestGraphRowsCache,
+            rowsByProvider: next,
+          }
+        }
+        return next
+      })
       usageRequestGraphLastRefreshAtRef.current = Date.now()
     } catch {
       if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
@@ -1744,12 +1756,19 @@ export function UsageStatisticsPanel({
   useEffect(() => {
     if (!isRequestsTab) return
     if (!usageRequestGraphBaseRows.length && Object.keys(usageRequestGraphRowsByProvider).length === 0) return
+    if (requestQueryKey !== USAGE_REQUESTS_PAGE_QUERY_KEY) return
     usageRequestGraphRowsCache = {
       queryKey: requestGraphQueryKey,
       baseRows: usageRequestGraphBaseRows,
       rowsByProvider: usageRequestGraphRowsByProvider,
     }
-  }, [isRequestsTab, requestGraphQueryKey, usageRequestGraphBaseRows, usageRequestGraphRowsByProvider])
+  }, [
+    isRequestsTab,
+    requestGraphQueryKey,
+    requestQueryKey,
+    usageRequestGraphBaseRows,
+    usageRequestGraphRowsByProvider,
+  ])
 
   useEffect(() => {
     if (!isRequestsTab && !isAnalyticsTab) return
