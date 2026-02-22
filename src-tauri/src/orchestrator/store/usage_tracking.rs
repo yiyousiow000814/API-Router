@@ -191,29 +191,47 @@ impl Store {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("-");
-        if let Ok(ts_i64) = i64::try_from(ts) {
-            let conn = self.events_db.lock();
-            let _ = conn.execute(
-                "INSERT INTO usage_requests(
-                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
-                    input_tokens, output_tokens, total_tokens,
-                    cache_creation_input_tokens, cache_read_input_tokens
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                params![
-                    id,
-                    ts_i64,
-                    provider,
-                    api_key_ref.unwrap_or("-"),
-                    model,
-                    origin,
-                    session_id,
-                    i64::try_from(increments.input_tokens).unwrap_or(i64::MAX),
-                    i64::try_from(increments.output_tokens).unwrap_or(i64::MAX),
-                    i64::try_from(increments.total_tokens).unwrap_or(i64::MAX),
-                    i64::try_from(increments.cache_creation_input_tokens).unwrap_or(i64::MAX),
-                    i64::try_from(increments.cache_read_input_tokens).unwrap_or(i64::MAX),
-                ],
-            );
+        if let (Ok(ts_i64), Some(day_key)) =
+            (i64::try_from(ts), Self::local_day_key_from_unix_ms(ts))
+        {
+            let mut conn = self.events_db.lock();
+            let tx_result = conn.transaction();
+            if let Ok(tx) = tx_result {
+                let inserted = tx.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                        input_tokens, output_tokens, total_tokens,
+                        cache_creation_input_tokens, cache_read_input_tokens
+                     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    params![
+                        id,
+                        ts_i64,
+                        provider,
+                        api_key_ref.unwrap_or("-"),
+                        model,
+                        origin,
+                        session_id,
+                        i64::try_from(increments.input_tokens).unwrap_or(i64::MAX),
+                        i64::try_from(increments.output_tokens).unwrap_or(i64::MAX),
+                        i64::try_from(increments.total_tokens).unwrap_or(i64::MAX),
+                        i64::try_from(increments.cache_creation_input_tokens).unwrap_or(i64::MAX),
+                        i64::try_from(increments.cache_read_input_tokens).unwrap_or(i64::MAX),
+                    ],
+                );
+                if inserted.unwrap_or(0) > 0 {
+                    let _ = Self::upsert_usage_request_filter_rollup_row(
+                        &tx,
+                        &day_key,
+                        provider,
+                        model,
+                        origin,
+                        session_id,
+                        1,
+                        i64::try_from(increments.total_tokens).unwrap_or(i64::MAX),
+                    );
+                }
+                let _ = tx.commit();
+            }
         }
         self.bump_usage_day(provider, ts, increments);
         let _ = self.db.flush();

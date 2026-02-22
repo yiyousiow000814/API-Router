@@ -164,6 +164,91 @@ pub(crate) fn get_usage_request_daily_totals(
 }
 
 #[tauri::command]
+pub(crate) fn get_usage_request_filter_options(
+    state: tauri::State<'_, app_state::AppState>,
+    hours: Option<u64>,
+    providers: Option<Vec<String>>,
+    models: Option<Vec<String>>,
+    origins: Option<Vec<String>>,
+    day_start_unix_ms: Option<u64>,
+    limit: Option<u64>,
+) -> serde_json::Value {
+    let now = unix_ms();
+    let window_hours = hours.unwrap_or(24).clamp(1, 24 * 365 * 20);
+    let window_ms = window_hours.saturating_mul(60 * 60 * 1000);
+    let mut since_unix_ms = now.saturating_sub(window_ms);
+    let mut until_unix_ms: Option<u64> = None;
+    if let Some(day_start) = day_start_unix_ms {
+        since_unix_ms = since_unix_ms.max(day_start);
+        until_unix_ms = Some(day_start.saturating_add(24 * 60 * 60 * 1000));
+    }
+
+    let provider_filter: BTreeSet<String> = providers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let model_filter: BTreeSet<String> = models
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let origin_filter = normalize_usage_origin_filter(origins);
+
+    let provider_filter_list: Vec<String> = provider_filter.iter().cloned().collect();
+    let model_filter_list: Vec<String> = model_filter.iter().cloned().collect();
+    let origin_filter_list: Vec<String> = origin_filter.iter().cloned().collect();
+    let option_limit = limit.unwrap_or(400).clamp(1, 2000) as usize;
+
+    let provider_options = state.gateway.store.list_usage_request_distinct_counts(
+        "provider",
+        since_unix_ms,
+        until_unix_ms,
+        &provider_filter_list,
+        &model_filter_list,
+        &origin_filter_list,
+        option_limit,
+    );
+    let model_options = state.gateway.store.list_usage_request_distinct_counts(
+        "model",
+        since_unix_ms,
+        until_unix_ms,
+        &provider_filter_list,
+        &model_filter_list,
+        &origin_filter_list,
+        option_limit,
+    );
+    let origin_options = state.gateway.store.list_usage_request_distinct_counts(
+        "origin",
+        since_unix_ms,
+        until_unix_ms,
+        &provider_filter_list,
+        &model_filter_list,
+        &origin_filter_list,
+        option_limit,
+    );
+    let session_options = state.gateway.store.list_usage_request_distinct_counts(
+        "session_id",
+        since_unix_ms,
+        until_unix_ms,
+        &provider_filter_list,
+        &model_filter_list,
+        &origin_filter_list,
+        option_limit,
+    );
+
+    serde_json::json!({
+        "ok": true,
+        "provider": provider_options.into_iter().map(|(value, count)| serde_json::json!({ "value": value, "count": count })).collect::<Vec<Value>>(),
+        "model": model_options.into_iter().map(|(value, count)| serde_json::json!({ "value": value, "count": count })).collect::<Vec<Value>>(),
+        "origin": origin_options.into_iter().map(|(value, count)| serde_json::json!({ "value": value, "count": count })).collect::<Vec<Value>>(),
+        "session": session_options.into_iter().map(|(value, count)| serde_json::json!({ "value": value, "count": count })).collect::<Vec<Value>>(),
+    })
+}
+
+#[tauri::command]
 pub(crate) fn get_usage_statistics(
     state: tauri::State<'_, app_state::AppState>,
     hours: Option<u64>,
