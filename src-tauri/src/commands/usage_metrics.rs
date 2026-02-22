@@ -39,6 +39,7 @@ fn list_usage_requests_for_statistics(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn get_usage_request_entries(
     state: tauri::State<'_, app_state::AppState>,
     hours: Option<u64>,

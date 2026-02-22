@@ -1374,6 +1374,7 @@ impl Store {
         out
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn list_usage_requests_page(
         &self,
         since_unix_ms: u64,
