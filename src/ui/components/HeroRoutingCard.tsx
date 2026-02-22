@@ -24,6 +24,22 @@ export function HeroRoutingCard({
         .filter(([, provider]) => !provider.disabled)
         .map(([name]) => name)
     : []
+  const routeSelection = override === '' ? routeMode : `lock:${override}`
+  const lockOptions = providers.map((provider) => ({
+    value: `lock:${provider}`,
+    label: `Lock to ${provider}`,
+  }))
+  const hasCurrentLockOption = override !== '' && lockOptions.some((option) => option.value === routeSelection)
+  const onRouteSelectionChange = (value: string) => {
+    if (value === 'follow_preferred_auto' || value === 'balanced_auto') {
+      if (override !== '') onOverrideChange('')
+      onRouteModeChange(value)
+      return
+    }
+    if (value.startsWith('lock:')) {
+      onOverrideChange(value.slice('lock:'.length))
+    }
+  }
 
   return (
     <div className="aoCard aoHeroCard aoHeroRouting">
@@ -38,22 +54,15 @@ export function HeroRoutingCard({
         <div className="aoRoutingGrid">
           <label className="aoRoutingRow">
             <span className="aoMiniLabel">Route mode</span>
-            <select
-              className="aoSelect"
-              value={routeMode}
-              onChange={(e) => onRouteModeChange(e.target.value as 'follow_preferred_auto' | 'balanced_auto')}
-            >
+            <select className="aoSelect" value={routeSelection} onChange={(e) => onRouteSelectionChange(e.target.value)}>
               <option value="follow_preferred_auto">Follow Preferred (Auto)</option>
               <option value="balanced_auto">Balanced Mode (Auto)</option>
-            </select>
-          </label>
-          <label className="aoRoutingRow">
-            <span className="aoMiniLabel">Provider lock</span>
-            <select className="aoSelect" value={override} onChange={(e) => onOverrideChange(e.target.value)}>
-              <option value="">None (Auto)</option>
-              {providers.map((p) => (
-                <option key={p} value={p}>
-                  {`Lock to ${p}`}
+              {hasCurrentLockOption ? null : override !== '' ? (
+                <option value={routeSelection}>{`Lock to ${override}`}</option>
+              ) : null}
+              {lockOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
                 </option>
               ))}
             </select>
