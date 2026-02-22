@@ -1333,7 +1333,12 @@ export function UsageStatisticsPanel({
       const shouldRefresh = usageRequestLoadedQueryKeyRef.current !== requestQueryKey || usageRequestRows.length === 0
       if (shouldRefresh) {
         usageRequestLoadedQueryKeyRef.current = requestQueryKey
-        void refreshUsageRequests(initialRefreshLimit)
+        if (usageRequestRows.length === 0) {
+          void refreshUsageRequests(initialRefreshLimit)
+        } else {
+          // Keep current table rows visible while switching query context; sync in background.
+          void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
+        }
         void refreshUsageRequestGraphRows()
         return
       }

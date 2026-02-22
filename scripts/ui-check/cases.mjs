@@ -963,6 +963,12 @@ export async function runRequestsAnalyticsSwitchNoReloadCase(driver, screenshotP
       target[key] = function patchedInvoke(cmd, payload) {
         if (cmd === 'get_usage_request_entries') {
           bucket.__requestsEntriesInvokeCount = (bucket.__requestsEntriesInvokeCount || 0) + 1;
+          // Stretch transient UI flashes (50-100ms) so the e2e sampler can detect them reliably.
+          return new Promise((resolve, reject) => {
+            setTimeout(() => {
+              Promise.resolve(original(cmd, payload)).then(resolve).catch(reject);
+            }, 220);
+          });
         }
         return original(cmd, payload);
       };
@@ -1000,25 +1006,52 @@ export async function runRequestsAnalyticsSwitchNoReloadCase(driver, screenshotP
       By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Request Details']`),
       15000,
     )
-    await new Promise((r) => setTimeout(r, 550))
-
-    const probe = await driver.executeScript(`
+    const probe = await driver.executeAsyncScript(`
+      const done = arguments[arguments.length - 1];
       const bucket = (window.__ui_check__ = window.__ui_check__ || {});
-      const invokeCount = Number(bucket.__requestsEntriesInvokeCount || 0);
-      const footerHints = Array.from(document.querySelectorAll('.aoUsageRequestsFooter .aoHint'))
-        .map((el) => (el.textContent || '').trim());
-      const tableHint = document.querySelector('.aoUsageHistoryTableBody td.aoHint');
-      const tableHintText = tableHint ? (tableHint.textContent || '').trim() : '';
-      return { invokeCount, footerHints, tableHintText };
+      const samples = [];
+      let sawLoadingHint = false;
+      let sawZeroRowsHint = false;
+
+      const read = () => {
+        const footerHints = Array.from(document.querySelectorAll('.aoUsageRequestsFooter .aoHint'))
+          .map((el) => (el.textContent || '').trim());
+        const tableHint = document.querySelector('.aoUsageHistoryTableBody td.aoHint');
+        const tableHintText = tableHint ? (tableHint.textContent || '').trim() : '';
+        const rowsHint = String(footerHints[1] || '');
+        return { footerHints, tableHintText, rowsHint };
+      };
+
+      const start = performance.now();
+      const loop = () => {
+        const snap = read();
+        samples.push(snap);
+        if (snap.tableHintText === "Loading today's rows..." || snap.footerHints[0] === 'Loading more...') {
+          sawLoadingHint = true;
+        }
+        if (/^0\\s*\\/\\s*\\d+\\s+rows$/i.test(snap.rowsHint)) {
+          sawZeroRowsHint = true;
+        }
+        if (performance.now() - start >= 1400) {
+          done({
+            invokeCount: Number(bucket.__requestsEntriesInvokeCount || 0),
+            sawLoadingHint,
+            sawZeroRowsHint,
+            first: samples[0] || null,
+            last: samples[samples.length - 1] || null,
+            sampleCount: samples.length,
+          });
+          return;
+        }
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
     `)
-    const hasReloadHint = String(probe?.tableHintText || '') === "Loading today's rows..."
-    const rowsHint = Array.isArray(probe?.footerHints) ? String(probe.footerHints[1] || '') : ''
-    const collapsedToZeroRows = /^0\s*\/\s*\d+\s+rows$/i.test(rowsHint)
-    if (hasReloadHint || Number(probe?.invokeCount || 0) > 0 || collapsedToZeroRows) {
+    if (probe?.sawLoadingHint || probe?.sawZeroRowsHint) {
       const b64 = await driver.takeScreenshot()
       fs.writeFileSync(screenshotPath.replace('.png', '-requests-analytics-switch-reload.png'), Buffer.from(b64, 'base64'))
       throw new Error(
-        `Requests tab should not collapse visible rows after returning from Analytics, but detected reload-like state (hint="${probe.tableHintText}", invokeCount=${probe.invokeCount}, rowsHint="${rowsHint}"). footer=${JSON.stringify(probe.footerHints || [])}`,
+        `Requests tab should not show reload state after returning from Analytics, but detected transient reload state (invokeCount=${probe.invokeCount}, sawLoadingHint=${probe.sawLoadingHint}, sawZeroRowsHint=${probe.sawZeroRowsHint}, first=${JSON.stringify(probe.first)}, last=${JSON.stringify(probe.last)}, sampleCount=${probe.sampleCount})`,
       )
     }
   } finally {
