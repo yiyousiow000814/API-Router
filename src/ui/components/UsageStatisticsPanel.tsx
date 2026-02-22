@@ -183,6 +183,18 @@ function listTopUsageProvidersFromRows(rows: UsageRequestEntry[]): string[] {
     })
     .map(([provider]) => provider)
 }
+
+function listUsageRequestDailyProviderHints(
+  providers: UsageRequestDailyTotalsResponse['providers'],
+): string[] {
+  const live = (providers ?? [])
+    .map((row) => String(row?.provider ?? '').trim())
+    .filter((provider) => provider.length > 0)
+  if (live.length > 0) return live
+  return (usageRequestDailyTotalsCache?.providers ?? [])
+    .map((row) => String(row?.provider ?? '').trim())
+    .filter((provider) => provider.length > 0)
+}
 const TEST_CODEX_SESSION_IDS = [
   '019c4578-0f3c-7f82-a4f9-b41a1e65e242',
   '019c03fd-6ea4-7121-961f-9f9b64d2c1b5',
@@ -436,6 +448,18 @@ export function primeUsageRequestsPrefetchCache(payload: {
   }
   primeUsageRequestGraphCacheFromBaseRows(payload.rows ?? [])
   emitUsageRequestsCachePrimed(payload.queryKey)
+}
+
+export function primeUsageRequestGraphPrefetchCache(payload: {
+  queryKey?: string
+  baseRows: UsageRequestEntry[]
+  rowsByProvider: Record<string, UsageRequestEntry[]>
+}) {
+  usageRequestGraphRowsCache = {
+    queryKey: payload.queryKey ?? USAGE_REQUEST_GRAPH_QUERY_KEY,
+    baseRows: payload.baseRows ?? [],
+    rowsByProvider: payload.rowsByProvider ?? {},
+  }
 }
 
 export function resolveRequestPageCached(input: {
@@ -869,6 +893,26 @@ export function UsageStatisticsPanel({
   >([])
   const [usageRequestDailyTotalsLoading, setUsageRequestDailyTotalsLoading] = useState(false)
   const [usageRequestsCachePrimedTick, setUsageRequestsCachePrimedTick] = useState(0)
+  const usageRequestDailyProviderHints = useMemo(
+    () => listUsageRequestDailyProviderHints(usageRequestDailyTotalsProviders),
+    [usageRequestDailyTotalsProviders, usageRequestsCachePrimedTick],
+  )
+  const usageRequestAnalyticsProviderHints = useMemo(() => {
+    const out: string[] = []
+    for (const row of usageByProvider) {
+      const provider = String(row?.provider ?? '').trim()
+      if (provider.length > 0) out.push(provider)
+    }
+    const configuredProviders =
+      config && typeof config === 'object' && config.providers && typeof config.providers === 'object'
+        ? Object.keys(config.providers)
+        : []
+    for (const provider of configuredProviders) {
+      const key = String(provider ?? '').trim()
+      if (key.length > 0) out.push(key)
+    }
+    return out
+  }, [config, usageByProvider])
   const usageRequestRefreshInFlightRef = useRef(false)
   const usageRequestGraphRefreshInFlightRef = useRef(false)
   const usageRequestGraphRefreshPendingRef = useRef(false)
@@ -1419,9 +1463,12 @@ export function UsageStatisticsPanel({
       }
       const providerTargets = pickUsageRequestDisplayProviders({
         selectedProviders: usageRequestMultiFilters.provider,
-        graphProviders: baseRows.length ? listTopUsageProvidersFromRows(baseRows) : EMPTY_STRING_LIST,
-        dailyProviders: usageRequestDailyTotalsProviders.map((row) => row.provider),
-        analyticsProviders: usageByProvider.map((row) => row.provider),
+        graphProviders: [
+          ...(baseRows.length ? listTopUsageProvidersFromRows(baseRows) : EMPTY_STRING_LIST),
+          ...Object.keys(usageRequestGraphRowsCache?.rowsByProvider ?? {}),
+        ],
+        dailyProviders: usageRequestDailyProviderHints,
+        analyticsProviders: usageRequestAnalyticsProviderHints,
         limit: Math.min(3, USAGE_REQUEST_GRAPH_COLORS.length),
       })
       if (providerTargets.length === 0) {
@@ -1441,7 +1488,7 @@ export function UsageStatisticsPanel({
         )
       }
       setUsageRequestGraphRowsByProvider((prev) => {
-        const next: Record<string, UsageRequestEntry[]> = {}
+        const next: Record<string, UsageRequestEntry[]> = { ...prev }
         let changed = false
         for (const provider of providerTargets) {
           const existingRows = prev[provider]
@@ -1451,18 +1498,27 @@ export function UsageStatisticsPanel({
           } else if (seedRows && seedRows.length) {
             next[provider] = seedRows
             changed = true
+          } else if (Object.prototype.hasOwnProperty.call(next, provider)) {
+            delete next[provider]
+            changed = true
           }
         }
         if (!changed && Object.keys(prev).every((provider) => targetSet.has(provider))) return prev
         return next
       })
+      const existingCacheRows =
+        usageRequestGraphRowsCache?.queryKey === requestGraphQueryKey ? usageRequestGraphRowsCache.rowsByProvider : {}
       usageRequestGraphRowsCache = {
         queryKey: requestGraphQueryKey,
         baseRows,
-        rowsByProvider: seedRowsByProvider,
+        rowsByProvider: {
+          ...existingCacheRows,
+          ...seedRowsByProvider,
+        },
       }
-      const providerResults = await Promise.all(
+      await Promise.all(
         providerTargets.map(async (provider) => {
+          let providerRows: UsageRequestEntry[] | null = null
           try {
             const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
               ...buildUsageRequestEntriesArgs({
@@ -1477,39 +1533,29 @@ export function UsageStatisticsPanel({
                 offset: 0,
               }),
             })
-            return { provider, rows: (res.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms) }
+            providerRows = (res.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms)
           } catch {
-            return { provider, rows: null as UsageRequestEntry[] | null }
+            providerRows = null
           }
+          if (!providerRows || usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
+          setUsageRequestGraphRowsByProvider((prev) => {
+            const currentRows = prev[provider] ?? EMPTY_USAGE_REQUEST_ROWS
+            const same =
+              currentRows.length === providerRows.length &&
+              currentRows.every((row, idx) => usageRequestRowIdentity(row) === usageRequestRowIdentity(providerRows[idx]))
+            if (same) return prev
+            const next = { ...prev, [provider]: providerRows }
+            if (usageRequestGraphRowsCache?.queryKey === requestGraphQueryKey) {
+              usageRequestGraphRowsCache = {
+                ...usageRequestGraphRowsCache,
+                rowsByProvider: next,
+              }
+            }
+            return next
+          })
         }),
       )
       if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
-      setUsageRequestGraphRowsByProvider((prev) => {
-        const next: Record<string, UsageRequestEntry[]> = {}
-        let changed = false
-        for (const provider of providerTargets) {
-          const resolved = providerResults.find((item) => item.provider === provider)
-          const providerRows = resolved?.rows
-          const currentRows = prev[provider] ?? EMPTY_USAGE_REQUEST_ROWS
-          if (!providerRows) {
-            next[provider] = currentRows
-            continue
-          }
-          const same =
-            currentRows.length === providerRows.length &&
-            currentRows.every((row, idx) => usageRequestRowIdentity(row) === usageRequestRowIdentity(providerRows[idx]))
-          next[provider] = providerRows
-          if (!same) changed = true
-        }
-        if (!changed && Object.keys(prev).every((provider) => targetSet.has(provider))) return prev
-        if (usageRequestGraphRowsCache?.queryKey === requestGraphQueryKey) {
-          usageRequestGraphRowsCache = {
-            ...usageRequestGraphRowsCache,
-            rowsByProvider: next,
-          }
-        }
-        return next
-      })
       usageRequestGraphLastRefreshAtRef.current = Date.now()
     } catch {
       if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
@@ -1536,8 +1582,8 @@ export function UsageStatisticsPanel({
     }
   }, [
     requestGraphQueryKey,
-    usageByProvider,
-    usageRequestDailyTotalsProviders,
+    usageRequestAnalyticsProviderHints,
+    usageRequestDailyProviderHints,
     usageRequestMultiFilters.provider,
     usageRequestGraphBaseRows.length,
     usageRequestRows,
@@ -1700,9 +1746,12 @@ export function UsageStatisticsPanel({
           : usageRequestRows
     const expectedGraphProviders = pickUsageRequestDisplayProviders({
       selectedProviders: usageRequestMultiFilters.provider,
-      graphProviders: listTopUsageProvidersFromRows(graphBaseCandidate),
-      dailyProviders: usageRequestDailyTotalsProviders.map((row) => row.provider),
-      analyticsProviders: usageByProvider.map((row) => row.provider),
+      graphProviders: [
+        ...listTopUsageProvidersFromRows(graphBaseCandidate),
+        ...Object.keys(cachedGraph?.rowsByProvider ?? {}),
+      ],
+      dailyProviders: usageRequestDailyProviderHints,
+      analyticsProviders: usageRequestAnalyticsProviderHints,
       limit: Math.min(3, USAGE_REQUEST_GRAPH_COLORS.length),
     })
     const visibleGraphProviderCount = Math.max(usageRequestGraphProviderCount, cachedGraphProviderCount)
@@ -1759,9 +1808,9 @@ export function UsageStatisticsPanel({
     usageRequestRows,
     usageRequestGraphBaseRows.length,
     usageRequestGraphProviderCount,
-    usageRequestDailyTotalsProviders,
+    usageRequestDailyProviderHints,
     usageRequestMultiFilters.provider,
-    usageByProvider,
+    usageRequestAnalyticsProviderHints,
     refreshUsageRequestGraphRows,
     refreshUsageRequests,
     usageRequestRows.length,
@@ -1952,13 +2001,13 @@ export function UsageStatisticsPanel({
     return pickUsageRequestDisplayProviders({
       selectedProviders: usageRequestMultiFilters.provider,
       graphProviders: usageRequestProviderOptions,
-      dailyProviders: usageRequestDailyTotalsProviders.map((row) => row.provider),
-      analyticsProviders: usageByProvider.map((row) => row.provider),
+      dailyProviders: usageRequestDailyProviderHints,
+      analyticsProviders: usageRequestAnalyticsProviderHints,
       limit: Math.min(3, USAGE_REQUEST_GRAPH_COLORS.length),
     })
   }, [
-    usageByProvider,
-    usageRequestDailyTotalsProviders,
+    usageRequestAnalyticsProviderHints,
+    usageRequestDailyProviderHints,
     usageRequestMultiFilters.provider,
     usageRequestProviderOptions,
   ])

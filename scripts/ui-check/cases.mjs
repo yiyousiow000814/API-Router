@@ -1153,6 +1153,7 @@ export async function runRequestsGraphProviderHydrationCase(driver, screenshotPa
   await driver.executeScript(`
     const globalObj = window;
     const bucket = (globalObj.__ui_check__ = globalObj.__ui_check__ || {});
+    bucket.__graphHydrationInvokes = [];
     const now = Date.now();
     const providers = ['official', 'provider_1', 'provider_2'];
     const mkRow = (provider, idx) => ({
@@ -1205,12 +1206,14 @@ export async function runRequestsGraphProviderHydrationCase(driver, screenshotPa
       target.__uiCheckGraphHydrationOriginalInvoke = original;
       target[key] = function patchedInvoke(cmd, payload) {
         if (cmd === 'get_usage_request_entries') {
-          bucket.__graphHydrationInvokes.push({
+          const log = Array.isArray(bucket.__graphHydrationInvokes) ? bucket.__graphHydrationInvokes : [];
+          log.push({
             providers: Array.isArray(payload?.providers) ? payload.providers.slice() : null,
             fromUnixMs: payload?.fromUnixMs ?? null,
             toUnixMs: payload?.toUnixMs ?? null,
             limit: payload?.limit ?? null,
           });
+          bucket.__graphHydrationInvokes = log;
         }
         if (cmd === 'get_usage_request_daily_totals') {
           return Promise.resolve({ ok: true, days: daily, providers: dailyProviders });

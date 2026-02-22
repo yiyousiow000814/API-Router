@@ -3,6 +3,7 @@ import { useCallback, useRef } from 'react'
 import {
   buildUsageRequestEntriesArgs,
   buildUsageRequestsQueryKey,
+  primeUsageRequestGraphPrefetchCache,
   primeUsageRequestsPrefetchCache,
 } from '../components/UsageStatisticsPanel'
 
@@ -66,6 +67,19 @@ function buildDailyTotalsFromRows(rows: UsageRequestEntry[], dayLimit: number) {
     .sort((a, b) => b[1] - a[1])
     .map(([provider, total_tokens]) => ({ provider, total_tokens }))
   return { days, providers }
+}
+
+function groupRowsByProvider(rows: UsageRequestEntry[], providerLimit: number) {
+  const out = new Map<string, UsageRequestEntry[]>()
+  for (const row of rows) {
+    const provider = String(row?.provider ?? '').trim()
+    if (!provider) continue
+    const list = out.get(provider) ?? []
+    if (list.length >= providerLimit) continue
+    list.push(row)
+    out.set(provider, list)
+  }
+  return Object.fromEntries(out.entries())
 }
 
 function buildSyntheticUsageRequestRows(limit: number): UsageRequestEntry[] {
@@ -193,6 +207,51 @@ export function useTopNavIntentPrefetch({
             providers: dailyRes.providers ?? [],
           },
         })
+        const graphProviders = (dailyRes.providers ?? [])
+          .map((row) => String(row?.provider ?? '').trim())
+          .filter((provider) => provider.length > 0)
+          .slice(0, 3)
+        if (graphProviders.length > 0) {
+          try {
+            const seeded = groupRowsByProvider(rowsRes.rows ?? [], 120)
+            const byProvider: Record<string, UsageRequestEntry[]> = Object.fromEntries(
+              graphProviders.map((provider) => [provider, seeded[provider] ?? [] as UsageRequestEntry[]]),
+            )
+            const providerResults = await Promise.all(
+              graphProviders.map(async (provider) => {
+                try {
+                  const res = await invoke<{ ok: boolean; rows: UsageRequestEntry[] }>(
+                    'get_usage_request_entries',
+                    buildUsageRequestEntriesArgs({
+                      hours: USAGE_REQUESTS_PREFETCH_HOURS,
+                      fromUnixMs: null,
+                      toUnixMs: null,
+                      providers: [provider],
+                      models: null,
+                      origins: null,
+                      sessions: null,
+                      limit: 120,
+                      offset: 0,
+                    }),
+                  )
+                  return { provider, rows: (res.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms).slice(0, 120) }
+                } catch {
+                  return { provider, rows: null as UsageRequestEntry[] | null }
+                }
+              }),
+            )
+            for (const item of providerResults) {
+              if (!item.rows || item.rows.length === 0) continue
+              byProvider[item.provider] = item.rows
+            }
+            primeUsageRequestGraphPrefetchCache({
+              baseRows: rowsRes.rows ?? [],
+              rowsByProvider: byProvider,
+            })
+          } catch {
+            // Keep table prefetch even when graph prefetch fails.
+          }
+        }
       } catch {
         // Non-Tauri dev server (or transient backend issues): prime a lightweight synthetic cache to avoid 0->loaded flashes.
         const fallbackRows = buildSyntheticUsageRequestRows(Math.min(800, USAGE_REQUESTS_PREFETCH_LIMIT))
