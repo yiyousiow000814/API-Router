@@ -2,7 +2,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { useCallback, useRef } from 'react'
 import {
   buildUsageRequestEntriesArgs,
-  buildUsageRequestsQueryKey,
+  USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
+  USAGE_REQUESTS_CANONICAL_QUERY_KEY,
   primeUsageRequestGraphPrefetchCache,
   primeUsageRequestsPrefetchCache,
 } from '../components/UsageStatisticsPanel'
@@ -10,7 +11,6 @@ import {
 const USAGE_STATS_INTENT_PREFETCH_COOLDOWN_MS = 60_000
 const USAGE_REQUESTS_INTENT_PREFETCH_COOLDOWN_MS = 2_000
 const USAGE_REQUESTS_PREFETCH_LIMIT = 2000
-const USAGE_REQUESTS_PREFETCH_HOURS = 24 * 365 * 20
 
 type TopPage =
   | 'dashboard'
@@ -159,22 +159,14 @@ export function useTopNavIntentPrefetch({
     }
     usageRequestsIntentPrefetchAtRef.current = now
     usageRequestsIntentPrefetchInFlightRef.current = true
-    const requestQueryKey = buildUsageRequestsQueryKey({
-      hours: USAGE_REQUESTS_PREFETCH_HOURS,
-      fromUnixMs: null,
-      toUnixMs: null,
-      providers: null,
-      models: null,
-      origins: null,
-      sessions: null,
-    })
+    const requestQueryKey = USAGE_REQUESTS_CANONICAL_QUERY_KEY
 
     void (async () => {
       try {
         const [rowsRes, dailyRes] = await Promise.all([
           invoke<{ ok: boolean; rows: UsageRequestEntry[]; has_more: boolean }>('get_usage_request_entries', {
             ...buildUsageRequestEntriesArgs({
-              hours: USAGE_REQUESTS_PREFETCH_HOURS,
+              hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
               fromUnixMs: null,
               toUnixMs: null,
               providers: null,
@@ -223,7 +215,7 @@ export function useTopNavIntentPrefetch({
                   const res = await invoke<{ ok: boolean; rows: UsageRequestEntry[] }>(
                     'get_usage_request_entries',
                     buildUsageRequestEntriesArgs({
-                      hours: USAGE_REQUESTS_PREFETCH_HOURS,
+                      hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
                       fromUnixMs: null,
                       toUnixMs: null,
                       providers: [provider],

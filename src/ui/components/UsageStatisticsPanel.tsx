@@ -215,7 +215,7 @@ const WEEKDAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']
 const EMPTY_USAGE_REQUEST_ROWS: UsageRequestEntry[] = []
 const EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER: Record<string, UsageRequestEntry[]> = {}
 const EMPTY_STRING_LIST: string[] = []
-const USAGE_REQUESTS_PAGE_FETCH_HOURS = 24 * 365 * 20
+export const USAGE_REQUESTS_CANONICAL_FETCH_HOURS = 24 * 365 * 20
 export function buildUsageRequestsQueryKey(input: {
   hours: number
   fromUnixMs: number | null
@@ -235,8 +235,8 @@ export function buildUsageRequestsQueryKey(input: {
     sessions: input.sessions ?? [],
   })
 }
-const USAGE_REQUESTS_PAGE_QUERY_KEY = buildUsageRequestsQueryKey({
-  hours: USAGE_REQUESTS_PAGE_FETCH_HOURS,
+export const USAGE_REQUESTS_CANONICAL_QUERY_KEY = buildUsageRequestsQueryKey({
+  hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
   fromUnixMs: null,
   toUnixMs: null,
   providers: null,
@@ -260,7 +260,7 @@ export function resolveRequestFetchHours(input: {
   usageWindowHours: number
 }): number {
   if (input.effectiveDetailsTab !== 'requests') return input.usageWindowHours
-  if (!input.showFilters) return USAGE_REQUESTS_PAGE_FETCH_HOURS
+  if (!input.showFilters) return USAGE_REQUESTS_CANONICAL_FETCH_HOURS
   return input.usageWindowHours
 }
 
@@ -1068,7 +1068,7 @@ export function UsageStatisticsPanel({
       ? usageRequestsPageCache
       : null
   const canonicalRequestsPageCache =
-    usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_PAGE_QUERY_KEY
+    usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
       ? usageRequestsPageCache
       : null
   const lastNonEmptyRequestsPageCache = usageRequestsLastNonEmptyPageCache
@@ -1360,7 +1360,7 @@ export function UsageStatisticsPanel({
     const now = Date.now()
     if (now - usageRequestsPagePrefetchAtRef.current < USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS) return
     const cached =
-      usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_PAGE_QUERY_KEY
+      usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
         ? usageRequestsPageCache
         : null
     if (cached && cached.rows.length > 0) return
@@ -1369,7 +1369,7 @@ export function UsageStatisticsPanel({
     try {
       const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
         ...buildUsageRequestEntriesArgs({
-          hours: USAGE_REQUESTS_PAGE_FETCH_HOURS,
+          hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
           fromUnixMs: null,
           toUnixMs: null,
           providers: null,
@@ -1382,26 +1382,26 @@ export function UsageStatisticsPanel({
       })
       const nextRows = res.rows ?? []
       usageRequestsPageCache = {
-        queryKey: USAGE_REQUESTS_PAGE_QUERY_KEY,
+        queryKey: USAGE_REQUESTS_CANONICAL_QUERY_KEY,
         rows: nextRows,
         hasMore: Boolean(res.has_more),
         usingTestFallback: false,
       }
       if (nextRows.length > 0) {
         usageRequestsLastNonEmptyPageCache = {
-          queryKey: USAGE_REQUESTS_PAGE_QUERY_KEY,
+          queryKey: USAGE_REQUESTS_CANONICAL_QUERY_KEY,
           rows: nextRows,
           hasMore: Boolean(res.has_more),
           usingTestFallback: false,
         }
         primeUsageRequestGraphCacheFromBaseRows(nextRows)
       }
-      emitUsageRequestsCachePrimed(USAGE_REQUESTS_PAGE_QUERY_KEY)
+      emitUsageRequestsCachePrimed(USAGE_REQUESTS_CANONICAL_QUERY_KEY)
     } catch {
       if (usageRequestTestFallbackEnabled) {
         const nextRows = usageRequestTestRows.slice(0, Math.max(1, limit))
         usageRequestsPageCache = {
-          queryKey: USAGE_REQUESTS_PAGE_QUERY_KEY,
+          queryKey: USAGE_REQUESTS_CANONICAL_QUERY_KEY,
           rows: nextRows,
           hasMore: usageRequestTestRows.length > nextRows.length,
           usingTestFallback: true,
@@ -1410,7 +1410,7 @@ export function UsageStatisticsPanel({
           usageRequestsLastNonEmptyPageCache = usageRequestsPageCache
           primeUsageRequestGraphCacheFromBaseRows(nextRows)
         }
-        emitUsageRequestsCachePrimed(USAGE_REQUESTS_PAGE_QUERY_KEY)
+        emitUsageRequestsCachePrimed(USAGE_REQUESTS_CANONICAL_QUERY_KEY)
       }
     } finally {
       usageRequestsPagePrefetchInFlightRef.current = false
@@ -1430,7 +1430,7 @@ export function UsageStatisticsPanel({
           ? usageRequestGraphRowsCache
           : null
       const canonicalPageRows =
-        usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_PAGE_QUERY_KEY
+        usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
           ? usageRequestsPageCache.rows
           : EMPTY_USAGE_REQUEST_ROWS
       const baseRows =
@@ -1660,7 +1660,7 @@ export function UsageStatisticsPanel({
         ? usageRequestsPageCache
         : null
     const canonicalCached =
-      usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_PAGE_QUERY_KEY
+      usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
         ? usageRequestsPageCache
         : null
     const source = resolveRequestPageCached({
@@ -1693,7 +1693,7 @@ export function UsageStatisticsPanel({
         ? usageRequestsPageCache
         : null
     const canonicalCached =
-      usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_PAGE_QUERY_KEY
+      usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
         ? usageRequestsPageCache
         : null
     const requestPageCached = resolveRequestPageCached({
@@ -1841,7 +1841,7 @@ export function UsageStatisticsPanel({
   useEffect(() => {
     if (!isRequestsTab) return
     if (!usageRequestGraphBaseRows.length && Object.keys(usageRequestGraphRowsByProvider).length === 0) return
-    if (requestQueryKey !== USAGE_REQUESTS_PAGE_QUERY_KEY) return
+    if (requestQueryKey !== USAGE_REQUESTS_CANONICAL_QUERY_KEY) return
     usageRequestGraphRowsCache = {
       queryKey: requestGraphQueryKey,
       baseRows: usageRequestGraphBaseRows,

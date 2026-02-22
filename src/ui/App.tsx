@@ -51,7 +51,7 @@ import {
 } from './utils/switchboard'
 import { usageProviderRowKey } from './utils/usageStatisticsView'
 import {
-  buildUsageRequestsQueryKey,
+  USAGE_REQUESTS_CANONICAL_QUERY_KEY,
   primeUsageRequestsPrefetchCache,
 } from './components/UsageStatisticsPanel'
 type TopPage = 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
@@ -63,16 +63,6 @@ const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.wsl2.v1'
 const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
 const EVENT_LOG_PRELOAD_REFRESH_MS = 15_000
 const EVENT_LOG_PRELOAD_LIMIT = 2000
-const USAGE_REQUESTS_PREFETCH_HOURS = 24 * 365 * 20
-const USAGE_REQUESTS_PREFETCH_QUERY_KEY = buildUsageRequestsQueryKey({
-  hours: USAGE_REQUESTS_PREFETCH_HOURS,
-  fromUnixMs: null,
-  toUnixMs: null,
-  providers: null,
-  models: null,
-  origins: null,
-  sessions: null,
-})
 export default function App() {
   const isDevPreview = useMemo(() => {
     if (!import.meta.env.DEV) return false
@@ -322,7 +312,7 @@ export default function App() {
     }
     next.primeRequestsPrefetchCache = (payload) => {
       primeUsageRequestsPrefetchCache({
-        queryKey: USAGE_REQUESTS_PREFETCH_QUERY_KEY,
+        queryKey: USAGE_REQUESTS_CANONICAL_QUERY_KEY,
         rows: payload?.rows ?? [],
         hasMore: Boolean(payload?.hasMore),
         dailyTotals: payload?.dailyTotals ?? null,
