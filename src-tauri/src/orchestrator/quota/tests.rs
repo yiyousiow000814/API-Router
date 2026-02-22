@@ -67,6 +67,7 @@ mod tests {
             routing: RoutingConfig {
                 preferred_provider: "p1".to_string(),
                 session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
                 auto_return_to_preferred: true,
                 preferred_stable_seconds: 1,
                 failure_threshold: 1,

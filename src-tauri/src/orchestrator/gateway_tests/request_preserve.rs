@@ -140,6 +140,7 @@ async fn preserves_tool_input_and_previous_response_id() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 1,
             failure_threshold: 1,
@@ -244,6 +245,7 @@ async fn preserves_tool_input_inside_message_array() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 1,
             failure_threshold: 1,
@@ -348,6 +350,7 @@ async fn preserves_previous_response_id_for_plain_messages() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 1,
             failure_threshold: 1,

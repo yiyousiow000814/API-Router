@@ -12,13 +12,22 @@ pub(crate) fn set_manual_override(
             return Err(format!("provider is deactivated: {p}"));
         }
     }
+    let prev_override = state.gateway.router.manual_override.read().clone();
+    if prev_override == provider {
+        return Ok(());
+    }
     state.gateway.router.set_manual_override(provider.clone());
+    let cleared_assignments = state.gateway.store.delete_all_session_route_assignments();
     state.gateway.store.add_event(
         provider.as_deref().unwrap_or("-"),
         "info",
         "routing.manual_override_changed",
         "manual override changed",
-        serde_json::Value::Null,
+        serde_json::json!({
+            "previous_manual_override": prev_override,
+            "manual_override": provider,
+            "cleared_session_route_assignments": cleared_assignments
+        }),
     );
     Ok(())
 }
@@ -155,6 +164,43 @@ pub(crate) fn set_preferred_provider(
     Ok(())
 }
 
+#[tauri::command]
+pub(crate) fn set_route_mode(
+    state: tauri::State<'_, app_state::AppState>,
+    mode: String,
+) -> Result<(), String> {
+    let next_mode = crate::orchestrator::config::RouteMode::from_wire(&mode)
+        .ok_or_else(|| format!("unknown route mode: {mode}"))?;
+    let prev_mode = state.gateway.cfg.read().routing.route_mode;
+    if prev_mode == next_mode {
+        return Ok(());
+    }
+
+    {
+        let mut cfg = state.gateway.cfg.write();
+        cfg.routing.route_mode = next_mode;
+    }
+
+    let cleared_assignments = state.gateway.store.delete_all_session_route_assignments();
+
+    persist_config(&state).map_err(|e| e.to_string())?;
+    state.gateway.store.add_event(
+        "gateway",
+        "info",
+        "config.route_mode_updated",
+        "route_mode updated",
+        serde_json::json!({
+            "route_mode": mode,
+            "previous_route_mode": match prev_mode {
+                crate::orchestrator::config::RouteMode::FollowPreferredAuto => "follow_preferred_auto",
+                crate::orchestrator::config::RouteMode::BalancedAuto => "balanced_auto",
+            },
+            "cleared_session_route_assignments": cleared_assignments,
+        }),
+    );
+    Ok(())
+}
+
 fn session_is_agent(state: &app_state::AppState, codex_session_id: &str) -> bool {
     if state
         .gateway
@@ -211,6 +257,10 @@ pub(crate) fn set_session_preferred_provider(
         prev
     };
     persist_config(&state).map_err(|e| e.to_string())?;
+    state
+        .gateway
+        .store
+        .delete_session_route_assignment(&codex_session_id);
     let msg = match prev_provider.as_deref() {
         Some(prev) => format!("session preferred_provider updated: {prev} -> {provider}"),
         None => format!("session preferred_provider set: {provider}"),
@@ -249,6 +299,10 @@ pub(crate) fn clear_session_preferred_provider(
         return Ok(());
     }
     persist_config(&state).map_err(|e| e.to_string())?;
+    state
+        .gateway
+        .store
+        .delete_session_route_assignment(&codex_session_id);
     state.gateway.store.add_event(
         "gateway",
         "info",

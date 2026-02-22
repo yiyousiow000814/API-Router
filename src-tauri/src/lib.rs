@@ -453,6 +453,7 @@ pub fn run() {
             commands::get_gateway_token,
             commands::rotate_gateway_token,
             commands::set_preferred_provider,
+            commands::set_route_mode,
             commands::set_session_preferred_provider,
             commands::clear_session_preferred_provider,
             commands::upsert_provider,

@@ -46,6 +46,7 @@ async fn switches_provider_rebuilds_history_without_prev_id() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: false,
             preferred_stable_seconds: 1,
             failure_threshold: 1,
@@ -210,6 +211,7 @@ async fn retries_without_prev_id_when_upstream_rejects_it() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 1,
             failure_threshold: 1,
@@ -348,6 +350,7 @@ async fn allows_request_without_prev_id_even_if_session_history_missing() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 1,
             failure_threshold: 1,
@@ -443,6 +446,7 @@ async fn allows_request_without_session_id_when_no_prev() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 1,
             failure_threshold: 1,
@@ -539,6 +543,7 @@ async fn gateway_request_sets_session_model_provider_to_api_router() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 1,
             failure_threshold: 1,
@@ -648,6 +653,7 @@ async fn review_request_backfills_parent_main_session_from_body_source() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 1,
             failure_threshold: 1,
@@ -771,6 +777,7 @@ async fn parent_thread_backfill_detects_missing_review_header_path() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 1,
             failure_threshold: 1,
@@ -895,6 +902,7 @@ async fn stream_usage_prefers_response_created_model_not_unknown() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 1,
             failure_threshold: 1,
@@ -1009,6 +1017,7 @@ async fn request_host_updates_session_reported_base_url_for_origin_detection() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 1,
             failure_threshold: 1,
@@ -1125,6 +1134,7 @@ async fn usage_records_store_windows_and_wsl2_origin_from_request_host() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 1,
             failure_threshold: 1,

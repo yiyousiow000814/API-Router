@@ -25,7 +25,7 @@ use super::openai::{
     extract_text_from_responses, input_to_items_preserve_tools, input_to_messages,
     messages_to_responses_input, messages_to_simple_input_list, sse_events_for_text,
 };
-use super::router::{select_fallback_provider, RouterState};
+use super::router::{provider_iteration_order, select_fallback_provider, RouterState};
 use super::secrets::SecretStore;
 use super::store::{extract_response_model_option, unix_ms, Store};
 use super::upstream::UpstreamClient;

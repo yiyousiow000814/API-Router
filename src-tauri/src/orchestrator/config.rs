@@ -1,5 +1,23 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteMode {
+    #[default]
+    FollowPreferredAuto,
+    BalancedAuto,
+}
+
+impl RouteMode {
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "follow_preferred_auto" => Some(Self::FollowPreferredAuto),
+            "balanced_auto" => Some(Self::BalancedAuto),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingConfig {
     pub preferred_provider: String,
@@ -9,6 +27,8 @@ pub struct RoutingConfig {
     /// instead of the global `preferred_provider`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub session_preferred_providers: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub route_mode: RouteMode,
     pub auto_return_to_preferred: bool,
     pub preferred_stable_seconds: u64,
     pub failure_threshold: u32,
@@ -98,6 +118,7 @@ impl AppConfig {
             routing: RoutingConfig {
                 preferred_provider: "official".to_string(),
                 session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: RouteMode::FollowPreferredAuto,
                 auto_return_to_preferred: true,
                 preferred_stable_seconds: 30,
                 failure_threshold: 2,

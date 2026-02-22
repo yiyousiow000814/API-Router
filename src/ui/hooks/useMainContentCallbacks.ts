@@ -29,9 +29,10 @@ type Params = {
     cliHomes?: string[],
   ) => Promise<void>
   setCodexSwapModalOpen: Dispatch<SetStateAction<boolean>>
+  override: string
   setOverride: Dispatch<SetStateAction<string>>
   overrideDirtyRef: MutableRefObject<boolean>
-  applyOverride: (next: string) => Promise<void>
+  applyOverride: (next: string) => Promise<boolean>
 }
 
 export function useMainContentCallbacks(params: Params) {
@@ -51,6 +52,7 @@ export function useMainContentCallbacks(params: Params) {
     providerSwitchStatus,
     setProviderSwitchTarget,
     setCodexSwapModalOpen,
+    override,
     setOverride,
     overrideDirtyRef,
     applyOverride,
@@ -169,10 +171,16 @@ export function useMainContentCallbacks(params: Params) {
 
   const onOpenCodexSwapOptions = () => setCodexSwapModalOpen(true)
 
-  const onOverrideChange = (next: string) => {
+  const onOverrideChange = async (next: string): Promise<boolean> => {
+    const prev = override
     setOverride(next)
     overrideDirtyRef.current = true
-    void applyOverride(next)
+    const ok = await applyOverride(next)
+    if (!ok) {
+      setOverride(prev)
+      overrideDirtyRef.current = false
+    }
+    return ok
   }
 
   return {

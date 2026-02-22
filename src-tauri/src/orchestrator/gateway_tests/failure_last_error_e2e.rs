@@ -45,6 +45,7 @@ async fn e2e_status_closed_provider_keeps_failure_fields() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 30,
             failure_threshold: 1,
@@ -162,6 +163,7 @@ async fn e2e_recovery_success_resets_failures_but_keeps_last_error() {
         routing: RoutingConfig {
             preferred_provider: "p1".to_string(),
             session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
             auto_return_to_preferred: true,
             preferred_stable_seconds: 30,
             failure_threshold: 1,

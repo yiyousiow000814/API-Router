@@ -718,6 +718,7 @@ export default function App() {
     nextProviderPlaceholder,
     applyOverride,
     setPreferred,
+    setRouteMode,
     applyProviderOrder,
     onDevPreviewBootstrap,
   } = useAppActions({
@@ -762,6 +763,9 @@ export default function App() {
     codexSwapUseWindows,
     codexSwapUseWsl,
   ])
+  const routeMode = (config?.routing.route_mode ?? 'follow_preferred_auto') as
+    | 'follow_preferred_auto'
+    | 'balanced_auto'
   const {
     providerListRef,
     registerProviderCardRef,
@@ -797,6 +801,7 @@ export default function App() {
     providerSwitchStatus,
     setProviderSwitchTarget,
     setCodexSwapModalOpen,
+    override,
     setOverride,
     overrideDirtyRef,
     applyOverride,
@@ -1112,6 +1117,8 @@ export default function App() {
               onChangeCodexSwapTarget={setCodexSwapTarget}
               codexSwapBadgeText={codexSwapBadge.badgeText}
               codexSwapBadgeTitle={codexSwapBadge.badgeTitle}
+              routeMode={routeMode}
+              onRouteModeChange={setRouteMode}
               override={override}
               onOverrideChange={onOverrideChange}
               onPreferredChange={(next) => void setPreferred(next)}
