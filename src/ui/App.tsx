@@ -50,7 +50,10 @@ import {
   resolveCliHomes,
 } from './utils/switchboard'
 import { usageProviderRowKey } from './utils/usageStatisticsView'
-import { primeUsageRequestsPrefetchCache } from './components/UsageStatisticsPanel'
+import {
+  buildUsageRequestsQueryKey,
+  primeUsageRequestsPrefetchCache,
+} from './components/UsageStatisticsPanel'
 type TopPage = 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
 const RAW_DRAFT_WINDOWS_KEY = '__draft_windows__'
 const RAW_DRAFT_WSL_KEY = '__draft_wsl2__'
@@ -61,11 +64,14 @@ const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
 const EVENT_LOG_PRELOAD_REFRESH_MS = 15_000
 const EVENT_LOG_PRELOAD_LIMIT = 2000
 const USAGE_REQUESTS_PREFETCH_HOURS = 24 * 365 * 20
-const USAGE_REQUESTS_PREFETCH_QUERY_KEY = JSON.stringify({
+const USAGE_REQUESTS_PREFETCH_QUERY_KEY = buildUsageRequestsQueryKey({
   hours: USAGE_REQUESTS_PREFETCH_HOURS,
-  providers: [],
-  models: [],
-  origins: [],
+  fromUnixMs: null,
+  toUnixMs: null,
+  providers: null,
+  models: null,
+  origins: null,
+  sessions: null,
 })
 export default function App() {
   const isDevPreview = useMemo(() => {

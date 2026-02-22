@@ -875,6 +875,7 @@ export function UsageStatisticsPanel({
   const usageRequestGraphRefreshInFlightRef = useRef(false)
   const usageRequestGraphLastRefreshAtRef = useRef(0)
   const usageRequestFetchSeqRef = useRef(0)
+  const usageRequestSummaryFetchSeqRef = useRef(0)
   const usageRequestGraphBaseFetchSeqRef = useRef(0)
   const usageRequestGraphProviderFetchSeqRef = useRef(new Map<string, number>())
   const usageRequestDailyTotalsFetchSeqRef = useRef(0)
@@ -1200,8 +1201,11 @@ export function UsageStatisticsPanel({
     ],
   )
   const refreshUsageRequestSummary = useCallback(async () => {
+    const requestSeq = usageRequestSummaryFetchSeqRef.current + 1
+    usageRequestSummaryFetchSeqRef.current = requestSeq
     if (!isRequestsTab) return
     if (hasImpossibleRequestFilters) {
+      if (usageRequestSummaryFetchSeqRef.current !== requestSeq) return
       setUsageRequestSummary({
         ok: true,
         requests: 0,
@@ -1233,8 +1237,10 @@ export function UsageStatisticsPanel({
           sessions: requestFetchSessions,
         }),
       )
+      if (usageRequestSummaryFetchSeqRef.current !== requestSeq) return
       setUsageRequestSummary(res)
     } catch {
+      if (usageRequestSummaryFetchSeqRef.current !== requestSeq) return
       setUsageRequestSummary(null)
     }
   }, [
