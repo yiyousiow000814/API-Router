@@ -123,6 +123,19 @@ mod tests {
     }
 
     #[test]
+    fn delete_all_session_route_assignments_removes_every_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        store.put_session_route_assignment("s1", "p1", 1_000);
+        store.put_session_route_assignment("s2", "p2", 2_000);
+
+        let deleted = store.delete_all_session_route_assignments();
+        assert_eq!(deleted, 2);
+        assert!(store.list_session_route_assignments_since(0).is_empty());
+    }
+
+    #[test]
     fn reopening_store_backfills_daily_index_from_events() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();

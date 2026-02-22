@@ -864,6 +864,99 @@ fn decide_provider_balanced_auto_rebalances_after_24h_when_assignment_is_skewed(
 }
 
 #[test]
+fn decide_provider_balanced_auto_ignores_explicit_session_lock_assignments() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut providers = std::collections::BTreeMap::new();
+    providers.insert(
+        "p1".to_string(),
+        ProviderConfig {
+            display_name: "P1".to_string(),
+            base_url: "https://p1.example.com".to_string(),
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        },
+    );
+    providers.insert(
+        "p2".to_string(),
+        ProviderConfig {
+            display_name: "P2".to_string(),
+            base_url: "https://p2.example.com".to_string(),
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        },
+    );
+
+    let mut session_preferred = std::collections::BTreeMap::new();
+    session_preferred.insert("session-locked".to_string(), "p2".to_string());
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 4000,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: session_preferred,
+            route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 30,
+            failure_threshold: 2,
+            cooldown_seconds: 30,
+            request_timeout_seconds: 300,
+        },
+        providers,
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+    let now = unix_ms();
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg.clone())),
+        router: Arc::new(RouterState::new(&cfg, now)),
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::from([(
+            "session-main".to_string(),
+            crate::orchestrator::gateway::ClientSessionRuntime {
+                codex_session_id: "session-main".to_string(),
+                pid: 1,
+                wt_session: Some("wt-main".to_string()),
+                last_request_unix_ms: now,
+                last_discovered_unix_ms: now,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        )]))),
+    };
+
+    state
+        .store
+        .put_session_route_assignment("session-a", "p1", now);
+    state
+        .store
+        .put_session_route_assignment("session-locked", "p2", now);
+
+    let (picked, reason) = decide_provider(&state, &cfg, "p1", "session-main");
+    assert_eq!(picked, "p2");
+    assert_eq!(reason, "balanced_auto");
+}
+
+#[test]
 fn decide_provider_skips_fallback_with_no_remaining_quota() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = open_store_dir(tmp.path().join("data")).expect("store");

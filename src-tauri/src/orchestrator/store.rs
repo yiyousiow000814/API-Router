@@ -1186,6 +1186,12 @@ impl Store {
         .unwrap_or(0)
     }
 
+    pub fn delete_all_session_route_assignments(&self) -> usize {
+        let conn = self.events_db.lock();
+        conn.execute("DELETE FROM session_route_assignments", [])
+            .unwrap_or(0)
+    }
+
     pub fn get_ledger(&self, provider: &str) -> Value {
         let key = format!("ledger:{provider}");
         self.db

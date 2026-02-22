@@ -192,6 +192,13 @@ fn load_balanced_assignment_counts(
         if row.session_id.starts_with("peer:") {
             continue;
         }
+        if cfg
+            .routing
+            .session_preferred_providers
+            .contains_key(&row.session_id)
+        {
+            continue;
+        }
         if !cfg
             .providers
             .get(&row.provider)
