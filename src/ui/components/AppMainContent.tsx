@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { DashboardPanel } from './DashboardPanel'
 import { EventLogPanel, type EventLogFocusRequest } from './EventLogPanel'
 import { ProviderSwitchboardPanel } from './ProviderSwitchboardPanel'
@@ -79,13 +80,31 @@ export function AppMainContent(props: Props) {
     usageProps,
     switchboardProps,
   } = props
+  const [keepRequestsPanelMounted, setKeepRequestsPanelMounted] = useState(activePage === 'usage_requests')
+
+  useEffect(() => {
+    if (activePage === 'usage_requests') {
+      setKeepRequestsPanelMounted(true)
+    }
+  }, [activePage])
+
+  const renderRequestsPanel = (visible: boolean) => (
+    <div style={visible ? undefined : { display: 'none' }} aria-hidden={visible ? undefined : true}>
+      <UsageRequestsPanel usageProps={usageProps} />
+    </div>
+  )
 
   if (activePage === 'usage_statistics') {
-    return <UsageAnalyticsPanel usageProps={usageProps} />
+    return (
+      <>
+        <UsageAnalyticsPanel usageProps={usageProps} />
+        {keepRequestsPanelMounted ? renderRequestsPanel(false) : null}
+      </>
+    )
   }
 
   if (activePage === 'usage_requests') {
-    return <UsageRequestsPanel usageProps={usageProps} />
+    return renderRequestsPanel(true)
   }
 
   if (activePage === 'provider_switchboard') {
@@ -104,38 +123,46 @@ export function AppMainContent(props: Props) {
   }
 
   if (!status) {
-    return <div className="aoHint">Loading...</div>
+    return (
+      <>
+        {keepRequestsPanelMounted ? renderRequestsPanel(false) : null}
+        <div className="aoHint">Loading...</div>
+      </>
+    )
   }
 
   return (
-    <DashboardPanel
-      status={status}
-      config={config}
-      providers={providers}
-      gatewayTokenPreview={gatewayTokenPreview}
-      onCopyToken={onCopyToken}
-      onShowGatewayRotate={onShowGatewayRotate}
-      onCodexLoginLogout={onCodexLoginLogout}
-      onCodexRefresh={onCodexRefresh}
-      codexRefreshing={codexRefreshing}
-      onCodexSwapAuthConfig={onCodexSwapAuthConfig}
-      onOpenCodexSwapOptions={onOpenCodexSwapOptions}
-      codexSwapTarget={codexSwapTarget}
-      codexSwapUseWindows={codexSwapUseWindows}
-      codexSwapUseWsl={codexSwapUseWsl}
-      onChangeCodexSwapTarget={onChangeCodexSwapTarget}
-      codexSwapBadgeText={codexSwapBadgeText}
-      codexSwapBadgeTitle={codexSwapBadgeTitle}
-      override={override}
-      onOverrideChange={onOverrideChange}
-      onPreferredChange={onPreferredChange}
-      onOpenConfigModal={onOpenConfigModal}
-      refreshingProviders={refreshingProviders}
-      onRefreshQuota={onRefreshQuota}
-      onOpenLastErrorInEventLog={onOpenLastErrorInEventLog}
-      clientSessions={clientSessions ?? []}
-      updatingSessionPref={updatingSessionPref}
-      onSetSessionPreferred={onSetSessionPreferred}
-    />
+    <>
+      {keepRequestsPanelMounted ? renderRequestsPanel(false) : null}
+      <DashboardPanel
+        status={status}
+        config={config}
+        providers={providers}
+        gatewayTokenPreview={gatewayTokenPreview}
+        onCopyToken={onCopyToken}
+        onShowGatewayRotate={onShowGatewayRotate}
+        onCodexLoginLogout={onCodexLoginLogout}
+        onCodexRefresh={onCodexRefresh}
+        codexRefreshing={codexRefreshing}
+        onCodexSwapAuthConfig={onCodexSwapAuthConfig}
+        onOpenCodexSwapOptions={onOpenCodexSwapOptions}
+        codexSwapTarget={codexSwapTarget}
+        codexSwapUseWindows={codexSwapUseWindows}
+        codexSwapUseWsl={codexSwapUseWsl}
+        onChangeCodexSwapTarget={onChangeCodexSwapTarget}
+        codexSwapBadgeText={codexSwapBadgeText}
+        codexSwapBadgeTitle={codexSwapBadgeTitle}
+        override={override}
+        onOverrideChange={onOverrideChange}
+        onPreferredChange={onPreferredChange}
+        onOpenConfigModal={onOpenConfigModal}
+        refreshingProviders={refreshingProviders}
+        onRefreshQuota={onRefreshQuota}
+        onOpenLastErrorInEventLog={onOpenLastErrorInEventLog}
+        clientSessions={clientSessions ?? []}
+        updatingSessionPref={updatingSessionPref}
+        onSetSessionPreferred={onSetSessionPreferred}
+      />
+    </>
   )
 }

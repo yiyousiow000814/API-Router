@@ -60,8 +60,6 @@ impl Store {
     const EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY: &'static str = "merged_legacy_sqlite_v1";
     const USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str =
         "usage_requests_migrated_from_sled_v1";
-    const USAGE_REQUEST_FILTER_ROLLUP_READY_KEY: &'static str =
-        "usage_request_filter_rollup_ready_v1";
 
     fn allowed_key_prefixes() -> [&'static [u8]; 10] {
         [
@@ -223,43 +221,8 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_usage_requests_provider_lc ON usage_requests(lower(provider));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_model_lc ON usage_requests(lower(model));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_origin_lc ON usage_requests(lower(origin));
-            CREATE TABLE IF NOT EXISTS usage_request_filter_rollup(
-              day_key TEXT NOT NULL,
-              provider_lc TEXT NOT NULL,
-              provider TEXT NOT NULL,
-              model_lc TEXT NOT NULL,
-              model TEXT NOT NULL,
-              origin_lc TEXT NOT NULL,
-              origin TEXT NOT NULL,
-              session_id TEXT NOT NULL,
-              request_count INTEGER NOT NULL,
-              total_tokens INTEGER NOT NULL,
-              PRIMARY KEY(day_key, provider_lc, model_lc, origin_lc, session_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_usage_request_filter_rollup_day_key
-              ON usage_request_filter_rollup(day_key);
-            CREATE INDEX IF NOT EXISTS idx_usage_request_filter_rollup_provider_lc
-              ON usage_request_filter_rollup(provider_lc);
-            CREATE INDEX IF NOT EXISTS idx_usage_request_filter_rollup_model_lc
-              ON usage_request_filter_rollup(model_lc);
-            CREATE INDEX IF NOT EXISTS idx_usage_request_filter_rollup_origin_lc
-              ON usage_request_filter_rollup(origin_lc);
             ",
         )?;
-        if conn
-            .execute(
-                "ALTER TABLE usage_request_filter_rollup
-                 ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0",
-                [],
-            )
-            .is_ok()
-        {
-            let _ = conn.execute(
-                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
-                 ON CONFLICT(key) DO UPDATE SET value='0'",
-                [Self::USAGE_REQUEST_FILTER_ROLLUP_READY_KEY],
-            );
-        }
         let current_schema: Option<String> = conn
             .query_row(
                 "SELECT value FROM event_meta WHERE key='schema_version'",
@@ -301,26 +264,6 @@ impl Store {
              ON CONFLICT(key) DO NOTHING",
             [Self::USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY],
         )?;
-        conn.execute(
-            "INSERT INTO event_meta(key, value) VALUES(?1, '0')
-             ON CONFLICT(key) DO NOTHING",
-            [Self::USAGE_REQUEST_FILTER_ROLLUP_READY_KEY],
-        )?;
-        let usage_rollup_ready: Option<String> = conn
-            .query_row(
-                "SELECT value FROM event_meta WHERE key=?1",
-                [Self::USAGE_REQUEST_FILTER_ROLLUP_READY_KEY],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if usage_rollup_ready.as_deref() != Some("1") {
-            Self::rebuild_usage_request_filter_rollup(&conn)?;
-            conn.execute(
-                "INSERT INTO event_meta(key, value) VALUES(?1, '1')
-                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                [Self::USAGE_REQUEST_FILTER_ROLLUP_READY_KEY],
-            )?;
-        }
         drop(conn);
         self.migrate_legacy_events_from_sled_if_needed()?;
         self.migrate_usage_requests_from_sled_if_needed()?;
@@ -424,85 +367,6 @@ impl Store {
             .with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
             .single()?;
         u64::try_from(dt.timestamp_millis()).ok()
-    }
-
-    pub(super) fn upsert_usage_request_filter_rollup_row(
-        tx: &rusqlite::Transaction<'_>,
-        day_key: &str,
-        provider: &str,
-        model: &str,
-        origin: &str,
-        session_id: &str,
-        request_count: i64,
-        total_tokens: i64,
-    ) -> rusqlite::Result<()> {
-        tx.execute(
-            "INSERT INTO usage_request_filter_rollup(
-                day_key, provider_lc, provider, model_lc, model, origin_lc, origin, session_id, request_count, total_tokens
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(day_key, provider_lc, model_lc, origin_lc, session_id)
-             DO UPDATE SET
-                request_count = usage_request_filter_rollup.request_count + excluded.request_count,
-                total_tokens = usage_request_filter_rollup.total_tokens + excluded.total_tokens,
-                provider = excluded.provider,
-                model = excluded.model,
-                origin = excluded.origin",
-            params![
-                day_key,
-                provider.trim().to_ascii_lowercase(),
-                provider,
-                model.trim().to_ascii_lowercase(),
-                model,
-                origin.trim().to_ascii_lowercase(),
-                origin,
-                session_id,
-                request_count.max(1),
-                total_tokens.max(0),
-            ],
-        )?;
-        Ok(())
-    }
-
-    fn rebuild_usage_request_filter_rollup(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-        conn.execute("DELETE FROM usage_request_filter_rollup", [])?;
-        conn.execute(
-            "INSERT INTO usage_request_filter_rollup(
-                day_key, provider_lc, provider, model_lc, model, origin_lc, origin, session_id, request_count, total_tokens
-             )
-             SELECT
-                strftime('%Y-%m-%d', unix_ms / 1000, 'unixepoch', 'localtime') AS day_key,
-                lower(provider) AS provider_lc,
-                MIN(provider) AS provider,
-                lower(model) AS model_lc,
-                MIN(model) AS model,
-                lower(origin) AS origin_lc,
-                MIN(origin) AS origin,
-                session_id,
-                COUNT(*) AS request_count,
-                SUM(total_tokens) AS total_tokens
-             FROM usage_requests
-             GROUP BY day_key, lower(provider), lower(model), lower(origin), session_id",
-            [],
-        )?;
-        Ok(())
-    }
-
-    fn ensure_usage_request_filter_rollup_populated(conn: &rusqlite::Connection) {
-        let rollup_count: i64 = conn
-            .query_row("SELECT COUNT(1) FROM usage_request_filter_rollup", [], |row| {
-                row.get(0)
-            })
-            .unwrap_or(0);
-        if rollup_count > 0 {
-            return;
-        }
-        let requests_count: i64 = conn
-            .query_row("SELECT COUNT(1) FROM usage_requests", [], |row| row.get(0))
-            .unwrap_or(0);
-        if requests_count <= 0 {
-            return;
-        }
-        let _ = Self::rebuild_usage_request_filter_rollup(conn);
     }
 
     fn parse_event_key_id(key: &[u8]) -> Option<String> {
@@ -853,7 +717,7 @@ impl Store {
             cache_read_input_tokens,
         ) in staged
         {
-            let inserted = tx.execute(
+            tx.execute(
                 "INSERT OR IGNORE INTO usage_requests(
                     id, unix_ms, provider, api_key_ref, model, origin, session_id,
                     input_tokens, output_tokens, total_tokens,
@@ -873,25 +737,6 @@ impl Store {
                     cache_creation_input_tokens,
                     cache_read_input_tokens,
                 ],
-            )?;
-            if inserted == 0 {
-                continue;
-            }
-            let Ok(unix_ms_u64) = u64::try_from(*unix_ms) else {
-                continue;
-            };
-            let Some(day_key) = Self::local_day_key_from_unix_ms(unix_ms_u64) else {
-                continue;
-            };
-            Self::upsert_usage_request_filter_rollup_row(
-                &tx,
-                &day_key,
-                provider,
-                model,
-                origin,
-                session_id,
-                1,
-                *total_tokens,
             )?;
         }
         tx.commit()?;
@@ -1161,17 +1006,6 @@ impl Store {
             let _ = conn.execute(
                 "UPDATE usage_requests SET provider=?1 WHERE provider=?2",
                 params![new, old],
-            );
-            let _ = conn.execute(
-                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
-                 ON CONFLICT(key) DO UPDATE SET value='0'",
-                [Self::USAGE_REQUEST_FILTER_ROLLUP_READY_KEY],
-            );
-            let _ = Self::rebuild_usage_request_filter_rollup(&conn);
-            let _ = conn.execute(
-                "INSERT INTO event_meta(key, value) VALUES(?1, '1')
-                 ON CONFLICT(key) DO UPDATE SET value='1'",
-                [Self::USAGE_REQUEST_FILTER_ROLLUP_READY_KEY],
             );
         }
 
@@ -1553,114 +1387,23 @@ impl Store {
         (out, has_more)
     }
 
-    pub fn list_usage_request_distinct_counts(
-        &self,
-        field: &str,
-        since_unix_ms: u64,
-        until_unix_ms: Option<u64>,
-        providers: &[String],
-        models: &[String],
-        origins: &[String],
-        limit: usize,
-    ) -> Vec<(String, u64)> {
-        let (group_by_expr, value_expr) = match field {
-            "provider" => ("provider_lc", "MIN(provider)"),
-            "model" => ("model_lc", "MIN(model)"),
-            "origin" => ("origin_lc", "MIN(origin)"),
-            "session_id" => ("session_id", "MIN(session_id)"),
-            _ => return Vec::new(),
-        };
-        let Some(since_day_key) = Self::local_day_key_from_unix_ms(since_unix_ms) else {
-            return Vec::new();
-        };
-        let mut sql = format!(
-            "SELECT {value_expr} AS value, SUM(request_count) AS cnt
-             FROM usage_request_filter_rollup
-             WHERE day_key >= ?"
-        );
-        let mut params: Vec<rusqlite::types::Value> =
-            vec![rusqlite::types::Value::Text(since_day_key)];
-        if let Some(until_unix_ms) = until_unix_ms {
-            if let Some(until_day_key) = Self::local_day_key_from_unix_ms(until_unix_ms) {
-                sql.push_str(" AND day_key < ?");
-                params.push(rusqlite::types::Value::Text(until_day_key));
-            }
-        }
-        if !providers.is_empty() {
-            let placeholders = vec!["?"; providers.len()].join(", ");
-            sql.push_str(&format!(" AND provider_lc IN ({placeholders})"));
-            for provider in providers {
-                params.push(rusqlite::types::Value::Text(
-                    provider.trim().to_ascii_lowercase(),
-                ));
-            }
-        }
-        if !models.is_empty() {
-            let placeholders = vec!["?"; models.len()].join(", ");
-            sql.push_str(&format!(" AND model_lc IN ({placeholders})"));
-            for model in models {
-                params.push(rusqlite::types::Value::Text(
-                    model.trim().to_ascii_lowercase(),
-                ));
-            }
-        }
-        if !origins.is_empty() {
-            let placeholders = vec!["?"; origins.len()].join(", ");
-            sql.push_str(&format!(" AND origin_lc IN ({placeholders})"));
-            for origin in origins {
-                params.push(rusqlite::types::Value::Text(
-                    origin.trim().to_ascii_lowercase(),
-                ));
-            }
-        }
-        sql.push_str(&format!(
-            " GROUP BY {group_by_expr}
-              ORDER BY cnt DESC, value ASC
-              LIMIT ?"
-        ));
-        params.push(rusqlite::types::Value::Integer(
-            i64::try_from(limit.max(1)).unwrap_or(i64::MAX),
-        ));
-
-        let conn = self.events_db.lock();
-        Self::ensure_usage_request_filter_rollup_populated(&conn);
-        let Ok(mut stmt) = conn.prepare(&sql) else {
-            return Vec::new();
-        };
-        let Ok(rows) = stmt.query_map(params_from_iter(params.iter()), |row| {
-            let value = row.get::<_, String>(0)?;
-            let count = u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0);
-            Ok((value, count))
-        }) else {
-            return Vec::new();
-        };
-        let mut out: Vec<(String, u64)> = Vec::new();
-        for row in rows.flatten() {
-            if row.0.trim().is_empty() {
-                continue;
-            }
-            out.push(row);
-        }
-        out
-    }
-
     pub fn list_usage_request_daily_totals(&self, day_limit: usize) -> Vec<(String, String, u64)> {
         let mut out: Vec<(String, String, u64)> = Vec::new();
         let limit = day_limit.clamp(1, 180);
         let conn = self.events_db.lock();
-        Self::ensure_usage_request_filter_rollup_populated(&conn);
         let Ok(mut stmt) = conn.prepare(
             "WITH latest_days AS (
-                SELECT day_key
-                FROM usage_request_filter_rollup
+                SELECT strftime('%Y-%m-%d', unix_ms / 1000, 'unixepoch', 'localtime') AS day_key
+                FROM usage_requests
                 GROUP BY day_key
                 ORDER BY day_key DESC
                 LIMIT ?1
              )
-             SELECT r.day_key, MIN(r.provider) AS provider, SUM(r.total_tokens) AS total_tokens
-             FROM usage_request_filter_rollup r
-             JOIN latest_days d ON r.day_key = d.day_key
-             GROUP BY r.day_key, r.provider_lc
+             SELECT d.day_key, u.provider, SUM(u.total_tokens) AS total_tokens
+             FROM usage_requests u
+             JOIN latest_days d
+               ON strftime('%Y-%m-%d', u.unix_ms / 1000, 'unixepoch', 'localtime') = d.day_key
+             GROUP BY d.day_key, u.provider
              ORDER BY d.day_key ASC, total_tokens DESC",
         ) else {
             return out;
