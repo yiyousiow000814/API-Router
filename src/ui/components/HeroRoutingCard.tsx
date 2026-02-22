@@ -3,6 +3,8 @@ import type { Config } from '../types'
 type HeroRoutingProps = {
   config: Config | null
   providers: string[]
+  routeMode: 'follow_preferred_auto' | 'balanced_auto'
+  onRouteModeChange: (next: 'follow_preferred_auto' | 'balanced_auto') => void
   override: string
   onOverrideChange: (next: string) => void
   onPreferredChange: (next: string) => void
@@ -11,6 +13,8 @@ type HeroRoutingProps = {
 export function HeroRoutingCard({
   config,
   providers,
+  routeMode,
+  onRouteModeChange,
   override,
   onOverrideChange,
   onPreferredChange,
@@ -34,8 +38,19 @@ export function HeroRoutingCard({
         <div className="aoRoutingGrid">
           <label className="aoRoutingRow">
             <span className="aoMiniLabel">Route mode</span>
+            <select
+              className="aoSelect"
+              value={routeMode}
+              onChange={(e) => onRouteModeChange(e.target.value as 'follow_preferred_auto' | 'balanced_auto')}
+            >
+              <option value="follow_preferred_auto">Follow Preferred (Auto)</option>
+              <option value="balanced_auto">Balanced Mode (Auto)</option>
+            </select>
+          </label>
+          <label className="aoRoutingRow">
+            <span className="aoMiniLabel">Provider lock</span>
             <select className="aoSelect" value={override} onChange={(e) => onOverrideChange(e.target.value)}>
-              <option value="">Follow Preferred (Auto)</option>
+              <option value="">None (Auto)</option>
               {providers.map((p) => (
                 <option key={p} value={p}>
                   {`Lock to ${p}`}

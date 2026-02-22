@@ -103,6 +103,12 @@ export function useAppActions(params: Params) {
     await refreshConfig()
   }
 
+  async function setRouteMode(next: 'follow_preferred_auto' | 'balanced_auto') {
+    await invoke('set_route_mode', { mode: next })
+    await refreshStatus()
+    await refreshConfig()
+  }
+
   async function applyProviderOrder(next: string[]) {
     if (!config) return
     setConfig((c) => (c ? { ...c, provider_order: next } : c))
@@ -130,6 +136,7 @@ export function useAppActions(params: Params) {
     nextProviderPlaceholder,
     applyOverride,
     setPreferred,
+    setRouteMode,
     applyProviderOrder,
     onDevPreviewBootstrap,
   }

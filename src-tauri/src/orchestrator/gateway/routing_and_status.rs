@@ -92,6 +92,51 @@ fn fallback_with_quota(
     })
 }
 
+fn balanced_session_provider_score(session_key: &str, provider: &str) -> u64 {
+    // Stable FNV-1a hash; deterministic across process restarts.
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in session_key
+        .as_bytes()
+        .iter()
+        .chain([0xff_u8].iter())
+        .chain(provider.as_bytes().iter())
+    {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn active_session_count_for_balancing(st: &GatewayState, session_key: &str, now_ms: u64) -> usize {
+    const ACTIVE_WINDOW_MS: u64 = 60_000;
+    let map = st.last_used_by_session.read();
+    let active_others = map
+        .iter()
+        .filter(|(sid, route)| {
+            sid.as_str() != session_key && now_ms.saturating_sub(route.unix_ms) < ACTIVE_WINDOW_MS
+        })
+        .count();
+    active_others.saturating_add(1)
+}
+
+fn pick_balanced_provider(
+    st: &GatewayState,
+    cfg: &AppConfig,
+    quota_snapshots: &Value,
+    session_key: &str,
+) -> Option<String> {
+    let candidates = provider_iteration_order(cfg)
+        .into_iter()
+        .filter(|name| provider_is_routable_for_selection(st, cfg, quota_snapshots, name))
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates
+        .into_iter()
+        .max_by_key(|provider| balanced_session_provider_score(session_key, provider))
+}
+
 pub(crate) fn decide_provider(
     st: &GatewayState,
     cfg: &AppConfig,
@@ -109,6 +154,21 @@ pub(crate) fn decide_provider(
             fallback_with_quota(st, cfg, preferred, &quota_snapshots),
             "manual_override_unhealthy",
         );
+    }
+
+    let session_has_explicit_preferred = cfg
+        .routing
+        .session_preferred_providers
+        .contains_key(session_key);
+    if cfg.routing.route_mode == crate::orchestrator::config::RouteMode::BalancedAuto
+        && !session_has_explicit_preferred
+    {
+        let active_sessions = active_session_count_for_balancing(st, session_key, unix_ms());
+        if active_sessions > 1 {
+            if let Some(provider) = pick_balanced_provider(st, cfg, &quota_snapshots, session_key) {
+                return (provider, "balanced_auto");
+            }
+        }
     }
 
     if cfg.routing.auto_return_to_preferred {

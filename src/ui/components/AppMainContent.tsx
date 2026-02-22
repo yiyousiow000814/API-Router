@@ -24,6 +24,8 @@ type Props = {
   onChangeCodexSwapTarget: (target: 'windows' | 'wsl2' | 'both') => void
   codexSwapBadgeText: string
   codexSwapBadgeTitle: string
+  routeMode: 'follow_preferred_auto' | 'balanced_auto'
+  onRouteModeChange: (next: 'follow_preferred_auto' | 'balanced_auto') => void
   override: string
   onOverrideChange: (next: string) => void
   onPreferredChange: (next: string) => void
@@ -62,6 +64,8 @@ export function AppMainContent(props: Props) {
     onChangeCodexSwapTarget,
     codexSwapBadgeText,
     codexSwapBadgeTitle,
+    routeMode,
+    onRouteModeChange,
     override,
     onOverrideChange,
     onPreferredChange,
@@ -126,6 +130,8 @@ export function AppMainContent(props: Props) {
         onChangeCodexSwapTarget={onChangeCodexSwapTarget}
         codexSwapBadgeText={codexSwapBadgeText}
         codexSwapBadgeTitle={codexSwapBadgeTitle}
+        routeMode={routeMode}
+        onRouteModeChange={onRouteModeChange}
         override={override}
         onOverrideChange={onOverrideChange}
         onPreferredChange={onPreferredChange}

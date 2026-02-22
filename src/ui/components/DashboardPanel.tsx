@@ -23,6 +23,8 @@ type Props = {
   onChangeCodexSwapTarget: (target: 'windows' | 'wsl2' | 'both') => void
   codexSwapBadgeText: string
   codexSwapBadgeTitle: string
+  routeMode: 'follow_preferred_auto' | 'balanced_auto'
+  onRouteModeChange: (next: 'follow_preferred_auto' | 'balanced_auto') => void
   override: string
   onOverrideChange: (next: string) => void
   onPreferredChange: (next: string) => void
@@ -53,6 +55,8 @@ export function DashboardPanel({
   onChangeCodexSwapTarget,
   codexSwapBadgeText,
   codexSwapBadgeTitle,
+  routeMode,
+  onRouteModeChange,
   override,
   onOverrideChange,
   onPreferredChange,
@@ -90,6 +94,8 @@ export function DashboardPanel({
         <HeroRoutingCard
           config={config}
           providers={providers}
+          routeMode={routeMode}
+          onRouteModeChange={onRouteModeChange}
           override={override}
           onOverrideChange={onOverrideChange}
           onPreferredChange={onPreferredChange}
