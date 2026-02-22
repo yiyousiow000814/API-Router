@@ -44,12 +44,36 @@ pub(crate) fn provider_has_remaining_quota(quota_snapshots: &Value, provider: &s
     true
 }
 
+pub(crate) fn quota_snapshot_confirms_available(quota_snapshots: &Value, provider: &str) -> bool {
+    let Some(snap) = quota_snapshots.get(provider) else {
+        return false;
+    };
+    let updated_at_unix_ms = snap
+        .get("updated_at_unix_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let last_error = snap
+        .get("last_error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    updated_at_unix_ms > 0
+        && last_error.trim().is_empty()
+        && provider_has_remaining_quota(quota_snapshots, provider)
+}
+
 fn provider_is_routable_for_selection(
     st: &GatewayState,
     cfg: &AppConfig,
     quota_snapshots: &Value,
     provider: &str,
 ) -> bool {
+    if st.router.is_waiting_usage_confirmation(provider) {
+        if quota_snapshot_confirms_available(quota_snapshots, provider) {
+            st.router.clear_usage_confirmation_requirement(provider);
+        } else {
+            return false;
+        }
+    }
     cfg.providers
         .get(provider)
         .is_some_and(|provider_cfg| !provider_cfg.disabled)

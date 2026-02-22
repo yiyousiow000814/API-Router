@@ -302,9 +302,9 @@ mod tests {
         }
 
         let (page1, has_more1) =
-            store.list_usage_requests_page(0, &[], &[], &[], 1, 0);
+            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], 1, 0);
         let (page2, has_more2) =
-            store.list_usage_requests_page(0, &[], &[], &[], 1, 1);
+            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], 1, 1);
         assert_eq!(page1.len(), 1);
         assert_eq!(page2.len(), 1);
         assert!(has_more1);
@@ -363,22 +363,252 @@ mod tests {
 
         let out = store.list_usage_request_daily_totals(2);
         assert!(!out.is_empty());
-        let day_keys: Vec<String> = out.iter().map(|(day, _, _)| day.clone()).collect();
+        let day_keys: Vec<String> = out
+            .iter()
+            .map(|(day, _, _, _, _, _)| day.clone())
+            .collect();
         assert!(day_keys.iter().all(|k| k.as_str() >= "2026-02-20"));
         assert!(day_keys.iter().all(|k| k.as_str() <= "2026-02-21"));
         assert!(!day_keys.iter().any(|k| k == "2026-02-19"));
 
         let sum_2026_02_21: u64 = out
             .iter()
-            .filter(|(day, _, _)| day == "2026-02-21")
-            .map(|(_, _, total)| *total)
+            .filter(|(day, _, _, _, _, _)| day == "2026-02-21")
+            .map(|(_, _, total, _, _, _)| *total)
             .sum();
         let sum_2026_02_20: u64 = out
             .iter()
-            .filter(|(day, _, _)| day == "2026-02-20")
-            .map(|(_, _, total)| *total)
+            .filter(|(day, _, _, _, _, _)| day == "2026-02-20")
+            .map(|(_, _, total, _, _, _)| *total)
             .sum();
         assert_eq!(sum_2026_02_21, 900);
         assert_eq!(sum_2026_02_20, 300);
+
+        let req_2026_02_21: u64 = out
+            .iter()
+            .filter(|(day, _, _, _, _, _)| day == "2026-02-21")
+            .map(|(_, _, _, request_count, _, _)| *request_count)
+            .sum();
+        assert_eq!(req_2026_02_21, 2);
+    }
+
+    #[test]
+    fn rename_provider_keeps_daily_totals_index_in_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let day = chrono::Local
+            .with_ymd_and_hms(2026, 2, 21, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, 'provider_old', '-', 'gpt-5.2-codex', 'windows', 's1', 100, 10, 110, 0, 0)",
+                rusqlite::params!["rename-id-1", day],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, 'provider_new', '-', 'gpt-5.2-codex', 'wsl2', 's2', 200, 20, 220, 0, 0)",
+                rusqlite::params!["rename-id-2", day + 1_000],
+            )
+            .unwrap();
+        }
+
+        store.rename_provider("provider_old", "provider_new");
+        let out = store.list_usage_request_daily_totals(5);
+
+        assert!(
+            !out.iter()
+                .any(|(_, provider, _, _, _, _)| provider == "provider_old")
+        );
+
+        let merged = out
+            .iter()
+            .find(|(day_key, provider, _, _, _, _)| day_key == "2026-02-21" && provider == "provider_new")
+            .cloned()
+            .unwrap();
+        assert_eq!(merged.2, 330);
+        assert_eq!(merged.3, 2);
+        assert_eq!(merged.4, 1);
+        assert_eq!(merged.5, 1);
+    }
+
+    #[test]
+    fn list_usage_requests_page_supports_day_range() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let day1 = chrono::Local
+            .with_ymd_and_hms(2026, 2, 19, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day2 = chrono::Local
+            .with_ymd_and_hms(2026, 2, 20, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            let insert = |id: &str, ts: i64| {
+                conn.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                        input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     ) VALUES(?1, ?2, 'official', '-', 'gpt-5.2-codex', 'windows', 's', 10, 1, 11, 0, 0)",
+                    rusqlite::params![id, ts],
+                )
+                .unwrap();
+            };
+            insert("id-a", day1);
+            insert("id-b", day2);
+        }
+
+        let day1_start = chrono::Local
+            .with_ymd_and_hms(2026, 2, 19, 0, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        let day1_end = chrono::Local
+            .with_ymd_and_hms(2026, 2, 20, 0, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+
+        let (rows, has_more) = store.list_usage_requests_page(
+            // Simulate a narrow "recent hours" window that would exclude day1 unless
+            // from/to date range takes precedence.
+            day2 as u64,
+            Some(day1_start),
+            Some(day1_end),
+            &[],
+            &[],
+            &[],
+            &[],
+            50,
+            0,
+        );
+        assert!(!has_more);
+        assert_eq!(rows.len(), 1);
+        let unix_ms = rows[0].get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        assert!(unix_ms >= day1_start && unix_ms < day1_end);
+    }
+
+    #[test]
+    fn summarize_usage_requests_is_not_limited_by_page_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let day = chrono::Local
+            .with_ymd_and_hms(2026, 2, 22, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day_start = chrono::Local
+            .with_ymd_and_hms(2026, 2, 22, 0, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        let day_end = chrono::Local
+            .with_ymd_and_hms(2026, 2, 23, 0, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+
+        {
+            let conn = store.events_db.lock();
+            for i in 0..3 {
+                conn.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                        input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                    ) VALUES(?1, ?2, 'official', '-', 'gpt-5.2-codex', 'wsl2', 's1', 100, 10, 110, 0, 0)",
+                    rusqlite::params![format!("id-{i}"), day + i * 1000],
+                )
+                .unwrap();
+            }
+        }
+
+        let (requests, input, output, total, cache_create, cache_read) = store
+            .summarize_usage_requests(
+                0,
+                Some(day_start),
+                Some(day_end),
+                &[],
+                &[],
+                &[],
+                &[],
+            );
+        assert_eq!(requests, 3);
+        assert_eq!(input, 300);
+        assert_eq!(output, 30);
+        assert_eq!(total, 330);
+        assert_eq!(cache_create, 0);
+        assert_eq!(cache_read, 0);
+    }
+
+    #[test]
+    fn since_window_applies_when_date_range_is_unbounded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let older = chrono::Local
+            .with_ymd_and_hms(2026, 2, 10, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let newer = chrono::Local
+            .with_ymd_and_hms(2026, 2, 21, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, 'official', '-', 'gpt-5.2-codex', 'windows', 's-older', 10, 1, 11, 0, 0)",
+                rusqlite::params!["older-row", older],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, 'official', '-', 'gpt-5.2-codex', 'windows', 's-newer', 20, 2, 22, 0, 0)",
+                rusqlite::params!["newer-row", newer],
+            )
+            .unwrap();
+        }
+
+        let since = (newer - 3_600_000) as u64;
+        let (rows, has_more) =
+            store.list_usage_requests_page(since, None, None, &[], &[], &[], &[], 50, 0);
+        assert!(!has_more);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0]
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default(),
+            "s-newer"
+        );
+
+        let (requests, input, output, total, cache_create, cache_read) = store
+            .summarize_usage_requests(since, None, None, &[], &[], &[], &[]);
+        assert_eq!(requests, 1);
+        assert_eq!(input, 20);
+        assert_eq!(output, 2);
+        assert_eq!(total, 22);
+        assert_eq!(cache_create, 0);
+        assert_eq!(cache_read, 0);
     }
 }

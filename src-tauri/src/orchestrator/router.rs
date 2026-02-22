@@ -21,6 +21,7 @@ struct ProviderHealth {
     state: HealthState,
     consecutive_failures: u32,
     cooldown_until_unix_ms: u64,
+    usage_confirmation_required: bool,
     last_error: String,
     last_ok_at_unix_ms: u64,
     last_fail_at_unix_ms: u64,
@@ -39,6 +40,7 @@ impl ProviderHealth {
             state: HealthState::Unknown,
             consecutive_failures: 0,
             cooldown_until_unix_ms: 0,
+            usage_confirmation_required: false,
             last_error: String::new(),
             last_ok_at_unix_ms: 0,
             last_fail_at_unix_ms: 0,
@@ -147,6 +149,7 @@ impl RouterState {
             h.state = HealthState::Healthy;
             h.consecutive_failures = 0;
             h.cooldown_until_unix_ms = 0;
+            h.usage_confirmation_required = false;
             h.last_ok_at_unix_ms = now_ms;
         }
     }
@@ -163,6 +166,27 @@ impl RouterState {
                 h.cooldown_until_unix_ms = now_ms + (cfg.routing.cooldown_seconds * 1000);
             }
         }
+    }
+
+    pub fn require_usage_confirmation(&self, provider: &str) {
+        let mut health = self.health.write();
+        if let Some(h) = health.get_mut(provider) {
+            h.usage_confirmation_required = true;
+        }
+    }
+
+    pub fn clear_usage_confirmation_requirement(&self, provider: &str) {
+        let mut health = self.health.write();
+        if let Some(h) = health.get_mut(provider) {
+            h.usage_confirmation_required = false;
+        }
+    }
+
+    pub fn is_waiting_usage_confirmation(&self, provider: &str) -> bool {
+        let health = self.health.read();
+        health
+            .get(provider)
+            .is_some_and(|h| h.usage_confirmation_required)
     }
 
     pub fn snapshot(&self, _now_ms: u64) -> HashMap<String, ProviderHealthSnapshot> {
@@ -200,7 +224,7 @@ impl RouterState {
         let Some(h) = health.get(provider) else {
             return false;
         };
-        !h.in_cooldown()
+        !h.in_cooldown() && !h.usage_confirmation_required
     }
 
     pub fn is_provider_routable(&self, provider: &str) -> bool {

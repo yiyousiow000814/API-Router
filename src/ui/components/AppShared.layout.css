@@ -381,6 +381,18 @@
   display: block;
 }
 
+.aoMainAreaRequestsFill {
+  height: auto;
+  min-height: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.aoMainAreaRequestsFill > * {
+  flex: 0 0 auto;
+  min-height: auto;
+}
+
 .aoSwitchDirsInline {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr);

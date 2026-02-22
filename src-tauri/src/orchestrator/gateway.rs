@@ -219,6 +219,58 @@ pub(crate) fn is_back_to_preferred_transition(
     })
 }
 
+async fn refresh_usage_once_after_first_failure(
+    st: &GatewayState,
+    provider_name: &str,
+    usage_refreshed_after_first_failure: &mut bool,
+) {
+    if *usage_refreshed_after_first_failure {
+        return;
+    }
+    *usage_refreshed_after_first_failure = true;
+
+    st.router.require_usage_confirmation(provider_name);
+    let snap = super::quota::refresh_quota_for_provider(st, provider_name).await;
+    let refresh_ok = snap.updated_at_unix_ms > 0 && snap.last_error.trim().is_empty();
+    if !refresh_ok {
+        let err = snap.last_error.trim();
+        let is_config_gap = err == "missing credentials for quota refresh"
+            || err == "missing usage token"
+            || err == "missing quota base"
+            || err == "missing base_url"
+            || err == "usage endpoint not found (set Usage base URL)";
+        if is_config_gap {
+            // If this provider does not support usage refresh in current config,
+            // fall back to normal retry behavior instead of blocking indefinitely.
+            st.router
+                .clear_usage_confirmation_requirement(provider_name);
+        } else {
+            st.store.add_event(
+                provider_name,
+                "warning",
+                "routing.usage_refresh_unconfirmed_after_failure",
+                "usage refresh failed after first failure; provider kept out of routing until confirmation",
+                json!({ "error": snap.last_error }),
+            );
+        }
+        return;
+    }
+
+    let quota_snapshots = st.store.list_quota_snapshots();
+    if quota_snapshot_confirms_available(&quota_snapshots, provider_name) {
+        st.router
+            .clear_usage_confirmation_requirement(provider_name);
+    } else if !provider_has_remaining_quota(&quota_snapshots, provider_name) {
+        st.store.add_event(
+            provider_name,
+            "warning",
+            "routing.closed_after_failure_usage_refresh",
+            "provider quota exhausted after first-failure usage refresh",
+            Value::Null,
+        );
+    }
+}
+
 pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: usize) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -468,6 +520,7 @@ async fn responses(
     // Try providers in order: chosen, then fallbacks.
     let mut tried = Vec::new();
     let mut last_err = String::new();
+    let mut usage_refreshed_after_first_failure = false;
 
     let mut session_messages: Option<Vec<Value>> = None;
     for _ in 0..cfg.providers.len().max(1) {
@@ -685,6 +738,12 @@ async fn responses(
                                 "stream": true
                             }),
                         );
+                        refresh_usage_once_after_first_failure(
+                            &st,
+                            &provider_name,
+                            &mut usage_refreshed_after_first_failure,
+                        )
+                        .await;
                         break;
                     }
                     Err(e) => {
@@ -699,6 +758,12 @@ async fn responses(
                             &last_err,
                             json!({ "endpoint": "/v1/responses", "stream": true }),
                         );
+                        refresh_usage_once_after_first_failure(
+                            &st,
+                            &provider_name,
+                            &mut usage_refreshed_after_first_failure,
+                        )
+                        .await;
                         break;
                     }
                 }
@@ -850,6 +915,12 @@ async fn responses(
                         &last_err,
                         json!({ "http_status": code, "endpoint": "/v1/responses", "stream": false }),
                     );
+                    refresh_usage_once_after_first_failure(
+                        &st,
+                        &provider_name,
+                        &mut usage_refreshed_after_first_failure,
+                    )
+                    .await;
                     break;
                 }
                 Err(e) => {
@@ -864,6 +935,12 @@ async fn responses(
                         &last_err,
                         json!({ "endpoint": "/v1/responses", "stream": false }),
                     );
+                    refresh_usage_once_after_first_failure(
+                        &st,
+                        &provider_name,
+                        &mut usage_refreshed_after_first_failure,
+                    )
+                    .await;
                     break;
                 }
             }

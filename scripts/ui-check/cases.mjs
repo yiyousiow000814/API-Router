@@ -914,6 +914,397 @@ export async function runRequestsFirstPaintStabilityCase(driver, screenshotPath)
   }
 }
 
+export async function runRequestsAnalyticsSwitchNoReloadCase(driver, screenshotPath) {
+  await driver.executeScript(`
+    const globalObj = window;
+    const bucket = (globalObj.__ui_check__ = globalObj.__ui_check__ || {});
+    bucket.__graphHydrationInvokes = [];
+    bucket.__requestsEntriesInvokeCount = 0;
+
+    const now = Date.now();
+    const TOTAL_ROWS = 34515;
+    const TODAY_ROWS = 520;
+    const rowsVirtual = Array.from({ length: TOTAL_ROWS }, (_, idx) => {
+      const inToday = idx < TODAY_ROWS;
+      const unixMs = inToday
+        ? now - idx * 45 * 1000
+        : now - 24 * 60 * 60 * 1000 - (idx - TODAY_ROWS) * 90 * 1000;
+      const provider = idx % 3 === 0 ? 'official' : idx % 3 === 1 ? 'provider_1' : 'provider_2';
+      return {
+        provider,
+        api_key_ref: '-',
+        model: 'gpt-5.2-codex',
+        origin: idx % 2 === 0 ? 'windows' : 'wsl2',
+        session_id: 'ui-check-session-' + String(idx + 1).padStart(6, '0'),
+        unix_ms: unixMs,
+        input_tokens: 1000 + (idx % 300),
+        output_tokens: 100 + (idx % 80),
+        total_tokens: 1100 + (idx % 380),
+        cache_creation_input_tokens: idx % 11 === 0 ? 60 : 0,
+        cache_read_input_tokens: idx % 7 === 0 ? 40 : 0,
+      };
+    });
+    const slicePage = (offset, limit) => {
+      const start = Math.max(0, Number(offset || 0));
+      const page = Math.max(1, Number(limit || 200));
+      const end = Math.min(rowsVirtual.length, start + page);
+      return rowsVirtual.slice(start, end);
+    };
+    const daily = [
+      {
+        day_start_unix_ms: new Date(now).setHours(0, 0, 0, 0),
+        provider_totals: { official: 120000, provider_1: 100000, provider_2: 90000 },
+        total_tokens: 310000,
+      },
+      {
+        day_start_unix_ms: new Date(now - 24 * 60 * 60 * 1000).setHours(0, 0, 0, 0),
+        provider_totals: { official: 80000, provider_1: 70000, provider_2: 65000 },
+        total_tokens: 215000,
+      },
+    ];
+    const providers = [
+      { provider: 'official', total_tokens: 200000 },
+      { provider: 'provider_1', total_tokens: 170000 },
+      { provider: 'provider_2', total_tokens: 155000 },
+    ];
+
+    if (!bucket.primeRequestsPrefetchCache || typeof bucket.primeRequestsPrefetchCache !== 'function') {
+      throw new Error('primeRequestsPrefetchCache is not available on window.__ui_check__.');
+    }
+    bucket.primeRequestsPrefetchCache({
+      rows: slicePage(0, 200),
+      hasMore: true,
+      dailyTotals: { days: daily, providers },
+    });
+
+    const patchInvoke = (target, key) => {
+      if (!target || typeof target[key] !== 'function') return;
+      if (target.__uiCheckRequestsInvokePatched) return;
+      const original = target[key].bind(target);
+      target.__uiCheckRequestsOriginalInvoke = original;
+      target[key] = function patchedInvoke(cmd, payload) {
+        if (cmd === 'get_usage_request_entries') {
+          bucket.__requestsEntriesInvokeCount = (bucket.__requestsEntriesInvokeCount || 0) + 1;
+          const limit = Number(payload?.limit || 200);
+          const offset = Number(payload?.offset || 0);
+          const rows = slicePage(offset, limit);
+          const nextOffset = offset + rows.length;
+          const hasMore = nextOffset < rowsVirtual.length;
+          return Promise.resolve({ ok: true, rows, has_more: hasMore, next_offset: nextOffset });
+        }
+        if (cmd === 'get_usage_request_daily_totals') {
+          return Promise.resolve({ ok: true, days: daily, providers });
+        }
+        return original(cmd, payload);
+      };
+      target.__uiCheckRequestsInvokePatched = true;
+    };
+
+    patchInvoke(globalObj.__TAURI_INTERNALS__, 'invoke');
+    patchInvoke(globalObj.__TAURI__ && globalObj.__TAURI__.core, 'invoke');
+  `)
+
+  try {
+    await clickTopNav(driver, 'Requests')
+    await waitVisible(
+      driver,
+      By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Request Details']`),
+      15000,
+    )
+    await new Promise((r) => setTimeout(r, 700))
+
+    await driver.executeScript(`
+      const bucket = (window.__ui_check__ = window.__ui_check__ || {});
+      bucket.__requestsEntriesInvokeCount = 0;
+    `)
+
+    await clickTopNav(driver, 'Analytics')
+    await waitVisible(
+      driver,
+      By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Provider Statistics']`),
+      15000,
+    )
+
+    await driver.executeScript(`
+      const bucket = (window.__ui_check__ = window.__ui_check__ || {});
+      bucket.__requestsSwitchFrameProbe = {
+        startedAt: performance.now(),
+        samples: [],
+        active: true,
+      };
+      const probe = bucket.__requestsSwitchFrameProbe;
+      const read = () => {
+        const footerHints = Array.from(document.querySelectorAll('.aoUsageRequestsFooter .aoHint'))
+          .map((el) => (el.textContent || '').trim());
+        const rowsHint = String(footerHints[1] || '');
+        const m = rowsHint.match(/^([\\d,]+)\\s*\\/\\s*([\\d,]+)\\s+rows$/i);
+        const shownRows = m ? Number(String(m[1]).replaceAll(',', '')) : null;
+        const totalRows = m ? Number(String(m[2]).replaceAll(',', '')) : null;
+        const tableHint = document.querySelector('.aoUsageHistoryTableBody td.aoHint');
+        const tableHintText = tableHint ? (tableHint.textContent || '').trim() : '';
+        const dataRowCount = document.querySelectorAll('.aoUsageHistoryTableBody tbody tr').length;
+        return { footerHints, rowsHint, shownRows, totalRows, tableHintText, dataRowCount };
+      };
+      const loop = () => {
+        const t = performance.now() - probe.startedAt;
+        if (!probe.active) return;
+        probe.samples.push({ ...read(), t });
+        if (performance.now() - probe.startedAt >= 1600) {
+          probe.active = false;
+          return;
+        }
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    `)
+
+    await clickTopNav(driver, 'Requests')
+    await waitVisible(
+      driver,
+      By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Request Details']`),
+      15000,
+    )
+    await new Promise((r) => setTimeout(r, 1300))
+
+    const probe = await driver.executeScript(`
+      const bucket = (window.__ui_check__ = window.__ui_check__ || {});
+      const p = bucket.__requestsSwitchFrameProbe || { samples: [] };
+      const samples = Array.isArray(p.samples) ? p.samples : [];
+      let sawLoadingHint = false;
+      let sawZeroRowsHint = false;
+      let sawSingleFrameCollapse = false;
+      let firstNonZeroRowsMs = null;
+      let fullRowsVisibleMs = null;
+      for (const snap of samples) {
+        if (!snap || typeof snap !== 'object') continue;
+        if (snap.tableHintText === "Loading today's rows..." || String(snap.footerHints?.[0] || '') === 'Loading more...') {
+          sawLoadingHint = true;
+        }
+        if (/^0\\s*\\/\\s*\\d+\\s+rows$/i.test(String(snap.rowsHint || ''))) {
+          sawZeroRowsHint = true;
+        }
+        if (Number.isFinite(snap.totalRows) && snap.totalRows > 0 && Number(snap.shownRows) === 0) {
+          sawSingleFrameCollapse = true;
+        }
+        if (firstNonZeroRowsMs == null && Number.isFinite(snap.shownRows) && snap.shownRows > 0) {
+          firstNonZeroRowsMs = Number(snap.t);
+        }
+        if (
+          fullRowsVisibleMs == null &&
+          Number.isFinite(snap.shownRows) &&
+          Number.isFinite(snap.totalRows) &&
+          snap.totalRows > 0 &&
+          snap.shownRows === snap.totalRows
+        ) {
+          fullRowsVisibleMs = Number(snap.t);
+        }
+      }
+      return {
+        invokeCount: Number(bucket.__requestsEntriesInvokeCount || 0),
+        sawLoadingHint,
+        sawZeroRowsHint,
+        sawSingleFrameCollapse,
+        firstNonZeroRowsMs,
+        fullRowsVisibleMs,
+        first: samples[0] || null,
+        last: samples[samples.length - 1] || null,
+        sampleCount: samples.length,
+      };
+    `)
+    const firstNonZeroRowsMs =
+      probe?.firstNonZeroRowsMs == null ? Number.POSITIVE_INFINITY : Number(probe.firstNonZeroRowsMs)
+    const fullRowsVisibleMs =
+      probe?.fullRowsVisibleMs == null ? Number.POSITIVE_INFINITY : Number(probe.fullRowsVisibleMs)
+    if (
+      probe?.sawLoadingHint ||
+      probe?.sawZeroRowsHint ||
+      probe?.sawSingleFrameCollapse ||
+      Number(probe?.invokeCount || 0) > 0 ||
+      firstNonZeroRowsMs > 180 ||
+      fullRowsVisibleMs > 220 ||
+      Number(probe?.last?.totalRows || 0) > 600
+    ) {
+      const b64 = await driver.takeScreenshot()
+      fs.writeFileSync(screenshotPath.replace('.png', '-requests-analytics-switch-reload.png'), Buffer.from(b64, 'base64'))
+      throw new Error(
+        `Requests tab switch latency/state regression under 34515-row dataset (invokeCount=${probe.invokeCount}, sawLoadingHint=${probe.sawLoadingHint}, sawZeroRowsHint=${probe.sawZeroRowsHint}, sawSingleFrameCollapse=${probe.sawSingleFrameCollapse}, firstNonZeroRowsMs=${probe.firstNonZeroRowsMs}, fullRowsVisibleMs=${probe.fullRowsVisibleMs}, first=${JSON.stringify(probe.first)}, last=${JSON.stringify(probe.last)}, sampleCount=${probe.sampleCount})`,
+      )
+    }
+    console.log(
+      `[ui:requests-reload] latency firstNonZeroRowsMs=${Number(probe.firstNonZeroRowsMs).toFixed(1)} fullRowsVisibleMs=${Number(probe.fullRowsVisibleMs).toFixed(1)} sampleCount=${probe.sampleCount}`,
+    )
+  } finally {
+    await driver.executeScript(`
+      const globalObj = window;
+      const restore = (target, key) => {
+        if (!target || !target.__uiCheckRequestsInvokePatched) return;
+        const original = target.__uiCheckRequestsOriginalInvoke;
+        if (typeof original === 'function') target[key] = original;
+        target.__uiCheckRequestsInvokePatched = false;
+        target.__uiCheckRequestsOriginalInvoke = undefined;
+      };
+      restore(globalObj.__TAURI_INTERNALS__, 'invoke');
+      restore(globalObj.__TAURI__ && globalObj.__TAURI__.core, 'invoke');
+    `)
+  }
+}
+
+export async function runRequestsGraphProviderHydrationCase(driver, screenshotPath) {
+  await driver.executeScript(`
+    const globalObj = window;
+    const bucket = (globalObj.__ui_check__ = globalObj.__ui_check__ || {});
+    bucket.__graphHydrationInvokes = [];
+    const now = Date.now();
+    const providers = ['official', 'provider_1', 'provider_2'];
+    const mkRow = (provider, idx) => ({
+      provider,
+      api_key_ref: '-',
+      model: 'gpt-5.2-codex',
+      origin: idx % 2 === 0 ? 'windows' : 'wsl2',
+      session_id: 'ui-graph-' + provider + '-' + String(idx).padStart(4, '0'),
+      unix_ms: now - idx * 45 * 1000,
+      input_tokens: 100000 + ((idx * 67) % 90000),
+      output_tokens: 1000 + ((idx * 29) % 5000),
+      total_tokens: 110000 + ((idx * 97) % 95000),
+      cache_creation_input_tokens: idx % 8 === 0 ? 1200 : 0,
+      cache_read_input_tokens: idx % 5 === 0 ? 900 : 0,
+    });
+    const rowsByProvider = Object.fromEntries(
+      providers.map((provider, pIdx) => [
+        provider,
+        Array.from({ length: 120 }, (_, idx) => mkRow(provider, idx + pIdx * 3)).sort((a, b) => b.unix_ms - a.unix_ms),
+      ]),
+    );
+    const seedRows = rowsByProvider['provider_2'].slice(0, 120);
+    const dayStart = new Date(now).setHours(0, 0, 0, 0);
+    const daily = [
+      {
+        day_start_unix_ms: dayStart,
+        provider_totals: { official: 220000, provider_1: 200000, provider_2: 180000 },
+        total_tokens: 600000,
+      },
+    ];
+    const dailyProviders = [
+      { provider: 'official', total_tokens: 220000 },
+      { provider: 'provider_1', total_tokens: 200000 },
+      { provider: 'provider_2', total_tokens: 180000 },
+    ];
+
+    if (!bucket.primeRequestsPrefetchCache || typeof bucket.primeRequestsPrefetchCache !== 'function') {
+      throw new Error('primeRequestsPrefetchCache is not available on window.__ui_check__.');
+    }
+    bucket.primeRequestsPrefetchCache({
+      rows: seedRows,
+      hasMore: true,
+      dailyTotals: { days: daily, providers: dailyProviders },
+    });
+
+    const patchInvoke = (target, key) => {
+      if (!target || typeof target[key] !== 'function') return;
+      if (target.__uiCheckGraphHydrationPatched) return;
+      const original = target[key].bind(target);
+      target.__uiCheckGraphHydrationOriginalInvoke = original;
+      target[key] = function patchedInvoke(cmd, payload) {
+        if (cmd === 'get_usage_request_entries') {
+          const log = Array.isArray(bucket.__graphHydrationInvokes) ? bucket.__graphHydrationInvokes : [];
+          log.push({
+            providers: Array.isArray(payload?.providers) ? payload.providers.slice() : null,
+            fromUnixMs: payload?.fromUnixMs ?? null,
+            toUnixMs: payload?.toUnixMs ?? null,
+            limit: payload?.limit ?? null,
+          });
+          bucket.__graphHydrationInvokes = log;
+        }
+        if (cmd === 'get_usage_request_daily_totals') {
+          return Promise.resolve({ ok: true, days: daily, providers: dailyProviders });
+        }
+        if (cmd === 'get_usage_request_entries') {
+          const reqProviders = Array.isArray(payload?.providers) ? payload.providers : null;
+          if (reqProviders && reqProviders.length === 1) {
+            const provider = String(reqProviders[0]);
+            const rows = rowsByProvider[provider] || [];
+            const delay = provider === 'provider_2' ? 600 : 120;
+            return new Promise((resolve) =>
+              setTimeout(() => resolve({ ok: true, rows, has_more: false, next_offset: rows.length }), delay),
+            );
+          }
+          // Canonical rows request seeds only one provider line.
+          return Promise.resolve({ ok: true, rows: seedRows, has_more: true, next_offset: seedRows.length });
+        }
+        return original(cmd, payload);
+      };
+      target.__uiCheckGraphHydrationPatched = true;
+    };
+
+    patchInvoke(globalObj.__TAURI_INTERNALS__, 'invoke');
+    patchInvoke(globalObj.__TAURI__ && globalObj.__TAURI__.core, 'invoke');
+  `)
+
+  try {
+    await clickTopNav(driver, 'Analytics')
+    await waitVisible(
+      driver,
+      By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Provider Statistics']`),
+      15000,
+    )
+    await clickTopNav(driver, 'Requests')
+    await waitVisible(
+      driver,
+      By.xpath(`//div[contains(@class,'aoMiniLabel') and normalize-space()='Request Details']`),
+      15000,
+    )
+    const probe = await driver.executeAsyncScript(`
+      const done = arguments[arguments.length - 1];
+      const start = performance.now();
+      const sample = () => {
+        const legendCount = document.querySelectorAll('.aoUsageRequestLegend .aoUsageRequestLegendItem').length;
+        const lineCount = document.querySelectorAll('.aoUsageRequestLineGraph path').length;
+        return { t: performance.now() - start, legendCount, lineCount };
+      };
+      const snaps = [];
+      const loop = () => {
+        snaps.push(sample());
+        if (performance.now() - start >= 2500) {
+          done({ snaps });
+          return;
+        }
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    `)
+    const snaps = Array.isArray(probe?.snaps) ? probe.snaps : []
+    const invokeLog = await driver.executeScript(`
+      const bucket = (window.__ui_check__ = window.__ui_check__ || {});
+      return Array.isArray(bucket.__graphHydrationInvokes) ? bucket.__graphHydrationInvokes : [];
+    `)
+    const fullAt = snaps.find((s) => Number(s.lineCount) >= 3 || Number(s.legendCount) >= 3)
+    if (!fullAt || Number(fullAt.t) > 1200) {
+      const b64 = await driver.takeScreenshot()
+      fs.writeFileSync(
+        screenshotPath.replace('.png', '-requests-graph-provider-hydration-fail.png'),
+        Buffer.from(b64, 'base64'),
+      )
+      throw new Error(
+        `Requests graph providers hydrated too slowly (firstFullAt=${fullAt ? Number(fullAt.t).toFixed(1) : 'never'}ms, invokes=${JSON.stringify(invokeLog.slice(0, 20))}, samples=${JSON.stringify(snaps.slice(0, 20))})`,
+      )
+    }
+    console.log(`[ui:requests-graph-hydration] firstFullAt=${Number(fullAt.t).toFixed(1)}ms`)
+  } finally {
+    await driver.executeScript(`
+      const globalObj = window;
+      const restore = (target, key) => {
+        if (!target || !target.__uiCheckGraphHydrationPatched) return;
+        const original = target.__uiCheckGraphHydrationOriginalInvoke;
+        if (typeof original === 'function') target[key] = original;
+        target.__uiCheckGraphHydrationPatched = false;
+        target.__uiCheckGraphHydrationOriginalInvoke = undefined;
+      };
+      restore(globalObj.__TAURI_INTERNALS__, 'invoke');
+      restore(globalObj.__TAURI__ && globalObj.__TAURI__.core, 'invoke');
+    `)
+  }
+}
+
 export async function runPricingTimelineModalCase(driver, screenshotPath) {
   await clickButtonByText(driver, 'Pricing Timeline', 12000)
   const modal = await waitVisible(
