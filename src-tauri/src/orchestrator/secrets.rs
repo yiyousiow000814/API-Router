@@ -571,3 +571,113 @@ impl SecretStore {
         format!("ao_{}", Uuid::new_v4().simple())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ProviderQuotaHardCapConfig, SecretStore};
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn quota_hard_cap_field_update_roundtrip_and_cleanup() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path.clone());
+
+        let updated = store
+            .set_provider_quota_hard_cap_field("p1", "weekly", false)
+            .expect("set weekly hard cap");
+        assert_eq!(
+            updated,
+            ProviderQuotaHardCapConfig {
+                daily: true,
+                weekly: false,
+                monthly: true,
+            }
+        );
+        assert_eq!(store.get_provider_quota_hard_cap("p1"), updated);
+
+        // Reload from disk to verify persistence.
+        let reloaded = SecretStore::new(path.clone());
+        assert_eq!(reloaded.get_provider_quota_hard_cap("p1"), updated);
+
+        // Reset to all-true; this should collapse to default (no override row).
+        let reset = reloaded
+            .set_provider_quota_hard_cap_field("p1", "weekly", true)
+            .expect("reset weekly hard cap");
+        assert_eq!(reset, ProviderQuotaHardCapConfig::default());
+        assert_eq!(
+            reloaded.get_provider_quota_hard_cap("p1"),
+            ProviderQuotaHardCapConfig::default()
+        );
+
+        let raw = std::fs::read_to_string(path).expect("read secrets");
+        assert!(
+            !raw.contains("\"provider_quota_hard_cap\": {\n    \"p1\""),
+            "all-true override should be removed from persisted file"
+        );
+    }
+
+    #[test]
+    fn quota_hard_cap_field_update_rejects_invalid_field_without_mutation() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path);
+        store
+            .set_provider_quota_hard_cap_field("p1", "daily", false)
+            .expect("seed daily=false");
+
+        let err = store
+            .set_provider_quota_hard_cap_field("p1", "bad_field", true)
+            .expect_err("invalid field should fail");
+        assert_eq!(err, "field must be one of: daily, weekly, monthly");
+        assert_eq!(
+            store.get_provider_quota_hard_cap("p1"),
+            ProviderQuotaHardCapConfig {
+                daily: false,
+                weekly: true,
+                monthly: true,
+            }
+        );
+    }
+
+    #[test]
+    fn quota_hard_cap_field_updates_are_atomic_under_concurrency() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = Arc::new(SecretStore::new(path));
+
+        for _ in 0..200 {
+            store
+                .set_provider_quota_hard_cap("p1", ProviderQuotaHardCapConfig::default())
+                .expect("reset to default");
+
+            let barrier = Arc::new(Barrier::new(3));
+            let s1 = Arc::clone(&store);
+            let b1 = Arc::clone(&barrier);
+            let t1 = std::thread::spawn(move || {
+                b1.wait();
+                s1.set_provider_quota_hard_cap_field("p1", "daily", false)
+                    .expect("daily=false");
+            });
+
+            let s2 = Arc::clone(&store);
+            let b2 = Arc::clone(&barrier);
+            let t2 = std::thread::spawn(move || {
+                b2.wait();
+                s2.set_provider_quota_hard_cap_field("p1", "weekly", false)
+                    .expect("weekly=false");
+            });
+
+            barrier.wait();
+            t1.join().expect("thread1");
+            t2.join().expect("thread2");
+
+            let got = store.get_provider_quota_hard_cap("p1");
+            assert!(
+                !got.daily && !got.weekly && got.monthly,
+                "concurrent field updates should merge, got: {:?}",
+                got
+            );
+        }
+    }
+}

@@ -1,6 +1,7 @@
-import { useCallback } from 'react'
+import { useCallback, type Dispatch, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { UseProviderActionsParams } from './types'
+import type { Config } from '../../types'
 
 type ProviderUsageActions = Pick<
   UseProviderActionsParams,
@@ -14,6 +15,73 @@ type ProviderUsageActions = Pick<
   | 'refreshConfig'
   | 'flashToast'
 >
+
+export type QuotaHardCapField = 'daily' | 'weekly' | 'monthly'
+
+export function applyProviderQuotaHardCapLocalPatch(
+  prev: Config | null,
+  provider: string,
+  field: QuotaHardCapField,
+  enabled: boolean,
+): Config | null {
+  if (!prev) return prev
+  const current = prev.providers?.[provider]
+  if (!current) return prev
+  const currentHardCap = current.quota_hard_cap ?? {
+    daily: true,
+    weekly: true,
+    monthly: true,
+  }
+  return {
+    ...prev,
+    providers: {
+      ...prev.providers,
+      [provider]: {
+        ...current,
+        quota_hard_cap: {
+          ...currentHardCap,
+          [field]: enabled,
+        },
+      },
+    },
+  }
+}
+
+type SetProviderQuotaHardCapParams = {
+  provider: string
+  field: QuotaHardCapField
+  enabled: boolean
+  invokeFn: (cmd: string, args: Record<string, unknown>) => Promise<unknown>
+  setConfig: Dispatch<SetStateAction<Config | null>>
+  refreshConfig: () => Promise<void>
+  refreshStatus: () => Promise<void>
+  flashToast: (msg: string, kind?: 'info' | 'error') => void
+}
+
+export async function setProviderQuotaHardCapFieldWithRefresh({
+  provider,
+  field,
+  enabled,
+  invokeFn,
+  setConfig,
+  refreshConfig,
+  refreshStatus,
+  flashToast,
+}: SetProviderQuotaHardCapParams): Promise<void> {
+  setConfig((prev) => applyProviderQuotaHardCapLocalPatch(prev, provider, field, enabled))
+  try {
+    await invokeFn('set_provider_quota_hard_cap_field', {
+      provider,
+      field,
+      enabled,
+    })
+    flashToast(`Hard cap updated: ${provider}.${field}`)
+  } catch (e) {
+    flashToast(String(e), 'error')
+  }
+  await refreshConfig()
+  await refreshStatus()
+}
 
 export function useProviderUsageActions({
   status,
@@ -102,44 +170,17 @@ export function useProviderUsageActions({
   )
 
   const setProviderQuotaHardCap = useCallback(
-    async (provider: string, field: 'daily' | 'weekly' | 'monthly', enabled: boolean) => {
-      setConfig((prev) => {
-        if (!prev) return prev
-        const current = prev.providers?.[provider]
-        if (!current) return prev
-        const currentHardCap = current.quota_hard_cap ?? {
-          daily: true,
-          weekly: true,
-          monthly: true,
-        }
-        return {
-          ...prev,
-          providers: {
-            ...prev.providers,
-            [provider]: {
-              ...current,
-              quota_hard_cap: {
-                ...currentHardCap,
-                [field]: enabled,
-              },
-            },
-          },
-        }
+    async (provider: string, field: QuotaHardCapField, enabled: boolean) => {
+      await setProviderQuotaHardCapFieldWithRefresh({
+        provider,
+        field,
+        enabled,
+        invokeFn: (cmd, args) => invoke(cmd, args),
+        setConfig,
+        refreshConfig,
+        refreshStatus,
+        flashToast,
       })
-      try {
-        await invoke('set_provider_quota_hard_cap_field', {
-          provider,
-          field,
-          enabled,
-        })
-        flashToast(`Hard cap updated: ${provider}.${field}`)
-        await refreshConfig()
-        await refreshStatus()
-      } catch (e) {
-        flashToast(String(e), 'error')
-        await refreshConfig()
-        await refreshStatus()
-      }
     },
     [flashToast, refreshConfig, refreshStatus, setConfig],
   )
