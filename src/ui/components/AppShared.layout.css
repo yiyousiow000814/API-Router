@@ -382,15 +382,15 @@
 }
 
 .aoMainAreaRequestsFill {
-  height: calc(100dvh - 108px);
-  min-height: 0;
+  height: auto;
+  min-height: auto;
   display: flex;
   flex-direction: column;
 }
 
 .aoMainAreaRequestsFill > * {
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: 0 0 auto;
+  min-height: auto;
 }
 
 .aoSwitchDirsInline {
