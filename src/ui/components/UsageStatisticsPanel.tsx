@@ -204,11 +204,33 @@ const EMPTY_USAGE_REQUEST_ROWS: UsageRequestEntry[] = []
 const EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER: Record<string, UsageRequestEntry[]> = {}
 const EMPTY_STRING_LIST: string[] = []
 const USAGE_REQUESTS_PAGE_FETCH_HOURS = 24 * 365 * 20
-const USAGE_REQUESTS_PAGE_QUERY_KEY = JSON.stringify({
+export function buildUsageRequestsQueryKey(input: {
+  hours: number
+  fromUnixMs: number | null
+  toUnixMs: number | null
+  providers: string[] | null
+  models: string[] | null
+  origins: string[] | null
+  sessions: string[] | null
+}): string {
+  return JSON.stringify({
+    hours: input.hours,
+    from_unix_ms: input.fromUnixMs,
+    to_unix_ms: input.toUnixMs,
+    providers: input.providers ?? [],
+    models: input.models ?? [],
+    origins: input.origins ?? [],
+    sessions: input.sessions ?? [],
+  })
+}
+const USAGE_REQUESTS_PAGE_QUERY_KEY = buildUsageRequestsQueryKey({
   hours: USAGE_REQUESTS_PAGE_FETCH_HOURS,
-  providers: [],
-  models: [],
-  origins: [],
+  fromUnixMs: null,
+  toUnixMs: null,
+  providers: null,
+  models: null,
+  origins: null,
+  sessions: null,
 })
 const USAGE_REQUESTS_CACHE_PRIMED_EVENT = 'ao:usage-requests-cache-primed'
 const USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS = 4_000
@@ -909,14 +931,14 @@ export function UsageStatisticsPanel({
   })
   const requestQueryKey = useMemo(
     () =>
-      JSON.stringify({
+      buildUsageRequestsQueryKey({
         hours: requestFetchHours,
-        from_unix_ms: requestFetchFromUnixMs,
-        to_unix_ms: requestFetchToUnixMs,
-        providers: requestFetchProviders ?? [],
-        models: requestFetchModels ?? [],
-        origins: requestFetchOrigins ?? [],
-        sessions: requestFetchSessions ?? [],
+        fromUnixMs: requestFetchFromUnixMs,
+        toUnixMs: requestFetchToUnixMs,
+        providers: requestFetchProviders,
+        models: requestFetchModels,
+        origins: requestFetchOrigins,
+        sessions: requestFetchSessions,
       }),
     [
       requestFetchFromUnixMs,

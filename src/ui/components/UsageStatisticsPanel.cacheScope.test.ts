@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildUsageRequestsQueryKey,
   resolveRequestPageCached,
   resolveRequestTableSummary,
   resolveSummaryFetchWindow,
@@ -129,5 +130,30 @@ describe('resolveRequestTableSummary', () => {
       cacheCreate: 20,
       cacheRead: 30,
     })
+  })
+})
+
+describe('buildUsageRequestsQueryKey', () => {
+  it('keeps canonical all-history key shape in sync with request query key fields', () => {
+    const key = buildUsageRequestsQueryKey({
+      hours: 24 * 365 * 20,
+      fromUnixMs: null,
+      toUnixMs: null,
+      providers: null,
+      models: null,
+      origins: null,
+      sessions: null,
+    })
+    expect(key).toBe(
+      JSON.stringify({
+        hours: 24 * 365 * 20,
+        from_unix_ms: null,
+        to_unix_ms: null,
+        providers: [],
+        models: [],
+        origins: [],
+        sessions: [],
+      }),
+    )
   })
 })
