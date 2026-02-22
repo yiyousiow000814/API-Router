@@ -147,7 +147,6 @@ impl RouterState {
             h.state = HealthState::Healthy;
             h.consecutive_failures = 0;
             h.cooldown_until_unix_ms = 0;
-            h.last_error.clear();
             h.last_ok_at_unix_ms = now_ms;
         }
     }
@@ -246,4 +245,29 @@ fn unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::from_secs(0))
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_success_keeps_last_error_but_resets_failure_state() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 1;
+        cfg.routing.cooldown_seconds = 30;
+        let provider = "official";
+        let router = RouterState::new(&cfg, 0);
+
+        router.mark_failure(provider, &cfg, "boom", 1_000);
+        router.mark_success(provider, 2_000);
+        let snapshot = router.snapshot(2_000);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+
+        assert_eq!(health.status, "healthy");
+        assert_eq!(health.consecutive_failures, 0);
+        assert_eq!(health.cooldown_until_unix_ms, 0);
+        assert_eq!(health.last_error, "boom");
+        assert_eq!(health.last_ok_at_unix_ms, 2_000);
+    }
 }

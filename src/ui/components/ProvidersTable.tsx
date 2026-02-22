@@ -231,7 +231,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
             // We only show timestamp + View when we can guarantee the exact error row is in the current
             // dashboard snapshot window (`status.recent_events`) and therefore jumpable from UI.
             const showLastError = lastErrorAt > 0 && lastErrorMessage.length > 0 && hasMatchingRecentError
-            const showJumpableError = !isClosed && showLastError
+            const showJumpableError = showLastError
 
             return (
               <tr key={p}>
