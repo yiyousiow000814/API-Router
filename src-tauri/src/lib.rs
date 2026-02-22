@@ -495,6 +495,7 @@ pub fn run() {
             commands::codex_account_refresh,
             commands::get_usage_statistics,
             commands::get_usage_request_entries,
+            commands::get_usage_request_summary,
             commands::get_usage_request_daily_totals,
             commands::get_spend_history,
             commands::set_spend_history_entry
