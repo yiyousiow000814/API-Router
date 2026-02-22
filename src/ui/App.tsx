@@ -801,6 +801,7 @@ export default function App() {
     providerSwitchStatus,
     setProviderSwitchTarget,
     setCodexSwapModalOpen,
+    override,
     setOverride,
     overrideDirtyRef,
     applyOverride,

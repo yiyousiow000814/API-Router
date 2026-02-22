@@ -46,6 +46,7 @@ describe('useMainContentCallbacks', () => {
       providerSwitchStatus: null,
       setProviderSwitchTarget: vi.fn(async () => {}),
       setCodexSwapModalOpen: vi.fn(),
+      override: '',
       setOverride: vi.fn(),
       overrideDirtyRef: { current: false },
       applyOverride: vi.fn(async () => true),
@@ -80,6 +81,7 @@ describe('useMainContentCallbacks', () => {
       providerSwitchStatus: null,
       setProviderSwitchTarget,
       setCodexSwapModalOpen: vi.fn(),
+      override: '',
       setOverride: vi.fn(),
       overrideDirtyRef: { current: false },
       applyOverride: vi.fn(async () => true),
@@ -93,5 +95,41 @@ describe('useMainContentCallbacks', () => {
       expect.stringContaining('Switchboard status is loading'),
       'error',
     )
+  })
+
+  it('rolls back local override when applyOverride fails', async () => {
+    const setOverride = vi.fn()
+    const overrideDirtyRef = { current: false }
+    const applyOverride = vi.fn(async () => false)
+
+    const callbacks = useMainContentCallbacks({
+      status: null,
+      flashToast: vi.fn(),
+      setGatewayModalOpen: vi.fn(),
+      setGatewayTokenReveal: vi.fn(),
+      setGatewayTokenPreview: vi.fn(),
+      setCodexRefreshing: vi.fn(),
+      refreshStatus: vi.fn(async () => {}),
+      codexSwapDir1: '',
+      codexSwapDir2: '',
+      codexSwapUseWindows: true,
+      codexSwapUseWsl: true,
+      codexSwapTarget: 'both',
+      providerSwitchStatus: null,
+      setProviderSwitchTarget: vi.fn(async () => {}),
+      setCodexSwapModalOpen: vi.fn(),
+      override: 'p1',
+      setOverride,
+      overrideDirtyRef,
+      applyOverride,
+    })
+
+    const ok = await callbacks.onOverrideChange('p2')
+
+    expect(ok).toBe(false)
+    expect(applyOverride).toHaveBeenCalledWith('p2')
+    expect(setOverride).toHaveBeenNthCalledWith(1, 'p2')
+    expect(setOverride).toHaveBeenNthCalledWith(2, 'p1')
+    expect(overrideDirtyRef.current).toBe(false)
   })
 })
