@@ -27,6 +27,49 @@ export function usageProviderRowKey(row: UsageProviderRow): string {
   return `${provider}::${keyRef}`
 }
 
+export function orderUsageProvidersByConfig(
+  rows: UsageProviderRow[],
+  orderedProviders: string[],
+): UsageProviderRow[] {
+  if (!rows.length) return []
+
+  const orderedSet = new Set(orderedProviders)
+  const rowsByProvider = new Map<string, UsageProviderRow[]>()
+  const trailingProviders: string[] = []
+
+  rows.forEach((row) => {
+    const provider = String(row.provider)
+    const existingRows = rowsByProvider.get(provider)
+    if (existingRows) {
+      existingRows.push(row)
+      return
+    }
+    rowsByProvider.set(provider, [row])
+    if (!orderedSet.has(provider)) trailingProviders.push(provider)
+  })
+
+  const result: UsageProviderRow[] = []
+  const consumedProviders = new Set<string>()
+
+  orderedProviders.forEach((provider) => {
+    if (consumedProviders.has(provider)) return
+    const providerRows = rowsByProvider.get(provider)
+    if (!providerRows) return
+    result.push(...providerRows)
+    consumedProviders.add(provider)
+  })
+
+  trailingProviders.forEach((provider) => {
+    if (consumedProviders.has(provider)) return
+    const providerRows = rowsByProvider.get(provider)
+    if (!providerRows) return
+    result.push(...providerRows)
+    consumedProviders.add(provider)
+  })
+
+  return result
+}
+
 const isSharedAccountSource = (sourceRaw?: string | null): boolean => {
   const source = (sourceRaw ?? '').trim().toLowerCase()
   if (!source || source === 'none') return false
