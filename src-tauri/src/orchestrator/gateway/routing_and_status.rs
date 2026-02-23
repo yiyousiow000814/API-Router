@@ -914,3 +914,85 @@ async fn models(
         _ => (StatusCode::OK, Json(json!({"object":"list","data":[]}))).into_response(),
     }
 }
+
+#[cfg(test)]
+mod routing_and_status_tests {
+    use super::*;
+
+    #[test]
+    fn session_demand_ratio_defaults_and_is_bounded() {
+        let fresh = session_demand_ratio_from_usage(0, 0);
+        assert_eq!(fresh, 0.25);
+
+        let heavy = session_demand_ratio_from_usage(10_000, 1_000_000_000);
+        assert!(
+            (0.25..=1.0).contains(&heavy),
+            "ratio should stay in [0.25, 1.0], got {heavy}"
+        );
+        assert_eq!(heavy, 1.0, "extremely heavy sessions should saturate at 1.0");
+    }
+
+    #[test]
+    fn session_demand_ratio_increases_with_usage_weight() {
+        let light = session_demand_ratio_from_usage(1, 1_000);
+        let medium = session_demand_ratio_from_usage(8, 80_000);
+        let heavy = session_demand_ratio_from_usage(24, 360_000);
+        assert!(
+            light < medium && medium <= heavy,
+            "expected monotonic demand: light={light}, medium={medium}, heavy={heavy}"
+        );
+    }
+
+    #[test]
+    fn provider_capacity_units_returns_floor_for_empty_quota_snapshots() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let units = provider_capacity_units_for_balancing(&json!({}), "p1", &hard_cap);
+        assert_eq!(units, 1.0);
+    }
+
+    #[test]
+    fn provider_per_request_cost_signal_handles_primary_and_gap_fill_modes() {
+        let mut pricing = std::collections::BTreeMap::new();
+        pricing.insert(
+            "primary".to_string(),
+            crate::orchestrator::secrets::ProviderPricingConfig {
+                mode: "per_request".to_string(),
+                amount_usd: 0.02,
+                periods: Vec::new(),
+                gap_fill_mode: None,
+                gap_fill_amount_usd: None,
+            },
+        );
+        pricing.insert(
+            "gap_fill".to_string(),
+            crate::orchestrator::secrets::ProviderPricingConfig {
+                mode: "per_token".to_string(),
+                amount_usd: 0.0,
+                periods: Vec::new(),
+                gap_fill_mode: Some("per_request".to_string()),
+                gap_fill_amount_usd: Some(0.03),
+            },
+        );
+        pricing.insert(
+            "none".to_string(),
+            crate::orchestrator::secrets::ProviderPricingConfig {
+                mode: "per_token".to_string(),
+                amount_usd: 0.0,
+                periods: Vec::new(),
+                gap_fill_mode: Some("per_request".to_string()),
+                gap_fill_amount_usd: None,
+            },
+        );
+
+        assert_eq!(
+            provider_per_request_cost_signal(&pricing, "primary"),
+            Some(0.02)
+        );
+        assert_eq!(
+            provider_per_request_cost_signal(&pricing, "gap_fill"),
+            Some(0.03)
+        );
+        assert_eq!(provider_per_request_cost_signal(&pricing, "none"), None);
+        assert_eq!(provider_per_request_cost_signal(&pricing, "missing"), None);
+    }
+}
