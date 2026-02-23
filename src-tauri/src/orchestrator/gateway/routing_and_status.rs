@@ -295,22 +295,24 @@ fn provider_is_balanced_candidate(
     st: &GatewayState,
     cfg: &AppConfig,
     quota_snapshots: &Value,
-    router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
+    _router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     provider: &str,
     clear_usage_confirmation_requirement: bool,
 ) -> bool {
-    if !provider_is_routable_for_selection(
+    provider_is_routable_for_selection(
         st,
         cfg,
         quota_snapshots,
         provider,
         clear_usage_confirmation_requirement,
-    ) {
-        return false;
-    }
-    // Keep "single-session one provider" stable, but once provider enters explicit unhealthy
-    // state we should rebalance immediately.
-    !router_snapshot
+    )
+}
+
+fn provider_is_explicitly_unhealthy(
+    router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
+    provider: &str,
+) -> bool {
+    router_snapshot
         .get(provider)
         .is_some_and(|snapshot| snapshot.status == "unhealthy")
 }
@@ -459,6 +461,11 @@ fn pick_balanced_provider(
             };
             let provider_pressure_rank = provider_load as u64;
             let bucket_pressure_rank = bucket_load as u64;
+            let unhealthy_rank = if provider_is_explicitly_unhealthy(router_snapshot, &provider) {
+                1_u8
+            } else {
+                0_u8
+            };
             let preferred_rank = if provider == preferred { 0_u8 } else { 1_u8 };
             let hash_rank = balanced_session_provider_score(session_key, &provider);
             (
@@ -466,6 +473,7 @@ fn pick_balanced_provider(
                 (
                     bucket_pressure_rank,
                     provider_pressure_rank,
+                    unhealthy_rank,
                     capacity_fit_rank,
                     cost_pressure_rank,
                     preferred_rank,
@@ -508,7 +516,10 @@ fn pick_balanced_provider_for_verified_main_session(
     });
 
     if let Some(row) = assignment.as_ref() {
+        let assignment_is_unhealthy =
+            provider_is_explicitly_unhealthy(router_snapshot, &row.provider);
         if assignment_is_fresh
+            && !assignment_is_unhealthy
             && provider_is_balanced_candidate(
                 st,
                 cfg,
@@ -533,7 +544,8 @@ fn pick_balanced_provider_for_verified_main_session(
         persist_full,
     );
     if let Some(row) = assignment.as_ref() {
-        let current_usable =
+        let current_usable = !provider_is_explicitly_unhealthy(router_snapshot, &row.provider)
+            &&
             provider_is_balanced_candidate(
                 st,
                 cfg,
