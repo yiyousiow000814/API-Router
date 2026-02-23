@@ -1,5 +1,5 @@
 import type { Dispatch, PointerEvent as ReactPointerEvent, SetStateAction } from 'react'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Config, Status } from '../types'
 import { createProviderCardRenderer } from '../utils/providerCardRenderer'
@@ -36,6 +36,37 @@ type Params = {
     enabled: boolean,
   ) => Promise<void>
   editingProviderName: string | null
+}
+
+type QuotaHardCapPeriod = 'daily' | 'weekly' | 'monthly'
+
+type MissingHardCapToggle = {
+  provider: string
+  period: QuotaHardCapPeriod
+}
+
+export function findMissingBudgetHardCapToggleToDisable(
+  config: Config | null,
+  status: Status | null,
+): MissingHardCapToggle | null {
+  if (!config || !status) return null
+  const hardCapPeriods: QuotaHardCapPeriod[] = ['daily', 'weekly', 'monthly']
+  for (const [providerName, providerConfig] of Object.entries(config.providers)) {
+    const quota = status.quota?.[providerName]
+    if (quota?.kind !== 'budget_info') continue
+    const quotaHardCap = providerConfig.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
+    const budgetWindowVisibleByPeriod: Record<QuotaHardCapPeriod, boolean> = {
+      daily: quota.daily_spent_usd != null && quota.daily_budget_usd != null,
+      weekly: quota.weekly_spent_usd != null && quota.weekly_budget_usd != null,
+      monthly: quota.monthly_spent_usd != null && quota.monthly_budget_usd != null,
+    }
+    for (const period of hardCapPeriods) {
+      if (!budgetWindowVisibleByPeriod[period] && quotaHardCap[period]) {
+        return { provider: providerName, period }
+      }
+    }
+  }
+  return null
 }
 
 export function useProviderPanelUi(params: Params) {
@@ -122,6 +153,12 @@ export function useProviderPanelUi(params: Params) {
     },
     [providerNameDrafts, refreshConfig, refreshStatus, flashToast],
   )
+
+  useEffect(() => {
+    const missingHardCap = findMissingBudgetHardCapToggleToDisable(config, status)
+    if (!missingHardCap) return
+    void setProviderQuotaHardCap(missingHardCap.provider, missingHardCap.period, false)
+  }, [config, setProviderQuotaHardCap, status])
 
   const renderProviderCard = useMemo(
     () =>

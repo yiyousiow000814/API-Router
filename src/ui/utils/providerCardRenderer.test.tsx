@@ -107,7 +107,7 @@ function renderCardHtml(config: Config, status: Status): string {
 }
 
 describe('provider hard cap rendering', () => {
-  it('keeps weekly hard cap toggle visible when weekly budget data is missing', () => {
+  it('hides weekly hard cap toggle when weekly budget data is missing', () => {
     const html = renderCardHtml(
       buildConfig({
         daily: false,
@@ -117,20 +117,21 @@ describe('provider hard cap rendering', () => {
       buildStatusWithoutWeeklyWindow(),
     )
 
-    expect(html).toContain('weekly hard cap')
-    expect(html).not.toContain('Visible hard caps are off.')
+    expect(html).not.toContain('weekly hard cap')
+    expect(html).toContain('daily hard cap')
+    expect(html).toContain('monthly hard cap')
   })
 
-  it('shows absolute warning only when every hard cap is disabled', () => {
+  it('shows warning when every visible hard cap is disabled', () => {
     const html = renderCardHtml(
       buildConfig({
         daily: false,
-        weekly: false,
+        weekly: true,
         monthly: false,
       }),
       buildStatusWithoutWeeklyWindow(),
     )
 
-    expect(html).toContain('All hard caps are off, so this provider will not auto-close on budget exhaustion.')
+    expect(html).toContain('All shown hard caps are off, so budget limits will not auto-close this provider.')
   })
 })

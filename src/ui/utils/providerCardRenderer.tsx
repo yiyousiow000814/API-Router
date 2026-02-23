@@ -47,17 +47,14 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
       weekly: hasBudgetInfo && quota.weekly_spent_usd != null && quota.weekly_budget_usd != null,
       monthly: hasBudgetInfo && quota.monthly_spent_usd != null && quota.monthly_budget_usd != null,
     }
-    const budgetHardCapWindows = hardCapPeriods.map((key) => ({ key, visible: budgetWindowVisibleByPeriod[key] }))
-    const budgetHardCapLabel = budgetHardCapWindows
-      .filter((window) => window.visible)
-      .map(({ key }) => key)
-      .join('/')
-    const showHardCapToggles = hasBudgetInfo
-    const allHardCapsDisabled = hardCapPeriods.every((key) => !quotaHardCap[key])
-    const hardCapWarningText =
-      showHardCapToggles && allHardCapsDisabled
-        ? 'All hard caps are off, so this provider will not auto-close on budget exhaustion.'
-        : null
+    const visibleHardCapPeriods = hardCapPeriods.filter((key) => budgetWindowVisibleByPeriod[key])
+    const budgetHardCapLabel = visibleHardCapPeriods.join('/')
+    const showHardCapToggles = hasBudgetInfo && visibleHardCapPeriods.length > 0
+    const allVisibleHardCapsDisabled =
+      showHardCapToggles && visibleHardCapPeriods.every((key) => !quotaHardCap[key])
+    const hardCapWarningText = allVisibleHardCapsDisabled
+      ? 'All shown hard caps are off, so budget limits will not auto-close this provider.'
+      : null
     const activeProviderCount = Object.values(options.config?.providers ?? {}).filter((provider) => !provider.disabled).length
     const canDeactivate = p.disabled || activeProviderCount > 1
     const isDragOver = options.dragOverProvider === name
@@ -252,25 +249,21 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 </div>
                 {showHardCapToggles ? (
                   <div className="aoUsageHardCapGrid">
-                    {budgetHardCapWindows.map(({ key: period, visible }) => (
+                    {visibleHardCapPeriods.map((period) => (
                       <label key={period} className="aoUsageHardCapItem">
                         <input
                           type="checkbox"
                           checked={quotaHardCap[period]}
                           onChange={(event) => void options.setProviderQuotaHardCap(name, period, event.target.checked)}
                         />
-                        <span>{period} hard cap{visible ? '' : ' (no data yet)'}</span>
+                        <span>{period} hard cap</span>
                       </label>
                     ))}
                   </div>
                 ) : null}
                 <div className="aoHint">Usage base sets the usage endpoint. If empty, we use the provider base URL.</div>
                 {showHardCapToggles ? (
-                  budgetHardCapLabel ? (
-                    <div className="aoHint">Hard cap controls whether {budgetHardCapLabel} budget exhaustion auto-closes this provider.</div>
-                  ) : (
-                    <div className="aoHint">Budget data is not available yet. Hard cap toggles still apply when data arrives.</div>
-                  )
+                  <div className="aoHint">Hard cap controls whether {budgetHardCapLabel} budget exhaustion auto-closes this provider.</div>
                 ) : (
                   <div className="aoHint">No budget windows detected for this provider, so hard cap toggles are hidden.</div>
                 )}

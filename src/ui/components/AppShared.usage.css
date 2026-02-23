@@ -314,7 +314,7 @@
 
 .aoProviderConfigBody {
   display: grid;
-  grid-template-columns: minmax(300px, 0.95fr) minmax(340px, 1.05fr);
+  grid-template-columns: minmax(320px, 1.1fr) minmax(300px, 0.9fr);
   gap: 12px;
   align-items: start;
 }
