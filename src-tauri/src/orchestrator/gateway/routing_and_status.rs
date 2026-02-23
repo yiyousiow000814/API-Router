@@ -694,6 +694,36 @@ fn decide_provider_with_balanced_mode(
     let now_ms = unix_ms();
     let clear_usage_confirmation_requirement =
         balanced_persist_mode == BalancedAssignmentPersistMode::Full;
+    if cfg.routing.route_mode == crate::orchestrator::config::RouteMode::BalancedAuto
+        && clear_usage_confirmation_requirement
+    {
+        let mut quota_closed_states: HashMap<String, bool> = HashMap::new();
+        for provider_name in cfg.providers.keys() {
+            let hard_cap = st.secrets.get_provider_quota_hard_cap(provider_name);
+            let is_closed = !provider_has_remaining_quota_with_hard_cap(
+                &quota_snapshots,
+                provider_name,
+                &hard_cap,
+            );
+            quota_closed_states.insert(provider_name.clone(), is_closed);
+        }
+        let reopened_providers = st.router.record_quota_closed_states(&quota_closed_states);
+        if !reopened_providers.is_empty() {
+            let cleared_assignments = st.store.delete_all_session_route_assignments();
+            if cleared_assignments > 0 {
+                st.store.add_event(
+                    "gateway",
+                    "info",
+                    "routing.balanced_reassign_on_reopen",
+                    "cleared balanced assignments after closed provider reopened",
+                    json!({
+                        "reopened_providers": reopened_providers,
+                        "cleared_session_route_assignments": cleared_assignments
+                    }),
+                );
+            }
+        }
+    }
     // Manual override wins only when the target is still routable under current
     // config/quota constraints; otherwise we fail over.
     if let Some(manual) = st.router.manual_override.read().clone() {

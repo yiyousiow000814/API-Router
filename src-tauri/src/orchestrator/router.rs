@@ -55,6 +55,7 @@ impl ProviderHealth {
 pub struct RouterState {
     pub manual_override: RwLock<Option<String>>,
     health: RwLock<HashMap<String, ProviderHealth>>,
+    quota_closed_by_provider: RwLock<HashMap<String, bool>>,
 }
 
 fn provider_is_enabled(cfg: &AppConfig, name: &str) -> bool {
@@ -123,9 +124,14 @@ impl RouterState {
         for name in cfg.providers.keys() {
             health.insert(name.clone(), ProviderHealth::new(now_ms));
         }
+        let mut quota_closed_by_provider = HashMap::new();
+        for name in cfg.providers.keys() {
+            quota_closed_by_provider.insert(name.clone(), false);
+        }
         Self {
             manual_override: RwLock::new(None),
             health: RwLock::new(health),
+            quota_closed_by_provider: RwLock::new(quota_closed_by_provider),
         }
     }
 
@@ -141,6 +147,28 @@ impl RouterState {
                 .or_insert_with(|| ProviderHealth::new(now_ms));
         }
         health.retain(|name, _| cfg.providers.contains_key(name));
+        drop(health);
+
+        let mut quota_closed = self.quota_closed_by_provider.write();
+        for name in cfg.providers.keys() {
+            quota_closed.entry(name.clone()).or_insert(false);
+        }
+        quota_closed.retain(|name, _| cfg.providers.contains_key(name));
+    }
+
+    pub fn record_quota_closed_states(&self, states: &HashMap<String, bool>) -> Vec<String> {
+        let mut quota_closed = self.quota_closed_by_provider.write();
+        let mut reopened = Vec::new();
+        for (provider, is_closed) in states {
+            let was_closed = quota_closed
+                .insert(provider.clone(), *is_closed)
+                .unwrap_or(false);
+            if was_closed && !*is_closed {
+                reopened.push(provider.clone());
+            }
+        }
+        quota_closed.retain(|provider, _| states.contains_key(provider));
+        reopened
     }
 
     pub fn mark_success(&self, provider: &str, now_ms: u64) {
