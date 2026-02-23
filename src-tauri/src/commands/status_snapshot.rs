@@ -153,6 +153,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
             let miss_counts = WSL_DISCOVERY_MISS_COUNTS
                 .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
             let mut miss_counts_guard = miss_counts.lock().ok();
+            let mut removed_main_sessions = Vec::new();
             map.retain(|_, v| {
                 let codex_id = v.codex_session_id.clone();
                 let is_wsl_pidless = v.pid == 0
@@ -187,19 +188,25 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     0
                 };
 
-                should_keep_runtime_session(
+                let keep = should_keep_runtime_session(
                     v,
                     now,
                     crate::platform::windows_terminal::is_pid_alive,
                     crate::platform::windows_terminal::is_wt_session_alive,
                     wsl_discovery_miss_count,
-                )
+                );
+                if !(keep || v.is_agent || v.is_review) {
+                    removed_main_sessions.push(codex_id);
+                }
+                keep
             });
             if let Some(guard) = miss_counts_guard.as_mut() {
                 let live_ids: std::collections::HashSet<String> =
                     map.keys().map(|k| k.to_string()).collect();
                 guard.retain(|k, _| live_ids.contains(k));
             }
+            clear_removed_main_session_routes_and_assignments(&state.gateway, &removed_main_sessions);
+            rebalance_balanced_assignments_on_main_session_change(&state.gateway, &cfg, &map);
         }
 
         let map = state.gateway.client_sessions.read().clone();
@@ -330,6 +337,71 @@ fn displayed_session_route(
         return (Some(provider), Some(reason.to_string()));
     }
     (None, None)
+}
+
+fn clear_removed_main_session_routes_and_assignments(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    removed_session_ids: &[String],
+) {
+    if removed_session_ids.is_empty() {
+        return;
+    }
+    {
+        let mut routes = gateway.last_used_by_session.write();
+        for session_id in removed_session_ids {
+            routes.remove(session_id);
+        }
+    }
+    for session_id in removed_session_ids {
+        gateway.store.delete_session_route_assignment(session_id);
+    }
+}
+
+fn main_session_ids_excluding_agents_and_reviews(
+    sessions: &std::collections::HashMap<String, crate::orchestrator::gateway::ClientSessionRuntime>,
+) -> std::collections::BTreeSet<String> {
+    sessions
+        .values()
+        .filter(|entry| !(entry.is_agent || entry.is_review))
+        .map(|entry| entry.codex_session_id.clone())
+        .collect()
+}
+
+fn rebalance_balanced_assignments_on_main_session_change(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    cfg: &crate::orchestrator::config::AppConfig,
+    sessions: &std::collections::HashMap<String, crate::orchestrator::gateway::ClientSessionRuntime>,
+) {
+    if cfg.routing.route_mode != crate::orchestrator::config::RouteMode::BalancedAuto {
+        return;
+    }
+    let main_session_ids = main_session_ids_excluding_agents_and_reviews(sessions);
+    if !gateway
+        .router
+        .record_balanced_main_sessions(&main_session_ids)
+    {
+        return;
+    }
+    let kept_agent_or_review_ids: std::collections::HashSet<String> = sessions
+        .values()
+        .filter(|entry| entry.is_agent || entry.is_review)
+        .map(|entry| entry.codex_session_id.clone())
+        .collect();
+    {
+        let mut routes = gateway.last_used_by_session.write();
+        routes.retain(|session_id, _| kept_agent_or_review_ids.contains(session_id));
+    }
+    let cleared_assignments = gateway.store.delete_all_session_route_assignments();
+    gateway.store.add_event(
+        "gateway",
+        "info",
+        "routing.balanced_reassign_on_session_topology_change",
+        "cleared balanced assignments after codex session topology changed",
+        serde_json::json!({
+            "main_session_count": main_session_ids.len(),
+            "cleared_session_route_assignments": cleared_assignments
+        }),
+    );
 }
 
 fn backfill_main_confirmation_from_verified_agent(
@@ -801,13 +873,16 @@ mod tests {
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::commands::{
         apply_discovered_router_confirmation, backfill_main_confirmation_from_verified_agent,
+        clear_removed_main_session_routes_and_assignments,
         append_backup_event_daily_stats, day_start_unix_ms_from_day_key, event_query_key,
+        main_session_ids_excluding_agents_and_reviews,
+        rebalance_balanced_assignments_on_main_session_change,
         displayed_session_route, merge_discovered_model_provider, next_last_discovered_unix_ms,
         normalize_event_query_limit, next_wsl_discovery_miss_count,
         should_keep_runtime_session,
     };
     use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
-    use crate::orchestrator::gateway::{open_store_dir, GatewayState, LastUsedRoute};
+    use crate::orchestrator::gateway::{decide_provider, open_store_dir, GatewayState, LastUsedRoute};
     use crate::orchestrator::router::RouterState;
     use crate::orchestrator::secrets::SecretStore;
     use crate::orchestrator::store::unix_ms;
@@ -1006,7 +1081,7 @@ mod tests {
     }
 
     #[test]
-    fn displayed_session_route_is_side_effect_free_before_first_request() {
+    fn displayed_session_route_bootstraps_balanced_assignment_before_first_request() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = open_store_dir(tmp.path().join("data")).expect("store");
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -1100,15 +1175,419 @@ mod tests {
             state
                 .store
                 .get_session_route_assignment("main-session")
-                .is_none(),
-            "status display should not create assignments before first routed request"
+                .is_some(),
+            "status display should pre-seed balanced assignments before first routed request"
+        );
+        let stale_assignment = state.store.get_session_route_assignment("stale-session");
+        if let Some(stale_assignment) = stale_assignment {
+            assert_eq!(stale_assignment.provider, "p2");
+        }
+    }
+
+    #[test]
+    fn displayed_session_route_keeps_provider_when_other_session_becomes_active() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url: "https://p1.example.com".to_string(),
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        providers.insert(
+            "p2".to_string(),
+            ProviderConfig {
+                display_name: "P2".to_string(),
+                base_url: "https://p2.example.com".to_string(),
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 30,
+                failure_threshold: 2,
+                cooldown_seconds: 30,
+                request_timeout_seconds: 300,
+            },
+            providers,
+            provider_order: vec!["p1".to_string(), "p2".to_string()],
+        };
+        let now = unix_ms();
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg.clone())),
+            router: Arc::new(RouterState::new(&cfg, now)),
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::from([
+                (
+                    "session-a".to_string(),
+                    ClientSessionRuntime {
+                        codex_session_id: "session-a".to_string(),
+                        pid: 1,
+                        wt_session: Some("wt-a".to_string()),
+                        last_request_unix_ms: now,
+                        last_discovered_unix_ms: now,
+                        last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                        last_reported_model: None,
+                        last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                        agent_parent_session_id: None,
+                        is_agent: false,
+                        is_review: false,
+                        confirmed_router: true,
+                    },
+                ),
+                (
+                    "session-b".to_string(),
+                    ClientSessionRuntime {
+                        codex_session_id: "session-b".to_string(),
+                        pid: 2,
+                        wt_session: Some("wt-b".to_string()),
+                        last_request_unix_ms: now,
+                        last_discovered_unix_ms: now,
+                        last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                        last_reported_model: None,
+                        last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                        agent_parent_session_id: None,
+                        is_agent: false,
+                        is_review: false,
+                        confirmed_router: true,
+                    },
+                ),
+            ]))),
+        };
+
+        let (before_provider, before_reason) = displayed_session_route(
+            &state,
+            &cfg,
+            "session-b",
+            "p1",
+            true,
+            None::<&LastUsedRoute>,
+        );
+        assert!(before_provider.is_some());
+
+        let (_picked, _reason) = decide_provider(&state, &cfg, "p1", "session-a");
+
+        let (after_provider, after_reason) = displayed_session_route(
+            &state,
+            &cfg,
+            "session-b",
+            "p1",
+            true,
+            None::<&LastUsedRoute>,
+        );
+
+        assert_eq!(before_provider, after_provider);
+        assert_eq!(before_reason, after_reason);
+    }
+
+    #[test]
+    fn clear_removed_main_session_routes_and_assignments_keeps_agent_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url: "https://p1.example.com".to_string(),
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 30,
+                failure_threshold: 2,
+                cooldown_seconds: 30,
+                request_timeout_seconds: 300,
+            },
+            providers,
+            provider_order: vec!["p1".to_string()],
+        };
+        let now = unix_ms();
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg.clone())),
+            router: Arc::new(RouterState::new(&cfg, now)),
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::from([
+                (
+                    "main-session".to_string(),
+                    LastUsedRoute {
+                        provider: "p1".to_string(),
+                        reason: "balanced_auto".to_string(),
+                        preferred: "p1".to_string(),
+                        unix_ms: now,
+                    },
+                ),
+                (
+                    "agent-session".to_string(),
+                    LastUsedRoute {
+                        provider: "p1".to_string(),
+                        reason: "balanced_auto".to_string(),
+                        preferred: "p1".to_string(),
+                        unix_ms: now,
+                    },
+                ),
+            ]))),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
+        };
+        state
+            .store
+            .put_session_route_assignment("main-session", "p1", now);
+        state
+            .store
+            .put_session_route_assignment("agent-session", "p1", now);
+
+        clear_removed_main_session_routes_and_assignments(
+            &state,
+            &["main-session".to_string()],
+        );
+
+        let routes = state.last_used_by_session.read();
+        assert!(!routes.contains_key("main-session"));
+        assert!(routes.contains_key("agent-session"));
+        assert!(
+            state
+                .store
+                .get_session_route_assignment("main-session")
+                .is_none()
         );
         assert!(
             state
                 .store
-                .get_session_route_assignment("stale-session")
+                .get_session_route_assignment("agent-session")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn main_session_ids_excluding_agents_and_reviews_only_tracks_main_sessions() {
+        let sessions = std::collections::HashMap::from([
+            (
+                "main-1".to_string(),
+                ClientSessionRuntime {
+                    codex_session_id: "main-1".to_string(),
+                    pid: 1,
+                    wt_session: None,
+                    last_request_unix_ms: 0,
+                    last_discovered_unix_ms: 0,
+                    last_reported_model_provider: None,
+                    last_reported_model: None,
+                    last_reported_base_url: None,
+                    agent_parent_session_id: None,
+                    is_agent: false,
+                    is_review: false,
+                    confirmed_router: true,
+                },
+            ),
+            (
+                "agent-1".to_string(),
+                ClientSessionRuntime {
+                    codex_session_id: "agent-1".to_string(),
+                    pid: 2,
+                    wt_session: None,
+                    last_request_unix_ms: 0,
+                    last_discovered_unix_ms: 0,
+                    last_reported_model_provider: None,
+                    last_reported_model: None,
+                    last_reported_base_url: None,
+                    agent_parent_session_id: Some("main-1".to_string()),
+                    is_agent: true,
+                    is_review: false,
+                    confirmed_router: true,
+                },
+            ),
+            (
+                "review-1".to_string(),
+                ClientSessionRuntime {
+                    codex_session_id: "review-1".to_string(),
+                    pid: 3,
+                    wt_session: None,
+                    last_request_unix_ms: 0,
+                    last_discovered_unix_ms: 0,
+                    last_reported_model_provider: None,
+                    last_reported_model: None,
+                    last_reported_base_url: None,
+                    agent_parent_session_id: Some("main-1".to_string()),
+                    is_agent: true,
+                    is_review: true,
+                    confirmed_router: true,
+                },
+            ),
+        ]);
+
+        let ids = main_session_ids_excluding_agents_and_reviews(&sessions);
+        assert_eq!(
+            ids,
+            std::collections::BTreeSet::from(["main-1".to_string()])
+        );
+    }
+
+    #[test]
+    fn rebalance_balanced_assignments_only_when_main_session_set_changes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 30,
+                failure_threshold: 2,
+                cooldown_seconds: 30,
+                request_timeout_seconds: 300,
+            },
+            providers: std::collections::BTreeMap::from([(
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: "https://p1.example.com".to_string(),
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            )]),
+            provider_order: vec!["p1".to_string()],
+        };
+        let now = unix_ms();
+        let mk = |sid: &str, is_agent: bool, is_review: bool| ClientSessionRuntime {
+            codex_session_id: sid.to_string(),
+            pid: 1,
+            wt_session: Some(format!("wt-{sid}")),
+            last_request_unix_ms: now,
+            last_discovered_unix_ms: now,
+            last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+            last_reported_model: None,
+            last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+            agent_parent_session_id: is_agent.then_some("main-a".to_string()),
+            is_agent,
+            is_review,
+            confirmed_router: true,
+        };
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg.clone())),
+            router: Arc::new(RouterState::new(&cfg, now)),
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::from([
+                (
+                    "main-a".to_string(),
+                    LastUsedRoute {
+                        provider: "p1".to_string(),
+                        reason: "balanced_auto".to_string(),
+                        preferred: "p1".to_string(),
+                        unix_ms: now,
+                    },
+                ),
+                (
+                    "agent-a".to_string(),
+                    LastUsedRoute {
+                        provider: "p1".to_string(),
+                        reason: "balanced_auto".to_string(),
+                        preferred: "p1".to_string(),
+                        unix_ms: now,
+                    },
+                ),
+            ]))),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::from([
+                ("main-a".to_string(), mk("main-a", false, false)),
+                ("agent-a".to_string(), mk("agent-a", true, false)),
+            ]))),
+        };
+        state
+            .store
+            .put_session_route_assignment("main-a", "p1", now.saturating_sub(1_000));
+
+        let first = state.client_sessions.read().clone();
+        rebalance_balanced_assignments_on_main_session_change(&state, &cfg, &first);
+        assert!(
+            state
+                .store
+                .get_session_route_assignment("main-a")
                 .is_some(),
-            "status display should not trigger assignment cleanup"
+            "first snapshot should only prime topology state"
+        );
+
+        {
+            let mut sessions = state.client_sessions.write();
+            sessions.remove("agent-a");
+            sessions.insert("agent-b".to_string(), mk("agent-b", true, false));
+        }
+        let agent_only_change = state.client_sessions.read().clone();
+        rebalance_balanced_assignments_on_main_session_change(&state, &cfg, &agent_only_change);
+        assert!(
+            state
+                .store
+                .get_session_route_assignment("main-a")
+                .is_some(),
+            "agent/review changes must not trigger balanced reassignment"
+        );
+
+        {
+            let mut sessions = state.client_sessions.write();
+            sessions.insert("main-b".to_string(), mk("main-b", false, false));
+        }
+        let main_change = state.client_sessions.read().clone();
+        rebalance_balanced_assignments_on_main_session_change(&state, &cfg, &main_change);
+        assert!(
+            state.store.list_session_route_assignments_since(0).is_empty(),
+            "main session topology change should clear assignments for immediate rebalance"
+        );
+        let routes = state.last_used_by_session.read();
+        assert!(
+            !routes.contains_key("main-a"),
+            "main-session observed route should be cleared on topology change"
         );
     }
 

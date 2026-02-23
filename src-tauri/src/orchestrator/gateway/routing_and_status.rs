@@ -149,7 +149,25 @@ const BALANCED_UNHEALTHY_LOAD_PENALTY: u64 = 2;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BalancedAssignmentPersistMode {
     Full,
-    ReadOnly,
+    Bootstrap,
+}
+
+impl BalancedAssignmentPersistMode {
+    fn clears_usage_confirmation_requirement(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    fn allows_assignment_cleanup(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    fn persists_assignments(self) -> bool {
+        matches!(self, Self::Full | Self::Bootstrap)
+    }
+
+    fn rewrites_existing_assignment(self) -> bool {
+        matches!(self, Self::Full)
+    }
 }
 
 #[derive(Default)]
@@ -509,14 +527,21 @@ fn pick_balanced_provider_for_verified_main_session(
 ) -> Option<String> {
     let now_ms = unix_ms();
     let mut assignment = st.store.get_session_route_assignment(session_key);
-    let persist_full = persist_mode == BalancedAssignmentPersistMode::Full;
-    let assignment_counts = load_balanced_assignment_counts(st, cfg, now_ms, persist_full);
+    let clears_usage_confirmation = persist_mode.clears_usage_confirmation_requirement();
+    let persist_assignments = persist_mode.persists_assignments();
+    let rewrite_existing_assignment = persist_mode.rewrites_existing_assignment();
+    let assignment_counts = load_balanced_assignment_counts(
+        st,
+        cfg,
+        now_ms,
+        persist_mode.allows_assignment_cleanup(),
+    );
     if assignment.as_ref().is_some_and(|row| {
         !cfg.providers
             .get(&row.provider)
             .is_some_and(|provider_cfg| !provider_cfg.disabled)
     }) {
-        if persist_full {
+        if rewrite_existing_assignment {
             st.store.delete_session_route_assignment(session_key);
         }
         assignment = None;
@@ -539,7 +564,7 @@ fn pick_balanced_provider_for_verified_main_session(
                 preferred,
                 suppress_preferred,
                 &row.provider,
-                persist_full,
+                clears_usage_confirmation,
             )
         {
             return Some(row.provider.clone());
@@ -555,7 +580,7 @@ fn pick_balanced_provider_for_verified_main_session(
         session_key,
         preferred,
         suppress_preferred,
-        persist_full,
+        clears_usage_confirmation,
     );
     if let Some(row) = assignment.as_ref() {
         let current_usable = !assignment_is_unhealthy
@@ -566,13 +591,13 @@ fn pick_balanced_provider_for_verified_main_session(
                 preferred,
                 suppress_preferred,
                 &row.provider,
-                persist_full,
+                clears_usage_confirmation,
             );
         if current_usable {
             if let Some((best_provider, _, best_bucket_load)) = best.as_ref() {
                 if best_provider == &row.provider || providers_share_api_key(st, &row.provider, best_provider)
                 {
-                    if persist_full {
+                    if rewrite_existing_assignment {
                         st.store
                             .put_session_route_assignment(session_key, &row.provider, now_ms);
                     }
@@ -586,7 +611,7 @@ fn pick_balanced_provider_for_verified_main_session(
                 if current_bucket_load
                     <= (*best_bucket_load).saturating_add(BALANCED_REBALANCE_MARGIN)
                 {
-                    if persist_full {
+                    if rewrite_existing_assignment {
                         st.store
                             .put_session_route_assignment(session_key, &row.provider, now_ms);
                     }
@@ -599,7 +624,11 @@ fn pick_balanced_provider_for_verified_main_session(
     }
 
     let (best_provider, _, _) = best?;
-    if persist_full {
+    let should_persist_selected = match assignment.as_ref() {
+        None => true,
+        Some(row) => rewrite_existing_assignment || row.provider != best_provider,
+    };
+    if persist_assignments && should_persist_selected {
         st.store
             .put_session_route_assignment(session_key, &best_provider, now_ms);
     }
@@ -693,7 +722,37 @@ fn decide_provider_with_balanced_mode(
     let quota_snapshots = st.store.list_quota_snapshots();
     let now_ms = unix_ms();
     let clear_usage_confirmation_requirement =
-        balanced_persist_mode == BalancedAssignmentPersistMode::Full;
+        balanced_persist_mode.clears_usage_confirmation_requirement();
+    if cfg.routing.route_mode == crate::orchestrator::config::RouteMode::BalancedAuto
+        && clear_usage_confirmation_requirement
+    {
+        let mut quota_closed_states: HashMap<String, bool> = HashMap::new();
+        for provider_name in cfg.providers.keys() {
+            let hard_cap = st.secrets.get_provider_quota_hard_cap(provider_name);
+            let is_closed = !provider_has_remaining_quota_with_hard_cap(
+                &quota_snapshots,
+                provider_name,
+                &hard_cap,
+            );
+            quota_closed_states.insert(provider_name.clone(), is_closed);
+        }
+        let reopened_providers = st.router.record_quota_closed_states(&quota_closed_states);
+        if !reopened_providers.is_empty() {
+            let cleared_assignments = st.store.delete_all_session_route_assignments();
+            if cleared_assignments > 0 {
+                st.store.add_event(
+                    "gateway",
+                    "info",
+                    "routing.balanced_reassign_on_reopen",
+                    "cleared balanced assignments after closed provider reopened",
+                    json!({
+                        "reopened_providers": reopened_providers,
+                        "cleared_session_route_assignments": cleared_assignments
+                    }),
+                );
+            }
+        }
+    }
     // Manual override wins only when the target is still routable under current
     // config/quota constraints; otherwise we fail over.
     if let Some(manual) = st.router.manual_override.read().clone() {
@@ -826,12 +885,14 @@ pub(crate) fn decide_provider_for_display(
     preferred: &str,
     session_key: &str,
 ) -> (String, &'static str) {
+    // Display path may bootstrap an initial balanced assignment so idle session cards stay
+    // stable, but it must not clear runtime usage-confirmation gates.
     decide_provider_with_balanced_mode(
         st,
         cfg,
         preferred,
         session_key,
-        BalancedAssignmentPersistMode::ReadOnly,
+        BalancedAssignmentPersistMode::Bootstrap,
     )
 }
 

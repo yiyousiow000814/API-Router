@@ -960,6 +960,148 @@ fn decide_provider_balanced_auto_retries_unhealthy_provider_when_load_is_skewed(
 }
 
 #[test]
+fn decide_provider_balanced_auto_reassigns_immediately_after_closed_provider_reopens() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut providers = std::collections::BTreeMap::new();
+    for name in ["p1", "p2"] {
+        providers.insert(
+            name.to_string(),
+            ProviderConfig {
+                display_name: name.to_uppercase(),
+                base_url: format!("https://{name}.example.com"),
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+    }
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 4000,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 30,
+            failure_threshold: 2,
+            cooldown_seconds: 30,
+            request_timeout_seconds: 300,
+        },
+        providers,
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+    let now = unix_ms();
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg.clone())),
+        router: Arc::new(RouterState::new(&cfg, now)),
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::from([
+            (
+                "session-main".to_string(),
+                crate::orchestrator::gateway::ClientSessionRuntime {
+                    codex_session_id: "session-main".to_string(),
+                    pid: 1,
+                    wt_session: Some("wt-main".to_string()),
+                    last_request_unix_ms: now,
+                    last_discovered_unix_ms: now,
+                    last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                    last_reported_model: None,
+                    last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    agent_parent_session_id: None,
+                    is_agent: false,
+                    is_review: false,
+                    confirmed_router: true,
+                },
+            ),
+            (
+                "session-side".to_string(),
+                crate::orchestrator::gateway::ClientSessionRuntime {
+                    codex_session_id: "session-side".to_string(),
+                    pid: 2,
+                    wt_session: Some("wt-side".to_string()),
+                    last_request_unix_ms: now,
+                    last_discovered_unix_ms: now,
+                    last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                    last_reported_model: None,
+                    last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    agent_parent_session_id: None,
+                    is_agent: false,
+                    is_review: false,
+                    confirmed_router: true,
+                },
+            ),
+        ]))),
+    };
+
+    state
+        .store
+        .put_quota_snapshot(
+            "p1",
+            &serde_json::json!({
+                "remaining": 0.0,
+                "updated_at_unix_ms": now,
+                "last_error": ""
+            }),
+        )
+        .expect("seed p1 closed quota");
+    state
+        .store
+        .put_quota_snapshot(
+            "p2",
+            &serde_json::json!({
+                "remaining": 100.0,
+                "updated_at_unix_ms": now,
+                "last_error": ""
+            }),
+        )
+        .expect("seed p2 open quota");
+
+    let (first_pick, first_reason) = decide_provider(&state, &cfg, "p1", "session-main");
+    assert_eq!(first_pick, "p2");
+    assert_eq!(first_reason, "balanced_auto");
+    let initial_assignment = state
+        .store
+        .get_session_route_assignment("session-main")
+        .expect("initial assignment");
+    assert_eq!(initial_assignment.provider, "p2");
+
+    state
+        .store
+        .put_quota_snapshot(
+            "p1",
+            &serde_json::json!({
+                "remaining": 100.0,
+                "updated_at_unix_ms": now.saturating_add(1),
+                "last_error": ""
+            }),
+        )
+        .expect("seed p1 reopened quota");
+
+    let (second_pick, second_reason) = decide_provider(&state, &cfg, "p1", "session-main");
+    assert_eq!(second_pick, "p1");
+    assert_eq!(second_reason, "balanced_auto");
+    let reassigned = state
+        .store
+        .get_session_route_assignment("session-main")
+        .expect("reassigned");
+    assert_eq!(reassigned.provider, "p1");
+}
+
+#[test]
 fn decide_provider_balanced_auto_prefers_healthy_when_load_gap_is_small() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = open_store_dir(tmp.path().join("data")).expect("store");
@@ -1821,6 +1963,215 @@ fn decide_provider_for_display_keeps_usage_confirmation_requirement() {
     assert!(
         !state.router.is_waiting_usage_confirmation("p1"),
         "real routing path should clear usage confirmation gate once confirmed"
+    );
+}
+
+#[test]
+fn decide_provider_for_display_balanced_bootstrap_keeps_usage_confirmation_requirement() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut providers = std::collections::BTreeMap::new();
+    providers.insert(
+        "p1".to_string(),
+        ProviderConfig {
+            display_name: "P1".to_string(),
+            base_url: "https://p1.example.com".to_string(),
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        },
+    );
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 4000,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 30,
+            failure_threshold: 2,
+            cooldown_seconds: 30,
+            request_timeout_seconds: 300,
+        },
+        providers,
+        provider_order: vec!["p1".to_string()],
+    };
+    let now = unix_ms();
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg.clone())),
+        router: Arc::new(RouterState::new(&cfg, now)),
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::from([(
+            "sid-1".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "sid-1".to_string(),
+                pid: 1,
+                wt_session: Some("wt-1".to_string()),
+                last_request_unix_ms: now,
+                last_discovered_unix_ms: now,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        )]))),
+    };
+
+    state.router.require_usage_confirmation("p1");
+    state
+        .store
+        .put_quota_snapshot(
+            "p1",
+            &json!({
+                "remaining": 100.0,
+                "updated_at_unix_ms": now
+            }),
+        )
+        .expect("quota p1");
+    assert!(state.router.is_waiting_usage_confirmation("p1"));
+
+    let (display_provider, display_reason) =
+        crate::orchestrator::gateway::decide_provider_for_display(&state, &cfg, "p1", "sid-1");
+    assert_eq!(display_provider, "p1");
+    assert_eq!(display_reason, "balanced_auto");
+    assert!(
+        state.router.is_waiting_usage_confirmation("p1"),
+        "balanced display route should not clear runtime usage confirmation gate"
+    );
+    assert!(
+        state.store.get_session_route_assignment("sid-1").is_some(),
+        "balanced display route should only bootstrap assignment state"
+    );
+
+    let (_route_provider, route_reason) = decide_provider(&state, &cfg, "p1", "sid-1");
+    assert_eq!(route_reason, "balanced_auto");
+    assert!(
+        !state.router.is_waiting_usage_confirmation("p1"),
+        "real routing path should clear usage confirmation gate once confirmed"
+    );
+}
+
+#[test]
+fn decide_provider_for_display_balanced_bootstrap_persists_rebalanced_stale_assignment() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut providers = std::collections::BTreeMap::new();
+    providers.insert(
+        "p1".to_string(),
+        ProviderConfig {
+            display_name: "P1".to_string(),
+            base_url: "https://p1.example.com".to_string(),
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        },
+    );
+    providers.insert(
+        "p2".to_string(),
+        ProviderConfig {
+            display_name: "P2".to_string(),
+            base_url: "https://p2.example.com".to_string(),
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        },
+    );
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 4000,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 30,
+            failure_threshold: 2,
+            cooldown_seconds: 30,
+            request_timeout_seconds: 300,
+        },
+        providers,
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+    let now = unix_ms();
+    let stale_ms = now.saturating_sub((2 * 60 * 60 * 1000) + 5_000);
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg.clone())),
+        router: Arc::new(RouterState::new(&cfg, now)),
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::from([(
+            "sid-1".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "sid-1".to_string(),
+                pid: 1,
+                wt_session: Some("wt-1".to_string()),
+                last_request_unix_ms: now,
+                last_discovered_unix_ms: now,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        )]))),
+    };
+
+    state
+        .store
+        .put_session_route_assignment("sid-1", "p2", stale_ms);
+    state
+        .store
+        .put_quota_snapshot(
+            "p2",
+            &json!({
+                "remaining": 0.0,
+                "updated_at_unix_ms": now
+            }),
+        )
+        .expect("quota p2");
+
+    let (display_provider, display_reason) =
+        crate::orchestrator::gateway::decide_provider_for_display(&state, &cfg, "p1", "sid-1");
+    assert_eq!(display_provider, "p1");
+    assert_eq!(display_reason, "balanced_auto");
+
+    let updated = state
+        .store
+        .get_session_route_assignment("sid-1")
+        .expect("updated assignment");
+    assert_eq!(
+        updated.provider, "p1",
+        "bootstrap mode must persist a newly rebalanced provider to avoid display flicker"
     );
 }
 
