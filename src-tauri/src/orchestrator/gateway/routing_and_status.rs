@@ -144,6 +144,7 @@ const BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS: u64 = 15 * 60 * 1000;
 const BALANCED_CAPACITY_FLOOR_RATIO: f64 = 0.25;
 const BALANCED_CAPACITY_FIT_RANK_SCALE: f64 = 100.0;
 const BALANCED_SESSION_LOAD_WINDOW_MS: u64 = 2 * 60 * 60 * 1000;
+const BALANCED_UNHEALTHY_LOAD_PENALTY: u64 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BalancedAssignmentPersistMode {
@@ -295,7 +296,6 @@ fn provider_is_balanced_candidate(
     st: &GatewayState,
     cfg: &AppConfig,
     quota_snapshots: &Value,
-    _router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     provider: &str,
     clear_usage_confirmation_requirement: bool,
 ) -> bool {
@@ -392,7 +392,6 @@ fn pick_balanced_provider(
                 st,
                 cfg,
                 quota_snapshots,
-                router_snapshot,
                 name,
                 clear_usage_confirmation_requirement,
             )
@@ -459,13 +458,16 @@ fn pick_balanced_provider(
             } else {
                 1000_u64
             };
-            let provider_pressure_rank = provider_load as u64;
-            let bucket_pressure_rank = bucket_load as u64;
-            let unhealthy_rank = if provider_is_explicitly_unhealthy(router_snapshot, &provider) {
-                1_u8
+            let unhealthy_penalty = if provider_is_explicitly_unhealthy(router_snapshot, &provider)
+            {
+                BALANCED_UNHEALTHY_LOAD_PENALTY
             } else {
-                0_u8
+                0_u64
             };
+            // Prefer healthy providers by default, but allow unhealthy retry when load skew is
+            // large enough to offset this fixed penalty.
+            let provider_pressure_rank = provider_load as u64 + unhealthy_penalty;
+            let bucket_pressure_rank = bucket_load as u64 + unhealthy_penalty;
             let preferred_rank = if provider == preferred { 0_u8 } else { 1_u8 };
             let hash_rank = balanced_session_provider_score(session_key, &provider);
             (
@@ -473,7 +475,6 @@ fn pick_balanced_provider(
                 (
                     bucket_pressure_rank,
                     provider_pressure_rank,
-                    unhealthy_rank,
                     capacity_fit_rank,
                     cost_pressure_rank,
                     preferred_rank,
@@ -514,17 +515,17 @@ fn pick_balanced_provider_for_verified_main_session(
     let assignment_is_fresh = assignment.as_ref().is_some_and(|row| {
         now_ms.saturating_sub(row.assigned_at_unix_ms) < BALANCED_ASSIGNMENT_STICKY_MS
     });
+    let assignment_is_unhealthy = assignment
+        .as_ref()
+        .is_some_and(|row| provider_is_explicitly_unhealthy(router_snapshot, &row.provider));
 
     if let Some(row) = assignment.as_ref() {
-        let assignment_is_unhealthy =
-            provider_is_explicitly_unhealthy(router_snapshot, &row.provider);
         if assignment_is_fresh
             && !assignment_is_unhealthy
             && provider_is_balanced_candidate(
                 st,
                 cfg,
                 quota_snapshots,
-                router_snapshot,
                 &row.provider,
                 persist_full,
             )
@@ -544,13 +545,11 @@ fn pick_balanced_provider_for_verified_main_session(
         persist_full,
     );
     if let Some(row) = assignment.as_ref() {
-        let current_usable = !provider_is_explicitly_unhealthy(router_snapshot, &row.provider)
-            &&
-            provider_is_balanced_candidate(
+        let current_usable = !assignment_is_unhealthy
+            && provider_is_balanced_candidate(
                 st,
                 cfg,
                 quota_snapshots,
-                router_snapshot,
                 &row.provider,
                 persist_full,
             );
