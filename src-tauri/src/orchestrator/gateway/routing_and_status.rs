@@ -335,13 +335,13 @@ fn provider_is_balanced_candidate(
     )
 }
 
-fn provider_is_explicitly_unhealthy(
+fn provider_is_unhealthy_or_cooldown(
     router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     provider: &str,
 ) -> bool {
-    router_snapshot
-        .get(provider)
-        .is_some_and(|snapshot| snapshot.status == "unhealthy")
+    router_snapshot.get(provider).is_some_and(|snapshot| {
+        snapshot.status == "unhealthy" || snapshot.status == "cooldown"
+    })
 }
 
 fn provider_is_due_for_unhealthy_retry(
@@ -500,7 +500,7 @@ fn pick_balanced_provider(
             } else {
                 1000_u64
             };
-            let unhealthy_penalty = if provider_is_explicitly_unhealthy(router_snapshot, &provider)
+            let unhealthy_penalty = if provider_is_unhealthy_or_cooldown(router_snapshot, &provider)
             {
                 BALANCED_UNHEALTHY_LOAD_PENALTY
             } else {
@@ -568,7 +568,7 @@ fn pick_balanced_provider_for_verified_main_session(
     });
     let assignment_is_unhealthy = assignment
         .as_ref()
-        .is_some_and(|row| provider_is_explicitly_unhealthy(router_snapshot, &row.provider));
+        .is_some_and(|row| provider_is_unhealthy_or_cooldown(router_snapshot, &row.provider));
     let assignment_retry_due = assignment.as_ref().is_some_and(|row| {
         provider_is_due_for_unhealthy_retry(
             router_snapshot,
