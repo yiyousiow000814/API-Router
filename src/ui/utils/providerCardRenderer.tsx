@@ -276,9 +276,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     ? fmtWhen(options.status.quota[name].updated_at_unix_ms)
                     : 'never'}
                 </div>
-                {options.status?.quota?.[name]?.last_error ? (
-                  <div className="aoUsageErr">{options.status.quota[name].last_error}</div>
-                ) : null}
               </>
             ) : (
               <div className="aoHint">Details hidden</div>

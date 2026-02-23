@@ -159,7 +159,7 @@ impl RouterState {
         if let Some(h) = health.get_mut(provider) {
             h.state = HealthState::Unhealthy;
             h.consecutive_failures = h.consecutive_failures.saturating_add(1);
-            h.last_error = err.chars().take(500).collect();
+            h.last_error = err.to_string();
             h.last_fail_at_unix_ms = now_ms;
 
             if h.consecutive_failures >= cfg.routing.failure_threshold {
@@ -301,5 +301,21 @@ mod tests {
         assert_eq!(health.cooldown_until_unix_ms, 0);
         assert_eq!(health.last_error, "boom");
         assert_eq!(health.last_ok_at_unix_ms, 2_000);
+    }
+
+    #[test]
+    fn mark_failure_keeps_full_last_error_without_truncation() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 10;
+        let provider = "official";
+        let router = RouterState::new(&cfg, 0);
+
+        let long_error = "x".repeat(900);
+        router.mark_failure(provider, &cfg, &long_error, 1_000);
+        let snapshot = router.snapshot(1_000);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+
+        assert_eq!(health.last_error.len(), 900);
+        assert_eq!(health.last_error, long_error);
     }
 }
