@@ -938,7 +938,7 @@ mod routing_and_status_tests {
         let medium = session_demand_ratio_from_usage(8, 80_000);
         let heavy = session_demand_ratio_from_usage(24, 360_000);
         assert!(
-            light < medium && medium <= heavy,
+            light < medium && medium < heavy,
             "expected monotonic demand: light={light}, medium={medium}, heavy={heavy}"
         );
     }
