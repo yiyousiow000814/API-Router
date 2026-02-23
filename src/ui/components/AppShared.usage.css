@@ -314,7 +314,7 @@
 
 .aoProviderConfigBody {
   display: grid;
-  grid-template-columns: minmax(320px, 1.4fr) minmax(220px, 0.9fr);
+  grid-template-columns: minmax(320px, 1.1fr) minmax(300px, 0.9fr);
   gap: 12px;
   align-items: start;
 }
@@ -331,23 +331,28 @@
 }
 
 .aoProviderRight {
-  position: relative;
+  align-self: stretch;
+  border-left: 1px solid rgba(13, 18, 32, 0.08);
   padding-left: 16px;
   padding-top: 15px;
 }
 
-.aoProviderRight::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 1px;
-  bottom: -22px;
-  width: 1px;
-  background: rgba(13, 18, 32, 0.08);
-}
+@media (max-width: 700px) {
+  .aoProviderConfigBody {
+    grid-template-columns: minmax(0, 1fr);
+  }
 
-.aoProviderConfigCollapsed .aoProviderRight::before {
-  bottom: 0;
+  .aoProviderLeft {
+    padding-right: 0;
+  }
+
+  .aoProviderRight {
+    border-left: 0;
+    border-top: 1px solid rgba(13, 18, 32, 0.08);
+    margin-top: 6px;
+    padding-left: 0;
+    padding-top: 12px;
+  }
 }
 
 .aoProviderHeadRow {

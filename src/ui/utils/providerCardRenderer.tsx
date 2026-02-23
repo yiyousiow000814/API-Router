@@ -1,6 +1,10 @@
 import type * as React from 'react'
 import type { Config, Status } from '../types'
 import { fmtWhen } from './format'
+import {
+  getVisibleBudgetHardCapPeriods,
+  isBudgetInfoQuota,
+} from './providerBudgetWindows'
 
 type CreateProviderCardRendererOptions = {
   config: Config | null
@@ -25,7 +29,7 @@ type CreateProviderCardRendererOptions = {
   deleteProvider: (provider: string) => Promise<void>
   setConfig: React.Dispatch<React.SetStateAction<Config | null>>
   toggleProviderOpen: (name: string) => void
-  openUsageBaseModal: (provider: string, value?: string) => Promise<void>
+  openUsageBaseModal: (provider: string, current: string | null | undefined) => Promise<void>
   clearUsageBaseUrl: (provider: string) => Promise<void>
   setProviderQuotaHardCap: (
     provider: string,
@@ -40,23 +44,15 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
     if (!p) return null
     const quotaHardCap = p.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
     const quota = options.status?.quota?.[name]
-    const budgetHardCapWindows = [
-      {
-        key: 'daily' as const,
-        visible: quota?.kind === 'budget_info' && quota.daily_spent_usd != null && quota.daily_budget_usd != null,
-      },
-      {
-        key: 'weekly' as const,
-        visible: quota?.kind === 'budget_info' && quota.weekly_spent_usd != null && quota.weekly_budget_usd != null,
-      },
-      {
-        key: 'monthly' as const,
-        visible: quota?.kind === 'budget_info' && quota.monthly_spent_usd != null && quota.monthly_budget_usd != null,
-      },
-    ].filter((window) => window.visible)
-    const budgetHardCapLabel = budgetHardCapWindows.map(({ key }) => key).join('/')
+    const hasBudgetInfo = isBudgetInfoQuota(quota)
+    const visibleHardCapPeriods = getVisibleBudgetHardCapPeriods(quota)
+    const budgetHardCapLabel = visibleHardCapPeriods.join('/')
+    const showHardCapToggles = hasBudgetInfo && visibleHardCapPeriods.length > 0
     const allVisibleHardCapsDisabled =
-      budgetHardCapWindows.length > 0 && budgetHardCapWindows.every(({ key }) => !quotaHardCap[key])
+      showHardCapToggles && visibleHardCapPeriods.every((key) => !quotaHardCap[key])
+    const hardCapWarningText = allVisibleHardCapsDisabled
+      ? 'All shown hard caps are off, so budget limits will not auto-close this provider.'
+      : null
     const activeProviderCount = Object.values(options.config?.providers ?? {}).filter((provider) => !provider.disabled).length
     const canDeactivate = p.disabled || activeProviderCount > 1
     const isDragOver = options.dragOverProvider === name
@@ -249,9 +245,9 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     </button>
                   ) : null}
                 </div>
-                {budgetHardCapWindows.length > 0 ? (
+                {showHardCapToggles ? (
                   <div className="aoUsageHardCapGrid">
-                    {budgetHardCapWindows.map(({ key: period }) => (
+                    {visibleHardCapPeriods.map((period) => (
                       <label key={period} className="aoUsageHardCapItem">
                         <input
                           type="checkbox"
@@ -264,14 +260,14 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   </div>
                 ) : null}
                 <div className="aoHint">Usage base sets the usage endpoint. If empty, we use the provider base URL.</div>
-                {budgetHardCapWindows.length > 0 ? (
+                {showHardCapToggles ? (
                   <div className="aoHint">Hard cap controls whether {budgetHardCapLabel} budget exhaustion auto-closes this provider.</div>
                 ) : (
                   <div className="aoHint">No budget windows detected for this provider, so hard cap toggles are hidden.</div>
                 )}
-                {allVisibleHardCapsDisabled ? (
+                {hardCapWarningText ? (
                   <div className="aoHint" style={{ color: 'rgba(145, 12, 43, 0.92)' }}>
-                    All visible hard caps are disabled, so this provider will not auto-close on budget exhaustion.
+                    {hardCapWarningText}
                   </div>
                 ) : null}
                 <div className="aoHint">

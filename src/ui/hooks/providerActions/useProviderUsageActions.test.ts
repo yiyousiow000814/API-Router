@@ -109,4 +109,38 @@ describe('setProviderQuotaHardCapFieldWithRefresh', () => {
     expect(refreshStatus).toHaveBeenCalledTimes(1)
     expect(flashToast).toHaveBeenCalledWith(expect.stringContaining('boom'), 'error')
   })
+
+  it('updates local state only in dev preview mode without invoking backend', async () => {
+    let cfg: Config | null = buildConfig()
+    const setConfig = vi.fn((updater: (prev: Config | null) => Config | null) => {
+      cfg = updater(cfg)
+    })
+    const invokeFn = vi.fn().mockResolvedValue(undefined)
+    const refreshConfig = vi.fn().mockResolvedValue(undefined)
+    const refreshStatus = vi.fn().mockResolvedValue(undefined)
+    const flashToast = vi.fn()
+
+    await setProviderQuotaHardCapFieldWithRefresh({
+      provider: 'p1',
+      field: 'monthly',
+      enabled: false,
+      invokeFn,
+      setConfig: setConfig as any,
+      refreshConfig,
+      refreshStatus,
+      flashToast,
+      isLocalOnly: true,
+    })
+
+    expect(cfg?.providers.p1.quota_hard_cap).toEqual({
+      daily: true,
+      weekly: true,
+      monthly: false,
+    })
+    expect(invokeFn).not.toHaveBeenCalled()
+    expect(refreshConfig).not.toHaveBeenCalled()
+    expect(refreshStatus).not.toHaveBeenCalled()
+    expect(flashToast).toHaveBeenCalledWith('Hard cap updated [TEST]: p1.monthly')
+  })
+
 })

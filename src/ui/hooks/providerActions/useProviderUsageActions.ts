@@ -56,6 +56,7 @@ type SetProviderQuotaHardCapParams = {
   refreshConfig: () => Promise<void>
   refreshStatus: () => Promise<void>
   flashToast: (msg: string, kind?: 'info' | 'error') => void
+  isLocalOnly?: boolean
 }
 
 export async function setProviderQuotaHardCapFieldWithRefresh({
@@ -67,8 +68,13 @@ export async function setProviderQuotaHardCapFieldWithRefresh({
   refreshConfig,
   refreshStatus,
   flashToast,
+  isLocalOnly,
 }: SetProviderQuotaHardCapParams): Promise<void> {
   setConfig((prev) => applyProviderQuotaHardCapLocalPatch(prev, provider, field, enabled))
+  if (isLocalOnly) {
+    flashToast(`Hard cap updated [TEST]: ${provider}.${field}`)
+    return
+  }
   try {
     await invokeFn('set_provider_quota_hard_cap_field', {
       provider,
@@ -180,9 +186,10 @@ export function useProviderUsageActions({
         refreshConfig,
         refreshStatus,
         flashToast,
+        isLocalOnly: isDevPreview,
       })
     },
-    [flashToast, refreshConfig, refreshStatus, setConfig],
+    [flashToast, isDevPreview, refreshConfig, refreshStatus, setConfig],
   )
 
   const openUsageBaseModal = useCallback(
