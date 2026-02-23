@@ -65,7 +65,7 @@ function buildStatusWithoutWeeklyWindow(): Status {
   }
 }
 
-function renderCardWarningText(config: Config, status: Status): string {
+function renderCardHtml(config: Config, status: Status): string {
   const setProviderNameDrafts = (() => undefined) as React.Dispatch<
     React.SetStateAction<Record<string, string>>
   >
@@ -106,9 +106,9 @@ function renderCardWarningText(config: Config, status: Status): string {
   return renderToStaticMarkup(card)
 }
 
-describe('provider hard cap warning text', () => {
-  it('warns that hidden hard caps can still auto-close later', () => {
-    const html = renderCardWarningText(
+describe('provider hard cap rendering', () => {
+  it('keeps weekly hard cap toggle visible when weekly budget data is missing', () => {
+    const html = renderCardHtml(
       buildConfig({
         daily: false,
         weekly: true,
@@ -117,13 +117,12 @@ describe('provider hard cap warning text', () => {
       buildStatusWithoutWeeklyWindow(),
     )
 
-    expect(html).toContain(
-      'Visible hard caps are off. This provider may still auto-close if other budget periods are returned later.',
-    )
+    expect(html).toContain('weekly hard cap')
+    expect(html).not.toContain('Visible hard caps are off.')
   })
 
-  it('keeps absolute warning when every hard cap is disabled', () => {
-    const html = renderCardWarningText(
+  it('shows absolute warning only when every hard cap is disabled', () => {
+    const html = renderCardHtml(
       buildConfig({
         daily: false,
         weekly: false,
@@ -132,6 +131,6 @@ describe('provider hard cap warning text', () => {
       buildStatusWithoutWeeklyWindow(),
     )
 
-    expect(html).toContain('All visible hard caps are disabled, so this provider will not auto-close on budget exhaustion.')
+    expect(html).toContain('All hard caps are off, so this provider will not auto-close on budget exhaustion.')
   })
 })
