@@ -804,12 +804,13 @@ pub(crate) fn decide_provider_for_display(
 // Full dashboard session details (including client_sessions/model fields) are exposed
 // by the Tauri `get_status` command in `src-tauri/src/lib.rs`.
 async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
+    const STATUS_RECENT_EVENTS_LIMIT: usize = 200;
     let cfg = st.cfg.read().clone();
     let now = unix_ms();
     let mut providers = st.router.snapshot(now);
     let manual_override = st.router.manual_override.read().clone();
 
-    let recent_events = st.store.list_events_split(5, 5);
+    let recent_events = st.store.list_events(STATUS_RECENT_EVENTS_LIMIT);
     let metrics = st.store.get_metrics();
     let quota = st.store.list_quota_snapshots();
     for (provider_name, snapshot) in providers.iter_mut() {
