@@ -19,6 +19,7 @@ import {
   buildUsageProviderFilterOptions,
   buildUsageSharedCostView,
   computeUsageProviderTotalsAndAverages,
+  orderUsageProvidersByConfig,
   usageProviderRowKey,
 } from '../utils/usageStatisticsView'
 
@@ -115,6 +116,10 @@ export function useDashboardDerivations(params: Params) {
   )
   const usageByModel = usageSummary?.by_model ?? []
   const usageByProvider = usageSummary?.by_provider ?? []
+  const orderedUsageByProvider = useMemo(
+    () => orderUsageProvidersByConfig(usageByProvider, orderedConfigProviders),
+    [usageByProvider, orderedConfigProviders],
+  )
   const usageMaxTimelineRequests = Math.max(1, ...usageTimeline.map((x) => x.requests ?? 0))
   const usageMaxTimelineTokens = Math.max(1, ...usageTimeline.map((x) => x.total_tokens ?? 0))
   const usageTotalInputTokens = usageByModel.reduce((sum: number, x) => sum + (x.input_tokens ?? 0), 0)
@@ -139,17 +144,20 @@ export function useDashboardDerivations(params: Params) {
     () => buildUsageOriginFilterOptions(usageCatalogOrigins),
     [usageCatalogOrigins],
   )
-  const usageSharedCostView = useMemo(() => buildUsageSharedCostView(usageByProvider), [usageByProvider])
-  const usageProviderDisplayGroups = useMemo(
-    () => buildUsageProviderDisplayGroups(usageByProvider, usageSharedCostView),
-    [usageByProvider, usageSharedCostView],
+  const usageSharedCostView = useMemo(
+    () => buildUsageSharedCostView(orderedUsageByProvider),
+    [orderedUsageByProvider],
   )
-  const usagePricedRequestCount = usageByProvider.reduce((sum: number, row) => {
+  const usageProviderDisplayGroups = useMemo(
+    () => buildUsageProviderDisplayGroups(orderedUsageByProvider, usageSharedCostView),
+    [orderedUsageByProvider, usageSharedCostView],
+  )
+  const usagePricedRequestCount = orderedUsageByProvider.reduce((sum: number, row) => {
     const total = usageSharedCostView.effectiveTotalByRowKey.get(usageProviderRowKey(row))
     if (total == null || !Number.isFinite(total) || total <= 0) return sum
     return sum + (row.requests ?? 0)
   }, 0)
-  const usageDedupedTotalUsedUsd = usageByProvider.reduce((sum: number, row) => {
+  const usageDedupedTotalUsedUsd = orderedUsageByProvider.reduce((sum: number, row) => {
     const total = usageSharedCostView.effectiveTotalByRowKey.get(usageProviderRowKey(row))
     if (total != null && Number.isFinite(total) && total > 0) return sum + total
     return sum
@@ -187,8 +195,8 @@ export function useDashboardDerivations(params: Params) {
     return `${usageWindowHours} hours`
   }, [usageWindowHours])
   const usageProviderTotalsAndAverages = useMemo(
-    () => computeUsageProviderTotalsAndAverages(usageByProvider, usageSharedCostView),
-    [usageByProvider, usageSharedCostView],
+    () => computeUsageProviderTotalsAndAverages(orderedUsageByProvider, usageSharedCostView),
+    [orderedUsageByProvider, usageSharedCostView],
   )
   const usagePricingProviderNames = managedProviderNames
   const usagePricingGroups = useMemo(
@@ -200,12 +208,12 @@ export function useDashboardDerivations(params: Params) {
     () =>
       computeUsageAnomalies(
         usageTimeline,
-        usageByProvider,
+        orderedUsageByProvider,
         usageStatistics?.window_hours ?? 24,
         usageProviderRowKey,
         formatUsdMaybe,
       ),
-    [usageTimeline, usageByProvider, usageStatistics?.window_hours],
+    [usageTimeline, orderedUsageByProvider, usageStatistics?.window_hours],
   )
 
   const toggleUsageProviderFilter = useCallback((name: string) => {
@@ -267,7 +275,7 @@ export function useDashboardDerivations(params: Params) {
     usageSummary,
     usageTimeline,
     usageByModel,
-    usageByProvider,
+    usageByProvider: orderedUsageByProvider,
     usageTotalInputTokens,
     usageTotalOutputTokens,
     usageAvgTokensPerRequest,
