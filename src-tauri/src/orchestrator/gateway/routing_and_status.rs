@@ -936,10 +936,14 @@ mod routing_and_status_tests {
     fn session_demand_ratio_increases_with_usage_weight() {
         let light = session_demand_ratio_from_usage(1, 1_000);
         let medium = session_demand_ratio_from_usage(8, 80_000);
-        let heavy = session_demand_ratio_from_usage(24, 360_000);
+        let heavy = session_demand_ratio_from_usage(15, 200_000);
         assert!(
             light < medium && medium < heavy,
             "expected monotonic demand: light={light}, medium={medium}, heavy={heavy}"
+        );
+        assert!(
+            heavy < 1.0,
+            "heavy test sample should stay below saturation for sensitivity; got {heavy}"
         );
     }
 
@@ -983,6 +987,16 @@ mod routing_and_status_tests {
                 gap_fill_amount_usd: None,
             },
         );
+        pricing.insert(
+            "gap_fill_zero".to_string(),
+            crate::orchestrator::secrets::ProviderPricingConfig {
+                mode: "per_token".to_string(),
+                amount_usd: 0.0,
+                periods: Vec::new(),
+                gap_fill_mode: Some("per_request".to_string()),
+                gap_fill_amount_usd: Some(0.0),
+            },
+        );
 
         assert_eq!(
             provider_per_request_cost_signal(&pricing, "primary"),
@@ -993,6 +1007,10 @@ mod routing_and_status_tests {
             Some(0.03)
         );
         assert_eq!(provider_per_request_cost_signal(&pricing, "none"), None);
+        assert_eq!(
+            provider_per_request_cost_signal(&pricing, "gap_fill_zero"),
+            None
+        );
         assert_eq!(provider_per_request_cost_signal(&pricing, "missing"), None);
     }
 }
