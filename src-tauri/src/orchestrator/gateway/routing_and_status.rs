@@ -139,11 +139,12 @@ fn balanced_session_provider_score(session_key: &str, provider: &str) -> u64 {
 }
 
 const BALANCED_ASSIGNMENT_STICKY_MS: u64 = 2 * 60 * 60 * 1000;
-const BALANCED_REBALANCE_MARGIN: usize = 2;
+const BALANCED_REBALANCE_MARGIN: usize = 3;
 const BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS: u64 = 15 * 60 * 1000;
 const BALANCED_CAPACITY_FLOOR_RATIO: f64 = 0.25;
 const BALANCED_CAPACITY_FIT_RANK_SCALE: f64 = 100.0;
 const BALANCED_SESSION_LOAD_WINDOW_MS: u64 = 2 * 60 * 60 * 1000;
+const BALANCED_UNHEALTHY_LOAD_PENALTY: u64 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BalancedAssignmentPersistMode {
@@ -295,22 +296,28 @@ fn provider_is_balanced_candidate(
     st: &GatewayState,
     cfg: &AppConfig,
     quota_snapshots: &Value,
-    router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
+    preferred: &str,
+    suppress_preferred: bool,
     provider: &str,
     clear_usage_confirmation_requirement: bool,
 ) -> bool {
-    if !provider_is_routable_for_selection(
+    if suppress_preferred && provider == preferred {
+        return false;
+    }
+    provider_is_routable_for_selection(
         st,
         cfg,
         quota_snapshots,
         provider,
         clear_usage_confirmation_requirement,
-    ) {
-        return false;
-    }
-    // Keep "single-session one provider" stable, but once provider enters explicit unhealthy
-    // state we should rebalance immediately.
-    !router_snapshot
+    )
+}
+
+fn provider_is_explicitly_unhealthy(
+    router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
+    provider: &str,
+) -> bool {
+    router_snapshot
         .get(provider)
         .is_some_and(|snapshot| snapshot.status == "unhealthy")
 }
@@ -380,6 +387,7 @@ fn pick_balanced_provider(
     assignment_counts: &BalancedAssignmentCounts,
     session_key: &str,
     preferred: &str,
+    suppress_preferred: bool,
     clear_usage_confirmation_requirement: bool,
 ) -> Option<(String, usize, usize)> {
     let now_ms = unix_ms();
@@ -390,7 +398,8 @@ fn pick_balanced_provider(
                 st,
                 cfg,
                 quota_snapshots,
-                router_snapshot,
+                preferred,
+                suppress_preferred,
                 name,
                 clear_usage_confirmation_requirement,
             )
@@ -457,8 +466,16 @@ fn pick_balanced_provider(
             } else {
                 1000_u64
             };
-            let provider_pressure_rank = provider_load as u64;
-            let bucket_pressure_rank = bucket_load as u64;
+            let unhealthy_penalty = if provider_is_explicitly_unhealthy(router_snapshot, &provider)
+            {
+                BALANCED_UNHEALTHY_LOAD_PENALTY
+            } else {
+                0_u64
+            };
+            // Prefer healthy providers by default, but allow unhealthy retry when load skew is
+            // large enough to offset this fixed penalty.
+            let provider_pressure_rank = provider_load as u64 + unhealthy_penalty;
+            let bucket_pressure_rank = bucket_load as u64 + unhealthy_penalty;
             let preferred_rank = if provider == preferred { 0_u8 } else { 1_u8 };
             let hash_rank = balanced_session_provider_score(session_key, &provider);
             (
@@ -479,6 +496,7 @@ fn pick_balanced_provider(
         .map(|(provider, _, provider_load, bucket_load)| (provider, provider_load, bucket_load))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pick_balanced_provider_for_verified_main_session(
     st: &GatewayState,
     cfg: &AppConfig,
@@ -486,6 +504,7 @@ fn pick_balanced_provider_for_verified_main_session(
     router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     session_key: &str,
     preferred: &str,
+    suppress_preferred: bool,
     persist_mode: BalancedAssignmentPersistMode,
 ) -> Option<String> {
     let now_ms = unix_ms();
@@ -506,14 +525,19 @@ fn pick_balanced_provider_for_verified_main_session(
     let assignment_is_fresh = assignment.as_ref().is_some_and(|row| {
         now_ms.saturating_sub(row.assigned_at_unix_ms) < BALANCED_ASSIGNMENT_STICKY_MS
     });
+    let assignment_is_unhealthy = assignment
+        .as_ref()
+        .is_some_and(|row| provider_is_explicitly_unhealthy(router_snapshot, &row.provider));
 
     if let Some(row) = assignment.as_ref() {
         if assignment_is_fresh
+            && !assignment_is_unhealthy
             && provider_is_balanced_candidate(
                 st,
                 cfg,
                 quota_snapshots,
-                router_snapshot,
+                preferred,
+                suppress_preferred,
                 &row.provider,
                 persist_full,
             )
@@ -530,15 +554,17 @@ fn pick_balanced_provider_for_verified_main_session(
         &assignment_counts,
         session_key,
         preferred,
+        suppress_preferred,
         persist_full,
     );
     if let Some(row) = assignment.as_ref() {
-        let current_usable =
-            provider_is_balanced_candidate(
+        let current_usable = !assignment_is_unhealthy
+            && provider_is_balanced_candidate(
                 st,
                 cfg,
                 quota_snapshots,
-                router_snapshot,
+                preferred,
+                suppress_preferred,
                 &row.provider,
                 persist_full,
             );
@@ -588,6 +614,7 @@ fn pick_balanced_provider_for_verified_session(
     router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     session_key: &str,
     preferred: &str,
+    suppress_preferred: bool,
     persist_mode: BalancedAssignmentPersistMode,
     depth: u8,
 ) -> Option<String> {
@@ -639,6 +666,7 @@ fn pick_balanced_provider_for_verified_session(
             router_snapshot,
             parent_sid,
             preferred,
+            suppress_preferred,
             persist_mode,
             depth.saturating_add(1),
         );
@@ -650,6 +678,7 @@ fn pick_balanced_provider_for_verified_session(
         router_snapshot,
         session_key,
         preferred,
+        suppress_preferred,
         persist_mode,
     )
 }
@@ -693,6 +722,17 @@ fn decide_provider_with_balanced_mode(
         .routing
         .session_preferred_providers
         .contains_key(session_key);
+    let last_provider = st
+        .last_used_by_session
+        .read()
+        .get(session_key)
+        .map(|v| v.provider.clone());
+    let suppress_preferred_in_balanced = last_provider
+        .as_deref()
+        .is_some_and(|p| p != preferred)
+        && st
+            .router
+            .should_suppress_preferred(preferred, cfg, now_ms);
     if cfg.routing.route_mode == crate::orchestrator::config::RouteMode::BalancedAuto
         && !session_has_explicit_preferred
     {
@@ -704,6 +744,7 @@ fn decide_provider_with_balanced_mode(
             &router_snapshot,
             session_key,
             preferred,
+            suppress_preferred_in_balanced,
             balanced_persist_mode,
             0,
         ) {
@@ -712,12 +753,6 @@ fn decide_provider_with_balanced_mode(
     }
 
     if cfg.routing.auto_return_to_preferred {
-        let last_provider = st
-            .last_used_by_session
-            .read()
-            .get(session_key)
-            .map(|v| v.provider.clone());
-
         // If we recently failed over away from preferred, keep using the last successful
         // fallback for a short stabilization window to avoid flapping.
         if last_provider.as_deref().is_some_and(|p| p != preferred)
