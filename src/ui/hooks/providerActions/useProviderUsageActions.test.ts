@@ -76,13 +76,16 @@ describe('setProviderQuotaHardCapFieldWithRefresh', () => {
     expect(flashToast).toHaveBeenCalledWith('Hard cap updated: p1.weekly')
   })
 
-  it('still refreshes and keeps optimistic state on invoke failure', async () => {
+  it('still refreshes and lets refreshConfig reconcile state on invoke failure', async () => {
     let cfg: Config | null = buildConfig()
     const setConfig = vi.fn((updater: (prev: Config | null) => Config | null) => {
       cfg = updater(cfg)
     })
     const invokeFn = vi.fn().mockRejectedValue(new Error('boom'))
-    const refreshConfig = vi.fn().mockResolvedValue(undefined)
+    const refreshConfig = vi.fn(async () => {
+      // Simulate backend truth after failed write: unchanged all-true hard cap.
+      cfg = buildConfig()
+    })
     const refreshStatus = vi.fn().mockResolvedValue(undefined)
     const flashToast = vi.fn()
 
@@ -98,7 +101,7 @@ describe('setProviderQuotaHardCapFieldWithRefresh', () => {
     })
 
     expect(cfg?.providers.p1.quota_hard_cap).toEqual({
-      daily: false,
+      daily: true,
       weekly: true,
       monthly: true,
     })

@@ -221,10 +221,13 @@ impl SecretStore {
         hard_cap: ProviderQuotaHardCapConfig,
     ) -> Result<(), String> {
         let mut data = self.inner.lock();
+        let mut next = data.clone();
         // Canonical storage invariant: all-true means "no override", so we
         // remove the row and let readers fall back to ProviderQuotaHardCapConfig::default().
-        Self::apply_provider_quota_hard_cap(&mut data, provider, hard_cap);
-        self.persist(&data)
+        Self::apply_provider_quota_hard_cap(&mut next, provider, hard_cap);
+        self.persist(&next)?;
+        *data = next;
+        Ok(())
     }
 
     pub fn set_provider_quota_hard_cap_field(
@@ -234,7 +237,8 @@ impl SecretStore {
         enabled: bool,
     ) -> Result<ProviderQuotaHardCapConfig, String> {
         let mut data = self.inner.lock();
-        let mut hard_cap = data
+        let mut next = data.clone();
+        let mut hard_cap = next
             .provider_quota_hard_cap
             .get(provider)
             .map(|v| ProviderQuotaHardCapConfig {
@@ -249,8 +253,10 @@ impl SecretStore {
             "monthly" => hard_cap.monthly = enabled,
             _ => return Err("field must be one of: daily, weekly, monthly".to_string()),
         }
-        Self::apply_provider_quota_hard_cap(&mut data, provider, hard_cap);
-        self.persist(&data).map(|_| hard_cap)
+        Self::apply_provider_quota_hard_cap(&mut next, provider, hard_cap);
+        self.persist(&next)?;
+        *data = next;
+        Ok(hard_cap)
     }
 
     pub fn clear_provider_quota_hard_cap(&self, provider: &str) -> Result<(), String> {
@@ -637,6 +643,26 @@ mod tests {
                 weekly: true,
                 monthly: true,
             }
+        );
+    }
+
+    #[test]
+    fn quota_hard_cap_field_update_does_not_mutate_memory_when_persist_fails() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Use a directory path as "file" path so persist() fails consistently.
+        let store = SecretStore::new(tmp.path().to_path_buf());
+
+        let err = store
+            .set_provider_quota_hard_cap_field("p1", "daily", false)
+            .expect_err("persist should fail on directory path");
+        assert!(
+            !err.trim().is_empty(),
+            "persist failure should bubble an error"
+        );
+        assert_eq!(
+            store.get_provider_quota_hard_cap("p1"),
+            ProviderQuotaHardCapConfig::default(),
+            "in-memory state should remain unchanged when persist fails"
         );
     }
 
