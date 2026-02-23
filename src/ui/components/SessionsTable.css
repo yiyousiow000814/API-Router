@@ -43,8 +43,33 @@
   color: rgba(126, 84, 24, 0.95);
 }
 
+.aoSessionsIdChild {
+  padding-left: 12px;
+}
+
+.aoSessionChildRoleBadge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.18);
+  background: rgba(13, 18, 32, 0.06);
+  color: rgba(13, 18, 32, 0.72);
+  font-size: 10px;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+}
+
+.aoSessionRowChild td {
+  background: rgba(13, 18, 32, 0.022) !important;
+}
+
+.aoSessionRowChild td:first-child {
+  box-shadow: inset 2px 0 0 rgba(13, 18, 32, 0.1);
+}
+
 .aoSessionRowAgent td {
-  background: rgba(40, 199, 217, 0.03) !important;
+  background: rgba(40, 199, 217, 0.02) !important;
 }
 
 .aoSessionRowAgent td:first-child {
