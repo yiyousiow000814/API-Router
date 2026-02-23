@@ -7,6 +7,7 @@ type SessionRow = {
   id: string
   wt_session?: string | null
   codex_session_id?: string | null
+  agent_parent_session_id?: string | null
   reported_model_provider?: string | null
   reported_model?: string | null
   reported_base_url?: string | null
@@ -57,6 +58,73 @@ export function isWslSessionRow(
   return host === normalizedWslHost
 }
 
+export function compareSessionRowsByOriginThenLastSeen(
+  left: Pick<SessionRow, 'id' | 'wt_session' | 'reported_base_url' | 'last_seen_unix_ms'>,
+  right: Pick<SessionRow, 'id' | 'wt_session' | 'reported_base_url' | 'last_seen_unix_ms'>,
+  wslGatewayHost: string = GATEWAY_WSL2_HOST,
+): number {
+  const leftIsWsl = isWslSessionRow(left, wslGatewayHost)
+  const rightIsWsl = isWslSessionRow(right, wslGatewayHost)
+  if (leftIsWsl !== rightIsWsl) return leftIsWsl ? 1 : -1
+  if (left.last_seen_unix_ms !== right.last_seen_unix_ms) {
+    return right.last_seen_unix_ms - left.last_seen_unix_ms
+  }
+  return left.id.localeCompare(right.id)
+}
+
+type DisplaySessionRow = {
+  row: SessionRow
+  parentMainSessionId?: string
+}
+
+export function arrangeSessionRowsByMainParent(
+  rows: SessionRow[],
+  wslGatewayHost: string = GATEWAY_WSL2_HOST,
+): DisplaySessionRow[] {
+  const sortedRows = [...rows].sort((left, right) =>
+    compareSessionRowsByOriginThenLastSeen(left, right, wslGatewayHost),
+  )
+  const mainRowsById = new Map(
+    sortedRows
+      .filter((row) => !(row.is_agent === true || row.is_review === true))
+      .map((row) => [row.id, row]),
+  )
+  const childRowsByMainSessionId = new Map<string, SessionRow[]>()
+  const rootRows: SessionRow[] = []
+
+  for (const row of sortedRows) {
+    const isAgentOrReview = row.is_agent === true || row.is_review === true
+    const parentMainSessionId = (row.agent_parent_session_id ?? '').trim()
+    const parentMainRow = parentMainSessionId ? mainRowsById.get(parentMainSessionId) : undefined
+    const parentReadyForChild =
+      !!parentMainRow &&
+      parentMainRow.verified !== false &&
+      !!(parentMainRow.current_provider ?? '').trim()
+    if (isAgentOrReview && parentReadyForChild) {
+      const rowsForMainSession = childRowsByMainSessionId.get(parentMainSessionId) ?? []
+      rowsForMainSession.push(row)
+      childRowsByMainSessionId.set(parentMainSessionId, rowsForMainSession)
+      continue
+    }
+    if (isAgentOrReview) continue
+    rootRows.push(row)
+  }
+
+  const displayRows: DisplaySessionRow[] = []
+  for (const row of rootRows) {
+    displayRows.push({ row })
+    const childRows = childRowsByMainSessionId
+      .get(row.id)
+      ?.sort((left, right) =>
+        compareSessionRowsByOriginThenLastSeen(left, right, wslGatewayHost),
+      ) ?? []
+    for (const childRow of childRows) {
+      displayRows.push({ row: childRow, parentMainSessionId: row.id })
+    }
+  }
+  return displayRows
+}
+
 export function SessionsTable({
   sessions,
   providers,
@@ -95,9 +163,99 @@ export function SessionsTable({
     return s.reported_model_provider ?? '-'
   }
 
-  const verifiedRows = sessions.filter((s) => s.verified !== false)
-  const unverifiedRows = sessions.filter((s) => s.verified === false)
+  const verifiedRows = arrangeSessionRowsByMainParent(
+    sessions.filter((s) => s.verified !== false),
+    wslGatewayHost,
+  )
+  const unverifiedRows = arrangeSessionRowsByMainParent(
+    sessions.filter((s) => s.verified === false),
+    wslGatewayHost,
+  )
   const [showUnverified, setShowUnverified] = useState(false)
+
+  const renderSessionRows = (rows: DisplaySessionRow[]) => {
+    const mainProviderBySessionId = new Map(
+      rows
+        .filter((entry) => !entry.parentMainSessionId)
+        .map((entry) => [entry.row.id, (entry.row.current_provider ?? '').trim()]),
+    )
+    return rows.map((entry) => {
+      const s = entry.row
+      const parentMainSessionId = entry.parentMainSessionId
+      const isChildRow = !!parentMainSessionId
+      const verified = s.verified !== false
+      const inheritedMainProvider = isChildRow
+        ? mainProviderBySessionId.get(parentMainSessionId) ?? ''
+        : ''
+      const currentProviderRaw = isChildRow ? inheritedMainProvider : (s.current_provider ?? '')
+      const currentProvider = currentProviderRaw.trim() || '-'
+      const codexSession = codexSessionIdOnly(s.codex_session_id)
+      const wt = s.wt_session ?? '-'
+      const isAgent = s.is_agent === true
+      const codexProvider = codexProviderLabel(s)
+      const modelName = s.reported_model ?? '-'
+      const originClass = sessionOriginClass(s)
+      const sessionIdClass = isChildRow ? `${originClass} aoSessionsIdChild` : originClass
+      const wsl = isWslSession(s)
+      const originBadgeClass = wsl
+        ? 'aoSessionOriginBadge aoSessionOriginBadgeWsl'
+        : 'aoSessionOriginBadge aoSessionOriginBadgeWindows'
+      const originLabel = wsl ? 'WSL2' : 'WIN'
+      const rowClass = [
+        isAgent ? (wsl ? 'aoSessionRowAgent aoSessionRowAgentWsl' : 'aoSessionRowAgent') : '',
+        isChildRow ? 'aoSessionRowChild' : '',
+      ]
+        .join(' ')
+        .trim()
+      const title = isChildRow
+        ? `WT_SESSION: ${wt}\nparent main session: ${parentMainSessionId}`
+        : `WT_SESSION: ${wt}`
+      return (
+        <tr key={s.id} className={rowClass || undefined}>
+          <td className="aoSessionsMono">
+            {codexSession ? (
+              <div className={sessionIdClass} title={title}>
+                {!isChildRow && <span className={originBadgeClass}>{originLabel}</span>}
+                {codexSession}
+              </div>
+            ) : (
+              <div className={sessionIdClass} title={title}>-</div>
+            )}
+          </td>
+          <td className="aoSessionsCellCenter">
+            <div className="aoSessionsCellCenterInner">
+              <span className="aoPill">
+                <span className={verified && s.active ? 'aoDot' : 'aoDot aoDotMuted'} />
+                <span className="aoPillText">{verified ? (s.active ? 'active' : 'idle') : 'unverified'}</span>
+              </span>
+            </div>
+          </td>
+          <td>{fmtWhen(s.last_seen_unix_ms)}</td>
+          <td className="aoSessionsMono">{codexProvider}</td>
+          <td className="aoSessionsMono">{modelName}</td>
+          <td className="aoSessionsMono" title={s.current_reason ?? ''}>{currentProvider}</td>
+          <td>
+            <select
+              className="aoSelect"
+              value={s.preferred_provider ?? ''}
+              disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession || isAgent}
+              onChange={(e) => {
+                const v = e.target.value
+                onSetPreferred(s.id, v ? v : null)
+              }}
+            >
+              <option value="">{`(follow global: ${globalPreferred})`}</option>
+              {providers.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          </td>
+        </tr>
+      )
+    })
+  }
 
   return (
     <table className="aoTable aoTableFixed">
@@ -118,70 +276,7 @@ export function SessionsTable({
         {sessions.length ? (
           <>
             {verifiedRows.length ? (
-              verifiedRows.map((s) => {
-                const verified = s.verified !== false
-                const currentProvider = s.current_provider ?? '-'
-                const codexSession = codexSessionIdOnly(s.codex_session_id)
-                const wt = s.wt_session ?? '-'
-                const isAgent = s.is_agent === true
-                const codexProvider = codexProviderLabel(s)
-                const modelName = s.reported_model ?? '-'
-                const originClass = sessionOriginClass(s)
-                const wsl = isWslSession(s)
-                const originBadgeClass = wsl
-                  ? 'aoSessionOriginBadge aoSessionOriginBadgeWsl'
-                  : 'aoSessionOriginBadge aoSessionOriginBadgeWindows'
-                const originLabel = wsl ? 'WSL2' : 'WIN'
-                const rowClass = isAgent
-                  ? wsl
-                    ? 'aoSessionRowAgent aoSessionRowAgentWsl'
-                    : 'aoSessionRowAgent'
-                  : undefined
-                return (
-                  <tr key={s.id} className={rowClass}>
-                    <td className="aoSessionsMono">
-                      {codexSession ? (
-                        <div className={originClass} title={`WT_SESSION: ${wt}`}>
-                          <span className={originBadgeClass}>{originLabel}</span>
-                          {codexSession}
-                        </div>
-                      ) : (
-                        <div className={originClass} title={`WT_SESSION: ${wt}`}>-</div>
-                      )}
-                    </td>
-                    <td className="aoSessionsCellCenter">
-                      <div className="aoSessionsCellCenterInner">
-                        <span className="aoPill">
-                          <span className={verified && s.active ? 'aoDot' : 'aoDot aoDotMuted'} />
-                          <span className="aoPillText">{verified ? (s.active ? 'active' : 'idle') : 'unverified'}</span>
-                        </span>
-                      </div>
-                    </td>
-                    <td>{fmtWhen(s.last_seen_unix_ms)}</td>
-                    <td className="aoSessionsMono">{codexProvider}</td>
-                    <td className="aoSessionsMono">{modelName}</td>
-                    <td className="aoSessionsMono" title={s.current_reason ?? ''}>{currentProvider}</td>
-                    <td>
-                      <select
-                        className="aoSelect"
-                        value={s.preferred_provider ?? ''}
-                        disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession || isAgent}
-                        onChange={(e) => {
-                          const v = e.target.value
-                          onSetPreferred(s.id, v ? v : null)
-                        }}
-                      >
-                        <option value="">{`(follow global: ${globalPreferred})`}</option>
-                        {providers.map((p) => (
-                          <option key={p} value={p}>
-                            {p}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                  </tr>
-                )
-              })
+              renderSessionRows(verifiedRows)
             ) : (
               <tr>
                 <td colSpan={7} className="aoHint">
@@ -227,70 +322,7 @@ export function SessionsTable({
                     Discovered in Windows Terminal, but API Router can&apos;t confirm their base_url yet. They&apos;ll become verified after the first request goes through the gateway.
                   </td>
                 </tr>
-                {unverifiedRows.map((s) => {
-                  const verified = s.verified !== false
-                  const currentProvider = s.current_provider ?? '-'
-                  const codexSession = codexSessionIdOnly(s.codex_session_id)
-                  const wt = s.wt_session ?? '-'
-                  const isAgent = s.is_agent === true
-                  const codexProvider = codexProviderLabel(s)
-                  const modelName = s.reported_model ?? '-'
-                  const originClass = sessionOriginClass(s)
-                  const wsl = isWslSession(s)
-                  const originBadgeClass = wsl
-                    ? 'aoSessionOriginBadge aoSessionOriginBadgeWsl'
-                    : 'aoSessionOriginBadge aoSessionOriginBadgeWindows'
-                  const originLabel = wsl ? 'WSL2' : 'WIN'
-                  const rowClass = isAgent
-                    ? wsl
-                      ? 'aoSessionRowAgent aoSessionRowAgentWsl'
-                      : 'aoSessionRowAgent'
-                    : undefined
-                  return (
-                    <tr key={s.id} className={rowClass}>
-                      <td className="aoSessionsMono">
-                        {codexSession ? (
-                          <div className={originClass} title={`WT_SESSION: ${wt}`}>
-                            <span className={originBadgeClass}>{originLabel}</span>
-                            {codexSession}
-                          </div>
-                        ) : (
-                          <div className={originClass} title={`WT_SESSION: ${wt}`}>-</div>
-                        )}
-                      </td>
-                      <td className="aoSessionsCellCenter">
-                        <div className="aoSessionsCellCenterInner">
-                          <span className="aoPill">
-                            <span className={verified && s.active ? 'aoDot' : 'aoDot aoDotMuted'} />
-                            <span className="aoPillText">{verified ? (s.active ? 'active' : 'idle') : 'unverified'}</span>
-                          </span>
-                        </div>
-                      </td>
-                      <td>{fmtWhen(s.last_seen_unix_ms)}</td>
-                      <td className="aoSessionsMono">{codexProvider}</td>
-                      <td className="aoSessionsMono">{modelName}</td>
-                      <td className="aoSessionsMono" title={s.current_reason ?? ''}>{currentProvider}</td>
-                      <td>
-                        <select
-                          className="aoSelect"
-                          value={s.preferred_provider ?? ''}
-                          disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession || isAgent}
-                          onChange={(e) => {
-                            const v = e.target.value
-                            onSetPreferred(s.id, v ? v : null)
-                          }}
-                        >
-                          <option value="">{`(follow global: ${globalPreferred})`}</option>
-                          {providers.map((p) => (
-                            <option key={p} value={p}>
-                              {p}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                    </tr>
-                  )
-                })}
+                {renderSessionRows(unverifiedRows)}
               </>
             )}
           </>

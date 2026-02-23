@@ -43,6 +43,25 @@
   color: rgba(126, 84, 24, 0.95);
 }
 
+.aoSessionsIdChild {
+  position: relative;
+  padding-left: 16px;
+}
+
+.aoSessionsIdChild::before {
+  content: "|-";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  color: rgba(13, 18, 32, 0.38);
+  font-size: 11px;
+}
+
+.aoSessionRowChild td:first-child {
+  box-shadow: inset 1px 0 0 rgba(13, 18, 32, 0.08);
+}
+
 .aoSessionRowAgent td {
   background: rgba(40, 199, 217, 0.03) !important;
 }

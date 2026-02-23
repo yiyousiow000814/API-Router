@@ -249,6 +249,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     "id": codex_id,
                     "wt_session": v.wt_session,
                     "codex_session_id": v.codex_session_id,
+                    "agent_parent_session_id": v.agent_parent_session_id,
                     "reported_model_provider": v.last_reported_model_provider,
                     "reported_model": v.last_reported_model,
                     "reported_base_url": v.last_reported_base_url,
