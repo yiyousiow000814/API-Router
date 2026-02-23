@@ -139,7 +139,7 @@ fn balanced_session_provider_score(session_key: &str, provider: &str) -> u64 {
 }
 
 const BALANCED_ASSIGNMENT_STICKY_MS: u64 = 2 * 60 * 60 * 1000;
-const BALANCED_REBALANCE_MARGIN: usize = 2;
+const BALANCED_REBALANCE_MARGIN: usize = 3;
 const BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS: u64 = 15 * 60 * 1000;
 const BALANCED_CAPACITY_FLOOR_RATIO: f64 = 0.25;
 const BALANCED_CAPACITY_FIT_RANK_SCALE: f64 = 100.0;
@@ -296,9 +296,14 @@ fn provider_is_balanced_candidate(
     st: &GatewayState,
     cfg: &AppConfig,
     quota_snapshots: &Value,
+    preferred: &str,
+    suppress_preferred: bool,
     provider: &str,
     clear_usage_confirmation_requirement: bool,
 ) -> bool {
+    if suppress_preferred && provider == preferred {
+        return false;
+    }
     provider_is_routable_for_selection(
         st,
         cfg,
@@ -382,6 +387,7 @@ fn pick_balanced_provider(
     assignment_counts: &BalancedAssignmentCounts,
     session_key: &str,
     preferred: &str,
+    suppress_preferred: bool,
     clear_usage_confirmation_requirement: bool,
 ) -> Option<(String, usize, usize)> {
     let now_ms = unix_ms();
@@ -392,6 +398,8 @@ fn pick_balanced_provider(
                 st,
                 cfg,
                 quota_snapshots,
+                preferred,
+                suppress_preferred,
                 name,
                 clear_usage_confirmation_requirement,
             )
@@ -488,6 +496,7 @@ fn pick_balanced_provider(
         .map(|(provider, _, provider_load, bucket_load)| (provider, provider_load, bucket_load))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pick_balanced_provider_for_verified_main_session(
     st: &GatewayState,
     cfg: &AppConfig,
@@ -495,6 +504,7 @@ fn pick_balanced_provider_for_verified_main_session(
     router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     session_key: &str,
     preferred: &str,
+    suppress_preferred: bool,
     persist_mode: BalancedAssignmentPersistMode,
 ) -> Option<String> {
     let now_ms = unix_ms();
@@ -526,6 +536,8 @@ fn pick_balanced_provider_for_verified_main_session(
                 st,
                 cfg,
                 quota_snapshots,
+                preferred,
+                suppress_preferred,
                 &row.provider,
                 persist_full,
             )
@@ -542,6 +554,7 @@ fn pick_balanced_provider_for_verified_main_session(
         &assignment_counts,
         session_key,
         preferred,
+        suppress_preferred,
         persist_full,
     );
     if let Some(row) = assignment.as_ref() {
@@ -550,6 +563,8 @@ fn pick_balanced_provider_for_verified_main_session(
                 st,
                 cfg,
                 quota_snapshots,
+                preferred,
+                suppress_preferred,
                 &row.provider,
                 persist_full,
             );
@@ -599,6 +614,7 @@ fn pick_balanced_provider_for_verified_session(
     router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     session_key: &str,
     preferred: &str,
+    suppress_preferred: bool,
     persist_mode: BalancedAssignmentPersistMode,
     depth: u8,
 ) -> Option<String> {
@@ -650,6 +666,7 @@ fn pick_balanced_provider_for_verified_session(
             router_snapshot,
             parent_sid,
             preferred,
+            suppress_preferred,
             persist_mode,
             depth.saturating_add(1),
         );
@@ -661,6 +678,7 @@ fn pick_balanced_provider_for_verified_session(
         router_snapshot,
         session_key,
         preferred,
+        suppress_preferred,
         persist_mode,
     )
 }
@@ -704,6 +722,17 @@ fn decide_provider_with_balanced_mode(
         .routing
         .session_preferred_providers
         .contains_key(session_key);
+    let last_provider = st
+        .last_used_by_session
+        .read()
+        .get(session_key)
+        .map(|v| v.provider.clone());
+    let suppress_preferred_in_balanced = last_provider
+        .as_deref()
+        .is_some_and(|p| p != preferred)
+        && st
+            .router
+            .should_suppress_preferred(preferred, cfg, now_ms);
     if cfg.routing.route_mode == crate::orchestrator::config::RouteMode::BalancedAuto
         && !session_has_explicit_preferred
     {
@@ -715,6 +744,7 @@ fn decide_provider_with_balanced_mode(
             &router_snapshot,
             session_key,
             preferred,
+            suppress_preferred_in_balanced,
             balanced_persist_mode,
             0,
         ) {
@@ -723,12 +753,6 @@ fn decide_provider_with_balanced_mode(
     }
 
     if cfg.routing.auto_return_to_preferred {
-        let last_provider = st
-            .last_used_by_session
-            .read()
-            .get(session_key)
-            .map(|v| v.provider.clone());
-
         // If we recently failed over away from preferred, keep using the last successful
         // fallback for a short stabilization window to avoid flapping.
         if last_provider.as_deref().is_some_and(|p| p != preferred)
