@@ -1,3 +1,10 @@
+fn clear_observed_session_routes(state: &app_state::AppState) -> usize {
+    let mut routes = state.gateway.last_used_by_session.write();
+    let cleared = routes.len();
+    routes.clear();
+    cleared
+}
+
 #[tauri::command]
 pub(crate) fn set_manual_override(
     state: tauri::State<'_, app_state::AppState>,
@@ -18,6 +25,7 @@ pub(crate) fn set_manual_override(
     }
     state.gateway.router.set_manual_override(provider.clone());
     let cleared_assignments = state.gateway.store.delete_all_session_route_assignments();
+    let cleared_observed_routes = clear_observed_session_routes(&state);
     state.gateway.store.add_event(
         provider.as_deref().unwrap_or("-"),
         "info",
@@ -26,7 +34,8 @@ pub(crate) fn set_manual_override(
         serde_json::json!({
             "previous_manual_override": prev_override,
             "manual_override": provider,
-            "cleared_session_route_assignments": cleared_assignments
+            "cleared_session_route_assignments": cleared_assignments,
+            "cleared_observed_session_routes": cleared_observed_routes,
         }),
     );
     Ok(())
@@ -185,6 +194,7 @@ pub(crate) fn set_route_mode(
     }
 
     let cleared_assignments = state.gateway.store.delete_all_session_route_assignments();
+    let cleared_observed_routes = clear_observed_session_routes(&state);
 
     persist_config(&state).map_err(|e| e.to_string())?;
     state.gateway.store.add_event(
@@ -199,6 +209,7 @@ pub(crate) fn set_route_mode(
                 crate::orchestrator::config::RouteMode::BalancedAuto => "balanced_auto",
             },
             "cleared_session_route_assignments": cleared_assignments,
+            "cleared_observed_session_routes": cleared_observed_routes,
         }),
     );
     Ok(())
@@ -264,6 +275,11 @@ pub(crate) fn set_session_preferred_provider(
         .gateway
         .store
         .delete_session_route_assignment(&codex_session_id);
+    state
+        .gateway
+        .last_used_by_session
+        .write()
+        .remove(&codex_session_id);
     let msg = match prev_provider.as_deref() {
         Some(prev) => format!("session preferred_provider updated: {prev} -> {provider}"),
         None => format!("session preferred_provider set: {provider}"),
@@ -306,6 +322,11 @@ pub(crate) fn clear_session_preferred_provider(
         .gateway
         .store
         .delete_session_route_assignment(&codex_session_id);
+    state
+        .gateway
+        .last_used_by_session
+        .write()
+        .remove(&codex_session_id);
     state.gateway.store.add_event(
         "gateway",
         "info",
