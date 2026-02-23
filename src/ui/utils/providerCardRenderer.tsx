@@ -57,6 +57,16 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
     const budgetHardCapLabel = budgetHardCapWindows.map(({ key }) => key).join('/')
     const allVisibleHardCapsDisabled =
       budgetHardCapWindows.length > 0 && budgetHardCapWindows.every(({ key }) => !quotaHardCap[key])
+    const hiddenEnabledHardCapExists =
+      budgetHardCapWindows.length > 0 &&
+      (['daily', 'weekly', 'monthly'] as const).some(
+        (key) => !budgetHardCapWindows.some((window) => window.key === key) && quotaHardCap[key],
+      )
+    const visibleHardCapWarningText = allVisibleHardCapsDisabled
+      ? hiddenEnabledHardCapExists
+        ? 'All visible hard caps are disabled. This provider may still auto-close if hidden budget windows appear later.'
+        : 'All visible hard caps are disabled, so this provider will not auto-close on budget exhaustion.'
+      : null
     const activeProviderCount = Object.values(options.config?.providers ?? {}).filter((provider) => !provider.disabled).length
     const canDeactivate = p.disabled || activeProviderCount > 1
     const isDragOver = options.dragOverProvider === name
@@ -269,9 +279,9 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 ) : (
                   <div className="aoHint">No budget windows detected for this provider, so hard cap toggles are hidden.</div>
                 )}
-                {allVisibleHardCapsDisabled ? (
+                {visibleHardCapWarningText ? (
                   <div className="aoHint" style={{ color: 'rgba(145, 12, 43, 0.92)' }}>
-                    All visible hard caps are disabled, so this provider will not auto-close on budget exhaustion.
+                    {visibleHardCapWarningText}
                   </div>
                 ) : null}
                 <div className="aoHint">
