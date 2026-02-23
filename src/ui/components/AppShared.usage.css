@@ -314,7 +314,7 @@
 
 .aoProviderConfigBody {
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(280px, 1fr);
+  grid-template-columns: minmax(280px, 0.88fr) minmax(360px, 1.12fr);
   gap: 12px;
   align-items: start;
 }
@@ -331,23 +331,10 @@
 }
 
 .aoProviderRight {
-  position: relative;
+  align-self: stretch;
+  border-left: 1px solid rgba(13, 18, 32, 0.08);
   padding-left: 16px;
   padding-top: 15px;
-}
-
-.aoProviderRight::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 1px;
-  bottom: 0;
-  width: 1px;
-  background: rgba(13, 18, 32, 0.08);
-}
-
-.aoProviderConfigCollapsed .aoProviderRight::before {
-  bottom: 0;
 }
 
 .aoProviderHeadRow {
