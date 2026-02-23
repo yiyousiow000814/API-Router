@@ -948,9 +948,34 @@ mod routing_and_status_tests {
     }
 
     #[test]
+    fn session_demand_ratio_with_requests_and_zero_tokens_stays_above_fresh_floor() {
+        let fresh = session_demand_ratio_from_usage(0, 0);
+        let request_only = session_demand_ratio_from_usage(5, 0);
+
+        assert!(request_only > fresh, "request_only={request_only}, fresh={fresh}");
+        assert!(
+            request_only < 1.0,
+            "request-only usage should remain below saturation, got {request_only}"
+        );
+    }
+
+    #[test]
     fn provider_capacity_units_returns_floor_for_empty_quota_snapshots() {
         let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
         let units = provider_capacity_units_for_balancing(&json!({}), "p1", &hard_cap);
+        assert_eq!(units, 1.0);
+    }
+
+    #[test]
+    fn provider_capacity_units_returns_floor_when_provider_snapshot_lacks_quota_fields() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let units = provider_capacity_units_for_balancing(
+            &json!({
+                "p1": { "kind": "token_stats" }
+            }),
+            "p1",
+            &hard_cap,
+        );
         assert_eq!(units, 1.0);
     }
 
