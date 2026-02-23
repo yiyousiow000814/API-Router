@@ -313,7 +313,7 @@ fn displayed_session_route(
     current_route: Option<&crate::orchestrator::gateway::LastUsedRoute>,
 ) -> (Option<String>, Option<String>) {
     if verified {
-        let (provider, reason) = crate::orchestrator::gateway::decide_provider(
+        let (provider, reason) = crate::orchestrator::gateway::decide_provider_for_display(
             gateway,
             cfg,
             preferred_provider,

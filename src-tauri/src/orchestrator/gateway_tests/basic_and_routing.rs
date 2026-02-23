@@ -864,7 +864,7 @@ fn decide_provider_balanced_auto_rebalances_after_sticky_window_when_assignment_
 }
 
 #[test]
-fn decide_provider_balanced_auto_prefers_higher_quota_headroom_when_loads_tie() {
+fn decide_provider_balanced_auto_prefers_lower_quota_for_new_session_when_loads_tie() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = open_store_dir(tmp.path().join("data")).expect("store");
     let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -964,6 +964,287 @@ fn decide_provider_balanced_auto_prefers_higher_quota_headroom_when_loads_tie() 
         .expect("quota p2");
 
     let (picked, reason) = decide_provider(&state, &cfg, "p1", "session-main");
+    assert_eq!(picked, "p1");
+    assert_eq!(reason, "balanced_auto");
+}
+
+#[test]
+fn decide_provider_balanced_auto_prefers_higher_quota_for_heavy_session_when_loads_tie() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut providers = std::collections::BTreeMap::new();
+    for name in ["p1", "p2"] {
+        providers.insert(
+            name.to_string(),
+            ProviderConfig {
+                display_name: name.to_uppercase(),
+                base_url: format!("https://{name}.example.com"),
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+    }
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 4000,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 30,
+            failure_threshold: 2,
+            cooldown_seconds: 30,
+            request_timeout_seconds: 300,
+        },
+        providers,
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+    let now = unix_ms();
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg.clone())),
+        router: Arc::new(RouterState::new(&cfg, now)),
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::from([(
+            "session-heavy-headroom".to_string(),
+            crate::orchestrator::gateway::ClientSessionRuntime {
+                codex_session_id: "session-heavy-headroom".to_string(),
+                pid: 1,
+                wt_session: Some("wt-main".to_string()),
+                last_request_unix_ms: now,
+                last_discovered_unix_ms: now,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        )]))),
+    };
+
+    state
+        .store
+        .put_session_route_assignment("session-a", "p1", now);
+    state
+        .store
+        .put_session_route_assignment("session-b", "p2", now);
+    state
+        .store
+        .put_quota_snapshot(
+            "p1",
+            &json!({
+                "kind": "budget_info",
+                "daily_spent_usd": 55.0,
+                "daily_budget_usd": 60.0,
+                "updated_at_unix_ms": now
+            }),
+        )
+        .expect("quota p1");
+    state
+        .store
+        .put_quota_snapshot(
+            "p2",
+            &json!({
+                "kind": "budget_info",
+                "daily_spent_usd": 10.0,
+                "daily_budget_usd": 120.0,
+                "updated_at_unix_ms": now
+            }),
+        )
+        .expect("quota p2");
+
+    for i in 0..24 {
+        state.store.record_success_with_model(
+            "p1",
+            &json!({
+                "id": format!("heavy-session-{i}"),
+                "model": "gpt-5.3-codex",
+                "usage": {
+                    "input_tokens": 12_000,
+                    "output_tokens": 4_000,
+                    "total_tokens": 16_000
+                }
+            }),
+            Some("-"),
+            None,
+            crate::constants::USAGE_ORIGIN_WINDOWS,
+            Some("session-heavy-headroom"),
+        );
+    }
+    let usage_since = unix_ms().saturating_sub(2 * 60 * 60 * 1000);
+    let sessions = vec!["session-heavy-headroom".to_string()];
+    let (usage_count, _, _, usage_total_tokens, _, _) = state.store.summarize_usage_requests(
+        usage_since,
+        Some(usage_since),
+        None,
+        &[],
+        &[],
+        &[],
+        &sessions,
+    );
+    assert!(usage_count >= 20, "expected heavy session history");
+    assert!(
+        usage_total_tokens >= 300_000,
+        "expected heavy token footprint"
+    );
+    let sessions_map = state.client_sessions.read();
+    assert!(
+        sessions_map.contains_key("session-heavy-headroom"),
+        "expected verified heavy session to exist"
+    );
+    assert!(
+        sessions_map
+            .get("session-heavy-headroom")
+            .is_some_and(|session| session.confirmed_router),
+        "expected heavy session to be confirmed"
+    );
+    drop(sessions_map);
+
+    let (picked, reason) = decide_provider(&state, &cfg, "p1", "session-heavy-headroom");
+    assert_eq!(picked, "p2", "expected heavy session to choose larger headroom; reason={reason}");
+    assert_eq!(reason, "balanced_auto");
+}
+
+#[test]
+fn decide_provider_balanced_auto_heavy_session_prefers_lower_per_request_cost() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+    secrets
+        .set_provider_pricing("p1", "per_request", 0.08, None, Some("-".to_string()))
+        .expect("pricing p1");
+    secrets
+        .set_provider_pricing("p2", "per_request", 0.01, None, Some("-".to_string()))
+        .expect("pricing p2");
+
+    let mut providers = std::collections::BTreeMap::new();
+    for name in ["p1", "p2"] {
+        providers.insert(
+            name.to_string(),
+            ProviderConfig {
+                display_name: name.to_uppercase(),
+                base_url: format!("https://{name}.example.com"),
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+    }
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 4000,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 30,
+            failure_threshold: 2,
+            cooldown_seconds: 30,
+            request_timeout_seconds: 300,
+        },
+        providers,
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+    let now = unix_ms();
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg.clone())),
+        router: Arc::new(RouterState::new(&cfg, now)),
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::from([(
+            "session-heavy-cost".to_string(),
+            crate::orchestrator::gateway::ClientSessionRuntime {
+                codex_session_id: "session-heavy-cost".to_string(),
+                pid: 1,
+                wt_session: Some("wt-main".to_string()),
+                last_request_unix_ms: now,
+                last_discovered_unix_ms: now,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        )]))),
+    };
+    state
+        .store
+        .put_session_route_assignment("session-a", "p1", now);
+    state
+        .store
+        .put_session_route_assignment("session-b", "p2", now);
+    state
+        .store
+        .put_quota_snapshot(
+            "p1",
+            &json!({
+                "kind": "budget_info",
+                "daily_spent_usd": 20.0,
+                "daily_budget_usd": 120.0,
+                "updated_at_unix_ms": now
+            }),
+        )
+        .expect("quota p1");
+    state
+        .store
+        .put_quota_snapshot(
+            "p2",
+            &json!({
+                "kind": "budget_info",
+                "daily_spent_usd": 18.0,
+                "daily_budget_usd": 120.0,
+                "updated_at_unix_ms": now
+            }),
+        )
+        .expect("quota p2");
+
+    for i in 0..20 {
+        state.store.record_success_with_model(
+            "p1",
+            &json!({
+                "id": format!("heavy-session-cost-{i}"),
+                "model": "gpt-5.3-codex",
+                "usage": {
+                    "input_tokens": 10_000,
+                    "output_tokens": 5_000,
+                    "total_tokens": 15_000
+                }
+            }),
+            Some("-"),
+            None,
+            crate::constants::USAGE_ORIGIN_WINDOWS,
+            Some("session-heavy-cost"),
+        );
+    }
+
+    let (picked, reason) = decide_provider(&state, &cfg, "p1", "session-heavy-cost");
     assert_eq!(picked, "p2");
     assert_eq!(reason, "balanced_auto");
 }
