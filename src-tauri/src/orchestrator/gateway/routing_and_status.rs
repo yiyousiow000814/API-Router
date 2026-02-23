@@ -80,19 +80,28 @@ fn provider_is_routable_for_selection(
     cfg: &AppConfig,
     quota_snapshots: &Value,
     provider: &str,
+    clear_usage_confirmation_requirement: bool,
 ) -> bool {
     let hard_cap = st.secrets.get_provider_quota_hard_cap(provider);
-    if st.router.is_waiting_usage_confirmation(provider) {
+    let waiting_usage_confirmation = st.router.is_waiting_usage_confirmation(provider);
+    if waiting_usage_confirmation {
         if quota_snapshot_confirms_available(quota_snapshots, provider, &hard_cap) {
-            st.router.clear_usage_confirmation_requirement(provider);
+            if clear_usage_confirmation_requirement {
+                st.router.clear_usage_confirmation_requirement(provider);
+            }
         } else {
             return false;
         }
     }
+    let router_routable = if waiting_usage_confirmation && !clear_usage_confirmation_requirement {
+        !st.router.is_provider_in_cooldown(provider)
+    } else {
+        st.router.is_provider_routable(provider)
+    };
     cfg.providers
         .get(provider)
         .is_some_and(|provider_cfg| !provider_cfg.disabled)
-        && st.router.is_provider_routable(provider)
+        && router_routable
         && provider_has_remaining_quota_with_hard_cap(quota_snapshots, provider, &hard_cap)
 }
 
@@ -101,9 +110,16 @@ fn fallback_with_quota(
     cfg: &AppConfig,
     preferred: &str,
     quota_snapshots: &Value,
+    clear_usage_confirmation_requirement: bool,
 ) -> String {
     select_fallback_provider(cfg, preferred, |name| {
-        provider_is_routable_for_selection(st, cfg, quota_snapshots, name)
+        provider_is_routable_for_selection(
+            st,
+            cfg,
+            quota_snapshots,
+            name,
+            clear_usage_confirmation_requirement,
+        )
     })
 }
 
@@ -281,8 +297,15 @@ fn provider_is_balanced_candidate(
     quota_snapshots: &Value,
     router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     provider: &str,
+    clear_usage_confirmation_requirement: bool,
 ) -> bool {
-    if !provider_is_routable_for_selection(st, cfg, quota_snapshots, provider) {
+    if !provider_is_routable_for_selection(
+        st,
+        cfg,
+        quota_snapshots,
+        provider,
+        clear_usage_confirmation_requirement,
+    ) {
         return false;
     }
     // Keep "single-session one provider" stable, but once provider enters explicit unhealthy
@@ -348,6 +371,7 @@ fn load_balanced_assignment_counts(
     counts
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pick_balanced_provider(
     st: &GatewayState,
     cfg: &AppConfig,
@@ -356,12 +380,20 @@ fn pick_balanced_provider(
     assignment_counts: &BalancedAssignmentCounts,
     session_key: &str,
     preferred: &str,
+    clear_usage_confirmation_requirement: bool,
 ) -> Option<(String, usize, usize)> {
     let now_ms = unix_ms();
     let candidates = provider_iteration_order(cfg)
         .into_iter()
         .filter(|name| {
-            provider_is_balanced_candidate(st, cfg, quota_snapshots, router_snapshot, name)
+            provider_is_balanced_candidate(
+                st,
+                cfg,
+                quota_snapshots,
+                router_snapshot,
+                name,
+                clear_usage_confirmation_requirement,
+            )
         })
         .collect::<Vec<_>>();
     if candidates.is_empty() {
@@ -477,7 +509,14 @@ fn pick_balanced_provider_for_verified_main_session(
 
     if let Some(row) = assignment.as_ref() {
         if assignment_is_fresh
-            && provider_is_balanced_candidate(st, cfg, quota_snapshots, router_snapshot, &row.provider)
+            && provider_is_balanced_candidate(
+                st,
+                cfg,
+                quota_snapshots,
+                router_snapshot,
+                &row.provider,
+                persist_full,
+            )
         {
             return Some(row.provider.clone());
         }
@@ -491,10 +530,18 @@ fn pick_balanced_provider_for_verified_main_session(
         &assignment_counts,
         session_key,
         preferred,
+        persist_full,
     );
     if let Some(row) = assignment.as_ref() {
         let current_usable =
-            provider_is_balanced_candidate(st, cfg, quota_snapshots, router_snapshot, &row.provider);
+            provider_is_balanced_candidate(
+                st,
+                cfg,
+                quota_snapshots,
+                router_snapshot,
+                &row.provider,
+                persist_full,
+            );
         if current_usable {
             if let Some((best_provider, _, best_bucket_load)) = best.as_ref() {
                 if best_provider == &row.provider || providers_share_api_key(st, &row.provider, best_provider)
@@ -616,14 +663,28 @@ fn decide_provider_with_balanced_mode(
 ) -> (String, &'static str) {
     let quota_snapshots = st.store.list_quota_snapshots();
     let now_ms = unix_ms();
+    let clear_usage_confirmation_requirement =
+        balanced_persist_mode == BalancedAssignmentPersistMode::Full;
     // Manual override wins only when the target is still routable under current
     // config/quota constraints; otherwise we fail over.
     if let Some(manual) = st.router.manual_override.read().clone() {
-        if provider_is_routable_for_selection(st, cfg, &quota_snapshots, &manual) {
+        if provider_is_routable_for_selection(
+            st,
+            cfg,
+            &quota_snapshots,
+            &manual,
+            clear_usage_confirmation_requirement,
+        ) {
             return (manual, "manual_override");
         }
         return (
-            fallback_with_quota(st, cfg, preferred, &quota_snapshots),
+            fallback_with_quota(
+                st,
+                cfg,
+                preferred,
+                &quota_snapshots,
+                clear_usage_confirmation_requirement,
+            ),
             "manual_override_unhealthy",
         );
     }
@@ -665,22 +726,46 @@ fn decide_provider_with_balanced_mode(
                 .should_suppress_preferred(preferred, cfg, now_ms)
         {
             if let Some(p) = last_provider {
-                if provider_is_routable_for_selection(st, cfg, &quota_snapshots, &p) {
+                if provider_is_routable_for_selection(
+                    st,
+                    cfg,
+                    &quota_snapshots,
+                    &p,
+                    clear_usage_confirmation_requirement,
+                ) {
                     return (p, "preferred_stabilizing");
                 }
             }
             return (
-                fallback_with_quota(st, cfg, preferred, &quota_snapshots),
+                fallback_with_quota(
+                    st,
+                    cfg,
+                    preferred,
+                    &quota_snapshots,
+                    clear_usage_confirmation_requirement,
+                ),
                 "preferred_stabilizing",
             );
         }
     }
 
-    if provider_is_routable_for_selection(st, cfg, &quota_snapshots, preferred) {
+    if provider_is_routable_for_selection(
+        st,
+        cfg,
+        &quota_snapshots,
+        preferred,
+        clear_usage_confirmation_requirement,
+    ) {
         return (preferred.to_string(), "preferred_healthy");
     }
     (
-        fallback_with_quota(st, cfg, preferred, &quota_snapshots),
+        fallback_with_quota(
+            st,
+            cfg,
+            preferred,
+            &quota_snapshots,
+            clear_usage_confirmation_requirement,
+        ),
         "preferred_unhealthy",
     )
 }

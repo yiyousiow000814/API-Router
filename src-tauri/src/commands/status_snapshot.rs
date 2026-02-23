@@ -312,6 +312,11 @@ fn displayed_session_route(
     verified: bool,
     current_route: Option<&crate::orchestrator::gateway::LastUsedRoute>,
 ) -> (Option<String>, Option<String>) {
+    if let Some(route) = current_route {
+        // Keep status polling cheap: once we have an observed route, reuse it instead of
+        // recomputing a full routing decision for every poll.
+        return (Some(route.provider.clone()), Some(route.reason.clone()));
+    }
     if verified {
         let (provider, reason) = crate::orchestrator::gateway::decide_provider_for_display(
             gateway,
@@ -321,10 +326,7 @@ fn displayed_session_route(
         );
         return (Some(provider), Some(reason.to_string()));
     }
-    (
-        current_route.map(|route| route.provider.clone()),
-        current_route.map(|route| route.reason.clone()),
-    )
+    (None, None)
 }
 
 fn backfill_main_confirmation_from_verified_agent(
@@ -1104,6 +1106,100 @@ mod tests {
                 .get_session_route_assignment("stale-session")
                 .is_some(),
             "status display should not trigger assignment cleanup"
+        );
+    }
+
+    #[test]
+    fn displayed_session_route_reuses_observed_route_for_verified_session() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url: "https://p1.example.com".to_string(),
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        providers.insert(
+            "p2".to_string(),
+            ProviderConfig {
+                display_name: "P2".to_string(),
+                base_url: "https://p2.example.com".to_string(),
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 30,
+                failure_threshold: 2,
+                cooldown_seconds: 30,
+                request_timeout_seconds: 300,
+            },
+            providers,
+            provider_order: vec!["p1".to_string(), "p2".to_string()],
+        };
+        let now = unix_ms();
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg.clone())),
+            router: Arc::new(RouterState::new(&cfg, now)),
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+        state.router.require_usage_confirmation("p1");
+        state
+            .store
+            .put_quota_snapshot(
+                "p1",
+                &serde_json::json!({
+                    "remaining": 100.0,
+                    "updated_at_unix_ms": now
+                }),
+            )
+            .expect("quota p1");
+
+        let observed = LastUsedRoute {
+            provider: "p2".to_string(),
+            reason: "preferred_unhealthy".to_string(),
+            preferred: "p1".to_string(),
+            unix_ms: now,
+        };
+        let (provider, reason) = displayed_session_route(
+            &state,
+            &cfg,
+            "main-session",
+            "p1",
+            true,
+            Some(&observed),
+        );
+        assert_eq!(provider.as_deref(), Some("p2"));
+        assert_eq!(reason.as_deref(), Some("preferred_unhealthy"));
+        assert!(
+            state.router.is_waiting_usage_confirmation("p1"),
+            "using observed route should not trigger display routing side effects"
         );
     }
 
