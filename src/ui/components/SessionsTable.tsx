@@ -66,9 +66,7 @@ export function compareSessionRowsByOriginThenLastSeen(
   const leftIsWsl = isWslSessionRow(left, wslGatewayHost)
   const rightIsWsl = isWslSessionRow(right, wslGatewayHost)
   if (leftIsWsl !== rightIsWsl) return leftIsWsl ? 1 : -1
-  if (left.last_seen_unix_ms !== right.last_seen_unix_ms) {
-    return right.last_seen_unix_ms - left.last_seen_unix_ms
-  }
+  // Keep session order stable across refresh ticks; avoid rows jumping as last_seen moves.
   return left.id.localeCompare(right.id)
 }
 
