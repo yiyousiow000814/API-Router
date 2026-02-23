@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { Config, Status } from '../types'
-import { findMissingBudgetHardCapToggleToDisable } from './useProviderPanelUi'
+import {
+  canAutoDisableMissingHardCap,
+  findMissingBudgetHardCapToggleToDisable,
+  markMissingHardCapAutoDisableAttempt,
+  toMissingHardCapRetryKey,
+} from './useProviderPanelUi'
 
 function buildConfig(weeklyEnabled: boolean): Config {
   return {
@@ -81,5 +86,29 @@ describe('findMissingBudgetHardCapToggleToDisable', () => {
   it('returns null when provider quota kind is not budget_info', () => {
     const result = findMissingBudgetHardCapToggleToDisable(buildConfig(true), buildStatusWithoutWeeklyWindow('none'))
     expect(result).toBeNull()
+  })
+})
+
+describe('missing hard cap auto-disable retry guard', () => {
+  it('skips retry for the same provider+period until cooldown expires', () => {
+    const retryAtByKey: Record<string, number> = {}
+    const target = { provider: 'p1', period: 'weekly' as const }
+    const nowMs = 1_000
+
+    expect(canAutoDisableMissingHardCap(retryAtByKey, target, nowMs)).toBe(true)
+    markMissingHardCapAutoDisableAttempt(retryAtByKey, target, nowMs, 30_000)
+    expect(canAutoDisableMissingHardCap(retryAtByKey, target, nowMs + 29_999)).toBe(false)
+    expect(canAutoDisableMissingHardCap(retryAtByKey, target, nowMs + 30_000)).toBe(true)
+  })
+
+  it('does not block a different provider+period key', () => {
+    const retryAtByKey: Record<string, number> = {}
+    const first = { provider: 'p1', period: 'weekly' as const }
+    const second = { provider: 'p2', period: 'daily' as const }
+
+    markMissingHardCapAutoDisableAttempt(retryAtByKey, first, 1_000, 30_000)
+    expect(canAutoDisableMissingHardCap(retryAtByKey, second, 2_000)).toBe(true)
+    expect(toMissingHardCapRetryKey(first)).toBe('p1:weekly')
+    expect(toMissingHardCapRetryKey(second)).toBe('p2:daily')
   })
 })

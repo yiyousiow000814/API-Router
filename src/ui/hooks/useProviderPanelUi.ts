@@ -1,5 +1,5 @@
 import type { Dispatch, PointerEvent as ReactPointerEvent, SetStateAction } from 'react'
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Config, Status } from '../types'
 import { createProviderCardRenderer } from '../utils/providerCardRenderer'
@@ -43,6 +43,30 @@ type QuotaHardCapPeriod = 'daily' | 'weekly' | 'monthly'
 type MissingHardCapToggle = {
   provider: string
   period: QuotaHardCapPeriod
+}
+
+const AUTO_DISABLE_HARD_CAP_RETRY_COOLDOWN_MS = 30_000
+
+export function toMissingHardCapRetryKey(target: MissingHardCapToggle): string {
+  return `${target.provider}:${target.period}`
+}
+
+export function canAutoDisableMissingHardCap(
+  retryAtByKey: Record<string, number>,
+  target: MissingHardCapToggle | null,
+  nowMs: number,
+): target is MissingHardCapToggle {
+  if (!target) return false
+  return nowMs >= (retryAtByKey[toMissingHardCapRetryKey(target)] ?? 0)
+}
+
+export function markMissingHardCapAutoDisableAttempt(
+  retryAtByKey: Record<string, number>,
+  target: MissingHardCapToggle,
+  nowMs: number,
+  cooldownMs = AUTO_DISABLE_HARD_CAP_RETRY_COOLDOWN_MS,
+): void {
+  retryAtByKey[toMissingHardCapRetryKey(target)] = nowMs + cooldownMs
 }
 
 export function findMissingBudgetHardCapToggleToDisable(
@@ -99,6 +123,8 @@ export function useProviderPanelUi(params: Params) {
     setProviderQuotaHardCap,
     editingProviderName,
   } = params
+  const autoDisableInFlightRef = useRef<Set<string>>(new Set())
+  const autoDisableRetryAtRef = useRef<Record<string, number>>({})
 
   const setAllProviderPanels = useCallback((open: boolean) => {
     setProviderPanelsOpen((prev) => {
@@ -156,8 +182,15 @@ export function useProviderPanelUi(params: Params) {
 
   useEffect(() => {
     const missingHardCap = findMissingBudgetHardCapToggleToDisable(config, status)
-    if (!missingHardCap) return
-    void setProviderQuotaHardCap(missingHardCap.provider, missingHardCap.period, false)
+    const nowMs = Date.now()
+    if (!canAutoDisableMissingHardCap(autoDisableRetryAtRef.current, missingHardCap, nowMs)) return
+    const retryKey = toMissingHardCapRetryKey(missingHardCap)
+    if (autoDisableInFlightRef.current.has(retryKey)) return
+    markMissingHardCapAutoDisableAttempt(autoDisableRetryAtRef.current, missingHardCap, nowMs)
+    autoDisableInFlightRef.current.add(retryKey)
+    void setProviderQuotaHardCap(missingHardCap.provider, missingHardCap.period, false).finally(() => {
+      autoDisableInFlightRef.current.delete(retryKey)
+    })
   }, [config, setProviderQuotaHardCap, status])
 
   const renderProviderCard = useMemo(
