@@ -118,7 +118,7 @@ describe('provider hard cap warning text', () => {
     )
 
     expect(html).toContain(
-      'All visible hard caps are disabled. This provider may still auto-close if hidden budget windows appear later.',
+      'Visible hard caps are off. This provider may still auto-close if other budget periods are returned later.',
     )
   })
 

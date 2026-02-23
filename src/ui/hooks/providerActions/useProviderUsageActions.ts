@@ -189,7 +189,7 @@ export function useProviderUsageActions({
         isLocalOnly: isDevPreview,
       })
     },
-    [flashToast, refreshConfig, refreshStatus, setConfig],
+    [flashToast, isDevPreview, refreshConfig, refreshStatus, setConfig],
   )
 
   const openUsageBaseModal = useCallback(
