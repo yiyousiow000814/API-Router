@@ -146,6 +146,10 @@ const BALANCED_CAPACITY_FIT_RANK_SCALE: f64 = 100.0;
 const BALANCED_SESSION_LOAD_WINDOW_MS: u64 = 2 * 60 * 60 * 1000;
 const BALANCED_UNHEALTHY_LOAD_PENALTY: u64 = 2;
 
+fn unhealthy_retry_delay_ms(cfg: &AppConfig) -> u64 {
+    cfg.routing.cooldown_seconds.max(1).saturating_mul(1000)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BalancedAssignmentPersistMode {
     Full,
@@ -331,13 +335,26 @@ fn provider_is_balanced_candidate(
     )
 }
 
-fn provider_is_explicitly_unhealthy(
+fn provider_is_unhealthy_or_cooldown(
     router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     provider: &str,
 ) -> bool {
-    router_snapshot
-        .get(provider)
-        .is_some_and(|snapshot| snapshot.status == "unhealthy")
+    router_snapshot.get(provider).is_some_and(|snapshot| {
+        snapshot.status == "unhealthy" || snapshot.status == "cooldown"
+    })
+}
+
+fn provider_is_due_for_unhealthy_retry(
+    router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
+    provider: &str,
+    now_ms: u64,
+    retry_delay_ms: u64,
+) -> bool {
+    router_snapshot.get(provider).is_some_and(|snapshot| {
+        snapshot.status == "unhealthy"
+            && snapshot.last_fail_at_unix_ms > 0
+            && now_ms.saturating_sub(snapshot.last_fail_at_unix_ms) >= retry_delay_ms
+    })
 }
 
 fn load_balanced_assignment_counts(
@@ -449,7 +466,6 @@ fn pick_balanced_provider(
     }
     let min_provider_cost = provider_costs.values().copied().fold(f64::INFINITY, f64::min);
     let has_cost_signal = min_provider_cost.is_finite() && min_provider_cost > 0.0;
-
     candidates
         .into_iter()
         .map(|provider| {
@@ -484,7 +500,7 @@ fn pick_balanced_provider(
             } else {
                 1000_u64
             };
-            let unhealthy_penalty = if provider_is_explicitly_unhealthy(router_snapshot, &provider)
+            let unhealthy_penalty = if provider_is_unhealthy_or_cooldown(router_snapshot, &provider)
             {
                 BALANCED_UNHEALTHY_LOAD_PENALTY
             } else {
@@ -552,22 +568,33 @@ fn pick_balanced_provider_for_verified_main_session(
     });
     let assignment_is_unhealthy = assignment
         .as_ref()
-        .is_some_and(|row| provider_is_explicitly_unhealthy(router_snapshot, &row.provider));
+        .is_some_and(|row| provider_is_unhealthy_or_cooldown(router_snapshot, &row.provider));
+    let assignment_retry_due = assignment.as_ref().is_some_and(|row| {
+        provider_is_due_for_unhealthy_retry(
+            router_snapshot,
+            &row.provider,
+            now_ms,
+            unhealthy_retry_delay_ms(cfg),
+        )
+    });
 
     if let Some(row) = assignment.as_ref() {
-        if assignment_is_fresh
-            && !assignment_is_unhealthy
-            && provider_is_balanced_candidate(
-                st,
-                cfg,
-                quota_snapshots,
-                preferred,
-                suppress_preferred,
-                &row.provider,
-                clears_usage_confirmation,
-            )
-        {
-            return Some(row.provider.clone());
+        let assignment_provider_usable = provider_is_balanced_candidate(
+            st,
+            cfg,
+            quota_snapshots,
+            preferred,
+            suppress_preferred,
+            &row.provider,
+            clears_usage_confirmation,
+        );
+        if assignment_is_fresh {
+            if !assignment_is_unhealthy && assignment_provider_usable {
+                return Some(row.provider.clone());
+            }
+            if assignment_is_unhealthy && assignment_retry_due && assignment_provider_usable {
+                return Some(row.provider.clone());
+            }
         }
     }
 
@@ -626,7 +653,13 @@ fn pick_balanced_provider_for_verified_main_session(
     let (best_provider, _, _) = best?;
     let should_persist_selected = match assignment.as_ref() {
         None => true,
-        Some(row) => rewrite_existing_assignment || row.provider != best_provider,
+        Some(row) => {
+            if assignment_is_fresh && assignment_is_unhealthy && row.provider != best_provider {
+                false
+            } else {
+                rewrite_existing_assignment || row.provider != best_provider
+            }
+        }
     };
     if persist_assignments && should_persist_selected {
         st.store

@@ -54,14 +54,14 @@ describe('compareSessionRowsByOriginThenLastSeen', () => {
     expect(sorted.map((row) => row.id)).toEqual(['win', 'wsl'])
   })
 
-  it('keeps newer session first within same origin group', () => {
+  it('keeps stable id order within same origin group', () => {
     const rows = [
-      { id: 'older', wt_session: 'abc', reported_base_url: 'http://127.0.0.1:4000/v1', last_seen_unix_ms: 100 },
-      { id: 'newer', wt_session: 'def', reported_base_url: 'http://127.0.0.1:4000/v1', last_seen_unix_ms: 200 },
+      { id: 'session-b', wt_session: 'abc', reported_base_url: 'http://127.0.0.1:4000/v1', last_seen_unix_ms: 200 },
+      { id: 'session-a', wt_session: 'def', reported_base_url: 'http://127.0.0.1:4000/v1', last_seen_unix_ms: 100 },
     ]
 
     const sorted = [...rows].sort(compareSessionRowsByOriginThenLastSeen)
-    expect(sorted.map((row) => row.id)).toEqual(['newer', 'older'])
+    expect(sorted.map((row) => row.id)).toEqual(['session-a', 'session-b'])
   })
 })
 
