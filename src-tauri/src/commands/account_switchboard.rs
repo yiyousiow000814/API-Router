@@ -145,10 +145,14 @@ fn mask_key_preview(key: &str) -> String {
     format!("{start}******{end}")
 }
 
-fn persist_config(state: &tauri::State<'_, app_state::AppState>) -> anyhow::Result<()> {
+fn persist_config_for_app_state(state: &app_state::AppState) -> anyhow::Result<()> {
     let cfg = state.gateway.cfg.read().clone();
     std::fs::write(&state.config_path, toml::to_string_pretty(&cfg)?)?;
     Ok(())
+}
+
+fn persist_config(state: &tauri::State<'_, app_state::AppState>) -> anyhow::Result<()> {
+    persist_config_for_app_state(state)
 }
 
 async fn refresh_codex_account_snapshot(
