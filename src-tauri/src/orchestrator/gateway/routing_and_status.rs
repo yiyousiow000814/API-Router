@@ -914,3 +914,130 @@ async fn models(
         _ => (StatusCode::OK, Json(json!({"object":"list","data":[]}))).into_response(),
     }
 }
+
+#[cfg(test)]
+mod routing_and_status_tests {
+    use super::*;
+
+    #[test]
+    fn session_demand_ratio_defaults_and_is_bounded() {
+        let fresh = session_demand_ratio_from_usage(0, 0);
+        assert_eq!(fresh, 0.25);
+
+        let heavy = session_demand_ratio_from_usage(10_000, 1_000_000_000);
+        assert!(
+            (0.25..=1.0).contains(&heavy),
+            "ratio should stay in [0.25, 1.0], got {heavy}"
+        );
+        assert_eq!(heavy, 1.0, "extremely heavy sessions should saturate at 1.0");
+    }
+
+    #[test]
+    fn session_demand_ratio_increases_with_usage_weight() {
+        let light = session_demand_ratio_from_usage(1, 1_000);
+        let medium = session_demand_ratio_from_usage(8, 80_000);
+        let heavy = session_demand_ratio_from_usage(15, 200_000);
+        assert!(
+            light < medium && medium < heavy,
+            "expected monotonic demand: light={light}, medium={medium}, heavy={heavy}"
+        );
+        assert!(
+            heavy < 1.0,
+            "heavy test sample should stay below saturation for sensitivity; got {heavy}"
+        );
+    }
+
+    #[test]
+    fn session_demand_ratio_with_requests_and_zero_tokens_stays_above_fresh_floor() {
+        let fresh = session_demand_ratio_from_usage(0, 0);
+        let request_only = session_demand_ratio_from_usage(5, 0);
+
+        assert!(request_only > fresh, "request_only={request_only}, fresh={fresh}");
+        assert!(
+            request_only < 1.0,
+            "request-only usage should remain below saturation, got {request_only}"
+        );
+    }
+
+    #[test]
+    fn provider_capacity_units_returns_floor_for_empty_quota_snapshots() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let units = provider_capacity_units_for_balancing(&json!({}), "p1", &hard_cap);
+        assert_eq!(units, 1.0);
+    }
+
+    #[test]
+    fn provider_capacity_units_returns_floor_when_provider_snapshot_lacks_quota_fields() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        // Defaults enable daily/weekly/monthly hard-cap checks, but with no budget fields in the
+        // snapshot the budget branch has no usable inputs and we should still fall back to floor.
+        let units = provider_capacity_units_for_balancing(
+            &json!({
+                "p1": { "kind": "token_stats" }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        assert_eq!(units, 1.0);
+    }
+
+    #[test]
+    fn provider_per_request_cost_signal_handles_primary_and_gap_fill_modes() {
+        let mut pricing = std::collections::BTreeMap::new();
+        pricing.insert(
+            "primary".to_string(),
+            crate::orchestrator::secrets::ProviderPricingConfig {
+                mode: "per_request".to_string(),
+                amount_usd: 0.02,
+                periods: Vec::new(),
+                gap_fill_mode: None,
+                gap_fill_amount_usd: None,
+            },
+        );
+        pricing.insert(
+            "gap_fill".to_string(),
+            crate::orchestrator::secrets::ProviderPricingConfig {
+                mode: "per_token".to_string(),
+                amount_usd: 0.0,
+                periods: Vec::new(),
+                gap_fill_mode: Some("per_request".to_string()),
+                gap_fill_amount_usd: Some(0.03),
+            },
+        );
+        pricing.insert(
+            "none".to_string(),
+            crate::orchestrator::secrets::ProviderPricingConfig {
+                mode: "per_token".to_string(),
+                amount_usd: 0.0,
+                periods: Vec::new(),
+                gap_fill_mode: Some("per_request".to_string()),
+                gap_fill_amount_usd: None,
+            },
+        );
+        pricing.insert(
+            "gap_fill_zero".to_string(),
+            crate::orchestrator::secrets::ProviderPricingConfig {
+                mode: "per_token".to_string(),
+                amount_usd: 0.0,
+                periods: Vec::new(),
+                gap_fill_mode: Some("per_request".to_string()),
+                gap_fill_amount_usd: Some(0.0),
+            },
+        );
+
+        assert_eq!(
+            provider_per_request_cost_signal(&pricing, "primary"),
+            Some(0.02)
+        );
+        assert_eq!(
+            provider_per_request_cost_signal(&pricing, "gap_fill"),
+            Some(0.03)
+        );
+        assert_eq!(provider_per_request_cost_signal(&pricing, "none"), None);
+        assert_eq!(
+            provider_per_request_cost_signal(&pricing, "gap_fill_zero"),
+            None
+        );
+        assert_eq!(provider_per_request_cost_signal(&pricing, "missing"), None);
+    }
+}
