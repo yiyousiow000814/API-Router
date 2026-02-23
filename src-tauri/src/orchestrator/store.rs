@@ -1330,7 +1330,6 @@ impl Store {
         }
     }
 
-    #[allow(dead_code)]
     pub fn list_events(&self, limit: usize) -> Vec<Value> {
         let cap = limit.max(1);
         let conn = self.events_db.lock();
@@ -1361,49 +1360,13 @@ impl Store {
             .collect()
     }
 
-    pub fn list_events_split(&self, max_error: usize, max_other: usize) -> Vec<Value> {
-        let mut out: Vec<Value> = Vec::with_capacity(max_error + max_other);
-        let conn = self.events_db.lock();
-        let query_with_level = |where_clause: &str, cap: usize| -> Vec<Value> {
-            if cap == 0 {
-                return Vec::new();
-            }
-            let sql = format!(
-                "SELECT unix_ms, provider, level, code, message, fields_json
-                 FROM events
-                 WHERE {where_clause}
-                 ORDER BY unix_ms DESC
-                 LIMIT ?1"
-            );
-            let Ok(mut stmt) = conn.prepare(&sql) else {
-                return Vec::new();
-            };
-            let Ok(rows) = stmt.query_map([cap as i64], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                ))
-            }) else {
-                return Vec::new();
-            };
-            rows.flatten()
-                .filter_map(|(unix_ms, provider, level, code, message, fields_json)| {
-                    Self::event_from_sql_row(unix_ms, provider, level, code, message, fields_json)
-                })
-                .collect()
-        };
-        out.extend(query_with_level("level = 'error'", max_error));
-        out.extend(query_with_level("level <> 'error'", max_other));
-        out.sort_by(|a, b| {
-            let a_ts = a.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-            let b_ts = b.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-            b_ts.cmp(&a_ts)
-        });
-        out
+    pub fn list_recent_error_events(&self, window_limit: usize, max_errors: usize) -> Vec<Value> {
+        let error_cap = max_errors.max(1);
+        self.list_events(window_limit)
+            .into_iter()
+            .filter(|event| event.get("level").and_then(Value::as_str) == Some("error"))
+            .take(error_cap)
+            .collect()
     }
 
     pub fn list_event_years(&self) -> std::collections::BTreeSet<i32> {
