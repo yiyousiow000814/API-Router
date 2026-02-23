@@ -12,6 +12,30 @@ fn clear_observed_session_routes_for_provider(state: &app_state::AppState, provi
     before.saturating_sub(routes.len())
 }
 
+fn rename_observed_session_routes_provider_refs(
+    state: &app_state::AppState,
+    old_provider: &str,
+    new_provider: &str,
+) -> usize {
+    let mut routes = state.gateway.last_used_by_session.write();
+    let mut updated = 0_usize;
+    for route in routes.values_mut() {
+        let mut changed = false;
+        if route.provider == old_provider {
+            route.provider = new_provider.to_string();
+            changed = true;
+        }
+        if route.preferred == old_provider {
+            route.preferred = new_provider.to_string();
+            changed = true;
+        }
+        if changed {
+            updated = updated.saturating_add(1);
+        }
+    }
+    updated
+}
+
 fn set_manual_override_impl(
     state: &app_state::AppState,
     provider: Option<String>,
@@ -291,7 +315,19 @@ fn set_session_preferred_provider_impl(
             .insert(codex_session_id.clone(), provider.clone());
         prev
     };
-    persist_config_for_app_state(state).map_err(|e| e.to_string())?;
+    if let Err(e) = persist_config_for_app_state(state) {
+        let mut cfg = state.gateway.cfg.write();
+        if let Some(prev) = prev_provider.as_deref() {
+            cfg.routing
+                .session_preferred_providers
+                .insert(codex_session_id.clone(), prev.to_string());
+        } else {
+            cfg.routing
+                .session_preferred_providers
+                .remove(&codex_session_id);
+        }
+        return Err(e.to_string());
+    }
     state
         .gateway
         .store
@@ -346,7 +382,18 @@ fn clear_session_preferred_provider_impl(
     if prev_provider.is_none() {
         return Ok(());
     }
-    persist_config_for_app_state(state).map_err(|e| e.to_string())?;
+    if let Err(e) = persist_config_for_app_state(state) {
+        if let Some(prev) = prev_provider.as_deref() {
+            state
+                .gateway
+                .cfg
+                .write()
+                .routing
+                .session_preferred_providers
+                .insert(codex_session_id.clone(), prev.to_string());
+        }
+        return Err(e.to_string());
+    }
     state
         .gateway
         .store
@@ -686,6 +733,8 @@ pub(crate) fn rename_provider(
     state.gateway.store.rename_provider(old, new);
     state.secrets.rename_provider(old, new)?;
     persist_config(&state).map_err(|e| e.to_string())?;
+    let renamed_observed_session_routes =
+        rename_observed_session_routes_provider_refs(&state, old, new);
     state
         .gateway
         .router
@@ -708,7 +757,9 @@ pub(crate) fn rename_provider(
         "info",
         "config.provider_renamed",
         "provider renamed",
-        serde_json::Value::Null,
+        serde_json::json!({
+            "renamed_observed_session_routes": renamed_observed_session_routes,
+        }),
     );
     Ok(())
 }
@@ -801,7 +852,8 @@ pub(crate) fn clear_provider_key(
 mod provider_management_tests {
     use super::{
         clear_session_preferred_provider_impl, next_preferred_after_delete, set_manual_override_impl,
-        set_route_mode_impl, set_session_preferred_provider_impl,
+        rename_observed_session_routes_provider_refs, set_route_mode_impl,
+        set_session_preferred_provider_impl,
     };
     use crate::app_state::AppState;
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
@@ -1085,6 +1137,128 @@ mod provider_management_tests {
                 .store
                 .get_session_route_assignment("s2")
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn set_session_preferred_provider_rolls_back_when_persist_fails() {
+        let (_tmp, mut state) = build_test_state();
+        seed_non_agent_session(&state, "s1");
+        state.gateway.cfg.write().routing.session_preferred_providers.insert(
+            "s1".to_string(),
+            "provider_1".to_string(),
+        );
+        seed_last_used_route(&state, "s1", "provider_1", "provider_1");
+        state
+            .gateway
+            .store
+            .put_session_route_assignment("s1", "provider_1", unix_ms());
+        let bad_path = state
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("persist-fail-dir");
+        std::fs::create_dir_all(&bad_path).expect("create bad path");
+        state.config_path = bad_path;
+
+        let result =
+            set_session_preferred_provider_impl(&state, "s1".to_string(), "provider_2".to_string());
+        assert!(result.is_err());
+        assert_eq!(
+            state
+                .gateway
+                .cfg
+                .read()
+                .routing
+                .session_preferred_providers
+                .get("s1")
+                .cloned(),
+            Some("provider_1".to_string())
+        );
+        assert!(
+            state
+                .gateway
+                .store
+                .get_session_route_assignment("s1")
+                .is_some()
+        );
+        assert!(state.gateway.last_used_by_session.read().contains_key("s1"));
+    }
+
+    #[test]
+    fn clear_session_preferred_provider_rolls_back_when_persist_fails() {
+        let (_tmp, mut state) = build_test_state();
+        state.gateway.cfg.write().routing.session_preferred_providers.insert(
+            "s1".to_string(),
+            "provider_2".to_string(),
+        );
+        seed_last_used_route(&state, "s1", "provider_2", "provider_1");
+        state
+            .gateway
+            .store
+            .put_session_route_assignment("s1", "provider_2", unix_ms());
+        let bad_path = state
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("persist-fail-dir");
+        std::fs::create_dir_all(&bad_path).expect("create bad path");
+        state.config_path = bad_path;
+
+        let result = clear_session_preferred_provider_impl(&state, "s1".to_string());
+        assert!(result.is_err());
+        assert_eq!(
+            state
+                .gateway
+                .cfg
+                .read()
+                .routing
+                .session_preferred_providers
+                .get("s1")
+                .cloned(),
+            Some("provider_2".to_string())
+        );
+        assert!(
+            state
+                .gateway
+                .store
+                .get_session_route_assignment("s1")
+                .is_some()
+        );
+        assert!(state.gateway.last_used_by_session.read().contains_key("s1"));
+    }
+
+    #[test]
+    fn rename_observed_routes_updates_provider_and_preferred_refs() {
+        let (_tmp, state) = build_test_state();
+        seed_last_used_route(&state, "s1", "provider_1", "provider_1");
+        seed_last_used_route(&state, "s2", "provider_2", "provider_1");
+        seed_last_used_route(&state, "s3", "provider_2", "provider_2");
+
+        let updated =
+            rename_observed_session_routes_provider_refs(&state, "provider_1", "provider_x");
+        assert_eq!(updated, 2);
+
+        let routes = state.gateway.last_used_by_session.read();
+        assert_eq!(
+            routes.get("s1").map(|route| route.provider.as_str()),
+            Some("provider_x")
+        );
+        assert_eq!(
+            routes.get("s1").map(|route| route.preferred.as_str()),
+            Some("provider_x")
+        );
+        assert_eq!(
+            routes.get("s2").map(|route| route.provider.as_str()),
+            Some("provider_2")
+        );
+        assert_eq!(
+            routes.get("s2").map(|route| route.preferred.as_str()),
+            Some("provider_x")
+        );
+        assert_eq!(
+            routes.get("s3").map(|route| route.preferred.as_str()),
+            Some("provider_2")
         );
     }
 }
