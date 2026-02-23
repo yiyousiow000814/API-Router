@@ -328,20 +328,12 @@ fn displayed_session_route(
         return (Some(route.provider.clone()), Some(route.reason.clone()));
     }
     if verified {
-        let (provider, reason) = if cfg.routing.route_mode
-            == crate::orchestrator::config::RouteMode::BalancedAuto
-        {
-            // Pre-seed balanced assignments during status rendering so the provider shown before
-            // first request matches the provider used after the session turns active.
-            crate::orchestrator::gateway::decide_provider(gateway, cfg, preferred_provider, codex_session_id)
-        } else {
-            crate::orchestrator::gateway::decide_provider_for_display(
-                gateway,
-                cfg,
-                preferred_provider,
-                codex_session_id,
-            )
-        };
+        let (provider, reason) = crate::orchestrator::gateway::decide_provider_for_display(
+            gateway,
+            cfg,
+            preferred_provider,
+            codex_session_id,
+        );
         return (Some(provider), Some(reason.to_string()));
     }
     (None, None)
