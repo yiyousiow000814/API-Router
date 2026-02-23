@@ -1,6 +1,7 @@
 import type * as React from 'react'
 import type { Config, Status } from '../types'
 import { fmtWhen } from './format'
+import { normalizeProviderGroupName } from './providerGroups'
 import {
   getVisibleBudgetHardCapPeriods,
   isBudgetInfoQuota,
@@ -10,6 +11,7 @@ type CreateProviderCardRendererOptions = {
   config: Config | null
   status: Status | null
   baselineBaseUrls: Record<string, string>
+  baselineProviderGroups: Record<string, string>
   dragOverProvider: string | null
   dragBaseTop: number
   dragOffsetY: number
@@ -55,6 +57,9 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
       : null
     const activeProviderCount = Object.values(options.config?.providers ?? {}).filter((provider) => !provider.disabled).length
     const canDeactivate = p.disabled || activeProviderCount > 1
+    const currentGroup = normalizeProviderGroupName(p.group)
+    const baselineGroup = normalizeProviderGroupName(options.baselineProviderGroups[name])
+    const hasPendingChanges = p.base_url !== (options.baselineBaseUrls[name] ?? '') || currentGroup !== baselineGroup
     const isDragOver = options.dragOverProvider === name
     const dragStyle = overlay
       ? {
@@ -130,7 +135,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 )}
               </div>
               <div className="aoProviderHeadActions">
-                {p.base_url !== (options.baselineBaseUrls[name] ?? '') ? (
+                {hasPendingChanges ? (
                   <button className="aoActionBtn" title="Save" onClick={() => void options.saveProvider(name)}>
                     <svg viewBox="0 0 24 24" aria-hidden="true">
                       <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
@@ -212,6 +217,25 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                             providers: {
                               ...c.providers,
                               [name]: { ...c.providers[name], base_url: e.target.value },
+                            },
+                          }
+                        : c,
+                    )
+                  }
+                />
+                <div className="aoMiniLabel">Group</div>
+                <input
+                  className="aoInput"
+                  value={p.group ?? ''}
+                  placeholder="Optional group"
+                  onChange={(e) =>
+                    options.setConfig((c) =>
+                      c
+                        ? {
+                            ...c,
+                            providers: {
+                              ...c.providers,
+                              [name]: { ...c.providers[name], group: e.target.value },
                             },
                           }
                         : c,

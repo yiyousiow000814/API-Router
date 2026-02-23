@@ -77,6 +77,7 @@ function renderCardHtml(config: Config, status: Status): string {
     config,
     status,
     baselineBaseUrls: { p1: 'https://example.com' },
+    baselineProviderGroups: { p1: '' },
     dragOverProvider: null,
     dragBaseTop: 0,
     dragOffsetY: 0,

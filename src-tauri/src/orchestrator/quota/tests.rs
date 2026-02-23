@@ -81,6 +81,7 @@ mod tests {
                     base_url,
                     usage_adapter: String::new(),
                     usage_base_url: None,
+                    group: None,
                     disabled: false,
                     api_key: String::new(),
                 },
@@ -118,6 +119,7 @@ mod tests {
         let p = ProviderConfig {
             display_name: "P".to_string(),
             base_url: "http://codex-api.example.com/v1".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -159,6 +161,7 @@ mod tests {
         let pp = ProviderConfig {
             display_name: "PP".to_string(),
             base_url: "https://code.ppchat.vip/v1".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -167,6 +170,7 @@ mod tests {
         let pumpkin = ProviderConfig {
             display_name: "Pumpkin".to_string(),
             base_url: "https://code.pumpkinai.vip/v1".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,

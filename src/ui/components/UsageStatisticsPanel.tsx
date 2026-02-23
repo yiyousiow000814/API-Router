@@ -17,6 +17,7 @@ import { UsageRequestDailyTotalsCard } from './UsageRequestDailyTotalsCard'
 import { UsageStatsFiltersBar } from './UsageStatsFiltersBar'
 import { useUsageHistoryScrollbar } from '../hooks/useUsageHistoryScrollbar'
 import { isNearBottom } from '../utils/scroll'
+import { buildProviderGroupMaps, resolveProviderDisplayName } from '../utils/providerGroups'
 
 type UsageSummary = UsageStatistics['summary']
 type UsageProviderRow = UsageSummary['by_provider'][number]
@@ -169,10 +170,14 @@ function pickUsageRequestDisplayProviders(input: {
   input.analyticsProviders.forEach(append)
   return picked.slice(0, input.limit)
 }
-function listTopUsageProvidersFromRows(rows: UsageRequestEntry[]): string[] {
+function listTopUsageProvidersFromRows(
+  rows: UsageRequestEntry[],
+  providerLabel?: (provider: string) => string,
+): string[] {
   const counts = new Map<string, number>()
   for (const row of rows) {
-    counts.set(row.provider, (counts.get(row.provider) ?? 0) + 1)
+    const provider = providerLabel ? providerLabel(row.provider) : row.provider
+    counts.set(provider, (counts.get(provider) ?? 0) + 1)
   }
   return [...counts.entries()]
     .sort((a, b) => {
@@ -331,13 +336,15 @@ function emitUsageRequestsCachePrimed(queryKey: string) {
 function groupUsageRequestRowsByProvider(
   rows: UsageRequestEntry[],
   perProviderLimit = USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
+  providerLabel?: (provider: string) => string,
 ): Record<string, UsageRequestEntry[]> {
   const grouped = new Map<string, UsageRequestEntry[]>()
   for (const row of rows) {
-    const list = grouped.get(row.provider) ?? []
+    const provider = providerLabel ? providerLabel(row.provider) : row.provider
+    const list = grouped.get(provider) ?? []
     if (list.length >= perProviderLimit) continue
     list.push(row)
-    grouped.set(row.provider, list)
+    grouped.set(provider, list)
   }
   return Object.fromEntries(grouped.entries())
 }
@@ -695,15 +702,17 @@ function buildUsageRequestTestRows(
 function buildDailyTotalsCacheFromRows(
   rows: UsageRequestEntry[],
   dayLimit: number,
+  providerLabel?: (provider: string) => string,
 ): UsageRequestDailyTotalsCache {
   const byDay = new Map<number, Map<string, number>>()
   const providerTotals = new Map<string, number>()
   for (const row of rows) {
+    const provider = providerLabel ? providerLabel(row.provider) : row.provider
     const day = startOfDayUnixMs(row.unix_ms)
     const dayMap = byDay.get(day) ?? new Map<string, number>()
-    dayMap.set(row.provider, (dayMap.get(row.provider) ?? 0) + row.total_tokens)
+    dayMap.set(provider, (dayMap.get(provider) ?? 0) + row.total_tokens)
     byDay.set(day, dayMap)
-    providerTotals.set(row.provider, (providerTotals.get(row.provider) ?? 0) + row.total_tokens)
+    providerTotals.set(provider, (providerTotals.get(provider) ?? 0) + row.total_tokens)
   }
   const latestDays = [...byDay.keys()].sort((a, b) => b - a).slice(0, Math.max(1, dayLimit))
   const days = latestDays
@@ -893,6 +902,11 @@ export function UsageStatisticsPanel({
   >([])
   const [usageRequestDailyTotalsLoading, setUsageRequestDailyTotalsLoading] = useState(false)
   const [usageRequestsCachePrimedTick, setUsageRequestsCachePrimedTick] = useState(0)
+  const providerGroupMaps = useMemo(() => buildProviderGroupMaps(config), [config])
+  const resolveRequestProviderName = useCallback(
+    (provider: string) => resolveProviderDisplayName(providerGroupMaps.displayNameByProvider, provider),
+    [providerGroupMaps.displayNameByProvider],
+  )
   const usageRequestDailyProviderHints = useMemo(
     () => listUsageRequestDailyProviderHints(usageRequestDailyTotalsProviders),
     [usageRequestDailyTotalsProviders, usageRequestsCachePrimedTick],
@@ -3006,7 +3020,7 @@ export function UsageStatisticsPanel({
                       displayedFilteredUsageRequestRows.map((row) => (
                         <tr key={usageRequestRowIdentity(row)}>
                           <td>{fmtWhen(row.unix_ms)}</td>
-                          <td className="aoUsageRequestsMono">{row.provider}</td>
+                          <td className="aoUsageRequestsMono">{resolveRequestProviderName(row.provider)}</td>
                           <td className="aoUsageRequestsMono">{row.model}</td>
                           <td>
                             {(() => {

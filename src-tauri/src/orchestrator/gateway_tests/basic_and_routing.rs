@@ -109,6 +109,7 @@ fn decide_provider_holds_fallback_during_preferred_stabilizing_window() {
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -120,6 +121,7 @@ fn decide_provider_holds_fallback_during_preferred_stabilizing_window() {
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -188,6 +190,7 @@ fn decide_provider_keeps_fallback_when_last_reason_already_preferred_stabilizing
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -199,6 +202,7 @@ fn decide_provider_keeps_fallback_when_last_reason_already_preferred_stabilizing
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -267,6 +271,7 @@ fn decide_provider_balanced_auto_spreads_multi_sessions_deterministically() {
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: "https://example.com".to_string(),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -380,6 +385,7 @@ fn decide_provider_balanced_auto_single_session_follows_preferred() {
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: "https://example.com".to_string(),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -438,6 +444,7 @@ fn decide_provider_balanced_auto_sticks_to_verified_session_assignment_even_if_p
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -514,6 +521,7 @@ fn decide_provider_balanced_auto_agent_session_follows_parent_assignment() {
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -609,6 +617,7 @@ fn decide_provider_balanced_auto_persists_assignment_across_restart() {
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -708,6 +717,7 @@ fn decide_provider_balanced_auto_keeps_provider_when_alternative_shares_same_api
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -789,6 +799,7 @@ fn decide_provider_balanced_auto_rebalances_after_sticky_window_when_assignment_
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -881,6 +892,7 @@ fn decide_provider_balanced_auto_retries_unhealthy_provider_when_load_is_skewed(
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -974,6 +986,7 @@ fn decide_provider_balanced_auto_retries_unhealthy_provider_even_with_fresh_assi
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1060,6 +1073,7 @@ fn decide_provider_balanced_auto_fallback_keeps_primary_assignment_when_unhealth
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1147,6 +1161,7 @@ fn decide_provider_balanced_auto_fallback_keeps_primary_assignment_during_cooldo
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1232,6 +1247,7 @@ fn decide_provider_balanced_auto_reassigns_immediately_after_closed_provider_reo
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1376,6 +1392,7 @@ fn decide_provider_balanced_auto_prefers_healthy_when_load_gap_is_small() {
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1455,6 +1472,7 @@ fn decide_provider_balanced_auto_suppresses_preferred_during_stabilizing_window(
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1545,6 +1563,7 @@ fn decide_provider_balanced_auto_keeps_healthy_when_unhealthy_gain_is_within_mar
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1629,6 +1648,7 @@ fn decide_provider_balanced_auto_prefers_lower_quota_for_new_session_when_loads_
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1734,6 +1754,7 @@ fn decide_provider_balanced_auto_prefers_higher_quota_for_heavy_session_when_loa
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1892,6 +1913,7 @@ fn decide_provider_balanced_auto_heavy_session_prefers_lower_per_request_cost() 
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -2021,6 +2043,7 @@ fn decide_provider_balanced_auto_prioritizes_load_pressure_over_capacity_and_cos
             ProviderConfig {
                 display_name: name.to_uppercase(),
                 base_url: format!("https://{name}.example.com"),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -2146,6 +2169,7 @@ fn decide_provider_for_display_keeps_usage_confirmation_requirement() {
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://p1.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2157,6 +2181,7 @@ fn decide_provider_for_display_keeps_usage_confirmation_requirement() {
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://p2.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2238,6 +2263,7 @@ fn decide_provider_for_display_balanced_bootstrap_keeps_usage_confirmation_requi
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://p1.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2339,6 +2365,7 @@ fn decide_provider_for_display_balanced_bootstrap_persists_rebalanced_stale_assi
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://p1.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2350,6 +2377,7 @@ fn decide_provider_for_display_balanced_bootstrap_persists_rebalanced_stale_assi
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://p2.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2447,6 +2475,7 @@ fn decide_provider_balanced_auto_ignores_explicit_session_lock_assignments() {
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://p1.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2458,6 +2487,7 @@ fn decide_provider_balanced_auto_ignores_explicit_session_lock_assignments() {
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://p2.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2540,6 +2570,7 @@ fn decide_provider_skips_fallback_with_no_remaining_quota() {
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://p1.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2551,6 +2582,7 @@ fn decide_provider_skips_fallback_with_no_remaining_quota() {
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://p2.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2562,6 +2594,7 @@ fn decide_provider_skips_fallback_with_no_remaining_quota() {
         ProviderConfig {
             display_name: "P3".to_string(),
             base_url: "https://p3.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2634,6 +2667,7 @@ fn decide_provider_skips_fallback_when_daily_budget_exhausted() {
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://p1.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2645,6 +2679,7 @@ fn decide_provider_skips_fallback_when_daily_budget_exhausted() {
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://p2.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2656,6 +2691,7 @@ fn decide_provider_skips_fallback_when_daily_budget_exhausted() {
         ProviderConfig {
             display_name: "P3".to_string(),
             base_url: "https://p3.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2728,6 +2764,7 @@ fn decide_with_budget_snapshot_for_p2(snapshot: serde_json::Value) -> (String, &
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://p1.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2739,6 +2776,7 @@ fn decide_with_budget_snapshot_for_p2(snapshot: serde_json::Value) -> (String, &
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://p2.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2750,6 +2788,7 @@ fn decide_with_budget_snapshot_for_p2(snapshot: serde_json::Value) -> (String, &
         ProviderConfig {
             display_name: "P3".to_string(),
             base_url: "https://p3.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2891,6 +2930,7 @@ fn decide_provider_manual_override_falls_back_when_daily_budget_exhausted() {
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://p1.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2902,6 +2942,7 @@ fn decide_provider_manual_override_falls_back_when_daily_budget_exhausted() {
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://p2.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2975,6 +3016,7 @@ fn decide_provider_stabilizing_skips_last_provider_with_no_remaining_quota() {
         ProviderConfig {
             display_name: "P1".to_string(),
             base_url: "https://p1.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2986,6 +3028,7 @@ fn decide_provider_stabilizing_skips_last_provider_with_no_remaining_quota() {
         ProviderConfig {
             display_name: "P2".to_string(),
             base_url: "https://p2.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -2997,6 +3040,7 @@ fn decide_provider_stabilizing_skips_last_provider_with_no_remaining_quota() {
         ProviderConfig {
             display_name: "P3".to_string(),
             base_url: "https://p3.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -3077,6 +3121,7 @@ fn decide_provider_respects_provider_order_for_fallback() {
         ProviderConfig {
             display_name: "Alpha".to_string(),
             base_url: "https://alpha.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -3088,6 +3133,7 @@ fn decide_provider_respects_provider_order_for_fallback() {
         ProviderConfig {
             display_name: "Beta".to_string(),
             base_url: "https://beta.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
@@ -3099,6 +3145,7 @@ fn decide_provider_respects_provider_order_for_fallback() {
         ProviderConfig {
             display_name: "Zeta".to_string(),
             base_url: "https://zeta.example.com".to_string(),
+            group: None,
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,

@@ -58,6 +58,7 @@ async fn e2e_status_closed_provider_keeps_failure_fields() {
                 ProviderConfig {
                     display_name: "P1".to_string(),
                     base_url: "https://example.com/v1".to_string(),
+                    group: None,
                     disabled: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
@@ -69,6 +70,7 @@ async fn e2e_status_closed_provider_keeps_failure_fields() {
                 ProviderConfig {
                     display_name: "P2".to_string(),
                     base_url: "https://example.com/v1".to_string(),
+                    group: None,
                     disabled: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
@@ -175,6 +177,7 @@ async fn e2e_recovery_success_resets_failures_but_keeps_last_error() {
             ProviderConfig {
                 display_name: "P1".to_string(),
                 base_url: p1_base,
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,

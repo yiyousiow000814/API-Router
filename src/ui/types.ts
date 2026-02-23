@@ -122,6 +122,7 @@ export type Config = {
     {
       display_name: string
       base_url: string
+      group?: string | null
       usage_adapter?: string
       usage_base_url?: string | null
       quota_hard_cap?: {

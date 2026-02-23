@@ -40,6 +40,8 @@ pub struct RoutingConfig {
 pub struct ProviderConfig {
     pub display_name: String,
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
     /// Optional usage/quota source type for this provider.
@@ -89,6 +91,7 @@ impl AppConfig {
             ProviderConfig {
                 display_name: "Official (OAuth passthrough)".to_string(),
                 base_url: "https://api.openai.com".to_string(),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -102,6 +105,7 @@ impl AppConfig {
                 ProviderConfig {
                     display_name: format!("Provider {i}"),
                     base_url: String::new(),
+                    group: None,
                     disabled: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,

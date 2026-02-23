@@ -2,9 +2,11 @@ import { useCallback, type Dispatch, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { UseProviderActionsParams } from './types'
 import type { Config } from '../../types'
+import { buildProviderGroupMaps, resolveProviderDisplayName } from '../../utils/providerGroups'
 
 type ProviderUsageActions = Pick<
   UseProviderActionsParams,
+  | 'config'
   | 'status'
   | 'setConfig'
   | 'isDevPreview'
@@ -90,6 +92,7 @@ export async function setProviderQuotaHardCapFieldWithRefresh({
 }
 
 export function useProviderUsageActions({
+  config,
   status,
   setConfig,
   isDevPreview,
@@ -100,6 +103,16 @@ export function useProviderUsageActions({
   refreshConfig,
   flashToast,
 }: ProviderUsageActions) {
+  const providerGroupMaps = buildProviderGroupMaps(config)
+  const providersForTarget = useCallback(
+    (provider: string): string[] => providerGroupMaps.membersByProvider[provider] ?? [provider],
+    [providerGroupMaps.membersByProvider],
+  )
+  const providerScopeLabel = useCallback(
+    (provider: string): string => resolveProviderDisplayName(providerGroupMaps.displayNameByProvider, provider),
+    [providerGroupMaps.displayNameByProvider],
+  )
+
   const refreshQuota = useCallback(
     async (name: string) => {
       setRefreshingProviders((prev) => ({ ...prev, [name]: true }))
@@ -136,8 +149,11 @@ export function useProviderUsageActions({
     const provider = usageBaseModal.provider
     const url = usageBaseModal.value.trim()
     if (!provider || !url) return
+    const targetProviders = providersForTarget(provider)
     try {
-      await invoke('set_usage_base_url', { provider, url })
+      for (const target of targetProviders) {
+        await invoke('set_usage_base_url', { provider: target, url })
+      }
       setUsageBaseModal({
         open: false,
         provider: '',
@@ -146,7 +162,12 @@ export function useProviderUsageActions({
         explicitValue: '',
         effectiveValue: '',
       })
-      flashToast(`Usage base saved: ${provider}`)
+      const scopeLabel = providerScopeLabel(provider)
+      flashToast(
+        targetProviders.length > 1
+          ? `Usage base saved: ${scopeLabel} (${targetProviders.length} providers)`
+          : `Usage base saved: ${scopeLabel}`,
+      )
       await refreshConfig()
       await refreshStatus()
     } catch (e) {
@@ -154,6 +175,8 @@ export function useProviderUsageActions({
     }
   }, [
     flashToast,
+    providerScopeLabel,
+    providersForTarget,
     refreshConfig,
     refreshStatus,
     setUsageBaseModal,
@@ -163,33 +186,68 @@ export function useProviderUsageActions({
 
   const clearUsageBaseUrl = useCallback(
     async (name: string) => {
+      const targetProviders = providersForTarget(name)
       try {
-        await invoke('clear_usage_base_url', { provider: name })
-        flashToast(`Usage base cleared: ${name}`)
+        for (const provider of targetProviders) {
+          await invoke('clear_usage_base_url', { provider })
+        }
+        const scopeLabel = providerScopeLabel(name)
+        flashToast(
+          targetProviders.length > 1
+            ? `Usage base cleared: ${scopeLabel} (${targetProviders.length} providers)`
+            : `Usage base cleared: ${scopeLabel}`,
+        )
         await refreshConfig()
         await refreshStatus()
       } catch (e) {
         flashToast(String(e), 'error')
       }
     },
-    [flashToast, refreshConfig, refreshStatus],
+    [flashToast, providerScopeLabel, providersForTarget, refreshConfig, refreshStatus],
   )
 
   const setProviderQuotaHardCap = useCallback(
     async (provider: string, field: QuotaHardCapField, enabled: boolean) => {
-      await setProviderQuotaHardCapFieldWithRefresh({
-        provider,
-        field,
-        enabled,
-        invokeFn: (cmd, args) => invoke(cmd, args),
-        setConfig,
-        refreshConfig,
-        refreshStatus,
-        flashToast,
-        isLocalOnly: isDevPreview,
+      const targets = providersForTarget(provider)
+      const scopeLabel = providerScopeLabel(provider)
+      if (targets.length === 1) {
+        await setProviderQuotaHardCapFieldWithRefresh({
+          provider,
+          field,
+          enabled,
+          invokeFn: (cmd, args) => invoke(cmd, args),
+          setConfig,
+          refreshConfig,
+          refreshStatus,
+          flashToast,
+          isLocalOnly: isDevPreview,
+        })
+        return
+      }
+
+      targets.forEach((target) => {
+        setConfig((prev) => applyProviderQuotaHardCapLocalPatch(prev, target, field, enabled))
       })
+      if (isDevPreview) {
+        flashToast(`Hard cap updated [TEST]: ${scopeLabel}.${field} (${targets.length} providers)`)
+        return
+      }
+      try {
+        for (const target of targets) {
+          await invoke('set_provider_quota_hard_cap_field', {
+            provider: target,
+            field,
+            enabled,
+          })
+        }
+        flashToast(`Hard cap updated: ${scopeLabel}.${field} (${targets.length} providers)`)
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+      await refreshConfig()
+      await refreshStatus()
     },
-    [flashToast, isDevPreview, refreshConfig, refreshStatus, setConfig],
+    [flashToast, isDevPreview, providerScopeLabel, providersForTarget, refreshConfig, refreshStatus, setConfig],
   )
 
   const openUsageBaseModal = useCallback(

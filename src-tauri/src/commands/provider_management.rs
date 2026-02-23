@@ -114,6 +114,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                 serde_json::json!({
                   "display_name": p.display_name,
                   "base_url": p.base_url,
+                  "group": p.group.clone(),
                   "disabled": p.disabled,
                   "usage_adapter": p.usage_adapter.clone(),
                   "usage_base_url": p.usage_base_url.clone(),
@@ -433,10 +434,19 @@ pub(crate) fn upsert_provider(
     name: String,
     display_name: String,
     base_url: String,
+    group: Option<String>,
 ) -> Result<(), String> {
     if name.trim().is_empty() {
         return Err("name is required".to_string());
     }
+    let normalized_group = group.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
     {
         let mut cfg = state.gateway.cfg.write();
         let existing = cfg.providers.get(&name).cloned();
@@ -446,6 +456,7 @@ pub(crate) fn upsert_provider(
             crate::orchestrator::config::ProviderConfig {
                 display_name,
                 base_url,
+                group: normalized_group,
                 disabled: existing.as_ref().is_some_and(|provider| provider.disabled),
                 usage_adapter: existing
                     .as_ref()

@@ -23,6 +23,7 @@ type UseSwitchboardStatusActionsOptions = {
   setOverride: (next: string) => void
   setConfig: (next: Config) => void
   setBaselineBaseUrls: (next: Record<string, string>) => void
+  setBaselineProviderGroups: (next: Record<string, string>) => void
   setGatewayTokenPreview: (next: string) => void
   codexSwapStatus: CodexSwapStatus | null
   setCodexSwapStatus: (next: CodexSwapStatus) => void
@@ -161,6 +162,7 @@ export function useSwitchboardStatusActions({
   setOverride,
   setConfig,
   setBaselineBaseUrls,
+  setBaselineProviderGroups,
   setGatewayTokenPreview,
   codexSwapStatus,
   setCodexSwapStatus,
@@ -277,6 +279,9 @@ export function useSwitchboardStatusActions({
     if (isDevPreview) {
       setConfig(devConfig)
       setBaselineBaseUrls(Object.fromEntries(Object.entries(devConfig.providers).map(([name, p]) => [name, p.base_url])))
+      setBaselineProviderGroups(
+        Object.fromEntries(Object.entries(devConfig.providers).map(([name, p]) => [name, (p.group ?? '').trim()])),
+      )
       setGatewayTokenPreview('ao_dev********7f2a')
       if (shouldRefreshProviderSwitchStatus) {
         void refreshProviderSwitchStatus()
@@ -287,6 +292,9 @@ export function useSwitchboardStatusActions({
       const c = await invoke<Config>('get_config')
       setConfig(c)
       setBaselineBaseUrls(Object.fromEntries(Object.entries(c.providers).map(([name, p]) => [name, p.base_url])))
+      setBaselineProviderGroups(
+        Object.fromEntries(Object.entries(c.providers).map(([name, p]) => [name, (p.group ?? '').trim()])),
+      )
       const p = await invoke<string>('get_gateway_token_preview')
       setGatewayTokenPreview(p)
       const homes = resolveCliHomes(

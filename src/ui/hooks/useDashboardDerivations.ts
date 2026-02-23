@@ -22,6 +22,7 @@ import {
   orderUsageProvidersByConfig,
   usageProviderRowKey,
 } from '../utils/usageStatisticsView'
+import { buildProviderGroupMaps, normalizeProviderGroupName, resolveProviderDisplayName } from '../utils/providerGroups'
 
 type Params = {
   config: Config | null
@@ -148,9 +149,16 @@ export function useDashboardDerivations(params: Params) {
     () => buildUsageSharedCostView(orderedUsageByProvider),
     [orderedUsageByProvider],
   )
+  const providerGroupMaps = useMemo(() => buildProviderGroupMaps(config), [config])
   const usageProviderDisplayGroups = useMemo(
-    () => buildUsageProviderDisplayGroups(orderedUsageByProvider, usageSharedCostView),
-    [orderedUsageByProvider, usageSharedCostView],
+    () =>
+      buildUsageProviderDisplayGroups(orderedUsageByProvider, usageSharedCostView, {
+        providerDisplayName: (provider) =>
+          resolveProviderDisplayName(providerGroupMaps.displayNameByProvider, provider),
+        providerGroupName: (provider) =>
+          normalizeProviderGroupName(config?.providers?.[provider]?.group) || null,
+      }),
+    [config?.providers, orderedUsageByProvider, providerGroupMaps.displayNameByProvider, usageSharedCostView],
   )
   const usagePricedRequestCount = orderedUsageByProvider.reduce((sum: number, row) => {
     const total = usageSharedCostView.effectiveTotalByRowKey.get(usageProviderRowKey(row))

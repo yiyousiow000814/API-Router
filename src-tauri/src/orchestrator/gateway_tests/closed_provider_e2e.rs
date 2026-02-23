@@ -57,6 +57,7 @@ async fn assert_closed_provider_not_used_e2e(tag: &str, p2_snapshot: serde_json:
                 ProviderConfig {
                     display_name: "P1".to_string(),
                     base_url: p1_base,
+                    group: None,
                     disabled: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
@@ -68,6 +69,7 @@ async fn assert_closed_provider_not_used_e2e(tag: &str, p2_snapshot: serde_json:
                 ProviderConfig {
                     display_name: "P2".to_string(),
                     base_url: p2_base,
+                    group: None,
                     disabled: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
@@ -79,6 +81,7 @@ async fn assert_closed_provider_not_used_e2e(tag: &str, p2_snapshot: serde_json:
                 ProviderConfig {
                     display_name: "P3".to_string(),
                     base_url: p3_base,
+                    group: None,
                     disabled: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
@@ -330,6 +333,7 @@ async fn e2e_first_failure_refreshes_usage_once_and_closes_provider_before_retry
                 ProviderConfig {
                     display_name: "P1".to_string(),
                     base_url: p1_base,
+                    group: None,
                     disabled: false,
                     usage_adapter: "budget_info".to_string(),
                     usage_base_url: Some(usage_base),
@@ -341,6 +345,7 @@ async fn e2e_first_failure_refreshes_usage_once_and_closes_provider_before_retry
                 ProviderConfig {
                     display_name: "P2".to_string(),
                     base_url: p2_base,
+                    group: None,
                     disabled: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
@@ -571,6 +576,7 @@ async fn e2e_failure_usage_refresh_only_runs_once_per_request() {
                 ProviderConfig {
                     display_name: "P1".to_string(),
                     base_url: p1_base,
+                    group: None,
                     disabled: false,
                     usage_adapter: "budget_info".to_string(),
                     usage_base_url: Some(usage_base.clone()),
@@ -582,6 +588,7 @@ async fn e2e_failure_usage_refresh_only_runs_once_per_request() {
                 ProviderConfig {
                     display_name: "P2".to_string(),
                     base_url: p2_base,
+                    group: None,
                     disabled: false,
                     usage_adapter: "budget_info".to_string(),
                     usage_base_url: Some(usage_base),
@@ -774,6 +781,7 @@ async fn e2e_provider_stays_skipped_until_usage_refresh_confirms_available() {
                 ProviderConfig {
                     display_name: "P1".to_string(),
                     base_url: p1_base,
+                    group: None,
                     disabled: false,
                     usage_adapter: "budget_info".to_string(),
                     usage_base_url: Some(usage_base),
@@ -785,6 +793,7 @@ async fn e2e_provider_stays_skipped_until_usage_refresh_confirms_available() {
                 ProviderConfig {
                     display_name: "P2".to_string(),
                     base_url: p2_base,
+                    group: None,
                     disabled: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,

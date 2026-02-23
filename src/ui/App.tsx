@@ -80,6 +80,7 @@ export default function App() {
   const [status, setStatus] = useState<Status | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
   const [baselineBaseUrls, setBaselineBaseUrls] = useState<Record<string, string>>({})
+  const [baselineProviderGroups, setBaselineProviderGroups] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<string>('')
   const [override, setOverride] = useState<string>('') // '' => auto
   const [newProviderName, setNewProviderName] = useState<string>('')
@@ -677,6 +678,7 @@ export default function App() {
     setOverride,
     setConfig,
     setBaselineBaseUrls,
+    setBaselineProviderGroups,
     setGatewayTokenPreview,
     codexSwapStatus,
     setCodexSwapStatus,
@@ -733,6 +735,7 @@ export default function App() {
     setStatus,
     setOverride,
     setBaselineBaseUrls,
+    setBaselineProviderGroups,
     setGatewayTokenPreview,
     devStatus,
     devConfig,
@@ -1056,6 +1059,7 @@ export default function App() {
     status,
     setConfig,
     baselineBaseUrls,
+    baselineProviderGroups,
     saveProvider,
     setProviderDisabled,
     deleteProvider,

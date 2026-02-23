@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { orderUsageProvidersByConfig } from './usageStatisticsView'
+import { buildUsageProviderDisplayGroups, orderUsageProvidersByConfig } from './usageStatisticsView'
 
 function makeRow(provider: string, apiKeyRef: string) {
   return {
@@ -47,5 +47,27 @@ describe('orderUsageProvidersByConfig', () => {
       'packycode3:k3-a',
       'packycode3:k3-b',
     ])
+  })
+})
+
+describe('buildUsageProviderDisplayGroups', () => {
+  it('merges providers under an explicit group label', () => {
+    const rows = [makeRow('provider_a', '-'), makeRow('provider_b', '-')]
+    const groups = buildUsageProviderDisplayGroups(
+      rows,
+      {
+        effectiveDailyByRowKey: new Map(),
+        effectiveTotalByRowKey: new Map(),
+      },
+      {
+        providerDisplayName: (provider) => provider,
+        providerGroupName: (provider) => (provider.startsWith('provider_') ? 'team-alpha' : null),
+      },
+    )
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].displayName).toBe('team-alpha')
+    expect(groups[0].detailLabel).toBe('provider_a / provider_b')
+    expect(groups[0].requests).toBe(2)
   })
 })

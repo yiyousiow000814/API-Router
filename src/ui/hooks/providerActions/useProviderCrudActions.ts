@@ -37,6 +37,7 @@ export function useProviderCrudActions({
           name,
           displayName: p.display_name,
           baseUrl: p.base_url,
+          group: (p.group ?? '').trim() || null,
         })
         flashToast(`Saved: ${name}`)
         try {
@@ -120,6 +121,7 @@ export function useProviderCrudActions({
         name,
         displayName: name,
         baseUrl,
+        group: null,
       })
       setNewProviderName('')
       setNewProviderBaseUrl('')

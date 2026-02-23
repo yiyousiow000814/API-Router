@@ -145,6 +145,10 @@ export function buildUsageProviderDisplayGroups(
     effectiveDailyByRowKey: Map<string, number | null>
     effectiveTotalByRowKey: Map<string, number | null>
   },
+  options?: {
+    providerDisplayName?: (provider: string) => string
+    providerGroupName?: (provider: string) => string | null
+  },
 ): Array<{
   id: string
   providers: string[]
@@ -159,19 +163,27 @@ export function buildUsageProviderDisplayGroups(
   effectiveDaily: number | null
   effectiveTotal: number | null
   pricingSource: string | null
-}> {
+  }> {
   const groups = new Map<
     string,
     {
       apiKeyRef: string
       providers: string[]
+      groupName: string | null
+      displayName: string
       rows: UsageProviderRow[]
     }
   >()
   usageByProvider.forEach((row) => {
     const provider = String(row.provider)
+    const groupName = options?.providerGroupName?.(provider) ?? null
+    const displayName = options?.providerDisplayName?.(provider) ?? provider
     const apiKeyRef = String(row.api_key_ref ?? '').trim()
-    const groupKey = apiKeyRef && apiKeyRef !== '-' ? `key:${apiKeyRef}` : `provider:${provider}`
+    const groupKey = groupName
+      ? `group:${groupName}`
+      : apiKeyRef && apiKeyRef !== '-'
+        ? `key:${apiKeyRef}`
+        : `provider:${provider}`
     const existing = groups.get(groupKey)
     if (existing) {
       if (!existing.providers.includes(provider)) existing.providers.push(provider)
@@ -180,6 +192,8 @@ export function buildUsageProviderDisplayGroups(
       groups.set(groupKey, {
         apiKeyRef,
         providers: [provider],
+        groupName,
+        displayName,
         rows: [row],
       })
     }
@@ -204,8 +218,12 @@ export function buildUsageProviderDisplayGroups(
       id: groupId,
       providers: group.providers,
       rows: group.rows,
-      displayName: group.providers.join(' / '),
-      detailLabel: group.apiKeyRef && group.apiKeyRef !== '-' ? group.apiKeyRef : '-',
+      displayName: group.groupName ?? (group.providers.length > 1 ? group.providers.join(' / ') : group.displayName),
+      detailLabel: group.groupName
+        ? group.providers.join(' / ')
+        : group.apiKeyRef && group.apiKeyRef !== '-'
+          ? group.apiKeyRef
+          : '-',
       requests,
       totalTokens,
       tokensPerRequest: requests > 0 ? totalTokens / requests : null,

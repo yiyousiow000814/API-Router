@@ -51,6 +51,7 @@ export function useProviderActions({
     setProviderQuotaHardCap,
     openUsageBaseModal,
   } = useProviderUsageActions({
+    config,
     status,
     setConfig,
     isDevPreview,

@@ -1092,6 +1092,7 @@ mod tests {
             ProviderConfig {
                 display_name: "P1".to_string(),
                 base_url: "https://p1.example.com".to_string(),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1103,6 +1104,7 @@ mod tests {
             ProviderConfig {
                 display_name: "P2".to_string(),
                 base_url: "https://p2.example.com".to_string(),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1196,6 +1198,7 @@ mod tests {
             ProviderConfig {
                 display_name: "P1".to_string(),
                 base_url: "https://p1.example.com".to_string(),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1207,6 +1210,7 @@ mod tests {
             ProviderConfig {
                 display_name: "P2".to_string(),
                 base_url: "https://p2.example.com".to_string(),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1316,6 +1320,7 @@ mod tests {
             ProviderConfig {
                 display_name: "P1".to_string(),
                 base_url: "https://p1.example.com".to_string(),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1489,6 +1494,7 @@ mod tests {
                 ProviderConfig {
                     display_name: "P1".to_string(),
                     base_url: "https://p1.example.com".to_string(),
+                    group: None,
                     disabled: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
@@ -1603,6 +1609,7 @@ mod tests {
             ProviderConfig {
                 display_name: "P1".to_string(),
                 base_url: "https://p1.example.com".to_string(),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
@@ -1614,6 +1621,7 @@ mod tests {
             ProviderConfig {
                 display_name: "P2".to_string(),
                 base_url: "https://p2.example.com".to_string(),
+                group: None,
                 disabled: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
