@@ -219,7 +219,9 @@ export function SessionsTable({
         : 'aoSessionOriginBadge aoSessionOriginBadgeWindows'
       const originLabel = wsl ? 'WSL2' : 'WIN'
       const rowClass = [
-        isAgent ? (wsl ? 'aoSessionRowAgent aoSessionRowAgentWsl' : 'aoSessionRowAgent') : '',
+        !isChildRow && isAgent
+          ? (wsl ? 'aoSessionRowAgent aoSessionRowAgentWsl' : 'aoSessionRowAgent')
+          : '',
         isChildRow ? 'aoSessionRowChild' : '',
       ]
         .join(' ')
