@@ -1,6 +1,5 @@
 #[tauri::command]
 pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value {
-    const STATUS_RECENT_EVENTS_LIMIT: usize = 200;
     let cfg = state.gateway.cfg.read().clone();
     let wsl_gateway_host =
         crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(&state.config_path));
@@ -8,9 +7,12 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
     state.gateway.router.sync_with_config(&cfg, now);
     let providers = state.gateway.router.snapshot(now);
     let manual_override = state.gateway.router.manual_override.read().clone();
-    // Keep dashboard and Event Log consistent on "latest errors": status recent events are the
-    // newest N rows (not level-split buckets).
-    let recent_events = state.gateway.store.list_events(STATUS_RECENT_EVENTS_LIMIT);
+    // Keep status payload small: expose only the latest error preview row, but source it from the
+    // same 200-row Event Log window used by the Events tab.
+    let recent_events = state.gateway.store.list_recent_error_events(
+        crate::constants::STATUS_EVENT_WINDOW_LIMIT,
+        crate::constants::STATUS_RECENT_ERROR_PREVIEW_LIMIT,
+    );
     let metrics = state.gateway.store.get_metrics();
     let quota = state.gateway.store.list_quota_snapshots();
     let mut providers = providers;

@@ -1330,7 +1330,6 @@ impl Store {
         }
     }
 
-    #[allow(dead_code)]
     pub fn list_events(&self, limit: usize) -> Vec<Value> {
         let cap = limit.max(1);
         let conn = self.events_db.lock();
@@ -1358,6 +1357,15 @@ impl Store {
             .filter_map(|(unix_ms, provider, level, code, message, fields_json)| {
                 Self::event_from_sql_row(unix_ms, provider, level, code, message, fields_json)
             })
+            .collect()
+    }
+
+    pub fn list_recent_error_events(&self, window_limit: usize, max_errors: usize) -> Vec<Value> {
+        let error_cap = max_errors.max(1);
+        self.list_events(window_limit)
+            .into_iter()
+            .filter(|event| event.get("level").and_then(Value::as_str) == Some("error"))
+            .take(error_cap)
             .collect()
     }
 
