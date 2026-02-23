@@ -1001,7 +1001,7 @@ mod tests {
     }
 
     #[test]
-    fn displayed_session_route_assigns_verified_session_before_first_request() {
+    fn displayed_session_route_is_side_effect_free_before_first_request() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = open_store_dir(tmp.path().join("data")).expect("store");
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -1076,6 +1076,11 @@ mod tests {
             )]))),
         };
 
+        let stale_ms = now.saturating_sub(24 * 60 * 60 * 1000);
+        state
+            .store
+            .put_session_route_assignment("stale-session", "p2", stale_ms);
+
         let (provider, reason) = displayed_session_route(
             &state,
             &cfg,
@@ -1090,8 +1095,15 @@ mod tests {
             state
                 .store
                 .get_session_route_assignment("main-session")
+                .is_none(),
+            "status display should not create assignments before first routed request"
+        );
+        assert!(
+            state
+                .store
+                .get_session_route_assignment("stale-session")
                 .is_some(),
-            "verified session should get an assignment before first routed request"
+            "status display should not trigger assignment cleanup"
         );
     }
 

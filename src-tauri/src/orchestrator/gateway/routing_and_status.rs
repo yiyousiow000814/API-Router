@@ -126,14 +126,13 @@ const BALANCED_ASSIGNMENT_STICKY_MS: u64 = 2 * 60 * 60 * 1000;
 const BALANCED_REBALANCE_MARGIN: usize = 2;
 const BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS: u64 = 15 * 60 * 1000;
 const BALANCED_CAPACITY_FLOOR_RATIO: f64 = 0.25;
+const BALANCED_CAPACITY_FIT_RANK_SCALE: f64 = 100.0;
 const BALANCED_SESSION_LOAD_WINDOW_MS: u64 = 2 * 60 * 60 * 1000;
-const BALANCED_SESSION_LOAD_CACHE_TTL_MS: u64 = 60 * 1000;
-const BALANCED_SESSION_LOAD_CACHE_MAX_ENTRIES: usize = 512;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BalancedAssignmentPersistMode {
     Full,
-    CreateOnly,
+    ReadOnly,
 }
 
 #[derive(Default)]
@@ -225,12 +224,6 @@ fn provider_capacity_units_for_balancing(
     1.0
 }
 
-#[derive(Clone, Copy)]
-struct SessionLoadCacheEntry {
-    updated_at_unix_ms: u64,
-    demand_ratio: f64,
-}
-
 fn session_demand_ratio_from_usage(request_count: u64, total_tokens: u64) -> f64 {
     if request_count == 0 {
         // Unknown / fresh sessions are usually lighter and should prefer smaller providers.
@@ -247,18 +240,6 @@ fn session_demand_ratio_for_balancing(st: &GatewayState, session_key: &str, now_
     if session_key.trim().is_empty() || session_key.starts_with("peer:") {
         return 0.25;
     }
-    static SESSION_LOAD_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, SessionLoadCacheEntry>>> =
-        std::sync::OnceLock::new();
-    let cache = SESSION_LOAD_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    if let Ok(guard) = cache.lock() {
-        if let Some(entry) = guard.get(session_key) {
-            if now_ms.saturating_sub(entry.updated_at_unix_ms) < BALANCED_SESSION_LOAD_CACHE_TTL_MS
-            {
-                return entry.demand_ratio;
-            }
-        }
-    }
-
     let since = now_ms.saturating_sub(BALANCED_SESSION_LOAD_WINDOW_MS);
     let sessions = vec![session_key.to_string()];
     let (request_count, _, _, total_tokens, _, _) = st.store.summarize_usage_requests(
@@ -270,28 +251,7 @@ fn session_demand_ratio_for_balancing(st: &GatewayState, session_key: &str, now_
         &[],
         &sessions,
     );
-    let demand_ratio = session_demand_ratio_from_usage(request_count, total_tokens);
-
-    if let Ok(mut guard) = cache.lock() {
-        if guard.len() >= BALANCED_SESSION_LOAD_CACHE_MAX_ENTRIES && !guard.contains_key(session_key)
-        {
-            if let Some(oldest_key) = guard
-                .iter()
-                .min_by_key(|(_, value)| value.updated_at_unix_ms)
-                .map(|(key, _)| key.clone())
-            {
-                guard.remove(&oldest_key);
-            }
-        }
-        guard.insert(
-            session_key.to_string(),
-            SessionLoadCacheEntry {
-                updated_at_unix_ms: now_ms,
-                demand_ratio,
-            },
-        );
-    }
-    demand_ratio
+    session_demand_ratio_from_usage(request_count, total_tokens)
 }
 
 fn provider_per_request_cost_signal(
@@ -336,13 +296,15 @@ fn load_balanced_assignment_counts(
     st: &GatewayState,
     cfg: &AppConfig,
     now_ms: u64,
+    allow_cleanup: bool,
 ) -> BalancedAssignmentCounts {
     static LAST_BALANCED_ASSIGNMENT_CLEANUP_UNIX_MS: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
 
     let cutoff_unix_ms = now_ms.saturating_sub(BALANCED_ASSIGNMENT_STICKY_MS);
     let last_cleanup = LAST_BALANCED_ASSIGNMENT_CLEANUP_UNIX_MS.load(std::sync::atomic::Ordering::Relaxed);
-    if now_ms.saturating_sub(last_cleanup) >= BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS
+    if allow_cleanup
+        && now_ms.saturating_sub(last_cleanup) >= BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS
         && LAST_BALANCED_ASSIGNMENT_CLEANUP_UNIX_MS
             .compare_exchange(
                 last_cleanup,
@@ -407,20 +369,13 @@ fn pick_balanced_provider(
     }
 
     let mut provider_capacity_units = HashMap::new();
-    let mut bucket_capacity_units: HashMap<String, f64> = HashMap::new();
     for provider in candidates.iter() {
         let hard_cap = st.secrets.get_provider_quota_hard_cap(provider);
         let units =
             provider_capacity_units_for_balancing(quota_snapshots, provider, &hard_cap).max(1.0);
         provider_capacity_units.insert(provider.clone(), units);
-        let bucket = provider_balance_bucket(st, provider);
-        *bucket_capacity_units.entry(bucket).or_insert(0.0) += units;
     }
     let max_provider_capacity_units = provider_capacity_units
-        .values()
-        .copied()
-        .fold(1.0_f64, f64::max);
-    let max_bucket_capacity_units = bucket_capacity_units
         .values()
         .copied()
         .fold(1.0_f64, f64::max);
@@ -457,14 +412,8 @@ fn pick_balanced_provider(
                 / max_provider_capacity_units;
             let provider_capacity_ratio =
                 provider_capacity_ratio.max(BALANCED_CAPACITY_FLOOR_RATIO);
-            let bucket_capacity_ratio = bucket_capacity_units
-                .get(&bucket)
-                .copied()
-                .unwrap_or(1.0)
-                / max_bucket_capacity_units;
-            let bucket_capacity_ratio = bucket_capacity_ratio.max(BALANCED_CAPACITY_FLOOR_RATIO);
             let capacity_fit_rank = ((provider_capacity_ratio - session_demand_ratio).abs()
-                * 1000.0)
+                * BALANCED_CAPACITY_FIT_RANK_SCALE)
                 .round() as u64;
             let cost_pressure_rank = if has_cost_signal {
                 let provider_cost = provider_costs
@@ -476,20 +425,17 @@ fn pick_balanced_provider(
             } else {
                 1000_u64
             };
-            let provider_pressure_rank =
-                ((((provider_load as f64) + 1.0) / provider_capacity_ratio) * 1000.0).round()
-                    as u64;
-            let bucket_pressure_rank =
-                ((((bucket_load as f64) + 1.0) / bucket_capacity_ratio) * 1000.0).round() as u64;
+            let provider_pressure_rank = provider_load as u64;
+            let bucket_pressure_rank = bucket_load as u64;
             let preferred_rank = if provider == preferred { 0_u8 } else { 1_u8 };
             let hash_rank = balanced_session_provider_score(session_key, &provider);
             (
                 provider,
                 (
-                    capacity_fit_rank,
-                    cost_pressure_rank,
                     bucket_pressure_rank,
                     provider_pressure_rank,
+                    capacity_fit_rank,
+                    cost_pressure_rank,
                     preferred_rank,
                     hash_rank,
                 ),
@@ -512,13 +458,16 @@ fn pick_balanced_provider_for_verified_main_session(
 ) -> Option<String> {
     let now_ms = unix_ms();
     let mut assignment = st.store.get_session_route_assignment(session_key);
-    let assignment_counts = load_balanced_assignment_counts(st, cfg, now_ms);
+    let persist_full = persist_mode == BalancedAssignmentPersistMode::Full;
+    let assignment_counts = load_balanced_assignment_counts(st, cfg, now_ms, persist_full);
     if assignment.as_ref().is_some_and(|row| {
         !cfg.providers
             .get(&row.provider)
             .is_some_and(|provider_cfg| !provider_cfg.disabled)
     }) {
-        st.store.delete_session_route_assignment(session_key);
+        if persist_full {
+            st.store.delete_session_route_assignment(session_key);
+        }
         assignment = None;
     }
 
@@ -550,7 +499,7 @@ fn pick_balanced_provider_for_verified_main_session(
             if let Some((best_provider, _, best_bucket_load)) = best.as_ref() {
                 if best_provider == &row.provider || providers_share_api_key(st, &row.provider, best_provider)
                 {
-                    if persist_mode == BalancedAssignmentPersistMode::Full {
+                    if persist_full {
                         st.store
                             .put_session_route_assignment(session_key, &row.provider, now_ms);
                     }
@@ -564,7 +513,7 @@ fn pick_balanced_provider_for_verified_main_session(
                 if current_bucket_load
                     <= (*best_bucket_load).saturating_add(BALANCED_REBALANCE_MARGIN)
                 {
-                    if persist_mode == BalancedAssignmentPersistMode::Full {
+                    if persist_full {
                         st.store
                             .put_session_route_assignment(session_key, &row.provider, now_ms);
                     }
@@ -577,9 +526,7 @@ fn pick_balanced_provider_for_verified_main_session(
     }
 
     let (best_provider, _, _) = best?;
-    let should_persist = persist_mode == BalancedAssignmentPersistMode::Full
-        || (persist_mode == BalancedAssignmentPersistMode::CreateOnly && assignment.is_none());
-    if should_persist {
+    if persist_full {
         st.store
             .put_session_route_assignment(session_key, &best_provider, now_ms);
     }
@@ -764,7 +711,7 @@ pub(crate) fn decide_provider_for_display(
         cfg,
         preferred,
         session_key,
-        BalancedAssignmentPersistMode::CreateOnly,
+        BalancedAssignmentPersistMode::ReadOnly,
     )
 }
 
