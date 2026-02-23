@@ -1,6 +1,10 @@
 import type * as React from 'react'
 import type { Config, Status } from '../types'
 import { fmtWhen } from './format'
+import {
+  getVisibleBudgetHardCapPeriods,
+  isBudgetInfoQuota,
+} from './providerBudgetWindows'
 
 type CreateProviderCardRendererOptions = {
   config: Config | null
@@ -40,14 +44,8 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
     if (!p) return null
     const quotaHardCap = p.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
     const quota = options.status?.quota?.[name]
-    const hardCapPeriods = ['daily', 'weekly', 'monthly'] as const
-    const hasBudgetInfo = quota?.kind === 'budget_info'
-    const budgetWindowVisibleByPeriod: Record<(typeof hardCapPeriods)[number], boolean> = {
-      daily: hasBudgetInfo && quota.daily_spent_usd != null && quota.daily_budget_usd != null,
-      weekly: hasBudgetInfo && quota.weekly_spent_usd != null && quota.weekly_budget_usd != null,
-      monthly: hasBudgetInfo && quota.monthly_spent_usd != null && quota.monthly_budget_usd != null,
-    }
-    const visibleHardCapPeriods = hardCapPeriods.filter((key) => budgetWindowVisibleByPeriod[key])
+    const hasBudgetInfo = isBudgetInfoQuota(quota)
+    const visibleHardCapPeriods = getVisibleBudgetHardCapPeriods(quota)
     const budgetHardCapLabel = visibleHardCapPeriods.join('/')
     const showHardCapToggles = hasBudgetInfo && visibleHardCapPeriods.length > 0
     const allVisibleHardCapsDisabled =

@@ -3,6 +3,11 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Config, Status } from '../types'
 import { createProviderCardRenderer } from '../utils/providerCardRenderer'
+import {
+  getBudgetWindowVisibleByPeriod,
+  QUOTA_HARD_CAP_PERIODS,
+  type QuotaHardCapPeriod,
+} from '../utils/providerBudgetWindows'
 
 type Params = {
   orderedConfigProviders: string[]
@@ -37,8 +42,6 @@ type Params = {
   ) => Promise<void>
   editingProviderName: string | null
 }
-
-type QuotaHardCapPeriod = 'daily' | 'weekly' | 'monthly'
 
 type MissingHardCapToggle = {
   provider: string
@@ -86,17 +89,16 @@ export function findMissingBudgetHardCapToggleToDisable(
   status: Status | null,
 ): MissingHardCapToggle | null {
   if (!config || !status) return null
-  const hardCapPeriods: QuotaHardCapPeriod[] = ['daily', 'weekly', 'monthly']
-  for (const [providerName, providerConfig] of Object.entries(config.providers)) {
+  const configuredProviderNames = (config.provider_order ?? []).filter((name) => name in config.providers)
+  const remainingProviderNames = Object.keys(config.providers).filter((name) => !configuredProviderNames.includes(name))
+  const providerNamesInPriorityOrder = [...configuredProviderNames, ...remainingProviderNames]
+  for (const providerName of providerNamesInPriorityOrder) {
+    const providerConfig = config.providers[providerName]
     const quota = status.quota?.[providerName]
     if (quota?.kind !== 'budget_info') continue
     const quotaHardCap = providerConfig.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
-    const budgetWindowVisibleByPeriod: Record<QuotaHardCapPeriod, boolean> = {
-      daily: quota.daily_spent_usd != null && quota.daily_budget_usd != null,
-      weekly: quota.weekly_spent_usd != null && quota.weekly_budget_usd != null,
-      monthly: quota.monthly_spent_usd != null && quota.monthly_budget_usd != null,
-    }
-    for (const period of hardCapPeriods) {
+    const budgetWindowVisibleByPeriod = getBudgetWindowVisibleByPeriod(quota)
+    for (const period of QUOTA_HARD_CAP_PERIODS) {
       if (!budgetWindowVisibleByPeriod[period] && quotaHardCap[period]) {
         return { provider: providerName, period }
       }
