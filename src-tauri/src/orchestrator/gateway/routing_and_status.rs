@@ -969,6 +969,8 @@ mod routing_and_status_tests {
     #[test]
     fn provider_capacity_units_returns_floor_when_provider_snapshot_lacks_quota_fields() {
         let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        // Defaults enable daily/weekly/monthly hard-cap checks, but with no budget fields in the
+        // snapshot the budget branch has no usable inputs and we should still fall back to floor.
         let units = provider_capacity_units_for_balancing(
             &json!({
                 "p1": { "kind": "token_stats" }
