@@ -179,6 +179,11 @@ export function SessionsTable({
         .filter((entry) => !entry.parentMainSessionId)
         .map((entry) => [entry.row.id, (entry.row.current_provider ?? '').trim()]),
     )
+    const mainCodexProviderBySessionId = new Map(
+      rows
+        .filter((entry) => !entry.parentMainSessionId)
+        .map((entry) => [entry.row.id, codexProviderLabel(entry.row)]),
+    )
     return rows.map((entry) => {
       const s = entry.row
       const parentMainSessionId = entry.parentMainSessionId
@@ -192,7 +197,9 @@ export function SessionsTable({
       const codexSession = codexSessionIdOnly(s.codex_session_id)
       const wt = s.wt_session ?? '-'
       const isAgent = s.is_agent === true
-      const codexProvider = codexProviderLabel(s)
+      const codexProvider = isChildRow
+        ? (mainCodexProviderBySessionId.get(parentMainSessionId) ?? codexProviderLabel(s))
+        : codexProviderLabel(s)
       const modelName = s.reported_model ?? '-'
       const originClass = sessionOriginClass(s)
       const sessionIdClass = isChildRow ? `${originClass} aoSessionsIdChild` : originClass
@@ -207,6 +214,11 @@ export function SessionsTable({
       ]
         .join(' ')
         .trim()
+      const childRoleLabel = isChildRow
+        ? s.is_review === true
+          ? 'REVIEW'
+          : 'AGENT'
+        : null
       const title = isChildRow
         ? `WT_SESSION: ${wt}\nparent main session: ${parentMainSessionId}`
         : `WT_SESSION: ${wt}`
@@ -216,6 +228,9 @@ export function SessionsTable({
             {codexSession ? (
               <div className={sessionIdClass} title={title}>
                 {!isChildRow && <span className={originBadgeClass}>{originLabel}</span>}
+                {isChildRow && childRoleLabel && (
+                  <span className="aoSessionChildRoleBadge">{childRoleLabel}</span>
+                )}
                 {codexSession}
               </div>
             ) : (
