@@ -2068,6 +2068,114 @@ fn decide_provider_for_display_balanced_bootstrap_keeps_usage_confirmation_requi
 }
 
 #[test]
+fn decide_provider_for_display_balanced_bootstrap_persists_rebalanced_stale_assignment() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut providers = std::collections::BTreeMap::new();
+    providers.insert(
+        "p1".to_string(),
+        ProviderConfig {
+            display_name: "P1".to_string(),
+            base_url: "https://p1.example.com".to_string(),
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        },
+    );
+    providers.insert(
+        "p2".to_string(),
+        ProviderConfig {
+            display_name: "P2".to_string(),
+            base_url: "https://p2.example.com".to_string(),
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        },
+    );
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 4000,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 30,
+            failure_threshold: 2,
+            cooldown_seconds: 30,
+            request_timeout_seconds: 300,
+        },
+        providers,
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+    let now = unix_ms();
+    let stale_ms = now.saturating_sub((2 * 60 * 60 * 1000) + 5_000);
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg.clone())),
+        router: Arc::new(RouterState::new(&cfg, now)),
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::from([(
+            "sid-1".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "sid-1".to_string(),
+                pid: 1,
+                wt_session: Some("wt-1".to_string()),
+                last_request_unix_ms: now,
+                last_discovered_unix_ms: now,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        )]))),
+    };
+
+    state
+        .store
+        .put_session_route_assignment("sid-1", "p2", stale_ms);
+    state
+        .store
+        .put_quota_snapshot(
+            "p2",
+            &json!({
+                "remaining": 0.0,
+                "updated_at_unix_ms": now
+            }),
+        )
+        .expect("quota p2");
+
+    let (display_provider, display_reason) =
+        crate::orchestrator::gateway::decide_provider_for_display(&state, &cfg, "p1", "sid-1");
+    assert_eq!(display_provider, "p1");
+    assert_eq!(display_reason, "balanced_auto");
+
+    let updated = state
+        .store
+        .get_session_route_assignment("sid-1")
+        .expect("updated assignment");
+    assert_eq!(
+        updated.provider, "p1",
+        "bootstrap mode must persist a newly rebalanced provider to avoid display flicker"
+    );
+}
+
+#[test]
 fn decide_provider_balanced_auto_ignores_explicit_session_lock_assignments() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = open_store_dir(tmp.path().join("data")).expect("store");

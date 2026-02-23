@@ -624,7 +624,11 @@ fn pick_balanced_provider_for_verified_main_session(
     }
 
     let (best_provider, _, _) = best?;
-    if persist_assignments && (assignment.is_none() || rewrite_existing_assignment) {
+    let should_persist_selected = match assignment.as_ref() {
+        None => true,
+        Some(row) => rewrite_existing_assignment || row.provider != best_provider,
+    };
+    if persist_assignments && should_persist_selected {
         st.store
             .put_session_route_assignment(session_key, &best_provider, now_ms);
     }
