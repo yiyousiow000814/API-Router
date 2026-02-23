@@ -1,5 +1,5 @@
 use reqwest::Url;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use parking_lot::RwLock;
@@ -56,6 +56,7 @@ pub struct RouterState {
     pub manual_override: RwLock<Option<String>>,
     health: RwLock<HashMap<String, ProviderHealth>>,
     quota_closed_by_provider: RwLock<HashMap<String, bool>>,
+    balanced_main_session_ids: RwLock<Option<BTreeSet<String>>>,
 }
 
 fn provider_is_enabled(cfg: &AppConfig, name: &str) -> bool {
@@ -132,6 +133,7 @@ impl RouterState {
             manual_override: RwLock::new(None),
             health: RwLock::new(health),
             quota_closed_by_provider: RwLock::new(quota_closed_by_provider),
+            balanced_main_session_ids: RwLock::new(None),
         }
     }
 
@@ -169,6 +171,16 @@ impl RouterState {
         }
         quota_closed.retain(|provider, _| states.contains_key(provider));
         reopened
+    }
+
+    pub fn record_balanced_main_sessions(&self, session_ids: &BTreeSet<String>) -> bool {
+        let mut last = self.balanced_main_session_ids.write();
+        let changed = match last.as_ref() {
+            None => false,
+            Some(prev) => prev != session_ids,
+        };
+        *last = Some(session_ids.clone());
+        changed
     }
 
     pub fn mark_success(&self, provider: &str, now_ms: u64) {
