@@ -954,7 +954,7 @@ export default function App() {
   })
   const {
     saveProvider, setProviderDisabled, deleteProvider, saveKey, clearKey, refreshQuota, refreshQuotaAll,
-    saveUsageBaseUrl, clearUsageBaseUrl, openKeyModal, openUsageBaseModal, addProvider,
+    saveUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap, openKeyModal, openUsageBaseModal, addProvider,
   } = useProviderActions({
     config,
     status,
@@ -1063,6 +1063,7 @@ export default function App() {
     clearKey,
     openUsageBaseModal,
     clearUsageBaseUrl,
+    setProviderQuotaHardCap,
     editingProviderName,
   })
   const clearUsageScheduleRowsAutoSave = () => clearAutoSaveTimer('schedule:rows')

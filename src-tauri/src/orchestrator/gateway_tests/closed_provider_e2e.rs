@@ -1,5 +1,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use crate::orchestrator::gateway::provider_has_remaining_quota;
+use crate::orchestrator::gateway::{
+    provider_has_remaining_quota_with_hard_cap,
+};
+use crate::orchestrator::secrets::ProviderQuotaHardCapConfig;
 
 async fn spawn_responses_upstream(hit_counter: Arc<AtomicUsize>, response_id: &'static str) -> String {
     let app = Router::new().route(
@@ -431,8 +434,38 @@ async fn e2e_first_failure_refreshes_usage_once_and_closes_provider_before_retry
 
     let quota_snapshots = store.list_quota_snapshots();
     assert!(
-        !provider_has_remaining_quota(&quota_snapshots, "p1"),
+        !provider_has_remaining_quota_with_hard_cap(
+            &quota_snapshots,
+            "p1",
+            &ProviderQuotaHardCapConfig::default(),
+        ),
         "p1 should be closed after first failure-triggered usage refresh"
+    );
+}
+
+#[test]
+fn weekly_budget_can_be_excluded_from_hard_cap_close() {
+    let quota_snapshots = json!({
+        "p1": {
+            "kind": "budget_info",
+            "daily_spent_usd": 12.0,
+            "daily_budget_usd": 120.0,
+            "weekly_spent_usd": 361.0,
+            "weekly_budget_usd": 360.0,
+            "monthly_spent_usd": 20.0,
+            "monthly_budget_usd": 400.0,
+            "updated_at_unix_ms": unix_ms()
+        }
+    });
+
+    let no_weekly_hard_cap = ProviderQuotaHardCapConfig {
+        daily: true,
+        weekly: false,
+        monthly: true,
+    };
+    assert!(
+        provider_has_remaining_quota_with_hard_cap(&quota_snapshots, "p1", &no_weekly_hard_cap),
+        "weekly budget should not close provider when weekly hard cap is disabled"
     );
 }
 

@@ -27,12 +27,36 @@ type CreateProviderCardRendererOptions = {
   toggleProviderOpen: (name: string) => void
   openUsageBaseModal: (provider: string, value?: string) => Promise<void>
   clearUsageBaseUrl: (provider: string) => Promise<void>
+  setProviderQuotaHardCap: (
+    provider: string,
+    field: 'daily' | 'weekly' | 'monthly',
+    enabled: boolean,
+  ) => Promise<void>
 }
 
 export function createProviderCardRenderer(options: CreateProviderCardRendererOptions) {
   return (name: string, overlay = false) => {
     const p = options.config?.providers?.[name]
     if (!p) return null
+    const quotaHardCap = p.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
+    const quota = options.status?.quota?.[name]
+    const budgetHardCapWindows = [
+      {
+        key: 'daily' as const,
+        visible: quota?.kind === 'budget_info' && quota.daily_spent_usd != null && quota.daily_budget_usd != null,
+      },
+      {
+        key: 'weekly' as const,
+        visible: quota?.kind === 'budget_info' && quota.weekly_spent_usd != null && quota.weekly_budget_usd != null,
+      },
+      {
+        key: 'monthly' as const,
+        visible: quota?.kind === 'budget_info' && quota.monthly_spent_usd != null && quota.monthly_budget_usd != null,
+      },
+    ].filter((window) => window.visible)
+    const budgetHardCapLabel = budgetHardCapWindows.map(({ key }) => key).join('/')
+    const allVisibleHardCapsDisabled =
+      budgetHardCapWindows.length > 0 && budgetHardCapWindows.every(({ key }) => !quotaHardCap[key])
     const activeProviderCount = Object.values(options.config?.providers ?? {}).filter((provider) => !provider.disabled).length
     const canDeactivate = p.disabled || activeProviderCount > 1
     const isDragOver = options.dragOverProvider === name
@@ -225,7 +249,31 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     </button>
                   ) : null}
                 </div>
+                {budgetHardCapWindows.length > 0 ? (
+                  <div className="aoUsageHardCapGrid">
+                    {budgetHardCapWindows.map(({ key: period }) => (
+                      <label key={period} className="aoUsageHardCapItem">
+                        <input
+                          type="checkbox"
+                          checked={quotaHardCap[period]}
+                          onChange={(event) => void options.setProviderQuotaHardCap(name, period, event.target.checked)}
+                        />
+                        <span>{period} hard cap</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="aoHint">Usage base sets the usage endpoint. If empty, we use the provider base URL.</div>
+                {budgetHardCapWindows.length > 0 ? (
+                  <div className="aoHint">Hard cap controls whether {budgetHardCapLabel} budget exhaustion auto-closes this provider.</div>
+                ) : (
+                  <div className="aoHint">No budget windows detected for this provider, so hard cap toggles are hidden.</div>
+                )}
+                {allVisibleHardCapsDisabled ? (
+                  <div className="aoHint" style={{ color: 'rgba(145, 12, 43, 0.92)' }}>
+                    All visible hard caps are disabled, so this provider will not auto-close on budget exhaustion.
+                  </div>
+                ) : null}
                 <div className="aoHint">
                   updated:{' '}
                   {options.status?.quota?.[name]?.updated_at_unix_ms

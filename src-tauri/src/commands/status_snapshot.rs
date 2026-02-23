@@ -14,7 +14,12 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
     let quota = state.gateway.store.list_quota_snapshots();
     let mut providers = providers;
     for (provider_name, snapshot) in providers.iter_mut() {
-        if !crate::orchestrator::gateway::provider_has_remaining_quota(&quota, provider_name) {
+        let hard_cap = state.secrets.get_provider_quota_hard_cap(provider_name);
+        if !crate::orchestrator::gateway::provider_has_remaining_quota_with_hard_cap(
+            &quota,
+            provider_name,
+            &hard_cap,
+        ) {
             snapshot.status = "closed".to_string();
             snapshot.cooldown_until_unix_ms = 0;
         }

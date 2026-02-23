@@ -36,6 +36,7 @@ pub(crate) fn set_manual_override(
 pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value {
     let cfg = state.gateway.cfg.read().clone();
     let pricing = state.secrets.list_provider_pricing();
+    let quota_hard_caps = state.secrets.list_provider_quota_hard_cap();
     let now = unix_ms();
     // Never expose keys in UI/API.
     let providers: serde_json::Map<String, serde_json::Value> = cfg
@@ -45,6 +46,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
             let key = state.secrets.get_provider_key(name);
             let usage_token = state.secrets.get_usage_token(name);
             let manual_pricing = pricing.get(name).cloned();
+            let quota_hard_cap = quota_hard_caps.get(name).copied().unwrap_or_default();
             let active_package = active_package_period(manual_pricing.as_ref(), now);
             let active_package_amount = active_package.map(|(amount, _)| amount);
             let active_package_expires = active_package.and_then(|(_, expires)| expires);
@@ -68,6 +70,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                   "disabled": p.disabled,
                   "usage_adapter": p.usage_adapter.clone(),
                   "usage_base_url": p.usage_base_url.clone(),
+                  "quota_hard_cap": quota_hard_cap,
                   "manual_pricing_mode": manual_mode.filter(|m| m != "none"),
                   "manual_pricing_amount_usd": manual_amount,
                   "manual_pricing_expires_at_unix_ms": active_package_expires,
@@ -503,6 +506,7 @@ pub(crate) fn delete_provider(
     }
     let _ = state.secrets.clear_provider_key(&name);
     let _ = state.secrets.clear_provider_pricing(&name);
+    let _ = state.secrets.clear_provider_quota_hard_cap(&name);
     persist_config(&state).map_err(|e| e.to_string())?;
     state.gateway.store.add_event(
         &name,

@@ -17,31 +17,6 @@ type Props = {
   onOpenLastErrorInEventLog: (payload: LastErrorJump) => void
 }
 
-
-function quotaIsClosed(
-  quota:
-    | Status['quota'][string]
-    | undefined,
-): boolean {
-  if (!quota) return false
-
-  const budgets: Array<[number | null | undefined, number | null | undefined]> = [
-    [quota.daily_spent_usd, quota.daily_budget_usd],
-    [quota.weekly_spent_usd, quota.weekly_budget_usd],
-    [quota.monthly_spent_usd, quota.monthly_budget_usd],
-  ]
-  let sawBudget = false
-  for (const [spent, budget] of budgets) {
-    if (spent == null || budget == null) continue
-    sawBudget = true
-    if (budget <= 0 || spent >= budget) return true
-  }
-  if (sawBudget) return false
-  if (quota.remaining != null) return quota.remaining <= 0
-  if (quota.today_used != null && quota.today_added != null) return quota.today_used >= quota.today_added
-  return false
-}
-
 export function ProvidersTable({ providers, status, refreshingProviders, onRefreshQuota, onOpenLastErrorInEventLog }: Props) {
   return (
     <table className="aoTable aoTableFixed">
@@ -67,7 +42,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
           const h = status.providers[p]
           const q = status.quota?.[p]
           const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
-          const isClosed = quotaIsClosed(q) || h.status === 'closed'
+          const isClosed = h.status === 'closed'
           const cooldownActive = !isClosed && h.cooldown_until_unix_ms > Date.now()
           const isActive = (status.active_provider_counts?.[p] ?? 0) > 0
           const healthLabel =

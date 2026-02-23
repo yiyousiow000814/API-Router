@@ -15,6 +15,8 @@ struct SecretsFile {
     usage_tokens: BTreeMap<String, String>,
     #[serde(default)]
     provider_pricing: BTreeMap<String, ProviderPricingOverride>,
+    #[serde(default)]
+    provider_quota_hard_cap: BTreeMap<String, ProviderQuotaHardCapOverride>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +29,37 @@ struct ProviderPricingOverride {
     gap_fill_mode: Option<String>,
     #[serde(default)]
     gap_fill_amount_usd: Option<f64>,
+}
+
+fn default_hard_cap_enabled() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct ProviderQuotaHardCapOverride {
+    #[serde(default = "default_hard_cap_enabled")]
+    daily: bool,
+    #[serde(default = "default_hard_cap_enabled")]
+    weekly: bool,
+    #[serde(default = "default_hard_cap_enabled")]
+    monthly: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderQuotaHardCapConfig {
+    pub daily: bool,
+    pub weekly: bool,
+    pub monthly: bool,
+}
+
+impl Default for ProviderQuotaHardCapConfig {
+    fn default() -> Self {
+        Self {
+            daily: true,
+            weekly: true,
+            monthly: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +92,25 @@ pub struct SecretStore {
 const GATEWAY_TOKEN_KEY: &str = "__gateway_token__";
 
 impl SecretStore {
+    fn apply_provider_quota_hard_cap(
+        data: &mut SecretsFile,
+        provider: &str,
+        hard_cap: ProviderQuotaHardCapConfig,
+    ) {
+        if hard_cap == ProviderQuotaHardCapConfig::default() {
+            data.provider_quota_hard_cap.remove(provider);
+        } else {
+            data.provider_quota_hard_cap.insert(
+                provider.to_string(),
+                ProviderQuotaHardCapOverride {
+                    daily: hard_cap.daily,
+                    weekly: hard_cap.weekly,
+                    monthly: hard_cap.monthly,
+                },
+            );
+        }
+    }
+
     pub fn new(path: PathBuf) -> Self {
         let inner = Self::load_from_disk(&path).unwrap_or_default();
         Self {
@@ -128,6 +180,88 @@ impl SecretStore {
         if let Some(v) = data.provider_pricing.remove(old) {
             data.provider_pricing.insert(new.to_string(), v);
         }
+        if let Some(v) = data.provider_quota_hard_cap.remove(old) {
+            data.provider_quota_hard_cap.insert(new.to_string(), v);
+        }
+        self.persist(&data)
+    }
+
+    pub fn get_provider_quota_hard_cap(&self, provider: &str) -> ProviderQuotaHardCapConfig {
+        let data = self.inner.lock();
+        data.provider_quota_hard_cap
+            .get(provider)
+            .map(|v| ProviderQuotaHardCapConfig {
+                daily: v.daily,
+                weekly: v.weekly,
+                monthly: v.monthly,
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn list_provider_quota_hard_cap(&self) -> BTreeMap<String, ProviderQuotaHardCapConfig> {
+        let data = self.inner.lock();
+        data.provider_quota_hard_cap
+            .iter()
+            .map(|(provider, value)| {
+                (
+                    provider.clone(),
+                    ProviderQuotaHardCapConfig {
+                        daily: value.daily,
+                        weekly: value.weekly,
+                        monthly: value.monthly,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub fn set_provider_quota_hard_cap(
+        &self,
+        provider: &str,
+        hard_cap: ProviderQuotaHardCapConfig,
+    ) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        let mut next = data.clone();
+        // Canonical storage invariant: all-true means "no override", so we
+        // remove the row and let readers fall back to ProviderQuotaHardCapConfig::default().
+        Self::apply_provider_quota_hard_cap(&mut next, provider, hard_cap);
+        self.persist(&next)?;
+        *data = next;
+        Ok(())
+    }
+
+    pub fn set_provider_quota_hard_cap_field(
+        &self,
+        provider: &str,
+        field: &str,
+        enabled: bool,
+    ) -> Result<ProviderQuotaHardCapConfig, String> {
+        let mut data = self.inner.lock();
+        let mut next = data.clone();
+        let mut hard_cap = next
+            .provider_quota_hard_cap
+            .get(provider)
+            .map(|v| ProviderQuotaHardCapConfig {
+                daily: v.daily,
+                weekly: v.weekly,
+                monthly: v.monthly,
+            })
+            .unwrap_or_default();
+        match field {
+            "daily" => hard_cap.daily = enabled,
+            "weekly" => hard_cap.weekly = enabled,
+            "monthly" => hard_cap.monthly = enabled,
+            _ => return Err("field must be one of: daily, weekly, monthly".to_string()),
+        }
+        Self::apply_provider_quota_hard_cap(&mut next, provider, hard_cap);
+        self.persist(&next)?;
+        *data = next;
+        Ok(hard_cap)
+    }
+
+    pub fn clear_provider_quota_hard_cap(&self, provider: &str) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        data.provider_quota_hard_cap.remove(provider);
         self.persist(&data)
     }
 
@@ -441,5 +575,135 @@ impl SecretStore {
 
     fn new_gateway_token() -> String {
         format!("ao_{}", Uuid::new_v4().simple())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProviderQuotaHardCapConfig, SecretStore};
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn quota_hard_cap_field_update_roundtrip_and_cleanup() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path.clone());
+
+        let updated = store
+            .set_provider_quota_hard_cap_field("p1", "weekly", false)
+            .expect("set weekly hard cap");
+        assert_eq!(
+            updated,
+            ProviderQuotaHardCapConfig {
+                daily: true,
+                weekly: false,
+                monthly: true,
+            }
+        );
+        assert_eq!(store.get_provider_quota_hard_cap("p1"), updated);
+
+        // Reload from disk to verify persistence.
+        let reloaded = SecretStore::new(path.clone());
+        assert_eq!(reloaded.get_provider_quota_hard_cap("p1"), updated);
+
+        // Reset to all-true; this should collapse to default (no override row).
+        let reset = reloaded
+            .set_provider_quota_hard_cap_field("p1", "weekly", true)
+            .expect("reset weekly hard cap");
+        assert_eq!(reset, ProviderQuotaHardCapConfig::default());
+        assert_eq!(
+            reloaded.get_provider_quota_hard_cap("p1"),
+            ProviderQuotaHardCapConfig::default()
+        );
+
+        let raw = std::fs::read_to_string(path).expect("read secrets");
+        assert!(
+            !raw.contains("\"provider_quota_hard_cap\": {\n    \"p1\""),
+            "all-true override should be removed from persisted file"
+        );
+    }
+
+    #[test]
+    fn quota_hard_cap_field_update_rejects_invalid_field_without_mutation() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path);
+        store
+            .set_provider_quota_hard_cap_field("p1", "daily", false)
+            .expect("seed daily=false");
+
+        let err = store
+            .set_provider_quota_hard_cap_field("p1", "bad_field", true)
+            .expect_err("invalid field should fail");
+        assert_eq!(err, "field must be one of: daily, weekly, monthly");
+        assert_eq!(
+            store.get_provider_quota_hard_cap("p1"),
+            ProviderQuotaHardCapConfig {
+                daily: false,
+                weekly: true,
+                monthly: true,
+            }
+        );
+    }
+
+    #[test]
+    fn quota_hard_cap_field_update_does_not_mutate_memory_when_persist_fails() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Use a directory path as "file" path so persist() fails consistently.
+        let store = SecretStore::new(tmp.path().to_path_buf());
+
+        let err = store
+            .set_provider_quota_hard_cap_field("p1", "daily", false)
+            .expect_err("persist should fail on directory path");
+        assert!(
+            !err.trim().is_empty(),
+            "persist failure should bubble an error"
+        );
+        assert_eq!(
+            store.get_provider_quota_hard_cap("p1"),
+            ProviderQuotaHardCapConfig::default(),
+            "in-memory state should remain unchanged when persist fails"
+        );
+    }
+
+    #[test]
+    fn quota_hard_cap_field_updates_are_atomic_under_concurrency() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = Arc::new(SecretStore::new(path));
+
+        for _ in 0..200 {
+            store
+                .set_provider_quota_hard_cap("p1", ProviderQuotaHardCapConfig::default())
+                .expect("reset to default");
+
+            let barrier = Arc::new(Barrier::new(3));
+            let s1 = Arc::clone(&store);
+            let b1 = Arc::clone(&barrier);
+            let t1 = std::thread::spawn(move || {
+                b1.wait();
+                s1.set_provider_quota_hard_cap_field("p1", "daily", false)
+                    .expect("daily=false");
+            });
+
+            let s2 = Arc::clone(&store);
+            let b2 = Arc::clone(&barrier);
+            let t2 = std::thread::spawn(move || {
+                b2.wait();
+                s2.set_provider_quota_hard_cap_field("p1", "weekly", false)
+                    .expect("weekly=false");
+            });
+
+            barrier.wait();
+            t1.join().expect("thread1");
+            t2.join().expect("thread2");
+
+            let got = store.get_provider_quota_hard_cap("p1");
+            assert!(
+                !got.daily && !got.weekly && got.monthly,
+                "concurrent field updates should merge, got: {:?}",
+                got
+            );
+        }
     }
 }
