@@ -231,6 +231,14 @@ impl RouterState {
         self.is_routable(provider)
     }
 
+    pub fn is_provider_in_cooldown(&self, provider: &str) -> bool {
+        let health = self.health.read();
+        let Some(h) = health.get(provider) else {
+            return true;
+        };
+        h.in_cooldown()
+    }
+
     pub fn should_suppress_preferred(&self, preferred: &str, cfg: &AppConfig, now_ms: u64) -> bool {
         if !cfg.routing.auto_return_to_preferred {
             return false;

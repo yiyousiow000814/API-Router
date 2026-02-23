@@ -223,6 +223,17 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                 let current_route = last_used_by_session
                     .get(&codex_id)
                     .filter(|route| cfg.providers.contains_key(route.provider.as_str()));
+                let preferred_provider = pref
+                    .as_deref()
+                    .unwrap_or(cfg.routing.preferred_provider.as_str());
+                let (display_provider, display_reason) = displayed_session_route(
+                    &state.gateway,
+                    &cfg,
+                    &codex_id,
+                    preferred_provider,
+                    v.confirmed_router,
+                    current_route,
+                );
                 let last_seen_unix_ms = v.last_request_unix_ms.max(v.last_discovered_unix_ms);
                 serde_json::json!({
                     "id": codex_id,
@@ -234,8 +245,8 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     "last_seen_unix_ms": last_seen_unix_ms,
                     "active": active,
                     "preferred_provider": pref,
-                    "current_provider": current_route.as_ref().map(|route| route.provider.clone()),
-                    "current_reason": current_route.as_ref().map(|route| route.reason.clone()),
+                    "current_provider": display_provider,
+                    "current_reason": display_reason,
                     "verified": v.confirmed_router,
                     "is_agent": v.is_agent,
                     "is_review": v.is_review
@@ -291,6 +302,31 @@ fn apply_discovered_router_confirmation(
     if !(discovered_is_agent || entry.is_agent) {
         entry.last_reported_model_provider = Some(crate::constants::GATEWAY_MODEL_PROVIDER_ID.to_string());
     }
+}
+
+fn displayed_session_route(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    cfg: &crate::orchestrator::config::AppConfig,
+    codex_session_id: &str,
+    preferred_provider: &str,
+    verified: bool,
+    current_route: Option<&crate::orchestrator::gateway::LastUsedRoute>,
+) -> (Option<String>, Option<String>) {
+    if let Some(route) = current_route {
+        // Keep status polling cheap: once we have an observed route, reuse it instead of
+        // recomputing a full routing decision for every poll.
+        return (Some(route.provider.clone()), Some(route.reason.clone()));
+    }
+    if verified {
+        let (provider, reason) = crate::orchestrator::gateway::decide_provider_for_display(
+            gateway,
+            cfg,
+            preferred_provider,
+            codex_session_id,
+        );
+        return (Some(provider), Some(reason.to_string()));
+    }
+    (None, None)
 }
 
 fn backfill_main_confirmation_from_verified_agent(
@@ -763,12 +799,22 @@ mod tests {
     use crate::commands::{
         apply_discovered_router_confirmation, backfill_main_confirmation_from_verified_agent,
         append_backup_event_daily_stats, day_start_unix_ms_from_day_key, event_query_key,
-        merge_discovered_model_provider, next_last_discovered_unix_ms, normalize_event_query_limit,
-        next_wsl_discovery_miss_count,
+        displayed_session_route, merge_discovered_model_provider, next_last_discovered_unix_ms,
+        normalize_event_query_limit, next_wsl_discovery_miss_count,
         should_keep_runtime_session,
     };
+    use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
+    use crate::orchestrator::gateway::{open_store_dir, GatewayState, LastUsedRoute};
+    use crate::orchestrator::router::RouterState;
+    use crate::orchestrator::secrets::SecretStore;
+    use crate::orchestrator::store::unix_ms;
+    use crate::orchestrator::upstream::UpstreamClient;
     use crate::orchestrator::gateway::ClientSessionRuntime;
     use chrono::TimeZone;
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
 
     #[test]
     fn discovered_provider_does_not_override_confirmed_gateway_session() {
@@ -954,6 +1000,207 @@ mod tests {
         apply_discovered_router_confirmation(&mut entry, true, true);
         assert!(entry.confirmed_router);
         assert_eq!(entry.last_reported_model_provider.as_deref(), None);
+    }
+
+    #[test]
+    fn displayed_session_route_is_side_effect_free_before_first_request() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url: "https://p1.example.com".to_string(),
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        providers.insert(
+            "p2".to_string(),
+            ProviderConfig {
+                display_name: "P2".to_string(),
+                base_url: "https://p2.example.com".to_string(),
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 30,
+                failure_threshold: 2,
+                cooldown_seconds: 30,
+                request_timeout_seconds: 300,
+            },
+            providers,
+            provider_order: vec!["p1".to_string(), "p2".to_string()],
+        };
+        let now = unix_ms();
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg.clone())),
+            router: Arc::new(RouterState::new(&cfg, now)),
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::from([(
+                "main-session".to_string(),
+                ClientSessionRuntime {
+                    codex_session_id: "main-session".to_string(),
+                    pid: 1,
+                    wt_session: Some("wt-main".to_string()),
+                    last_request_unix_ms: now,
+                    last_discovered_unix_ms: now,
+                    last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                    last_reported_model: None,
+                    last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    agent_parent_session_id: None,
+                    is_agent: false,
+                    is_review: false,
+                    confirmed_router: true,
+                },
+            )]))),
+        };
+
+        let stale_ms = now.saturating_sub(24 * 60 * 60 * 1000);
+        state
+            .store
+            .put_session_route_assignment("stale-session", "p2", stale_ms);
+
+        let (provider, reason) = displayed_session_route(
+            &state,
+            &cfg,
+            "main-session",
+            "p1",
+            true,
+            None::<&LastUsedRoute>,
+        );
+        assert_eq!(provider.as_deref(), Some("p1"));
+        assert_eq!(reason.as_deref(), Some("balanced_auto"));
+        assert!(
+            state
+                .store
+                .get_session_route_assignment("main-session")
+                .is_none(),
+            "status display should not create assignments before first routed request"
+        );
+        assert!(
+            state
+                .store
+                .get_session_route_assignment("stale-session")
+                .is_some(),
+            "status display should not trigger assignment cleanup"
+        );
+    }
+
+    #[test]
+    fn displayed_session_route_reuses_observed_route_for_verified_session() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url: "https://p1.example.com".to_string(),
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        providers.insert(
+            "p2".to_string(),
+            ProviderConfig {
+                display_name: "P2".to_string(),
+                base_url: "https://p2.example.com".to_string(),
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 30,
+                failure_threshold: 2,
+                cooldown_seconds: 30,
+                request_timeout_seconds: 300,
+            },
+            providers,
+            provider_order: vec!["p1".to_string(), "p2".to_string()],
+        };
+        let now = unix_ms();
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg.clone())),
+            router: Arc::new(RouterState::new(&cfg, now)),
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+        state.router.require_usage_confirmation("p1");
+        state
+            .store
+            .put_quota_snapshot(
+                "p1",
+                &serde_json::json!({
+                    "remaining": 100.0,
+                    "updated_at_unix_ms": now
+                }),
+            )
+            .expect("quota p1");
+
+        let observed = LastUsedRoute {
+            provider: "p2".to_string(),
+            reason: "preferred_unhealthy".to_string(),
+            preferred: "p1".to_string(),
+            unix_ms: now,
+        };
+        let (provider, reason) = displayed_session_route(
+            &state,
+            &cfg,
+            "main-session",
+            "p1",
+            true,
+            Some(&observed),
+        );
+        assert_eq!(provider.as_deref(), Some("p2"));
+        assert_eq!(reason.as_deref(), Some("preferred_unhealthy"));
+        assert!(
+            state.router.is_waiting_usage_confirmation("p1"),
+            "using observed route should not trigger display routing side effects"
+        );
     }
 
     #[test]

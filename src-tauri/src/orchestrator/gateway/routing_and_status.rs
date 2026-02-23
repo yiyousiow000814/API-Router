@@ -80,19 +80,28 @@ fn provider_is_routable_for_selection(
     cfg: &AppConfig,
     quota_snapshots: &Value,
     provider: &str,
+    clear_usage_confirmation_requirement: bool,
 ) -> bool {
     let hard_cap = st.secrets.get_provider_quota_hard_cap(provider);
-    if st.router.is_waiting_usage_confirmation(provider) {
+    let waiting_usage_confirmation = st.router.is_waiting_usage_confirmation(provider);
+    if waiting_usage_confirmation {
         if quota_snapshot_confirms_available(quota_snapshots, provider, &hard_cap) {
-            st.router.clear_usage_confirmation_requirement(provider);
+            if clear_usage_confirmation_requirement {
+                st.router.clear_usage_confirmation_requirement(provider);
+            }
         } else {
             return false;
         }
     }
+    let router_routable = if waiting_usage_confirmation && !clear_usage_confirmation_requirement {
+        !st.router.is_provider_in_cooldown(provider)
+    } else {
+        st.router.is_provider_routable(provider)
+    };
     cfg.providers
         .get(provider)
         .is_some_and(|provider_cfg| !provider_cfg.disabled)
-        && st.router.is_provider_routable(provider)
+        && router_routable
         && provider_has_remaining_quota_with_hard_cap(quota_snapshots, provider, &hard_cap)
 }
 
@@ -101,9 +110,16 @@ fn fallback_with_quota(
     cfg: &AppConfig,
     preferred: &str,
     quota_snapshots: &Value,
+    clear_usage_confirmation_requirement: bool,
 ) -> String {
     select_fallback_provider(cfg, preferred, |name| {
-        provider_is_routable_for_selection(st, cfg, quota_snapshots, name)
+        provider_is_routable_for_selection(
+            st,
+            cfg,
+            quota_snapshots,
+            name,
+            clear_usage_confirmation_requirement,
+        )
     })
 }
 
@@ -122,9 +138,18 @@ fn balanced_session_provider_score(session_key: &str, provider: &str) -> u64 {
     hash
 }
 
-const BALANCED_ASSIGNMENT_STICKY_MS: u64 = 8 * 60 * 60 * 1000;
+const BALANCED_ASSIGNMENT_STICKY_MS: u64 = 2 * 60 * 60 * 1000;
 const BALANCED_REBALANCE_MARGIN: usize = 2;
 const BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS: u64 = 15 * 60 * 1000;
+const BALANCED_CAPACITY_FLOOR_RATIO: f64 = 0.25;
+const BALANCED_CAPACITY_FIT_RANK_SCALE: f64 = 100.0;
+const BALANCED_SESSION_LOAD_WINDOW_MS: u64 = 2 * 60 * 60 * 1000;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BalancedAssignmentPersistMode {
+    Full,
+    ReadOnly,
+}
 
 #[derive(Default)]
 struct BalancedAssignmentCounts {
@@ -157,14 +182,130 @@ fn providers_share_api_key(st: &GatewayState, left: &str, right: &str) -> bool {
     }
 }
 
+fn provider_capacity_units_for_balancing(
+    quota_snapshots: &Value,
+    provider: &str,
+    hard_cap: &crate::orchestrator::secrets::ProviderQuotaHardCapConfig,
+) -> f64 {
+    let Some(snap) = quota_snapshots.get(provider) else {
+        return 1.0;
+    };
+
+    let mut budget_remaining = Vec::new();
+    for (enabled, spent, budget) in [
+        (
+            hard_cap.daily,
+            snap.get("daily_spent_usd").and_then(|v| v.as_f64()),
+            snap.get("daily_budget_usd").and_then(|v| v.as_f64()),
+        ),
+        (
+            hard_cap.weekly,
+            snap.get("weekly_spent_usd").and_then(|v| v.as_f64()),
+            snap.get("weekly_budget_usd").and_then(|v| v.as_f64()),
+        ),
+        (
+            hard_cap.monthly,
+            snap.get("monthly_spent_usd").and_then(|v| v.as_f64()),
+            snap.get("monthly_budget_usd").and_then(|v| v.as_f64()),
+        ),
+    ] {
+        if !enabled {
+            continue;
+        }
+        if let Some(budget) = budget.filter(|v| *v > 0.0) {
+            let spent = spent.unwrap_or(0.0).max(0.0);
+            budget_remaining.push((budget - spent).max(0.0));
+        }
+    }
+
+    if !budget_remaining.is_empty() {
+        let bottleneck_remaining = budget_remaining
+            .into_iter()
+            .fold(f64::INFINITY, f64::min)
+            .max(0.0);
+        return bottleneck_remaining.ln_1p().max(1.0);
+    }
+
+    if let Some(remaining) = snap.get("remaining").and_then(|v| v.as_f64()) {
+        return remaining.max(0.0).ln_1p().max(1.0);
+    }
+
+    if let (Some(used), Some(added)) = (
+        snap.get("today_used").and_then(|v| v.as_f64()),
+        snap.get("today_added").and_then(|v| v.as_f64()),
+    ) {
+        return (added - used).max(0.0).ln_1p().max(1.0);
+    }
+
+    1.0
+}
+
+fn session_demand_ratio_from_usage(request_count: u64, total_tokens: u64) -> f64 {
+    if request_count == 0 {
+        // Unknown / fresh sessions are usually lighter and should prefer smaller providers.
+        return 0.25;
+    }
+    let avg_tokens_per_request = (total_tokens as f64) / (request_count as f64);
+    let request_factor = ((request_count as f64) / 20.0).min(1.0);
+    let total_factor = ((total_tokens as f64) / 320_000.0).min(1.0);
+    let avg_factor = (avg_tokens_per_request / 16_000.0).min(1.0);
+    (0.25 + (request_factor * 0.35) + (total_factor * 0.25) + (avg_factor * 0.25)).min(1.0)
+}
+
+fn session_demand_ratio_for_balancing(st: &GatewayState, session_key: &str, now_ms: u64) -> f64 {
+    if session_key.trim().is_empty() || session_key.starts_with("peer:") {
+        return 0.25;
+    }
+    let since = now_ms.saturating_sub(BALANCED_SESSION_LOAD_WINDOW_MS);
+    let sessions = vec![session_key.to_string()];
+    let (request_count, _, _, total_tokens, _, _) = st.store.summarize_usage_requests(
+        since,
+        Some(since),
+        None,
+        &[],
+        &[],
+        &[],
+        &sessions,
+    );
+    session_demand_ratio_from_usage(request_count, total_tokens)
+}
+
+fn provider_per_request_cost_signal(
+    pricing_map: &std::collections::BTreeMap<String, crate::orchestrator::secrets::ProviderPricingConfig>,
+    provider: &str,
+) -> Option<f64> {
+    let pricing = pricing_map.get(provider)?;
+    let mode = pricing.mode.trim().to_ascii_lowercase();
+    if mode == "per_request" && pricing.amount_usd.is_finite() && pricing.amount_usd > 0.0 {
+        return Some(pricing.amount_usd);
+    }
+    if pricing
+        .gap_fill_mode
+        .as_deref()
+        .is_some_and(|gap_mode| gap_mode.trim().eq_ignore_ascii_case("per_request"))
+    {
+        return pricing
+            .gap_fill_amount_usd
+            .filter(|value| value.is_finite() && *value > 0.0);
+    }
+    None
+}
+
 fn provider_is_balanced_candidate(
     st: &GatewayState,
     cfg: &AppConfig,
     quota_snapshots: &Value,
     router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     provider: &str,
+    clear_usage_confirmation_requirement: bool,
 ) -> bool {
-    if !provider_is_routable_for_selection(st, cfg, quota_snapshots, provider) {
+    if !provider_is_routable_for_selection(
+        st,
+        cfg,
+        quota_snapshots,
+        provider,
+        clear_usage_confirmation_requirement,
+    ) {
         return false;
     }
     // Keep "single-session one provider" stable, but once provider enters explicit unhealthy
@@ -178,13 +319,15 @@ fn load_balanced_assignment_counts(
     st: &GatewayState,
     cfg: &AppConfig,
     now_ms: u64,
+    allow_cleanup: bool,
 ) -> BalancedAssignmentCounts {
     static LAST_BALANCED_ASSIGNMENT_CLEANUP_UNIX_MS: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
 
     let cutoff_unix_ms = now_ms.saturating_sub(BALANCED_ASSIGNMENT_STICKY_MS);
     let last_cleanup = LAST_BALANCED_ASSIGNMENT_CLEANUP_UNIX_MS.load(std::sync::atomic::Ordering::Relaxed);
-    if now_ms.saturating_sub(last_cleanup) >= BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS
+    if allow_cleanup
+        && now_ms.saturating_sub(last_cleanup) >= BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS
         && LAST_BALANCED_ASSIGNMENT_CLEANUP_UNIX_MS
             .compare_exchange(
                 last_cleanup,
@@ -228,6 +371,7 @@ fn load_balanced_assignment_counts(
     counts
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pick_balanced_provider(
     st: &GatewayState,
     cfg: &AppConfig,
@@ -236,16 +380,49 @@ fn pick_balanced_provider(
     assignment_counts: &BalancedAssignmentCounts,
     session_key: &str,
     preferred: &str,
+    clear_usage_confirmation_requirement: bool,
 ) -> Option<(String, usize, usize)> {
+    let now_ms = unix_ms();
     let candidates = provider_iteration_order(cfg)
         .into_iter()
         .filter(|name| {
-            provider_is_balanced_candidate(st, cfg, quota_snapshots, router_snapshot, name)
+            provider_is_balanced_candidate(
+                st,
+                cfg,
+                quota_snapshots,
+                router_snapshot,
+                name,
+                clear_usage_confirmation_requirement,
+            )
         })
         .collect::<Vec<_>>();
     if candidates.is_empty() {
         return None;
     }
+
+    let mut provider_capacity_units = HashMap::new();
+    for provider in candidates.iter() {
+        let hard_cap = st.secrets.get_provider_quota_hard_cap(provider);
+        let units =
+            provider_capacity_units_for_balancing(quota_snapshots, provider, &hard_cap).max(1.0);
+        provider_capacity_units.insert(provider.clone(), units);
+    }
+    let max_provider_capacity_units = provider_capacity_units
+        .values()
+        .copied()
+        .fold(1.0_f64, f64::max);
+    let session_demand_ratio = session_demand_ratio_for_balancing(st, session_key, now_ms);
+    let session_cost_sensitivity = 0.5 + session_demand_ratio;
+    let provider_pricing = st.secrets.list_provider_pricing();
+    let mut provider_costs: HashMap<String, f64> = HashMap::new();
+    for provider in candidates.iter() {
+        if let Some(cost) = provider_per_request_cost_signal(&provider_pricing, provider) {
+            provider_costs.insert(provider.clone(), cost);
+        }
+    }
+    let min_provider_cost = provider_costs.values().copied().fold(f64::INFINITY, f64::min);
+    let has_cost_signal = min_provider_cost.is_finite() && min_provider_cost > 0.0;
+
     candidates
         .into_iter()
         .map(|provider| {
@@ -260,11 +437,40 @@ fn pick_balanced_provider(
                 .get(&bucket)
                 .copied()
                 .unwrap_or(0);
+            let provider_capacity_ratio = provider_capacity_units
+                .get(&provider)
+                .copied()
+                .unwrap_or(1.0)
+                / max_provider_capacity_units;
+            let provider_capacity_ratio =
+                provider_capacity_ratio.max(BALANCED_CAPACITY_FLOOR_RATIO);
+            let capacity_fit_rank = ((provider_capacity_ratio - session_demand_ratio).abs()
+                * BALANCED_CAPACITY_FIT_RANK_SCALE)
+                .round() as u64;
+            let cost_pressure_rank = if has_cost_signal {
+                let provider_cost = provider_costs
+                    .get(&provider)
+                    .copied()
+                    .unwrap_or(min_provider_cost);
+                let cost_ratio = (provider_cost / min_provider_cost).max(1.0);
+                (cost_ratio.powf(session_cost_sensitivity) * 1000.0).round() as u64
+            } else {
+                1000_u64
+            };
+            let provider_pressure_rank = provider_load as u64;
+            let bucket_pressure_rank = bucket_load as u64;
             let preferred_rank = if provider == preferred { 0_u8 } else { 1_u8 };
             let hash_rank = balanced_session_provider_score(session_key, &provider);
             (
                 provider,
-                (bucket_load, preferred_rank, provider_load, hash_rank),
+                (
+                    bucket_pressure_rank,
+                    provider_pressure_rank,
+                    capacity_fit_rank,
+                    cost_pressure_rank,
+                    preferred_rank,
+                    hash_rank,
+                ),
                 provider_load,
                 bucket_load,
             )
@@ -280,16 +486,20 @@ fn pick_balanced_provider_for_verified_main_session(
     router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     session_key: &str,
     preferred: &str,
+    persist_mode: BalancedAssignmentPersistMode,
 ) -> Option<String> {
     let now_ms = unix_ms();
     let mut assignment = st.store.get_session_route_assignment(session_key);
-    let assignment_counts = load_balanced_assignment_counts(st, cfg, now_ms);
+    let persist_full = persist_mode == BalancedAssignmentPersistMode::Full;
+    let assignment_counts = load_balanced_assignment_counts(st, cfg, now_ms, persist_full);
     if assignment.as_ref().is_some_and(|row| {
         !cfg.providers
             .get(&row.provider)
             .is_some_and(|provider_cfg| !provider_cfg.disabled)
     }) {
-        st.store.delete_session_route_assignment(session_key);
+        if persist_full {
+            st.store.delete_session_route_assignment(session_key);
+        }
         assignment = None;
     }
 
@@ -299,7 +509,14 @@ fn pick_balanced_provider_for_verified_main_session(
 
     if let Some(row) = assignment.as_ref() {
         if assignment_is_fresh
-            && provider_is_balanced_candidate(st, cfg, quota_snapshots, router_snapshot, &row.provider)
+            && provider_is_balanced_candidate(
+                st,
+                cfg,
+                quota_snapshots,
+                router_snapshot,
+                &row.provider,
+                persist_full,
+            )
         {
             return Some(row.provider.clone());
         }
@@ -313,16 +530,26 @@ fn pick_balanced_provider_for_verified_main_session(
         &assignment_counts,
         session_key,
         preferred,
+        persist_full,
     );
     if let Some(row) = assignment.as_ref() {
         let current_usable =
-            provider_is_balanced_candidate(st, cfg, quota_snapshots, router_snapshot, &row.provider);
+            provider_is_balanced_candidate(
+                st,
+                cfg,
+                quota_snapshots,
+                router_snapshot,
+                &row.provider,
+                persist_full,
+            );
         if current_usable {
             if let Some((best_provider, _, best_bucket_load)) = best.as_ref() {
                 if best_provider == &row.provider || providers_share_api_key(st, &row.provider, best_provider)
                 {
-                    st.store
-                        .put_session_route_assignment(session_key, &row.provider, now_ms);
+                    if persist_full {
+                        st.store
+                            .put_session_route_assignment(session_key, &row.provider, now_ms);
+                    }
                     return Some(row.provider.clone());
                 }
                 let current_bucket_load = assignment_counts
@@ -333,8 +560,10 @@ fn pick_balanced_provider_for_verified_main_session(
                 if current_bucket_load
                     <= (*best_bucket_load).saturating_add(BALANCED_REBALANCE_MARGIN)
                 {
-                    st.store
-                        .put_session_route_assignment(session_key, &row.provider, now_ms);
+                    if persist_full {
+                        st.store
+                            .put_session_route_assignment(session_key, &row.provider, now_ms);
+                    }
                     return Some(row.provider.clone());
                 }
             } else {
@@ -344,11 +573,14 @@ fn pick_balanced_provider_for_verified_main_session(
     }
 
     let (best_provider, _, _) = best?;
-    st.store
-        .put_session_route_assignment(session_key, &best_provider, now_ms);
+    if persist_full {
+        st.store
+            .put_session_route_assignment(session_key, &best_provider, now_ms);
+    }
     Some(best_provider)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pick_balanced_provider_for_verified_session(
     st: &GatewayState,
     cfg: &AppConfig,
@@ -356,6 +588,7 @@ fn pick_balanced_provider_for_verified_session(
     router_snapshot: &HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     session_key: &str,
     preferred: &str,
+    persist_mode: BalancedAssignmentPersistMode,
     depth: u8,
 ) -> Option<String> {
     if depth > 2 || session_key.starts_with("peer:") {
@@ -406,6 +639,7 @@ fn pick_balanced_provider_for_verified_session(
             router_snapshot,
             parent_sid,
             preferred,
+            persist_mode,
             depth.saturating_add(1),
         );
     }
@@ -416,25 +650,41 @@ fn pick_balanced_provider_for_verified_session(
         router_snapshot,
         session_key,
         preferred,
+        persist_mode,
     )
 }
 
-pub(crate) fn decide_provider(
+fn decide_provider_with_balanced_mode(
     st: &GatewayState,
     cfg: &AppConfig,
     preferred: &str,
     session_key: &str,
+    balanced_persist_mode: BalancedAssignmentPersistMode,
 ) -> (String, &'static str) {
     let quota_snapshots = st.store.list_quota_snapshots();
     let now_ms = unix_ms();
+    let clear_usage_confirmation_requirement =
+        balanced_persist_mode == BalancedAssignmentPersistMode::Full;
     // Manual override wins only when the target is still routable under current
     // config/quota constraints; otherwise we fail over.
     if let Some(manual) = st.router.manual_override.read().clone() {
-        if provider_is_routable_for_selection(st, cfg, &quota_snapshots, &manual) {
+        if provider_is_routable_for_selection(
+            st,
+            cfg,
+            &quota_snapshots,
+            &manual,
+            clear_usage_confirmation_requirement,
+        ) {
             return (manual, "manual_override");
         }
         return (
-            fallback_with_quota(st, cfg, preferred, &quota_snapshots),
+            fallback_with_quota(
+                st,
+                cfg,
+                preferred,
+                &quota_snapshots,
+                clear_usage_confirmation_requirement,
+            ),
             "manual_override_unhealthy",
         );
     }
@@ -454,6 +704,7 @@ pub(crate) fn decide_provider(
             &router_snapshot,
             session_key,
             preferred,
+            balanced_persist_mode,
             0,
         ) {
             return (provider, "balanced_auto");
@@ -475,23 +726,77 @@ pub(crate) fn decide_provider(
                 .should_suppress_preferred(preferred, cfg, now_ms)
         {
             if let Some(p) = last_provider {
-                if provider_is_routable_for_selection(st, cfg, &quota_snapshots, &p) {
+                if provider_is_routable_for_selection(
+                    st,
+                    cfg,
+                    &quota_snapshots,
+                    &p,
+                    clear_usage_confirmation_requirement,
+                ) {
                     return (p, "preferred_stabilizing");
                 }
             }
             return (
-                fallback_with_quota(st, cfg, preferred, &quota_snapshots),
+                fallback_with_quota(
+                    st,
+                    cfg,
+                    preferred,
+                    &quota_snapshots,
+                    clear_usage_confirmation_requirement,
+                ),
                 "preferred_stabilizing",
             );
         }
     }
 
-    if provider_is_routable_for_selection(st, cfg, &quota_snapshots, preferred) {
+    if provider_is_routable_for_selection(
+        st,
+        cfg,
+        &quota_snapshots,
+        preferred,
+        clear_usage_confirmation_requirement,
+    ) {
         return (preferred.to_string(), "preferred_healthy");
     }
     (
-        fallback_with_quota(st, cfg, preferred, &quota_snapshots),
+        fallback_with_quota(
+            st,
+            cfg,
+            preferred,
+            &quota_snapshots,
+            clear_usage_confirmation_requirement,
+        ),
         "preferred_unhealthy",
+    )
+}
+
+pub(crate) fn decide_provider(
+    st: &GatewayState,
+    cfg: &AppConfig,
+    preferred: &str,
+    session_key: &str,
+) -> (String, &'static str) {
+    decide_provider_with_balanced_mode(
+        st,
+        cfg,
+        preferred,
+        session_key,
+        BalancedAssignmentPersistMode::Full,
+    )
+}
+
+pub(crate) fn decide_provider_for_display(
+    st: &GatewayState,
+    cfg: &AppConfig,
+    preferred: &str,
+    session_key: &str,
+) -> (String, &'static str) {
+    decide_provider_with_balanced_mode(
+        st,
+        cfg,
+        preferred,
+        session_key,
+        BalancedAssignmentPersistMode::ReadOnly,
     )
 }
 
