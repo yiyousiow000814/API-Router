@@ -122,9 +122,10 @@ fn balanced_session_provider_score(session_key: &str, provider: &str) -> u64 {
     hash
 }
 
-const BALANCED_ASSIGNMENT_STICKY_MS: u64 = 8 * 60 * 60 * 1000;
+const BALANCED_ASSIGNMENT_STICKY_MS: u64 = 2 * 60 * 60 * 1000;
 const BALANCED_REBALANCE_MARGIN: usize = 2;
 const BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS: u64 = 15 * 60 * 1000;
+const BALANCED_CAPACITY_FLOOR_RATIO: f64 = 0.25;
 
 #[derive(Default)]
 struct BalancedAssignmentCounts {
@@ -155,6 +156,64 @@ fn providers_share_api_key(st: &GatewayState, left: &str, right: &str) -> bool {
         (Some(l), Some(r)) => l == r,
         _ => false,
     }
+}
+
+fn provider_capacity_units_for_balancing(
+    quota_snapshots: &Value,
+    provider: &str,
+    hard_cap: &crate::orchestrator::secrets::ProviderQuotaHardCapConfig,
+) -> f64 {
+    let Some(snap) = quota_snapshots.get(provider) else {
+        return 1.0;
+    };
+
+    let mut budget_remaining = Vec::new();
+    for (enabled, spent, budget) in [
+        (
+            hard_cap.daily,
+            snap.get("daily_spent_usd").and_then(|v| v.as_f64()),
+            snap.get("daily_budget_usd").and_then(|v| v.as_f64()),
+        ),
+        (
+            hard_cap.weekly,
+            snap.get("weekly_spent_usd").and_then(|v| v.as_f64()),
+            snap.get("weekly_budget_usd").and_then(|v| v.as_f64()),
+        ),
+        (
+            hard_cap.monthly,
+            snap.get("monthly_spent_usd").and_then(|v| v.as_f64()),
+            snap.get("monthly_budget_usd").and_then(|v| v.as_f64()),
+        ),
+    ] {
+        if !enabled {
+            continue;
+        }
+        if let Some(budget) = budget.filter(|v| *v > 0.0) {
+            let spent = spent.unwrap_or(0.0).max(0.0);
+            budget_remaining.push((budget - spent).max(0.0));
+        }
+    }
+
+    if !budget_remaining.is_empty() {
+        let bottleneck_remaining = budget_remaining
+            .into_iter()
+            .fold(f64::INFINITY, f64::min)
+            .max(0.0);
+        return bottleneck_remaining.ln_1p().max(1.0);
+    }
+
+    if let Some(remaining) = snap.get("remaining").and_then(|v| v.as_f64()) {
+        return remaining.max(0.0).ln_1p().max(1.0);
+    }
+
+    if let (Some(used), Some(added)) = (
+        snap.get("today_used").and_then(|v| v.as_f64()),
+        snap.get("today_added").and_then(|v| v.as_f64()),
+    ) {
+        return (added - used).max(0.0).ln_1p().max(1.0);
+    }
+
+    1.0
 }
 
 fn provider_is_balanced_candidate(
@@ -246,6 +305,26 @@ fn pick_balanced_provider(
     if candidates.is_empty() {
         return None;
     }
+
+    let mut provider_capacity_units = HashMap::new();
+    let mut bucket_capacity_units: HashMap<String, f64> = HashMap::new();
+    for provider in candidates.iter() {
+        let hard_cap = st.secrets.get_provider_quota_hard_cap(provider);
+        let units =
+            provider_capacity_units_for_balancing(quota_snapshots, provider, &hard_cap).max(1.0);
+        provider_capacity_units.insert(provider.clone(), units);
+        let bucket = provider_balance_bucket(st, provider);
+        *bucket_capacity_units.entry(bucket).or_insert(0.0) += units;
+    }
+    let max_provider_capacity_units = provider_capacity_units
+        .values()
+        .copied()
+        .fold(1.0_f64, f64::max);
+    let max_bucket_capacity_units = bucket_capacity_units
+        .values()
+        .copied()
+        .fold(1.0_f64, f64::max);
+
     candidates
         .into_iter()
         .map(|provider| {
@@ -260,11 +339,34 @@ fn pick_balanced_provider(
                 .get(&bucket)
                 .copied()
                 .unwrap_or(0);
+            let provider_capacity_ratio = provider_capacity_units
+                .get(&provider)
+                .copied()
+                .unwrap_or(1.0)
+                / max_provider_capacity_units;
+            let provider_capacity_ratio =
+                provider_capacity_ratio.max(BALANCED_CAPACITY_FLOOR_RATIO);
+            let bucket_capacity_ratio = bucket_capacity_units
+                .get(&bucket)
+                .copied()
+                .unwrap_or(1.0)
+                / max_bucket_capacity_units;
+            let bucket_capacity_ratio = bucket_capacity_ratio.max(BALANCED_CAPACITY_FLOOR_RATIO);
+            let provider_pressure_rank =
+                ((((provider_load as f64) + 1.0) / provider_capacity_ratio) * 1000.0).round()
+                    as u64;
+            let bucket_pressure_rank =
+                ((((bucket_load as f64) + 1.0) / bucket_capacity_ratio) * 1000.0).round() as u64;
             let preferred_rank = if provider == preferred { 0_u8 } else { 1_u8 };
             let hash_rank = balanced_session_provider_score(session_key, &provider);
             (
                 provider,
-                (bucket_load, preferred_rank, provider_load, hash_rank),
+                (
+                    bucket_pressure_rank,
+                    provider_pressure_rank,
+                    preferred_rank,
+                    hash_rank,
+                ),
                 provider_load,
                 bucket_load,
             )
