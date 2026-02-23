@@ -179,6 +179,11 @@ export function SessionsTable({
         .filter((entry) => !entry.parentMainSessionId)
         .map((entry) => [entry.row.id, (entry.row.current_provider ?? '').trim()]),
     )
+    const mainReasonBySessionId = new Map(
+      rows
+        .filter((entry) => !entry.parentMainSessionId)
+        .map((entry) => [entry.row.id, (entry.row.current_reason ?? '').trim()]),
+    )
     const mainCodexProviderBySessionId = new Map(
       rows
         .filter((entry) => !entry.parentMainSessionId)
@@ -192,8 +197,13 @@ export function SessionsTable({
       const inheritedMainProvider = isChildRow
         ? mainProviderBySessionId.get(parentMainSessionId) ?? ''
         : ''
+      const inheritedMainReason = isChildRow
+        ? mainReasonBySessionId.get(parentMainSessionId) ?? ''
+        : ''
       const currentProviderRaw = isChildRow ? inheritedMainProvider : (s.current_provider ?? '')
       const currentProvider = currentProviderRaw.trim() || '-'
+      const currentReasonRaw = isChildRow ? inheritedMainReason : (s.current_reason ?? '')
+      const currentReason = currentReasonRaw.trim()
       const codexSession = codexSessionIdOnly(s.codex_session_id)
       const wt = s.wt_session ?? '-'
       const isAgent = s.is_agent === true
@@ -248,7 +258,7 @@ export function SessionsTable({
           <td>{fmtWhen(s.last_seen_unix_ms)}</td>
           <td className="aoSessionsMono">{codexProvider}</td>
           <td className="aoSessionsMono">{modelName}</td>
-          <td className="aoSessionsMono" title={s.current_reason ?? ''}>{currentProvider}</td>
+          <td className="aoSessionsMono" title={currentReason}>{currentProvider}</td>
           <td>
             <select
               className="aoSelect"
