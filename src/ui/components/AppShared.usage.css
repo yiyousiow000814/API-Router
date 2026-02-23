@@ -337,6 +337,24 @@
   padding-top: 15px;
 }
 
+@media (max-width: 700px) {
+  .aoProviderConfigBody {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .aoProviderLeft {
+    padding-right: 0;
+  }
+
+  .aoProviderRight {
+    border-left: 0;
+    border-top: 1px solid rgba(13, 18, 32, 0.08);
+    margin-top: 6px;
+    padding-left: 0;
+    padding-top: 12px;
+  }
+}
+
 .aoProviderHeadRow {
   display: flex;
   align-items: center;

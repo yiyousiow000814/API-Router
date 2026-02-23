@@ -60,6 +60,18 @@ export function canAutoDisableMissingHardCap(
   return nowMs >= (retryAtByKey[toMissingHardCapRetryKey(target)] ?? 0)
 }
 
+export function canStartMissingHardCapAutoDisable(
+  inFlightKeys: Set<string>,
+  retryAtByKey: Record<string, number>,
+  target: MissingHardCapToggle | null,
+  nowMs: number,
+  hasInFlightOperation = false,
+): target is MissingHardCapToggle {
+  if (!canAutoDisableMissingHardCap(retryAtByKey, target, nowMs)) return false
+  if (hasInFlightOperation) return false
+  return !inFlightKeys.has(toMissingHardCapRetryKey(target))
+}
+
 export function markMissingHardCapAutoDisableAttempt(
   retryAtByKey: Record<string, number>,
   target: MissingHardCapToggle,
@@ -125,6 +137,7 @@ export function useProviderPanelUi(params: Params) {
   } = params
   const autoDisableInFlightRef = useRef<Set<string>>(new Set())
   const autoDisableRetryAtRef = useRef<Record<string, number>>({})
+  const autoDisableAnyInFlightRef = useRef(false)
 
   const setAllProviderPanels = useCallback((open: boolean) => {
     setProviderPanelsOpen((prev) => {
@@ -183,13 +196,24 @@ export function useProviderPanelUi(params: Params) {
   useEffect(() => {
     const missingHardCap = findMissingBudgetHardCapToggleToDisable(config, status)
     const nowMs = Date.now()
-    if (!canAutoDisableMissingHardCap(autoDisableRetryAtRef.current, missingHardCap, nowMs)) return
+    if (
+      !canStartMissingHardCapAutoDisable(
+        autoDisableInFlightRef.current,
+        autoDisableRetryAtRef.current,
+        missingHardCap,
+        nowMs,
+        autoDisableAnyInFlightRef.current,
+      )
+    ) {
+      return
+    }
     const retryKey = toMissingHardCapRetryKey(missingHardCap)
-    if (autoDisableInFlightRef.current.has(retryKey)) return
     markMissingHardCapAutoDisableAttempt(autoDisableRetryAtRef.current, missingHardCap, nowMs)
+    autoDisableAnyInFlightRef.current = true
     autoDisableInFlightRef.current.add(retryKey)
     void setProviderQuotaHardCap(missingHardCap.provider, missingHardCap.period, false).finally(() => {
       autoDisableInFlightRef.current.delete(retryKey)
+      autoDisableAnyInFlightRef.current = false
     })
   }, [config, setProviderQuotaHardCap, status])
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Config, Status } from '../types'
 import {
   canAutoDisableMissingHardCap,
+  canStartMissingHardCapAutoDisable,
   findMissingBudgetHardCapToggleToDisable,
   markMissingHardCapAutoDisableAttempt,
   toMissingHardCapRetryKey,
@@ -110,5 +111,14 @@ describe('missing hard cap auto-disable retry guard', () => {
     expect(canAutoDisableMissingHardCap(retryAtByKey, second, 2_000)).toBe(true)
     expect(toMissingHardCapRetryKey(first)).toBe('p1:weekly')
     expect(toMissingHardCapRetryKey(second)).toBe('p2:daily')
+  })
+
+  it('blocks start when another auto-disable is already in flight', () => {
+    const retryAtByKey: Record<string, number> = {}
+    const inFlightKeys = new Set<string>()
+    const target = { provider: 'p1', period: 'weekly' as const }
+
+    expect(canStartMissingHardCapAutoDisable(inFlightKeys, retryAtByKey, target, 1_000, true)).toBe(false)
+    expect(canStartMissingHardCapAutoDisable(inFlightKeys, retryAtByKey, target, 1_000, false)).toBe(true)
   })
 })

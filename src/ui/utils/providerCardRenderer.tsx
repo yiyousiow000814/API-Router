@@ -25,7 +25,7 @@ type CreateProviderCardRendererOptions = {
   deleteProvider: (provider: string) => Promise<void>
   setConfig: React.Dispatch<React.SetStateAction<Config | null>>
   toggleProviderOpen: (name: string) => void
-  openUsageBaseModal: (provider: string, value?: string) => Promise<void>
+  openUsageBaseModal: (provider: string, current: string | null | undefined) => Promise<void>
   clearUsageBaseUrl: (provider: string) => Promise<void>
   setProviderQuotaHardCap: (
     provider: string,
