@@ -738,6 +738,26 @@ export default function App() {
     devStatus,
     devConfig,
   })
+  useEffect(() => {
+    if (!config) return
+    setBaselineBaseUrls((prev) => {
+      const next: Record<string, string> = { ...prev }
+      let changed = false
+      for (const [name, provider] of Object.entries(config.providers ?? {})) {
+        if (!Object.prototype.hasOwnProperty.call(next, name)) {
+          next[name] = provider.base_url
+          changed = true
+        }
+      }
+      for (const name of Object.keys(next)) {
+        if (!config.providers?.[name]) {
+          delete next[name]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [config, setBaselineBaseUrls])
   const onDevPreviewTick = useCallback(() => {
     setStatus((prev) => evolveDevStatus(prev))
   }, [])

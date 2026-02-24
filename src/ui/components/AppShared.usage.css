@@ -9,6 +9,14 @@
   border-color: rgba(255, 94, 125, 0.32);
 }
 
+.aoConfigModalBody {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding-right: 0;
+}
+
 .aoConfigSection {
   margin-top: 12px;
 }
@@ -171,6 +179,15 @@
   padding: 12px;
 }
 
+.aoConfigStickyAddProvider {
+  flex: 0 0 auto;
+  padding-bottom: 8px;
+}
+
+.aoConfigStickySub {
+  margin: 0 0 8px;
+}
+
 .aoConfigDeck {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -322,12 +339,34 @@
 .aoProviderConfigList {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
   gap: 16px;
   margin-top: 12px;
   position: relative;
   overflow-anchor: none;
+  overflow: auto;
+  padding-right: 6px;
   /* Prevent the drag overlay shadow from being clipped by the modal body. */
   padding-bottom: 48px;
+}
+
+.aoProviderConfigList::-webkit-scrollbar {
+  width: 8px;
+}
+
+.aoProviderConfigList::-webkit-scrollbar-track {
+  background: rgba(13, 18, 32, 0.06);
+  border-radius: 999px;
+}
+
+.aoProviderConfigList::-webkit-scrollbar-thumb {
+  background: rgba(13, 18, 32, 0.35);
+  border-radius: 999px;
+}
+
+.aoProviderConfigList::-webkit-scrollbar-thumb:hover {
+  background: rgba(13, 18, 32, 0.5);
 }
 
 .aoProviderConfigCard {

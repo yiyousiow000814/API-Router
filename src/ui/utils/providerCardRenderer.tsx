@@ -57,7 +57,8 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
     const groupName = (p.group ?? '').trim()
     const activeProviderCount = Object.values(options.config?.providers ?? {}).filter((provider) => !provider.disabled).length
     const canDeactivate = p.disabled || activeProviderCount > 1
-    const hasPendingChanges = p.base_url !== (options.baselineBaseUrls[name] ?? '')
+    const hasBaselineBaseUrl = Object.prototype.hasOwnProperty.call(options.baselineBaseUrls, name)
+    const hasPendingChanges = hasBaselineBaseUrl && p.base_url !== options.baselineBaseUrls[name]
     const isDragOver = options.dragOverProvider === name
     const dragStyle = overlay
       ? {

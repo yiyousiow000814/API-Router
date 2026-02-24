@@ -61,28 +61,30 @@ export function ConfigModal({
             </button>
           </div>
         </div>
-        <div className="aoModalBody">
-          <div className="aoModalSub">keys are stored in ./user-data/secrets.json</div>
-          <div className="aoCard aoConfigCard">
-            <div className="aoConfigDeck">
-              <div className="aoConfigPanel">
-                <div className="aoMiniTitle">Add provider</div>
-                <div className="aoAddProviderRow">
-                  <input
-                    className="aoInput"
-                    placeholder={nextProviderPlaceholder}
-                    value={newProviderName}
-                    onChange={(e) => setNewProviderName(e.target.value)}
-                  />
-                  <input
-                    className="aoInput"
-                    placeholder="Base URL (e.g. https://api.openai.com/v1)"
-                    value={newProviderBaseUrl}
-                    onChange={(e) => setNewProviderBaseUrl(e.target.value)}
-                  />
-                  <button className="aoBtn aoBtnPrimary" onClick={onAddProvider}>
-                    Add
-                  </button>
+        <div className="aoModalBody aoConfigModalBody">
+          <div className="aoConfigStickyAddProvider">
+            <div className="aoModalSub aoConfigStickySub">keys are stored in ./user-data/secrets.json</div>
+            <div className="aoCard aoConfigCard">
+              <div className="aoConfigDeck">
+                <div className="aoConfigPanel">
+                  <div className="aoMiniTitle">Add provider</div>
+                  <div className="aoAddProviderRow">
+                    <input
+                      className="aoInput"
+                      placeholder={nextProviderPlaceholder}
+                      value={newProviderName}
+                      onChange={(e) => setNewProviderName(e.target.value)}
+                    />
+                    <input
+                      className="aoInput"
+                      placeholder="Base URL (e.g. https://api.openai.com/v1)"
+                      value={newProviderBaseUrl}
+                      onChange={(e) => setNewProviderBaseUrl(e.target.value)}
+                    />
+                    <button className="aoBtn aoBtnPrimary" onClick={onAddProvider}>
+                      Add
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
