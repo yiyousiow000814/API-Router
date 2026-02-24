@@ -260,13 +260,28 @@ export function ProviderGroupManagerModal({
               <div className="aoGroupManagerGroupList">
                 {groupEntries.map(({ name, members }) => {
                   const visibleMembers = members.filter((provider) => !config.providers?.[provider]?.disabled)
-                  const groupRepresentative = visibleMembers[0] ?? members[0] ?? ''
-                  const representativeProvider = groupRepresentative ? config.providers?.[groupRepresentative] : undefined
-                  const representativeHardCap = representativeProvider?.quota_hard_cap ?? {
-                    daily: true,
-                    weekly: true,
-                    monthly: true,
-                  }
+                  const groupActionTarget = visibleMembers[0] ?? members[0] ?? ''
+                  const groupHardCap = QUOTA_HARD_CAP_PERIODS.reduce(
+                    (acc, period) => {
+                      acc[period] = members.every(
+                        (provider) => config.providers?.[provider]?.quota_hard_cap?.[period] ?? true,
+                      )
+                      return acc
+                    },
+                    {} as Record<QuotaHardCapField, boolean>,
+                  )
+                  const groupHardCapMixed = QUOTA_HARD_CAP_PERIODS.reduce(
+                    (acc, period) => {
+                      const enabledCount = members.reduce(
+                        (count, provider) =>
+                          count + ((config.providers?.[provider]?.quota_hard_cap?.[period] ?? true) ? 1 : 0),
+                        0,
+                      )
+                      acc[period] = enabledCount > 0 && enabledCount < members.length
+                      return acc
+                    },
+                    {} as Record<QuotaHardCapField, boolean>,
+                  )
                   const normalizedUsageBases = new Set(
                     members.map((provider) => (config.providers?.[provider]?.usage_base_url ?? '').trim()),
                   )
@@ -321,18 +336,18 @@ export function ProviderGroupManagerModal({
                         />
                         <button
                           className="aoBtn"
-                          disabled={!groupRepresentative}
+                          disabled={!groupActionTarget}
                           onClick={() => {
                             setGroupUsageBaseDrafts((prev) => ({ ...prev, [name]: '' }))
-                            void onClearUsageBase(groupRepresentative)
+                            void onClearUsageBase(groupActionTarget)
                           }}
                         >
                           Clear
                         </button>
                         <button
                           className="aoBtn aoBtnPrimary"
-                          disabled={!groupRepresentative}
-                          onClick={() => void onSetUsageBase(groupRepresentative, usageBaseDraft)}
+                          disabled={!groupActionTarget}
+                          onClick={() => void onSetUsageBase(groupActionTarget, usageBaseDraft)}
                         >
                           Save
                         </button>
@@ -344,9 +359,14 @@ export function ProviderGroupManagerModal({
                             <label key={`group-hard-cap-${name}-${period}`} className="aoUsageHardCapItem">
                               <input
                                 type="checkbox"
-                                checked={Boolean(representativeHardCap[period])}
+                                checked={Boolean(groupHardCap[period])}
+                                disabled={!groupActionTarget}
+                                ref={(input) => {
+                                  if (!input) return
+                                  input.indeterminate = groupHardCapMixed[period]
+                                }}
                                 onChange={(event) =>
-                                  void onSetHardCap(groupRepresentative, period, event.target.checked)
+                                  void onSetHardCap(groupActionTarget, period, event.target.checked)
                                 }
                               />
                               <span>{period} hard cap</span>

@@ -2,6 +2,7 @@ import type * as React from 'react'
 import type { Config, Status } from '../types'
 import { fmtWhen } from './format'
 import {
+  QUOTA_HARD_CAP_PERIODS,
   getVisibleBudgetHardCapPeriods,
   isBudgetInfoQuota,
 } from './providerBudgetWindows'
@@ -47,10 +48,11 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
     const quota = options.status?.quota?.[name]
     const hasBudgetInfo = isBudgetInfoQuota(quota)
     const visibleHardCapPeriods = getVisibleBudgetHardCapPeriods(quota)
-    const budgetHardCapLabel = visibleHardCapPeriods.join('/')
-    const showHardCapToggles = hasBudgetInfo && visibleHardCapPeriods.length > 0
+    const showBudgetWindows = hasBudgetInfo && visibleHardCapPeriods.length > 0
+    const hardCapPeriods = showBudgetWindows ? visibleHardCapPeriods : [...QUOTA_HARD_CAP_PERIODS]
+    const budgetHardCapLabel = hardCapPeriods.join('/')
     const allVisibleHardCapsDisabled =
-      showHardCapToggles && visibleHardCapPeriods.every((key) => !quotaHardCap[key])
+      hardCapPeriods.length > 0 && hardCapPeriods.every((key) => !quotaHardCap[key])
     const hardCapWarningText = allVisibleHardCapsDisabled
       ? 'All shown hard caps are off, so budget limits will not auto-close this provider.'
       : null
@@ -253,26 +255,24 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                           Usage Base
                         </button>
                       </div>
-                      {showHardCapToggles ? (
-                        <div className="aoUsageHardCapInline">
-                          {visibleHardCapPeriods.map((period) => (
-                            <label key={period} className="aoUsageHardCapItem">
-                              <input
-                                type="checkbox"
-                                checked={quotaHardCap[period]}
-                                onChange={(event) => void options.setProviderQuotaHardCap(name, period, event.target.checked)}
-                              />
-                              <span>{period} hard cap</span>
-                            </label>
-                          ))}
-                        </div>
-                      ) : null}
+                      <div className="aoUsageHardCapInline">
+                        {hardCapPeriods.map((period) => (
+                          <label key={period} className="aoUsageHardCapItem">
+                            <input
+                              type="checkbox"
+                              checked={quotaHardCap[period]}
+                              onChange={(event) => void options.setProviderQuotaHardCap(name, period, event.target.checked)}
+                            />
+                            <span>{period} hard cap</span>
+                          </label>
+                        ))}
+                      </div>
                     </div>
                     <div className="aoHint">Usage base sets the usage endpoint. If empty, we use the provider base URL.</div>
-                    {showHardCapToggles ? (
+                    {showBudgetWindows ? (
                       <div className="aoHint">Hard cap auto-closes this provider when {budgetHardCapLabel} budget is exhausted.</div>
                     ) : (
-                      <div className="aoHint">No budget windows detected for this provider, so hard cap toggles are hidden.</div>
+                      <div className="aoHint">Budget windows not detected yet. Hard cap toggles are still saved and will apply once usage windows appear.</div>
                     )}
                     {hardCapWarningText ? (
                       <div className="aoHint" style={{ color: 'rgba(145, 12, 43, 0.92)' }}>

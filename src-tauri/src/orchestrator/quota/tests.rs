@@ -130,6 +130,23 @@ mod tests {
         assert!(bases.contains(&"http://codex.example.com".to_string()));
     }
 
+    #[tokio::test]
+    async fn candidate_quota_bases_keeps_explicit_first_and_appends_fallbacks() {
+        let p = ProviderConfig {
+            display_name: "P".to_string(),
+            base_url: "http://codex-api.example.com/v1".to_string(),
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: Some("https://explicit.example.com/".to_string()),
+            api_key: String::new(),
+        };
+        let bases = candidate_quota_bases(&p);
+        assert_eq!(bases.first().map(String::as_str), Some("https://explicit.example.com"));
+        assert!(bases.contains(&"http://codex-api.example.com".to_string()));
+        assert!(bases.contains(&"http://codex.example.com".to_string()));
+    }
+
     #[test]
     fn usage_request_key_normalizes_bases_order() {
         let bases_a = vec![

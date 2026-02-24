@@ -1,7 +1,6 @@
 import { useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { UseProviderActionsParams } from './types'
-import { inferGroupUsageBase, resolveGroupUsageBaseAction } from '../../utils/groupUsageBase'
 
 type ProviderCrudActions = Pick<
   UseProviderActionsParams,
@@ -64,27 +63,6 @@ export function useProviderCrudActions({
       const normalizedProviders = providers.map((name) => name.trim()).filter(Boolean)
       if (!normalizedProviders.length) return
       const normalizedGroup = group && group.trim() ? group.trim() : null
-      const previousGroupByProvider = new Map<string, string | null>(
-        normalizedProviders.map((name) => [name, (config?.providers?.[name]?.group ?? '').trim() || null]),
-      )
-      const existingGroupMembers =
-        normalizedGroup && config
-          ? Object.keys(config.providers ?? {}).filter(
-              (name) => (config.providers?.[name]?.group ?? '').trim() === normalizedGroup,
-            )
-          : []
-      const usageBaseTargets =
-        normalizedGroup != null
-          ? [...new Set([...existingGroupMembers, ...normalizedProviders])]
-          : normalizedProviders
-      const previousUsageBaseByProvider = new Map<string, string | null>(
-        usageBaseTargets.map((name) => [name, (config?.providers?.[name]?.usage_base_url ?? '').trim() || null]),
-      )
-      const inferredUsageBase = normalizedGroup ? inferGroupUsageBase(config, usageBaseTargets) : null
-      const usageBaseAction =
-        normalizedGroup != null
-          ? resolveGroupUsageBaseAction(config, usageBaseTargets, inferredUsageBase)
-          : { mode: 'noop' as const, value: null }
       if (isDevPreview) {
         setConfig((prev) => {
           if (!prev) return prev
@@ -92,102 +70,30 @@ export function useProviderCrudActions({
           normalizedProviders.forEach((name) => {
             const current = nextProviders[name]
             if (!current) return
-            const nextUsageBase =
-              usageBaseAction.mode === 'set'
-                ? usageBaseAction.value
-                : usageBaseAction.mode === 'clear'
-                  ? null
-                  : current.usage_base_url ?? null
             nextProviders[name] = {
               ...current,
               group: normalizedGroup,
-              usage_base_url: nextUsageBase,
             }
           })
-          if (normalizedGroup != null) {
-            usageBaseTargets.forEach((name) => {
-              const current = nextProviders[name]
-              if (!current) return
-              const nextUsageBase =
-                usageBaseAction.mode === 'set'
-                  ? usageBaseAction.value
-                  : usageBaseAction.mode === 'clear'
-                    ? null
-                    : current.usage_base_url ?? null
-              nextProviders[name] = {
-                ...current,
-                usage_base_url: nextUsageBase,
-              }
-            })
-          }
           return { ...prev, providers: nextProviders }
         })
-        flashToast(
-          usageBaseAction.mode === 'set'
-            ? `[TEST] Group updated (${usageBaseTargets.length}), usage base auto-set`
-            : usageBaseAction.mode === 'clear'
-              ? `[TEST] Group updated (${usageBaseTargets.length}), mixed usage base cleared`
-              : `[TEST] Group updated (${normalizedProviders.length})`,
-        )
+        flashToast(`[TEST] Group updated (${normalizedProviders.length})`)
         return
       }
       try {
-        let opError: unknown = null
-        let rollbackError: unknown = null
-        const usageBaseAppliedProviders: string[] = []
         await invoke('set_providers_group', { providers: normalizedProviders, group: normalizedGroup })
-        try {
-          if (usageBaseAction.mode === 'set' && usageBaseAction.value) {
-            for (const provider of usageBaseTargets) {
-              await invoke('set_usage_base_url', { provider, url: usageBaseAction.value })
-              usageBaseAppliedProviders.push(provider)
-            }
-          } else if (usageBaseAction.mode === 'clear') {
-            for (const provider of usageBaseTargets) {
-              await invoke('clear_usage_base_url', { provider })
-              usageBaseAppliedProviders.push(provider)
-            }
-          }
-          flashToast(
-            normalizedGroup
-              ? usageBaseAction.mode === 'set'
-                ? `Group updated: ${normalizedGroup} (${usageBaseTargets.length} providers), usage base auto-set`
-                : usageBaseAction.mode === 'clear'
-                  ? `Group updated: ${normalizedGroup} (${usageBaseTargets.length} providers), mixed usage base cleared`
-                  : `Group updated: ${normalizedGroup} (${normalizedProviders.length} providers)`
-              : `Group cleared: ${normalizedProviders.length} providers`,
-          )
-        } catch (e) {
-          opError = e
-          try {
-            for (const name of normalizedProviders) {
-              const previousGroup = previousGroupByProvider.get(name) ?? null
-              await invoke('set_provider_group', { name, group: previousGroup })
-            }
-            for (const name of usageBaseAppliedProviders) {
-              const previousUsageBase = previousUsageBaseByProvider.get(name) ?? null
-              if (previousUsageBase) {
-                await invoke('set_usage_base_url', { provider: name, url: previousUsageBase })
-              } else {
-                await invoke('clear_usage_base_url', { provider: name })
-              }
-            }
-          } catch (rollbackErr) {
-            rollbackError = rollbackErr
-          }
-        } finally {
-          await refreshConfig()
-        }
-        if (rollbackError) {
-          throw new Error(`${String(opError)} | rollback failed: ${String(rollbackError)}`)
-        }
-        if (opError) throw opError
+        flashToast(
+          normalizedGroup
+            ? `Group updated: ${normalizedGroup} (${normalizedProviders.length} providers)`
+            : `Group cleared: ${normalizedProviders.length} providers`,
+        )
+        await refreshConfig()
       } catch (e) {
         flashToast(String(e), 'error')
         throw e
       }
     },
-    [config, flashToast, isDevPreview, refreshConfig, setConfig],
+    [flashToast, isDevPreview, refreshConfig, setConfig],
   )
 
   const saveProvider = useCallback(
