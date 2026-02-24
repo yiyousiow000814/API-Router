@@ -25,7 +25,7 @@ export function buildUsageProviderFilterDisplayOptions(
   orderedProviders.forEach((provider) => {
     const normalizedGroup = (options?.providerGroupName?.(provider) ?? '').trim()
     if (normalizedGroup) {
-      const groupKey = `group:${normalizedGroup.toLowerCase()}`
+      const groupKey = `group:${normalizedGroup}`
       const existing = grouped.get(groupKey)
       if (existing) {
         if (!existing.providers.includes(provider)) existing.providers.push(provider)
@@ -254,21 +254,13 @@ export function buildUsageProviderDisplayGroups(
     const pricingSources = Array.from(
       new Set(group.rows.map((row) => String(row.pricing_source ?? '').trim()).filter(Boolean)),
     )
-    const apiKeyRefs = Array.from(
-      new Set(
-        group.rows
-          .map((row) => String(row.api_key_ref ?? '').trim())
-          .filter((value) => value.length > 0 && value !== '-'),
-      ),
-    ).sort((a, b) => a.localeCompare(b))
-    const apiKeyDetailLabel = apiKeyRefs.length ? apiKeyRefs.join(' / ') : '-'
     const groupId = `${group.providers.join('|')}::${group.apiKeyRef || '-'}`
     return {
       id: groupId,
       providers: group.providers,
       rows: group.rows,
       displayName: group.groupName ?? (group.providers.length > 1 ? group.providers.join(' / ') : group.displayName),
-      detailLabel: apiKeyDetailLabel,
+      detailLabel: group.providers.join(' / '),
       requests,
       totalTokens,
       tokensPerRequest: requests > 0 ? totalTokens / requests : null,

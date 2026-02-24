@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildUsageRequestsQueryKey,
+  pickUsageRequestGraphBaseRows,
   resolveRequestPageCached,
   resolveRequestTableSummary,
   resolveSummaryFetchWindow,
@@ -155,5 +156,52 @@ describe('buildUsageRequestsQueryKey', () => {
         sessions: [],
       }),
     )
+  })
+})
+
+describe('pickUsageRequestGraphBaseRows', () => {
+  const makeRows = (provider: string) =>
+    [
+      {
+        provider,
+        api_key_ref: '-',
+        model: 'm',
+        origin: 'o',
+        session_id: 's',
+        unix_ms: 1,
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    ] as const
+
+  it('keeps requests tab anchored to current request rows before canonical cache', () => {
+    const requestRows = makeRows('request_provider')
+    const canonicalRows = makeRows('canonical_provider')
+    const picked = pickUsageRequestGraphBaseRows({
+      isRequestsTab: true,
+      requestRows: [...requestRows],
+      scopedPageRows: [],
+      canonicalPageRows: [...canonicalRows],
+      cachedGraphRows: [],
+      fallbackRows: [],
+    })
+    expect(picked[0]?.provider).toBe('request_provider')
+  })
+
+  it('allows analytics tab to keep canonical cache precedence', () => {
+    const requestRows = makeRows('request_provider')
+    const canonicalRows = makeRows('canonical_provider')
+    const picked = pickUsageRequestGraphBaseRows({
+      isRequestsTab: false,
+      requestRows: [...requestRows],
+      scopedPageRows: [],
+      canonicalPageRows: [...canonicalRows],
+      cachedGraphRows: [],
+      fallbackRows: [],
+    })
+    expect(picked[0]?.provider).toBe('canonical_provider')
   })
 })

@@ -592,26 +592,10 @@ pub(crate) fn set_provider_group(
     name: String,
     group: Option<String>,
 ) -> Result<(), String> {
-    let normalized_group = group.and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    });
-    {
-        let mut cfg = state.gateway.cfg.write();
-        let provider = cfg
-            .providers
-            .get_mut(&name)
-            .ok_or_else(|| format!("unknown provider: {name}"))?;
-        if provider.group == normalized_group {
-            return Ok(());
-        }
-        provider.group = normalized_group.clone();
+    let (changed, normalized_group) = set_provider_group_impl(&state, name.clone(), group)?;
+    if !changed {
+        return Ok(());
     }
-    persist_config(&state).map_err(|e| e.to_string())?;
     state.gateway.store.add_event(
         &name,
         "info",
@@ -631,6 +615,37 @@ fn normalize_provider_group(group: Option<String>) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
+}
+
+fn set_provider_group_impl(
+    state: &app_state::AppState,
+    name: String,
+    group: Option<String>,
+) -> Result<(bool, Option<String>), String> {
+    let normalized_group = normalize_provider_group(group);
+    let previous_group = {
+        let mut cfg = state.gateway.cfg.write();
+        let provider = cfg
+            .providers
+            .get_mut(&name)
+            .ok_or_else(|| format!("unknown provider: {name}"))?;
+        if provider.group == normalized_group {
+            return Ok((false, normalized_group));
+        }
+        let previous = provider.group.clone();
+        provider.group = normalized_group.clone();
+        previous
+    };
+
+    if let Err(error) = persist_config_for_app_state(state) {
+        let mut cfg = state.gateway.cfg.write();
+        if let Some(provider) = cfg.providers.get_mut(&name) {
+            provider.group = previous_group;
+        }
+        return Err(error.to_string());
+    }
+
+    Ok((true, normalized_group))
 }
 
 fn set_providers_group_impl(
@@ -999,7 +1014,7 @@ pub(crate) fn clear_provider_key(
 mod provider_management_tests {
     use super::{
         clear_session_preferred_provider_impl, next_preferred_after_delete, set_manual_override_impl,
-        rename_observed_session_routes_provider_refs, set_route_mode_impl,
+        rename_observed_session_routes_provider_refs, set_provider_group_impl, set_route_mode_impl,
         set_providers_group_impl, set_session_preferred_provider_impl,
     };
     use crate::app_state::AppState;
@@ -1185,6 +1200,51 @@ mod provider_management_tests {
                 .get_session_route_assignment("s1")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn set_provider_group_rolls_back_when_persist_fails() {
+        let (_tmp, mut state) = build_test_state();
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.providers
+                .get_mut("provider_1")
+                .expect("provider_1")
+                .group = Some("alpha".to_string());
+        }
+        let bad_path = state
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("persist-fail-dir");
+        std::fs::create_dir_all(&bad_path).expect("create bad path");
+        state.config_path = bad_path;
+
+        let result = set_provider_group_impl(
+            &state,
+            "provider_1".to_string(),
+            Some("new_group".to_string()),
+        );
+        assert!(result.is_err());
+
+        let cfg = state.gateway.cfg.read();
+        assert_eq!(
+            cfg.providers
+                .get("provider_1")
+                .and_then(|provider| provider.group.as_deref()),
+            Some("alpha")
+        );
+    }
+
+    #[test]
+    fn set_provider_group_validates_unknown_provider_before_mutation() {
+        let (_tmp, state) = build_test_state();
+        let result = set_provider_group_impl(
+            &state,
+            "missing_provider".to_string(),
+            Some("new_group".to_string()),
+        );
+        assert!(result.is_err());
     }
 
     #[test]

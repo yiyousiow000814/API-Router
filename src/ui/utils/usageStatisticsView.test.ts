@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { buildUsageProviderDisplayGroups, orderUsageProvidersByConfig } from './usageStatisticsView'
+import {
+  buildUsageProviderDisplayGroups,
+  buildUsageProviderFilterDisplayOptions,
+  orderUsageProvidersByConfig,
+} from './usageStatisticsView'
 
 function makeRow(provider: string, apiKeyRef: string) {
   return {
@@ -69,5 +73,17 @@ describe('buildUsageProviderDisplayGroups', () => {
     expect(groups[0].displayName).toBe('team-alpha')
     expect(groups[0].detailLabel).toBe('provider_a / provider_b')
     expect(groups[0].requests).toBe(2)
+  })
+})
+
+describe('buildUsageProviderFilterDisplayOptions', () => {
+  it('keeps case-distinct group names as separate filter options', () => {
+    const options = buildUsageProviderFilterDisplayOptions(['provider_a', 'provider_b'], {
+      providerGroupName: (provider) => (provider === 'provider_a' ? 'TeamA' : 'teama'),
+    })
+
+    expect(options.map((option) => option.label)).toEqual(['TeamA', 'teama'])
+    expect(options[0].providers).toEqual(['provider_a'])
+    expect(options[1].providers).toEqual(['provider_b'])
   })
 })

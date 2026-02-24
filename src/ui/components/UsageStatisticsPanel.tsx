@@ -500,6 +500,35 @@ export function resolveRequestPageCached(input: {
   return input.cached ?? input.canonicalCached ?? input.lastNonEmpty
 }
 
+export function pickUsageRequestGraphBaseRows(input: {
+  isRequestsTab: boolean
+  requestRows: UsageRequestEntry[]
+  scopedPageRows: UsageRequestEntry[]
+  canonicalPageRows: UsageRequestEntry[]
+  cachedGraphRows: UsageRequestEntry[]
+  fallbackRows: UsageRequestEntry[]
+}): UsageRequestEntry[] {
+  const preferred = input.isRequestsTab
+    ? [
+        input.requestRows,
+        input.scopedPageRows,
+        input.cachedGraphRows,
+        input.fallbackRows,
+        input.canonicalPageRows,
+      ]
+    : [
+        input.canonicalPageRows,
+        input.scopedPageRows,
+        input.cachedGraphRows,
+        input.requestRows,
+        input.fallbackRows,
+      ]
+  for (const rows of preferred) {
+    if (rows.length > 0) return rows
+  }
+  return EMPTY_USAGE_REQUEST_ROWS
+}
+
 export function resolveSummaryFetchWindow(input: {
   requestFetchFromUnixMs: number | null
   hasExplicitRequestFilters: boolean
@@ -1679,16 +1708,19 @@ export function UsageStatisticsPanel({
         usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
           ? usageRequestsPageCache.rows
           : EMPTY_USAGE_REQUEST_ROWS
-      const baseRows =
-        canonicalPageRows.length
-          ? canonicalPageRows
-          : cachedGraph?.baseRows?.length
-            ? cachedGraph.baseRows
-            : usageRequestRows.length
-              ? usageRequestRows
-              : usageRequestTestFallbackEnabled
-                ? usageRequestTestRows
-                : EMPTY_USAGE_REQUEST_ROWS
+      const scopedPageRows =
+        usageRequestsPageCache != null && usageRequestsPageCache.queryKey === requestQueryKey
+          ? usageRequestsPageCache.rows
+          : EMPTY_USAGE_REQUEST_ROWS
+      const fallbackRows = usageRequestTestFallbackEnabled ? usageRequestTestRows : EMPTY_USAGE_REQUEST_ROWS
+      const baseRows = pickUsageRequestGraphBaseRows({
+        isRequestsTab,
+        requestRows: usageRequestRows,
+        scopedPageRows,
+        canonicalPageRows,
+        cachedGraphRows: cachedGraph?.baseRows ?? EMPTY_USAGE_REQUEST_ROWS,
+        fallbackRows,
+      })
       if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
 
       if (usageRequestTestFallbackEnabled && baseRows === usageRequestTestRows && usageRequestTestRows.length > 0) {
@@ -1827,6 +1859,8 @@ export function UsageStatisticsPanel({
       }
     }
   }, [
+    isRequestsTab,
+    requestQueryKey,
     requestGraphQueryKey,
     usageRequestAnalyticsProviderHints,
     usageRequestDailyProviderHints,
