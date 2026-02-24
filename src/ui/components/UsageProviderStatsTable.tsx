@@ -16,6 +16,61 @@ type Props = {
   usageProviderTotalsAndAverages: UsageProviderTotalsAndAverages | null
 }
 
+export type UsageProviderDetailRow = {
+  apiKeyRef: string
+  rowKeys: string[]
+  requests: number
+  totalTokens: number
+  estimatedDaily: number | null
+  totalUsed: number | null
+  pricingSources: Set<string>
+}
+
+export function buildUsageProviderDetailRows(
+  groupRows: UsageProviderRow[],
+  usageProviderRowKey: (row: UsageProviderRow) => string,
+): UsageProviderDetailRow[] {
+  const asFinite = (value: number | null | undefined): number | null => {
+    if (value == null || !Number.isFinite(value)) return null
+    return Number(value)
+  }
+  const detailRows = new Map<string, UsageProviderDetailRow>()
+  groupRows.forEach((row) => {
+    const apiKeyRef = String(row.api_key_ref ?? '').trim() || '-'
+    const key = apiKeyRef
+    const rowKey = usageProviderRowKey(row)
+    const existing = detailRows.get(key)
+    const rowRequests = row.requests ?? 0
+    const rowTokens = row.total_tokens ?? 0
+    const rowEstimatedDaily = asFinite(row.estimated_daily_cost_usd)
+    const rowTotalUsed = asFinite(row.total_used_cost_usd)
+    const rowPricingSource = String(row.pricing_source ?? '').trim()
+    if (existing) {
+      existing.rowKeys.push(rowKey)
+      existing.requests += rowRequests
+      existing.totalTokens += rowTokens
+      if (rowEstimatedDaily != null) {
+        existing.estimatedDaily = (existing.estimatedDaily ?? 0) + rowEstimatedDaily
+      }
+      if (rowTotalUsed != null) {
+        existing.totalUsed = (existing.totalUsed ?? 0) + rowTotalUsed
+      }
+      if (rowPricingSource) existing.pricingSources.add(rowPricingSource)
+      return
+    }
+    detailRows.set(key, {
+      apiKeyRef,
+      rowKeys: [rowKey],
+      requests: rowRequests,
+      totalTokens: rowTokens,
+      estimatedDaily: rowEstimatedDaily,
+      totalUsed: rowTotalUsed,
+      pricingSources: rowPricingSource ? new Set([rowPricingSource]) : new Set<string>(),
+    })
+  })
+  return [...detailRows.values()]
+}
+
 export function UsageProviderStatsTable({
   usageProviderDisplayGroups,
   usageProviderShowDetails,
@@ -25,11 +80,6 @@ export function UsageProviderStatsTable({
   formatPricingSource,
   usageProviderTotalsAndAverages,
 }: Props) {
-  const asFinite = (value: number | null | undefined): number | null => {
-    if (value == null || !Number.isFinite(value)) return null
-    return Number(value)
-  }
-
   return (
     <table className="aoUsageProviderTable">
       <colgroup>
@@ -86,53 +136,7 @@ export function UsageProviderStatsTable({
               </td>
             </tr>,
             ...(() => {
-              const detailRows = new Map<
-                string,
-                {
-                  apiKeyRef: string
-                  rowKeys: string[]
-                  requests: number
-                  totalTokens: number
-                  estimatedDaily: number | null
-                  totalUsed: number | null
-                  pricingSources: Set<string>
-                }
-              >()
-              group.rows.forEach((row) => {
-                const apiKeyRef = String(row.api_key_ref ?? '').trim() || '-'
-                const key = apiKeyRef.toLowerCase()
-                const rowKey = usageProviderRowKey(row)
-                const existing = detailRows.get(key)
-                const rowRequests = row.requests ?? 0
-                const rowTokens = row.total_tokens ?? 0
-                const rowEstimatedDaily = asFinite(row.estimated_daily_cost_usd)
-                const rowTotalUsed = asFinite(row.total_used_cost_usd)
-                const rowPricingSource = String(row.pricing_source ?? '').trim()
-                if (existing) {
-                  existing.rowKeys.push(rowKey)
-                  existing.requests += rowRequests
-                  existing.totalTokens += rowTokens
-                  if (rowEstimatedDaily != null) {
-                    existing.estimatedDaily = (existing.estimatedDaily ?? 0) + rowEstimatedDaily
-                  }
-                  if (rowTotalUsed != null) {
-                    existing.totalUsed = (existing.totalUsed ?? 0) + rowTotalUsed
-                  }
-                  if (rowPricingSource) existing.pricingSources.add(rowPricingSource)
-                  return
-                }
-                detailRows.set(key, {
-                  apiKeyRef,
-                  rowKeys: [rowKey],
-                  requests: rowRequests,
-                  totalTokens: rowTokens,
-                  estimatedDaily: rowEstimatedDaily,
-                  totalUsed: rowTotalUsed,
-                  pricingSources: rowPricingSource ? new Set([rowPricingSource]) : new Set<string>(),
-                })
-              })
-
-              return [...detailRows.values()].map((row) => {
+              return buildUsageProviderDetailRows(group.rows, usageProviderRowKey).map((row) => {
                 const rowHasAnomaly = row.rowKeys.some((rowKey) => usageAnomaliesHighCostRowKeys.has(rowKey))
                 const rowTokPerReq =
                   row.requests > 0 && row.totalTokens > 0 ? row.totalTokens / row.requests : null

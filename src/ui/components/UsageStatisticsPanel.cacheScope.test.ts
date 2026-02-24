@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildUsageRequestsQueryKey,
+  filterUsageRequestRowsByProviderIds,
+  normalizeUsageRequestProviderFilter,
   pickUsageRequestGraphBaseRows,
   resolveRequestPageCached,
   resolveRequestTableSummary,
@@ -203,5 +205,46 @@ describe('pickUsageRequestGraphBaseRows', () => {
       fallbackRows: [],
     })
     expect(picked[0]?.provider).toBe('canonical_provider')
+  })
+})
+
+describe('provider filter helpers', () => {
+  it('keeps raw provider ids without display-name remapping', () => {
+    const picked = normalizeUsageRequestProviderFilter(['Alpha', 'alpha', 'Alpha', '  '])
+    expect(picked).toEqual(['Alpha', 'alpha'])
+  })
+
+  it('filters rows by raw provider ids only', () => {
+    const rows = [
+      {
+        provider: 'groupA-provider-1',
+        api_key_ref: '-',
+        model: 'm',
+        origin: 'o',
+        session_id: 's1',
+        unix_ms: 1,
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      {
+        provider: 'groupA-provider-2',
+        api_key_ref: '-',
+        model: 'm',
+        origin: 'o',
+        session_id: 's2',
+        unix_ms: 2,
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    ] as const
+    const filtered = filterUsageRequestRowsByProviderIds(rows as any, ['groupA-provider-1'])
+    expect(filtered).toHaveLength(1)
+    expect(filtered[0].provider).toBe('groupA-provider-1')
   })
 })

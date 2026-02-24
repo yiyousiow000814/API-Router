@@ -529,6 +529,22 @@ export function pickUsageRequestGraphBaseRows(input: {
   return EMPTY_USAGE_REQUEST_ROWS
 }
 
+export function normalizeUsageRequestProviderFilter(
+  providers: string[] | null,
+): string[] | null {
+  if (!providers || providers.length === 0) return null
+  return [...new Set(providers.map((provider) => provider.trim()).filter(Boolean))]
+}
+
+export function filterUsageRequestRowsByProviderIds(
+  rows: UsageRequestEntry[],
+  selectedProviders: string[] | null,
+): UsageRequestEntry[] {
+  if (!selectedProviders || selectedProviders.length === 0) return rows
+  const providerSet = new Set(selectedProviders)
+  return rows.filter((row) => providerSet.has(String(row.provider ?? '').trim()))
+}
+
 export function resolveSummaryFetchWindow(input: {
   requestFetchFromUnixMs: number | null
   hasExplicitRequestFilters: boolean
@@ -1136,19 +1152,14 @@ export function UsageStatisticsPanel({
     [providerGroupMaps.displayNameByProvider],
   )
   const usageRequestDailyProviderHints = useMemo(
-    () => {
-      const mapped = listUsageRequestDailyProviderHints(usageRequestDailyTotalsProviders).map((provider) =>
-        resolveRequestProviderName(provider),
-      )
-      return [...new Set(mapped)]
-    },
-    [resolveRequestProviderName, usageRequestDailyTotalsProviders, usageRequestsCachePrimedTick],
+    () => normalizeUsageRequestProviderFilter(listUsageRequestDailyProviderHints(usageRequestDailyTotalsProviders)) ?? [],
+    [usageRequestDailyTotalsProviders, usageRequestsCachePrimedTick],
   )
   const usageRequestAnalyticsProviderHints = useMemo(() => {
     const out: string[] = []
     for (const row of usageByProvider) {
       const provider = String(row?.provider ?? '').trim()
-      if (provider.length > 0) out.push(resolveRequestProviderName(provider))
+      if (provider.length > 0) out.push(provider)
     }
     const configuredProviders =
       config && typeof config === 'object' && config.providers && typeof config.providers === 'object'
@@ -1156,10 +1167,10 @@ export function UsageStatisticsPanel({
         : []
     for (const provider of configuredProviders) {
       const key = String(provider ?? '').trim()
-      if (key.length > 0) out.push(resolveRequestProviderName(key))
+      if (key.length > 0) out.push(key)
     }
-    return [...new Set(out)]
-  }, [config, resolveRequestProviderName, usageByProvider])
+    return normalizeUsageRequestProviderFilter(out) ?? []
+  }, [config, usageByProvider])
   const verifiedSessionIdSet = useMemo(() => {
     const ids = new Set<string>()
     for (const session of clientSessions ?? []) {
@@ -1227,10 +1238,10 @@ export function UsageStatisticsPanel({
     [useGlobalRequestFilters, usageFilterOrigins],
   )
   const requestFetchSessions: string[] | null = null
-  const graphScopedProviderFilter = useMemo(() => {
-    if (!requestFetchProviders || requestFetchProviders.length === 0) return null
-    return [...new Set(requestFetchProviders.map((provider) => resolveRequestProviderName(provider)).filter(Boolean))]
-  }, [requestFetchProviders, resolveRequestProviderName])
+  const graphScopedProviderFilter = useMemo(
+    () => normalizeUsageRequestProviderFilter(requestFetchProviders),
+    [requestFetchProviders],
+  )
   const hasExplicitTimeFilter = usageRequestTimeFilter.trim().length > 0
   const selectedRequestTimeFilterDay = useMemo(
     () => parseDateInputToDayStart(usageRequestTimeFilter),
@@ -2027,8 +2038,8 @@ export function UsageStatisticsPanel({
     const expectedGraphProviders = pickUsageRequestDisplayProviders({
       selectedProviders: graphScopedProviderFilter,
       graphProviders: [
-        ...listTopUsageProvidersFromRows(graphBaseCandidate, resolveRequestProviderName),
-        ...Object.keys(cachedGraph?.rowsByProvider ?? {}).map((provider) => resolveRequestProviderName(provider)),
+        ...listTopUsageProvidersFromRows(graphBaseCandidate),
+        ...Object.keys(cachedGraph?.rowsByProvider ?? {}),
       ],
       dailyProviders: usageRequestDailyProviderHints,
       analyticsProviders: usageRequestAnalyticsProviderHints,
@@ -2091,7 +2102,6 @@ export function UsageStatisticsPanel({
     usageRequestDailyProviderHints,
     graphScopedProviderFilter,
     usageRequestAnalyticsProviderHints,
-    resolveRequestProviderName,
     refreshUsageRequestGraphRows,
     refreshUsageRequests,
     usageRequestRows.length,
@@ -2270,16 +2280,9 @@ export function UsageStatisticsPanel({
   const graphRowsForVerifiedSessions = useMemo(() => {
     if (!shouldPrepareRequestsData) return EMPTY_USAGE_REQUEST_ROWS
     if (!graphBaseRowsForVerifiedSessions.length) return EMPTY_USAGE_REQUEST_ROWS
-    if (!selectedRequestGraphProviders || selectedRequestGraphProviders.length === 0) {
-      return graphBaseRowsForVerifiedSessions
-    }
-    const providerSet = new Set(selectedRequestGraphProviders)
-    return graphBaseRowsForVerifiedSessions.filter((row) =>
-      providerSet.has(resolveRequestProviderName(row.provider)),
-    )
+    return filterUsageRequestRowsByProviderIds(graphBaseRowsForVerifiedSessions, selectedRequestGraphProviders)
   }, [
     graphBaseRowsForVerifiedSessions,
-    resolveRequestProviderName,
     selectedRequestGraphProviders,
     shouldPrepareRequestsData,
   ])

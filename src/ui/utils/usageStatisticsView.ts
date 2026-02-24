@@ -39,8 +39,8 @@ export function buildUsageProviderFilterDisplayOptions(
       return
     }
 
-    grouped.set(`provider:${provider.toLowerCase()}`, {
-      id: `provider:${provider.toLowerCase()}`,
+    grouped.set(`provider:${provider}`, {
+      id: `provider:${provider}`,
       label: options?.providerDisplayName?.(provider) ?? provider,
       providers: [provider],
     })

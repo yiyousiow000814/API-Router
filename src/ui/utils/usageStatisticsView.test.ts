@@ -86,4 +86,11 @@ describe('buildUsageProviderFilterDisplayOptions', () => {
     expect(options[0].providers).toEqual(['provider_a'])
     expect(options[1].providers).toEqual(['provider_b'])
   })
+
+  it('does not merge case-distinct provider ids when ungrouped', () => {
+    const options = buildUsageProviderFilterDisplayOptions(['ProviderA', 'providera'])
+    expect(options).toHaveLength(2)
+    expect(new Set(options.map((option) => option.id))).toEqual(new Set(['provider:ProviderA', 'provider:providera']))
+    expect(new Set(options.flatMap((option) => option.providers))).toEqual(new Set(['ProviderA', 'providera']))
+  })
 })
