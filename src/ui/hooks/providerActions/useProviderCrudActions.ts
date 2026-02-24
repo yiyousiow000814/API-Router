@@ -64,6 +64,9 @@ export function useProviderCrudActions({
       const normalizedProviders = providers.map((name) => name.trim()).filter(Boolean)
       if (!normalizedProviders.length) return
       const normalizedGroup = group && group.trim() ? group.trim() : null
+      const previousGroupByProvider = new Map<string, string | null>(
+        normalizedProviders.map((name) => [name, (config?.providers?.[name]?.group ?? '').trim() || null]),
+      )
       const existingGroupMembers =
         normalizedGroup && config
           ? Object.keys(config.providers ?? {}).filter(
@@ -74,6 +77,9 @@ export function useProviderCrudActions({
         normalizedGroup != null
           ? [...new Set([...existingGroupMembers, ...normalizedProviders])]
           : normalizedProviders
+      const previousUsageBaseByProvider = new Map<string, string | null>(
+        usageBaseTargets.map((name) => [name, (config?.providers?.[name]?.usage_base_url ?? '').trim() || null]),
+      )
       const inferredUsageBase = normalizedGroup ? inferGroupUsageBase(config, usageBaseTargets) : null
       const usageBaseAction =
         normalizedGroup != null
@@ -127,15 +133,19 @@ export function useProviderCrudActions({
       }
       try {
         let opError: unknown = null
+        let rollbackError: unknown = null
+        const usageBaseAppliedProviders: string[] = []
         await invoke('set_providers_group', { providers: normalizedProviders, group: normalizedGroup })
         try {
           if (usageBaseAction.mode === 'set' && usageBaseAction.value) {
             for (const provider of usageBaseTargets) {
               await invoke('set_usage_base_url', { provider, url: usageBaseAction.value })
+              usageBaseAppliedProviders.push(provider)
             }
           } else if (usageBaseAction.mode === 'clear') {
             for (const provider of usageBaseTargets) {
               await invoke('clear_usage_base_url', { provider })
+              usageBaseAppliedProviders.push(provider)
             }
           }
           flashToast(
@@ -149,8 +159,27 @@ export function useProviderCrudActions({
           )
         } catch (e) {
           opError = e
+          try {
+            for (const name of normalizedProviders) {
+              const previousGroup = previousGroupByProvider.get(name) ?? null
+              await invoke('set_provider_group', { name, group: previousGroup })
+            }
+            for (const name of usageBaseAppliedProviders) {
+              const previousUsageBase = previousUsageBaseByProvider.get(name) ?? null
+              if (previousUsageBase) {
+                await invoke('set_usage_base_url', { provider: name, url: previousUsageBase })
+              } else {
+                await invoke('clear_usage_base_url', { provider: name })
+              }
+            }
+          } catch (rollbackErr) {
+            rollbackError = rollbackErr
+          }
         } finally {
           await refreshConfig()
+        }
+        if (rollbackError) {
+          throw new Error(`${String(opError)} | rollback failed: ${String(rollbackError)}`)
         }
         if (opError) throw opError
       } catch (e) {

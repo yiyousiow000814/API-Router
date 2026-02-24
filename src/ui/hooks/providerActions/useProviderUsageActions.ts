@@ -1,4 +1,4 @@
-import { useCallback, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useMemo, type Dispatch, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { UseProviderActionsParams } from './types'
 import type { Config } from '../../types'
@@ -103,7 +103,7 @@ export function useProviderUsageActions({
   refreshConfig,
   flashToast,
 }: ProviderUsageActions) {
-  const providerGroupMaps = buildProviderGroupMaps(config)
+  const providerGroupMaps = useMemo(() => buildProviderGroupMaps(config), [config])
   const providersForTarget = useCallback(
     (provider: string): string[] => providerGroupMaps.membersByProvider[provider] ?? [provider],
     [providerGroupMaps.membersByProvider],
