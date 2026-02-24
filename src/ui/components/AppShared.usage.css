@@ -22,16 +22,22 @@
 .aoProviderGroupTag {
   display: inline-flex;
   align-items: center;
-  height: 20px;
-  padding: 0 8px;
+  height: 22px;
+  padding: 0 9px;
   border-radius: 999px;
-  border: 1px solid rgba(var(--ao-accent-rgb), 0.42);
-  background: rgba(var(--ao-accent-rgb), 0.1);
-  color: rgba(13, 18, 32, 0.82);
-  font-size: 11px;
+  border: 1px solid rgba(13, 18, 32, 0.2);
+  background: rgba(13, 18, 32, 0.08);
+  color: rgba(13, 18, 32, 0.78);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 10px;
+  line-height: 1;
   font-weight: 700;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .aoProviderNameRow {
