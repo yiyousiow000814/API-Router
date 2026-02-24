@@ -160,7 +160,8 @@ export function ProviderGroupManagerModal({
             <div className="aoCard aoGroupManagerCard">
               <div className="aoMiniTitle">Assign Providers</div>
               <div className="aoHint">Select providers, then assign one group name in batch.</div>
-              <div className="aoGroupManagerAssignMode">
+              <div className="aoGroupManagerAssignMode" data-mode={assignMode}>
+                <span className="aoGroupManagerAssignModeSlider" aria-hidden="true" />
                 <button
                   className={`aoGroupManagerAssignModeBtn${assignMode === 'new' ? ' is-active' : ''}`}
                   onClick={() => setAssignMode('new')}
