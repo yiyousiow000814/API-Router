@@ -126,28 +126,36 @@ export function useProviderCrudActions({
         return
       }
       try {
+        let opError: unknown = null
         await invoke('set_providers_group', { providers: normalizedProviders, group: normalizedGroup })
-        if (usageBaseAction.mode === 'set' && usageBaseAction.value) {
-          for (const provider of usageBaseTargets) {
-            await invoke('set_usage_base_url', { provider, url: usageBaseAction.value })
+        try {
+          if (usageBaseAction.mode === 'set' && usageBaseAction.value) {
+            for (const provider of usageBaseTargets) {
+              await invoke('set_usage_base_url', { provider, url: usageBaseAction.value })
+            }
+          } else if (usageBaseAction.mode === 'clear') {
+            for (const provider of usageBaseTargets) {
+              await invoke('clear_usage_base_url', { provider })
+            }
           }
-        } else if (usageBaseAction.mode === 'clear') {
-          for (const provider of usageBaseTargets) {
-            await invoke('clear_usage_base_url', { provider })
-          }
+          flashToast(
+            normalizedGroup
+              ? usageBaseAction.mode === 'set'
+                ? `Group updated: ${normalizedGroup} (${usageBaseTargets.length} providers), usage base auto-set`
+                : usageBaseAction.mode === 'clear'
+                  ? `Group updated: ${normalizedGroup} (${usageBaseTargets.length} providers), mixed usage base cleared`
+                  : `Group updated: ${normalizedGroup} (${normalizedProviders.length} providers)`
+              : `Group cleared: ${normalizedProviders.length} providers`,
+          )
+        } catch (e) {
+          opError = e
+        } finally {
+          await refreshConfig()
         }
-        flashToast(
-          normalizedGroup
-            ? usageBaseAction.mode === 'set'
-              ? `Group updated: ${normalizedGroup} (${usageBaseTargets.length} providers), usage base auto-set`
-              : usageBaseAction.mode === 'clear'
-                ? `Group updated: ${normalizedGroup} (${usageBaseTargets.length} providers), mixed usage base cleared`
-                : `Group updated: ${normalizedGroup} (${normalizedProviders.length} providers)`
-            : `Group cleared: ${normalizedProviders.length} providers`,
-        )
-        await refreshConfig()
+        if (opError) throw opError
       } catch (e) {
         flashToast(String(e), 'error')
+        throw e
       }
     },
     [config, flashToast, isDevPreview, refreshConfig, setConfig],

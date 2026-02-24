@@ -199,9 +199,13 @@ export function ProviderGroupManagerModal({
                   className="aoBtn aoBtnPrimary"
                   disabled={!canApplyAssign}
                   onClick={async () => {
-                    await onAssignGroup(selectedProviders, selectedGroupName || null)
-                    setSelectedProviders([])
-                    if (assignMode === 'new') setGroupDraft('')
+                    try {
+                      await onAssignGroup(selectedProviders, selectedGroupName || null)
+                      setSelectedProviders([])
+                      if (assignMode === 'new') setGroupDraft('')
+                    } catch {
+                      // Keep current selection/input so users can retry after fixing the error.
+                    }
                   }}
                 >
                   Apply
@@ -271,7 +275,7 @@ export function ProviderGroupManagerModal({
                                   className="aoGroupManagerMemberRemove"
                                   title={`Remove ${provider} from group`}
                                   aria-label={`Remove ${provider} from group`}
-                                  onClick={() => void onAssignGroup([provider], null)}
+                                  onClick={() => void onAssignGroup([provider], null).catch(() => undefined)}
                                 >
                                   ×
                                 </button>
@@ -336,9 +340,13 @@ export function ProviderGroupManagerModal({
                           className="aoBtn aoBtnDangerSoft"
                           disabled={members.length === 0}
                           onClick={async () => {
-                            await onAssignGroup(members, null)
-                            if (editingGroupName === name) {
-                              setEditingGroupName(null)
+                            try {
+                              await onAssignGroup(members, null)
+                              if (editingGroupName === name) {
+                                setEditingGroupName(null)
+                              }
+                            } catch {
+                              // Keep editing state unchanged on failure.
                             }
                           }}
                         >

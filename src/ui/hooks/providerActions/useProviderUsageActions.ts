@@ -151,13 +151,22 @@ export function useProviderUsageActions({
       if (!provider) return
       const targetProviders = providersForTarget(provider)
       const shouldSetUsageBase = Boolean(url)
-      for (const target of targetProviders) {
-        if (shouldSetUsageBase) {
-          await invoke('set_usage_base_url', { provider: target, url })
-        } else {
-          await invoke('clear_usage_base_url', { provider: target })
+      let opError: unknown = null
+      try {
+        for (const target of targetProviders) {
+          if (shouldSetUsageBase) {
+            await invoke('set_usage_base_url', { provider: target, url })
+          } else {
+            await invoke('clear_usage_base_url', { provider: target })
+          }
         }
+      } catch (e) {
+        opError = e
+      } finally {
+        await refreshConfig()
+        await refreshStatus()
       }
+      if (opError) throw opError
       const scopeLabel = providerScopeLabel(provider)
       flashToast(
         shouldSetUsageBase
@@ -168,8 +177,6 @@ export function useProviderUsageActions({
             ? `Usage base cleared: ${scopeLabel} (${targetProviders.length} providers)`
             : `Usage base cleared: ${scopeLabel}`,
       )
-      await refreshConfig()
-      await refreshStatus()
     },
     [flashToast, providerScopeLabel, providersForTarget, refreshConfig, refreshStatus],
   )
@@ -212,6 +219,7 @@ export function useProviderUsageActions({
   const clearUsageBaseUrl = useCallback(
     async (name: string) => {
       const targetProviders = providersForTarget(name)
+      let opError: unknown = null
       try {
         for (const provider of targetProviders) {
           await invoke('clear_usage_base_url', { provider })
@@ -222,11 +230,13 @@ export function useProviderUsageActions({
             ? `Usage base cleared: ${scopeLabel} (${targetProviders.length} providers)`
             : `Usage base cleared: ${scopeLabel}`,
         )
+      } catch (e) {
+        opError = e
+      } finally {
         await refreshConfig()
         await refreshStatus()
-      } catch (e) {
-        flashToast(String(e), 'error')
       }
+      if (opError) flashToast(String(opError), 'error')
     },
     [flashToast, providerScopeLabel, providersForTarget, refreshConfig, refreshStatus],
   )
