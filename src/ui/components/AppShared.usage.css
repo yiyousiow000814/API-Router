@@ -492,7 +492,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding-top: 15px;
+  padding-top: 6px;
 }
 
 .aoProviderLeft {
@@ -503,7 +503,7 @@
   align-self: stretch;
   border-left: 1px solid rgba(13, 18, 32, 0.08);
   padding-left: 16px;
-  padding-top: 15px;
+  padding-top: 6px;
 }
 
 @media (max-width: 700px) {
@@ -538,6 +538,26 @@
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 6px;
+}
+
+.aoProviderConfigCollapsed .aoProviderConfigBody {
+  align-items: center;
+}
+
+.aoProviderConfigCollapsed .aoProviderField {
+  padding-top: 0;
+}
+
+.aoProviderConfigCollapsed .aoProviderHeadRow {
+  margin-bottom: 0;
+}
+
+.aoProviderConfigCollapsed .aoProviderRight {
+  justify-content: center;
+}
+
+.aoProviderConfigCollapsed .aoProviderRight > .aoHint {
+  display: none;
 }
 
 .aoProviderHeadActions {

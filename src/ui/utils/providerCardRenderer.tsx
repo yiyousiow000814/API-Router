@@ -222,7 +222,9 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
           </div>
           <div className="aoProviderField aoProviderRight">
             <div className="aoUsageControlsHeader">
-              <div className="aoMiniLabel">Usage controls</div>
+              <div className="aoMiniLabel">
+                {options.isProviderOpen(name) ? 'Usage controls' : 'Usage controls (Show for details)'}
+              </div>
               <button className="aoTinyBtn aoToggleBtn" onClick={() => options.toggleProviderOpen(name)}>
                 {options.isProviderOpen(name) ? 'Hide' : 'Show'}
               </button>
