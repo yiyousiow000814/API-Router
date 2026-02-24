@@ -10,6 +10,7 @@ describe('KeyModal', () => {
         provider="provider_1"
         value=""
         loading
+        loadFailed={false}
         onChange={() => {}}
         onCancel={() => {}}
         onSave={() => {}}

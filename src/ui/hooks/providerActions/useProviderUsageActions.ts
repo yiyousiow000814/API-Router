@@ -152,6 +152,11 @@ export function useProviderUsageActions({
       const targetProviders = providersForTarget(provider)
       const shouldSetUsageBase = Boolean(url)
       let opError: unknown = null
+      let rollbackError: unknown = null
+      const appliedProviders: string[] = []
+      const previousUsageBaseByProvider = new Map<string, string | null>(
+        targetProviders.map((target) => [target, (config?.providers?.[target]?.usage_base_url ?? '').trim() || null]),
+      )
       try {
         for (const target of targetProviders) {
           if (shouldSetUsageBase) {
@@ -159,12 +164,28 @@ export function useProviderUsageActions({
           } else {
             await invoke('clear_usage_base_url', { provider: target })
           }
+          appliedProviders.push(target)
         }
       } catch (e) {
         opError = e
+        try {
+          for (const target of appliedProviders) {
+            const previousUsageBase = previousUsageBaseByProvider.get(target) ?? null
+            if (previousUsageBase) {
+              await invoke('set_usage_base_url', { provider: target, url: previousUsageBase })
+            } else {
+              await invoke('clear_usage_base_url', { provider: target })
+            }
+          }
+        } catch (rollbackErr) {
+          rollbackError = rollbackErr
+        }
       } finally {
         await refreshConfig()
         await refreshStatus()
+      }
+      if (rollbackError) {
+        throw new Error(`${String(opError)} | rollback failed: ${String(rollbackError)}`)
       }
       if (opError) throw opError
       const scopeLabel = providerScopeLabel(provider)
@@ -178,7 +199,7 @@ export function useProviderUsageActions({
             : `Usage base cleared: ${scopeLabel}`,
       )
     },
-    [flashToast, providerScopeLabel, providersForTarget, refreshConfig, refreshStatus],
+    [config, flashToast, providerScopeLabel, providersForTarget, refreshConfig, refreshStatus],
   )
 
   const setUsageBaseUrl = useCallback(
@@ -218,27 +239,13 @@ export function useProviderUsageActions({
 
   const clearUsageBaseUrl = useCallback(
     async (name: string) => {
-      const targetProviders = providersForTarget(name)
-      let opError: unknown = null
       try {
-        for (const provider of targetProviders) {
-          await invoke('clear_usage_base_url', { provider })
-        }
-        const scopeLabel = providerScopeLabel(name)
-        flashToast(
-          targetProviders.length > 1
-            ? `Usage base cleared: ${scopeLabel} (${targetProviders.length} providers)`
-            : `Usage base cleared: ${scopeLabel}`,
-        )
+        await applyUsageBaseUrl(name, '')
       } catch (e) {
-        opError = e
-      } finally {
-        await refreshConfig()
-        await refreshStatus()
+        flashToast(String(e), 'error')
       }
-      if (opError) flashToast(String(opError), 'error')
     },
-    [flashToast, providerScopeLabel, providersForTarget, refreshConfig, refreshStatus],
+    [applyUsageBaseUrl, flashToast],
   )
 
   const setProviderQuotaHardCap = useCallback(
@@ -267,6 +274,12 @@ export function useProviderUsageActions({
         flashToast(`Hard cap updated [TEST]: ${scopeLabel}.${field} (${targets.length} providers)`)
         return
       }
+      let opError: unknown = null
+      let rollbackError: unknown = null
+      const appliedTargets: string[] = []
+      const previousEnabledByProvider = new Map<string, boolean>(
+        targets.map((target) => [target, config?.providers?.[target]?.quota_hard_cap?.[field] ?? true]),
+      )
       try {
         for (const target of targets) {
           await invoke('set_provider_quota_hard_cap_field', {
@@ -274,15 +287,55 @@ export function useProviderUsageActions({
             field,
             enabled,
           })
+          appliedTargets.push(target)
         }
         flashToast(`Hard cap updated: ${scopeLabel}.${field} (${targets.length} providers)`)
       } catch (e) {
-        flashToast(String(e), 'error')
+        opError = e
+        setConfig((prev) => {
+          let next = prev
+          for (const target of targets) {
+            next = applyProviderQuotaHardCapLocalPatch(
+              next,
+              target,
+              field,
+              previousEnabledByProvider.get(target) ?? true,
+            )
+          }
+          return next
+        })
+        try {
+          for (const target of appliedTargets) {
+            await invoke('set_provider_quota_hard_cap_field', {
+              provider: target,
+              field,
+              enabled: previousEnabledByProvider.get(target) ?? true,
+            })
+          }
+        } catch (rollbackErr) {
+          rollbackError = rollbackErr
+        }
       }
       await refreshConfig()
       await refreshStatus()
+      if (rollbackError) {
+        flashToast(`${String(opError)} | rollback failed: ${String(rollbackError)}`, 'error')
+        return
+      }
+      if (opError) {
+        flashToast(String(opError), 'error')
+      }
     },
-    [flashToast, isDevPreview, providerScopeLabel, providersForTarget, refreshConfig, refreshStatus, setConfig],
+    [
+      config,
+      flashToast,
+      isDevPreview,
+      providerScopeLabel,
+      providersForTarget,
+      refreshConfig,
+      refreshStatus,
+      setConfig,
+    ],
   )
 
   const openUsageBaseModal = useCallback(

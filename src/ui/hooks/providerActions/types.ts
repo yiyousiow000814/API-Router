@@ -6,6 +6,7 @@ export type KeyModalState = {
   provider: string
   value: string
   loading: boolean
+  loadFailed: boolean
 }
 
 export type UsageBaseModalState = {

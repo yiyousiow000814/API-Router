@@ -380,8 +380,9 @@ export function AppModals(props: Props) {
         provider={keyModal.provider}
         value={keyModal.value}
         loading={keyModal.loading}
+        loadFailed={keyModal.loadFailed}
         onChange={(value) => setKeyModal((m) => ({ ...m, value }))}
-        onCancel={() => setKeyModal({ open: false, provider: '', value: '', loading: false })}
+        onCancel={() => setKeyModal({ open: false, provider: '', value: '', loading: false, loadFailed: false })}
         onSave={() => void saveKey()}
       />
 
