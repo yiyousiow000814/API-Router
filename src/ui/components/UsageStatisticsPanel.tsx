@@ -18,6 +18,10 @@ import { UsageStatsFiltersBar } from './UsageStatsFiltersBar'
 import { useUsageHistoryScrollbar } from '../hooks/useUsageHistoryScrollbar'
 import { isNearBottom } from '../utils/scroll'
 import { buildProviderGroupMaps, resolveProviderDisplayName } from '../utils/providerGroups'
+import {
+  buildUsageProviderFilterDisplayOptions,
+  type UsageProviderFilterDisplayOption,
+} from '../utils/usageStatisticsView'
 
 type UsageSummary = UsageStatistics['summary']
 type UsageProviderRow = UsageSummary['by_provider'][number]
@@ -741,7 +745,8 @@ type Props = {
   usageFilterProviders: string[]
   setUsageFilterProviders: (providers: string[]) => void
   usageProviderFilterOptions: string[]
-  toggleUsageProviderFilter: (providerName: string) => void
+  usageProviderFilterDisplayOptions: UsageProviderFilterDisplayOption[]
+  toggleUsageProviderFilterDisplayOption: (providers: string[]) => void
   usageFilterModels: string[]
   setUsageFilterModels: (models: string[]) => void
   usageModelFilterOptions: string[]
@@ -813,7 +818,8 @@ export function UsageStatisticsPanel({
   usageFilterProviders,
   setUsageFilterProviders,
   usageProviderFilterOptions,
-  toggleUsageProviderFilter,
+  usageProviderFilterDisplayOptions,
+  toggleUsageProviderFilterDisplayOption,
   usageFilterModels,
   setUsageFilterModels,
   usageModelFilterOptions,
@@ -942,10 +948,14 @@ export function UsageStatisticsPanel({
   const usageRequestDefaultTodayAutoPageRef = useRef(false)
   const usageRequestsPagePrefetchInFlightRef = useRef(false)
   const usageRequestsPagePrefetchAtRef = useRef(0)
-  const usageRequestTestFallbackEnabled = useMemo(() => readTestFlagFromLocation() || import.meta.env.DEV, [])
+  const usageRequestForceSyntheticProviders = useMemo(() => readTestFlagFromLocation(), [])
+  const usageRequestTestFallbackEnabled = useMemo(
+    () => usageRequestForceSyntheticProviders || import.meta.env.DEV,
+    [usageRequestForceSyntheticProviders],
+  )
   const usageRequestTestRows = useMemo(
-    () => buildUsageRequestTestRows(usageStatistics, usageWindowHours, usageRequestTestFallbackEnabled),
-    [usageRequestTestFallbackEnabled, usageStatistics, usageWindowHours],
+    () => buildUsageRequestTestRows(usageStatistics, usageWindowHours, usageRequestForceSyntheticProviders),
+    [usageRequestForceSyntheticProviders, usageStatistics, usageWindowHours],
   )
   const useGlobalRequestFilters = showFilters
   const requestFetchProviders = useMemo(
@@ -2191,6 +2201,17 @@ export function UsageStatisticsPanel({
       session: [...sessions].sort((a, b) => a.localeCompare(b)),
     }
   }, [timeScopedUsageRequestRows])
+  const usageRequestProviderFilterDisplayOptions = useMemo(
+    () =>
+      buildUsageProviderFilterDisplayOptions(usageRequestFilterOptions.provider, {
+        providerDisplayName: (provider) => resolveRequestProviderName(provider),
+        providerGroupName: (provider) => {
+          const group = String(config?.providers?.[provider]?.group ?? '').trim()
+          return group || null
+        },
+      }),
+    [config?.providers, resolveRequestProviderName, usageRequestFilterOptions.provider],
+  )
   useEffect(() => {
     if (!isRequestsTab) return
     setUsageRequestMultiFilters((prev) => ({
@@ -2437,8 +2458,8 @@ export function UsageStatisticsPanel({
             usageStatisticsLoading={usageStatisticsLoading}
             usageFilterProviders={usageFilterProviders}
             setUsageFilterProviders={setUsageFilterProviders}
-            usageProviderFilterOptions={usageProviderFilterOptions}
-            toggleUsageProviderFilter={toggleUsageProviderFilter}
+            usageProviderFilterDisplayOptions={usageProviderFilterDisplayOptions}
+            toggleUsageProviderFilterDisplayOption={toggleUsageProviderFilterDisplayOption}
             usageFilterModels={usageFilterModels}
             setUsageFilterModels={setUsageFilterModels}
             usageModelFilterOptions={usageModelFilterOptions}
@@ -2873,18 +2894,90 @@ export function UsageStatisticsPanel({
                     <div className="aoUsageReqFilterOptions">
                       {(() => {
                         const key = activeUsageRequestFilterMenu.key as UsageRequestMultiFilterKey
+                        const providerOptions = usageRequestFilterOptions.provider
+                        if (key === 'provider') {
+                          const searchNeedle = usageRequestFilterSearch.provider.toLowerCase()
+                          const visibleOptions = usageRequestProviderFilterDisplayOptions
+                            .filter((option) => {
+                              if (option.label.toLowerCase().includes(searchNeedle)) return true
+                              return option.providers.some((provider) =>
+                                provider.toLowerCase().includes(searchNeedle),
+                              )
+                            })
+                            .slice(0, 40)
+                          const selectedSet = new Set(usageRequestMultiFilters.provider ?? providerOptions)
+                          const allVisibleSelected =
+                            visibleOptions.length > 0 &&
+                            visibleOptions.every((option) =>
+                              option.providers.every((provider) => selectedSet.has(provider)),
+                            )
+                          return (
+                            <>
+                              <label className="aoUsageReqFilterOptionBtn aoUsageReqFilterOptionSelectAll">
+                                <input
+                                  type="checkbox"
+                                  checked={allVisibleSelected}
+                                  onChange={(event) =>
+                                    setUsageRequestMultiFilters((prev) => {
+                                      const current = new Set(prev.provider ?? providerOptions)
+                                      visibleOptions.forEach((option) => {
+                                        option.providers.forEach((provider) => {
+                                          if (event.target.checked) current.add(provider)
+                                          else current.delete(provider)
+                                        })
+                                      })
+                                      const next = [...current]
+                                      return {
+                                        ...prev,
+                                        provider: next.length >= providerOptions.length ? null : next,
+                                      }
+                                    })
+                                  }
+                                />
+                                <span>(Select All)</span>
+                              </label>
+                              {visibleOptions.map((option) => {
+                                const checked =
+                                  option.providers.length > 0 &&
+                                  option.providers.every((provider) => selectedSet.has(provider))
+                                return (
+                                  <label
+                                    key={`filter-option-provider-${option.id}`}
+                                    className="aoUsageReqFilterOptionBtn"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={(event) =>
+                                        setUsageRequestMultiFilters((prev) => {
+                                          const current = new Set(prev.provider ?? providerOptions)
+                                          option.providers.forEach((provider) => {
+                                            if (event.target.checked) current.add(provider)
+                                            else current.delete(provider)
+                                          })
+                                          const next = [...current]
+                                          return {
+                                            ...prev,
+                                            provider: next.length >= providerOptions.length ? null : next,
+                                          }
+                                        })
+                                      }
+                                    />
+                                    <span>{option.label}</span>
+                                  </label>
+                                )
+                              })}
+                            </>
+                          )
+                        }
                         const options =
-                          activeUsageRequestFilterMenu.key === 'provider'
-                            ? usageRequestFilterOptions.provider
-                            : activeUsageRequestFilterMenu.key === 'model'
+                          activeUsageRequestFilterMenu.key === 'model'
                               ? usageRequestFilterOptions.model
                               : activeUsageRequestFilterMenu.key === 'origin'
                                 ? usageRequestFilterOptions.origin
                                 : usageRequestFilterOptions.session
                         const searchNeedle = (
-                          activeUsageRequestFilterMenu.key === 'provider'
-                            ? usageRequestFilterSearch.provider
-                            : activeUsageRequestFilterMenu.key === 'model'
+                          activeUsageRequestFilterMenu.key === 'model'
                               ? usageRequestFilterSearch.model
                               : activeUsageRequestFilterMenu.key === 'origin'
                                 ? usageRequestFilterSearch.origin

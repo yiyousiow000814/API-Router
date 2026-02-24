@@ -81,20 +81,17 @@ export function ProviderGroupManagerModal({
       const focusGroup = (config.providers?.[focusProvider]?.group ?? '').trim()
       if (focusGroup) {
         setSelectedProviders([])
-        setAssignMode('add')
         setTargetExistingGroup(focusGroup)
         setGroupDraft('')
-        setEditingGroupName(focusGroup)
+        setEditingGroupName(null)
       } else {
         setSelectedProviders([focusProvider])
-        setAssignMode('new')
         setTargetExistingGroup(groupNames[0] ?? '')
         setGroupDraft('')
         setEditingGroupName(null)
       }
     } else {
       setSelectedProviders([])
-      setAssignMode('new')
       setTargetExistingGroup(groupNames[0] ?? '')
       setGroupDraft('')
       setEditingGroupName(null)

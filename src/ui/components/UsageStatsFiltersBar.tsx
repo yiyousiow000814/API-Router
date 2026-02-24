@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import type { UsageProviderFilterDisplayOption } from '../utils/usageStatisticsView'
 
 type Props = {
   usageWindowHours: number
@@ -6,8 +7,8 @@ type Props = {
   usageStatisticsLoading: boolean
   usageFilterProviders: string[]
   setUsageFilterProviders: (providers: string[]) => void
-  usageProviderFilterOptions: string[]
-  toggleUsageProviderFilter: (providerName: string) => void
+  usageProviderFilterDisplayOptions: UsageProviderFilterDisplayOption[]
+  toggleUsageProviderFilterDisplayOption: (providers: string[]) => void
   usageFilterModels: string[]
   setUsageFilterModels: (models: string[]) => void
   usageModelFilterOptions: string[]
@@ -25,8 +26,8 @@ export function UsageStatsFiltersBar({
   usageStatisticsLoading,
   usageFilterProviders,
   setUsageFilterProviders,
-  usageProviderFilterOptions,
-  toggleUsageProviderFilter,
+  usageProviderFilterDisplayOptions,
+  toggleUsageProviderFilterDisplayOption,
   usageFilterModels,
   setUsageFilterModels,
   usageModelFilterOptions,
@@ -124,14 +125,19 @@ export function UsageStatsFiltersBar({
             >
               All providers
             </button>
-            {usageProviderFilterOptions.map((providerName) => (
+            {usageProviderFilterDisplayOptions.map((option) => (
               <button
-                key={providerName}
-                className={`aoUsageFilterChip${usageFilterProviders.includes(providerName) ? ' is-active' : ''}`}
+                key={option.id}
+                className={`aoUsageFilterChip${
+                  option.providers.length > 0 &&
+                  option.providers.every((providerName) => usageFilterProviders.includes(providerName))
+                    ? ' is-active'
+                    : ''
+                }`}
                 disabled={usageStatisticsLoading}
-                onClick={() => toggleUsageProviderFilter(providerName)}
+                onClick={() => toggleUsageProviderFilterDisplayOption(option.providers)}
               >
-                {providerName}
+                {option.label}
               </button>
             ))}
           </div>
