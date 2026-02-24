@@ -673,24 +673,17 @@ fn set_providers_group_impl(
         return Ok((Vec::new(), normalized_group));
     }
 
-    {
-        let cfg = state.gateway.cfg.read();
-        for name in &deduped_providers {
-            if !cfg.providers.contains_key(name) {
-                return Err(format!("unknown provider: {name}"));
-            }
-        }
-    }
-
     let mut updated: Vec<String> = Vec::new();
     let mut previous_groups: Vec<(String, Option<String>)> = Vec::new();
     {
         let mut cfg = state.gateway.cfg.write();
         for name in &deduped_providers {
-            let provider = cfg
-                .providers
-                .get_mut(name)
-                .ok_or_else(|| format!("unknown provider: {name}"))?;
+            if !cfg.providers.contains_key(name) {
+                return Err(format!("unknown provider: {name}"));
+            }
+        }
+        for name in &deduped_providers {
+            let provider = cfg.providers.get_mut(name).expect("provider validated above");
             if provider.group == normalized_group {
                 continue;
             }

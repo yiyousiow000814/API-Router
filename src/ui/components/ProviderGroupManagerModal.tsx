@@ -17,8 +17,10 @@ type Props = {
   onSetHardCap: (provider: string, field: QuotaHardCapField, enabled: boolean) => Promise<void>
 }
 
-function orderedProviders(config: Config, ordered: string[]): string[] {
-  const names = Object.keys(config.providers ?? {}).filter((name) => !config.providers?.[name]?.disabled)
+function orderedProviders(config: Config, ordered: string[], includeDisabled = false): string[] {
+  const names = Object.keys(config.providers ?? {}).filter((name) =>
+    includeDisabled ? true : !config.providers?.[name]?.disabled,
+  )
   const fromOrder = ordered.filter((name) => names.includes(name))
   const leftovers = names.filter((name) => !fromOrder.includes(name))
   return [...fromOrder, ...leftovers]
@@ -47,10 +49,14 @@ export function ProviderGroupManagerModal({
     () => (config ? orderedProviders(config, orderedConfigProviders) : []),
     [config, orderedConfigProviders],
   )
+  const allProviderNames = useMemo(
+    () => (config ? orderedProviders(config, orderedConfigProviders, true) : []),
+    [config, orderedConfigProviders],
+  )
   const groups = useMemo(() => {
     if (!config) return new Map<string, string[]>()
     const grouped = new Map<string, string[]>()
-    for (const provider of providerNames) {
+    for (const provider of allProviderNames) {
       const group = (config.providers?.[provider]?.group ?? '').trim()
       if (!group) continue
       const members = grouped.get(group) ?? []
@@ -58,7 +64,7 @@ export function ProviderGroupManagerModal({
       grouped.set(group, members)
     }
     return grouped
-  }, [config, providerNames])
+  }, [allProviderNames, config])
   const groupEntries = useMemo(
     () => [...groups.entries()].map(([name, members]) => ({ name, members })),
     [groups],
@@ -106,15 +112,30 @@ export function ProviderGroupManagerModal({
   }, [config])
 
   useEffect(() => {
-    if (!open || !config) return
-    setGroupUsageBaseDrafts(() => {
+    if (!open || !config) {
+      setGroupUsageBaseDrafts((prev) => (Object.keys(prev).length > 0 ? {} : prev))
+      return
+    }
+    setGroupUsageBaseDrafts((prev) => {
       const next: Record<string, string> = {}
       groupEntries.forEach(({ name, members }) => {
         const representative = members[0] ?? ''
         const representativeUsageBase = (config.providers?.[representative]?.usage_base_url ?? '').trim()
         const inferredUsageBase = inferGroupUsageBase(config, members) ?? ''
-        next[name] = representativeUsageBase || inferredUsageBase
+        if (Object.prototype.hasOwnProperty.call(prev, name)) {
+          next[name] = prev[name]
+        } else {
+          next[name] = representativeUsageBase || inferredUsageBase
+        }
       })
+      const prevKeys = Object.keys(prev)
+      const nextKeys = Object.keys(next)
+      if (
+        prevKeys.length === nextKeys.length &&
+        nextKeys.every((name) => Object.prototype.hasOwnProperty.call(prev, name) && prev[name] === next[name])
+      ) {
+        return prev
+      }
       return next
     })
   }, [config, groupEntries, open])
@@ -238,7 +259,8 @@ export function ProviderGroupManagerModal({
               <div className="aoMiniTitle">Group Usage Controls</div>
               <div className="aoGroupManagerGroupList">
                 {groupEntries.map(({ name, members }) => {
-                  const groupRepresentative = members[0] ?? ''
+                  const visibleMembers = members.filter((provider) => !config.providers?.[provider]?.disabled)
+                  const groupRepresentative = visibleMembers[0] ?? members[0] ?? ''
                   const representativeProvider = groupRepresentative ? config.providers?.[groupRepresentative] : undefined
                   const representativeHardCap = representativeProvider?.quota_hard_cap ?? {
                     daily: true,
@@ -266,7 +288,7 @@ export function ProviderGroupManagerModal({
                       </div>
 
                       <div className="aoGroupManagerProviderList">
-                        {members.map((provider) => {
+                        {visibleMembers.map((provider) => {
                           return (
                             <div key={`group-member-row-${name}-${provider}`} className="aoGroupManagerMemberRow">
                               <span className="aoProviderName">{provider}</span>
@@ -283,6 +305,9 @@ export function ProviderGroupManagerModal({
                             </div>
                           )
                         })}
+                        {visibleMembers.length === 0 ? (
+                          <div className="aoHint">All providers in this group are disabled.</div>
+                        ) : null}
                       </div>
 
                       <div className="aoGroupUsageBaseRow">
