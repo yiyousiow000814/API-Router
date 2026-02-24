@@ -336,7 +336,7 @@ export function ProviderGroupManagerModal({
 
                       <div className="aoGroupManagerGroupActions">
                         <button
-                          className="aoBtn"
+                          className="aoBtn aoBtnDangerSoft"
                           disabled={members.length === 0}
                           onClick={async () => {
                             await onAssignGroup(members, null)

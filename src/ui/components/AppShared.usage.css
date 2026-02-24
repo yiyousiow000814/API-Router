@@ -412,8 +412,15 @@
 
 .aoGroupManagerGroupActions {
   display: flex;
+  justify-content: flex-end;
   gap: 8px;
-  flex-wrap: wrap;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoGroupManagerGroupActions .aoBtn {
+  min-width: 108px;
 }
 
 .aoGroupUsageBaseRow {
