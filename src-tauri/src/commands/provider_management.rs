@@ -622,41 +622,96 @@ pub(crate) fn set_provider_group(
     Ok(())
 }
 
-#[tauri::command]
-pub(crate) fn set_providers_group(
-    state: tauri::State<'_, app_state::AppState>,
-    providers: Vec<String>,
-    group: Option<String>,
-) -> Result<(), String> {
-    if providers.is_empty() {
-        return Ok(());
-    }
-    let normalized_group = group.and_then(|value| {
+fn normalize_provider_group(group: Option<String>) -> Option<String> {
+    group.and_then(|value| {
         let trimmed = value.trim();
         if trimmed.is_empty() {
             None
         } else {
             Some(trimmed.to_string())
         }
-    });
-    let mut updated = Vec::new();
+    })
+}
+
+fn set_providers_group_impl(
+    state: &app_state::AppState,
+    providers: Vec<String>,
+    group: Option<String>,
+) -> Result<(Vec<String>, Option<String>), String> {
+    if providers.is_empty() {
+        return Ok((Vec::new(), normalize_provider_group(group)));
+    }
+
+    let normalized_group = normalize_provider_group(group);
+    let mut deduped_providers: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for provider in providers {
+        let name = provider.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if seen.insert(name.to_string()) {
+            deduped_providers.push(name.to_string());
+        }
+    }
+    if deduped_providers.is_empty() {
+        return Ok((Vec::new(), normalized_group));
+    }
+
     {
-        let mut cfg = state.gateway.cfg.write();
-        for name in providers {
-            let provider = cfg
-                .providers
-                .get_mut(&name)
-                .ok_or_else(|| format!("unknown provider: {name}"))?;
-            if provider.group != normalized_group {
-                provider.group = normalized_group.clone();
-                updated.push(name);
+        let cfg = state.gateway.cfg.read();
+        for name in &deduped_providers {
+            if !cfg.providers.contains_key(name) {
+                return Err(format!("unknown provider: {name}"));
             }
         }
     }
+
+    let mut updated: Vec<String> = Vec::new();
+    let mut previous_groups: Vec<(String, Option<String>)> = Vec::new();
+    {
+        let mut cfg = state.gateway.cfg.write();
+        for name in &deduped_providers {
+            let provider = cfg
+                .providers
+                .get_mut(name)
+                .ok_or_else(|| format!("unknown provider: {name}"))?;
+            if provider.group == normalized_group {
+                continue;
+            }
+            previous_groups.push((name.clone(), provider.group.clone()));
+            provider.group = normalized_group.clone();
+            updated.push(name.clone());
+        }
+    }
+
+    if updated.is_empty() {
+        return Ok((updated, normalized_group));
+    }
+
+    if let Err(error) = persist_config_for_app_state(state) {
+        let mut cfg = state.gateway.cfg.write();
+        for (name, previous_group) in previous_groups {
+            if let Some(provider) = cfg.providers.get_mut(&name) {
+                provider.group = previous_group;
+            }
+        }
+        return Err(error.to_string());
+    }
+
+    Ok((updated, normalized_group))
+}
+
+#[tauri::command]
+pub(crate) fn set_providers_group(
+    state: tauri::State<'_, app_state::AppState>,
+    providers: Vec<String>,
+    group: Option<String>,
+) -> Result<(), String> {
+    let (updated, normalized_group) = set_providers_group_impl(&state, providers, group)?;
     if updated.is_empty() {
         return Ok(());
     }
-    persist_config(&state).map_err(|e| e.to_string())?;
     state.gateway.store.add_event(
         "gateway",
         "info",
@@ -945,7 +1000,7 @@ mod provider_management_tests {
     use super::{
         clear_session_preferred_provider_impl, next_preferred_after_delete, set_manual_override_impl,
         rename_observed_session_routes_provider_refs, set_route_mode_impl,
-        set_session_preferred_provider_impl,
+        set_providers_group_impl, set_session_preferred_provider_impl,
     };
     use crate::app_state::AppState;
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
@@ -1129,6 +1184,77 @@ mod provider_management_tests {
                 .store
                 .get_session_route_assignment("s1")
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn set_providers_group_validates_all_names_before_mutation() {
+        let (_tmp, state) = build_test_state();
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.providers
+                .get_mut("provider_1")
+                .expect("provider_1")
+                .group = Some("existing".to_string());
+        }
+
+        let result = set_providers_group_impl(
+            &state,
+            vec!["provider_1".to_string(), "missing_provider".to_string()],
+            Some("new_group".to_string()),
+        );
+        assert!(result.is_err());
+
+        let cfg = state.gateway.cfg.read();
+        assert_eq!(
+            cfg.providers
+                .get("provider_1")
+                .and_then(|provider| provider.group.as_deref()),
+            Some("existing")
+        );
+    }
+
+    #[test]
+    fn set_providers_group_rolls_back_when_persist_fails() {
+        let (_tmp, mut state) = build_test_state();
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.providers
+                .get_mut("provider_1")
+                .expect("provider_1")
+                .group = Some("alpha".to_string());
+            cfg.providers
+                .get_mut("provider_2")
+                .expect("provider_2")
+                .group = Some("beta".to_string());
+        }
+        let bad_path = state
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("persist-fail-dir");
+        std::fs::create_dir_all(&bad_path).expect("create bad path");
+        state.config_path = bad_path;
+
+        let result = set_providers_group_impl(
+            &state,
+            vec!["provider_1".to_string(), "provider_2".to_string()],
+            Some("new_group".to_string()),
+        );
+        assert!(result.is_err());
+
+        let cfg = state.gateway.cfg.read();
+        assert_eq!(
+            cfg.providers
+                .get("provider_1")
+                .and_then(|provider| provider.group.as_deref()),
+            Some("alpha")
+        );
+        assert_eq!(
+            cfg.providers
+                .get("provider_2")
+                .and_then(|provider| provider.group.as_deref()),
+            Some("beta")
         );
     }
 

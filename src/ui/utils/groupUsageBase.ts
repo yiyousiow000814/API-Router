@@ -46,9 +46,11 @@ export function resolveGroupUsageBaseAction(
   if (!config || providers.length === 0) {
     return { mode: 'noop', value: null }
   }
-  const normalizedCurrent = providers.map((name) => (config.providers?.[name]?.usage_base_url ?? '').trim())
-  const uniqueCurrent = new Set(normalizedCurrent)
-  if (uniqueCurrent.size <= 1) {
+  const explicitUsageBases = providers
+    .map((name) => (config.providers?.[name]?.usage_base_url ?? '').trim())
+    .filter((value) => value.length > 0)
+  const uniqueExplicit = new Set(explicitUsageBases)
+  if (uniqueExplicit.size <= 1) {
     return { mode: 'noop', value: null }
   }
   // Mixed explicit usage bases are ambiguous at group-level; clear them so the group
