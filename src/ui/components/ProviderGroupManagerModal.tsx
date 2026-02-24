@@ -18,7 +18,7 @@ type Props = {
 }
 
 function orderedProviders(config: Config, ordered: string[]): string[] {
-  const names = Object.keys(config.providers ?? {})
+  const names = Object.keys(config.providers ?? {}).filter((name) => !config.providers?.[name]?.disabled)
   const fromOrder = ordered.filter((name) => names.includes(name))
   const leftovers = names.filter((name) => !fromOrder.includes(name))
   return [...fromOrder, ...leftovers]
