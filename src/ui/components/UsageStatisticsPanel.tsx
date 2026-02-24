@@ -137,6 +137,8 @@ const USAGE_REQUEST_GRAPH_SOURCE_LIMIT = 120
 const USAGE_REQUEST_GRAPH_MAX_SESSIONS = 6
 const USAGE_REQUEST_TEST_MIN_ROWS = 401
 const USAGE_REQUEST_TEST_MIN_WINDOW_HOURS = 24 * 60
+const USAGE_REQUEST_TEST_DATA_REVISION = 'fallback-v3'
+const USAGE_REQUEST_LINE_HEADROOM_RATIO = 1.04
 const USAGE_REQUEST_GRAPH_COLORS = [
   '#21a8b7',
   '#f2c14d',
@@ -145,6 +147,7 @@ const USAGE_REQUEST_GRAPH_COLORS = [
   '#30c48d',
   '#ff8a3d',
 ] as const
+const USAGE_REQUEST_FALLBACK_LINE_STEP_MS = 820
 const isOfficialUsageProvider = (provider: string) => provider.trim().toLowerCase() === 'official'
 const compareUsageProvidersForDisplay = (left: string, right: string) => {
   const leftOfficial = isOfficialUsageProvider(left)
@@ -240,8 +243,18 @@ export function buildUsageRequestsQueryKey(input: {
   models: string[] | null
   origins: string[] | null
   sessions: string[] | null
+  syntheticRevision?: string | null
 }): string {
-  return JSON.stringify({
+  const base: {
+    hours: number
+    from_unix_ms: number | null
+    to_unix_ms: number | null
+    providers: string[]
+    models: string[]
+    origins: string[]
+    sessions: string[]
+    synthetic_revision?: string
+  } = {
     hours: input.hours,
     from_unix_ms: input.fromUnixMs,
     to_unix_ms: input.toUnixMs,
@@ -249,7 +262,11 @@ export function buildUsageRequestsQueryKey(input: {
     models: input.models ?? [],
     origins: input.origins ?? [],
     sessions: input.sessions ?? [],
-  })
+  }
+  if (input.syntheticRevision != null && input.syntheticRevision.trim().length > 0) {
+    base.synthetic_revision = input.syntheticRevision
+  }
+  return JSON.stringify(base)
 }
 export const USAGE_REQUESTS_CANONICAL_QUERY_KEY = buildUsageRequestsQueryKey({
   hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
@@ -269,6 +286,7 @@ let usageRequestsPageCache: UsageRequestsPageCache | null = null
 let usageRequestsLastNonEmptyPageCache: UsageRequestsPageCache | null = null
 let usageRequestDailyTotalsCache: UsageRequestDailyTotalsCache | null = null
 let usageRequestGraphRowsCache: UsageRequestGraphRowsCache | null = null
+let usageRequestSyntheticRevisionCacheTag: string | null = null
 
 export function resolveRequestFetchHours(input: {
   effectiveDetailsTab: UsageDetailsTab
@@ -728,6 +746,7 @@ function buildUsageRequestTestRows(
     seed = (seed * 1103515245 + 12345) >>> 0
     return seed / 4294967296
   }
+  const clampNumber = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
   const pick = <T extends { requests: number }>(rows: T[]) => {
     const sum = rows.reduce((acc, row) => acc + Math.max(0, row.requests), 0)
     if (sum <= 0) return rows[0]
@@ -739,30 +758,138 @@ function buildUsageRequestTestRows(
     return rows[rows.length - 1]
   }
   const rows: UsageRequestEntry[] = []
-  for (let i = 0; i < totalRequests; i += 1) {
-    const chosenSession = sessionSeedRows.length > 0 ? pick(sessionSeedRows) : null
-    const providerName = chosenSession?.provider ?? pick(providers).provider
+
+  const baseSessions =
+    sessionSeedRows.length > 0
+      ? sessionSeedRows.slice(0, 8)
+      : TEST_CODEX_SESSION_IDS.slice(0, 5).map((sessionId, index) => ({
+          sessionId,
+          provider: providers[index % providers.length]?.provider ?? defaultProviderName,
+          origin: (index % 2 === 0 ? 'windows' : 'wsl2') as 'windows' | 'wsl2',
+          requests: Math.max(1, 6 - index),
+        }))
+  type TestSessionPlan = {
+    sessionId: string
+    provider: string
+    origin: 'windows' | 'wsl2'
+    requestCount: number
+  }
+  let sessionPlans: TestSessionPlan[] = baseSessions.map((session, index) => {
+    const normalizedRank = baseSessions.length <= 1 ? 1 : (baseSessions.length - 1 - index) / (baseSessions.length - 1)
+    const preferredCount =
+      index === 0
+        ? USAGE_REQUEST_GRAPH_SOURCE_LIMIT
+        : index === 1
+          ? Math.round(56 + normalizedRank * 26)
+          : index === 2
+            ? Math.round(24 + normalizedRank * 18)
+            : Math.round(2 + normalizedRank * 12)
+    const activityBoost = session.requests >= 8 ? 12 : 0
+    const jitter = Math.floor((rand() - 0.5) * (index <= 1 ? 8 : 5))
+    return {
+      sessionId: session.sessionId,
+      provider: session.provider,
+      origin: session.origin,
+      requestCount: clampNumber(preferredCount + activityBoost + jitter, 1, USAGE_REQUEST_GRAPH_SOURCE_LIMIT),
+    }
+  })
+  if (sessionPlans.length > 0 && totalRequests >= USAGE_REQUEST_GRAPH_SOURCE_LIMIT) {
+    const first = sessionPlans[0]
+    sessionPlans = [{ ...first, requestCount: USAGE_REQUEST_GRAPH_SOURCE_LIMIT }, ...sessionPlans.slice(1)]
+  }
+  const plannedPrimaryTotal = sessionPlans.reduce((sum, plan) => sum + plan.requestCount, 0)
+  if (sessionPlans.length > 4 && plannedPrimaryTotal > totalRequests) {
+    const scale = totalRequests / plannedPrimaryTotal
+    sessionPlans = sessionPlans.map((plan, index) => ({
+      ...plan,
+      requestCount: clampNumber(
+        Math.round(plan.requestCount * scale),
+        index === 0 ? 6 : 1,
+        USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
+      ),
+    }))
+  }
+
+  const appendSessionRows = (
+    sessionId: string,
+    providerName: string,
+    origin: 'windows' | 'wsl2',
+    rawCount: number,
+    trendIndex: number,
+  ) => {
+    const count = clampNumber(Math.round(rawCount), 1, USAGE_REQUEST_GRAPH_SOURCE_LIMIT)
+    if (count <= 0) return 0
     const providerMeta = providerMetaByName.get(providerName) ?? { model: 'gpt-5.2-codex', apiKeyRef: '-' }
     const model = pick(models)
-    const origin = chosenSession?.origin ?? (i % 2 === 0 ? 'windows' : 'wsl2')
-    const input = 100_000 + Math.floor(rand() * 900_000)
-    const output = 1_000 + Math.floor(rand() * 9_000)
-    const total = input + output
-    const cacheCreate = i % 7 === 0 ? 100_000 + Math.floor(rand() * 900_000) : 0
-    const cacheRead = i % 4 === 0 ? 100_000 + Math.floor(rand() * 900_000) : 0
-    rows.push({
-      provider: providerName,
-      api_key_ref: providerMeta.apiKeyRef,
-      model: providerMeta.model || model.model,
-      origin,
-      session_id: chosenSession?.sessionId ?? TEST_CODEX_SESSION_IDS[i % TEST_CODEX_SESSION_IDS.length],
-      unix_ms: generatedAt - Math.floor(rand() * windowMs),
-      input_tokens: input,
-      output_tokens: output,
-      total_tokens: total,
-      cache_creation_input_tokens: cacheCreate,
-      cache_read_input_tokens: cacheRead,
-    })
+    const seriesSpanMs = clampNumber(
+      Math.floor(windowMs * (0.34 + rand() * 0.42)),
+      45 * 60 * 1000,
+      windowMs,
+    )
+    const earliestAllowed = generatedAt - windowMs
+    const latestStart = generatedAt - seriesSpanMs
+    const startMs = clampNumber(
+      latestStart - Math.floor(rand() * Math.max(1, windowMs * 0.2)),
+      earliestAllowed,
+      latestStart,
+    )
+    const stepMs = Math.max(45_000, Math.floor(seriesSpanMs / Math.max(1, count - 1)))
+    const baseline = 92_000 + Math.floor(rand() * 38_000) + trendIndex * 900
+    const driftPerPoint = 8 + Math.floor(rand() * 28)
+    const waveAmplitude = 700 + Math.floor(rand() * 2_100)
+    const wavePeriod = 22 + Math.floor(rand() * 26)
+    const wavePhase = rand() * Math.PI * 2
+    let carryNoise = (rand() - 0.5) * 900
+
+    for (let idx = 0; idx < count; idx += 1) {
+      carryNoise = carryNoise * 0.62 + (rand() - 0.5) * 920
+      const wave = Math.sin((idx / wavePeriod) * Math.PI * 2 + wavePhase) * waveAmplitude
+      const total = clampNumber(
+        Math.round(baseline + idx * driftPerPoint + wave + carryNoise),
+        55_000,
+        230_000,
+      )
+      const output = Math.max(1_000, Math.round(total * (0.055 + rand() * 0.07)))
+      const input = Math.max(1, total - output)
+      const cacheCreate = idx % 11 === 0 ? Math.max(0, Math.round(total * (0.28 + rand() * 0.22))) : 0
+      const cacheRead = idx % 5 === 0 ? Math.max(0, Math.round(total * (0.24 + rand() * 0.2))) : 0
+      const unixMs = clampNumber(
+        startMs + idx * stepMs + Math.floor((rand() - 0.5) * stepMs * 0.3),
+        earliestAllowed,
+        generatedAt,
+      )
+      rows.push({
+        provider: providerName,
+        api_key_ref: providerMeta.apiKeyRef,
+        model: providerMeta.model || model.model,
+        origin,
+        session_id: sessionId,
+        unix_ms: unixMs,
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: total,
+        cache_creation_input_tokens: cacheCreate,
+        cache_read_input_tokens: cacheRead,
+      })
+    }
+    return count
+  }
+
+  let allocated = 0
+  sessionPlans.forEach((plan, index) => {
+    allocated += appendSessionRows(plan.sessionId, plan.provider, plan.origin, plan.requestCount, index)
+  })
+
+  let remaining = Math.max(0, totalRequests - allocated)
+  let auxIndex = 0
+  while (remaining > 0) {
+    const providerName = pick(providers).provider
+    const origin: 'windows' | 'wsl2' = auxIndex % 2 === 0 ? 'windows' : 'wsl2'
+    const chunk = Math.min(remaining, 20 + Math.floor(rand() * 44))
+    const sessionId = `test-aux-session-${String(auxIndex + 1).padStart(2, '0')}`
+    allocated += appendSessionRows(sessionId, providerName, origin, chunk, sessionPlans.length + auxIndex)
+    remaining = Math.max(0, totalRequests - allocated)
+    auxIndex += 1
   }
   return rows.sort((a, b) => b.unix_ms - a.unix_ms)
 }
@@ -1035,6 +1162,23 @@ export function UsageStatisticsPanel({
     () => usageRequestForceSyntheticProviders || import.meta.env.DEV,
     [usageRequestForceSyntheticProviders],
   )
+  useEffect(() => {
+    const nextTag = usageRequestTestFallbackEnabled ? USAGE_REQUEST_TEST_DATA_REVISION : null
+    if (usageRequestSyntheticRevisionCacheTag === nextTag) return
+    usageRequestSyntheticRevisionCacheTag = nextTag
+    usageRequestsPageCache = null
+    usageRequestsLastNonEmptyPageCache = null
+    usageRequestDailyTotalsCache = null
+    usageRequestGraphRowsCache = null
+    usageRequestGraphLastRefreshAtRef.current = 0
+    setUsageRequestRows([])
+    setUsageRequestHasMore(false)
+    setUsageRequestUsingTestFallback(false)
+    setUsageRequestGraphBaseRows([])
+    setUsageRequestGraphRowsByProvider({})
+    setUsageRequestDailyTotalsDays([])
+    setUsageRequestDailyTotalsProviders([])
+  }, [usageRequestTestFallbackEnabled])
   const usageRequestTestRows = useMemo(
     () => buildUsageRequestTestRows(usageStatistics, usageWindowHours, usageRequestForceSyntheticProviders, clientSessions),
     [clientSessions, usageRequestForceSyntheticProviders, usageStatistics, usageWindowHours],
@@ -1081,6 +1225,7 @@ export function UsageStatisticsPanel({
         models: requestFetchModels,
         origins: requestFetchOrigins,
         sessions: requestFetchSessions,
+        syntheticRevision: usageRequestTestFallbackEnabled ? USAGE_REQUEST_TEST_DATA_REVISION : null,
       }),
     [
       requestFetchFromUnixMs,
@@ -1090,9 +1235,16 @@ export function UsageStatisticsPanel({
       requestFetchProviders,
       requestFetchSessions,
       requestFetchToUnixMs,
+      usageRequestTestFallbackEnabled,
     ],
   )
-  const requestGraphQueryKey = USAGE_REQUEST_GRAPH_QUERY_KEY
+  const requestGraphQueryKey = useMemo(
+    () =>
+      usageRequestTestFallbackEnabled
+        ? `${USAGE_REQUEST_GRAPH_QUERY_KEY}:${USAGE_REQUEST_TEST_DATA_REVISION}`
+        : USAGE_REQUEST_GRAPH_QUERY_KEY,
+    [usageRequestTestFallbackEnabled],
+  )
   const hasExplicitRequestFilters =
     hasExplicitTimeFilter ||
     usageRequestMultiFilters.provider !== null ||
@@ -2221,33 +2373,111 @@ export function UsageStatisticsPanel({
     requestGraphColorByProvider,
     requestGraphProviderBySession,
   ])
-  const [requestLineAnimTick, setRequestLineAnimTick] = useState(0)
+  const [requestLineAnimElapsedMs, setRequestLineAnimElapsedMs] = useState(0)
   useEffect(() => {
-    if (!isRequestsTab) return
-    if (!usageRequestUsingTestFallback) return
-    if (usageRequestLineSeries.length === 0) return
-    const timer = window.setInterval(() => {
-      setRequestLineAnimTick((tick) => (tick + 1) % 10_000)
-    }, 680)
-    return () => window.clearInterval(timer)
+    if (!isRequestsTab || !usageRequestUsingTestFallback || usageRequestLineSeries.length === 0) {
+      setRequestLineAnimElapsedMs(0)
+      return
+    }
+    const startedAt = performance.now()
+    let rafId = 0
+    const run = (now: number) => {
+      setRequestLineAnimElapsedMs(now - startedAt)
+      rafId = window.requestAnimationFrame(run)
+    }
+    rafId = window.requestAnimationFrame(run)
+    return () => window.cancelAnimationFrame(rafId)
   }, [isRequestsTab, usageRequestLineSeries.length, usageRequestUsingTestFallback])
   const renderedUsageRequestLineSeries = useMemo(() => {
     if (!isRequestsTab || !usageRequestUsingTestFallback) return usageRequestLineSeries
     return usageRequestLineSeries.map((series) => {
-      const activeCount = series.present.reduce((sum, isPresent) => sum + (isPresent ? 1 : 0), 0)
-      if (activeCount <= 1) return series
-      const shift = requestLineAnimTick % activeCount
-      if (shift === 0) return series
-      const activeValues = series.values.slice(0, activeCount)
-      const rotated = activeValues.map((_, idx) => activeValues[(idx + shift) % activeCount])
-      const values = series.values.slice()
-      for (let idx = 0; idx < activeCount; idx += 1) values[idx] = rotated[idx]
+      const baseValues: number[] = []
+      for (let idx = 0; idx < series.present.length; idx += 1) {
+        if (!series.present[idx]) continue
+        baseValues.push(series.values[idx] ?? 0)
+      }
+      const baseCount = baseValues.length
+      const stepIndex = Math.floor(requestLineAnimElapsedMs / USAGE_REQUEST_FALLBACK_LINE_STEP_MS)
+      if (baseCount <= 0) {
+        return {
+          ...series,
+          fallbackSlidingEligible: false,
+          fallbackPreviewNextValue: null as number | null,
+        }
+      }
+      const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+      const baseSeed = stableSeedFromText(String((series as { id?: string }).id ?? series.provider))
+      const buildNextValue = (prev: number, prevPrev: number, stepOrdinal: number) => {
+        const wave = Math.sin((stepOrdinal + (baseSeed % 41)) / 9) * 620
+        const ripple = Math.cos((stepOrdinal + (baseSeed % 67)) / 7) * 390
+        const momentum = (prev - prevPrev) * 0.36
+        return clamp(Math.round(prev + momentum + wave + ripple), 55_000, 230_000)
+      }
+      const sequence = [...baseValues]
+      let previousValue = sequence[Math.max(0, sequence.length - 2)] ?? sequence[0] ?? 100_000
+      let latestValue = sequence[Math.max(0, sequence.length - 1)] ?? previousValue
+      const appendSynthetic = (stepOrdinal: number) => {
+        const next = buildNextValue(latestValue, previousValue, stepOrdinal)
+        sequence.push(next)
+        previousValue = latestValue
+        latestValue = next
+      }
+
+      let committedStepCount = 0
+      if (baseCount < usageRequestGraphPointCount) {
+        const growthSteps = Math.min(stepIndex, usageRequestGraphPointCount - baseCount)
+        for (let idx = 0; idx < growthSteps; idx += 1) {
+          appendSynthetic(idx)
+        }
+        committedStepCount += growthSteps
+        const slidingSteps = Math.max(0, stepIndex - (usageRequestGraphPointCount - baseCount))
+        for (let idx = 0; idx < slidingSteps; idx += 1) {
+          appendSynthetic(growthSteps + idx)
+        }
+        committedStepCount += slidingSteps
+      } else {
+        for (let idx = 0; idx < stepIndex; idx += 1) {
+          appendSynthetic(idx)
+        }
+        committedStepCount = stepIndex
+      }
+
+      const windowCount = Math.min(usageRequestGraphPointCount, sequence.length)
+      const windowStart = Math.max(0, sequence.length - windowCount)
+      const windowValues = sequence.slice(windowStart)
+      const values = new Array<number>(usageRequestGraphPointCount).fill(0)
+      const present = new Array<boolean>(usageRequestGraphPointCount).fill(false)
+      for (let idx = 0; idx < windowValues.length; idx += 1) {
+        values[idx] = windowValues[idx]
+        present[idx] = true
+      }
+      const slidingEligible = windowCount >= usageRequestGraphPointCount
+      const previewNextValue = buildNextValue(latestValue, previousValue, committedStepCount)
       return {
         ...series,
         values,
+        present,
+        fallbackSlidingEligible: slidingEligible,
+        fallbackPreviewNextValue: previewNextValue,
       }
     })
-  }, [isRequestsTab, requestLineAnimTick, usageRequestLineSeries, usageRequestUsingTestFallback])
+  }, [
+    isRequestsTab,
+    requestLineAnimElapsedMs,
+    usageRequestGraphPointCount,
+    usageRequestLineSeries,
+    usageRequestUsingTestFallback,
+  ])
+  const requestLineAnimPhase = useMemo(() => {
+    if (!isRequestsTab || !usageRequestUsingTestFallback || usageRequestLineSeries.length === 0) return 0
+    return (requestLineAnimElapsedMs % USAGE_REQUEST_FALLBACK_LINE_STEP_MS) / USAGE_REQUEST_FALLBACK_LINE_STEP_MS
+  }, [isRequestsTab, requestLineAnimElapsedMs, usageRequestLineSeries.length, usageRequestUsingTestFallback])
+  const requestLineFallbackSliding = useMemo(() => {
+    if (!isRequestsTab || !usageRequestUsingTestFallback || renderedUsageRequestLineSeries.length === 0) return false
+    return renderedUsageRequestLineSeries.some((series) =>
+      Boolean((series as { fallbackSlidingEligible?: boolean }).fallbackSlidingEligible),
+    )
+  }, [isRequestsTab, renderedUsageRequestLineSeries, usageRequestUsingTestFallback])
 
   const usageRequestLineMaxValue = useMemo(() => {
     let maxValue = 0
@@ -2256,7 +2486,8 @@ export function UsageStatisticsPanel({
         if (value > maxValue) maxValue = value
       }
     }
-    return Math.max(1, maxValue)
+    if (maxValue <= 0) return 1
+    return Math.max(1, Math.ceil(maxValue * USAGE_REQUEST_LINE_HEADROOM_RATIO))
   }, [renderedUsageRequestLineSeries])
   const usageRequestLegendSeries = useMemo(
     () => {
@@ -2527,6 +2758,11 @@ export function UsageStatisticsPanel({
   const requestChartMaxX = requestChartWidth - requestChartRightPadding
   const requestChartTopY = 14
   const requestChartBottomY = 136
+  const requestLinePointSpacing =
+    (requestChartMaxX - requestChartMinX) / Math.max(1, usageRequestGraphPointCount - 1)
+  const requestLineAnimOffsetX = requestLineAnimPhase * requestLinePointSpacing
+  const requestLineClipPathIdRef = useRef(`aoUsageRequestLineClip-${Math.random().toString(36).slice(2, 10)}`)
+  const requestLineClipPathId = requestLineClipPathIdRef.current
   const [lineHoverIndex, setLineHoverIndex] = useState<number | null>(null)
   const [lineHoverX, setLineHoverX] = useState<number | null>(null)
   const lineHoverData = useMemo(() => {
@@ -2555,7 +2791,12 @@ export function UsageStatisticsPanel({
       rows,
       total: rows.reduce((sum, row) => sum + row.value, 0),
     }
-  }, [isRequestsTab, lineHoverIndex, renderedUsageRequestLineSeries, usageRequestGraphPointCount])
+  }, [
+    isRequestsTab,
+    lineHoverIndex,
+    renderedUsageRequestLineSeries,
+    usageRequestGraphPointCount,
+  ])
   const usageRequestSidRowsWithPosition = useMemo(() => {
     if (!usageRequestSessionLegendRows.length) return []
     const rowHeight = 16
@@ -2770,6 +3011,16 @@ export function UsageStatisticsPanel({
                     setLineHoverX(snappedX)
                   }}
                 >
+                <defs>
+                  <clipPath id={requestLineClipPathId}>
+                    <rect
+                      x={requestChartMinX}
+                      y={requestChartTopY}
+                      width={Math.max(0, requestChartMaxX - requestChartMinX)}
+                      height={Math.max(0, requestChartBottomY - requestChartTopY)}
+                    />
+                  </clipPath>
+                </defs>
                 <line x1={requestChartMinX} y1={requestChartTopY} x2={requestChartMinX} y2={requestChartBottomY} stroke="rgba(13, 18, 32, 0.24)" strokeWidth="1" />
                 <line x1={requestChartMinX} y1={requestChartBottomY} x2={requestChartMaxX} y2={requestChartBottomY} stroke="rgba(13, 18, 32, 0.24)" strokeWidth="1" />
                 <line
@@ -2796,70 +3047,129 @@ export function UsageStatisticsPanel({
                 <text x={requestChartMaxX} y={requestChartBottomY + 16} textAnchor="end" fill="rgba(13, 18, 32, 0.52)" fontSize="10">
                   Newer
                 </text>
-                {renderedUsageRequestLineSeries.map((series) => {
-                  const points = series.values.map((value, idx) => {
-                    const x =
-                      requestChartMinX +
-                      (idx / Math.max(1, usageRequestGraphPointCount - 1)) * (requestChartMaxX - requestChartMinX)
-                    const y =
-                      requestChartBottomY -
-                      (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
-                    return { x, y, present: series.present[idx] }
-                  })
-                  const providerPoints = points
-                    .filter((point) => point.present)
-                    .map((point) => ({ x: point.x, y: point.y }))
-                  let pathD = ''
-                  if (providerPoints.length > 1) {
-                    pathD = buildSmoothLinePath(providerPoints, { min: requestChartTopY, max: requestChartBottomY })
-                  }
-                  if (!pathD.trim()) return null
-                  return (
-                    <path
-                      key={`request-line-series-${String((series as { id?: string }).id ?? series.provider)}`}
-                      d={pathD}
-                      fill="none"
-                      stroke={series.color}
-                      strokeWidth={1.8}
-                      opacity={0.82}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
+                <g clipPath={`url(#${requestLineClipPathId})`}>
+                  {renderedUsageRequestLineSeries.map((series) => {
+                    const activeCount = series.present.reduce((sum, isPresent) => sum + (isPresent ? 1 : 0), 0)
+                    const slidingEligible = Boolean(
+                      (series as { fallbackSlidingEligible?: boolean }).fallbackSlidingEligible,
+                    )
+                    const previewNextValue = Number(
+                      (series as { fallbackPreviewNextValue?: number | null }).fallbackPreviewNextValue ?? NaN,
+                    )
+                    const hasPreviewNextValue = Number.isFinite(previewNextValue)
+                    const isFallbackAnimating =
+                      isRequestsTab &&
+                      usageRequestUsingTestFallback &&
+                      requestLineFallbackSliding &&
+                      slidingEligible
+                    const isFallbackGrowing =
+                      isRequestsTab &&
+                      usageRequestUsingTestFallback &&
+                      !slidingEligible &&
+                      activeCount > 1 &&
+                      activeCount < usageRequestGraphPointCount
+                    const providerPoints: Array<{ x: number; y: number }> = []
+                    if (isFallbackAnimating && activeCount > 1) {
+                      for (let idx = 0; idx < activeCount; idx += 1) {
+                        const value = series.values[idx] ?? 0
+                        const x = requestChartMinX + idx * requestLinePointSpacing - requestLineAnimOffsetX
+                        const y =
+                          requestChartBottomY -
+                          (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                        providerPoints.push({ x, y })
+                      }
+                      if (hasPreviewNextValue) {
+                        const nextX = requestChartMinX + activeCount * requestLinePointSpacing - requestLineAnimOffsetX
+                        const nextY =
+                          requestChartBottomY -
+                          (previewNextValue / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                        providerPoints.push({ x: nextX, y: nextY })
+                      }
+                    } else {
+                      series.values.forEach((value, idx) => {
+                        if (!series.present[idx]) return
+                        const x = requestChartMinX + idx * requestLinePointSpacing
+                        const y =
+                          requestChartBottomY -
+                          (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                        providerPoints.push({ x, y })
+                      })
+                    }
+                    if (isFallbackGrowing && providerPoints.length > 1 && requestLineAnimPhase > 0) {
+                      const lastPoint = providerPoints[providerPoints.length - 1]
+                      const previewY = hasPreviewNextValue
+                        ? requestChartBottomY -
+                          (previewNextValue / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                        : lastPoint.y
+                      const nextX = Math.min(requestChartMaxX, lastPoint.x + requestLinePointSpacing * requestLineAnimPhase)
+                      const nextY = Math.max(
+                        requestChartTopY,
+                        Math.min(
+                          requestChartBottomY,
+                          lastPoint.y + (previewY - lastPoint.y) * requestLineAnimPhase,
+                        ),
+                      )
+                      providerPoints.push({ x: nextX, y: nextY })
+                    }
+                    if (providerPoints.length <= 1) return null
+                    const pathD = buildSmoothLinePath(providerPoints, { min: requestChartTopY, max: requestChartBottomY })
+                    if (!pathD.trim()) return null
+                    return (
+                      <path
+                        key={`request-line-series-${String((series as { id?: string }).id ?? series.provider)}`}
+                        d={pathD}
+                        fill="none"
+                        stroke={series.color}
+                        strokeWidth={1.8}
+                        opacity={0.82}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    )
+                  })}
+                  {lineHoverX != null ? (
+                    <line
+                      x1={lineHoverX}
+                      y1={requestChartTopY}
+                      x2={lineHoverX}
+                      y2={requestChartBottomY}
+                      stroke="rgba(13, 18, 32, 0.22)"
+                      strokeWidth="1"
+                      strokeDasharray="3 3"
                     />
-                  )
-                })}
-                {lineHoverX != null ? (
-                  <line
-                    x1={lineHoverX}
-                    y1={requestChartTopY}
-                    x2={lineHoverX}
-                    y2={requestChartBottomY}
-                    stroke="rgba(13, 18, 32, 0.22)"
-                    strokeWidth="1"
-                    strokeDasharray="3 3"
-                  />
-                ) : null}
-                {lineHoverIndex != null
-                  ? renderedUsageRequestLineSeries.map((series) => {
-                      if (!series.present[lineHoverIndex]) return null
-                      const value = series.values[lineHoverIndex] ?? 0
-                      const x =
+                  ) : null}
+                  {lineHoverIndex != null
+                    ? renderedUsageRequestLineSeries.map((series) => {
+                        if (!series.present[lineHoverIndex]) return null
+                        const value = series.values[lineHoverIndex] ?? 0
+                      const baseX =
                         requestChartMinX +
                         (lineHoverIndex / Math.max(1, usageRequestGraphPointCount - 1)) *
                           (requestChartMaxX - requestChartMinX)
-                      const y =
-                        requestChartBottomY -
-                        (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
-                      return (
-                        <circle
-                          key={`line-hover-dot-${String((series as { id?: string }).id ?? series.provider)}`}
-                          cx={x}
-                          cy={y}
-                          r="2.2"
-                          fill={series.color}
-                        />
+                      const slidingEligible = Boolean(
+                        (series as { fallbackSlidingEligible?: boolean }).fallbackSlidingEligible,
                       )
-                    })
-                  : null}
+                      const isFallbackAnimating =
+                        isRequestsTab &&
+                        usageRequestUsingTestFallback &&
+                        requestLineFallbackSliding &&
+                        slidingEligible
+                        const x = isFallbackAnimating ? baseX - requestLineAnimOffsetX : baseX
+                        const y =
+                          requestChartBottomY -
+                          (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                        return (
+                          <circle
+                            key={`line-hover-dot-${String((series as { id?: string }).id ?? series.provider)}`}
+                            cx={x}
+                            cy={y}
+                            r="2.2"
+                            fill={series.color}
+                          />
+                        )
+                      })
+                    : null}
+                </g>
                 </svg>
                 {lineHoverData ? (
                   <div className="aoUsageRequestHoverOverlay" aria-live="polite">
