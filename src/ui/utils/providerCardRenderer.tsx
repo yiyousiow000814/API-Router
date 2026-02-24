@@ -117,6 +117,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   />
                 ) : (
                   <>
+                    {groupName ? <span className="aoProviderGroupTag">{groupName}</span> : null}
                     <span className="aoProviderName">{name}</span>
                     <button
                       className="aoIconGhost"
@@ -221,12 +222,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     )
                   }
                 />
-                {p.group ? (
-                  <>
-                    <div className="aoMiniLabel">Group</div>
-                    <div className="aoKeyValue">{p.group}</div>
-                  </>
-                ) : null}
                 <div className="aoMiniLabel">Key</div>
                 <div className="aoKeyValue">{p.has_key ? (p.key_preview ? p.key_preview : 'set') : 'empty'}</div>
               </>
