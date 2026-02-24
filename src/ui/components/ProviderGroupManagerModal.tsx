@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Config } from '../types'
 import { ModalBackdrop } from './ModalBackdrop'
 import type { QuotaHardCapField } from '../hooks/providerActions/useProviderUsageActions'
@@ -24,10 +24,6 @@ function orderedProviders(config: Config, ordered: string[]): string[] {
   return [...fromOrder, ...leftovers]
 }
 
-function formatProviderCount(count: number): string {
-  return `${count} ${count === 1 ? 'provider' : 'providers'}`
-}
-
 export function ProviderGroupManagerModal({
   open,
   config,
@@ -39,10 +35,13 @@ export function ProviderGroupManagerModal({
   onClearUsageBase,
   onSetHardCap,
 }: Props) {
+  const openInitKeyRef = useRef<string | null>(null)
+  const [assignMode, setAssignMode] = useState<'new' | 'add'>('new')
   const [selectedProviders, setSelectedProviders] = useState<string[]>([])
-  const [selectedGroupMembers, setSelectedGroupMembers] = useState<Record<string, string[]>>({})
+  const [editingGroupName, setEditingGroupName] = useState<string | null>(null)
   const [groupUsageBaseDrafts, setGroupUsageBaseDrafts] = useState<Record<string, string>>({})
   const [groupDraft, setGroupDraft] = useState('')
+  const [targetExistingGroup, setTargetExistingGroup] = useState('')
 
   const providerNames = useMemo(
     () => (config ? orderedProviders(config, orderedConfigProviders) : []),
@@ -64,30 +63,43 @@ export function ProviderGroupManagerModal({
     () => [...groups.entries()].map(([name, members]) => ({ name, members })),
     [groups],
   )
+  const groupNames = useMemo(() => groupEntries.map((entry) => entry.name), [groupEntries])
   const ungroupedProviders = useMemo(
     () => providerNames.filter((provider) => !(config?.providers?.[provider]?.group ?? '').trim()),
     [config, providerNames],
   )
 
   useEffect(() => {
-    if (!open || !config) return
+    if (!open || !config) {
+      openInitKeyRef.current = null
+      return
+    }
+    const initKey = focusProvider && providerNames.includes(focusProvider) ? `focus:${focusProvider}` : 'none'
+    if (openInitKeyRef.current === initKey) return
+    openInitKeyRef.current = initKey
     if (focusProvider && providerNames.includes(focusProvider)) {
       const focusGroup = (config.providers?.[focusProvider]?.group ?? '').trim()
       if (focusGroup) {
         setSelectedProviders([])
-        setGroupDraft(focusGroup)
-        setSelectedGroupMembers({ [focusGroup]: [focusProvider] })
+        setAssignMode('add')
+        setTargetExistingGroup(focusGroup)
+        setGroupDraft('')
+        setEditingGroupName(focusGroup)
       } else {
         setSelectedProviders([focusProvider])
+        setAssignMode('new')
+        setTargetExistingGroup(groupNames[0] ?? '')
         setGroupDraft('')
-        setSelectedGroupMembers({})
+        setEditingGroupName(null)
       }
     } else {
       setSelectedProviders([])
+      setAssignMode('new')
+      setTargetExistingGroup(groupNames[0] ?? '')
       setGroupDraft('')
-      setSelectedGroupMembers({})
+      setEditingGroupName(null)
     }
-  }, [config, focusProvider, open, providerNames])
+  }, [config, focusProvider, groupNames, open, providerNames])
 
   useEffect(() => {
     if (!config) return
@@ -95,21 +107,6 @@ export function ProviderGroupManagerModal({
       prev.filter((provider) => !(config.providers?.[provider]?.group ?? '').trim()),
     )
   }, [config])
-
-  useEffect(() => {
-    if (!config) return
-    setSelectedGroupMembers((prev) => {
-      const next: Record<string, string[]> = {}
-      for (const [groupName, members] of Object.entries(prev)) {
-        const currentMembers = new Set(groups.get(groupName) ?? [])
-        const kept = members.filter((member) => currentMembers.has(member))
-        if (kept.length) {
-          next[groupName] = kept
-        }
-      }
-      return next
-    })
-  }, [config, groups])
 
   useEffect(() => {
     if (!open || !config) return
@@ -125,7 +122,29 @@ export function ProviderGroupManagerModal({
     })
   }, [config, groupEntries, open])
 
+  useEffect(() => {
+    if (groupNames.length === 0) {
+      setTargetExistingGroup('')
+      if (assignMode === 'add') setAssignMode('new')
+      return
+    }
+    if (!targetExistingGroup || !groupNames.includes(targetExistingGroup)) {
+      setTargetExistingGroup(groupNames[0] ?? '')
+    }
+  }, [assignMode, groupNames, targetExistingGroup])
+
+  useEffect(() => {
+    if (!editingGroupName) return
+    if (!groupNames.includes(editingGroupName)) {
+      setEditingGroupName(null)
+    }
+  }, [editingGroupName, groupNames])
+
   if (!open || !config) return null
+
+  const selectedGroupName =
+    assignMode === 'new' ? groupDraft.trim() : targetExistingGroup.trim()
+  const canApplyAssign = selectedProviders.length > 0 && selectedGroupName.length > 0
 
   return (
     <ModalBackdrop onClose={onClose}>
@@ -141,30 +160,53 @@ export function ProviderGroupManagerModal({
             <div className="aoCard aoGroupManagerCard">
               <div className="aoMiniTitle">Assign Providers</div>
               <div className="aoHint">Select providers, then assign one group name in batch.</div>
+              <div className="aoGroupManagerAssignMode">
+                <button
+                  className={`aoGroupManagerAssignModeBtn${assignMode === 'new' ? ' is-active' : ''}`}
+                  onClick={() => setAssignMode('new')}
+                >
+                  New Group
+                </button>
+                <button
+                  className={`aoGroupManagerAssignModeBtn${assignMode === 'add' ? ' is-active' : ''}`}
+                  disabled={groupNames.length === 0}
+                  onClick={() => setAssignMode('add')}
+                >
+                  Add to Group
+                </button>
+              </div>
               <div className="aoGroupManagerAssignRow">
-                <input
-                  className="aoInput"
-                  placeholder="Group name"
-                  value={groupDraft}
-                  onChange={(event) => setGroupDraft(event.target.value)}
-                />
+                {assignMode === 'new' ? (
+                  <input
+                    className="aoInput"
+                    placeholder="Group name"
+                    value={groupDraft}
+                    onChange={(event) => setGroupDraft(event.target.value)}
+                  />
+                ) : (
+                  <select
+                    className="aoSelect"
+                    value={targetExistingGroup}
+                    onChange={(event) => setTargetExistingGroup(event.target.value)}
+                    disabled={groupNames.length === 0}
+                  >
+                    {groupNames.map((name) => (
+                      <option key={`assign-group-option-${name}`} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <button
                   className="aoBtn aoBtnPrimary"
-                  disabled={selectedProviders.length === 0 || groupDraft.trim().length === 0}
+                  disabled={!canApplyAssign}
                   onClick={async () => {
-                    await onAssignGroup(selectedProviders, groupDraft.trim() || null)
+                    await onAssignGroup(selectedProviders, selectedGroupName || null)
                     setSelectedProviders([])
-                    setGroupDraft('')
+                    if (assignMode === 'new') setGroupDraft('')
                   }}
                 >
                   Apply
-                </button>
-                <button
-                  className="aoBtn"
-                  disabled={selectedProviders.length === 0}
-                  onClick={() => setSelectedProviders([])}
-                >
-                  Reset
                 </button>
               </div>
               <div className="aoGroupManagerProviderList">
@@ -205,7 +247,7 @@ export function ProviderGroupManagerModal({
                     members.map((provider) => (config.providers?.[provider]?.usage_base_url ?? '').trim()),
                   )
                   const hasMixedUsageBase = normalizedUsageBases.size > 1
-                  const selectedMembers = selectedGroupMembers[name] ?? []
+                  const isEditingThisGroup = editingGroupName === name
                   const usageBaseDraft = groupUsageBaseDrafts[name] ?? ''
                   const showUsageBaseWarning =
                     members.length > 1 && (hasMixedUsageBase || usageBaseDraft.trim().length === 0)
@@ -213,29 +255,30 @@ export function ProviderGroupManagerModal({
                     <div key={`group-card-${name}`} className="aoGroupManagerGroupCard">
                       <div className="aoGroupManagerGroupHead">
                         <div className="aoProviderGroupTag">{name}</div>
-                        <div className="aoHint">{formatProviderCount(members.length)}</div>
+                        <button
+                          className="aoGroupManagerEditLink"
+                          onClick={() => setEditingGroupName((prev) => (prev === name ? null : name))}
+                        >
+                          {isEditingThisGroup ? 'Done' : 'Edit'}
+                        </button>
                       </div>
 
                       <div className="aoGroupManagerProviderList">
                         {members.map((provider) => {
-                          const checked = selectedMembers.includes(provider)
                           return (
-                            <label key={`group-member-row-${name}-${provider}`} className="aoGroupManagerProviderRow">
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={(event) =>
-                                  setSelectedGroupMembers((prev) => {
-                                    const current = prev[name] ?? []
-                                    const next = event.target.checked
-                                      ? [...new Set([...current, provider])]
-                                      : current.filter((item) => item !== provider)
-                                    return { ...prev, [name]: next }
-                                  })
-                                }
-                              />
+                            <div key={`group-member-row-${name}-${provider}`} className="aoGroupManagerMemberRow">
                               <span className="aoProviderName">{provider}</span>
-                            </label>
+                              {isEditingThisGroup ? (
+                                <button
+                                  className="aoGroupManagerMemberRemove"
+                                  title={`Remove ${provider} from group`}
+                                  aria-label={`Remove ${provider} from group`}
+                                  onClick={() => void onAssignGroup([provider], null)}
+                                >
+                                  ×
+                                </button>
+                              ) : null}
+                            </div>
                           )
                         })}
                       </div>
@@ -293,20 +336,12 @@ export function ProviderGroupManagerModal({
                       <div className="aoGroupManagerGroupActions">
                         <button
                           className="aoBtn"
-                          disabled={selectedMembers.length === 0}
-                          onClick={async () => {
-                            await onAssignGroup(selectedMembers, null)
-                            setSelectedGroupMembers((prev) => ({ ...prev, [name]: [] }))
-                          }}
-                        >
-                          Kick Selected
-                        </button>
-                        <button
-                          className="aoBtn"
                           disabled={members.length === 0}
                           onClick={async () => {
                             await onAssignGroup(members, null)
-                            setSelectedGroupMembers((prev) => ({ ...prev, [name]: [] }))
+                            if (editingGroupName === name) {
+                              setEditingGroupName(null)
+                            }
                           }}
                         >
                           Close Group
