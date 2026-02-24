@@ -196,8 +196,8 @@ function listTopUsageProvidersFromRows(
 
 function shortSessionIdForLegend(sessionId: string): string {
   const value = sessionId.trim()
-  if (value.length <= 18) return value
-  return `${value.slice(0, 8)}...${value.slice(-4)}`
+  if (value.length <= 24) return value
+  return `${value.slice(0, 12)}...${value.slice(-8)}`
 }
 
 function listUsageRequestDailyProviderHints(
@@ -278,17 +278,6 @@ export function resolveRequestFetchHours(input: {
   if (input.effectiveDetailsTab !== 'requests') return input.usageWindowHours
   if (!input.showFilters) return USAGE_REQUESTS_CANONICAL_FETCH_HOURS
   return input.usageWindowHours
-}
-
-function combineStringFilterLists(
-  left: string[] | null,
-  right: string[] | null,
-): string[] | null {
-  if (left == null && right == null) return null
-  if (left == null) return right
-  if (right == null) return left
-  const rightSet = new Set(right.map((v) => v.toLowerCase()))
-  return left.filter((v) => rightSet.has(v.toLowerCase()))
 }
 
 export function buildUsageRequestEntriesArgs(input: {
@@ -446,19 +435,20 @@ export function primeUsageRequestsPrefetchCache(payload: {
   rows: UsageRequestEntry[]
   hasMore: boolean
   dailyTotals?: UsageRequestDailyTotalsCache | null
+  usingTestFallback?: boolean
 }) {
   usageRequestsPageCache = {
     queryKey: payload.queryKey,
     rows: payload.rows ?? [],
     hasMore: Boolean(payload.hasMore),
-    usingTestFallback: false,
+    usingTestFallback: Boolean(payload.usingTestFallback),
   }
   if ((payload.rows ?? []).length > 0) {
     usageRequestsLastNonEmptyPageCache = {
       queryKey: payload.queryKey,
       rows: payload.rows ?? [],
       hasMore: Boolean(payload.hasMore),
-      usingTestFallback: false,
+      usingTestFallback: Boolean(payload.usingTestFallback),
     }
   }
   if (payload.dailyTotals) {
@@ -1050,31 +1040,24 @@ export function UsageStatisticsPanel({
     [clientSessions, usageRequestForceSyntheticProviders, usageStatistics, usageWindowHours],
   )
   const useGlobalRequestFilters = showFilters
+  // Keep table column filters client-side so unselected options remain visible in the filter menu.
   const requestFetchProviders = useMemo(
-    () =>
-      combineStringFilterLists(
-        useGlobalRequestFilters && usageFilterProviders.length ? usageFilterProviders : null,
-        usageRequestMultiFilters.provider,
-      ),
-    [useGlobalRequestFilters, usageFilterProviders, usageRequestMultiFilters.provider],
+    () => (useGlobalRequestFilters && usageFilterProviders.length ? usageFilterProviders : null),
+    [useGlobalRequestFilters, usageFilterProviders],
   )
   const requestFetchModels = useMemo(
-    () =>
-      combineStringFilterLists(
-        useGlobalRequestFilters && usageFilterModels.length ? usageFilterModels : null,
-        usageRequestMultiFilters.model,
-      ),
-    [useGlobalRequestFilters, usageFilterModels, usageRequestMultiFilters.model],
+    () => (useGlobalRequestFilters && usageFilterModels.length ? usageFilterModels : null),
+    [useGlobalRequestFilters, usageFilterModels],
   )
   const requestFetchOrigins = useMemo(
-    () =>
-      combineStringFilterLists(
-        useGlobalRequestFilters && usageFilterOrigins.length ? usageFilterOrigins : null,
-        usageRequestMultiFilters.origin,
-      ),
-    [useGlobalRequestFilters, usageFilterOrigins, usageRequestMultiFilters.origin],
+    () => (useGlobalRequestFilters && usageFilterOrigins.length ? usageFilterOrigins : null),
+    [useGlobalRequestFilters, usageFilterOrigins],
   )
-  const requestFetchSessions = usageRequestMultiFilters.session
+  const requestFetchSessions: string[] | null = null
+  const graphScopedProviderFilter = useMemo(() => {
+    if (!requestFetchProviders || requestFetchProviders.length === 0) return null
+    return [...new Set(requestFetchProviders.map((provider) => resolveRequestProviderName(provider)).filter(Boolean))]
+  }, [requestFetchProviders, resolveRequestProviderName])
   const hasExplicitTimeFilter = usageRequestTimeFilter.trim().length > 0
   const selectedRequestTimeFilterDay = useMemo(
     () => parseDateInputToDayStart(usageRequestTimeFilter),
@@ -1121,7 +1104,10 @@ export function UsageStatisticsPanel({
     (requestFetchProviders !== null && requestFetchProviders.length === 0) ||
     (requestFetchModels !== null && requestFetchModels.length === 0) ||
     (requestFetchOrigins !== null && requestFetchOrigins.length === 0) ||
-    (requestFetchSessions !== null && requestFetchSessions.length === 0)
+    (usageRequestMultiFilters.provider !== null && usageRequestMultiFilters.provider.length === 0) ||
+    (usageRequestMultiFilters.model !== null && usageRequestMultiFilters.model.length === 0) ||
+    (usageRequestMultiFilters.origin !== null && usageRequestMultiFilters.origin.length === 0) ||
+    (usageRequestMultiFilters.session !== null && usageRequestMultiFilters.session.length === 0)
   const [requestDefaultDay, setRequestDefaultDay] = useState<number>(() =>
     startOfDayUnixMs(Date.now()),
   )
@@ -1570,7 +1556,7 @@ export function UsageStatisticsPanel({
         setUsageRequestGraphBaseRows(baseRows)
       }
       const providerTargets = pickUsageRequestDisplayProviders({
-        selectedProviders: usageRequestMultiFilters.provider,
+        selectedProviders: graphScopedProviderFilter,
         graphProviders: [
           ...(baseRows.length ? listTopUsageProvidersFromRows(baseRows) : EMPTY_STRING_LIST),
           ...Object.keys(usageRequestGraphRowsCache?.rowsByProvider ?? {}),
@@ -1692,7 +1678,7 @@ export function UsageStatisticsPanel({
     requestGraphQueryKey,
     usageRequestAnalyticsProviderHints,
     usageRequestDailyProviderHints,
-    usageRequestMultiFilters.provider,
+    graphScopedProviderFilter,
     usageRequestGraphBaseRows.length,
     usageRequestRows,
     usageRequestTestFallbackEnabled,
@@ -1853,10 +1839,7 @@ export function UsageStatisticsPanel({
           ? requestPageCached.rows
           : usageRequestRows
     const expectedGraphProviders = pickUsageRequestDisplayProviders({
-      selectedProviders:
-        usageRequestMultiFilters.provider == null
-          ? null
-          : [...new Set(usageRequestMultiFilters.provider.map((provider) => resolveRequestProviderName(provider)))],
+      selectedProviders: graphScopedProviderFilter,
       graphProviders: [
         ...listTopUsageProvidersFromRows(graphBaseCandidate, resolveRequestProviderName),
         ...Object.keys(cachedGraph?.rowsByProvider ?? {}).map((provider) => resolveRequestProviderName(provider)),
@@ -1920,7 +1903,7 @@ export function UsageStatisticsPanel({
     usageRequestGraphBaseRows.length,
     usageRequestGraphProviderCount,
     usageRequestDailyProviderHints,
-    usageRequestMultiFilters.provider,
+    graphScopedProviderFilter,
     usageRequestAnalyticsProviderHints,
     resolveRequestProviderName,
     refreshUsageRequestGraphRows,
@@ -2095,10 +2078,8 @@ export function UsageStatisticsPanel({
   }, [graphBaseRowsForRequestRender, shouldPrepareRequestsData, verifiedSessionIdSet])
 
   const selectedRequestGraphProviders = useMemo(() => {
-    const selected = usageRequestMultiFilters.provider
-    if (!selected || selected.length === 0) return null
-    return [...new Set(selected.map((provider) => resolveRequestProviderName(provider)).filter(Boolean))]
-  }, [resolveRequestProviderName, usageRequestMultiFilters.provider])
+    return graphScopedProviderFilter
+  }, [graphScopedProviderFilter])
 
   const graphRowsForVerifiedSessions = useMemo(() => {
     if (!shouldPrepareRequestsData) return EMPTY_USAGE_REQUEST_ROWS
@@ -2552,12 +2533,23 @@ export function UsageStatisticsPanel({
     if (!isRequestsTab) return null
     if (lineHoverIndex == null) return null
     if (lineHoverIndex < 0 || lineHoverIndex >= usageRequestGraphPointCount) return null
-    const rows = renderedUsageRequestLineSeries.map((series) => ({
-      id: String((series as { id?: string }).id ?? series.provider),
-      provider: series.provider,
-      color: series.color,
-      value: series.values[lineHoverIndex] ?? 0,
-    }))
+    const byProvider = new Map<string, { id: string; provider: string; color: string; value: number }>()
+    renderedUsageRequestLineSeries.forEach((series) => {
+      const providerName = String((series as { providerName?: string }).providerName ?? '').trim() || series.provider
+      const value = series.values[lineHoverIndex] ?? 0
+      const existing = byProvider.get(providerName)
+      if (existing) {
+        existing.value += value
+        return
+      }
+      byProvider.set(providerName, {
+        id: providerName,
+        provider: providerName,
+        color: series.color,
+        value,
+      })
+    })
+    const rows = [...byProvider.values()].sort((a, b) => compareUsageProvidersForDisplay(a.provider, b.provider))
     return {
       point: lineHoverIndex + 1,
       rows,

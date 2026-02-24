@@ -824,7 +824,7 @@
   position: relative;
   flex: 0 0 auto;
   align-self: flex-start;
-  width: 122px;
+  width: 136px;
   border-left: 1px dashed rgba(13, 18, 32, 0.2);
   padding: 0 0 0 5px;
   pointer-events: none;
@@ -842,23 +842,22 @@
   position: relative;
   overflow: hidden;
   height: 100%;
-  padding-right: 4px;
+  padding-right: 2px;
 }
 
 .aoUsageRequestSidRow {
   position: absolute;
   left: 0;
-  right: auto;
-  display: inline-flex;
+  right: 0;
+  display: flex;
   align-items: center;
-  max-width: calc(100% - 2px);
 }
 
 .aoUsageRequestSidChip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  max-width: calc(100% - 2px);
+  width: calc(100% - 2px);
   padding: 1px 7px;
   border-radius: 999px;
   border: 1px solid rgba(13, 18, 32, 0.14);
@@ -875,7 +874,7 @@
 
 .aoUsageRequestSidLabel {
   min-width: 0;
-  max-width: 84px;
+  flex: 1 1 auto;
   font-size: 10px;
   line-height: 1.25;
   color: rgba(13, 18, 32, 0.78);

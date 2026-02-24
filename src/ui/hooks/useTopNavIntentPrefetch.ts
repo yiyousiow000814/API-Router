@@ -335,6 +335,7 @@ export function useTopNavIntentPrefetch({
           rows: fallbackRows,
           hasMore: true,
           dailyTotals,
+          usingTestFallback: true,
         })
       } finally {
         usageRequestsIntentPrefetchInFlightRef.current = false
