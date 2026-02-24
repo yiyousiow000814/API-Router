@@ -50,6 +50,7 @@ export type UseProviderActionsResult = {
   refreshQuota: (name: string) => Promise<void>
   refreshQuotaAll: (opts?: RefreshQuotaOptions) => Promise<void>
   saveUsageBaseUrl: () => Promise<void>
+  setUsageBaseUrl: (provider: string, url: string) => Promise<void>
   clearUsageBaseUrl: (name: string) => Promise<void>
   setProviderQuotaHardCap: (
     provider: string,

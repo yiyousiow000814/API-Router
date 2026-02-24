@@ -29,7 +29,7 @@ export function UsageBaseModal({
         <div className="aoModalSub">
           Provider: <span style={{ fontFamily: mono }}>{provider}</span>
           <br />
-          Usage source URL used for quota/usage fetch. If this provider belongs to a group, Save/Clear applies to the whole group.
+          Usage source URL used for quota/usage fetch.
         </div>
         <input
           className="aoInput"

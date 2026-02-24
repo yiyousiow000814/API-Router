@@ -145,13 +145,12 @@ export function useProviderUsageActions({
     [flashToast, isDevPreview, refreshStatus],
   )
 
-  const saveUsageBaseUrl = useCallback(async () => {
-    const provider = usageBaseModal.provider
-    const url = usageBaseModal.value.trim()
-    if (!provider) return
-    const targetProviders = providersForTarget(provider)
-    const shouldSetUsageBase = Boolean(url)
-    try {
+  const applyUsageBaseUrl = useCallback(
+    async (provider: string, rawUrl: string) => {
+      const url = rawUrl.trim()
+      if (!provider) return
+      const targetProviders = providersForTarget(provider)
+      const shouldSetUsageBase = Boolean(url)
       for (const target of targetProviders) {
         if (shouldSetUsageBase) {
           await invoke('set_usage_base_url', { provider: target, url })
@@ -159,14 +158,6 @@ export function useProviderUsageActions({
           await invoke('clear_usage_base_url', { provider: target })
         }
       }
-      setUsageBaseModal({
-        open: false,
-        provider: '',
-        value: '',
-        auto: false,
-        explicitValue: '',
-        effectiveValue: '',
-      })
       const scopeLabel = providerScopeLabel(provider)
       flashToast(
         shouldSetUsageBase
@@ -179,15 +170,40 @@ export function useProviderUsageActions({
       )
       await refreshConfig()
       await refreshStatus()
+    },
+    [flashToast, providerScopeLabel, providersForTarget, refreshConfig, refreshStatus],
+  )
+
+  const setUsageBaseUrl = useCallback(
+    async (provider: string, url: string) => {
+      try {
+        await applyUsageBaseUrl(provider, url)
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+    },
+    [applyUsageBaseUrl, flashToast],
+  )
+
+  const saveUsageBaseUrl = useCallback(async () => {
+    const provider = usageBaseModal.provider
+    if (!provider) return
+    try {
+      await applyUsageBaseUrl(provider, usageBaseModal.value)
+      setUsageBaseModal({
+        open: false,
+        provider: '',
+        value: '',
+        auto: false,
+        explicitValue: '',
+        effectiveValue: '',
+      })
     } catch (e) {
       flashToast(String(e), 'error')
     }
   }, [
+    applyUsageBaseUrl,
     flashToast,
-    providerScopeLabel,
-    providersForTarget,
-    refreshConfig,
-    refreshStatus,
     setUsageBaseModal,
     usageBaseModal.provider,
     usageBaseModal.value,
@@ -292,6 +308,7 @@ export function useProviderUsageActions({
     refreshQuota,
     refreshQuotaAll,
     saveUsageBaseUrl,
+    setUsageBaseUrl,
     clearUsageBaseUrl,
     setProviderQuotaHardCap,
     openUsageBaseModal,

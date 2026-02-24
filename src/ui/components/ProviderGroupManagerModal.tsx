@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Config } from '../types'
 import { ModalBackdrop } from './ModalBackdrop'
 import type { QuotaHardCapField } from '../hooks/providerActions/useProviderUsageActions'
+import { QUOTA_HARD_CAP_PERIODS } from '../utils/providerBudgetWindows'
+import { inferGroupUsageBase } from '../utils/groupUsageBase'
 
 type Props = {
   open: boolean
@@ -10,7 +12,8 @@ type Props = {
   focusProvider?: string | null
   onClose: () => void
   onAssignGroup: (providers: string[], group: string | null) => Promise<void>
-  onOpenUsageBase: (provider: string, current: string | null | undefined) => Promise<void>
+  onSetUsageBase: (provider: string, url: string) => Promise<void>
+  onClearUsageBase: (provider: string) => Promise<void>
   onSetHardCap: (provider: string, field: QuotaHardCapField, enabled: boolean) => Promise<void>
 }
 
@@ -32,11 +35,13 @@ export function ProviderGroupManagerModal({
   focusProvider,
   onClose,
   onAssignGroup,
-  onOpenUsageBase,
+  onSetUsageBase,
+  onClearUsageBase,
   onSetHardCap,
 }: Props) {
   const [selectedProviders, setSelectedProviders] = useState<string[]>([])
   const [selectedGroupMembers, setSelectedGroupMembers] = useState<Record<string, string[]>>({})
+  const [groupUsageBaseDrafts, setGroupUsageBaseDrafts] = useState<Record<string, string>>({})
   const [groupDraft, setGroupDraft] = useState('')
 
   const providerNames = useMemo(
@@ -90,6 +95,7 @@ export function ProviderGroupManagerModal({
       prev.filter((provider) => !(config.providers?.[provider]?.group ?? '').trim()),
     )
   }, [config])
+
   useEffect(() => {
     if (!config) return
     setSelectedGroupMembers((prev) => {
@@ -104,6 +110,20 @@ export function ProviderGroupManagerModal({
       return next
     })
   }, [config, groups])
+
+  useEffect(() => {
+    if (!open || !config) return
+    setGroupUsageBaseDrafts(() => {
+      const next: Record<string, string> = {}
+      groupEntries.forEach(({ name, members }) => {
+        const representative = members[0] ?? ''
+        const representativeUsageBase = (config.providers?.[representative]?.usage_base_url ?? '').trim()
+        const inferredUsageBase = inferGroupUsageBase(config, members) ?? ''
+        next[name] = representativeUsageBase || inferredUsageBase
+      })
+      return next
+    })
+  }, [config, groupEntries, open])
 
   if (!open || !config) return null
 
@@ -176,7 +196,6 @@ export function ProviderGroupManagerModal({
                 {groupEntries.map(({ name, members }) => {
                   const groupRepresentative = members[0] ?? ''
                   const representativeProvider = groupRepresentative ? config.providers?.[groupRepresentative] : undefined
-                  const representativeUsageBase = representativeProvider?.usage_base_url ?? null
                   const representativeHardCap = representativeProvider?.quota_hard_cap ?? {
                     daily: true,
                     weekly: true,
@@ -187,6 +206,9 @@ export function ProviderGroupManagerModal({
                   )
                   const hasMixedUsageBase = normalizedUsageBases.size > 1
                   const selectedMembers = selectedGroupMembers[name] ?? []
+                  const usageBaseDraft = groupUsageBaseDrafts[name] ?? ''
+                  const showUsageBaseWarning =
+                    members.length > 1 && (hasMixedUsageBase || usageBaseDraft.trim().length === 0)
                   return (
                     <div key={`group-card-${name}`} className="aoGroupManagerGroupCard">
                       <div className="aoGroupManagerGroupHead">
@@ -218,16 +240,37 @@ export function ProviderGroupManagerModal({
                         })}
                       </div>
 
-                      <div className="aoUsageTop">
+                      <div className="aoGroupUsageBaseRow">
+                        <input
+                          className="aoInput aoGroupUsageBaseInput"
+                          placeholder="Usage base URL"
+                          value={usageBaseDraft}
+                          onChange={(event) =>
+                            setGroupUsageBaseDrafts((prev) => ({ ...prev, [name]: event.target.value }))
+                          }
+                        />
+                        <button
+                          className="aoBtn"
+                          disabled={!groupRepresentative}
+                          onClick={() => {
+                            setGroupUsageBaseDrafts((prev) => ({ ...prev, [name]: '' }))
+                            void onClearUsageBase(groupRepresentative)
+                          }}
+                        >
+                          Clear
+                        </button>
                         <button
                           className="aoBtn aoBtnPrimary"
                           disabled={!groupRepresentative}
-                          onClick={() => void onOpenUsageBase(groupRepresentative, representativeUsageBase)}
+                          onClick={() => void onSetUsageBase(groupRepresentative, usageBaseDraft)}
                         >
-                          Usage Base
+                          Save
                         </button>
+                      </div>
+
+                      <div className="aoUsageTop">
                         <div className="aoUsageHardCapInline">
-                          {(['daily', 'weekly', 'monthly'] as QuotaHardCapField[]).map((period) => (
+                          {QUOTA_HARD_CAP_PERIODS.map((period) => (
                             <label key={`group-hard-cap-${name}-${period}`} className="aoUsageHardCapItem">
                               <input
                                 type="checkbox"
@@ -241,7 +284,7 @@ export function ProviderGroupManagerModal({
                           ))}
                         </div>
                       </div>
-                      {hasMixedUsageBase ? (
+                      {showUsageBaseWarning ? (
                         <div className="aoHint aoHintWarning">
                           Warning: Group members should share the same usage base URL (usage fetch endpoint, not provider base URL).
                         </div>

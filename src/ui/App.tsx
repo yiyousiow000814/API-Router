@@ -46,6 +46,7 @@ import { useUsageOpsBridge } from './hooks/useUsageOpsBridge'
 import { useUsageUiDerived } from './hooks/useUsageUiDerived'
 import { useMainContentCallbacks } from './hooks/useMainContentCallbacks'
 import { useTopNavIntentPrefetch } from './hooks/useTopNavIntentPrefetch'
+import type { KeyModalState, UsageBaseModalState } from './hooks/providerActions/types'
 import {
   buildCodexSwapBadge,
   resolveCliHomes,
@@ -86,19 +87,12 @@ export default function App() {
   const [newProviderName, setNewProviderName] = useState<string>('')
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
   const [providerPanelsOpen, setProviderPanelsOpen] = useState<Record<string, boolean>>({})
-  const [keyModal, setKeyModal] = useState<{ open: boolean; provider: string; value: string }>({
+  const [keyModal, setKeyModal] = useState<KeyModalState>({
     open: false,
     provider: '',
     value: '',
   })
-  const [usageBaseModal, setUsageBaseModal] = useState<{
-    open: boolean
-    provider: string
-    value: string
-    auto: boolean
-    explicitValue: string
-    effectiveValue: string
-  }>({
+  const [usageBaseModal, setUsageBaseModal] = useState<UsageBaseModalState>({
     open: false,
     provider: '',
     value: '',
@@ -961,7 +955,7 @@ export default function App() {
   })
   const {
     saveProvider, setProviderDisabled, deleteProvider, saveKey, clearKey, refreshQuota, refreshQuotaAll,
-    saveUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap, openKeyModal, openUsageBaseModal, addProvider,
+    saveUsageBaseUrl, setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap, openKeyModal, openUsageBaseModal, addProvider,
     setProvidersGroup,
   } = useProviderActions({
     config,
@@ -1368,7 +1362,8 @@ export default function App() {
           setProviderGroupManagerFocusProvider(null)
         }}
         onAssignGroup={setProvidersGroup}
-        onOpenUsageBase={openUsageBaseModal}
+        onSetUsageBase={setUsageBaseUrl}
+        onClearUsageBase={clearUsageBaseUrl}
         onSetHardCap={setProviderQuotaHardCap}
       />
     </div>

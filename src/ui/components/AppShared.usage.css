@@ -201,19 +201,29 @@
   align-items: stretch;
   flex: 1 1 auto;
   min-height: 0;
+  height: 100%;
 }
 
 .aoModalWide.aoGroupManagerModal {
-  min-height: min(76vh, 720px);
+  height: min(76vh, 720px);
 }
 
 .aoGroupManagerModal .aoModalBody {
-  min-height: min(66vh, 620px);
   display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding-right: 6px;
+  padding-bottom: 0;
+}
+
+.aoGroupManagerModal .aoModalHeader {
+  padding-right: 6px;
 }
 
 .aoGroupManagerModal .aoModalBody > .aoGroupManagerLayout {
   width: 100%;
+  height: 100%;
 }
 
 .aoGroupManagerCard {
@@ -251,15 +261,13 @@
 }
 
 .aoGroupManagerGroupList {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-auto-rows: min-content;
-  align-content: start;
-  align-items: start;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   max-height: none;
   overflow: auto;
   min-height: 0;
+  height: 100%;
   padding-right: 2px;
 }
 
@@ -278,6 +286,10 @@
   gap: 8px;
 }
 
+.aoGroupManagerGroupList > .aoGroupManagerGroupCard:only-child {
+  flex: 1 1 auto;
+}
+
 .aoGroupManagerGroupHead {
   display: flex;
   align-items: center;
@@ -289,6 +301,17 @@
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.aoGroupUsageBaseRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.aoGroupUsageBaseInput {
+  width: 100%;
 }
 
 .aoGroupManagerGroupCard .aoGroupManagerProviderList {
