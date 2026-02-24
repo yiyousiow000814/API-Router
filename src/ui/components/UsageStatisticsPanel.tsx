@@ -137,7 +137,7 @@ const USAGE_REQUEST_GRAPH_SOURCE_LIMIT = 120
 const USAGE_REQUEST_GRAPH_MAX_SESSIONS = 6
 const USAGE_REQUEST_TEST_MIN_ROWS = 401
 const USAGE_REQUEST_TEST_MIN_WINDOW_HOURS = 24 * 60
-const USAGE_REQUEST_TEST_DATA_REVISION = 'fallback-v3'
+export const USAGE_REQUEST_TEST_DATA_REVISION = 'fallback-v3'
 const USAGE_REQUEST_LINE_HEADROOM_RATIO = 1.04
 const USAGE_REQUEST_GRAPH_COLORS = [
   '#21a8b7',
@@ -280,7 +280,7 @@ export const USAGE_REQUESTS_CANONICAL_QUERY_KEY = buildUsageRequestsQueryKey({
 const USAGE_REQUESTS_CACHE_PRIMED_EVENT = 'ao:usage-requests-cache-primed'
 const USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS = 4_000
 const USAGE_REQUEST_GRAPH_FETCH_HOURS = 24 * 365 * 20
-const USAGE_REQUEST_GRAPH_QUERY_KEY = 'usage_request_graph:v1:all-history'
+export const USAGE_REQUEST_GRAPH_QUERY_KEY = 'usage_request_graph:v1:all-history'
 const USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS = 15_000
 let usageRequestsPageCache: UsageRequestsPageCache | null = null
 let usageRequestsLastNonEmptyPageCache: UsageRequestsPageCache | null = null
@@ -675,7 +675,7 @@ function buildSmoothLinePath(
   return d
 }
 
-function readTestFlagFromLocation(): boolean {
+export function readTestFlagFromLocation(): boolean {
   if (typeof window === 'undefined') return false
   const raw = new URLSearchParams(window.location.search).get('test')
   if (!raw) return false

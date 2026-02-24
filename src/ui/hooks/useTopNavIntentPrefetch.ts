@@ -3,8 +3,12 @@ import { useCallback, useRef } from 'react'
 import type { Status } from '../types'
 import {
   buildUsageRequestEntriesArgs,
+  buildUsageRequestsQueryKey,
+  readTestFlagFromLocation,
+  USAGE_REQUEST_GRAPH_QUERY_KEY,
   USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
   USAGE_REQUESTS_CANONICAL_QUERY_KEY,
+  USAGE_REQUEST_TEST_DATA_REVISION,
   primeUsageRequestGraphPrefetchCache,
   primeUsageRequestsPrefetchCache,
 } from '../components/UsageStatisticsPanel'
@@ -241,7 +245,22 @@ export function useTopNavIntentPrefetch({
     }
     usageRequestsIntentPrefetchAtRef.current = now
     usageRequestsIntentPrefetchInFlightRef.current = true
-    const requestQueryKey = USAGE_REQUESTS_CANONICAL_QUERY_KEY
+    const useSyntheticRevision = import.meta.env.DEV || readTestFlagFromLocation()
+    const requestQueryKey = useSyntheticRevision
+      ? buildUsageRequestsQueryKey({
+          hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
+          fromUnixMs: null,
+          toUnixMs: null,
+          providers: null,
+          models: null,
+          origins: null,
+          sessions: null,
+          syntheticRevision: USAGE_REQUEST_TEST_DATA_REVISION,
+        })
+      : USAGE_REQUESTS_CANONICAL_QUERY_KEY
+    const requestGraphQueryKey = useSyntheticRevision
+      ? `${USAGE_REQUEST_GRAPH_QUERY_KEY}:${USAGE_REQUEST_TEST_DATA_REVISION}`
+      : USAGE_REQUEST_GRAPH_QUERY_KEY
 
     void (async () => {
       try {
@@ -319,6 +338,7 @@ export function useTopNavIntentPrefetch({
               byProvider[item.provider] = item.rows
             }
             primeUsageRequestGraphPrefetchCache({
+              queryKey: requestGraphQueryKey,
               baseRows: rowsRes.rows ?? [],
               rowsByProvider: byProvider,
             })

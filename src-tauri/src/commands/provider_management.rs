@@ -434,18 +434,30 @@ pub(crate) fn upsert_provider(
     name: String,
     display_name: String,
     base_url: String,
-    group: Option<String>,
+    group: Option<Option<String>>,
+) -> Result<(), String> {
+    upsert_provider_impl(&state, name, display_name, base_url, group)
+}
+
+fn upsert_provider_impl(
+    state: &app_state::AppState,
+    name: String,
+    display_name: String,
+    base_url: String,
+    group: Option<Option<String>>,
 ) -> Result<(), String> {
     if name.trim().is_empty() {
         return Err("name is required".to_string());
     }
-    let normalized_group = group.and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
+    let normalized_group = group.map(|value| {
+        value.and_then(|inner| {
+            let trimmed = inner.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
     });
     {
         let mut cfg = state.gateway.cfg.write();
@@ -456,7 +468,8 @@ pub(crate) fn upsert_provider(
             crate::orchestrator::config::ProviderConfig {
                 display_name,
                 base_url,
-                group: normalized_group,
+                group: normalized_group
+                    .unwrap_or_else(|| existing.as_ref().and_then(|provider| provider.group.clone())),
                 disabled: existing.as_ref().is_some_and(|provider| provider.disabled),
                 usage_adapter: existing
                     .as_ref()
@@ -476,7 +489,7 @@ pub(crate) fn upsert_provider(
         }
         app_state::normalize_provider_order(&mut cfg);
     }
-    persist_config(&state).map_err(|e| e.to_string())?;
+    persist_config_for_app_state(state).map_err(|e| e.to_string())?;
     state.gateway.store.add_event(
         &name,
         "info",
@@ -1008,7 +1021,7 @@ mod provider_management_tests {
     use super::{
         clear_session_preferred_provider_impl, next_preferred_after_delete, set_manual_override_impl,
         rename_observed_session_routes_provider_refs, set_provider_group_impl, set_route_mode_impl,
-        set_providers_group_impl, set_session_preferred_provider_impl,
+        set_providers_group_impl, set_session_preferred_provider_impl, upsert_provider_impl,
     };
     use crate::app_state::AppState;
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
@@ -1238,6 +1251,32 @@ mod provider_management_tests {
             Some("new_group".to_string()),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn upsert_provider_preserves_existing_group_when_group_arg_missing() {
+        let (_tmp, state) = build_test_state();
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.providers
+                .get_mut("provider_1")
+                .expect("provider_1")
+                .group = Some("existing".to_string());
+        }
+
+        upsert_provider_impl(
+            &state,
+            "provider_1".to_string(),
+            "Provider 1".to_string(),
+            "https://example.com/v2".to_string(),
+            None,
+        )
+        .expect("upsert provider");
+
+        let cfg = state.gateway.cfg.read();
+        let provider = cfg.providers.get("provider_1").expect("provider_1");
+        assert_eq!(provider.group.as_deref(), Some("existing"));
+        assert_eq!(provider.base_url, "https://example.com/v2");
     }
 
     #[test]
