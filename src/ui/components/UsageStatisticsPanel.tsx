@@ -1,6 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import type { Config, UsageStatistics } from '../types'
+import type { Config, Status, UsageStatistics } from '../types'
 import './UsageStatisticsPanel.css'
 import './UsageHistoryModal.css'
 import {
@@ -134,6 +134,7 @@ const USAGE_REQUEST_COLUMN_FILTERS: Array<{
 ]
 const USAGE_REQUEST_PAGE_SIZE = 200
 const USAGE_REQUEST_GRAPH_SOURCE_LIMIT = 120
+const USAGE_REQUEST_GRAPH_MAX_SESSIONS = 6
 const USAGE_REQUEST_TEST_MIN_ROWS = 401
 const USAGE_REQUEST_TEST_MIN_WINDOW_HOURS = 24 * 60
 const USAGE_REQUEST_GRAPH_COLORS = [
@@ -193,6 +194,12 @@ function listTopUsageProvidersFromRows(
     .map(([provider]) => provider)
 }
 
+function shortSessionIdForLegend(sessionId: string): string {
+  const value = sessionId.trim()
+  if (value.length <= 18) return value
+  return `${value.slice(0, 8)}...${value.slice(-4)}`
+}
+
 function listUsageRequestDailyProviderHints(
   providers: UsageRequestDailyTotalsResponse['providers'],
 ): string[] {
@@ -215,9 +222,9 @@ const TEST_CODEX_SESSION_IDS = [
   '019ca04e-b5f1-73d8-89fd-13ae6de95021',
 ] as const
 const TEST_USAGE_PROVIDERS = [
-  { provider: 'official', model: 'gpt-5.2-codex', requests: 34, apiKeyRef: '-' },
   { provider: 'provider_1', model: 'gpt-5.2-codex', requests: 40, apiKeyRef: '-' },
-  { provider: 'provider_2', model: 'gpt-5.2-codex', requests: 26, apiKeyRef: '-' },
+  { provider: 'provider_2', model: 'gpt-5.2-codex', requests: 34, apiKeyRef: '-' },
+  { provider: 'provider_3', model: 'gpt-5.2-codex', requests: 26, apiKeyRef: '-' },
 ] as const
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 const WEEKDAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']
@@ -628,10 +635,20 @@ function isUnknownUsageProvider(provider: string): boolean {
   return normalized.length === 0 || normalized === 'unknown' || normalized === '-'
 }
 
+function stableSeedFromText(text: string): number {
+  let hash = 2166136261
+  for (let idx = 0; idx < text.length; idx += 1) {
+    hash ^= text.charCodeAt(idx)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
 function buildUsageRequestTestRows(
   stats: UsageStatistics | null,
   usageWindowHours: number,
   forceSyntheticProviders = false,
+  clientSessions: Status['client_sessions'] = [],
 ): UsageRequestEntry[] {
   const summary = stats?.summary
   const summaryTotalRequests = summary?.total_requests ?? 0
@@ -658,10 +675,65 @@ function buildUsageRequestTestRows(
         requests: Math.max(1, Math.round((totalRequests * row.requests) / 100)),
         apiKeyRef: row.apiKeyRef,
       }))
+  const defaultProviderName = providers[0]?.provider?.trim() || TEST_USAGE_PROVIDERS[0].provider
+  const providerMetaByName = new Map<string, { model: string; apiKeyRef: string }>()
+  providers.forEach((item) => {
+    const providerName = String(item.provider ?? '').trim()
+    if (!providerName || providerMetaByName.has(providerName)) return
+    providerMetaByName.set(providerName, {
+      model: String(item.model ?? '').trim() || 'gpt-5.2-codex',
+      apiKeyRef: String(item.apiKeyRef ?? '-').trim() || '-',
+    })
+  })
+  const sessionSeedRows = (() => {
+    const bySessionId = new Map<string, { sessionId: string; provider: string; origin: 'windows' | 'wsl2'; requests: number; verified: boolean }>()
+    for (const session of clientSessions ?? []) {
+      if (!session) continue
+      const sessionId = String(session.codex_session_id ?? '').trim() || String(session.id ?? '').trim()
+      if (!sessionId) continue
+      const providerCandidates = [
+        String(session.current_provider ?? '').trim(),
+        String(session.preferred_provider ?? '').trim(),
+        String(session.reported_model_provider ?? '').trim(),
+      ]
+      const provider =
+        providerCandidates.find((value) => value && value !== '-' && value.toLowerCase() !== 'api_router') ??
+        defaultProviderName
+      const wtSession = String(session.wt_session ?? '').trim().toLowerCase()
+      const origin: 'windows' | 'wsl2' = wtSession.includes('wsl') ? 'wsl2' : 'windows'
+      const requests = session.active ? 8 : 3
+      const verified = Boolean(session.verified)
+      const existing = bySessionId.get(sessionId)
+      if (existing) {
+        bySessionId.set(sessionId, {
+          ...existing,
+          provider,
+          origin,
+          requests: Math.max(existing.requests, requests),
+          verified: existing.verified || verified,
+        })
+        continue
+      }
+      bySessionId.set(sessionId, { sessionId, provider, origin, requests, verified })
+    }
+    const all = [...bySessionId.values()]
+    const verifiedOnly = all.filter((item) => item.verified)
+    return (verifiedOnly.length > 0 ? verifiedOnly : all).map((item) => ({
+      sessionId: item.sessionId,
+      provider: item.provider,
+      origin: item.origin,
+      requests: Math.max(1, item.requests),
+    }))
+  })()
   const models = [{ model: 'gpt-5.2-codex', requests: totalRequests }]
-  const generatedAt = stats?.generated_at_unix_ms ?? Date.now()
+  const generatedAt = Date.now()
   const windowMs = Math.max(usageWindowHours, USAGE_REQUEST_TEST_MIN_WINDOW_HOURS) * 60 * 60 * 1000
-  let seed = (generatedAt + totalRequests * 13) >>> 0
+  const fingerprint = [
+    String(totalRequests),
+    ...providers.map((item) => `${item.provider}:${item.requests}`),
+    ...sessionSeedRows.map((item) => `${item.sessionId}:${item.provider}:${item.requests}:${item.origin}`),
+  ].join('|')
+  let seed = stableSeedFromText(fingerprint || String(totalRequests))
   const rand = () => {
     seed = (seed * 1103515245 + 12345) >>> 0
     return seed / 4294967296
@@ -678,20 +750,22 @@ function buildUsageRequestTestRows(
   }
   const rows: UsageRequestEntry[] = []
   for (let i = 0; i < totalRequests; i += 1) {
-    const provider = pick(providers)
+    const chosenSession = sessionSeedRows.length > 0 ? pick(sessionSeedRows) : null
+    const providerName = chosenSession?.provider ?? pick(providers).provider
+    const providerMeta = providerMetaByName.get(providerName) ?? { model: 'gpt-5.2-codex', apiKeyRef: '-' }
     const model = pick(models)
-    const origin = i % 2 === 0 ? 'windows' : 'wsl2'
+    const origin = chosenSession?.origin ?? (i % 2 === 0 ? 'windows' : 'wsl2')
     const input = 100_000 + Math.floor(rand() * 900_000)
     const output = 1_000 + Math.floor(rand() * 9_000)
     const total = input + output
     const cacheCreate = i % 7 === 0 ? 100_000 + Math.floor(rand() * 900_000) : 0
     const cacheRead = i % 4 === 0 ? 100_000 + Math.floor(rand() * 900_000) : 0
     rows.push({
-      provider: provider.provider,
-      api_key_ref: provider.apiKeyRef,
-      model: model.model,
+      provider: providerName,
+      api_key_ref: providerMeta.apiKeyRef,
+      model: providerMeta.model || model.model,
       origin,
-      session_id: TEST_CODEX_SESSION_IDS[i % TEST_CODEX_SESSION_IDS.length],
+      session_id: chosenSession?.sessionId ?? TEST_CODEX_SESSION_IDS[i % TEST_CODEX_SESSION_IDS.length],
       unix_ms: generatedAt - Math.floor(rand() * windowMs),
       input_tokens: input,
       output_tokens: output,
@@ -806,6 +880,7 @@ type Props = {
   formatPricingSource: (source: string | null | undefined) => string
   usageProviderTotalsAndAverages: UsageProviderTotalsAndAverages | null
   usageActivityUnixMs?: number | null
+  clientSessions?: Status['client_sessions']
   forceDetailsTab?: UsageDetailsTab
   showFilters?: boolean
 }
@@ -864,6 +939,7 @@ export function UsageStatisticsPanel({
   formatPricingSource,
   usageProviderTotalsAndAverages,
   usageActivityUnixMs = null,
+  clientSessions = [],
   forceDetailsTab,
   showFilters = true,
 }: Props) {
@@ -914,14 +990,19 @@ export function UsageStatisticsPanel({
     [providerGroupMaps.displayNameByProvider],
   )
   const usageRequestDailyProviderHints = useMemo(
-    () => listUsageRequestDailyProviderHints(usageRequestDailyTotalsProviders),
-    [usageRequestDailyTotalsProviders, usageRequestsCachePrimedTick],
+    () => {
+      const mapped = listUsageRequestDailyProviderHints(usageRequestDailyTotalsProviders).map((provider) =>
+        resolveRequestProviderName(provider),
+      )
+      return [...new Set(mapped)]
+    },
+    [resolveRequestProviderName, usageRequestDailyTotalsProviders, usageRequestsCachePrimedTick],
   )
   const usageRequestAnalyticsProviderHints = useMemo(() => {
     const out: string[] = []
     for (const row of usageByProvider) {
       const provider = String(row?.provider ?? '').trim()
-      if (provider.length > 0) out.push(provider)
+      if (provider.length > 0) out.push(resolveRequestProviderName(provider))
     }
     const configuredProviders =
       config && typeof config === 'object' && config.providers && typeof config.providers === 'object'
@@ -929,10 +1010,21 @@ export function UsageStatisticsPanel({
         : []
     for (const provider of configuredProviders) {
       const key = String(provider ?? '').trim()
-      if (key.length > 0) out.push(key)
+      if (key.length > 0) out.push(resolveRequestProviderName(key))
     }
-    return out
-  }, [config, usageByProvider])
+    return [...new Set(out)]
+  }, [config, resolveRequestProviderName, usageByProvider])
+  const verifiedSessionIdSet = useMemo(() => {
+    const ids = new Set<string>()
+    for (const session of clientSessions ?? []) {
+      if (!session?.verified) continue
+      const codexSessionId = String(session.codex_session_id ?? '').trim()
+      if (codexSessionId) ids.add(codexSessionId)
+      const fallbackSessionId = String(session.id ?? '').trim()
+      if (fallbackSessionId) ids.add(fallbackSessionId)
+    }
+    return ids
+  }, [clientSessions])
   const usageRequestRefreshInFlightRef = useRef(false)
   const usageRequestGraphRefreshInFlightRef = useRef(false)
   const usageRequestGraphRefreshPendingRef = useRef(false)
@@ -954,8 +1046,8 @@ export function UsageStatisticsPanel({
     [usageRequestForceSyntheticProviders],
   )
   const usageRequestTestRows = useMemo(
-    () => buildUsageRequestTestRows(usageStatistics, usageWindowHours, usageRequestForceSyntheticProviders),
-    [usageRequestForceSyntheticProviders, usageStatistics, usageWindowHours],
+    () => buildUsageRequestTestRows(usageStatistics, usageWindowHours, usageRequestForceSyntheticProviders, clientSessions),
+    [clientSessions, usageRequestForceSyntheticProviders, usageStatistics, usageWindowHours],
   )
   const useGlobalRequestFilters = showFilters
   const requestFetchProviders = useMemo(
@@ -1112,7 +1204,6 @@ export function UsageStatisticsPanel({
           EMPTY_USAGE_REQUEST_ROWS
     : EMPTY_USAGE_REQUEST_ROWS
   const deferredUsageRequestGraphBaseRows = useDeferredValue(usageRequestGraphBaseRows)
-  const deferredUsageRequestGraphRowsByProvider = useDeferredValue(usageRequestGraphRowsByProvider)
   const graphBaseRowsForRequestRender = shouldPrepareRequestsData
     ? deferredUsageRequestGraphBaseRows.length > 0
       ? deferredUsageRequestGraphBaseRows
@@ -1120,13 +1211,6 @@ export function UsageStatisticsPanel({
         ? usageRequestGraphBaseRows
         : cachedGraphRows?.baseRows ?? EMPTY_USAGE_REQUEST_ROWS
     : EMPTY_USAGE_REQUEST_ROWS
-  const graphRowsByProviderForRequestRender = shouldPrepareRequestsData
-    ? Object.keys(deferredUsageRequestGraphRowsByProvider).length > 0
-      ? deferredUsageRequestGraphRowsByProvider
-      : Object.keys(usageRequestGraphRowsByProvider).length > 0
-        ? usageRequestGraphRowsByProvider
-        : cachedGraphRows?.rowsByProvider ?? EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER
-    : EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER
   const usageRequestGraphProviderCount = useMemo(
     () => Object.keys(usageRequestGraphRowsByProvider).length,
     [usageRequestGraphRowsByProvider],
@@ -1769,10 +1853,13 @@ export function UsageStatisticsPanel({
           ? requestPageCached.rows
           : usageRequestRows
     const expectedGraphProviders = pickUsageRequestDisplayProviders({
-      selectedProviders: usageRequestMultiFilters.provider,
+      selectedProviders:
+        usageRequestMultiFilters.provider == null
+          ? null
+          : [...new Set(usageRequestMultiFilters.provider.map((provider) => resolveRequestProviderName(provider)))],
       graphProviders: [
-        ...listTopUsageProvidersFromRows(graphBaseCandidate),
-        ...Object.keys(cachedGraph?.rowsByProvider ?? {}),
+        ...listTopUsageProvidersFromRows(graphBaseCandidate, resolveRequestProviderName),
+        ...Object.keys(cachedGraph?.rowsByProvider ?? {}).map((provider) => resolveRequestProviderName(provider)),
       ],
       dailyProviders: usageRequestDailyProviderHints,
       analyticsProviders: usageRequestAnalyticsProviderHints,
@@ -1835,6 +1922,7 @@ export function UsageStatisticsPanel({
     usageRequestDailyProviderHints,
     usageRequestMultiFilters.provider,
     usageRequestAnalyticsProviderHints,
+    resolveRequestProviderName,
     refreshUsageRequestGraphRows,
     refreshUsageRequests,
     usageRequestRows.length,
@@ -2000,64 +2088,127 @@ export function UsageStatisticsPanel({
     usageRequestRows,
   ])
 
-  const usageRequestProviderOptions = useMemo(() => {
-    if (!shouldPrepareRequestsData) return EMPTY_STRING_LIST
-    const counts = new Map<string, number>()
-    for (const row of graphBaseRowsForRequestRender) {
-      counts.set(row.provider, (counts.get(row.provider) ?? 0) + 1)
-    }
-    if (counts.size === 0) {
-      for (const provider of Object.keys(graphRowsByProviderForRequestRender)) {
-        counts.set(provider, graphRowsByProviderForRequestRender[provider]?.length ?? 0)
-      }
-    }
-    return [...counts.entries()]
-      .sort((a, b) => {
-        const providerOrder = compareUsageProvidersForDisplay(a[0], b[0])
-        if (providerOrder !== 0) return providerOrder
-        if (a[1] !== b[1]) return b[1] - a[1]
-        return a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: 'base' })
-      })
-      .map(([provider]) => provider)
-  }, [graphBaseRowsForRequestRender, graphRowsByProviderForRequestRender, shouldPrepareRequestsData])
+  const graphBaseRowsForVerifiedSessions = useMemo(() => {
+    if (!shouldPrepareRequestsData) return EMPTY_USAGE_REQUEST_ROWS
+    if (verifiedSessionIdSet.size === 0) return EMPTY_USAGE_REQUEST_ROWS
+    return graphBaseRowsForRequestRender.filter((row) => verifiedSessionIdSet.has(String(row.session_id ?? '').trim()))
+  }, [graphBaseRowsForRequestRender, shouldPrepareRequestsData, verifiedSessionIdSet])
 
-  const usageRequestDisplayProviders = useMemo(() => {
-    return pickUsageRequestDisplayProviders({
-      selectedProviders: usageRequestMultiFilters.provider,
-      graphProviders: usageRequestProviderOptions,
-      dailyProviders: usageRequestDailyProviderHints,
-      analyticsProviders: usageRequestAnalyticsProviderHints,
-      limit: Math.min(3, USAGE_REQUEST_GRAPH_COLORS.length),
-    })
+  const selectedRequestGraphProviders = useMemo(() => {
+    const selected = usageRequestMultiFilters.provider
+    if (!selected || selected.length === 0) return null
+    return [...new Set(selected.map((provider) => resolveRequestProviderName(provider)).filter(Boolean))]
+  }, [resolveRequestProviderName, usageRequestMultiFilters.provider])
+
+  const graphRowsForVerifiedSessions = useMemo(() => {
+    if (!shouldPrepareRequestsData) return EMPTY_USAGE_REQUEST_ROWS
+    if (!graphBaseRowsForVerifiedSessions.length) return EMPTY_USAGE_REQUEST_ROWS
+    if (!selectedRequestGraphProviders || selectedRequestGraphProviders.length === 0) {
+      return graphBaseRowsForVerifiedSessions
+    }
+    const providerSet = new Set(selectedRequestGraphProviders)
+    return graphBaseRowsForVerifiedSessions.filter((row) =>
+      providerSet.has(resolveRequestProviderName(row.provider)),
+    )
   }, [
-    usageRequestAnalyticsProviderHints,
-    usageRequestDailyProviderHints,
-    usageRequestMultiFilters.provider,
-    usageRequestProviderOptions,
+    graphBaseRowsForVerifiedSessions,
+    resolveRequestProviderName,
+    selectedRequestGraphProviders,
+    shouldPrepareRequestsData,
   ])
-  const activeRequestGraphProviders = usageRequestDisplayProviders
+
+  const graphRowsBySessionForRequestRender = useMemo(() => {
+    if (!shouldPrepareRequestsData) return EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER
+    if (!graphRowsForVerifiedSessions.length) return EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER
+    const grouped = new Map<string, UsageRequestEntry[]>()
+    graphRowsForVerifiedSessions.forEach((row) => {
+      const sessionId = String(row.session_id ?? '').trim()
+      if (!sessionId) return
+      const list = grouped.get(sessionId) ?? []
+      list.push(row)
+      grouped.set(sessionId, list)
+    })
+    const out: Record<string, UsageRequestEntry[]> = {}
+    grouped.forEach((rows, sessionId) => {
+      out[sessionId] = [...rows].sort((a, b) => b.unix_ms - a.unix_ms).slice(0, USAGE_REQUEST_GRAPH_SOURCE_LIMIT)
+    })
+    return out
+  }, [graphRowsForVerifiedSessions, shouldPrepareRequestsData])
+
+  const usageRequestSessionOptions = useMemo(() => {
+    if (!shouldPrepareRequestsData) return EMPTY_STRING_LIST
+    return Object.entries(graphRowsBySessionForRequestRender)
+      .map(([sessionId, rows]) => ({ sessionId, count: rows.length }))
+      .sort((a, b) => b.count - a.count || a.sessionId.localeCompare(b.sessionId, undefined, { numeric: true, sensitivity: 'base' }))
+      .map((item) => item.sessionId)
+  }, [graphRowsBySessionForRequestRender, shouldPrepareRequestsData])
+
+  const selectedRequestGraphSessions = useMemo(() => {
+    const selected = usageRequestMultiFilters.session
+    if (!selected || selected.length === 0) return null
+    return [...new Set(selected.map((sessionId) => sessionId.trim()).filter(Boolean))]
+  }, [usageRequestMultiFilters.session])
+
+  const usageRequestDisplaySessions = useMemo(() => {
+    if (!usageRequestSessionOptions.length) return EMPTY_STRING_LIST
+    if (selectedRequestGraphSessions && selectedRequestGraphSessions.length > 0) {
+      const available = new Set(usageRequestSessionOptions)
+      const selected = selectedRequestGraphSessions.filter((sessionId) => available.has(sessionId))
+      const rest = usageRequestSessionOptions.filter((sessionId) => !selected.includes(sessionId))
+      return [...selected, ...rest].slice(0, USAGE_REQUEST_GRAPH_MAX_SESSIONS)
+    }
+    return usageRequestSessionOptions.slice(0, USAGE_REQUEST_GRAPH_MAX_SESSIONS)
+  }, [selectedRequestGraphSessions, usageRequestSessionOptions])
+  const activeRequestGraphSessions = usageRequestDisplaySessions
+
+  const requestGraphColorByProvider = useMemo(() => {
+    const providers = Array.from(
+      new Set(graphRowsForVerifiedSessions.map((row) => resolveRequestProviderName(row.provider))),
+    ).sort(compareUsageProvidersForDisplay)
+    const map = new Map<string, string>()
+    providers.forEach((provider, index) => {
+      map.set(provider, USAGE_REQUEST_GRAPH_COLORS[index % USAGE_REQUEST_GRAPH_COLORS.length])
+    })
+    return map
+  }, [graphRowsForVerifiedSessions, resolveRequestProviderName])
+
+  const requestGraphProviderBySession = useMemo(() => {
+    const out = new Map<string, string>()
+    activeRequestGraphSessions.forEach((sessionId) => {
+      const rows = graphRowsBySessionForRequestRender[sessionId] ?? EMPTY_USAGE_REQUEST_ROWS
+      const counts = new Map<string, number>()
+      rows.forEach((row) => {
+        const provider = resolveRequestProviderName(row.provider)
+        counts.set(provider, (counts.get(provider) ?? 0) + 1)
+      })
+      const dominantProvider =
+        [...counts.entries()].sort((a, b) => b[1] - a[1] || compareUsageProvidersForDisplay(a[0], b[0]))[0]?.[0] ?? '-'
+      out.set(sessionId, dominantProvider)
+    })
+    return out
+  }, [activeRequestGraphSessions, graphRowsBySessionForRequestRender, resolveRequestProviderName])
 
   const usageRequestGraphPointCount = USAGE_REQUEST_GRAPH_SOURCE_LIMIT
 
-  const usageRequestRowsByProvider = useMemo(() => {
+  const usageRequestRowsBySession = useMemo(() => {
     if (!shouldPrepareRequestsData) return new Map<string, UsageRequestEntry[]>()
     const out = new Map<string, UsageRequestEntry[]>()
-    for (const provider of activeRequestGraphProviders) {
-      const rows = graphRowsByProviderForRequestRender[provider] ?? []
-      out.set(provider, rows.slice(0, USAGE_REQUEST_GRAPH_SOURCE_LIMIT))
+    for (const sessionId of activeRequestGraphSessions) {
+      const rows = graphRowsBySessionForRequestRender[sessionId] ?? []
+      out.set(sessionId, rows.slice(0, USAGE_REQUEST_GRAPH_SOURCE_LIMIT))
     }
     return out
-  }, [activeRequestGraphProviders, graphRowsByProviderForRequestRender, shouldPrepareRequestsData])
+  }, [activeRequestGraphSessions, graphRowsBySessionForRequestRender, shouldPrepareRequestsData])
 
   const usageRequestLineSeries = useMemo(() => {
     if (!shouldPrepareRequestsData) return []
-    const providers = [...activeRequestGraphProviders].sort(compareUsageProvidersForDisplay)
-    if (!providers.length) return []
+    const sessions = [...activeRequestGraphSessions]
+    if (!sessions.length) return []
     const pointCount = usageRequestGraphPointCount
-      const providerSeries = providers.map((provider, providerIndex) => {
+      const providerSeries = sessions.map((sessionId, sessionIndex) => {
         const values = new Array<number>(pointCount).fill(0)
         const present = new Array<boolean>(pointCount).fill(false)
-        const rows = usageRequestRowsByProvider.get(provider) ?? []
+        const rows = usageRequestRowsBySession.get(sessionId) ?? []
       const count = Math.min(pointCount, rows.length)
       // Plot request points as left-old/right-new:
       // point 1 is the oldest entry within the latest-N window,
@@ -2067,45 +2218,110 @@ export function UsageStatisticsPanel({
         values[idx] = row.total_tokens
         present[idx] = true
       }
+      const dominantProvider = requestGraphProviderBySession.get(sessionId) ?? '-'
       return {
-        kind: 'provider' as const,
-        provider,
-        color: USAGE_REQUEST_GRAPH_COLORS[providerIndex % USAGE_REQUEST_GRAPH_COLORS.length],
+        kind: 'session' as const,
+        id: sessionId,
+        provider: shortSessionIdForLegend(sessionId),
+        providerName: dominantProvider,
+        color:
+          requestGraphColorByProvider.get(dominantProvider) ??
+          USAGE_REQUEST_GRAPH_COLORS[sessionIndex % USAGE_REQUEST_GRAPH_COLORS.length],
         values,
         present,
       }
     })
     return providerSeries
-  }, [activeRequestGraphProviders, shouldPrepareRequestsData, usageRequestGraphPointCount, usageRequestRowsByProvider])
+  }, [
+    activeRequestGraphSessions,
+    shouldPrepareRequestsData,
+    usageRequestGraphPointCount,
+    usageRequestRowsBySession,
+    requestGraphColorByProvider,
+    requestGraphProviderBySession,
+  ])
+  const [requestLineAnimTick, setRequestLineAnimTick] = useState(0)
+  useEffect(() => {
+    if (!isRequestsTab) return
+    if (!usageRequestUsingTestFallback) return
+    if (usageRequestLineSeries.length === 0) return
+    const timer = window.setInterval(() => {
+      setRequestLineAnimTick((tick) => (tick + 1) % 10_000)
+    }, 680)
+    return () => window.clearInterval(timer)
+  }, [isRequestsTab, usageRequestLineSeries.length, usageRequestUsingTestFallback])
+  const renderedUsageRequestLineSeries = useMemo(() => {
+    if (!isRequestsTab || !usageRequestUsingTestFallback) return usageRequestLineSeries
+    return usageRequestLineSeries.map((series) => {
+      const activeCount = series.present.reduce((sum, isPresent) => sum + (isPresent ? 1 : 0), 0)
+      if (activeCount <= 1) return series
+      const shift = requestLineAnimTick % activeCount
+      if (shift === 0) return series
+      const activeValues = series.values.slice(0, activeCount)
+      const rotated = activeValues.map((_, idx) => activeValues[(idx + shift) % activeCount])
+      const values = series.values.slice()
+      for (let idx = 0; idx < activeCount; idx += 1) values[idx] = rotated[idx]
+      return {
+        ...series,
+        values,
+      }
+    })
+  }, [isRequestsTab, requestLineAnimTick, usageRequestLineSeries, usageRequestUsingTestFallback])
 
   const usageRequestLineMaxValue = useMemo(() => {
     let maxValue = 0
-    for (const series of usageRequestLineSeries) {
+    for (const series of renderedUsageRequestLineSeries) {
       for (const value of series.values) {
         if (value > maxValue) maxValue = value
       }
     }
     return Math.max(1, maxValue)
-  }, [usageRequestLineSeries])
+  }, [renderedUsageRequestLineSeries])
   const usageRequestLegendSeries = useMemo(
-    () => usageRequestLineSeries.filter((series) => series.kind === 'provider'),
-    [usageRequestLineSeries],
+    () => {
+      const colorByProvider = new Map<string, string>()
+      renderedUsageRequestLineSeries.forEach((series) => {
+        const providerName = String((series as { providerName?: string }).providerName ?? '').trim() || '-'
+        if (!colorByProvider.has(providerName)) colorByProvider.set(providerName, series.color)
+      })
+      return [...colorByProvider.entries()]
+        .sort((a, b) => compareUsageProvidersForDisplay(a[0], b[0]))
+        .map(([provider, color]) => ({ provider, color }))
+    },
+    [renderedUsageRequestLineSeries],
+  )
+  const usageRequestSessionLegendRows = useMemo(
+    () =>
+      renderedUsageRequestLineSeries.map((series) => ({
+        id: String((series as { id?: string }).id ?? series.provider),
+        sidLabel: series.provider,
+        providerName: String((series as { providerName?: string }).providerName ?? '').trim() || '-',
+        color: series.color,
+      })),
+    [renderedUsageRequestLineSeries],
   )
   const usageRequestChartShownCount = useMemo(() => {
     let maxCount = 0
-    for (const series of usageRequestLineSeries) {
+    for (const series of renderedUsageRequestLineSeries) {
       const count = series.present.reduce((sum, present) => sum + (present ? 1 : 0), 0)
       if (count > maxCount) maxCount = count
     }
     return maxCount
-  }, [usageRequestLineSeries])
+  }, [renderedUsageRequestLineSeries])
 
   const usageRequestDailyWindowRows = useMemo(() => {
     if (!isRequestsTab || !usageRequestDailyTotalsDays.length) return []
     const byDay = new Map<number, Record<string, number>>()
     for (const row of usageRequestDailyTotalsDays) {
       if (!row || typeof row.day_start_unix_ms !== 'number') continue
-      byDay.set(row.day_start_unix_ms, row.provider_totals ?? {})
+      const normalizedTotals: Record<string, number> = {}
+      for (const [provider, rawValue] of Object.entries(row.provider_totals ?? {})) {
+        const value = Number(rawValue)
+        if (!Number.isFinite(value) || value <= 0) continue
+        const displayProvider = resolveRequestProviderName(provider)
+        normalizedTotals[displayProvider] = (normalizedTotals[displayProvider] ?? 0) + value
+      }
+      byDay.set(row.day_start_unix_ms, normalizedTotals)
     }
     if (!byDay.size) return []
     const latestDay = Math.max(...byDay.keys())
@@ -2122,7 +2338,7 @@ export function UsageStatisticsPanel({
       day,
       providerTotals: byDay.get(day) ?? {},
     }))
-  }, [isRequestsTab, usageRequestDailyTotalsDays])
+  }, [isRequestsTab, resolveRequestProviderName, usageRequestDailyTotalsDays])
 
   const dailyTotalsProviders = useMemo(() => {
     if (!usageRequestDailyWindowRows.length) return EMPTY_STRING_LIST
@@ -2326,7 +2542,8 @@ export function UsageStatisticsPanel({
   const requestChartWidth = 1000
   const requestChartHeight = 176
   const requestChartMinX = 54
-  const requestChartMaxX = 982
+  const requestChartRightPadding = 18
+  const requestChartMaxX = requestChartWidth - requestChartRightPadding
   const requestChartTopY = 14
   const requestChartBottomY = 136
   const [lineHoverIndex, setLineHoverIndex] = useState<number | null>(null)
@@ -2335,7 +2552,8 @@ export function UsageStatisticsPanel({
     if (!isRequestsTab) return null
     if (lineHoverIndex == null) return null
     if (lineHoverIndex < 0 || lineHoverIndex >= usageRequestGraphPointCount) return null
-    const rows = usageRequestLineSeries.map((series) => ({
+    const rows = renderedUsageRequestLineSeries.map((series) => ({
+      id: String((series as { id?: string }).id ?? series.provider),
       provider: series.provider,
       color: series.color,
       value: series.values[lineHoverIndex] ?? 0,
@@ -2345,7 +2563,47 @@ export function UsageStatisticsPanel({
       rows,
       total: rows.reduce((sum, row) => sum + row.value, 0),
     }
-  }, [isRequestsTab, lineHoverIndex, usageRequestGraphPointCount, usageRequestLineSeries])
+  }, [isRequestsTab, lineHoverIndex, renderedUsageRequestLineSeries, usageRequestGraphPointCount])
+  const usageRequestSidRowsWithPosition = useMemo(() => {
+    if (!usageRequestSessionLegendRows.length) return []
+    const rowHeight = 16
+    const panelHeight = Math.max(24, requestChartBottomY - requestChartTopY)
+    const listHeight = Math.max(24, panelHeight)
+    const minTop = 0
+    const maxTop = Math.max(0, listHeight - rowHeight)
+    return usageRequestSessionLegendRows
+      .map((item) => {
+        const series = renderedUsageRequestLineSeries.find(
+          (entry) => String((entry as { id?: string }).id ?? entry.provider) === item.id,
+        )
+        if (!series) return null
+        let latestIndex = -1
+        for (let idx = series.present.length - 1; idx >= 0; idx -= 1) {
+          if (series.present[idx]) {
+            latestIndex = idx
+            break
+          }
+        }
+        if (latestIndex < 0) return null
+        const value = series.values[latestIndex] ?? 0
+        const y =
+          requestChartBottomY -
+          (value / Math.max(1, usageRequestLineMaxValue)) * (requestChartBottomY - requestChartTopY)
+        const top = Math.min(
+          maxTop,
+          Math.max(minTop, y - requestChartTopY - rowHeight / 2),
+        )
+        return { ...item, top, latestValue: value }
+      })
+      .filter((item): item is { id: string; sidLabel: string; providerName: string; color: string; top: number; latestValue: number } => item != null)
+      .sort((a, b) => a.top - b.top)
+  }, [
+    requestChartBottomY,
+    requestChartTopY,
+    usageRequestLineMaxValue,
+    renderedUsageRequestLineSeries,
+    usageRequestSessionLegendRows,
+  ])
   const selectedTimeFilterDay = selectedRequestTimeFilterDay
   const timeFilterCalendarCells = useMemo(() => {
     const monthStart = timePickerMonthStartMs
@@ -2488,17 +2746,18 @@ export function UsageStatisticsPanel({
           {usageRequestError ? <div className="aoHint">Failed to load request details: {usageRequestError}</div> : null}
           <div className="aoUsageRequestChartCard">
             <div className="aoSwitchboardSectionHead">
-              <div className="aoMiniLabel">Latest 120 Requests (Total Tokens)</div>
+              <div className="aoMiniLabel">Latest 120 Verified Session Requests (Total Tokens)</div>
               <div className="aoHint">{usageRequestChartShownCount.toLocaleString()} requests shown</div>
             </div>
-            {usageRequestLineSeries.length ? (
-              <div className="aoUsageRequestLineGraphWrap">
+            {renderedUsageRequestLineSeries.length ? (
+              <div className="aoUsageRequestLineGraphShell">
+                <div className="aoUsageRequestLineGraphWrap">
                 <svg
                   className="aoUsageRequestLineGraph"
                   viewBox={`0 0 ${requestChartWidth} ${requestChartHeight}`}
                   preserveAspectRatio="none"
                   role="img"
-                  aria-label="Request token trend by provider"
+                  aria-label="Request token trend by verified session"
                   onMouseLeave={() => {
                     setLineHoverIndex(null)
                     setLineHoverX(null)
@@ -2545,7 +2804,7 @@ export function UsageStatisticsPanel({
                 <text x={requestChartMaxX} y={requestChartBottomY + 16} textAnchor="end" fill="rgba(13, 18, 32, 0.52)" fontSize="10">
                   Newer
                 </text>
-                {usageRequestLineSeries.map((series) => {
+                {renderedUsageRequestLineSeries.map((series) => {
                   const points = series.values.map((value, idx) => {
                     const x =
                       requestChartMinX +
@@ -2565,7 +2824,7 @@ export function UsageStatisticsPanel({
                   if (!pathD.trim()) return null
                   return (
                     <path
-                      key={`request-line-series-${series.provider}`}
+                      key={`request-line-series-${String((series as { id?: string }).id ?? series.provider)}`}
                       d={pathD}
                       fill="none"
                       stroke={series.color}
@@ -2588,7 +2847,7 @@ export function UsageStatisticsPanel({
                   />
                 ) : null}
                 {lineHoverIndex != null
-                  ? usageRequestLineSeries.map((series) => {
+                  ? renderedUsageRequestLineSeries.map((series) => {
                       if (!series.present[lineHoverIndex]) return null
                       const value = series.values[lineHoverIndex] ?? 0
                       const x =
@@ -2598,7 +2857,15 @@ export function UsageStatisticsPanel({
                       const y =
                         requestChartBottomY -
                         (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
-                      return <circle key={`line-hover-dot-${series.provider}`} cx={x} cy={y} r="2.6" fill={series.color} />
+                      return (
+                        <circle
+                          key={`line-hover-dot-${String((series as { id?: string }).id ?? series.provider)}`}
+                          cx={x}
+                          cy={y}
+                          r="2.2"
+                          fill={series.color}
+                        />
+                      )
                     })
                   : null}
                 </svg>
@@ -2608,7 +2875,7 @@ export function UsageStatisticsPanel({
                       Point {lineHoverData.point}/{usageRequestGraphPointCount} · Total {lineHoverData.total.toLocaleString()}
                     </span>
                     {lineHoverData.rows.map((row) => (
-                      <span key={`hover-overlay-${row.provider}`} className="aoUsageRequestHoverSummaryItem">
+                      <span key={`hover-overlay-${row.id}`} className="aoUsageRequestHoverSummaryItem">
                         <i style={{ background: row.color }} />
                         {row.provider}: {row.value.toLocaleString()}
                       </span>
@@ -2616,13 +2883,47 @@ export function UsageStatisticsPanel({
                   </div>
                 ) : null}
               </div>
+                {usageRequestSidRowsWithPosition.length ? (
+                  <div
+                    className="aoUsageRequestSidPanel"
+                    aria-label="Verified session ids in chart"
+                    style={{
+                      marginTop: `${requestChartTopY}px`,
+                      height: `${requestChartBottomY - requestChartTopY}px`,
+                    }}
+                  >
+                    <div className="aoMiniLabel aoUsageRequestSidTitle">SID</div>
+                    <div className="aoUsageRequestSidList">
+                      {usageRequestSidRowsWithPosition.map((item) => (
+                        <div
+                          key={`sid-row-${item.id}`}
+                          className="aoUsageRequestSidRow"
+                          style={{ top: `${item.top}px`, zIndex: Math.max(1, Math.round(item.latestValue)) }}
+                        >
+                          <span className="aoUsageRequestSidChip">
+                            <i style={{ background: item.color }} />
+                            <span className="aoUsageRequestSidLabel">{item.sidLabel}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             ) : (
-              <div className="aoHint">No recent rows for line graph.</div>
+              <div className="aoHint">
+                {verifiedSessionIdSet.size === 0
+                  ? 'No verified sessions yet.'
+                  : 'No recent verified-session rows for line graph.'}
+              </div>
             )}
             {usageRequestLegendSeries.length ? (
               <div className="aoUsageRequestLegend">
                 {usageRequestLegendSeries.map((series) => (
-                  <span key={`request-line-legend-${series.provider}`} className="aoUsageRequestLegendItem">
+                  <span
+                    key={`request-line-legend-${String((series as { id?: string }).id ?? series.provider)}`}
+                    className="aoUsageRequestLegendItem"
+                  >
                     <i style={{ background: series.color }} />
                     {series.provider}
                   </span>

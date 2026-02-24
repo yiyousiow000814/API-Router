@@ -906,6 +906,7 @@ export default function App() {
   } = useTopNavIntentPrefetch({
     activePage,
     refreshUsageStatistics,
+    clientSessions: status?.client_sessions ?? [],
   })
   const usageRequestsWarmupStartedRef = useRef(false)
   useEffect(() => {
@@ -1211,6 +1212,7 @@ export default function App() {
                 formatPricingSource,
                 usageProviderTotalsAndAverages,
                 usageActivityUnixMs: status?.last_activity_unix_ms ?? null,
+                clientSessions: status?.client_sessions ?? [],
               }}
               switchboardProps={{
                 providerSwitchStatus,

@@ -746,8 +746,16 @@
   gap: 8px;
 }
 
+.aoUsageRequestLineGraphShell {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
 .aoUsageRequestLineGraphWrap {
   position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .aoUsageRequestLineGraph {
@@ -810,6 +818,70 @@
   width: 8px;
   height: 8px;
   border-radius: 999px;
+}
+
+.aoUsageRequestSidPanel {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  width: 122px;
+  border-left: 1px dashed rgba(13, 18, 32, 0.2);
+  padding: 0 0 0 5px;
+  pointer-events: none;
+  background: transparent;
+}
+
+.aoUsageRequestSidTitle {
+  position: absolute;
+  left: 6px;
+  top: -12px;
+  font-size: 10px;
+}
+
+.aoUsageRequestSidList {
+  position: relative;
+  overflow: hidden;
+  height: 100%;
+  padding-right: 4px;
+}
+
+.aoUsageRequestSidRow {
+  position: absolute;
+  left: 0;
+  right: auto;
+  display: inline-flex;
+  align-items: center;
+  max-width: calc(100% - 2px);
+}
+
+.aoUsageRequestSidChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: calc(100% - 2px);
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.14);
+  background: rgba(249, 250, 252, 0.94);
+  box-shadow: 0 1px 2px rgba(13, 18, 32, 0.1);
+}
+
+.aoUsageRequestSidChip i {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.aoUsageRequestSidLabel {
+  min-width: 0;
+  max-width: 84px;
+  font-size: 10px;
+  line-height: 1.25;
+  color: rgba(13, 18, 32, 0.78);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .aoUsageRequestDailyBars {
