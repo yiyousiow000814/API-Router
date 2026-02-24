@@ -28,8 +28,8 @@ type Params = {
   status: Status | null
   setConfig: Dispatch<SetStateAction<Config | null>>
   baselineBaseUrls: Record<string, string>
-  baselineProviderGroups: Record<string, string>
   saveProvider: (name: string) => Promise<void>
+  openProviderGroupManager: (provider: string) => void
   setProviderDisabled: (name: string, disabled: boolean) => Promise<void>
   deleteProvider: (name: string) => Promise<void>
   openKeyModal: (provider: string) => Promise<void>
@@ -128,8 +128,8 @@ export function useProviderPanelUi(params: Params) {
     status,
     setConfig,
     baselineBaseUrls,
-    baselineProviderGroups,
     saveProvider,
+    openProviderGroupManager,
     setProviderDisabled,
     deleteProvider,
     openKeyModal,
@@ -233,8 +233,8 @@ export function useProviderPanelUi(params: Params) {
         status,
         setConfig,
         baselineBaseUrls,
-        baselineProviderGroups,
         saveProvider,
+        openProviderGroupManager,
         setProviderDisabled,
         deleteProvider,
         openKeyModal,
@@ -261,8 +261,8 @@ export function useProviderPanelUi(params: Params) {
       status,
       setConfig,
       baselineBaseUrls,
-      baselineProviderGroups,
       saveProvider,
+      openProviderGroupManager,
       setProviderDisabled,
       deleteProvider,
       openKeyModal,

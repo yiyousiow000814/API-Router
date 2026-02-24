@@ -14,7 +14,6 @@ type Params = {
   setStatus: Dispatch<SetStateAction<Status | null>>
   setOverride?: Dispatch<SetStateAction<string>>
   setBaselineBaseUrls: Dispatch<SetStateAction<Record<string, string>>>
-  setBaselineProviderGroups: Dispatch<SetStateAction<Record<string, string>>>
   setGatewayTokenPreview: Dispatch<SetStateAction<string>>
   devStatus: Status
   devConfig: Config
@@ -32,7 +31,6 @@ export function useAppActions(params: Params) {
     flashToast,
     setStatus,
     setBaselineBaseUrls,
-    setBaselineProviderGroups,
     setGatewayTokenPreview,
     devStatus,
     devConfig,
@@ -143,13 +141,8 @@ export function useAppActions(params: Params) {
     setBaselineBaseUrls(
       Object.fromEntries(Object.entries(devConfig.providers).map(([name, provider]) => [name, provider.base_url])),
     )
-    setBaselineProviderGroups(
-      Object.fromEntries(
-        Object.entries(devConfig.providers).map(([name, provider]) => [name, (provider.group ?? '').trim()]),
-      ),
-    )
     setGatewayTokenPreview('ao_dev********7f2a')
-  }, [devConfig, devStatus, setBaselineBaseUrls, setBaselineProviderGroups, setConfig, setGatewayTokenPreview, setStatus])
+  }, [devConfig, devStatus, setBaselineBaseUrls, setConfig, setGatewayTokenPreview, setStatus])
 
   return {
     setSessionPreferred,

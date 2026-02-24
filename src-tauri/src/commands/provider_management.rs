@@ -587,6 +587,87 @@ pub(crate) fn set_provider_disabled(
 }
 
 #[tauri::command]
+pub(crate) fn set_provider_group(
+    state: tauri::State<'_, app_state::AppState>,
+    name: String,
+    group: Option<String>,
+) -> Result<(), String> {
+    let normalized_group = group.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+    {
+        let mut cfg = state.gateway.cfg.write();
+        let provider = cfg
+            .providers
+            .get_mut(&name)
+            .ok_or_else(|| format!("unknown provider: {name}"))?;
+        if provider.group == normalized_group {
+            return Ok(());
+        }
+        provider.group = normalized_group.clone();
+    }
+    persist_config(&state).map_err(|e| e.to_string())?;
+    state.gateway.store.add_event(
+        &name,
+        "info",
+        "config.provider_group_updated",
+        "provider group updated",
+        serde_json::json!({ "group": normalized_group }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn set_providers_group(
+    state: tauri::State<'_, app_state::AppState>,
+    providers: Vec<String>,
+    group: Option<String>,
+) -> Result<(), String> {
+    if providers.is_empty() {
+        return Ok(());
+    }
+    let normalized_group = group.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+    let mut updated = Vec::new();
+    {
+        let mut cfg = state.gateway.cfg.write();
+        for name in providers {
+            let provider = cfg
+                .providers
+                .get_mut(&name)
+                .ok_or_else(|| format!("unknown provider: {name}"))?;
+            if provider.group != normalized_group {
+                provider.group = normalized_group.clone();
+                updated.push(name);
+            }
+        }
+    }
+    if updated.is_empty() {
+        return Ok(());
+    }
+    persist_config(&state).map_err(|e| e.to_string())?;
+    state.gateway.store.add_event(
+        "gateway",
+        "info",
+        "config.provider_group_bulk_updated",
+        "provider groups updated",
+        serde_json::json!({ "group": normalized_group, "providers": updated }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) fn delete_provider(
     state: tauri::State<'_, app_state::AppState>,
     name: String,

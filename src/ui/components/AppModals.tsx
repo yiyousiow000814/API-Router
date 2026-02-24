@@ -76,6 +76,7 @@ type Props = {
   setNewProviderName: Dispatch<SetStateAction<string>>
   setNewProviderBaseUrl: Dispatch<SetStateAction<string>>
   addProvider: () => Promise<void>
+  openProviderGroupManager: (provider?: string) => void
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
   rawConfigModalOpen: boolean
   rawConfigHomeOptions: string[]
@@ -241,6 +242,7 @@ export function AppModals(props: Props) {
     setNewProviderName,
     setNewProviderBaseUrl,
     addProvider,
+    openProviderGroupManager,
     setConfigModalOpen,
     rawConfigModalOpen,
     rawConfigHomeOptions,
@@ -446,6 +448,7 @@ requires_openai_auth = true`}
         setNewProviderName={setNewProviderName}
         setNewProviderBaseUrl={setNewProviderBaseUrl}
         onAddProvider={() => void addProvider()}
+        onOpenGroupManager={() => openProviderGroupManager()}
         onClose={() => setConfigModalOpen(false)}
         providerListRef={providerListRef}
         orderedConfigProviders={orderedConfigProviders}

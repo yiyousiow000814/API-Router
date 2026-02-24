@@ -28,6 +28,70 @@ export function useProviderCrudActions({
   refreshConfig,
   flashToast,
 }: ProviderCrudActions) {
+  const setProviderGroup = useCallback(
+    async (name: string, group: string | null) => {
+      if (isDevPreview) {
+        setConfig((prev) => {
+          if (!prev?.providers?.[name]) return prev
+          return {
+            ...prev,
+            providers: {
+              ...prev.providers,
+              [name]: {
+                ...prev.providers[name],
+                group: group && group.trim() ? group.trim() : null,
+              },
+            },
+          }
+        })
+        flashToast(`[TEST] Group updated: ${name}`)
+        return
+      }
+      try {
+        await invoke('set_provider_group', { name, group: group && group.trim() ? group.trim() : null })
+        flashToast(group && group.trim() ? `Group updated: ${name} -> ${group.trim()}` : `Group cleared: ${name}`)
+        await refreshConfig()
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+    },
+    [flashToast, isDevPreview, refreshConfig, setConfig],
+  )
+
+  const setProvidersGroup = useCallback(
+    async (providers: string[], group: string | null) => {
+      const normalizedProviders = providers.map((name) => name.trim()).filter(Boolean)
+      if (!normalizedProviders.length) return
+      const normalizedGroup = group && group.trim() ? group.trim() : null
+      if (isDevPreview) {
+        setConfig((prev) => {
+          if (!prev) return prev
+          const nextProviders = { ...prev.providers }
+          normalizedProviders.forEach((name) => {
+            const current = nextProviders[name]
+            if (!current) return
+            nextProviders[name] = { ...current, group: normalizedGroup }
+          })
+          return { ...prev, providers: nextProviders }
+        })
+        flashToast(`[TEST] Group updated (${normalizedProviders.length})`)
+        return
+      }
+      try {
+        await invoke('set_providers_group', { providers: normalizedProviders, group: normalizedGroup })
+        flashToast(
+          normalizedGroup
+            ? `Group updated: ${normalizedGroup} (${normalizedProviders.length} providers)`
+            : `Group cleared: ${normalizedProviders.length} providers`,
+        )
+        await refreshConfig()
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+    },
+    [flashToast, isDevPreview, refreshConfig, setConfig],
+  )
+
   const saveProvider = useCallback(
     async (name: string) => {
       if (!config) return
@@ -143,6 +207,8 @@ export function useProviderCrudActions({
 
   return {
     saveProvider,
+    setProviderGroup,
+    setProvidersGroup,
     setProviderDisabled,
     deleteProvider,
     addProvider,

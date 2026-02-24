@@ -1,7 +1,6 @@
 import type * as React from 'react'
 import type { Config, Status } from '../types'
 import { fmtWhen } from './format'
-import { normalizeProviderGroupName } from './providerGroups'
 import {
   getVisibleBudgetHardCapPeriods,
   isBudgetInfoQuota,
@@ -11,7 +10,6 @@ type CreateProviderCardRendererOptions = {
   config: Config | null
   status: Status | null
   baselineBaseUrls: Record<string, string>
-  baselineProviderGroups: Record<string, string>
   dragOverProvider: string | null
   dragBaseTop: number
   dragOffsetY: number
@@ -26,6 +24,7 @@ type CreateProviderCardRendererOptions = {
   commitRenameProvider: (name: string) => Promise<void>
   saveProvider: (name: string) => Promise<void>
   setProviderDisabled: (name: string, disabled: boolean) => Promise<void>
+  openProviderGroupManager: (provider: string) => void
   openKeyModal: (provider: string) => Promise<void>
   clearKey: (provider: string) => Promise<void>
   deleteProvider: (provider: string) => Promise<void>
@@ -55,11 +54,10 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
     const hardCapWarningText = allVisibleHardCapsDisabled
       ? 'All shown hard caps are off, so budget limits will not auto-close this provider.'
       : null
+    const groupName = (p.group ?? '').trim()
     const activeProviderCount = Object.values(options.config?.providers ?? {}).filter((provider) => !provider.disabled).length
     const canDeactivate = p.disabled || activeProviderCount > 1
-    const currentGroup = normalizeProviderGroupName(p.group)
-    const baselineGroup = normalizeProviderGroupName(options.baselineProviderGroups[name])
-    const hasPendingChanges = p.base_url !== (options.baselineBaseUrls[name] ?? '') || currentGroup !== baselineGroup
+    const hasPendingChanges = p.base_url !== (options.baselineBaseUrls[name] ?? '')
     const isDragOver = options.dragOverProvider === name
     const dragStyle = overlay
       ? {
@@ -223,25 +221,12 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     )
                   }
                 />
-                <div className="aoMiniLabel">Group</div>
-                <input
-                  className="aoInput"
-                  value={p.group ?? ''}
-                  placeholder="Optional group"
-                  onChange={(e) =>
-                    options.setConfig((c) =>
-                      c
-                        ? {
-                            ...c,
-                            providers: {
-                              ...c.providers,
-                              [name]: { ...c.providers[name], group: e.target.value },
-                            },
-                          }
-                        : c,
-                    )
-                  }
-                />
+                {p.group ? (
+                  <>
+                    <div className="aoMiniLabel">Group</div>
+                    <div className="aoKeyValue">{p.group}</div>
+                  </>
+                ) : null}
                 <div className="aoMiniLabel">Key</div>
                 <div className="aoKeyValue">{p.has_key ? (p.key_preview ? p.key_preview : 'set') : 'empty'}</div>
               </>
@@ -256,44 +241,58 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
             </div>
             {options.isProviderOpen(name) ? (
               <>
-                <div className="aoUsageBtns">
-                  <button
-                    className="aoTinyBtn"
-                    onClick={() => void options.openUsageBaseModal(name, p.usage_base_url ?? undefined)}
-                  >
-                    Usage Base
-                  </button>
-                  {p.usage_base_url ? (
-                    <button className="aoTinyBtn" onClick={() => void options.clearUsageBaseUrl(name)}>
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-                {showHardCapToggles ? (
-                  <div className="aoUsageHardCapGrid">
-                    {visibleHardCapPeriods.map((period) => (
-                      <label key={period} className="aoUsageHardCapItem">
-                        <input
-                          type="checkbox"
-                          checked={quotaHardCap[period]}
-                          onChange={(event) => void options.setProviderQuotaHardCap(name, period, event.target.checked)}
-                        />
-                        <span>{period} hard cap</span>
-                      </label>
-                    ))}
-                  </div>
-                ) : null}
-                <div className="aoHint">Usage base sets the usage endpoint. If empty, we use the provider base URL.</div>
-                {showHardCapToggles ? (
-                  <div className="aoHint">Hard cap controls whether {budgetHardCapLabel} budget exhaustion auto-closes this provider.</div>
+                {groupName ? (
+                  <>
+                    <div className="aoHint">Usage controls are managed in Group Manager.</div>
+                    <div className="aoHint">{`Current group: ${groupName}`}</div>
+                    <div className="aoUsageBtns">
+                      <button className="aoTinyBtn" onClick={() => options.openProviderGroupManager(name)}>
+                        Open Group Manager
+                      </button>
+                    </div>
+                  </>
                 ) : (
-                  <div className="aoHint">No budget windows detected for this provider, so hard cap toggles are hidden.</div>
+                  <>
+                    <div className="aoUsageBtns">
+                      <button
+                        className="aoTinyBtn"
+                        onClick={() => void options.openUsageBaseModal(name, p.usage_base_url ?? undefined)}
+                      >
+                        Usage Base
+                      </button>
+                      {p.usage_base_url ? (
+                        <button className="aoTinyBtn" onClick={() => void options.clearUsageBaseUrl(name)}>
+                          Clear
+                        </button>
+                      ) : null}
+                    </div>
+                    {showHardCapToggles ? (
+                      <div className="aoUsageHardCapGrid">
+                        {visibleHardCapPeriods.map((period) => (
+                          <label key={period} className="aoUsageHardCapItem">
+                            <input
+                              type="checkbox"
+                              checked={quotaHardCap[period]}
+                              onChange={(event) => void options.setProviderQuotaHardCap(name, period, event.target.checked)}
+                            />
+                            <span>{period} hard cap</span>
+                          </label>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="aoHint">Usage base sets the usage endpoint. If empty, we use the provider base URL.</div>
+                    {showHardCapToggles ? (
+                      <div className="aoHint">Hard cap controls whether {budgetHardCapLabel} budget exhaustion auto-closes this provider.</div>
+                    ) : (
+                      <div className="aoHint">No budget windows detected for this provider, so hard cap toggles are hidden.</div>
+                    )}
+                    {hardCapWarningText ? (
+                      <div className="aoHint" style={{ color: 'rgba(145, 12, 43, 0.92)' }}>
+                        {hardCapWarningText}
+                      </div>
+                    ) : null}
+                  </>
                 )}
-                {hardCapWarningText ? (
-                  <div className="aoHint" style={{ color: 'rgba(145, 12, 43, 0.92)' }}>
-                    {hardCapWarningText}
-                  </div>
-                ) : null}
                 <div className="aoHint">
                   updated:{' '}
                   {options.status?.quota?.[name]?.updated_at_unix_ms

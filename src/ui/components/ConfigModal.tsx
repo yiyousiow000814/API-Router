@@ -12,6 +12,7 @@ type Props = {
   setNewProviderName: (next: string) => void
   setNewProviderBaseUrl: (next: string) => void
   onAddProvider: () => void
+  onOpenGroupManager: () => void
   onClose: () => void
   providerListRef: React.RefObject<HTMLDivElement | null>
   orderedConfigProviders: string[]
@@ -32,6 +33,7 @@ export function ConfigModal({
   setNewProviderName,
   setNewProviderBaseUrl,
   onAddProvider,
+  onOpenGroupManager,
   onClose,
   providerListRef,
   orderedConfigProviders,
@@ -47,6 +49,9 @@ export function ConfigModal({
         <div className="aoModalHeader">
           <div className="aoModalTitle">Config</div>
           <div className="aoRow">
+            <button className="aoBtn" onClick={onOpenGroupManager}>
+              Group Manager
+            </button>
             <button className="aoBtn" onClick={() => setAllProviderPanels(!allProviderPanelsOpen)}>
               {allProviderPanelsOpen ? 'Hide all' : 'Show all'}
             </button>
