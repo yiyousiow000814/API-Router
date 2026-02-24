@@ -48,14 +48,17 @@ export function ConfigModal({
       <div className="aoModal aoModalWide" onClick={(e) => e.stopPropagation()}>
         <div className="aoModalHeader">
           <div className="aoModalTitle">Config</div>
-          <div className="aoRow">
-            <button className="aoBtn" onClick={onOpenGroupManager}>
+          <div className="aoRow aoConfigHeaderActions">
+            <button className="aoBtn aoBtnPrimary aoConfigHeaderBtn" onClick={onOpenGroupManager}>
               Group Manager
             </button>
-            <button className="aoBtn" onClick={() => setAllProviderPanels(!allProviderPanelsOpen)}>
+            <button
+              className={`aoBtn aoConfigHeaderBtn${allProviderPanelsOpen ? ' aoConfigHeaderBtnToggleOn' : ''}`}
+              onClick={() => setAllProviderPanels(!allProviderPanelsOpen)}
+            >
               {allProviderPanelsOpen ? 'Hide all' : 'Show all'}
             </button>
-            <button className="aoBtn" onClick={onClose}>
+            <button className="aoBtn aoBtnDangerSoft aoConfigHeaderBtn aoConfigHeaderBtnClose" onClick={onClose}>
               Close
             </button>
           </div>

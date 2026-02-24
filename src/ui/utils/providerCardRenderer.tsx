@@ -156,13 +156,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   </svg>
                   <span>Key</span>
                 </button>
-                <button className="aoActionBtn" title="Clear key" onClick={() => void options.clearKey(name)}>
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="m7 21-4-4a2 2 0 0 1 0-3l10-10a2 2 0 0 1 3 0l5 5a2 2 0 0 1 0 3l-8 8" />
-                    <path d="M6 18h8" />
-                  </svg>
-                  <span>Clear</span>
-                </button>
                 <button
                   className="aoActionBtn aoActionBtnDanger"
                   title="Delete provider"
@@ -255,11 +248,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                       >
                         Usage Base
                       </button>
-                      {p.usage_base_url ? (
-                        <button className="aoTinyBtn" onClick={() => void options.clearUsageBaseUrl(name)}>
-                          Clear
-                        </button>
-                      ) : null}
                     </div>
                     {showHardCapToggles ? (
                       <div className="aoUsageHardCapGrid">
@@ -277,7 +265,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     ) : null}
                     <div className="aoHint">Usage base sets the usage endpoint. If empty, we use the provider base URL.</div>
                     {showHardCapToggles ? (
-                      <div className="aoHint">Hard cap controls whether {budgetHardCapLabel} budget exhaustion auto-closes this provider.</div>
+                      <div className="aoHint">Hard cap auto-closes this provider when {budgetHardCapLabel} budget is exhausted.</div>
                     ) : (
                       <div className="aoHint">No budget windows detected for this provider, so hard cap toggles are hidden.</div>
                     )}

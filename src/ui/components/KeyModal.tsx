@@ -33,7 +33,10 @@ export function KeyModal({ open, provider, value, onChange, onCancel, onSave }: 
           <button className="aoBtn" onClick={onCancel}>
             Cancel
           </button>
-          <button className="aoBtn aoBtnPrimary" onClick={onSave} disabled={!value}>
+          <button className="aoBtn" onClick={() => onChange('')} disabled={!value}>
+            Clear
+          </button>
+          <button className="aoBtn aoBtnPrimary" onClick={onSave}>
             Save
           </button>
         </div>

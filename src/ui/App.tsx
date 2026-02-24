@@ -1221,7 +1221,6 @@ export default function App() {
         saveKey={saveKey}
         usageBaseModal={usageBaseModal}
         setUsageBaseModal={setUsageBaseModal}
-        clearUsageBaseUrl={clearUsageBaseUrl}
         saveUsageBaseUrl={saveUsageBaseUrl}
         instructionModalOpen={instructionModalOpen}
         setInstructionModalOpen={setInstructionModalOpen}

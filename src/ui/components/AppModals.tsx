@@ -61,7 +61,6 @@ type Props = {
   saveKey: () => Promise<void>
   usageBaseModal: UsageBaseModalState
   setUsageBaseModal: Dispatch<SetStateAction<UsageBaseModalState>>
-  clearUsageBaseUrl: (name: string) => Promise<void>
   saveUsageBaseUrl: () => Promise<void>
   instructionModalOpen: boolean
   setInstructionModalOpen: Dispatch<SetStateAction<boolean>>
@@ -227,7 +226,6 @@ export function AppModals(props: Props) {
     saveKey,
     usageBaseModal,
     setUsageBaseModal,
-    clearUsageBaseUrl,
     saveUsageBaseUrl,
     instructionModalOpen,
     setInstructionModalOpen,
@@ -390,7 +388,6 @@ export function AppModals(props: Props) {
         open={usageBaseModal.open}
         provider={usageBaseModal.provider}
         value={usageBaseModal.value}
-        explicitValue={usageBaseModal.explicitValue}
         onChange={(value) =>
           setUsageBaseModal((m) => ({
             ...m,
@@ -409,7 +406,14 @@ export function AppModals(props: Props) {
             effectiveValue: '',
           })
         }
-        onClear={() => void clearUsageBaseUrl(usageBaseModal.provider)}
+        onClear={() =>
+          setUsageBaseModal((m) => ({
+            ...m,
+            value: '',
+            auto: false,
+            explicitValue: '',
+          }))
+        }
         onSave={() => void saveUsageBaseUrl()}
       />
 

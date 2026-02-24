@@ -17,21 +17,29 @@ export function useProviderKeyActions({
 }: ProviderKeyActions) {
   const saveKey = useCallback(async () => {
     const provider = keyModal.provider
-    const key = keyModal.value
-    if (!provider || !key) return
+    const key = keyModal.value.trim()
+    if (!provider) return
     try {
-      await invoke('set_provider_key', { provider, key })
-      setKeyModal({ open: false, provider: '', value: '' })
-      flashToast(`Key set: ${provider}`)
-      try {
-        await invoke('probe_provider', { provider })
-      } catch (e) {
-        flashToast(String(e), 'error')
+      if (key) {
+        await invoke('set_provider_key', { provider, key })
+      } else {
+        await invoke('clear_provider_key', { provider })
       }
-      try {
-        await invoke('refresh_quota', { provider })
-      } catch (e) {
-        flashToast(String(e), 'error')
+      setKeyModal({ open: false, provider: '', value: '' })
+      if (key) {
+        flashToast(`Key set: ${provider}`)
+        try {
+          await invoke('probe_provider', { provider })
+        } catch (e) {
+          flashToast(String(e), 'error')
+        }
+        try {
+          await invoke('refresh_quota', { provider })
+        } catch (e) {
+          flashToast(String(e), 'error')
+        }
+      } else {
+        flashToast(`Key cleared: ${provider}`)
       }
       await refreshStatus()
       await refreshConfig()

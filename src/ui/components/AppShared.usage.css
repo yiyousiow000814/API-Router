@@ -13,6 +13,32 @@
   margin-top: 12px;
 }
 
+.aoConfigHeaderActions {
+  gap: 6px;
+  padding: 4px;
+  border-radius: 14px;
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  background: rgba(13, 18, 32, 0.03);
+}
+
+.aoConfigHeaderBtn {
+  min-width: 84px;
+}
+
+.aoConfigHeaderBtnToggleOn {
+  background: rgba(242, 193, 77, 0.14);
+  border-color: rgba(242, 193, 77, 0.44);
+}
+
+.aoConfigHeaderBtnToggleOn:hover {
+  background: rgba(242, 193, 77, 0.2);
+  border-color: rgba(242, 193, 77, 0.56);
+}
+
+.aoConfigHeaderBtnClose {
+  margin-left: 2px;
+}
+
 .aoProviderName {
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
   font-size: 13px;
@@ -377,7 +403,7 @@
 
 .aoProviderConfigBody {
   display: grid;
-  grid-template-columns: minmax(320px, 1.1fr) minmax(300px, 0.9fr);
+  grid-template-columns: minmax(300px, 0.98fr) minmax(340px, 1.02fr);
   gap: 12px;
   align-items: start;
 }

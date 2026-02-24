@@ -148,11 +148,16 @@ export function useProviderUsageActions({
   const saveUsageBaseUrl = useCallback(async () => {
     const provider = usageBaseModal.provider
     const url = usageBaseModal.value.trim()
-    if (!provider || !url) return
+    if (!provider) return
     const targetProviders = providersForTarget(provider)
+    const shouldSetUsageBase = Boolean(url)
     try {
       for (const target of targetProviders) {
-        await invoke('set_usage_base_url', { provider: target, url })
+        if (shouldSetUsageBase) {
+          await invoke('set_usage_base_url', { provider: target, url })
+        } else {
+          await invoke('clear_usage_base_url', { provider: target })
+        }
       }
       setUsageBaseModal({
         open: false,
@@ -164,9 +169,13 @@ export function useProviderUsageActions({
       })
       const scopeLabel = providerScopeLabel(provider)
       flashToast(
-        targetProviders.length > 1
-          ? `Usage base saved: ${scopeLabel} (${targetProviders.length} providers)`
-          : `Usage base saved: ${scopeLabel}`,
+        shouldSetUsageBase
+          ? targetProviders.length > 1
+            ? `Usage base saved: ${scopeLabel} (${targetProviders.length} providers)`
+            : `Usage base saved: ${scopeLabel}`
+          : targetProviders.length > 1
+            ? `Usage base cleared: ${scopeLabel} (${targetProviders.length} providers)`
+            : `Usage base cleared: ${scopeLabel}`,
       )
       await refreshConfig()
       await refreshStatus()
