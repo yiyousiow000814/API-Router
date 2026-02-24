@@ -2,6 +2,7 @@ import type * as React from 'react'
 import type { Config, Status } from '../types'
 import { fmtWhen } from './format'
 import {
+  QUOTA_HARD_CAP_PERIODS,
   getVisibleBudgetHardCapPeriods,
   isBudgetInfoQuota,
 } from './providerBudgetWindows'
@@ -24,6 +25,7 @@ type CreateProviderCardRendererOptions = {
   commitRenameProvider: (name: string) => Promise<void>
   saveProvider: (name: string) => Promise<void>
   setProviderDisabled: (name: string, disabled: boolean) => Promise<void>
+  openProviderGroupManager: (provider: string) => void
   openKeyModal: (provider: string) => Promise<void>
   clearKey: (provider: string) => Promise<void>
   deleteProvider: (provider: string) => Promise<void>
@@ -46,15 +48,19 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
     const quota = options.status?.quota?.[name]
     const hasBudgetInfo = isBudgetInfoQuota(quota)
     const visibleHardCapPeriods = getVisibleBudgetHardCapPeriods(quota)
-    const budgetHardCapLabel = visibleHardCapPeriods.join('/')
-    const showHardCapToggles = hasBudgetInfo && visibleHardCapPeriods.length > 0
+    const showBudgetWindows = hasBudgetInfo && visibleHardCapPeriods.length > 0
+    const hardCapPeriods = showBudgetWindows ? visibleHardCapPeriods : [...QUOTA_HARD_CAP_PERIODS]
+    const budgetHardCapLabel = hardCapPeriods.join('/')
     const allVisibleHardCapsDisabled =
-      showHardCapToggles && visibleHardCapPeriods.every((key) => !quotaHardCap[key])
+      hardCapPeriods.length > 0 && hardCapPeriods.every((key) => !quotaHardCap[key])
     const hardCapWarningText = allVisibleHardCapsDisabled
       ? 'All shown hard caps are off, so budget limits will not auto-close this provider.'
       : null
+    const groupName = (p.group ?? '').trim()
     const activeProviderCount = Object.values(options.config?.providers ?? {}).filter((provider) => !provider.disabled).length
     const canDeactivate = p.disabled || activeProviderCount > 1
+    const hasBaselineBaseUrl = Object.prototype.hasOwnProperty.call(options.baselineBaseUrls, name)
+    const hasPendingChanges = hasBaselineBaseUrl && p.base_url !== options.baselineBaseUrls[name]
     const isDragOver = options.dragOverProvider === name
     const dragStyle = overlay
       ? {
@@ -114,6 +120,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   />
                 ) : (
                   <>
+                    {groupName ? <span className="aoProviderGroupTag">{groupName}</span> : null}
                     <span className="aoProviderName">{name}</span>
                     <button
                       className="aoIconGhost"
@@ -130,7 +137,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 )}
               </div>
               <div className="aoProviderHeadActions">
-                {p.base_url !== (options.baselineBaseUrls[name] ?? '') ? (
+                {hasPendingChanges ? (
                   <button className="aoActionBtn" title="Save" onClick={() => void options.saveProvider(name)}>
                     <svg viewBox="0 0 24 24" aria-hidden="true">
                       <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
@@ -151,13 +158,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     </g>
                   </svg>
                   <span>Key</span>
-                </button>
-                <button className="aoActionBtn" title="Clear key" onClick={() => void options.clearKey(name)}>
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="m7 21-4-4a2 2 0 0 1 0-3l10-10a2 2 0 0 1 3 0l5 5a2 2 0 0 1 0 3l-8 8" />
-                    <path d="M6 18h8" />
-                  </svg>
-                  <span>Clear</span>
                 </button>
                 <button
                   className="aoActionBtn aoActionBtnDanger"
@@ -225,51 +225,62 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
           </div>
           <div className="aoProviderField aoProviderRight">
             <div className="aoUsageControlsHeader">
-              <div className="aoMiniLabel">Usage controls</div>
+              <div className="aoMiniLabel">
+                {options.isProviderOpen(name) ? 'Usage controls' : 'Usage controls (Show for details)'}
+              </div>
               <button className="aoTinyBtn aoToggleBtn" onClick={() => options.toggleProviderOpen(name)}>
                 {options.isProviderOpen(name) ? 'Hide' : 'Show'}
               </button>
             </div>
             {options.isProviderOpen(name) ? (
               <>
-                <div className="aoUsageBtns">
-                  <button
-                    className="aoTinyBtn"
-                    onClick={() => void options.openUsageBaseModal(name, p.usage_base_url ?? undefined)}
-                  >
-                    Usage Base
-                  </button>
-                  {p.usage_base_url ? (
-                    <button className="aoTinyBtn" onClick={() => void options.clearUsageBaseUrl(name)}>
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-                {showHardCapToggles ? (
-                  <div className="aoUsageHardCapGrid">
-                    {visibleHardCapPeriods.map((period) => (
-                      <label key={period} className="aoUsageHardCapItem">
-                        <input
-                          type="checkbox"
-                          checked={quotaHardCap[period]}
-                          onChange={(event) => void options.setProviderQuotaHardCap(name, period, event.target.checked)}
-                        />
-                        <span>{period} hard cap</span>
-                      </label>
-                    ))}
-                  </div>
-                ) : null}
-                <div className="aoHint">Usage base sets the usage endpoint. If empty, we use the provider base URL.</div>
-                {showHardCapToggles ? (
-                  <div className="aoHint">Hard cap controls whether {budgetHardCapLabel} budget exhaustion auto-closes this provider.</div>
+                {groupName ? (
+                  <>
+                    <div className="aoHint">Usage controls are managed in Group Manager.</div>
+                    <div className="aoHint">{`Current group: ${groupName}`}</div>
+                    <div className="aoUsageBtns">
+                      <button className="aoTinyBtn" onClick={() => options.openProviderGroupManager(name)}>
+                        Open Group Manager
+                      </button>
+                    </div>
+                  </>
                 ) : (
-                  <div className="aoHint">No budget windows detected for this provider, so hard cap toggles are hidden.</div>
+                  <>
+                    <div className="aoUsageTop">
+                      <div className="aoUsageBtns">
+                        <button
+                          className="aoTinyBtn"
+                          onClick={() => void options.openUsageBaseModal(name, p.usage_base_url ?? undefined)}
+                        >
+                          Usage Base
+                        </button>
+                      </div>
+                      <div className="aoUsageHardCapInline">
+                        {hardCapPeriods.map((period) => (
+                          <label key={period} className="aoUsageHardCapItem">
+                            <input
+                              type="checkbox"
+                              checked={quotaHardCap[period]}
+                              onChange={(event) => void options.setProviderQuotaHardCap(name, period, event.target.checked)}
+                            />
+                            <span>{period} hard cap</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="aoHint">Usage base sets the usage endpoint. If empty, we use the provider base URL.</div>
+                    {showBudgetWindows ? (
+                      <div className="aoHint">Hard cap auto-closes this provider when {budgetHardCapLabel} budget is exhausted.</div>
+                    ) : (
+                      <div className="aoHint">Budget windows not detected yet. Hard cap toggles are still saved and will apply once usage windows appear.</div>
+                    )}
+                    {hardCapWarningText ? (
+                      <div className="aoHint" style={{ color: 'rgba(145, 12, 43, 0.92)' }}>
+                        {hardCapWarningText}
+                      </div>
+                    ) : null}
+                  </>
                 )}
-                {hardCapWarningText ? (
-                  <div className="aoHint" style={{ color: 'rgba(145, 12, 43, 0.92)' }}>
-                    {hardCapWarningText}
-                  </div>
-                ) : null}
                 <div className="aoHint">
                   updated:{' '}
                   {options.status?.quota?.[name]?.updated_at_unix_ms

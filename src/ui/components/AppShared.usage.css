@@ -9,14 +9,62 @@
   border-color: rgba(255, 94, 125, 0.32);
 }
 
+.aoConfigModalBody {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding-right: 0;
+}
+
 .aoConfigSection {
   margin-top: 12px;
+}
+
+.aoConfigHeaderActions {
+  gap: 8px;
+}
+
+.aoConfigHeaderBtn {
+  min-width: 84px;
+}
+
+.aoConfigHeaderDivider {
+  width: 1px;
+  height: 20px;
+  background: rgba(13, 18, 32, 0.16);
+}
+
+.aoConfigHeaderBtnClose {
+  margin-left: 0;
+  min-width: 0;
 }
 
 .aoProviderName {
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
   font-size: 13px;
   color: rgba(13, 18, 32, 0.9);
+}
+
+.aoProviderGroupTag {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.2);
+  background: rgba(13, 18, 32, 0.08);
+  color: rgba(13, 18, 32, 0.78);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .aoProviderNameRow {
@@ -123,8 +171,21 @@
   color: rgba(13, 18, 32, 0.66);
 }
 
+.aoHintWarning {
+  color: rgba(117, 85, 18, 0.94);
+}
+
 .aoConfigCard {
   padding: 12px;
+}
+
+.aoConfigStickyAddProvider {
+  flex: 0 0 auto;
+  padding-bottom: 8px;
+}
+
+.aoConfigStickySub {
+  margin: 0 0 8px;
 }
 
 .aoConfigDeck {
@@ -150,15 +211,265 @@
   align-items: center;
 }
 
+.aoGroupManagerLayout {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(360px, 1.1fr);
+  gap: 14px;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+
+.aoModalWide.aoGroupManagerModal {
+  height: min(76vh, 720px);
+}
+
+.aoGroupManagerModal .aoModalBody {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding-right: 6px;
+  padding-bottom: 0;
+}
+
+.aoGroupManagerModal .aoModalHeader {
+  padding-right: 6px;
+}
+
+.aoGroupManagerModal .aoModalBody > .aoGroupManagerLayout {
+  width: 100%;
+  height: 100%;
+}
+
+.aoGroupManagerCard {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  height: 100%;
+}
+
+.aoGroupManagerAssignRow {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.aoGroupManagerAssignMode {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 214px;
+  padding: 2px;
+  border-radius: 10px;
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  background: rgba(13, 18, 32, 0.03);
+}
+
+.aoGroupManagerAssignModeSlider {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  bottom: 2px;
+  width: calc(50% - 2px);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.24), rgba(242, 193, 77, 0.2));
+  box-shadow: inset 0 0 0 1px rgba(var(--ao-accent-rgb), 0.24);
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.aoGroupManagerAssignMode[data-mode='add'] .aoGroupManagerAssignModeSlider {
+  transform: translateX(100%);
+}
+
+.aoGroupManagerAssignModeBtn {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
+  height: 26px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(13, 18, 32, 0.74);
+  font-size: 12px;
+  font-weight: 650;
+  padding: 0 10px;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.aoGroupManagerAssignModeBtn:hover {
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoGroupManagerAssignModeBtn.is-active {
+  color: rgba(13, 18, 32, 0.94);
+}
+
+.aoGroupManagerAssignModeBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.aoGroupManagerProviderList {
+  max-height: none;
+  overflow: auto;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 12px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.aoGroupManagerProviderRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.aoGroupManagerGroupList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: none;
+  overflow: auto;
+  min-height: 0;
+  height: 100%;
+  padding-right: 2px;
+}
+
+.aoGroupManagerCard > .aoGroupManagerProviderList,
+.aoGroupManagerCard > .aoGroupManagerGroupList {
+  flex: 1 1 auto;
+}
+
+.aoGroupManagerGroupCard {
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 14px;
+  padding: 10px;
+  background: rgba(13, 18, 32, 0.018);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aoGroupManagerGroupHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aoGroupManagerEditLink {
+  border: 0;
+  background: transparent;
+  color: rgba(13, 18, 32, 0.56);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  padding: 0;
+  margin-right: 8px;
+}
+
+.aoGroupManagerEditLink:hover {
+  color: rgba(13, 18, 32, 0.82);
+}
+
+.aoGroupManagerMemberRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.aoGroupManagerMemberRemove {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(13, 18, 32, 0.58);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.aoGroupManagerMemberRemove:hover {
+  color: rgba(185, 28, 28, 0.9);
+  background: rgba(255, 94, 125, 0.08);
+}
+
+.aoGroupManagerGroupActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(13, 18, 32, 0.08);
+}
+
+.aoGroupManagerGroupActions .aoBtn {
+  min-width: 108px;
+}
+
+.aoGroupUsageBaseRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.aoGroupUsageBaseInput {
+  width: 100%;
+}
+
+.aoGroupManagerGroupCard .aoGroupManagerProviderList {
+  max-height: 140px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
 .aoProviderConfigList {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
   gap: 16px;
   margin-top: 12px;
   position: relative;
   overflow-anchor: none;
+  overflow: auto;
+  padding-right: 6px;
   /* Prevent the drag overlay shadow from being clipped by the modal body. */
   padding-bottom: 48px;
+}
+
+.aoProviderConfigList::-webkit-scrollbar {
+  width: 8px;
+}
+
+.aoProviderConfigList::-webkit-scrollbar-track {
+  background: rgba(13, 18, 32, 0.06);
+  border-radius: 999px;
+}
+
+.aoProviderConfigList::-webkit-scrollbar-thumb {
+  background: rgba(13, 18, 32, 0.35);
+  border-radius: 999px;
+}
+
+.aoProviderConfigList::-webkit-scrollbar-thumb:hover {
+  background: rgba(13, 18, 32, 0.5);
 }
 
 .aoProviderConfigCard {
@@ -314,7 +625,7 @@
 
 .aoProviderConfigBody {
   display: grid;
-  grid-template-columns: minmax(320px, 1.1fr) minmax(300px, 0.9fr);
+  grid-template-columns: minmax(300px, 0.98fr) minmax(340px, 1.02fr);
   gap: 12px;
   align-items: start;
 }
@@ -323,7 +634,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding-top: 15px;
+  padding-top: 6px;
 }
 
 .aoProviderLeft {
@@ -334,10 +645,18 @@
   align-self: stretch;
   border-left: 1px solid rgba(13, 18, 32, 0.08);
   padding-left: 16px;
-  padding-top: 15px;
+  padding-top: 6px;
 }
 
 @media (max-width: 700px) {
+  .aoGroupManagerLayout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .aoGroupManagerAssignRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .aoProviderConfigBody {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -361,6 +680,26 @@
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 6px;
+}
+
+.aoProviderConfigCollapsed .aoProviderConfigBody {
+  align-items: center;
+}
+
+.aoProviderConfigCollapsed .aoProviderField {
+  padding-top: 0;
+}
+
+.aoProviderConfigCollapsed .aoProviderHeadRow {
+  margin-bottom: 0;
+}
+
+.aoProviderConfigCollapsed .aoProviderRight {
+  justify-content: center;
+}
+
+.aoProviderConfigCollapsed .aoProviderRight > .aoHint {
+  display: none;
 }
 
 .aoProviderHeadActions {
@@ -782,14 +1121,23 @@
 .aoUsageTop {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  justify-content: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .aoUsageBtns {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.aoUsageHardCapInline {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .aoUsageHardCapGrid {

@@ -4,7 +4,6 @@ type Props = {
   open: boolean
   provider: string
   value: string
-  explicitValue: string
   onChange: (next: string) => void
   onCancel: () => void
   onClear: () => void
@@ -17,7 +16,6 @@ export function UsageBaseModal({
   open,
   provider,
   value,
-  explicitValue,
   onChange,
   onCancel,
   onClear,
@@ -44,10 +42,10 @@ export function UsageBaseModal({
           <button className="aoBtn" onClick={onCancel}>
             Cancel
           </button>
-          <button className="aoBtn" onClick={onClear} disabled={!explicitValue}>
+          <button className="aoBtn" onClick={onClear} disabled={!value}>
             Clear
           </button>
-          <button className="aoBtn aoBtnPrimary" onClick={onSave} disabled={!value.trim()}>
+          <button className="aoBtn aoBtnPrimary" onClick={onSave}>
             Save
           </button>
         </div>

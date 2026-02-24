@@ -16,12 +16,14 @@ import {
   buildUsageOriginFilterOptions,
   buildUsagePricingGroups,
   buildUsageProviderDisplayGroups,
+  buildUsageProviderFilterDisplayOptions,
   buildUsageProviderFilterOptions,
   buildUsageSharedCostView,
   computeUsageProviderTotalsAndAverages,
   orderUsageProvidersByConfig,
   usageProviderRowKey,
 } from '../utils/usageStatisticsView'
+import { buildProviderGroupMaps, normalizeProviderGroupName, resolveProviderDisplayName } from '../utils/providerGroups'
 
 type Params = {
   config: Config | null
@@ -109,6 +111,7 @@ export function useDashboardDerivations(params: Params) {
     providerSwitchStatus?.dirs?.map((d) => d.cli_home).join(' | ') || '-'
 
   const usageSummary = usageStatistics?.summary ?? null
+  const providerGroupMaps = useMemo(() => buildProviderGroupMaps(config), [config])
   const usageTimelineRaw = usageSummary?.timeline ?? []
   const usageTimeline = useMemo(
     () => [...usageTimelineRaw].sort((a, b) => a.bucket_unix_ms - b.bucket_unix_ms),
@@ -136,6 +139,16 @@ export function useDashboardDerivations(params: Params) {
     () => buildUsageProviderFilterOptions(usageCatalogProviders),
     [usageCatalogProviders],
   )
+  const usageProviderFilterDisplayOptions = useMemo(
+    () =>
+      buildUsageProviderFilterDisplayOptions(usageCatalogProviders, {
+        providerDisplayName: (provider) =>
+          resolveProviderDisplayName(providerGroupMaps.displayNameByProvider, provider),
+        providerGroupName: (provider) =>
+          normalizeProviderGroupName(config?.providers?.[provider]?.group) || null,
+      }),
+    [config?.providers, providerGroupMaps.displayNameByProvider, usageCatalogProviders],
+  )
   const usageModelFilterOptions = useMemo(
     () => buildUsageModelFilterOptions(usageCatalogModels),
     [usageCatalogModels],
@@ -149,8 +162,14 @@ export function useDashboardDerivations(params: Params) {
     [orderedUsageByProvider],
   )
   const usageProviderDisplayGroups = useMemo(
-    () => buildUsageProviderDisplayGroups(orderedUsageByProvider, usageSharedCostView),
-    [orderedUsageByProvider, usageSharedCostView],
+    () =>
+      buildUsageProviderDisplayGroups(orderedUsageByProvider, usageSharedCostView, {
+        providerDisplayName: (provider) =>
+          resolveProviderDisplayName(providerGroupMaps.displayNameByProvider, provider),
+        providerGroupName: (provider) =>
+          normalizeProviderGroupName(config?.providers?.[provider]?.group) || null,
+      }),
+    [config?.providers, orderedUsageByProvider, providerGroupMaps.displayNameByProvider, usageSharedCostView],
   )
   const usagePricedRequestCount = orderedUsageByProvider.reduce((sum: number, row) => {
     const total = usageSharedCostView.effectiveTotalByRowKey.get(usageProviderRowKey(row))
@@ -216,21 +235,29 @@ export function useDashboardDerivations(params: Params) {
     [usageTimeline, orderedUsageByProvider, usageStatistics?.window_hours],
   )
 
-  const toggleUsageProviderFilter = useCallback((name: string) => {
-    setUsageFilterProviders((prev: string[]) =>
-      prev.includes(name) ? prev.filter((v) => v !== name) : [...prev, name],
-    )
-  }, [])
+  const toggleUsageProviderFilterDisplayOption = useCallback((providers: string[]) => {
+    const names = providers.map((name) => name.trim()).filter(Boolean)
+    if (!names.length) return
+    setUsageFilterProviders((prev: string[]) => {
+      const next = new Set(prev)
+      const allSelected = names.every((name) => next.has(name))
+      names.forEach((name) => {
+        if (allSelected) next.delete(name)
+        else next.add(name)
+      })
+      return [...next]
+    })
+  }, [setUsageFilterProviders])
   const toggleUsageModelFilter = useCallback((name: string) => {
     setUsageFilterModels((prev: string[]) =>
       prev.includes(name) ? prev.filter((v) => v !== name) : [...prev, name],
     )
-  }, [])
+  }, [setUsageFilterModels])
   const toggleUsageOriginFilter = useCallback((name: string) => {
     setUsageFilterOrigins((prev: string[]) =>
       prev.includes(name) ? prev.filter((v) => v !== name) : [name],
     )
-  }, [])
+  }, [setUsageFilterOrigins])
 
   const usageChart = useMemo(
     () => buildUsageChartModel(usageTimeline, usageMaxTimelineRequests, usageMaxTimelineTokens),
@@ -281,6 +308,7 @@ export function useDashboardDerivations(params: Params) {
     usageAvgTokensPerRequest,
     usageTopModel,
     usageProviderFilterOptions,
+    usageProviderFilterDisplayOptions,
     usageModelFilterOptions,
     usageOriginFilterOptions,
     usageProviderDisplayGroups,
@@ -296,7 +324,7 @@ export function useDashboardDerivations(params: Params) {
     usagePricingGroups,
     usageScheduleProviderOptions,
     usageAnomalies,
-    toggleUsageProviderFilter,
+    toggleUsageProviderFilterDisplayOption,
     toggleUsageModelFilter,
     toggleUsageOriginFilter,
     usageChart,

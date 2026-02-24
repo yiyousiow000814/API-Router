@@ -61,7 +61,6 @@ type Props = {
   saveKey: () => Promise<void>
   usageBaseModal: UsageBaseModalState
   setUsageBaseModal: Dispatch<SetStateAction<UsageBaseModalState>>
-  clearUsageBaseUrl: (name: string) => Promise<void>
   saveUsageBaseUrl: () => Promise<void>
   instructionModalOpen: boolean
   setInstructionModalOpen: Dispatch<SetStateAction<boolean>>
@@ -76,6 +75,7 @@ type Props = {
   setNewProviderName: Dispatch<SetStateAction<string>>
   setNewProviderBaseUrl: Dispatch<SetStateAction<string>>
   addProvider: () => Promise<void>
+  openProviderGroupManager: (provider?: string) => void
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
   rawConfigModalOpen: boolean
   rawConfigHomeOptions: string[]
@@ -226,7 +226,6 @@ export function AppModals(props: Props) {
     saveKey,
     usageBaseModal,
     setUsageBaseModal,
-    clearUsageBaseUrl,
     saveUsageBaseUrl,
     instructionModalOpen,
     setInstructionModalOpen,
@@ -241,6 +240,7 @@ export function AppModals(props: Props) {
     setNewProviderName,
     setNewProviderBaseUrl,
     addProvider,
+    openProviderGroupManager,
     setConfigModalOpen,
     rawConfigModalOpen,
     rawConfigHomeOptions,
@@ -379,8 +379,10 @@ export function AppModals(props: Props) {
         open={keyModal.open}
         provider={keyModal.provider}
         value={keyModal.value}
+        loading={keyModal.loading}
+        loadFailed={keyModal.loadFailed}
         onChange={(value) => setKeyModal((m) => ({ ...m, value }))}
-        onCancel={() => setKeyModal({ open: false, provider: '', value: '' })}
+        onCancel={() => setKeyModal({ open: false, provider: '', value: '', loading: false, loadFailed: false })}
         onSave={() => void saveKey()}
       />
 
@@ -388,7 +390,6 @@ export function AppModals(props: Props) {
         open={usageBaseModal.open}
         provider={usageBaseModal.provider}
         value={usageBaseModal.value}
-        explicitValue={usageBaseModal.explicitValue}
         onChange={(value) =>
           setUsageBaseModal((m) => ({
             ...m,
@@ -407,7 +408,14 @@ export function AppModals(props: Props) {
             effectiveValue: '',
           })
         }
-        onClear={() => void clearUsageBaseUrl(usageBaseModal.provider)}
+        onClear={() =>
+          setUsageBaseModal((m) => ({
+            ...m,
+            value: '',
+            auto: false,
+            explicitValue: '',
+          }))
+        }
         onSave={() => void saveUsageBaseUrl()}
       />
 
@@ -446,6 +454,7 @@ requires_openai_auth = true`}
         setNewProviderName={setNewProviderName}
         setNewProviderBaseUrl={setNewProviderBaseUrl}
         onAddProvider={() => void addProvider()}
+        onOpenGroupManager={() => openProviderGroupManager()}
         onClose={() => setConfigModalOpen(false)}
         providerListRef={providerListRef}
         orderedConfigProviders={orderedConfigProviders}

@@ -7,6 +7,47 @@ export function buildUsageProviderFilterOptions(usageCatalogProviders: string[])
   return [...usageCatalogProviders].sort((a, b) => a.localeCompare(b))
 }
 
+export type UsageProviderFilterDisplayOption = {
+  id: string
+  label: string
+  providers: string[]
+}
+
+export function buildUsageProviderFilterDisplayOptions(
+  usageCatalogProviders: string[],
+  options?: {
+    providerDisplayName?: (provider: string) => string
+    providerGroupName?: (provider: string) => string | null
+  },
+): UsageProviderFilterDisplayOption[] {
+  const orderedProviders = buildUsageProviderFilterOptions(usageCatalogProviders)
+  const grouped = new Map<string, UsageProviderFilterDisplayOption>()
+  orderedProviders.forEach((provider) => {
+    const normalizedGroup = (options?.providerGroupName?.(provider) ?? '').trim()
+    if (normalizedGroup) {
+      const groupKey = `group:${normalizedGroup}`
+      const existing = grouped.get(groupKey)
+      if (existing) {
+        if (!existing.providers.includes(provider)) existing.providers.push(provider)
+        return
+      }
+      grouped.set(groupKey, {
+        id: groupKey,
+        label: normalizedGroup,
+        providers: [provider],
+      })
+      return
+    }
+
+    grouped.set(`provider:${provider}`, {
+      id: `provider:${provider}`,
+      label: options?.providerDisplayName?.(provider) ?? provider,
+      providers: [provider],
+    })
+  })
+  return [...grouped.values()]
+}
+
 export function buildUsageModelFilterOptions(usageCatalogModels: string[]): string[] {
   return [...usageCatalogModels].sort((a, b) => a.localeCompare(b))
 }
@@ -145,6 +186,10 @@ export function buildUsageProviderDisplayGroups(
     effectiveDailyByRowKey: Map<string, number | null>
     effectiveTotalByRowKey: Map<string, number | null>
   },
+  options?: {
+    providerDisplayName?: (provider: string) => string
+    providerGroupName?: (provider: string) => string | null
+  },
 ): Array<{
   id: string
   providers: string[]
@@ -159,19 +204,27 @@ export function buildUsageProviderDisplayGroups(
   effectiveDaily: number | null
   effectiveTotal: number | null
   pricingSource: string | null
-}> {
+  }> {
   const groups = new Map<
     string,
     {
       apiKeyRef: string
       providers: string[]
+      groupName: string | null
+      displayName: string
       rows: UsageProviderRow[]
     }
   >()
   usageByProvider.forEach((row) => {
     const provider = String(row.provider)
+    const groupName = options?.providerGroupName?.(provider) ?? null
+    const displayName = options?.providerDisplayName?.(provider) ?? provider
     const apiKeyRef = String(row.api_key_ref ?? '').trim()
-    const groupKey = apiKeyRef && apiKeyRef !== '-' ? `key:${apiKeyRef}` : `provider:${provider}`
+    const groupKey = groupName
+      ? `group:${groupName}`
+      : apiKeyRef && apiKeyRef !== '-'
+        ? `key:${apiKeyRef}`
+        : `provider:${provider}`
     const existing = groups.get(groupKey)
     if (existing) {
       if (!existing.providers.includes(provider)) existing.providers.push(provider)
@@ -180,6 +233,8 @@ export function buildUsageProviderDisplayGroups(
       groups.set(groupKey, {
         apiKeyRef,
         providers: [provider],
+        groupName,
+        displayName,
         rows: [row],
       })
     }
@@ -204,8 +259,8 @@ export function buildUsageProviderDisplayGroups(
       id: groupId,
       providers: group.providers,
       rows: group.rows,
-      displayName: group.providers.join(' / '),
-      detailLabel: group.apiKeyRef && group.apiKeyRef !== '-' ? group.apiKeyRef : '-',
+      displayName: group.groupName ?? (group.providers.length > 1 ? group.providers.join(' / ') : group.displayName),
+      detailLabel: group.providers.join(' / '),
       requests,
       totalTokens,
       tokensPerRequest: requests > 0 ? totalTokens / requests : null,

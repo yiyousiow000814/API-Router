@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { Config, Status } from '../types'
 import { createProviderCardRenderer } from './providerCardRenderer'
 
-function buildConfig(quotaHardCap: Config['providers'][string]['quota_hard_cap']): Config {
+function buildConfig(group: string | null): Config {
   return {
     listen: { host: '127.0.0.1', port: 4000 },
     routing: {
@@ -19,14 +19,14 @@ function buildConfig(quotaHardCap: Config['providers'][string]['quota_hard_cap']
       p1: {
         display_name: 'Provider 1',
         base_url: 'https://example.com',
+        group,
         has_key: true,
-        quota_hard_cap: quotaHardCap,
       },
     },
   }
 }
 
-function buildStatusWithoutWeeklyWindow(): Status {
+function buildStatus(): Status {
   return {
     listen: { host: '127.0.0.1', port: 4000 },
     preferred_provider: 'p1',
@@ -50,12 +50,12 @@ function buildStatusWithoutWeeklyWindow(): Status {
         remaining: null,
         today_used: null,
         today_added: null,
-        daily_spent_usd: 100,
-        daily_budget_usd: 100,
+        daily_spent_usd: 10,
+        daily_budget_usd: 20,
         weekly_spent_usd: null,
         weekly_budget_usd: null,
-        monthly_spent_usd: 1000,
-        monthly_budget_usd: 1000,
+        monthly_spent_usd: 100,
+        monthly_budget_usd: 200,
         last_error: '',
       },
     },
@@ -91,6 +91,7 @@ function renderCardHtml(config: Config, status: Status): string {
     commitRenameProvider: async () => undefined,
     saveProvider: async () => undefined,
     setProviderDisabled: async () => undefined,
+    openProviderGroupManager: () => undefined,
     openKeyModal: async () => undefined,
     clearKey: async () => undefined,
     deleteProvider: async () => undefined,
@@ -106,32 +107,19 @@ function renderCardHtml(config: Config, status: Status): string {
   return renderToStaticMarkup(card)
 }
 
-describe('provider hard cap rendering', () => {
-  it('hides weekly hard cap toggle when weekly budget data is missing', () => {
-    const html = renderCardHtml(
-      buildConfig({
-        daily: false,
-        weekly: true,
-        monthly: false,
-      }),
-      buildStatusWithoutWeeklyWindow(),
-    )
-
-    expect(html).not.toContain('weekly hard cap')
+describe('provider usage controls rendering', () => {
+  it('shows direct usage controls when provider is not grouped', () => {
+    const html = renderCardHtml(buildConfig(null), buildStatus())
+    expect(html).toContain('Usage Base')
     expect(html).toContain('daily hard cap')
     expect(html).toContain('monthly hard cap')
+    expect(html).toContain('Usage base sets the usage endpoint.')
   })
 
-  it('shows warning when every visible hard cap is disabled', () => {
-    const html = renderCardHtml(
-      buildConfig({
-        daily: false,
-        weekly: true,
-        monthly: false,
-      }),
-      buildStatusWithoutWeeklyWindow(),
-    )
-
-    expect(html).toContain('All shown hard caps are off, so budget limits will not auto-close this provider.')
+  it('shows current group when provider has a group', () => {
+    const html = renderCardHtml(buildConfig('alpha'), buildStatus())
+    expect(html).toContain('Usage controls are managed in Group Manager.')
+    expect(html).toContain('Open Group Manager')
+    expect(html).toContain('Current group: alpha')
   })
 })

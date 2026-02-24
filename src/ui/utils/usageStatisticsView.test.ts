@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { orderUsageProvidersByConfig } from './usageStatisticsView'
+import {
+  buildUsageProviderDisplayGroups,
+  buildUsageProviderFilterDisplayOptions,
+  orderUsageProvidersByConfig,
+} from './usageStatisticsView'
 
 function makeRow(provider: string, apiKeyRef: string) {
   return {
@@ -47,5 +51,46 @@ describe('orderUsageProvidersByConfig', () => {
       'packycode3:k3-a',
       'packycode3:k3-b',
     ])
+  })
+})
+
+describe('buildUsageProviderDisplayGroups', () => {
+  it('merges providers under an explicit group label', () => {
+    const rows = [makeRow('provider_a', '-'), makeRow('provider_b', '-')]
+    const groups = buildUsageProviderDisplayGroups(
+      rows,
+      {
+        effectiveDailyByRowKey: new Map(),
+        effectiveTotalByRowKey: new Map(),
+      },
+      {
+        providerDisplayName: (provider) => provider,
+        providerGroupName: (provider) => (provider.startsWith('provider_') ? 'team-alpha' : null),
+      },
+    )
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0].displayName).toBe('team-alpha')
+    expect(groups[0].detailLabel).toBe('provider_a / provider_b')
+    expect(groups[0].requests).toBe(2)
+  })
+})
+
+describe('buildUsageProviderFilterDisplayOptions', () => {
+  it('keeps case-distinct group names as separate filter options', () => {
+    const options = buildUsageProviderFilterDisplayOptions(['provider_a', 'provider_b'], {
+      providerGroupName: (provider) => (provider === 'provider_a' ? 'TeamA' : 'teama'),
+    })
+
+    expect(options.map((option) => option.label)).toEqual(['TeamA', 'teama'])
+    expect(options[0].providers).toEqual(['provider_a'])
+    expect(options[1].providers).toEqual(['provider_b'])
+  })
+
+  it('does not merge case-distinct provider ids when ungrouped', () => {
+    const options = buildUsageProviderFilterDisplayOptions(['ProviderA', 'providera'])
+    expect(options).toHaveLength(2)
+    expect(new Set(options.map((option) => option.id))).toEqual(new Set(['provider:ProviderA', 'provider:providera']))
+    expect(new Set(options.flatMap((option) => option.providers))).toEqual(new Set(['ProviderA', 'providera']))
   })
 })

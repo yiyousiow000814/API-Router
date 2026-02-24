@@ -27,6 +27,7 @@ import {
 import { AppMainContent } from './components/AppMainContent'
 import { AppModals } from './components/AppModals'
 import { AppTopNav } from './components/AppTopNav'
+import { ProviderGroupManagerModal } from './components/ProviderGroupManagerModal'
 import type { EventLogDailyStat, EventLogEntry } from './components/EventLogPanel'
 import type { LastErrorJump } from './components/ProvidersTable'
 import { useConfigDrag } from './hooks/useConfigDrag'
@@ -45,6 +46,7 @@ import { useUsageOpsBridge } from './hooks/useUsageOpsBridge'
 import { useUsageUiDerived } from './hooks/useUsageUiDerived'
 import { useMainContentCallbacks } from './hooks/useMainContentCallbacks'
 import { useTopNavIntentPrefetch } from './hooks/useTopNavIntentPrefetch'
+import type { KeyModalState, UsageBaseModalState } from './hooks/providerActions/types'
 import {
   buildCodexSwapBadge,
   resolveCliHomes,
@@ -85,19 +87,14 @@ export default function App() {
   const [newProviderName, setNewProviderName] = useState<string>('')
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
   const [providerPanelsOpen, setProviderPanelsOpen] = useState<Record<string, boolean>>({})
-  const [keyModal, setKeyModal] = useState<{ open: boolean; provider: string; value: string }>({
+  const [keyModal, setKeyModal] = useState<KeyModalState>({
     open: false,
     provider: '',
     value: '',
+    loading: false,
+    loadFailed: false,
   })
-  const [usageBaseModal, setUsageBaseModal] = useState<{
-    open: boolean
-    provider: string
-    value: string
-    auto: boolean
-    explicitValue: string
-    effectiveValue: string
-  }>({
+  const [usageBaseModal, setUsageBaseModal] = useState<UsageBaseModalState>({
     open: false,
     provider: '',
     value: '',
@@ -141,6 +138,8 @@ export default function App() {
   const [eventLogPreloadEntries, setEventLogPreloadEntries] = useState<EventLogEntry[]>([])
   const [eventLogPreloadDailyStats, setEventLogPreloadDailyStats] = useState<EventLogDailyStat[]>([])
   const [providerSwitchStatus, setProviderSwitchStatus] = useState<ProviderSwitchboardStatus | null>(null)
+  const [providerGroupManagerOpen, setProviderGroupManagerOpen] = useState<boolean>(false)
+  const [providerGroupManagerFocusProvider, setProviderGroupManagerFocusProvider] = useState<string | null>(null)
   const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(null)
   const [usageWindowHours, setUsageWindowHours] = useState<number>(24)
   const [usageFilterProviders, setUsageFilterProviders] = useState<string[]>([])
@@ -181,6 +180,10 @@ export default function App() {
     width: number
   } | null>(null)
   const [usageScheduleCurrencyQuery, setUsageScheduleCurrencyQuery] = useState<string>('')
+  const openProviderGroupManager = useCallback((provider?: string) => {
+    setProviderGroupManagerFocusProvider(provider?.trim() ? provider.trim() : null)
+    setProviderGroupManagerOpen(true)
+  }, [])
   const [fxRatesByCurrency, setFxRatesByCurrency] = useState<Record<string, number>>({ USD: 1 })
   const [fxRatesDate, setFxRatesDate] = useState<string>('')
   const [usageChartHover, setUsageChartHover] = useState<{
@@ -737,6 +740,26 @@ export default function App() {
     devStatus,
     devConfig,
   })
+  useEffect(() => {
+    if (!config) return
+    setBaselineBaseUrls((prev) => {
+      const next: Record<string, string> = { ...prev }
+      let changed = false
+      for (const [name, provider] of Object.entries(config.providers ?? {})) {
+        if (!Object.prototype.hasOwnProperty.call(next, name)) {
+          next[name] = provider.base_url
+          changed = true
+        }
+      }
+      for (const name of Object.keys(next)) {
+        if (!config.providers?.[name]) {
+          delete next[name]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [config, setBaselineBaseUrls])
   const onDevPreviewTick = useCallback(() => {
     setStatus((prev) => evolveDevStatus(prev))
   }, [])
@@ -885,6 +908,7 @@ export default function App() {
   } = useTopNavIntentPrefetch({
     activePage,
     refreshUsageStatistics,
+    clientSessions: status?.client_sessions ?? [],
   })
   const usageRequestsWarmupStartedRef = useRef(false)
   useEffect(() => {
@@ -914,12 +938,13 @@ export default function App() {
   const {
     providerGroupLabelByName, linkedProvidersForApiKey, switchboardProviderCards, switchboardModeLabel,
     switchboardModelProviderLabel, switchboardTargetDirsLabel, usageSummary, usageByProvider, usageTotalInputTokens,
-    usageTotalOutputTokens, usageAvgTokensPerRequest, usageTopModel, usageProviderFilterOptions, usageModelFilterOptions,
+    usageTotalOutputTokens, usageAvgTokensPerRequest, usageTopModel, usageProviderFilterOptions,
+    usageProviderFilterDisplayOptions, usageModelFilterOptions,
     usageOriginFilterOptions,
     usageProviderDisplayGroups, usagePricedRequestCount, usageDedupedTotalUsedUsd, usagePricedCoveragePct,
     usageActiveWindowHours, usageAvgRequestsPerHour, usageAvgTokensPerHour, usageWindowLabel,
     usageProviderTotalsAndAverages, usagePricingProviderNames, usagePricingGroups, usageScheduleProviderOptions,
-    usageAnomalies, toggleUsageProviderFilter, toggleUsageModelFilter, toggleUsageOriginFilter, usageChart, showUsageChartHover,
+    usageAnomalies, toggleUsageProviderFilterDisplayOption, toggleUsageModelFilter, toggleUsageOriginFilter, usageChart, showUsageChartHover,
   } = useDashboardDerivations({
     config,
     orderedConfigProviders,
@@ -954,7 +979,8 @@ export default function App() {
   })
   const {
     saveProvider, setProviderDisabled, deleteProvider, saveKey, clearKey, refreshQuota, refreshQuotaAll,
-    saveUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap, openKeyModal, openUsageBaseModal, addProvider,
+    saveUsageBaseUrl, setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap, openKeyModal, openUsageBaseModal, addProvider,
+    setProvidersGroup,
   } = useProviderActions({
     config,
     status,
@@ -1057,6 +1083,7 @@ export default function App() {
     setConfig,
     baselineBaseUrls,
     saveProvider,
+    openProviderGroupManager,
     setProviderDisabled,
     deleteProvider,
     openKeyModal,
@@ -1142,7 +1169,8 @@ export default function App() {
                 usageFilterProviders,
                 setUsageFilterProviders,
                 usageProviderFilterOptions,
-                toggleUsageProviderFilter,
+                usageProviderFilterDisplayOptions,
+                toggleUsageProviderFilterDisplayOption,
                 usageFilterModels,
                 setUsageFilterModels,
                 usageModelFilterOptions,
@@ -1186,6 +1214,7 @@ export default function App() {
                 formatPricingSource,
                 usageProviderTotalsAndAverages,
                 usageActivityUnixMs: status?.last_activity_unix_ms ?? null,
+                clientSessions: status?.client_sessions ?? [],
               }}
               switchboardProps={{
                 providerSwitchStatus,
@@ -1212,7 +1241,6 @@ export default function App() {
         saveKey={saveKey}
         usageBaseModal={usageBaseModal}
         setUsageBaseModal={setUsageBaseModal}
-        clearUsageBaseUrl={clearUsageBaseUrl}
         saveUsageBaseUrl={saveUsageBaseUrl}
         instructionModalOpen={instructionModalOpen}
         setInstructionModalOpen={setInstructionModalOpen}
@@ -1227,6 +1255,7 @@ export default function App() {
         setNewProviderName={setNewProviderName}
         setNewProviderBaseUrl={setNewProviderBaseUrl}
         addProvider={addProvider}
+        openProviderGroupManager={openProviderGroupManager}
         setConfigModalOpen={setConfigModalOpen}
         rawConfigModalOpen={rawConfigModalOpen}
         rawConfigHomeOptions={rawConfigHomeOptions}
@@ -1348,6 +1377,20 @@ export default function App() {
         setCodexSwapModalOpen={setCodexSwapModalOpen}
         toggleCodexSwap={toggleCodexSwap}
         resolveCliHomes={resolveCliHomes}
+      />
+      <ProviderGroupManagerModal
+        open={providerGroupManagerOpen}
+        config={config}
+        orderedConfigProviders={orderedConfigProviders}
+        focusProvider={providerGroupManagerFocusProvider}
+        onClose={() => {
+          setProviderGroupManagerOpen(false)
+          setProviderGroupManagerFocusProvider(null)
+        }}
+        onAssignGroup={setProvidersGroup}
+        onSetUsageBase={setUsageBaseUrl}
+        onClearUsageBase={clearUsageBaseUrl}
+        onSetHardCap={setProviderQuotaHardCap}
       />
     </div>
   )

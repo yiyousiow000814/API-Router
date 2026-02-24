@@ -1,4 +1,4 @@
-import type { UsageStatistics } from '../types'
+import type { Config, UsageStatistics } from '../types'
 
 export function buildDevUsageStatistics(params: {
   now: number
@@ -6,10 +6,27 @@ export function buildDevUsageStatistics(params: {
   usageFilterProviders: string[]
   usageFilterModels: string[]
   usageFilterOrigins: string[]
+  config?: Config | null
 }): UsageStatistics {
-  const { now, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins } = params
+  const { now, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins, config = null } = params
+  const normalizedProviderFilters = usageFilterProviders.map((provider) => provider.trim().toLowerCase()).filter(Boolean)
+  const includeProvider =
+    normalizedProviderFilters.length === 0
+      ? (_provider: string) => true
+      : (provider: string) => normalizedProviderFilters.includes(provider.trim().toLowerCase())
   const normalizedOrigins = usageFilterOrigins.map((origin) => origin.trim().toLowerCase()).filter(Boolean)
   const includeOrigin = (origin: string) => normalizedOrigins.length === 0 || normalizedOrigins.includes(origin)
+  const orderedProviderNames = (() => {
+    const providerMap = config?.providers ?? {}
+    const all = Object.keys(providerMap).filter((name) => {
+      if (name === 'official') return false
+      return !providerMap[name]?.disabled
+    })
+    const ordered = (config?.provider_order ?? []).filter((name) => all.includes(name))
+    const leftovers = all.filter((name) => !ordered.includes(name)).sort((a, b) => a.localeCompare(b))
+    const merged = [...ordered, ...leftovers]
+    return merged.length ? merged : ['provider_1', 'provider_2']
+  })()
   const usageOriginFactor = normalizedOrigins.includes('wsl2')
     ? normalizedOrigins.includes('windows')
       ? 1
@@ -136,74 +153,45 @@ export function buildDevUsageStatistics(params: {
       }
     })
 
-  const byProvider = [
-    {
-      provider: 'provider_1',
-      api_key_ref: 'sk-dev********a11',
-      origin: 'windows',
-      requests: 140,
-      total_tokens: 84000,
-      estimated_total_cost_usd: 30.8,
-      estimated_avg_request_cost_usd: 0.22,
-      estimated_cost_request_count: 140,
-      pricing_source: 'manual_per_request',
-    },
-    {
-      provider: 'provider_1',
-      api_key_ref: 'sk-dev********a11',
-      origin: 'wsl2',
-      requests: 70,
-      total_tokens: 44400,
-      estimated_total_cost_usd: 15.4,
-      estimated_avg_request_cost_usd: 0.22,
-      estimated_cost_request_count: 70,
-      pricing_source: 'manual_per_request',
-    },
-    {
-      provider: 'provider_2',
-      api_key_ref: 'sk-dev********b22',
-      origin: 'windows',
-      requests: 7,
-      total_tokens: 2100,
-      estimated_total_cost_usd: 0.21,
-      estimated_avg_request_cost_usd: 0.03,
-      estimated_cost_request_count: 7,
-      pricing_source: 'manual_per_request',
-    },
-    {
-      provider: 'provider_2',
-      api_key_ref: 'sk-dev********b22',
-      origin: 'wsl2',
-      requests: 5,
-      total_tokens: 1300,
-      estimated_total_cost_usd: 0.15,
-      estimated_avg_request_cost_usd: 0.03,
-      estimated_cost_request_count: 5,
-      pricing_source: 'manual_per_request',
-    },
-    {
-      provider: 'official',
-      api_key_ref: 'sk-dev********c33',
-      origin: 'windows',
-      requests: 16,
-      total_tokens: 5600,
-      estimated_total_cost_usd: 0.32,
-      estimated_avg_request_cost_usd: 0.02,
-      estimated_cost_request_count: 16,
-      pricing_source: 'manual_per_request',
-    },
-    {
-      provider: 'official',
-      api_key_ref: 'sk-dev********c33',
-      origin: 'wsl2',
-      requests: 10,
-      total_tokens: 3500,
-      estimated_total_cost_usd: 0.2,
-      estimated_avg_request_cost_usd: 0.02,
-      estimated_cost_request_count: 10,
-      pricing_source: 'manual_per_request',
-    },
-  ].filter((row) => includeOrigin(row.origin))
+  const providerRowsRaw = orderedProviderNames.flatMap((providerName, index) => {
+    const providerCfg = config?.providers?.[providerName]
+    const apiKeyRef = (providerCfg?.key_preview ?? '').trim() || `sk-dev********p${index + 1}`
+    const totalRequests = Math.max(8, 180 - index * 36)
+    const totalTokens = totalRequests * Math.max(380, 640 - index * 80)
+    const avgCost = Math.max(0.015, 0.08 - index * 0.01)
+    const windowsRequests = Math.max(1, Math.round(totalRequests * 0.67))
+    const wslRequests = Math.max(1, totalRequests - windowsRequests)
+    const windowsTokens = Math.max(1, Math.round(totalTokens * 0.67))
+    const wslTokens = Math.max(1, totalTokens - windowsTokens)
+    return [
+      {
+        provider: providerName,
+        api_key_ref: apiKeyRef,
+        origin: 'windows',
+        requests: windowsRequests,
+        total_tokens: windowsTokens,
+        estimated_total_cost_usd: Number((windowsRequests * avgCost).toFixed(2)),
+        estimated_avg_request_cost_usd: Number(avgCost.toFixed(3)),
+        estimated_cost_request_count: windowsRequests,
+        pricing_source: 'manual_per_request',
+      },
+      {
+        provider: providerName,
+        api_key_ref: apiKeyRef,
+        origin: 'wsl2',
+        requests: wslRequests,
+        total_tokens: wslTokens,
+        estimated_total_cost_usd: Number((wslRequests * avgCost).toFixed(2)),
+        estimated_avg_request_cost_usd: Number(avgCost.toFixed(3)),
+        estimated_cost_request_count: wslRequests,
+        pricing_source: 'manual_per_request',
+      },
+    ]
+  })
+
+  const byProvider = providerRowsRaw
+    .filter((row) => includeOrigin(row.origin))
+    .filter((row) => includeProvider(row.provider))
 
   const totalRequests = byProvider.reduce((sum, row) => sum + row.requests, 0)
   const totalTokens = byProvider.reduce((sum, row) => sum + row.total_tokens, 0)
@@ -221,7 +209,7 @@ export function buildDevUsageStatistics(params: {
       origins: usageFilterOrigins,
     },
     catalog: {
-      providers: ['provider_1', 'provider_2'],
+      providers: orderedProviderNames,
       models: ['gpt-5.x', 'gpt-4.1'],
       origins: ['windows', 'wsl2'],
     },

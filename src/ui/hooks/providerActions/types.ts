@@ -5,6 +5,8 @@ export type KeyModalState = {
   open: boolean
   provider: string
   value: string
+  loading: boolean
+  loadFailed: boolean
 }
 
 export type UsageBaseModalState = {
@@ -41,6 +43,8 @@ export type RefreshQuotaOptions = {
 
 export type UseProviderActionsResult = {
   saveProvider: (name: string) => Promise<void>
+  setProviderGroup: (name: string, group: string | null) => Promise<void>
+  setProvidersGroup: (providers: string[], group: string | null) => Promise<void>
   setProviderDisabled: (name: string, disabled: boolean) => Promise<void>
   deleteProvider: (name: string) => Promise<void>
   saveKey: () => Promise<void>
@@ -48,6 +52,7 @@ export type UseProviderActionsResult = {
   refreshQuota: (name: string) => Promise<void>
   refreshQuotaAll: (opts?: RefreshQuotaOptions) => Promise<void>
   saveUsageBaseUrl: () => Promise<void>
+  setUsageBaseUrl: (provider: string, url: string) => Promise<void>
   clearUsageBaseUrl: (name: string) => Promise<void>
   setProviderQuotaHardCap: (
     provider: string,

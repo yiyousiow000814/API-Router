@@ -41,14 +41,6 @@ fn build_models_url(base: &str) -> String {
 }
 
 fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
-    // User-provided usage_base_url always wins.
-    if let Some(u) = provider.usage_base_url.as_deref() {
-        let t = u.trim().trim_end_matches('/');
-        if !t.is_empty() {
-            return vec![t.to_string()];
-        }
-    }
-
     let mut out: Vec<String> = Vec::new();
     let mut push_unique = |value: String| {
         if value.is_empty() {
@@ -58,6 +50,16 @@ fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
             out.push(value);
         }
     };
+
+    // Keep user-provided usage_base_url as the first-choice endpoint, but still
+    // append provider-derived fallbacks so we can recover when a saved endpoint
+    // later becomes invalid or returns an unexpected payload.
+    if let Some(u) = provider.usage_base_url.as_deref() {
+        let t = u.trim().trim_end_matches('/');
+        if !t.is_empty() {
+            push_unique(t.to_string());
+        }
+    }
 
     let is_ppchat = is_ppchat_base(&provider.base_url);
     let is_pumpkin = is_pumpkinai_base(&provider.base_url);
@@ -198,4 +200,3 @@ async fn reorder_bases_for_speed(
 
     ordered
 }
-

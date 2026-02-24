@@ -1,9 +1,14 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useCallback, useRef } from 'react'
+import type { Status } from '../types'
 import {
   buildUsageRequestEntriesArgs,
+  buildUsageRequestsQueryKey,
+  readTestFlagFromLocation,
+  USAGE_REQUEST_GRAPH_QUERY_KEY,
   USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
   USAGE_REQUESTS_CANONICAL_QUERY_KEY,
+  USAGE_REQUEST_TEST_DATA_REVISION,
   primeUsageRequestGraphPrefetchCache,
   primeUsageRequestsPrefetchCache,
 } from '../components/UsageStatisticsPanel'
@@ -22,6 +27,7 @@ type TopPage =
 type Params = {
   activePage: TopPage
   refreshUsageStatistics: (opts?: { silent?: boolean }) => Promise<unknown> | void
+  clientSessions?: Status['client_sessions']
 }
 
 type UsageRequestEntry = {
@@ -36,6 +42,13 @@ type UsageRequestEntry = {
   total_tokens: number
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
+}
+
+type SyntheticSessionSeed = {
+  sessionId: string
+  provider: string
+  origin: 'windows' | 'wsl2'
+  requests: number
 }
 
 function startOfDayUnixMs(unixMs: number): number {
@@ -82,23 +95,95 @@ function groupRowsByProvider(rows: UsageRequestEntry[], providerLimit: number) {
   return Object.fromEntries(out.entries())
 }
 
-function buildSyntheticUsageRequestRows(limit: number): UsageRequestEntry[] {
-  const providers = ['official', 'provider_1', 'provider_2']
+function stableSeedFromText(text: string): number {
+  let hash = 2166136261
+  for (let idx = 0; idx < text.length; idx += 1) {
+    hash ^= text.charCodeAt(idx)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+function buildSyntheticSessionSeeds(clientSessions: Status['client_sessions'] | undefined): SyntheticSessionSeed[] {
+  const sessionById = new Map<string, SyntheticSessionSeed & { verified: boolean }>()
+  for (const session of clientSessions ?? []) {
+    if (!session) continue
+    const sessionId = String(session.codex_session_id ?? '').trim() || String(session.id ?? '').trim()
+    if (!sessionId) continue
+    const providerCandidates = [
+      String(session.current_provider ?? '').trim(),
+      String(session.preferred_provider ?? '').trim(),
+      String(session.reported_model_provider ?? '').trim(),
+    ]
+    const provider = providerCandidates.find((value) => value && value !== '-' && value.toLowerCase() !== 'api_router') ?? 'provider_1'
+    const wtSession = String(session.wt_session ?? '').trim().toLowerCase()
+    const origin: 'windows' | 'wsl2' = wtSession.includes('wsl') ? 'wsl2' : 'windows'
+    const requests = session.active ? 8 : 3
+    const verified = Boolean(session.verified)
+    const existing = sessionById.get(sessionId)
+    if (existing) {
+      sessionById.set(sessionId, {
+        ...existing,
+        provider,
+        origin,
+        requests: Math.max(existing.requests, requests),
+        verified: existing.verified || verified,
+      })
+      continue
+    }
+    sessionById.set(sessionId, { sessionId, provider, origin, requests, verified })
+  }
+  const rows = [...sessionById.values()]
+  const verifiedRows = rows.filter((item) => item.verified)
+  const selected = verifiedRows.length > 0 ? verifiedRows : rows
+  return selected.map((item) => ({
+    sessionId: item.sessionId,
+    provider: item.provider,
+    origin: item.origin,
+    requests: item.requests,
+  }))
+}
+
+function buildSyntheticUsageRequestRows(limit: number, clientSessions?: Status['client_sessions']): UsageRequestEntry[] {
+  const fallbackSessions = [
+    { sessionId: '019c4578-0f3c-7f82-a4f9-b41a1e65e242', provider: 'provider_1', origin: 'windows', requests: 8 },
+    { sessionId: '019c03fd-6ea4-7121-961f-9f9b64d2c1b5', provider: 'provider_1', origin: 'wsl2', requests: 7 },
+    { sessionId: '019c7f46-c5ec-7e2e-9205-4e00718a524e', provider: 'provider_2', origin: 'wsl2', requests: 5 },
+    { sessionId: '019c9f18-3d72-7ce3-a9a1-2fd7f4d9d100', provider: 'provider_3', origin: 'windows', requests: 4 },
+  ] as const satisfies SyntheticSessionSeed[]
+  const sessionSeeds = buildSyntheticSessionSeeds(clientSessions)
+  const sessions = sessionSeeds.length > 0 ? sessionSeeds : fallbackSessions
+  const providers = [...new Set(sessions.map((session) => session.provider))]
   const origins = ['windows', 'wsl2']
   const models = ['gpt-5.2-codex']
   const now = Date.now()
-  let seed = (now + limit * 13) >>> 0
+  const fingerprint = [
+    String(limit),
+    ...sessions.map((session) => `${session.sessionId}:${session.provider}:${session.requests}:${session.origin}`),
+  ].join('|')
+  let seed = stableSeedFromText(fingerprint)
   const rand = () => {
     seed = (seed * 1103515245 + 12345) >>> 0
     return seed / 4294967296
+  }
+  const pick = <T extends { requests: number }>(rows: T[]): T => {
+    const sum = rows.reduce((acc, row) => acc + Math.max(0, row.requests), 0)
+    if (sum <= 0) return rows[0]
+    let marker = rand() * sum
+    for (const row of rows) {
+      marker -= Math.max(0, row.requests)
+      if (marker <= 0) return row
+    }
+    return rows[rows.length - 1]
   }
 
   const windowMs = 45 * 24 * 60 * 60 * 1000
   const rows: UsageRequestEntry[] = []
   const count = Math.max(0, limit)
   for (let i = 0; i < count; i += 1) {
-    const provider = providers[Math.floor(rand() * providers.length)]
-    const origin = origins[i % origins.length]
+    const chosenSession = pick(sessions)
+    const provider = chosenSession.provider || providers[0]
+    const origin = chosenSession.origin || origins[i % origins.length]
     const input = 100_000 + Math.floor(rand() * 900_000)
     const output = 1_000 + Math.floor(rand() * 9_000)
     const total = input + output
@@ -109,7 +194,7 @@ function buildSyntheticUsageRequestRows(limit: number): UsageRequestEntry[] {
       api_key_ref: '-',
       model: models[0],
       origin,
-      session_id: `session_${String(i).padStart(4, '0')}`,
+      session_id: chosenSession.sessionId,
       unix_ms: now - Math.floor(rand() * windowMs),
       input_tokens: input,
       output_tokens: output,
@@ -124,6 +209,7 @@ function buildSyntheticUsageRequestRows(limit: number): UsageRequestEntry[] {
 export function useTopNavIntentPrefetch({
   activePage,
   refreshUsageStatistics,
+  clientSessions = [],
 }: Params) {
   const usageStatsIntentPrefetchAtRef = useRef<number>(0)
   const usageStatsIntentPrefetchInFlightRef = useRef<boolean>(false)
@@ -159,7 +245,22 @@ export function useTopNavIntentPrefetch({
     }
     usageRequestsIntentPrefetchAtRef.current = now
     usageRequestsIntentPrefetchInFlightRef.current = true
-    const requestQueryKey = USAGE_REQUESTS_CANONICAL_QUERY_KEY
+    const useSyntheticRevision = import.meta.env.DEV || readTestFlagFromLocation()
+    const requestQueryKey = useSyntheticRevision
+      ? buildUsageRequestsQueryKey({
+          hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
+          fromUnixMs: null,
+          toUnixMs: null,
+          providers: null,
+          models: null,
+          origins: null,
+          sessions: null,
+          syntheticRevision: USAGE_REQUEST_TEST_DATA_REVISION,
+        })
+      : USAGE_REQUESTS_CANONICAL_QUERY_KEY
+    const requestGraphQueryKey = useSyntheticRevision
+      ? `${USAGE_REQUEST_GRAPH_QUERY_KEY}:${USAGE_REQUEST_TEST_DATA_REVISION}`
+      : USAGE_REQUEST_GRAPH_QUERY_KEY
 
     void (async () => {
       try {
@@ -237,6 +338,7 @@ export function useTopNavIntentPrefetch({
               byProvider[item.provider] = item.rows
             }
             primeUsageRequestGraphPrefetchCache({
+              queryKey: requestGraphQueryKey,
               baseRows: rowsRes.rows ?? [],
               rowsByProvider: byProvider,
             })
@@ -246,19 +348,20 @@ export function useTopNavIntentPrefetch({
         }
       } catch {
         // Non-Tauri dev server (or transient backend issues): prime a lightweight synthetic cache to avoid 0->loaded flashes.
-        const fallbackRows = buildSyntheticUsageRequestRows(Math.min(800, USAGE_REQUESTS_PREFETCH_LIMIT))
+        const fallbackRows = buildSyntheticUsageRequestRows(Math.min(800, USAGE_REQUESTS_PREFETCH_LIMIT), clientSessions)
         const dailyTotals = buildDailyTotalsFromRows(fallbackRows, 45)
         primeUsageRequestsPrefetchCache({
           queryKey: requestQueryKey,
           rows: fallbackRows,
           hasMore: true,
           dailyTotals,
+          usingTestFallback: true,
         })
       } finally {
         usageRequestsIntentPrefetchInFlightRef.current = false
       }
     })()
-  }, [activePage])
+  }, [activePage, clientSessions])
 
   return {
     handleUsageStatisticsIntentPrefetch,

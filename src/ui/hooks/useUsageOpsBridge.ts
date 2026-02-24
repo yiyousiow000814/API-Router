@@ -150,6 +150,7 @@ export function useUsageOpsBridge(params: Params) {
           usageFilterProviders,
           usageFilterModels,
           usageFilterOrigins,
+          config,
         }),
       )
       return
@@ -170,6 +171,7 @@ export function useUsageOpsBridge(params: Params) {
     }
   }, [
     isDevPreview,
+    config,
     setUsageStatistics,
     usageWindowHours,
     usageFilterProviders,

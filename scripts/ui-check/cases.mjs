@@ -1377,6 +1377,7 @@ export async function runSwitchboardSwitchCase(driver, directProvider, uiProfile
       name: directProvider,
       displayName: String(providerCfg?.display_name || directProvider),
       baseUrl: 'https://example.com/v1',
+      group: providerCfg?.group ?? null,
     })
   }
   await tauriInvoke(driver, 'set_provider_key', { provider: directProvider, key: 'sk-ui-check-direct-provider-key' })

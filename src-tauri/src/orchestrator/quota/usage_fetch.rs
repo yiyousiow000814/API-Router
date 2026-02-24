@@ -22,6 +22,7 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
 
     let mut last_err = String::new();
     let mut saw_404 = false;
+    let mut non_404_err: Option<String> = None;
     for base in bases {
         let base = base.trim_end_matches('/');
         if base.is_empty() {
@@ -43,6 +44,8 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
                 if !(200..300).contains(&status) {
                     if status == 404 {
                         saw_404 = true;
+                    } else {
+                        non_404_err.get_or_insert_with(|| format!("http {status}"));
                     }
                     last_err = format!("http {status}");
                     continue;
@@ -71,16 +74,20 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
                 }
 
                 last_err = "unexpected response".to_string();
+                non_404_err.get_or_insert_with(|| last_err.clone());
                 continue;
             }
             Err(e) => {
                 last_err = format_reqwest_error_for_logs(&e);
+                non_404_err.get_or_insert_with(|| last_err.clone());
                 continue;
             }
         }
     }
 
-    if last_err.is_empty() || (saw_404 && last_err == "http 404") {
+    if let Some(err) = non_404_err {
+        out.last_error = err;
+    } else if last_err.is_empty() || (saw_404 && last_err == "http 404") {
         out.last_error = "usage endpoint not found (set Usage base URL)".to_string();
     } else {
         out.last_error = last_err;
@@ -216,6 +223,7 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
 
     let mut last_err = String::new();
     let mut saw_404 = false;
+    let mut non_404_err: Option<String> = None;
     for base in bases {
         let base = base.trim_end_matches('/');
         if base.is_empty() {
@@ -235,6 +243,8 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
                 if !(200..300).contains(&status) {
                     if status == 404 {
                         saw_404 = true;
+                    } else {
+                        non_404_err.get_or_insert_with(|| format!("http {status}"));
                     }
                     last_err = format!("http {status}");
                     continue;
@@ -249,6 +259,7 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
                     && root.get("weekly_spent").is_none()
                 {
                     last_err = "unexpected response".to_string();
+                    non_404_err.get_or_insert_with(|| last_err.clone());
                     continue;
                 }
 
@@ -268,12 +279,15 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
             }
             Err(e) => {
                 last_err = format_reqwest_error_for_logs(&e);
+                non_404_err.get_or_insert_with(|| last_err.clone());
                 continue;
             }
         }
     }
 
-    if last_err.is_empty() || (saw_404 && last_err == "http 404") {
+    if let Some(err) = non_404_err {
+        out.last_error = err;
+    } else if last_err.is_empty() || (saw_404 && last_err == "http 404") {
         out.last_error = "usage endpoint not found (set Usage base URL)".to_string();
     } else {
         out.last_error = last_err;
@@ -297,4 +311,3 @@ fn as_f64(v: Option<&Value>) -> Option<f64> {
             })
         })
 }
-

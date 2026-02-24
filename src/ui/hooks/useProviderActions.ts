@@ -21,7 +21,7 @@ export function useProviderActions({
   refreshConfig,
   flashToast,
 }: UseProviderActionsParams): UseProviderActionsResult {
-  const { saveProvider, setProviderDisabled, deleteProvider, addProvider } = useProviderCrudActions({
+  const { saveProvider, setProviderGroup, setProvidersGroup, setProviderDisabled, deleteProvider, addProvider } = useProviderCrudActions({
     config,
     isDevPreview,
     setConfig,
@@ -47,10 +47,12 @@ export function useProviderActions({
     refreshQuota,
     refreshQuotaAll,
     saveUsageBaseUrl,
+    setUsageBaseUrl,
     clearUsageBaseUrl,
     setProviderQuotaHardCap,
     openUsageBaseModal,
   } = useProviderUsageActions({
+    config,
     status,
     setConfig,
     isDevPreview,
@@ -64,6 +66,8 @@ export function useProviderActions({
 
   return {
     saveProvider,
+    setProviderGroup,
+    setProvidersGroup,
     setProviderDisabled,
     deleteProvider,
     saveKey,
@@ -71,6 +75,7 @@ export function useProviderActions({
     refreshQuota,
     refreshQuotaAll,
     saveUsageBaseUrl,
+    setUsageBaseUrl,
     clearUsageBaseUrl,
     setProviderQuotaHardCap,
     openKeyModal,
