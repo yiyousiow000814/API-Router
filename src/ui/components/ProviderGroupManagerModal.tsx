@@ -11,7 +11,6 @@ type Props = {
   onClose: () => void
   onAssignGroup: (providers: string[], group: string | null) => Promise<void>
   onOpenUsageBase: (provider: string, current: string | null | undefined) => Promise<void>
-  onClearUsageBase: (provider: string) => Promise<void>
   onSetHardCap: (provider: string, field: QuotaHardCapField, enabled: boolean) => Promise<void>
 }
 
@@ -22,6 +21,10 @@ function orderedProviders(config: Config, ordered: string[]): string[] {
   return [...fromOrder, ...leftovers]
 }
 
+function formatProviderCount(count: number): string {
+  return `${count} ${count === 1 ? 'provider' : 'providers'}`
+}
+
 export function ProviderGroupManagerModal({
   open,
   config,
@@ -30,12 +33,11 @@ export function ProviderGroupManagerModal({
   onClose,
   onAssignGroup,
   onOpenUsageBase,
-  onClearUsageBase,
   onSetHardCap,
 }: Props) {
   const [selectedProviders, setSelectedProviders] = useState<string[]>([])
+  const [selectedGroupMembers, setSelectedGroupMembers] = useState<Record<string, string[]>>({})
   const [groupDraft, setGroupDraft] = useState('')
-  const [activeGroup, setActiveGroup] = useState('')
 
   const providerNames = useMemo(
     () => (config ? orderedProviders(config, orderedConfigProviders) : []),
@@ -53,26 +55,34 @@ export function ProviderGroupManagerModal({
     }
     return grouped
   }, [config, providerNames])
-  const groupOptions = useMemo(() => [...groups.keys()].sort((a, b) => a.localeCompare(b)), [groups])
-  const activeGroupMembers = useMemo(() => groups.get(activeGroup) ?? [], [activeGroup, groups])
-  const groupRepresentative = activeGroupMembers[0] ?? ''
-  const representativeProvider = groupRepresentative ? config?.providers?.[groupRepresentative] : undefined
-  const representativeUsageBase = representativeProvider?.usage_base_url ?? null
-  const representativeHardCap = representativeProvider?.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
+  const groupEntries = useMemo(
+    () => [...groups.entries()].map(([name, members]) => ({ name, members })),
+    [groups],
+  )
+  const ungroupedProviders = useMemo(
+    () => providerNames.filter((provider) => !(config?.providers?.[provider]?.group ?? '').trim()),
+    [config, providerNames],
+  )
 
   useEffect(() => {
     if (!open || !config) return
     if (focusProvider && providerNames.includes(focusProvider)) {
-      setSelectedProviders([focusProvider])
-      const nextGroup = (config.providers?.[focusProvider]?.group ?? '').trim()
-      setGroupDraft(nextGroup)
-      setActiveGroup(nextGroup)
-      return
+      const focusGroup = (config.providers?.[focusProvider]?.group ?? '').trim()
+      if (focusGroup) {
+        setSelectedProviders([])
+        setGroupDraft(focusGroup)
+        setSelectedGroupMembers({ [focusGroup]: [focusProvider] })
+      } else {
+        setSelectedProviders([focusProvider])
+        setGroupDraft('')
+        setSelectedGroupMembers({})
+      }
+    } else {
+      setSelectedProviders([])
+      setGroupDraft('')
+      setSelectedGroupMembers({})
     }
-    setSelectedProviders([])
-    setGroupDraft('')
-    setActiveGroup((prev) => (prev && groupOptions.includes(prev) ? prev : groupOptions[0] ?? ''))
-  }, [config, focusProvider, groupOptions, open, providerNames])
+  }, [config, focusProvider, open, providerNames])
 
   useEffect(() => {
     if (!config) return
@@ -80,12 +90,26 @@ export function ProviderGroupManagerModal({
       prev.filter((provider) => !(config.providers?.[provider]?.group ?? '').trim()),
     )
   }, [config])
+  useEffect(() => {
+    if (!config) return
+    setSelectedGroupMembers((prev) => {
+      const next: Record<string, string[]> = {}
+      for (const [groupName, members] of Object.entries(prev)) {
+        const currentMembers = new Set(groups.get(groupName) ?? [])
+        const kept = members.filter((member) => currentMembers.has(member))
+        if (kept.length) {
+          next[groupName] = kept
+        }
+      }
+      return next
+    })
+  }, [config, groups])
 
   if (!open || !config) return null
 
   return (
     <ModalBackdrop onClose={onClose}>
-      <div className="aoModal aoModalWide" onClick={(event) => event.stopPropagation()}>
+      <div className="aoModal aoModalWide aoGroupManagerModal" onClick={(event) => event.stopPropagation()}>
         <div className="aoModalHeader">
           <div className="aoModalTitle">Group Manager</div>
           <button className="aoBtn" onClick={onClose}>
@@ -100,20 +124,18 @@ export function ProviderGroupManagerModal({
               <div className="aoGroupManagerAssignRow">
                 <input
                   className="aoInput"
-                  list="ao-group-options"
                   placeholder="Group name"
                   value={groupDraft}
                   onChange={(event) => setGroupDraft(event.target.value)}
                 />
-                <datalist id="ao-group-options">
-                  {groupOptions.map((group) => (
-                    <option key={`group-option-${group}`} value={group} />
-                  ))}
-                </datalist>
                 <button
                   className="aoBtn aoBtnPrimary"
                   disabled={selectedProviders.length === 0 || groupDraft.trim().length === 0}
-                  onClick={() => void onAssignGroup(selectedProviders, groupDraft.trim() || null)}
+                  onClick={async () => {
+                    await onAssignGroup(selectedProviders, groupDraft.trim() || null)
+                    setSelectedProviders([])
+                    setGroupDraft('')
+                  }}
                 >
                   Apply
                 </button>
@@ -126,19 +148,13 @@ export function ProviderGroupManagerModal({
                 </button>
               </div>
               <div className="aoGroupManagerProviderList">
-                {providerNames.map((provider) => {
+                {ungroupedProviders.map((provider) => {
                   const selected = selectedProviders.includes(provider)
-                  const currentGroup = (config.providers?.[provider]?.group ?? '').trim()
-                  const grouped = Boolean(currentGroup)
                   return (
-                    <label
-                      key={`provider-group-row-${provider}`}
-                      className={`aoGroupManagerProviderRow${grouped ? ' aoGroupManagerProviderRowDisabled' : ''}`}
-                    >
+                    <label key={`provider-group-row-${provider}`} className="aoGroupManagerProviderRow">
                       <input
                         type="checkbox"
                         checked={selected}
-                        disabled={grouped}
                         onChange={(event) =>
                           setSelectedProviders((prev) => {
                             if (event.target.checked) return [...new Set([...prev, provider])]
@@ -147,79 +163,117 @@ export function ProviderGroupManagerModal({
                         }
                       />
                       <span className="aoProviderName">{provider}</span>
-                      <span className="aoHint">{currentGroup || '-'}</span>
                     </label>
                   )
                 })}
+                {ungroupedProviders.length === 0 ? <div className="aoHint">All providers are already assigned to groups.</div> : null}
               </div>
             </div>
 
             <div className="aoCard aoGroupManagerCard">
               <div className="aoMiniTitle">Group Usage Controls</div>
-              <div className="aoGroupManagerAssignRow">
-                <select
-                  className="aoInput"
-                  value={activeGroup}
-                  onChange={(event) => setActiveGroup(event.target.value)}
-                >
-                  <option value="">Select group</option>
-                  {groupOptions.map((group) => (
-                    <option key={`group-select-${group}`} value={group}>
-                      {group}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="aoBtn"
-                  disabled={activeGroupMembers.length === 0}
-                  onClick={() => setSelectedProviders(activeGroupMembers)}
-                >
-                  Select Members
-                </button>
-                <button
-                  className="aoBtn"
-                  disabled={activeGroupMembers.length === 0}
-                  onClick={async () => {
-                    await onAssignGroup(activeGroupMembers, null)
-                    setActiveGroup('')
-                  }}
-                >
-                  Close Group
-                </button>
-              </div>
+              <div className="aoGroupManagerGroupList">
+                {groupEntries.map(({ name, members }) => {
+                  const groupRepresentative = members[0] ?? ''
+                  const representativeProvider = groupRepresentative ? config.providers?.[groupRepresentative] : undefined
+                  const representativeUsageBase = representativeProvider?.usage_base_url ?? null
+                  const representativeHardCap = representativeProvider?.quota_hard_cap ?? {
+                    daily: true,
+                    weekly: true,
+                    monthly: true,
+                  }
+                  const normalizedUsageBases = new Set(
+                    members.map((provider) => (config.providers?.[provider]?.usage_base_url ?? '').trim()),
+                  )
+                  const hasMixedUsageBase = normalizedUsageBases.size > 1
+                  const selectedMembers = selectedGroupMembers[name] ?? []
+                  return (
+                    <div key={`group-card-${name}`} className="aoGroupManagerGroupCard">
+                      <div className="aoGroupManagerGroupHead">
+                        <div className="aoProviderGroupTag">{name}</div>
+                        <div className="aoHint">{formatProviderCount(members.length)}</div>
+                      </div>
 
-              {activeGroupMembers.length > 0 ? (
-                <>
-                  <div className="aoHint">Members: {activeGroupMembers.join(' / ')}</div>
-                  <div className="aoUsageBtns">
-                    <button
-                      className="aoTinyBtn"
-                      onClick={() => void onOpenUsageBase(groupRepresentative, representativeUsageBase)}
-                    >
-                      Usage Base
-                    </button>
-                    <button className="aoTinyBtn" onClick={() => void onClearUsageBase(groupRepresentative)}>
-                      Clear
-                    </button>
-                  </div>
-                  <div className="aoUsageHardCapGrid">
-                    {(['daily', 'weekly', 'monthly'] as QuotaHardCapField[]).map((period) => (
-                      <label key={`group-hard-cap-${period}`} className="aoUsageHardCapItem">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(representativeHardCap[period])}
-                          onChange={(event) =>
-                            void onSetHardCap(groupRepresentative, period, event.target.checked)
-                          }
-                        />
-                        <span>{period} hard cap</span>
-                      </label>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <div className="aoHint">Select a group to manage usage base and hard cap in one place.</div>
-              )}
+                      <div className="aoGroupManagerProviderList">
+                        {members.map((provider) => {
+                          const checked = selectedMembers.includes(provider)
+                          return (
+                            <label key={`group-member-row-${name}-${provider}`} className="aoGroupManagerProviderRow">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(event) =>
+                                  setSelectedGroupMembers((prev) => {
+                                    const current = prev[name] ?? []
+                                    const next = event.target.checked
+                                      ? [...new Set([...current, provider])]
+                                      : current.filter((item) => item !== provider)
+                                    return { ...prev, [name]: next }
+                                  })
+                                }
+                              />
+                              <span className="aoProviderName">{provider}</span>
+                            </label>
+                          )
+                        })}
+                      </div>
+
+                      <div className="aoUsageTop">
+                        <button
+                          className="aoBtn aoBtnPrimary"
+                          disabled={!groupRepresentative}
+                          onClick={() => void onOpenUsageBase(groupRepresentative, representativeUsageBase)}
+                        >
+                          Usage Base
+                        </button>
+                        <div className="aoUsageHardCapInline">
+                          {(['daily', 'weekly', 'monthly'] as QuotaHardCapField[]).map((period) => (
+                            <label key={`group-hard-cap-${name}-${period}`} className="aoUsageHardCapItem">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(representativeHardCap[period])}
+                                onChange={(event) =>
+                                  void onSetHardCap(groupRepresentative, period, event.target.checked)
+                                }
+                              />
+                              <span>{period} hard cap</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                      {hasMixedUsageBase ? (
+                        <div className="aoHint aoHintWarning">
+                          Warning: Group members should share the same usage base URL (usage fetch endpoint, not provider base URL).
+                        </div>
+                      ) : null}
+
+                      <div className="aoGroupManagerGroupActions">
+                        <button
+                          className="aoBtn"
+                          disabled={selectedMembers.length === 0}
+                          onClick={async () => {
+                            await onAssignGroup(selectedMembers, null)
+                            setSelectedGroupMembers((prev) => ({ ...prev, [name]: [] }))
+                          }}
+                        >
+                          Kick Selected
+                        </button>
+                        <button
+                          className="aoBtn"
+                          disabled={members.length === 0}
+                          onClick={async () => {
+                            await onAssignGroup(members, null)
+                            setSelectedGroupMembers((prev) => ({ ...prev, [name]: [] }))
+                          }}
+                        >
+                          Close Group
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+                {groupEntries.length === 0 ? <div className="aoHint">No groups yet. Assign providers on the left.</div> : null}
+              </div>
             </div>
           </div>
         </div>

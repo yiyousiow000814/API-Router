@@ -20,7 +20,7 @@ export function KeyModal({ open, provider, value, onChange, onCancel, onSave }: 
         <div className="aoModalSub">
           Provider: <span style={{ fontFamily: mono }}>{provider}</span>
           <br />
-          Stored in ./user-data/secrets.json (gitignored).
+          Stored in ./user-data/secrets.json.
         </div>
         <input
           className="aoInput"

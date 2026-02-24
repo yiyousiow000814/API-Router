@@ -52,19 +52,17 @@ export function ConfigModal({
             <button className="aoBtn aoBtnPrimary aoConfigHeaderBtn" onClick={onOpenGroupManager}>
               Group Manager
             </button>
-            <button
-              className={`aoBtn aoConfigHeaderBtn${allProviderPanelsOpen ? ' aoConfigHeaderBtnToggleOn' : ''}`}
-              onClick={() => setAllProviderPanels(!allProviderPanelsOpen)}
-            >
+            <button className="aoBtn aoConfigHeaderBtn" onClick={() => setAllProviderPanels(!allProviderPanelsOpen)}>
               {allProviderPanelsOpen ? 'Hide all' : 'Show all'}
             </button>
-            <button className="aoBtn aoBtnDangerSoft aoConfigHeaderBtn aoConfigHeaderBtnClose" onClick={onClose}>
+            <span className="aoConfigHeaderDivider" aria-hidden="true" />
+            <button className="aoBtn aoConfigHeaderBtn aoConfigHeaderBtnClose" onClick={onClose}>
               Close
             </button>
           </div>
         </div>
         <div className="aoModalBody">
-          <div className="aoModalSub">keys are stored in ./user-data/secrets.json (gitignored)</div>
+          <div className="aoModalSub">keys are stored in ./user-data/secrets.json</div>
           <div className="aoCard aoConfigCard">
             <div className="aoConfigDeck">
               <div className="aoConfigPanel">

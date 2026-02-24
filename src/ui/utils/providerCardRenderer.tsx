@@ -241,28 +241,30 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   </>
                 ) : (
                   <>
-                    <div className="aoUsageBtns">
-                      <button
-                        className="aoTinyBtn"
-                        onClick={() => void options.openUsageBaseModal(name, p.usage_base_url ?? undefined)}
-                      >
-                        Usage Base
-                      </button>
-                    </div>
-                    {showHardCapToggles ? (
-                      <div className="aoUsageHardCapGrid">
-                        {visibleHardCapPeriods.map((period) => (
-                          <label key={period} className="aoUsageHardCapItem">
-                            <input
-                              type="checkbox"
-                              checked={quotaHardCap[period]}
-                              onChange={(event) => void options.setProviderQuotaHardCap(name, period, event.target.checked)}
-                            />
-                            <span>{period} hard cap</span>
-                          </label>
-                        ))}
+                    <div className="aoUsageTop">
+                      <div className="aoUsageBtns">
+                        <button
+                          className="aoTinyBtn"
+                          onClick={() => void options.openUsageBaseModal(name, p.usage_base_url ?? undefined)}
+                        >
+                          Usage Base
+                        </button>
                       </div>
-                    ) : null}
+                      {showHardCapToggles ? (
+                        <div className="aoUsageHardCapInline">
+                          {visibleHardCapPeriods.map((period) => (
+                            <label key={period} className="aoUsageHardCapItem">
+                              <input
+                                type="checkbox"
+                                checked={quotaHardCap[period]}
+                                onChange={(event) => void options.setProviderQuotaHardCap(name, period, event.target.checked)}
+                              />
+                              <span>{period} hard cap</span>
+                            </label>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
                     <div className="aoHint">Usage base sets the usage endpoint. If empty, we use the provider base URL.</div>
                     {showHardCapToggles ? (
                       <div className="aoHint">Hard cap auto-closes this provider when {budgetHardCapLabel} budget is exhausted.</div>

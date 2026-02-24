@@ -14,29 +14,22 @@
 }
 
 .aoConfigHeaderActions {
-  gap: 6px;
-  padding: 4px;
-  border-radius: 14px;
-  border: 1px solid rgba(13, 18, 32, 0.1);
-  background: rgba(13, 18, 32, 0.03);
+  gap: 8px;
 }
 
 .aoConfigHeaderBtn {
   min-width: 84px;
 }
 
-.aoConfigHeaderBtnToggleOn {
-  background: rgba(242, 193, 77, 0.14);
-  border-color: rgba(242, 193, 77, 0.44);
-}
-
-.aoConfigHeaderBtnToggleOn:hover {
-  background: rgba(242, 193, 77, 0.2);
-  border-color: rgba(242, 193, 77, 0.56);
+.aoConfigHeaderDivider {
+  width: 1px;
+  height: 20px;
+  background: rgba(13, 18, 32, 0.16);
 }
 
 .aoConfigHeaderBtnClose {
-  margin-left: 2px;
+  margin-left: 0;
+  min-width: 0;
 }
 
 .aoProviderName {
@@ -170,6 +163,10 @@
   color: rgba(13, 18, 32, 0.66);
 }
 
+.aoHintWarning {
+  color: rgba(117, 85, 18, 0.94);
+}
+
 .aoConfigCard {
   padding: 12px;
 }
@@ -199,8 +196,24 @@
 
 .aoGroupManagerLayout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(300px, 0.9fr) minmax(360px, 1.1fr);
   gap: 14px;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.aoModalWide.aoGroupManagerModal {
+  min-height: min(76vh, 720px);
+}
+
+.aoGroupManagerModal .aoModalBody {
+  min-height: min(66vh, 620px);
+  display: flex;
+}
+
+.aoGroupManagerModal .aoModalBody > .aoGroupManagerLayout {
+  width: 100%;
 }
 
 .aoGroupManagerCard {
@@ -208,6 +221,8 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
+  height: 100%;
 }
 
 .aoGroupManagerAssignRow {
@@ -218,7 +233,7 @@
 }
 
 .aoGroupManagerProviderList {
-  max-height: 320px;
+  max-height: none;
   overflow: auto;
   border: 1px solid rgba(13, 18, 32, 0.08);
   border-radius: 12px;
@@ -230,13 +245,55 @@
 
 .aoGroupManagerProviderRow {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 8px;
 }
 
-.aoGroupManagerProviderRowDisabled {
-  opacity: 0.5;
+.aoGroupManagerGroupList {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-rows: min-content;
+  align-content: start;
+  align-items: start;
+  gap: 10px;
+  max-height: none;
+  overflow: auto;
+  min-height: 0;
+  padding-right: 2px;
+}
+
+.aoGroupManagerCard > .aoGroupManagerProviderList,
+.aoGroupManagerCard > .aoGroupManagerGroupList {
+  flex: 1 1 auto;
+}
+
+.aoGroupManagerGroupCard {
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 14px;
+  padding: 10px;
+  background: rgba(13, 18, 32, 0.018);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aoGroupManagerGroupHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aoGroupManagerGroupActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aoGroupManagerGroupCard .aoGroupManagerProviderList {
+  max-height: 140px;
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .aoProviderConfigList {
@@ -879,14 +936,23 @@
 .aoUsageTop {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  justify-content: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .aoUsageBtns {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.aoUsageHardCapInline {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .aoUsageHardCapGrid {

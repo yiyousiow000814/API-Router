@@ -1369,7 +1369,6 @@ export default function App() {
         }}
         onAssignGroup={setProvidersGroup}
         onOpenUsageBase={openUsageBaseModal}
-        onClearUsageBase={clearUsageBaseUrl}
         onSetHardCap={setProviderQuotaHardCap}
       />
     </div>
