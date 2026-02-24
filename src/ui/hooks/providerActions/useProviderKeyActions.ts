@@ -18,14 +18,14 @@ export function useProviderKeyActions({
   const saveKey = useCallback(async () => {
     const provider = keyModal.provider
     const key = keyModal.value.trim()
-    if (!provider) return
+    if (!provider || keyModal.loading) return
     try {
       if (key) {
         await invoke('set_provider_key', { provider, key })
       } else {
         await invoke('clear_provider_key', { provider })
       }
-      setKeyModal({ open: false, provider: '', value: '' })
+      setKeyModal({ open: false, provider: '', value: '', loading: false })
       if (key) {
         flashToast(`Key set: ${provider}`)
         try {
@@ -46,7 +46,7 @@ export function useProviderKeyActions({
     } catch (e) {
       flashToast(String(e), 'error')
     }
-  }, [flashToast, keyModal.provider, keyModal.value, refreshConfig, refreshStatus, setKeyModal])
+  }, [flashToast, keyModal.loading, keyModal.provider, keyModal.value, refreshConfig, refreshStatus, setKeyModal])
 
   const clearKey = useCallback(
     async (name: string) => {
@@ -64,13 +64,14 @@ export function useProviderKeyActions({
 
   const openKeyModal = useCallback(
     async (provider: string) => {
-      setKeyModal({ open: true, provider, value: '' })
+      setKeyModal({ open: true, provider, value: '', loading: !isDevPreview })
       if (isDevPreview) return
       try {
         const existing = await invoke<string | null>('get_provider_key', { provider })
-        setKeyModal((m) => (m.open && m.provider === provider ? { ...m, value: existing ?? '' } : m))
+        setKeyModal((m) => (m.open && m.provider === provider ? { ...m, value: existing ?? '', loading: false } : m))
       } catch (e) {
         console.warn('Failed to load provider key', e)
+        setKeyModal((m) => (m.open && m.provider === provider ? { ...m, loading: false } : m))
       }
     },
     [isDevPreview, setKeyModal],

@@ -5,6 +5,7 @@ export type KeyModalState = {
   open: boolean
   provider: string
   value: string
+  loading: boolean
 }
 
 export type UsageBaseModalState = {

@@ -91,6 +91,7 @@ export default function App() {
     open: false,
     provider: '',
     value: '',
+    loading: false,
   })
   const [usageBaseModal, setUsageBaseModal] = useState<UsageBaseModalState>({
     open: false,

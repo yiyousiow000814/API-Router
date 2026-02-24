@@ -4,6 +4,7 @@ type Props = {
   open: boolean
   provider: string
   value: string
+  loading: boolean
   onChange: (next: string) => void
   onCancel: () => void
   onSave: () => void
@@ -11,7 +12,7 @@ type Props = {
 
 const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
 
-export function KeyModal({ open, provider, value, onChange, onCancel, onSave }: Props) {
+export function KeyModal({ open, provider, value, loading, onChange, onCancel, onSave }: Props) {
   if (!open) return null
   return (
     <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={onCancel}>
@@ -27,16 +28,17 @@ export function KeyModal({ open, provider, value, onChange, onCancel, onSave }: 
           style={{ width: '100%', height: 36, borderRadius: 12 }}
           placeholder="Paste API key..."
           value={value}
+          disabled={loading}
           onChange={(e) => onChange(e.target.value)}
         />
         <div className="aoModalActions">
           <button className="aoBtn" onClick={onCancel}>
             Cancel
           </button>
-          <button className="aoBtn" onClick={() => onChange('')} disabled={!value}>
+          <button className="aoBtn" onClick={() => onChange('')} disabled={loading || !value}>
             Clear
           </button>
-          <button className="aoBtn aoBtnPrimary" onClick={onSave}>
+          <button className="aoBtn aoBtnPrimary" onClick={onSave} disabled={loading}>
             Save
           </button>
         </div>
