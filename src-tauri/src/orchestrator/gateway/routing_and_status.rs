@@ -146,6 +146,14 @@ const BALANCED_CAPACITY_FIT_RANK_SCALE: f64 = 100.0;
 const BALANCED_SESSION_LOAD_WINDOW_MS: u64 = 2 * 60 * 60 * 1000;
 const BALANCED_UNHEALTHY_LOAD_PENALTY: u64 = 2;
 
+fn balanced_assignment_window(unix_ms: u64) -> u64 {
+    unix_ms / BALANCED_ASSIGNMENT_STICKY_MS
+}
+
+fn assignment_is_fresh_for_current_window(assigned_at_unix_ms: u64, now_ms: u64) -> bool {
+    balanced_assignment_window(assigned_at_unix_ms) == balanced_assignment_window(now_ms)
+}
+
 fn unhealthy_retry_delay_ms(cfg: &AppConfig) -> u64 {
     cfg.routing.cooldown_seconds.max(1).saturating_mul(1000)
 }
@@ -563,9 +571,9 @@ fn pick_balanced_provider_for_verified_main_session(
         assignment = None;
     }
 
-    let assignment_is_fresh = assignment.as_ref().is_some_and(|row| {
-        now_ms.saturating_sub(row.assigned_at_unix_ms) < BALANCED_ASSIGNMENT_STICKY_MS
-    });
+    let assignment_is_fresh = assignment
+        .as_ref()
+        .is_some_and(|row| assignment_is_fresh_for_current_window(row.assigned_at_unix_ms, now_ms));
     let assignment_is_unhealthy = assignment
         .as_ref()
         .is_some_and(|row| provider_is_unhealthy_or_cooldown(router_snapshot, &row.provider));
@@ -624,10 +632,6 @@ fn pick_balanced_provider_for_verified_main_session(
             if let Some((best_provider, _, best_bucket_load)) = best.as_ref() {
                 if best_provider == &row.provider || providers_share_api_key(st, &row.provider, best_provider)
                 {
-                    if rewrite_existing_assignment {
-                        st.store
-                            .put_session_route_assignment(session_key, &row.provider, now_ms);
-                    }
                     return Some(row.provider.clone());
                 }
                 let current_bucket_load = assignment_counts
@@ -638,10 +642,6 @@ fn pick_balanced_provider_for_verified_main_session(
                 if current_bucket_load
                     <= (*best_bucket_load).saturating_add(BALANCED_REBALANCE_MARGIN)
                 {
-                    if rewrite_existing_assignment {
-                        st.store
-                            .put_session_route_assignment(session_key, &row.provider, now_ms);
-                    }
                     return Some(row.provider.clone());
                 }
             } else {
@@ -1111,6 +1111,22 @@ mod routing_and_status_tests {
             &hard_cap,
         );
         assert_eq!(units, 1.0);
+    }
+
+    #[test]
+    fn assignment_is_fresh_within_same_global_window() {
+        let window_ms = BALANCED_ASSIGNMENT_STICKY_MS;
+        let assigned_at = window_ms + 1_000;
+        let now = window_ms + (30 * 60 * 1000);
+        assert!(assignment_is_fresh_for_current_window(assigned_at, now));
+    }
+
+    #[test]
+    fn assignment_expires_when_global_window_changes() {
+        let window_ms = BALANCED_ASSIGNMENT_STICKY_MS;
+        let assigned_at = window_ms.saturating_sub(1);
+        let now = window_ms + 1;
+        assert!(!assignment_is_fresh_for_current_window(assigned_at, now));
     }
 
     #[test]
