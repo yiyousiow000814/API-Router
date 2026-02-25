@@ -150,6 +150,10 @@ fn balanced_assignment_window(unix_ms: u64) -> u64 {
     unix_ms / BALANCED_ASSIGNMENT_STICKY_MS
 }
 
+fn balanced_assignment_window_start(unix_ms: u64) -> u64 {
+    balanced_assignment_window(unix_ms).saturating_mul(BALANCED_ASSIGNMENT_STICKY_MS)
+}
+
 fn assignment_is_fresh_for_current_window(assigned_at_unix_ms: u64, now_ms: u64) -> bool {
     balanced_assignment_window(assigned_at_unix_ms) == balanced_assignment_window(now_ms)
 }
@@ -374,7 +378,7 @@ fn load_balanced_assignment_counts(
     static LAST_BALANCED_ASSIGNMENT_CLEANUP_UNIX_MS: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
 
-    let cutoff_unix_ms = now_ms.saturating_sub(BALANCED_ASSIGNMENT_STICKY_MS);
+    let cutoff_unix_ms = balanced_assignment_window_start(now_ms);
     let last_cleanup = LAST_BALANCED_ASSIGNMENT_CLEANUP_UNIX_MS.load(std::sync::atomic::Ordering::Relaxed);
     if allow_cleanup
         && now_ms.saturating_sub(last_cleanup) >= BALANCED_ASSIGNMENT_CLEANUP_INTERVAL_MS
@@ -632,6 +636,10 @@ fn pick_balanced_provider_for_verified_main_session(
             if let Some((best_provider, _, best_bucket_load)) = best.as_ref() {
                 if best_provider == &row.provider || providers_share_api_key(st, &row.provider, best_provider)
                 {
+                    if !assignment_is_fresh && rewrite_existing_assignment {
+                        st.store
+                            .put_session_route_assignment(session_key, &row.provider, now_ms);
+                    }
                     return Some(row.provider.clone());
                 }
                 let current_bucket_load = assignment_counts
@@ -642,9 +650,17 @@ fn pick_balanced_provider_for_verified_main_session(
                 if current_bucket_load
                     <= (*best_bucket_load).saturating_add(BALANCED_REBALANCE_MARGIN)
                 {
+                    if !assignment_is_fresh && rewrite_existing_assignment {
+                        st.store
+                            .put_session_route_assignment(session_key, &row.provider, now_ms);
+                    }
                     return Some(row.provider.clone());
                 }
             } else {
+                if !assignment_is_fresh && rewrite_existing_assignment {
+                    st.store
+                        .put_session_route_assignment(session_key, &row.provider, now_ms);
+                }
                 return Some(row.provider.clone());
             }
         }
@@ -1127,6 +1143,13 @@ mod routing_and_status_tests {
         let assigned_at = window_ms.saturating_sub(1);
         let now = window_ms + 1;
         assert!(!assignment_is_fresh_for_current_window(assigned_at, now));
+    }
+
+    #[test]
+    fn assignment_window_start_aligns_to_current_global_window() {
+        let window_ms = BALANCED_ASSIGNMENT_STICKY_MS;
+        assert_eq!(balanced_assignment_window_start(window_ms.saturating_sub(1)), 0);
+        assert_eq!(balanced_assignment_window_start(window_ms + 1234), window_ms);
     }
 
     #[test]
