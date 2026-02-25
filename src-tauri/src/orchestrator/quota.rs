@@ -436,6 +436,11 @@ async fn propagate_quota_snapshot_shared(
     }
 
     let cfg = st.cfg.read().clone();
+    let source_package_expiry_strategy = cfg
+        .providers
+        .get(source_provider)
+        .map(|p| detect_package_expiry_strategy(&p.base_url))
+        .unwrap_or(PackageExpiryStrategy::None);
     for (name, p) in cfg.providers.iter() {
         if name == source_provider {
             continue;
@@ -464,6 +469,10 @@ async fn propagate_quota_snapshot_shared(
         }
 
         let mut copied = snap.clone();
+        let target_package_expiry_strategy = detect_package_expiry_strategy(&p.base_url);
+        if target_package_expiry_strategy != source_package_expiry_strategy {
+            copied.package_expires_at_unix_ms = None;
+        }
         copied.effective_usage_base = Some(shared_base.to_string());
         store_quota_snapshot_silent(st, name, &copied);
     }

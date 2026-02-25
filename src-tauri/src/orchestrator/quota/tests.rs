@@ -123,22 +123,8 @@ mod tests {
     }
 
     fn mk_state(base_url: String, secrets: SecretStore) -> GatewayState {
-        let cfg = AppConfig {
-            listen: ListenConfig {
-                host: "127.0.0.1".to_string(),
-                port: 0,
-            },
-            routing: RoutingConfig {
-                preferred_provider: "p1".to_string(),
-                session_preferred_providers: std::collections::BTreeMap::new(),
-                route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
-                auto_return_to_preferred: true,
-                preferred_stable_seconds: 1,
-                failure_threshold: 1,
-                cooldown_seconds: 1,
-                request_timeout_seconds: 5,
-            },
-            providers: std::collections::BTreeMap::from([(
+        mk_state_with_providers(
+            std::collections::BTreeMap::from([(
                 "p1".to_string(),
                 ProviderConfig {
                     display_name: "P1".to_string(),
@@ -150,7 +136,37 @@ mod tests {
                     api_key: String::new(),
                 },
             )]),
-            provider_order: vec!["p1".to_string()],
+            vec!["p1".to_string()],
+            secrets,
+        )
+    }
+
+    fn mk_state_with_providers(
+        providers: std::collections::BTreeMap<String, ProviderConfig>,
+        provider_order: Vec<String>,
+        secrets: SecretStore,
+    ) -> GatewayState {
+        let preferred_provider = provider_order
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "p1".to_string());
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            },
+            routing: RoutingConfig {
+                preferred_provider,
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 1,
+                failure_threshold: 1,
+                cooldown_seconds: 1,
+                request_timeout_seconds: 5,
+            },
+            providers,
+            provider_order,
         };
 
         // Keep the sled directory alive for the test duration.
@@ -322,6 +338,60 @@ mod tests {
         assert!(snap.last_error.is_empty());
         assert_eq!(snap.kind.as_str(), "token_stats");
         assert_eq!(snap.package_expires_at_unix_ms, Some(1_900_000_000_000));
+    }
+
+    #[tokio::test]
+    async fn package_expiry_does_not_propagate_to_non_packycode_provider() {
+        let (base, _h) = start_mock_server(true).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "k-shared").unwrap();
+        secrets.set_provider_key("p2", "k-shared").unwrap();
+        secrets.set_usage_token("p1", "t-shared").unwrap();
+        secrets.set_usage_token("p2", "t-shared").unwrap();
+
+        let providers = std::collections::BTreeMap::from([
+            (
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: "https://codex-api.packycode.com/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some(base.clone()),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "P2".to_string(),
+                    base_url: "https://example.com/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some(base.clone()),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            ),
+        ]);
+        let st = mk_state_with_providers(
+            providers,
+            vec!["p1".to_string(), "p2".to_string()],
+            secrets,
+        );
+
+        let source = refresh_quota_for_provider(&st, "p1").await;
+        assert!(source.last_error.is_empty());
+        assert!(source.package_expires_at_unix_ms.is_some());
+
+        let quota = st.store.list_quota_snapshots();
+        let p2 = quota.get("p2").expect("p2 snapshot should be propagated");
+        assert_eq!(
+            p2.get("package_expires_at_unix_ms").and_then(|v| v.as_u64()),
+            None
+        );
     }
 
     #[test]
