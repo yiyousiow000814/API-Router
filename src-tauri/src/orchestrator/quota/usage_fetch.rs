@@ -2,7 +2,7 @@ async fn fetch_token_stats_any(
     bases: &[String],
     provider_key: Option<&str>,
     usage_token: Option<&str>,
-    is_packycode: bool,
+    supports_package_expiry: bool,
 ) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::TokenStats);
     let Some(k) = provider_key else {
@@ -60,7 +60,7 @@ async fn fetch_token_stats_any(
                     out.remaining = remaining;
                     out.today_used = today_used;
                     out.today_added = today_added;
-                    if is_packycode {
+                    if supports_package_expiry {
                         if let Some(token) = usage_token {
                             out.package_expires_at_unix_ms =
                                 fetch_package_expiry_any(&client, bases, token, Some(base)).await;
@@ -78,7 +78,7 @@ async fn fetch_token_stats_any(
                     out.remaining = remaining;
                     out.today_used = today_used;
                     out.today_added = today_added;
-                    if is_packycode {
+                    if supports_package_expiry {
                         if let Some(token) = usage_token {
                             out.package_expires_at_unix_ms =
                                 fetch_package_expiry_any(&client, bases, token, Some(base)).await;
@@ -219,7 +219,7 @@ async fn fetch_token_logs_stats(
 async fn fetch_budget_info_any(
     bases: &[String],
     jwt: Option<&str>,
-    is_packycode: bool,
+    supports_package_expiry: bool,
 ) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
     let Some(token) = jwt else {
@@ -293,7 +293,7 @@ async fn fetch_budget_info_any(
                 out.monthly_spent_usd = as_f64(root.get("monthly_spent_usd"));
                 out.monthly_budget_usd = as_f64(root.get("monthly_budget_usd"));
                 out.remaining = as_f64(root.get("remaining_quota"));
-                out.package_expires_at_unix_ms = if is_packycode {
+                out.package_expires_at_unix_ms = if supports_package_expiry {
                     if let Some(expiry) = extract_package_expiry_from_value(root) {
                         Some(expiry)
                     } else {
@@ -366,16 +366,15 @@ async fn fetch_package_expiry_any(
         push_unique(base);
     }
 
-    let mut best: Option<u64> = None;
     for base in ordered_bases {
         if let Some(found) = fetch_package_expiry_from_user_info(client, &base, token).await {
-            best = Some(best.map_or(found, |prev| prev.max(found)));
+            return Some(found);
         }
         if let Some(found) = fetch_package_expiry_unix_ms_for_base(client, &base, token).await {
-            best = Some(best.map_or(found, |prev| prev.max(found)));
+            return Some(found);
         }
     }
-    best
+    None
 }
 
 async fn fetch_package_expiry_from_user_info(
@@ -383,11 +382,12 @@ async fn fetch_package_expiry_from_user_info(
     base: &str,
     token: &str,
 ) -> Option<u64> {
+    const PACKAGE_EXPIRY_TIMEOUT_SECS: u64 = 8;
     let url = format!("{base}/api/backend/users/info");
     let resp = client
         .get(url)
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(PACKAGE_EXPIRY_TIMEOUT_SECS))
         .send()
         .await
         .ok()?;
@@ -404,11 +404,12 @@ async fn fetch_package_expiry_unix_ms_for_base(
     base: &str,
     token: &str,
 ) -> Option<u64> {
+    const PACKAGE_EXPIRY_TIMEOUT_SECS: u64 = 8;
     let url = format!("{base}/api/backend/subscriptions?page=1&per_page=50");
     let resp = client
         .get(url)
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(PACKAGE_EXPIRY_TIMEOUT_SECS))
         .send()
         .await
         .ok()?;

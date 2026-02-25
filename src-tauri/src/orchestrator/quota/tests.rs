@@ -302,6 +302,28 @@ mod tests {
         assert_eq!(snap.package_expires_at_unix_ms, None);
     }
 
+    #[tokio::test]
+    async fn token_stats_reads_package_expiry_for_packycode_sources() {
+        let (base, _h) = start_mock_server(true).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "k1").unwrap();
+        secrets.set_usage_token("p1", "t1").unwrap();
+        let st = mk_state(format!("{base}/v1"), secrets);
+        {
+            let mut cfg = st.cfg.write();
+            if let Some(p) = cfg.providers.get_mut("p1") {
+                p.base_url = "https://codex-api.packycode.com/v1".to_string();
+                p.usage_base_url = Some(base.to_string());
+            }
+        }
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        assert!(snap.last_error.is_empty());
+        assert_eq!(snap.kind.as_str(), "token_stats");
+        assert_eq!(snap.package_expires_at_unix_ms, Some(1_900_000_000_000));
+    }
+
     #[test]
     fn silent_quota_propagation_does_not_duplicate_budget_spend() {
         let tmp = tempfile::tempdir().unwrap();

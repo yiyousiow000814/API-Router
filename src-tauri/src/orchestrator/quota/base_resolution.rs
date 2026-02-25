@@ -15,6 +15,12 @@ fn is_packycode_base(base_url: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn supports_package_expiry_base(base_url: &str) -> bool {
+    // Canonical gate for package-expiry probing.
+    // Today only packycode is supported; add more providers here in the future.
+    is_packycode_base(base_url)
+}
+
 fn is_ppchat_base(base_url: &str) -> bool {
     reqwest::Url::parse(base_url)
         .ok()
