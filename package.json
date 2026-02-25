@@ -4,6 +4,9 @@
   "version": "0.4.0",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "check:gateway-provider-id": "node scripts/check-gateway-provider-id.mjs",
     "check:line-endings": "node scripts/check-line-endings.mjs",
@@ -32,7 +35,7 @@
     "pngjs": "^7.0.0",
     "selenium-webdriver": "^4.40.0",
     "typescript": "~5.9.3",
-    "vite": "^7.2.4",
+    "vite": "^7.3.1",
     "vitest": "^2.1.9"
   },
   "dependencies": {
