@@ -1,0 +1,173 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageExpiryStrategy {
+    None,
+    Packycode,
+}
+
+fn detect_package_expiry_strategy(base_url: &str) -> PackageExpiryStrategy {
+    if is_packycode_base(base_url) {
+        PackageExpiryStrategy::Packycode
+    } else {
+        PackageExpiryStrategy::None
+    }
+}
+
+async fn fetch_package_expiry_for_strategy(
+    strategy: PackageExpiryStrategy,
+    client: &reqwest::Client,
+    bases: &[String],
+    token: &str,
+    preferred_base: Option<&str>,
+    budget_root: Option<&Value>,
+) -> Option<u64> {
+    match strategy {
+        PackageExpiryStrategy::None => None,
+        PackageExpiryStrategy::Packycode => {
+            fetch_packycode_package_expiry(client, bases, token, preferred_base, budget_root).await
+        }
+    }
+}
+
+async fn fetch_packycode_package_expiry(
+    client: &reqwest::Client,
+    bases: &[String],
+    token: &str,
+    preferred_base: Option<&str>,
+    budget_root: Option<&Value>,
+) -> Option<u64> {
+    if let Some(root) = budget_root {
+        if let Some(expiry) = extract_packycode_package_expiry_from_value(root) {
+            return Some(expiry);
+        }
+    }
+
+    let mut ordered_bases: Vec<String> = Vec::new();
+    let mut push_unique = |value: &str| {
+        let trimmed = value.trim().trim_end_matches('/');
+        if trimmed.is_empty() {
+            return;
+        }
+        if ordered_bases.iter().any(|base| base == trimmed) {
+            return;
+        }
+        ordered_bases.push(trimmed.to_string());
+    };
+    if let Some(base) = preferred_base {
+        push_unique(base);
+    }
+    for base in bases {
+        push_unique(base);
+    }
+
+    for base in ordered_bases {
+        if let Some(found) = fetch_packycode_expiry_from_user_info(client, &base, token).await {
+            return Some(found);
+        }
+        if let Some(found) = fetch_packycode_expiry_from_subscriptions(client, &base, token).await {
+            return Some(found);
+        }
+    }
+    None
+}
+
+async fn fetch_packycode_expiry_from_user_info(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+) -> Option<u64> {
+    const PACKAGE_EXPIRY_TIMEOUT_SECS: u64 = 8;
+    let url = format!("{base}/api/backend/users/info");
+    let resp = client
+        .get(url)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .timeout(Duration::from_secs(PACKAGE_EXPIRY_TIMEOUT_SECS))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let payload = resp.json::<Value>().await.ok()?;
+    let root = payload.get("data").unwrap_or(&payload);
+    extract_packycode_package_expiry_from_value(root)
+}
+
+async fn fetch_packycode_expiry_from_subscriptions(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+) -> Option<u64> {
+    const PACKAGE_EXPIRY_TIMEOUT_SECS: u64 = 8;
+    let url = format!("{base}/api/backend/subscriptions?page=1&per_page=50");
+    let resp = client
+        .get(url)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .timeout(Duration::from_secs(PACKAGE_EXPIRY_TIMEOUT_SECS))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let payload = resp.json::<Value>().await.ok()?;
+    let rows = payload
+        .get("data")
+        .and_then(Value::as_array)
+        .or_else(|| payload.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut best: Option<u64> = None;
+    for row in rows {
+        let status = row
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if status != "active" {
+            continue;
+        }
+        let Some(end) = parse_packycode_unix_ms_any(row.get("current_period_end")) else {
+            continue;
+        };
+        best = Some(best.map_or(end, |prev| prev.max(end)));
+    }
+    best
+}
+
+fn extract_packycode_package_expiry_from_value(root: &Value) -> Option<u64> {
+    parse_packycode_unix_ms_any(root.get("package_expires_at_unix_ms"))
+        .or_else(|| parse_packycode_unix_ms_any(root.get("plan_expires_at")))
+        .or_else(|| parse_packycode_unix_ms_any(root.get("plan_expire_at")))
+        .or_else(|| parse_packycode_unix_ms_any(root.get("expires_at")))
+        .or_else(|| parse_packycode_unix_ms_any(root.get("current_period_end")))
+}
+
+fn parse_packycode_unix_ms_any(v: Option<&Value>) -> Option<u64> {
+    let value = v?;
+    if let Some(ms) = value.as_u64() {
+        return Some(if ms < 1_000_000_000_000 { ms * 1000 } else { ms });
+    }
+    if let Some(ms) = value.as_i64() {
+        if ms <= 0 {
+            return None;
+        }
+        let ms = ms as u64;
+        return Some(if ms < 1_000_000_000_000 { ms * 1000 } else { ms });
+    }
+    let text = value.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().all(|c| c.is_ascii_digit()) {
+        let ms = text.parse::<u64>().ok()?;
+        return Some(if ms < 1_000_000_000_000 { ms * 1000 } else { ms });
+    }
+    let ts = chrono::DateTime::parse_from_rfc3339(text)
+        .ok()?
+        .timestamp_millis();
+    if ts <= 0 {
+        return None;
+    }
+    Some(ts as u64)
+}

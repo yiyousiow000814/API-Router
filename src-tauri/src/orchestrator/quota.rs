@@ -170,6 +170,7 @@ pub fn detect_usage_kind(provider: &ProviderConfig) -> UsageKind {
 }
 
 include!("quota/base_resolution.rs");
+include!("quota/package_expiry.rs");
 pub async fn effective_usage_base(st: &GatewayState, provider_name: &str) -> Option<String> {
     let cfg = st.cfg.read().clone();
     let p = cfg.providers.get(provider_name)?;
@@ -223,14 +224,14 @@ async fn compute_quota_snapshot(
     bases: &[String],
     provider_key: Option<&str>,
     usage_token: Option<&str>,
-    supports_package_expiry: bool,
+    package_expiry_strategy: PackageExpiryStrategy,
 ) -> QuotaSnapshot {
     match kind {
         UsageKind::TokenStats => {
-            fetch_token_stats_any(bases, provider_key, usage_token, supports_package_expiry).await
+            fetch_token_stats_any(bases, provider_key, usage_token, package_expiry_strategy).await
         }
         UsageKind::BudgetInfo => {
-            fetch_budget_info_any(bases, usage_token, supports_package_expiry).await
+            fetch_budget_info_any(bases, usage_token, package_expiry_strategy).await
         }
         UsageKind::None => {
             if provider_key.is_some() {
@@ -238,18 +239,18 @@ async fn compute_quota_snapshot(
                     bases,
                     provider_key,
                     usage_token,
-                    supports_package_expiry,
+                    package_expiry_strategy,
                 )
                 .await;
                 if s.last_error.is_empty() {
                     s
                 } else if usage_token.is_some() {
-                    fetch_budget_info_any(bases, usage_token, supports_package_expiry).await
+                    fetch_budget_info_any(bases, usage_token, package_expiry_strategy).await
                 } else {
                     s
                 }
             } else if usage_token.is_some() {
-                fetch_budget_info_any(bases, usage_token, supports_package_expiry).await
+                fetch_budget_info_any(bases, usage_token, package_expiry_strategy).await
             } else {
                 let mut out = QuotaSnapshot::empty(UsageKind::None);
                 out.last_error = "missing credentials for quota refresh".to_string();
@@ -492,14 +493,14 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     let effective_base = bases.first().cloned();
 
     let kind = detect_usage_kind(p);
-    let supports_package_expiry = supports_package_expiry_base(&p.base_url);
+    let package_expiry_strategy = detect_package_expiry_strategy(&p.base_url);
     let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token);
     let mut snap = compute_quota_snapshot(
         kind,
         &bases,
         provider_key.as_deref(),
         usage_token.as_deref(),
-        supports_package_expiry,
+        package_expiry_strategy,
     )
     .await;
     if snap.effective_usage_base.is_none() {
@@ -538,7 +539,7 @@ async fn refresh_quota_for_provider_cached(
     let effective_base = bases.first().cloned();
 
     let kind = detect_usage_kind(p);
-    let supports_package_expiry = supports_package_expiry_base(&p.base_url);
+    let package_expiry_strategy = detect_package_expiry_strategy(&p.base_url);
     let key = usage_request_key(&bases, &provider_key, &usage_token, kind);
     let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token);
     let snap = if let Some(existing) = cache.get(&key) {
@@ -549,7 +550,7 @@ async fn refresh_quota_for_provider_cached(
             &bases,
             provider_key.as_deref(),
             usage_token.as_deref(),
-            supports_package_expiry,
+            package_expiry_strategy,
         )
         .await;
         if computed.effective_usage_base.is_none() {
