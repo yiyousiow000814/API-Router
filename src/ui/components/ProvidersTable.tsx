@@ -18,6 +18,10 @@ type Props = {
 }
 
 export function ProvidersTable({ providers, status, refreshingProviders, onRefreshQuota, onOpenLastErrorInEventLog }: Props) {
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000
+  const fmtDateOnly = (unixMs: number): string => fmtWhen(unixMs).split(' ')[0] ?? '-'
+  const isExpiryUrgent = (unixMs: number): boolean => Number.isFinite(unixMs) && unixMs > 0 && unixMs - Date.now() <= ONE_DAY_MS
+
   return (
     <table className="aoTable aoTableFixed">
       <thead>
@@ -210,7 +214,24 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
 
             return (
               <tr key={p}>
-                <td style={{ fontFamily: mono }}>{p}</td>
+                <td style={{ fontFamily: mono }}>
+                  <div>{p}</div>
+                  {q?.package_expires_at_unix_ms ? (
+                    <div
+                      className="aoHint"
+                      style={{
+                        marginTop: 2,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        color: isExpiryUrgent(q.package_expires_at_unix_ms) ? 'rgba(145, 12, 43, 0.92)' : undefined,
+                      }}
+                      title={`package ends: ${fmtWhen(q.package_expires_at_unix_ms)}`}
+                    >
+                      ends: {fmtDateOnly(q.package_expires_at_unix_ms)}
+                    </div>
+                  ) : null}
+                </td>
                 <td className="aoCellCenter">
                   <div className="aoCellCenterInner">
                     <span className={`aoPill ${isActive ? 'aoPulse' : ''}`.trim()}>

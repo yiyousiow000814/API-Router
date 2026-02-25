@@ -57,6 +57,7 @@ export type Status = {
       weekly_budget_usd?: number | null
       monthly_spent_usd: number | null
       monthly_budget_usd: number | null
+      package_expires_at_unix_ms?: number | null
       last_error: string
       effective_usage_base?: string | null
     }

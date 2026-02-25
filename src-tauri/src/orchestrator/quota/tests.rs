@@ -34,6 +34,30 @@ mod tests {
                 }),
             )
             .route(
+                "/api/backend/subscriptions",
+                get(|| async move {
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                          "data": [
+                            {
+                              "status": "canceled",
+                              "current_period_end": 1990000000
+                            },
+                            {
+                              "status": "active",
+                              "current_period_end": "2028-01-01T00:00:00Z"
+                            },
+                            {
+                              "status": "active",
+                              "current_period_end": 1900000000
+                            }
+                          ]
+                        })),
+                    )
+                }),
+            )
+            .route(
                 "/api/backend/users/info",
                 get(|| async move {
                     (
@@ -47,6 +71,46 @@ mod tests {
                         })),
                     )
                 }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}:{}", addr.ip(), addr.port());
+        let h = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (url, h)
+    }
+
+    async fn start_mock_server_budget_plan_expiry_only() -> (String, tokio::task::JoinHandle<()>) {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        use axum::{Json, Router};
+
+        let app = Router::new()
+            .route(
+                "/api/token-stats",
+                get(|| async move { (StatusCode::NOT_FOUND, Json(serde_json::json!({}))) }),
+            )
+            .route(
+                "/api/backend/users/info",
+                get(|| async move {
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                          "daily_spent_usd": "0.5",
+                          "daily_budget_usd": 1,
+                          "monthly_spent_usd": 2,
+                          "monthly_budget_usd": 10,
+                          "remaining_quota": 123,
+                          "plan_expires_at": "2026-03-01T14:50:39.044332+08:00"
+                        })),
+                    )
+                }),
+            )
+            .route(
+                "/api/backend/subscriptions",
+                get(|| async move { (StatusCode::UNAUTHORIZED, Json(serde_json::json!({}))) }),
             );
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -221,6 +285,21 @@ mod tests {
         assert!(snap.last_error.is_empty());
         assert_eq!(snap.kind.as_str(), "token_stats");
         assert_eq!(snap.remaining.unwrap_or(0.0), 12.3);
+    }
+
+    #[tokio::test]
+    async fn token_stats_keeps_package_expiry_empty_for_non_packycode_sources() {
+        let (base, _h) = start_mock_server(true).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "k1").unwrap();
+        secrets.set_usage_token("p1", "t1").unwrap();
+        let st = mk_state(format!("{base}/v1"), secrets);
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        assert!(snap.last_error.is_empty());
+        assert_eq!(snap.kind.as_str(), "token_stats");
+        assert_eq!(snap.package_expires_at_unix_ms, None);
     }
 
     #[test]
@@ -427,5 +506,22 @@ mod tests {
         assert!(snap.last_error.is_empty());
         assert_eq!(snap.kind.as_str(), "budget_info");
         assert_eq!(snap.daily_spent_usd.unwrap_or(0.0), 0.5);
+        assert_eq!(snap.package_expires_at_unix_ms, None);
+    }
+
+    #[tokio::test]
+    async fn budget_info_reads_plan_expiry_from_users_info_when_subscriptions_unavailable() {
+        let (base, _h) = start_mock_server_budget_plan_expiry_only().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "k1").unwrap();
+        secrets.set_usage_token("p1", "t1").unwrap();
+        let st = mk_state(format!("{base}/v1"), secrets);
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        assert!(snap.last_error.is_empty());
+        assert_eq!(snap.kind.as_str(), "budget_info");
+        assert_eq!(snap.daily_spent_usd.unwrap_or(0.0), 0.5);
+        assert_eq!(snap.package_expires_at_unix_ms, Some(1_772_347_839_044));
     }
 }

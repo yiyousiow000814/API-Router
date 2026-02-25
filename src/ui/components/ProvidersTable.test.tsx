@@ -45,6 +45,7 @@ function buildStatus(): Status {
         weekly_budget_usd: 300,
         monthly_spent_usd: null,
         monthly_budget_usd: null,
+        package_expires_at_unix_ms: 1_900_000_000_000,
         last_error: '',
       },
     },
@@ -67,5 +68,19 @@ describe('ProvidersTable', () => {
     )
 
     expect(html).toContain('aoLastErrorViewBtn')
+  })
+
+  it('shows package expiry when budget response includes subscription end', () => {
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['packycode']}
+        status={buildStatus()}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('ends:')
   })
 })

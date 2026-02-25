@@ -94,6 +94,7 @@ pub struct QuotaSnapshot {
     pub weekly_budget_usd: Option<f64>,
     pub monthly_spent_usd: Option<f64>,
     pub monthly_budget_usd: Option<f64>,
+    pub package_expires_at_unix_ms: Option<u64>,
     pub last_error: String,
     pub effective_usage_base: Option<String>,
 }
@@ -132,6 +133,7 @@ impl QuotaSnapshot {
             weekly_budget_usd: None,
             monthly_spent_usd: None,
             monthly_budget_usd: None,
+            package_expires_at_unix_ms: None,
             last_error: String::new(),
             effective_usage_base: None,
         }
@@ -150,6 +152,7 @@ impl QuotaSnapshot {
             "weekly_budget_usd": self.weekly_budget_usd,
             "monthly_spent_usd": self.monthly_spent_usd,
             "monthly_budget_usd": self.monthly_budget_usd,
+            "package_expires_at_unix_ms": self.package_expires_at_unix_ms,
             "last_error": self.last_error,
             "effective_usage_base": self.effective_usage_base,
         })
@@ -222,11 +225,11 @@ async fn compute_quota_snapshot(
     usage_token: Option<&str>,
 ) -> QuotaSnapshot {
     match kind {
-        UsageKind::TokenStats => fetch_token_stats_any(bases, provider_key).await,
+        UsageKind::TokenStats => fetch_token_stats_any(bases, provider_key, usage_token).await,
         UsageKind::BudgetInfo => fetch_budget_info_any(bases, usage_token).await,
         UsageKind::None => {
             if provider_key.is_some() {
-                let s = fetch_token_stats_any(bases, provider_key).await;
+                let s = fetch_token_stats_any(bases, provider_key, usage_token).await;
                 if s.last_error.is_empty() {
                     s
                 } else if usage_token.is_some() {

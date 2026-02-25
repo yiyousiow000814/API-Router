@@ -1,4 +1,8 @@
-async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> QuotaSnapshot {
+async fn fetch_token_stats_any(
+    bases: &[String],
+    provider_key: Option<&str>,
+    usage_token: Option<&str>,
+) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::TokenStats);
     let Some(k) = provider_key else {
         out.last_error = "missing provider key".to_string();
@@ -55,6 +59,12 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
                     out.remaining = remaining;
                     out.today_used = today_used;
                     out.today_added = today_added;
+                    if let Some(token) = usage_token {
+                        if bases.iter().any(|base| is_packycode_base(base)) {
+                        out.package_expires_at_unix_ms =
+                            fetch_package_expiry_any(&client, bases, token, Some(base)).await;
+                        }
+                    }
                     out.effective_usage_base = Some(base.to_string());
                     out.updated_at_unix_ms = unix_ms();
                     out.last_error.clear();
@@ -67,6 +77,12 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
                     out.remaining = remaining;
                     out.today_used = today_used;
                     out.today_added = today_added;
+                    if let Some(token) = usage_token {
+                        if bases.iter().any(|base| is_packycode_base(base)) {
+                        out.package_expires_at_unix_ms =
+                            fetch_package_expiry_any(&client, bases, token, Some(base)).await;
+                        }
+                    }
                     out.effective_usage_base = Some(base.to_string());
                     out.updated_at_unix_ms = unix_ms();
                     out.last_error.clear();
@@ -272,6 +288,14 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
                 out.monthly_spent_usd = as_f64(root.get("monthly_spent_usd"));
                 out.monthly_budget_usd = as_f64(root.get("monthly_budget_usd"));
                 out.remaining = as_f64(root.get("remaining_quota"));
+                let expiry_from_payload = extract_package_expiry_from_value(root);
+                out.package_expires_at_unix_ms = if let Some(expiry) = expiry_from_payload {
+                    Some(expiry)
+                } else if bases.iter().any(|base| is_packycode_base(base)) {
+                    fetch_package_expiry_any(&client, bases, token, Some(base)).await
+                } else {
+                    None
+                };
                 out.effective_usage_base = Some(base.to_string());
                 out.updated_at_unix_ms = unix_ms();
                 out.last_error.clear();
@@ -310,4 +334,140 @@ fn as_f64(v: Option<&Value>) -> Option<f64> {
                 }
             })
         })
+}
+
+async fn fetch_package_expiry_any(
+    client: &reqwest::Client,
+    bases: &[String],
+    token: &str,
+    preferred_base: Option<&str>,
+) -> Option<u64> {
+    let mut ordered_bases: Vec<String> = Vec::new();
+    let mut push_unique = |value: &str| {
+        let trimmed = value.trim().trim_end_matches('/');
+        if trimmed.is_empty() {
+            return;
+        }
+        if ordered_bases.iter().any(|base| base == trimmed) {
+            return;
+        }
+        ordered_bases.push(trimmed.to_string());
+    };
+    if let Some(base) = preferred_base {
+        push_unique(base);
+    }
+    for base in bases {
+        push_unique(base);
+    }
+
+    let mut best: Option<u64> = None;
+    for base in ordered_bases {
+        if let Some(found) = fetch_package_expiry_from_user_info(client, &base, token).await {
+            best = Some(best.map_or(found, |prev| prev.max(found)));
+        }
+        if let Some(found) = fetch_package_expiry_unix_ms_for_base(client, &base, token).await {
+            best = Some(best.map_or(found, |prev| prev.max(found)));
+        }
+    }
+    best
+}
+
+async fn fetch_package_expiry_from_user_info(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+) -> Option<u64> {
+    let url = format!("{base}/api/backend/users/info");
+    let resp = client
+        .get(url)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let payload = resp.json::<Value>().await.ok()?;
+    let root = payload.get("data").unwrap_or(&payload);
+    extract_package_expiry_from_value(root)
+}
+
+async fn fetch_package_expiry_unix_ms_for_base(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+) -> Option<u64> {
+    let url = format!("{base}/api/backend/subscriptions?page=1&per_page=50");
+    let resp = client
+        .get(url)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let payload = resp.json::<Value>().await.ok()?;
+    let rows = payload
+        .get("data")
+        .and_then(Value::as_array)
+        .or_else(|| payload.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut best: Option<u64> = None;
+    for row in rows {
+        let status = row
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if status != "active" {
+            continue;
+        }
+        let Some(end) = parse_unix_ms_any(row.get("current_period_end")) else {
+            continue;
+        };
+        best = Some(best.map_or(end, |prev| prev.max(end)));
+    }
+    best
+}
+
+fn extract_package_expiry_from_value(root: &Value) -> Option<u64> {
+    parse_unix_ms_any(root.get("package_expires_at_unix_ms"))
+        .or_else(|| parse_unix_ms_any(root.get("plan_expires_at")))
+        .or_else(|| parse_unix_ms_any(root.get("plan_expire_at")))
+        .or_else(|| parse_unix_ms_any(root.get("expires_at")))
+        .or_else(|| parse_unix_ms_any(root.get("current_period_end")))
+}
+
+fn parse_unix_ms_any(v: Option<&Value>) -> Option<u64> {
+    let value = v?;
+    if let Some(ms) = value.as_u64() {
+        return Some(if ms < 1_000_000_000_000 { ms * 1000 } else { ms });
+    }
+    if let Some(ms) = value.as_i64() {
+        if ms <= 0 {
+            return None;
+        }
+        let ms = ms as u64;
+        return Some(if ms < 1_000_000_000_000 { ms * 1000 } else { ms });
+    }
+    let text = value.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().all(|c| c.is_ascii_digit()) {
+        let ms = text.parse::<u64>().ok()?;
+        return Some(if ms < 1_000_000_000_000 { ms * 1000 } else { ms });
+    }
+    let ts = chrono::DateTime::parse_from_rfc3339(text)
+        .ok()?
+        .timestamp_millis();
+    if ts <= 0 {
+        return None;
+    }
+    Some(ts as u64)
 }
