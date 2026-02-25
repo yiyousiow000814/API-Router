@@ -1,4 +1,9 @@
-async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> QuotaSnapshot {
+async fn fetch_token_stats_any(
+    bases: &[String],
+    provider_key: Option<&str>,
+    usage_token: Option<&str>,
+    package_expiry_strategy: PackageExpiryStrategy,
+) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::TokenStats);
     let Some(k) = provider_key else {
         out.last_error = "missing provider key".to_string();
@@ -55,6 +60,17 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
                     out.remaining = remaining;
                     out.today_used = today_used;
                     out.today_added = today_added;
+                    if let Some(token) = usage_token {
+                        out.package_expires_at_unix_ms = fetch_package_expiry_for_strategy(
+                            package_expiry_strategy,
+                            &client,
+                            bases,
+                            token,
+                            Some(base),
+                            None,
+                        )
+                        .await;
+                    }
                     out.effective_usage_base = Some(base.to_string());
                     out.updated_at_unix_ms = unix_ms();
                     out.last_error.clear();
@@ -67,6 +83,17 @@ async fn fetch_token_stats_any(bases: &[String], provider_key: Option<&str>) -> 
                     out.remaining = remaining;
                     out.today_used = today_used;
                     out.today_added = today_added;
+                    if let Some(token) = usage_token {
+                        out.package_expires_at_unix_ms = fetch_package_expiry_for_strategy(
+                            package_expiry_strategy,
+                            &client,
+                            bases,
+                            token,
+                            Some(base),
+                            None,
+                        )
+                        .await;
+                    }
                     out.effective_usage_base = Some(base.to_string());
                     out.updated_at_unix_ms = unix_ms();
                     out.last_error.clear();
@@ -199,7 +226,11 @@ async fn fetch_token_logs_stats(
     Some((remaining, today_used, today_added))
 }
 
-async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnapshot {
+async fn fetch_budget_info_any(
+    bases: &[String],
+    jwt: Option<&str>,
+    package_expiry_strategy: PackageExpiryStrategy,
+) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
     let Some(token) = jwt else {
         out.last_error = "missing usage token".to_string();
@@ -272,6 +303,15 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
                 out.monthly_spent_usd = as_f64(root.get("monthly_spent_usd"));
                 out.monthly_budget_usd = as_f64(root.get("monthly_budget_usd"));
                 out.remaining = as_f64(root.get("remaining_quota"));
+                out.package_expires_at_unix_ms = fetch_package_expiry_for_strategy(
+                    package_expiry_strategy,
+                    &client,
+                    bases,
+                    token,
+                    Some(base),
+                    Some(root),
+                )
+                .await;
                 out.effective_usage_base = Some(base.to_string());
                 out.updated_at_unix_ms = unix_ms();
                 out.last_error.clear();

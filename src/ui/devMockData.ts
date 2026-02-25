@@ -438,6 +438,7 @@ export const devStatus: Status = {
       weekly_budget_usd: 40,
       monthly_spent_usd: 12.3,
       monthly_budget_usd: 40,
+      package_expires_at_unix_ms: DEV_NOW + 11 * 24 * 60 * 60 * 1000,
       last_error: '',
       effective_usage_base: null,
     },
