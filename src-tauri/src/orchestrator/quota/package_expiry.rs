@@ -146,14 +146,17 @@ fn extract_packycode_package_expiry_from_value(root: &Value) -> Option<u64> {
 fn parse_packycode_unix_ms_any(v: Option<&Value>) -> Option<u64> {
     let value = v?;
     if let Some(ms) = value.as_u64() {
-        return Some(if ms < 1_000_000_000_000 { ms * 1000 } else { ms });
+        if ms == 0 {
+            return None;
+        }
+        return Some(normalize_packycode_unix_ms(ms));
     }
     if let Some(ms) = value.as_i64() {
         if ms <= 0 {
             return None;
         }
         let ms = ms as u64;
-        return Some(if ms < 1_000_000_000_000 { ms * 1000 } else { ms });
+        return Some(normalize_packycode_unix_ms(ms));
     }
     let text = value.as_str()?.trim();
     if text.is_empty() {
@@ -161,7 +164,10 @@ fn parse_packycode_unix_ms_any(v: Option<&Value>) -> Option<u64> {
     }
     if text.chars().all(|c| c.is_ascii_digit()) {
         let ms = text.parse::<u64>().ok()?;
-        return Some(if ms < 1_000_000_000_000 { ms * 1000 } else { ms });
+        if ms == 0 {
+            return None;
+        }
+        return Some(normalize_packycode_unix_ms(ms));
     }
     let ts = chrono::DateTime::parse_from_rfc3339(text)
         .ok()?
@@ -170,4 +176,29 @@ fn parse_packycode_unix_ms_any(v: Option<&Value>) -> Option<u64> {
         return None;
     }
     Some(ts as u64)
+}
+
+fn normalize_packycode_unix_ms(raw: u64) -> u64 {
+    if raw < 1_000_000_000_000 {
+        raw * 1000
+    } else {
+        raw
+    }
+}
+
+#[cfg(test)]
+mod package_expiry_tests {
+    use super::*;
+
+    #[test]
+    fn parse_packycode_unix_ms_rejects_zero_number() {
+        let v = serde_json::json!(0);
+        assert_eq!(parse_packycode_unix_ms_any(Some(&v)), None);
+    }
+
+    #[test]
+    fn parse_packycode_unix_ms_rejects_zero_digit_string() {
+        let v = serde_json::json!("0");
+        assert_eq!(parse_packycode_unix_ms_any(Some(&v)), None);
+    }
 }
