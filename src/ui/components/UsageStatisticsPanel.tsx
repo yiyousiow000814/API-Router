@@ -550,24 +550,36 @@ export function primeUsageRequestsPrefetchCache(payload: {
   dailyTotals?: UsageRequestDailyTotalsCache | null
   usingTestFallback?: boolean
 }) {
+  const incomingRows = payload.rows ?? []
+  const currentCache = usageRequestsPageCache
+  const canReuseCurrentRows =
+    incomingRows.length === 0 &&
+    currentCache != null &&
+    currentCache.queryKey === payload.queryKey &&
+    currentCache.rows.length > 0
+  const nextRows = canReuseCurrentRows ? currentCache.rows : incomingRows
+  const nextHasMore = canReuseCurrentRows ? currentCache.hasMore : Boolean(payload.hasMore)
+  const nextUsingTestFallback = canReuseCurrentRows
+    ? currentCache.usingTestFallback
+    : Boolean(payload.usingTestFallback)
   usageRequestsPageCache = {
     queryKey: payload.queryKey,
-    rows: payload.rows ?? [],
-    hasMore: Boolean(payload.hasMore),
-    usingTestFallback: Boolean(payload.usingTestFallback),
+    rows: nextRows,
+    hasMore: nextHasMore,
+    usingTestFallback: nextUsingTestFallback,
   }
-  if ((payload.rows ?? []).length > 0) {
+  if (nextRows.length > 0) {
     usageRequestsLastNonEmptyPageCache = {
       queryKey: payload.queryKey,
-      rows: payload.rows ?? [],
-      hasMore: Boolean(payload.hasMore),
-      usingTestFallback: Boolean(payload.usingTestFallback),
+      rows: nextRows,
+      hasMore: nextHasMore,
+      usingTestFallback: nextUsingTestFallback,
     }
   }
   if (payload.dailyTotals) {
     usageRequestDailyTotalsCache = payload.dailyTotals
   }
-  primeUsageRequestGraphCacheFromBaseRows(payload.rows ?? [])
+  primeUsageRequestGraphCacheFromBaseRows(nextRows)
   emitUsageRequestsCachePrimed(payload.queryKey)
 }
 
@@ -1452,6 +1464,8 @@ export function UsageStatisticsPanel({
   const isAnalyticsTab = effectiveDetailsTab === 'analytics'
   const requestsTabSeenRef = useRef(false)
   const justEnteredRequestsTab = isRequestsTab && !requestsTabSeenRef.current
+  const [requestTabImmediateRender, setRequestTabImmediateRender] = useState(false)
+  const shouldUseImmediateRequestRows = isRequestsTab && (justEnteredRequestsTab || requestTabImmediateRender)
   const shouldPrepareRequestsData = isRequestsTab
   const isRequestsOnlyPage = effectiveDetailsTab === 'requests' && !showFilters
   const cachedRequestsPage =
@@ -1468,9 +1482,10 @@ export function UsageStatisticsPanel({
       ? usageRequestGraphRowsCache
       : null
   const deferredUsageRequestRows = useDeferredValue(usageRequestRows)
+  const requestRowsForRender = shouldUseImmediateRequestRows ? usageRequestRows : deferredUsageRequestRows
   const rowsForRequestRender = isRequestsTab
-    ? deferredUsageRequestRows.length > 0
-      ? deferredUsageRequestRows
+    ? requestRowsForRender.length > 0
+      ? requestRowsForRender
       : usageRequestRows.length > 0
         ? usageRequestRows
         : cachedRequestsPage?.rows ??
@@ -1498,6 +1513,19 @@ export function UsageStatisticsPanel({
   useEffect(() => {
     requestsTabSeenRef.current = isRequestsTab
   }, [isRequestsTab])
+  useEffect(() => {
+    if (!isRequestsTab) {
+      setRequestTabImmediateRender(false)
+      return
+    }
+    setRequestTabImmediateRender(true)
+    const timer = window.setTimeout(() => {
+      setRequestTabImmediateRender(false)
+    }, 1500)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [isRequestsTab, requestQueryKey])
 
   useEffect(() => {
     if (!isRequestsTab) return
@@ -3018,7 +3046,10 @@ export function UsageStatisticsPanel({
     usageRequestTimeFilter,
   ])
   const deferredFilteredUsageRequestRows = useDeferredValue(filteredUsageRequestRows)
-  const displayedFilteredUsageRequestRows = justEnteredRequestsTab ? filteredUsageRequestRows : deferredFilteredUsageRequestRows
+  const displayedFilteredUsageRequestRows = shouldUseImmediateRequestRows
+    ? filteredUsageRequestRows
+    : deferredFilteredUsageRequestRows
+  const totalRequestRowsForDisplay = rowsForRequestRender.length
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
     if (!hasExplicitTimeFilter) return
@@ -4023,7 +4054,7 @@ export function UsageStatisticsPanel({
                     {!displayedFilteredUsageRequestRows.length && !usageRequestLoading ? (
                       <tr>
                         <td colSpan={9} className="aoHint">
-                          {defaultTodayOnly && usageRequestHasMore
+                          {defaultTodayOnly && usageRequestHasMore && totalRequestRowsForDisplay === 0
                             ? "Loading today's rows..."
                             : 'No request rows match current filters.'}
                         </td>
@@ -4134,7 +4165,7 @@ export function UsageStatisticsPanel({
                   : 'All loaded'}
             </span>
             <span className="aoHint">
-              {displayedFilteredUsageRequestRows.length.toLocaleString()} / {usageRequestRows.length.toLocaleString()} rows
+              {displayedFilteredUsageRequestRows.length.toLocaleString()} / {totalRequestRowsForDisplay.toLocaleString()} rows
             </span>
           </div>
         </div>
