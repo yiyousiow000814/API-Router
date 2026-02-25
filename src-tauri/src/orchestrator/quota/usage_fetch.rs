@@ -2,6 +2,7 @@ async fn fetch_token_stats_any(
     bases: &[String],
     provider_key: Option<&str>,
     usage_token: Option<&str>,
+    is_packycode: bool,
 ) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::TokenStats);
     let Some(k) = provider_key else {
@@ -59,10 +60,10 @@ async fn fetch_token_stats_any(
                     out.remaining = remaining;
                     out.today_used = today_used;
                     out.today_added = today_added;
-                    if let Some(token) = usage_token {
-                        if bases.iter().any(|base| is_packycode_base(base)) {
-                        out.package_expires_at_unix_ms =
-                            fetch_package_expiry_any(&client, bases, token, Some(base)).await;
+                    if is_packycode {
+                        if let Some(token) = usage_token {
+                            out.package_expires_at_unix_ms =
+                                fetch_package_expiry_any(&client, bases, token, Some(base)).await;
                         }
                     }
                     out.effective_usage_base = Some(base.to_string());
@@ -77,10 +78,10 @@ async fn fetch_token_stats_any(
                     out.remaining = remaining;
                     out.today_used = today_used;
                     out.today_added = today_added;
-                    if let Some(token) = usage_token {
-                        if bases.iter().any(|base| is_packycode_base(base)) {
-                        out.package_expires_at_unix_ms =
-                            fetch_package_expiry_any(&client, bases, token, Some(base)).await;
+                    if is_packycode {
+                        if let Some(token) = usage_token {
+                            out.package_expires_at_unix_ms =
+                                fetch_package_expiry_any(&client, bases, token, Some(base)).await;
                         }
                     }
                     out.effective_usage_base = Some(base.to_string());
@@ -215,7 +216,11 @@ async fn fetch_token_logs_stats(
     Some((remaining, today_used, today_added))
 }
 
-async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnapshot {
+async fn fetch_budget_info_any(
+    bases: &[String],
+    jwt: Option<&str>,
+    is_packycode: bool,
+) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
     let Some(token) = jwt else {
         out.last_error = "missing usage token".to_string();
@@ -288,11 +293,12 @@ async fn fetch_budget_info_any(bases: &[String], jwt: Option<&str>) -> QuotaSnap
                 out.monthly_spent_usd = as_f64(root.get("monthly_spent_usd"));
                 out.monthly_budget_usd = as_f64(root.get("monthly_budget_usd"));
                 out.remaining = as_f64(root.get("remaining_quota"));
-                let expiry_from_payload = extract_package_expiry_from_value(root);
-                out.package_expires_at_unix_ms = if let Some(expiry) = expiry_from_payload {
-                    Some(expiry)
-                } else if bases.iter().any(|base| is_packycode_base(base)) {
-                    fetch_package_expiry_any(&client, bases, token, Some(base)).await
+                out.package_expires_at_unix_ms = if is_packycode {
+                    if let Some(expiry) = extract_package_expiry_from_value(root) {
+                        Some(expiry)
+                    } else {
+                        fetch_package_expiry_any(&client, bases, token, Some(base)).await
+                    }
                 } else {
                     None
                 };

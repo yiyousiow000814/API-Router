@@ -223,22 +223,25 @@ async fn compute_quota_snapshot(
     bases: &[String],
     provider_key: Option<&str>,
     usage_token: Option<&str>,
+    is_packycode: bool,
 ) -> QuotaSnapshot {
     match kind {
-        UsageKind::TokenStats => fetch_token_stats_any(bases, provider_key, usage_token).await,
-        UsageKind::BudgetInfo => fetch_budget_info_any(bases, usage_token).await,
+        UsageKind::TokenStats => {
+            fetch_token_stats_any(bases, provider_key, usage_token, is_packycode).await
+        }
+        UsageKind::BudgetInfo => fetch_budget_info_any(bases, usage_token, is_packycode).await,
         UsageKind::None => {
             if provider_key.is_some() {
-                let s = fetch_token_stats_any(bases, provider_key, usage_token).await;
+                let s = fetch_token_stats_any(bases, provider_key, usage_token, is_packycode).await;
                 if s.last_error.is_empty() {
                     s
                 } else if usage_token.is_some() {
-                    fetch_budget_info_any(bases, usage_token).await
+                    fetch_budget_info_any(bases, usage_token, is_packycode).await
                 } else {
                     s
                 }
             } else if usage_token.is_some() {
-                fetch_budget_info_any(bases, usage_token).await
+                fetch_budget_info_any(bases, usage_token, is_packycode).await
             } else {
                 let mut out = QuotaSnapshot::empty(UsageKind::None);
                 out.last_error = "missing credentials for quota refresh".to_string();
@@ -481,12 +484,14 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     let effective_base = bases.first().cloned();
 
     let kind = detect_usage_kind(p);
+    let is_packycode = is_packycode_base(&p.base_url);
     let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token);
     let mut snap = compute_quota_snapshot(
         kind,
         &bases,
         provider_key.as_deref(),
         usage_token.as_deref(),
+        is_packycode,
     )
     .await;
     if snap.effective_usage_base.is_none() {
@@ -525,6 +530,7 @@ async fn refresh_quota_for_provider_cached(
     let effective_base = bases.first().cloned();
 
     let kind = detect_usage_kind(p);
+    let is_packycode = is_packycode_base(&p.base_url);
     let key = usage_request_key(&bases, &provider_key, &usage_token, kind);
     let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token);
     let snap = if let Some(existing) = cache.get(&key) {
@@ -535,6 +541,7 @@ async fn refresh_quota_for_provider_cached(
             &bases,
             provider_key.as_deref(),
             usage_token.as_deref(),
+            is_packycode,
         )
         .await;
         if computed.effective_usage_base.is_none() {

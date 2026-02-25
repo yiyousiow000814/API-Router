@@ -517,6 +517,13 @@ mod tests {
         secrets.set_provider_key("p1", "k1").unwrap();
         secrets.set_usage_token("p1", "t1").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
+        {
+            let mut cfg = st.cfg.write();
+            if let Some(p) = cfg.providers.get_mut("p1") {
+                p.base_url = "https://codex-api.packycode.com/v1".to_string();
+                p.usage_base_url = Some(base.to_string());
+            }
+        }
 
         let snap = refresh_quota_for_provider(&st, "p1").await;
         assert!(snap.last_error.is_empty());
