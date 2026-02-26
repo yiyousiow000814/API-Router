@@ -1074,7 +1074,7 @@ mod provider_management_tests {
         state
             .gateway
             .store
-            .list_events(20)
+            .list_events_range(None, None, Some(20))
             .into_iter()
             .find(|event| event.get("code").and_then(|v| v.as_str()) == Some(code))
             .expect("event by code")

@@ -97,7 +97,7 @@ async fn logs_pre_handler_json_rejections() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
-    let events = store.list_events(10);
+    let events = store.list_events_range(None, None, Some(10));
     assert!(!events.is_empty());
     let joined = events
         .iter()
@@ -421,4 +421,3 @@ async fn preserves_previous_response_id_for_plain_messages() {
     assert_eq!(captured.get("previous_response_id").unwrap(), "resp_prev");
     assert_eq!(captured.get("input").unwrap(), &input);
 }
-

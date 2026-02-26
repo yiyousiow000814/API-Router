@@ -10,7 +10,6 @@ type Props = {
   events: Status['recent_events']
   focusEvent?: Status['recent_events'][number] | null
   focusNonce?: number
-  splitByLevel?: boolean
   scrollInside?: boolean
   scrollPersistKey?: string
   onReachEnd?: () => void
@@ -69,7 +68,6 @@ export function EventsTable({
   events,
   focusEvent = null,
   focusNonce = 0,
-  splitByLevel = true,
   scrollInside = false,
   scrollPersistKey,
   onReachEnd,
@@ -298,7 +296,7 @@ export function EventsTable({
       window.cancelAnimationFrame(raf)
       window.removeEventListener('resize', onResize)
     }
-  }, [refreshExpandableMessageKeys, allEvents.length, splitByLevel, scrollInside])
+  }, [refreshExpandableMessageKeys, allEvents.length, scrollInside])
 
   useEffect(() => {
     if (!scrollInside || typeof window === 'undefined') return
@@ -327,7 +325,7 @@ export function EventsTable({
       }
       window.removeEventListener('resize', onResize)
     }
-  }, [scrollInside, scheduleEventsScrollbarSync, splitByLevel, scrollPersistKey])
+  }, [scrollInside, scheduleEventsScrollbarSync, scrollPersistKey])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -413,11 +411,6 @@ export function EventsTable({
       focusFlashTimerRef.current = null
     }, 1400)
   }, [focusEvent, focusNonce])
-
-  // Infos are displayed directly, so cap them here. Errors/warnings are merged/sorted and capped later.
-  const errors = allEvents.filter((e) => e.level === 'error')
-  const warnings = allEvents.filter((e) => e.level === 'warning')
-  const infos = allEvents.filter((e) => e.level !== 'error' && e.level !== 'warning').slice(0, 5)
 
   const renderColGroup = () => (
     <colgroup>
@@ -545,81 +538,21 @@ export function EventsTable({
   }
 
   const renderBodyRows = () =>
-    !splitByLevel ? (
-      [...allEvents].sort((a, b) => b.unix_ms - a.unix_ms).length ? (
-        (() => {
-          const keyedAll = withStableRowKeys(
-            [...allEvents].sort((a, b) => b.unix_ms - a.unix_ms),
-            'all',
-          )
-          const focusKey = focusEventId ? keyedAll.find((row) => eventIdentity(row.event) === focusEventId)?.key ?? null : null
-          return keyedAll.map(({ event, key }) => renderRow(event, key, key === focusKey))
-        })()
-      ) : (
-        <tr>
-          <td colSpan={5} className="aoHint">
-            No events
-          </td>
-        </tr>
-      )
-    ) : (
+    [...allEvents].sort((a, b) => b.unix_ms - a.unix_ms).length ? (
       (() => {
-        const keyedInfos = withStableRowKeys(infos, 'info')
-        const keyedIssues = withStableRowKeys(
-          [...warnings, ...errors]
-            .sort((a, b) => b.unix_ms - a.unix_ms)
-            .slice(0, 5),
-          'issue',
+        const keyedAll = withStableRowKeys(
+          [...allEvents].sort((a, b) => b.unix_ms - a.unix_ms),
+          'all',
         )
-        const focusKey = focusEventId
-          ? keyedInfos.find((row) => eventIdentity(row.event) === focusEventId)?.key
-            ?? keyedIssues.find((row) => eventIdentity(row.event) === focusEventId)?.key
-            ?? null
-          : null
-        return (
-          <>
-            <tr className="aoEventsSection">
-              <td colSpan={5}>
-                <span>Info</span>
-              </td>
-            </tr>
-            {keyedInfos.length ? (
-              keyedInfos.map(({ event, key }) => renderRow(event, key, key === focusKey))
-            ) : (
-              <tr>
-                <td colSpan={5} className="aoHint">
-                  No info events
-                </td>
-              </tr>
-            )}
-
-            {keyedInfos.length ? (
-              <tr className="aoEventsGap" aria-hidden="true">
-                <td colSpan={5} />
-              </tr>
-            ) : null}
-
-            <tr className="aoEventsSection">
-              <td colSpan={5}>
-                <div className="aoEventsSectionRow">
-                  <div>
-                    <span>Errors / Warnings</span>
-                  </div>
-                </div>
-              </td>
-            </tr>
-            {keyedIssues.length ? (
-              keyedIssues.map(({ event, key }) => renderRow(event, key, key === focusKey))
-            ) : (
-              <tr>
-                <td colSpan={5} className="aoHint">
-                  No errors or warnings
-                </td>
-              </tr>
-            )}
-          </>
-        )
+        const focusKey = focusEventId ? keyedAll.find((row) => eventIdentity(row.event) === focusEventId)?.key ?? null : null
+        return keyedAll.map(({ event, key }) => renderRow(event, key, key === focusKey))
       })()
+    ) : (
+      <tr>
+        <td colSpan={5} className="aoHint">
+          No events
+        </td>
+      </tr>
     )
 
   if (!scrollInside) {

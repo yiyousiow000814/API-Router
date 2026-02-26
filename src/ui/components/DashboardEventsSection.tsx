@@ -6,7 +6,6 @@ type Props = {
   focusEvent?: Status['recent_events'][number] | null
   focusNonce?: number
   title?: string
-  splitByLevel?: boolean
   scrollInside?: boolean
   showHeader?: boolean
   scrollPersistKey?: string
@@ -18,7 +17,6 @@ export function DashboardEventsSection({
   focusEvent,
   focusNonce,
   title = 'Events',
-  splitByLevel = true,
   scrollInside = false,
   showHeader = true,
   scrollPersistKey,
@@ -37,7 +35,6 @@ export function DashboardEventsSection({
         events={visibleEvents}
         focusEvent={focusEvent}
         focusNonce={focusNonce}
-        splitByLevel={splitByLevel}
         scrollInside={scrollInside}
         scrollPersistKey={scrollPersistKey}
         onReachEnd={onReachEnd}

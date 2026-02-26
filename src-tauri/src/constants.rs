@@ -5,5 +5,4 @@ pub const GATEWAY_ANY_HOST: &str = "0.0.0.0";
 pub const USAGE_ORIGIN_WINDOWS: &str = "windows";
 pub const USAGE_ORIGIN_WSL2: &str = "wsl2";
 pub const USAGE_ORIGIN_UNKNOWN: &str = "unknown";
-pub const STATUS_EVENT_WINDOW_LIMIT: usize = 200;
 pub const STATUS_RECENT_ERROR_PREVIEW_LIMIT: usize = 1;
