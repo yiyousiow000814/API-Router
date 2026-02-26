@@ -1661,6 +1661,7 @@ export function UsageStatisticsPanel({
       requestFetchOrigins,
       requestFetchSessions,
       requestFetchToUnixMs,
+      requestQueryKey,
       usageRequestTestFallbackEnabled,
       usageRequestTestRows,
     ],
