@@ -784,16 +784,18 @@ function buildSmoothLinePath(
 }
 
 function formatUsageRequestAxisCompact(value: number): string {
-  const n = Math.max(0, Math.round(value))
+  const n = Math.max(0, Number.isFinite(value) ? value : 0)
+  const formatCompact = (scaled: number, suffix: 'k' | 'M') => {
+    const rounded = Math.round(scaled * 10) / 10
+    return Number.isInteger(rounded) ? `${rounded}${suffix}` : `${rounded.toFixed(1)}${suffix}`
+  }
   if (n >= 1_000_000) {
-    const compact = Math.round(n / 1_000_000)
-    return `${compact}M`
+    return formatCompact(n / 1_000_000, 'M')
   }
   if (n >= 1_000) {
-    const compact = Math.round(n / 1_000)
-    return `${compact}k`
+    return formatCompact(n / 1_000, 'k')
   }
-  return String(n)
+  return String(Math.round(n))
 }
 
 export function readTestFlagFromLocation(): boolean {
@@ -3118,6 +3120,11 @@ export function UsageStatisticsPanel({
   ])
   const requestChartMeasureRef = useRef<SVGSVGElement | null>(null)
   const [requestChartViewportWidth, setRequestChartViewportWidth] = useState(560)
+  const requestChartMeasureOrigin = useMemo<'windows' | 'wsl2'>(() => {
+    if (usageRequestLineSeriesByOrigin.windows.length > 0) return 'windows'
+    if (usageRequestLineSeriesByOrigin.wsl2.length > 0) return 'wsl2'
+    return 'windows'
+  }, [usageRequestLineSeriesByOrigin])
   const requestChartWidth = Math.max(360, requestChartViewportWidth)
   const requestChartHeight = 176
   const requestChartMinX = 36
@@ -3142,7 +3149,7 @@ export function UsageStatisticsPanel({
     const observer = new ResizeObserver(() => updateWidth())
     observer.observe(svg)
     return () => observer.disconnect()
-  }, [isRequestsTab, renderedUsageRequestLineSeries.length])
+  }, [isRequestsTab, requestChartMeasureOrigin])
   const requestLinePointSpacing =
     (requestChartMaxX - requestChartMinX) / Math.max(1, usageRequestGraphPointCount - 1)
   const requestLineAnimOffsetX = requestLineAnimPhase * requestLinePointSpacing
@@ -3400,7 +3407,7 @@ export function UsageStatisticsPanel({
                         <div className="aoUsageRequestLineGraphShell">
                           <div className="aoUsageRequestLineGraphWrap">
                             <svg
-                              ref={originChart.key === 'windows' ? requestChartMeasureRef : undefined}
+                              ref={originChart.key === requestChartMeasureOrigin ? requestChartMeasureRef : undefined}
                               className="aoUsageRequestLineGraph"
                               viewBox={`0 0 ${requestChartWidth} ${requestChartHeight}`}
                               preserveAspectRatio="none"
