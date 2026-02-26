@@ -744,6 +744,9 @@
   padding: 9px 10px;
   display: grid;
   gap: 8px;
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
 }
 
 .aoUsageRequestOriginGrid {
