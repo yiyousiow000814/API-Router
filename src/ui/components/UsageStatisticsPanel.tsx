@@ -3415,7 +3415,6 @@ export function UsageStatisticsPanel({
                               role="img"
                               aria-label={`Request token trend (${originChart.label})`}
                               onMouseLeave={() => {
-                                if (lineHoverOrigin !== originChart.key) return
                                 setLineHoverOrigin(null)
                                 setLineHoverIndex(null)
                                 setLineHoverX(null)
