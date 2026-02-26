@@ -150,7 +150,7 @@ const USAGE_REQUEST_COLUMN_FILTERS: Array<{
   { key: 'cacheRead', label: 'Cache Read', filterable: false },
 ]
 const USAGE_REQUEST_PAGE_SIZE = 200
-const USAGE_REQUEST_GRAPH_SOURCE_LIMIT = 120
+const USAGE_REQUEST_GRAPH_SOURCE_LIMIT = 60
 const USAGE_REQUEST_GRAPH_MAX_SESSIONS = 6
 const USAGE_REQUEST_TEST_MIN_ROWS = 401
 const USAGE_REQUEST_TEST_MIN_WINDOW_HOURS = 24 * 60
@@ -3384,7 +3384,9 @@ export function UsageStatisticsPanel({
           {usageRequestError ? <div className="aoHint">Failed to load request details: {usageRequestError}</div> : null}
           <div className="aoUsageRequestChartCard">
             <div className="aoSwitchboardSectionHead">
-              <div className="aoMiniLabel">Latest 120 Verified Session Requests (Total Tokens)</div>
+              <div className="aoMiniLabel">
+                Latest {USAGE_REQUEST_GRAPH_SOURCE_LIMIT} Verified Session Requests (Total Tokens)
+              </div>
             </div>
             {renderedUsageRequestLineSeries.length ? (
               <div className="aoUsageRequestOriginGrid">
