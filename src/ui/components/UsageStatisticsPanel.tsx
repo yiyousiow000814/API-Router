@@ -3120,15 +3120,15 @@ export function UsageStatisticsPanel({
   const [requestChartViewportWidth, setRequestChartViewportWidth] = useState(560)
   const requestChartWidth = Math.max(360, requestChartViewportWidth)
   const requestChartHeight = 176
-  const requestChartMinX = 44
-  const requestChartRightPadding = 12
+  const requestChartMinX = 36
+  const requestChartRightPadding = 8
   const requestChartMaxX = Math.max(requestChartMinX + 20, requestChartWidth - requestChartRightPadding)
   const requestChartTopY = 14
   const requestChartBottomY = 150
-  const requestChartAxisLabelX = requestChartMinX - 4
+  const requestChartAxisLabelX = requestChartMinX - 3
   const requestChartXAxisLabelY = requestChartBottomY + 12
-  const requestChartXAxisLeftLabelX = requestChartMinX + 2
-  const requestChartXAxisRightLabelX = requestChartMaxX - 2
+  const requestChartXAxisLeftLabelX = requestChartMinX + 1
+  const requestChartXAxisRightLabelX = requestChartMaxX - 1
   useLayoutEffect(() => {
     if (!isRequestsTab) return
     const svg = requestChartMeasureRef.current
