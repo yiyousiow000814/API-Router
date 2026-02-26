@@ -83,4 +83,49 @@ describe('ProvidersTable', () => {
 
     expect(html).toContain('ends:')
   })
+
+  it('shows each provider last error even when recent_events preview omits it', () => {
+    const status = buildStatus()
+    status.providers = {
+      packycode: {
+        status: 'unhealthy',
+        consecutive_failures: 2,
+        cooldown_until_unix_ms: 0,
+        last_error: 'usage refresh failed: unexpected response',
+        last_ok_at_unix_ms: 1_000,
+        last_fail_at_unix_ms: 2_000,
+      },
+      packycode2: {
+        status: 'unhealthy',
+        consecutive_failures: 1,
+        cooldown_until_unix_ms: 0,
+        last_error: 'upstream returned 502',
+        last_ok_at_unix_ms: 1_100,
+        last_fail_at_unix_ms: 2_100,
+      },
+    }
+    // Keep only one unrelated preview row: this reproduces the dashboard compact snapshot shape.
+    status.recent_events = [
+      {
+        provider: 'packycode3',
+        level: 'error',
+        unix_ms: 2_200,
+        code: 'gateway.request_failed',
+        message: 'boom',
+        fields: null,
+      },
+    ]
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['packycode', 'packycode2']}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+    const jumpButtons = html.match(/aoLastErrorViewBtn/g) ?? []
+    expect(jumpButtons).toHaveLength(2)
+  })
 })

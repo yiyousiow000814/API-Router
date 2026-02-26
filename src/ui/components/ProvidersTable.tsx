@@ -200,16 +200,9 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
 
             const lastErrorMessage = h.last_error?.trim() ?? ''
             const lastErrorAt = h.last_fail_at_unix_ms
-            const hasMatchingRecentError = status.recent_events.some((event) => {
-              if (event.level !== 'error') return false
-              if (event.provider !== p) return false
-              if (event.unix_ms !== lastErrorAt) return false
-              return event.message.trim() === lastErrorMessage
-            })
-            // Product rule: "Last Error" here is a jump affordance, not a full failure history field.
-            // We only show timestamp + View when we can guarantee the exact error row is in the current
-            // dashboard snapshot window (`status.recent_events`) and therefore jumpable from UI.
-            const showLastError = lastErrorAt > 0 && lastErrorMessage.length > 0 && hasMatchingRecentError
+            // Show each provider's own latest failure in-place. Event Log jump remains best-effort:
+            // the Event Log page re-runs a provider+message+time search against its full loaded window.
+            const showLastError = lastErrorAt > 0 && lastErrorMessage.length > 0
             const showJumpableError = showLastError
 
             return (
