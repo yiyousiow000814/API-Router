@@ -145,6 +145,12 @@ const BALANCED_CAPACITY_FLOOR_RATIO: f64 = 0.25;
 const BALANCED_CAPACITY_FIT_RANK_SCALE: f64 = 100.0;
 const BALANCED_SESSION_LOAD_WINDOW_MS: u64 = 2 * 60 * 60 * 1000;
 const BALANCED_UNHEALTHY_LOAD_PENALTY: u64 = 2;
+const BALANCED_DAILY_BUDGET_PRESSURE_EXPONENT: f64 = 2.2;
+const BALANCED_DAILY_BUDGET_PRESSURE_SCALE: f64 = 16.0;
+const BALANCED_DAILY_BUDGET_PRESSURE_WARN_RATIO: f64 = 0.90;
+const BALANCED_DAILY_BUDGET_PRESSURE_CRITICAL_RATIO: f64 = 0.98;
+const BALANCED_DAILY_BUDGET_PRESSURE_WARN_FLOOR: u64 = 14;
+const BALANCED_DAILY_BUDGET_PRESSURE_CRITICAL_FLOOR: u64 = 20;
 
 fn balanced_assignment_window(unix_ms: u64) -> u64 {
     unix_ms / BALANCED_ASSIGNMENT_STICKY_MS
@@ -296,13 +302,16 @@ fn provider_daily_budget_pressure_for_balancing(
         .unwrap_or(0.0)
         .max(0.0);
     let spent_ratio = (daily_spent / daily_budget).clamp(0.0, 2.0);
-    let mut pressure_units = (spent_ratio.powf(2.2) * 8.0).round() as u64;
+    // This is a soft balancing signal and stays active even when hard daily caps are disabled.
+    let mut pressure_units = (spent_ratio.powf(BALANCED_DAILY_BUDGET_PRESSURE_EXPONENT)
+        * BALANCED_DAILY_BUDGET_PRESSURE_SCALE)
+        .round() as u64;
     // Near hard-cap, increase pressure aggressively so routing drains other providers first.
     if hard_cap.daily {
-        if spent_ratio >= 0.98 {
-            pressure_units = pressure_units.max(12);
-        } else if spent_ratio >= 0.90 {
-            pressure_units = pressure_units.max(6);
+        if spent_ratio >= BALANCED_DAILY_BUDGET_PRESSURE_CRITICAL_RATIO {
+            pressure_units = pressure_units.max(BALANCED_DAILY_BUDGET_PRESSURE_CRITICAL_FLOOR);
+        } else if spent_ratio >= BALANCED_DAILY_BUDGET_PRESSURE_WARN_RATIO {
+            pressure_units = pressure_units.max(BALANCED_DAILY_BUDGET_PRESSURE_WARN_FLOOR);
         }
     }
     pressure_units
@@ -1210,6 +1219,71 @@ mod routing_and_status_tests {
             &hard_cap,
         );
         assert_eq!(pressure, 0);
+    }
+
+    #[test]
+    fn provider_daily_budget_pressure_is_soft_signal_even_without_hard_daily_cap() {
+        let mut hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        hard_cap.daily = false;
+        let pressure = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "daily_spent_usd": 50.0,
+                    "daily_budget_usd": 100.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        assert!(pressure > 0, "pressure should stay as a soft signal; got {pressure}");
+    }
+
+    #[test]
+    fn provider_daily_budget_pressure_distinguishes_lower_spend_levels() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let very_low = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "daily_spent_usd": 5.0,
+                    "daily_budget_usd": 100.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        let medium = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "daily_spent_usd": 30.0,
+                    "daily_budget_usd": 100.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        assert!(
+            medium > very_low,
+            "expected medium spend pressure to exceed very low spend: medium={medium}, very_low={very_low}"
+        );
+    }
+
+    #[test]
+    fn provider_daily_budget_pressure_hard_cap_boosts_near_limit() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let pressure = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "daily_spent_usd": 98.0,
+                    "daily_budget_usd": 100.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        assert!(
+            pressure >= BALANCED_DAILY_BUDGET_PRESSURE_CRITICAL_FLOOR,
+            "expected near-cap pressure floor, got {pressure}"
+        );
     }
 
     #[test]
