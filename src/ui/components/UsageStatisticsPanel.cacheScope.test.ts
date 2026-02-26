@@ -180,12 +180,8 @@ describe('pickUsageRequestGraphBaseRows', () => {
     ] as const
 
   it('always prefers canonical rows over scoped request rows', () => {
-    const requestRows = makeRows('request_provider')
     const canonicalRows = makeRows('canonical_provider')
     const picked = pickUsageRequestGraphBaseRows({
-      isRequestsTab: true,
-      requestRows: [...requestRows],
-      scopedPageRows: [],
       canonicalPageRows: [...canonicalRows],
       cachedGraphRows: [],
       fallbackRows: [],
@@ -196,9 +192,6 @@ describe('pickUsageRequestGraphBaseRows', () => {
   it('falls back to graph cache rows when canonical rows are unavailable', () => {
     const cachedRows = makeRows('cached_provider')
     const picked = pickUsageRequestGraphBaseRows({
-      isRequestsTab: true,
-      requestRows: [...makeRows('request_provider')],
-      scopedPageRows: [],
       canonicalPageRows: [],
       cachedGraphRows: [...cachedRows],
       fallbackRows: [],
@@ -207,12 +200,8 @@ describe('pickUsageRequestGraphBaseRows', () => {
   })
 
   it('uses fallback rows only when canonical and cached rows are both unavailable', () => {
-    const requestRows = makeRows('request_provider')
     const fallbackRows = makeRows('fallback_provider')
     const picked = pickUsageRequestGraphBaseRows({
-      isRequestsTab: false,
-      requestRows: [...requestRows],
-      scopedPageRows: [],
       canonicalPageRows: [],
       cachedGraphRows: [],
       fallbackRows: [...fallbackRows],
