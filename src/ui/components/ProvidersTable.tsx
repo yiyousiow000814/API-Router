@@ -143,13 +143,6 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                       }
 
                       // Last resort: show whatever we have without rendering confusing "-".
-                      if (hasMonthly) {
-                        return (
-                          <div className="aoUsageLine">
-                            monthly: ${fmtUsd(q?.monthly_spent_usd)} / ${fmtUsd(q?.monthly_budget_usd)}
-                          </div>
-                        )
-                      }
                       if (hasWeeklyBudget) {
                         return (
                           <div className="aoUsageLine">
@@ -203,7 +196,6 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
             // Show each provider's own latest failure in-place. Event Log jump remains best-effort:
             // the Event Log page re-runs a provider+message+time search against its full loaded window.
             const showLastError = lastErrorAt > 0 && lastErrorMessage.length > 0
-            const showJumpableError = showLastError
 
             return (
               <tr key={p}>
@@ -237,7 +229,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                 <td className="aoCellCenter">{cooldownActive ? fmtWhen(h.cooldown_until_unix_ms) : '-'}</td>
                 <td>{fmtWhen(h.last_ok_at_unix_ms)}</td>
                 <td>
-                  {showJumpableError ? (
+                  {showLastError ? (
                     <span className="aoLastErrorCell">
                       <span className="aoLastErrorTime">{fmtWhen(lastErrorAt)}</span>
                       <button
