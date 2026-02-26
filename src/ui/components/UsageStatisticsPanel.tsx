@@ -1292,6 +1292,8 @@ export function UsageStatisticsPanel({
     return ids
   }, [clientSessions])
   const usageRequestRefreshInFlightRef = useRef(false)
+  const usageRequestRefreshPendingRef = useRef(false)
+  const usageRequestRefreshPendingLimitRef = useRef(USAGE_REQUEST_PAGE_SIZE)
   const usageRequestGraphRefreshInFlightRef = useRef(false)
   const usageRequestGraphRefreshPendingRef = useRef(false)
   const usageRequestGraphLastRefreshAtRef = useRef(0)
@@ -1517,6 +1519,10 @@ export function UsageStatisticsPanel({
     usageRequestPrevQueryKeyRef.current = requestQueryKey
     usageRequestResolvedQueryKeyRef.current = null
   }, [requestQueryKey])
+  useEffect(() => {
+    if (isRequestsTab) return
+    usageRequestLastRenderedRowsRef.current = []
+  }, [isRequestsTab])
 
   useEffect(() => {
     if (!isRequestsTab) {
@@ -1589,7 +1595,11 @@ export function UsageStatisticsPanel({
 
   const refreshUsageRequests = useCallback(
     async (limit: number) => {
-      if (usageRequestRefreshInFlightRef.current) return
+      if (usageRequestRefreshInFlightRef.current) {
+        usageRequestRefreshPendingRef.current = true
+        usageRequestRefreshPendingLimitRef.current = limit
+        return
+      }
       usageRequestRefreshInFlightRef.current = true
       const requestSeq = usageRequestFetchSeqRef.current + 1
       usageRequestFetchSeqRef.current = requestSeq
@@ -1650,6 +1660,11 @@ export function UsageStatisticsPanel({
         usageRequestRefreshInFlightRef.current = false
         if (usageRequestFetchSeqRef.current === requestSeq) {
           setUsageRequestLoading(false)
+        }
+        if (usageRequestRefreshPendingRef.current) {
+          const nextLimit = usageRequestRefreshPendingLimitRef.current
+          usageRequestRefreshPendingRef.current = false
+          void refreshUsageRequests(nextLimit)
         }
       }
     },
@@ -1767,6 +1782,11 @@ export function UsageStatisticsPanel({
       } finally {
         usageRequestRefreshInFlightRef.current = false
         setUsageRequestMergeTick((tick) => tick + 1)
+        if (usageRequestRefreshPendingRef.current) {
+          const nextLimit = usageRequestRefreshPendingLimitRef.current
+          usageRequestRefreshPendingRef.current = false
+          void refreshUsageRequests(nextLimit)
+        }
       }
     },
     [
@@ -1777,6 +1797,8 @@ export function UsageStatisticsPanel({
       requestFetchProviders,
       requestFetchSessions,
       requestFetchToUnixMs,
+      requestQueryKey,
+      refreshUsageRequests,
     ],
   )
   const prefetchUsageRequestsPageCache = useCallback(async (limit: number) => {
@@ -2367,6 +2389,11 @@ export function UsageStatisticsPanel({
     } finally {
       usageRequestRefreshInFlightRef.current = false
       setUsageRequestLoading(false)
+      if (usageRequestRefreshPendingRef.current) {
+        const nextLimit = usageRequestRefreshPendingLimitRef.current
+        usageRequestRefreshPendingRef.current = false
+        void refreshUsageRequests(nextLimit)
+      }
     }
   }, [
     requestFetchHours,
@@ -2376,6 +2403,8 @@ export function UsageStatisticsPanel({
     requestFetchProviders,
     requestFetchSessions,
     requestFetchToUnixMs,
+    requestQueryKey,
+    refreshUsageRequests,
     usageRequestHasMore,
     usageRequestLoading,
     usageRequestRows.length,
