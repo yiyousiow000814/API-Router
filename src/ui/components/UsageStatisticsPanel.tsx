@@ -97,6 +97,7 @@ type UsageRequestLineSeries = {
   id: string
   provider: string
   providerName: string
+  origin: 'windows' | 'wsl2'
   color: string
   values: number[]
   present: boolean[]
@@ -780,6 +781,19 @@ function buildSmoothLinePath(
     d += ` C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`
   }
   return d
+}
+
+function formatUsageRequestAxisCompact(value: number): string {
+  const n = Math.max(0, Math.round(value))
+  if (n >= 1_000_000) {
+    const compact = Math.round(n / 1_000_000)
+    return `${compact}M`
+  }
+  if (n >= 1_000) {
+    const compact = Math.round(n / 1_000)
+    return `${compact}k`
+  }
+  return String(n)
 }
 
 export function readTestFlagFromLocation(): boolean {
@@ -2492,6 +2506,25 @@ export function UsageStatisticsPanel({
     return out
   }, [activeRequestGraphSessions, graphRowsBySessionForRequestRender, resolveRequestProviderName])
 
+  const requestGraphOriginBySession = useMemo(() => {
+    const out = new Map<string, 'windows' | 'wsl2'>()
+    activeRequestGraphSessions.forEach((sessionId) => {
+      const rows = graphRowsBySessionForRequestRender[sessionId] ?? EMPTY_USAGE_REQUEST_ROWS
+      let windowsCount = 0
+      let wslCount = 0
+      rows.forEach((row) => {
+        const origin = normalizeUsageOrigin(row.origin)
+        if (origin === 'wsl2') {
+          wslCount += 1
+          return
+        }
+        windowsCount += 1
+      })
+      out.set(sessionId, wslCount > windowsCount ? 'wsl2' : 'windows')
+    })
+    return out
+  }, [activeRequestGraphSessions, graphRowsBySessionForRequestRender])
+
   const usageRequestGraphPointCount = USAGE_REQUEST_GRAPH_SOURCE_LIMIT
 
   const usageRequestRowsBySession = useMemo(() => {
@@ -2509,7 +2542,7 @@ export function UsageStatisticsPanel({
     const sessions = [...activeRequestGraphSessions]
     if (!sessions.length) return []
     const pointCount = usageRequestGraphPointCount
-      const providerSeries = sessions.map((sessionId, sessionIndex) => {
+    const providerSeries = sessions.map((sessionId, sessionIndex) => {
         const values = new Array<number>(pointCount).fill(0)
         const present = new Array<boolean>(pointCount).fill(false)
         const pointIds = new Array<string>(pointCount).fill('')
@@ -2525,11 +2558,13 @@ export function UsageStatisticsPanel({
         pointIds[idx] = usageRequestRowIdentity(row)
       }
       const dominantProvider = requestGraphProviderBySession.get(sessionId) ?? '-'
+      const dominantOrigin = requestGraphOriginBySession.get(sessionId) ?? 'windows'
       return {
         kind: 'session' as const,
         id: sessionId,
         provider: shortSessionIdForLegend(sessionId),
         providerName: dominantProvider,
+        origin: dominantOrigin,
         color:
           requestGraphColorByProvider.get(dominantProvider) ??
           USAGE_REQUEST_GRAPH_COLORS[sessionIndex % USAGE_REQUEST_GRAPH_COLORS.length],
@@ -2545,6 +2580,7 @@ export function UsageStatisticsPanel({
     usageRequestGraphPointCount,
     usageRequestRowsBySession,
     requestGraphColorByProvider,
+    requestGraphOriginBySession,
     requestGraphProviderBySession,
   ])
   const previousUsageRequestLineSeriesRef = useRef<UsageRequestLineSeries[]>([])
@@ -2827,6 +2863,13 @@ export function UsageStatisticsPanel({
     if (maxValue <= 0) return 1
     return Math.max(1, Math.ceil(maxValue * USAGE_REQUEST_LINE_HEADROOM_RATIO))
   }, [renderedUsageRequestLineSeries])
+  const usageRequestLineSeriesByOrigin = useMemo(
+    () => ({
+      wsl2: renderedUsageRequestLineSeries.filter((series) => series.origin === 'wsl2'),
+      windows: renderedUsageRequestLineSeries.filter((series) => series.origin === 'windows'),
+    }),
+    [renderedUsageRequestLineSeries],
+  )
   const usageRequestLegendSeries = useMemo(
     () => {
       const colorByProvider = new Map<string, string>()
@@ -2840,27 +2883,6 @@ export function UsageStatisticsPanel({
     },
     [renderedUsageRequestLineSeries],
   )
-  const usageRequestSessionLegendRows = useMemo(
-    () =>
-      renderedUsageRequestLineSeries
-        .filter((series) => series.present.reduce((sum, present) => sum + (present ? 1 : 0), 0) > 1)
-        .map((series) => ({
-          id: String((series as { id?: string }).id ?? series.provider),
-          sidLabel: series.provider,
-          providerName: String((series as { providerName?: string }).providerName ?? '').trim() || '-',
-          color: series.color,
-        })),
-    [renderedUsageRequestLineSeries],
-  )
-  const usageRequestChartShownCount = useMemo(() => {
-    let maxCount = 0
-    for (const series of renderedUsageRequestLineSeries) {
-      const count = series.present.reduce((sum, present) => sum + (present ? 1 : 0), 0)
-      if (count > maxCount) maxCount = count
-    }
-    return maxCount
-  }, [renderedUsageRequestLineSeries])
-
   const usageRequestDailyWindowRows = useMemo(() => {
     if (!isRequestsTab || !usageRequestDailyTotalsDays.length) return []
     const byDay = new Map<number, Record<string, number>>()
@@ -3094,26 +3116,50 @@ export function UsageStatisticsPanel({
     usageRequestLoading,
     usageRequestRows.length,
   ])
-  const requestChartWidth = 1000
+  const requestChartMeasureRef = useRef<SVGSVGElement | null>(null)
+  const [requestChartViewportWidth, setRequestChartViewportWidth] = useState(560)
+  const requestChartWidth = Math.max(360, requestChartViewportWidth)
   const requestChartHeight = 176
-  const requestChartMinX = 54
-  const requestChartRightPadding = 18
-  const requestChartMaxX = requestChartWidth - requestChartRightPadding
+  const requestChartMinX = 44
+  const requestChartRightPadding = 12
+  const requestChartMaxX = Math.max(requestChartMinX + 20, requestChartWidth - requestChartRightPadding)
   const requestChartTopY = 14
-  const requestChartBottomY = 136
+  const requestChartBottomY = 150
+  const requestChartAxisLabelX = requestChartMinX - 4
+  const requestChartXAxisLabelY = requestChartBottomY + 12
+  const requestChartXAxisLeftLabelX = requestChartMinX + 2
+  const requestChartXAxisRightLabelX = requestChartMaxX - 2
+  useLayoutEffect(() => {
+    if (!isRequestsTab) return
+    const svg = requestChartMeasureRef.current
+    if (!svg || typeof ResizeObserver === 'undefined') return
+    const updateWidth = () => {
+      const width = svg.getBoundingClientRect().width
+      if (!Number.isFinite(width) || width <= 0) return
+      setRequestChartViewportWidth((prev) => (Math.abs(prev - width) < 1 ? prev : width))
+    }
+    updateWidth()
+    const observer = new ResizeObserver(() => updateWidth())
+    observer.observe(svg)
+    return () => observer.disconnect()
+  }, [isRequestsTab, renderedUsageRequestLineSeries.length])
   const requestLinePointSpacing =
     (requestChartMaxX - requestChartMinX) / Math.max(1, usageRequestGraphPointCount - 1)
   const requestLineAnimOffsetX = requestLineAnimPhase * requestLinePointSpacing
   const requestLineClipPathIdRef = useRef(`aoUsageRequestLineClip-${Math.random().toString(36).slice(2, 10)}`)
   const requestLineClipPathId = requestLineClipPathIdRef.current
+  const [lineHoverOrigin, setLineHoverOrigin] = useState<'wsl2' | 'windows' | null>(null)
   const [lineHoverIndex, setLineHoverIndex] = useState<number | null>(null)
   const [lineHoverX, setLineHoverX] = useState<number | null>(null)
   const lineHoverData = useMemo(() => {
     if (!isRequestsTab) return null
+    if (lineHoverOrigin == null) return null
     if (lineHoverIndex == null) return null
     if (lineHoverIndex < 0 || lineHoverIndex >= usageRequestGraphPointCount) return null
+    const hoveredSeries = usageRequestLineSeriesByOrigin[lineHoverOrigin]
+    if (!hoveredSeries.length) return null
     const byProvider = new Map<string, { id: string; provider: string; color: string; value: number }>()
-    renderedUsageRequestLineSeries.forEach((series) => {
+    hoveredSeries.forEach((series) => {
       const providerName = String((series as { providerName?: string }).providerName ?? '').trim() || series.provider
       const value = series.values[lineHoverIndex] ?? 0
       const existing = byProvider.get(providerName)
@@ -3136,50 +3182,58 @@ export function UsageStatisticsPanel({
     }
   }, [
     isRequestsTab,
+    lineHoverOrigin,
     lineHoverIndex,
-    renderedUsageRequestLineSeries,
+    usageRequestLineSeriesByOrigin,
     usageRequestGraphPointCount,
   ])
-  const usageRequestSidRowsWithPosition = useMemo(() => {
-    if (!usageRequestSessionLegendRows.length) return []
+  const usageRequestSidRowsWithPositionByOrigin = useMemo(() => {
     const rowHeight = 18
     const edgeInset = 1
     const panelHeight = Math.max(24, requestChartBottomY - requestChartTopY)
     const listHeight = Math.max(24, panelHeight)
     const minTop = edgeInset
     const maxTop = Math.max(edgeInset, listHeight - rowHeight - edgeInset)
-    return usageRequestSessionLegendRows
-      .map((item) => {
-        const series = renderedUsageRequestLineSeries.find(
-          (entry) => String((entry as { id?: string }).id ?? entry.provider) === item.id,
-        )
-        if (!series) return null
-        let latestIndex = -1
-        for (let idx = series.present.length - 1; idx >= 0; idx -= 1) {
-          if (series.present[idx]) {
-            latestIndex = idx
-            break
+    const mapRowsWithPosition = (seriesList: UsageRequestRenderedLineSeries[]) =>
+      seriesList
+        .filter((series) => series.present.reduce((sum, present) => sum + (present ? 1 : 0), 0) > 1)
+        .map((series) => {
+          let latestIndex = -1
+          for (let idx = series.present.length - 1; idx >= 0; idx -= 1) {
+            if (series.present[idx]) {
+              latestIndex = idx
+              break
+            }
           }
-        }
-        if (latestIndex < 0) return null
-        const value = series.values[latestIndex] ?? 0
-        const y =
-          requestChartBottomY -
-          (value / Math.max(1, usageRequestLineMaxValue)) * (requestChartBottomY - requestChartTopY)
-        const top = Math.min(
-          maxTop,
-          Math.max(minTop, y - requestChartTopY - rowHeight / 2),
-        )
-        return { ...item, top, latestValue: value }
-      })
+          if (latestIndex < 0) return null
+          const value = series.values[latestIndex] ?? 0
+          const y =
+            requestChartBottomY -
+            (value / Math.max(1, usageRequestLineMaxValue)) * (requestChartBottomY - requestChartTopY)
+          const top = Math.min(
+            maxTop,
+            Math.max(minTop, y - requestChartTopY - rowHeight / 2),
+          )
+          return {
+            id: String((series as { id?: string }).id ?? series.provider),
+            sidLabel: series.provider,
+            providerName: String((series as { providerName?: string }).providerName ?? '').trim() || '-',
+            color: series.color,
+            top,
+            latestValue: value,
+          }
+        })
       .filter((item): item is { id: string; sidLabel: string; providerName: string; color: string; top: number; latestValue: number } => item != null)
       .sort((a, b) => a.top - b.top)
+    return {
+      wsl2: mapRowsWithPosition(usageRequestLineSeriesByOrigin.wsl2),
+      windows: mapRowsWithPosition(usageRequestLineSeriesByOrigin.windows),
+    }
   }, [
     requestChartBottomY,
     requestChartTopY,
     usageRequestLineMaxValue,
-    renderedUsageRequestLineSeries,
-    usageRequestSessionLegendRows,
+    usageRequestLineSeriesByOrigin,
   ])
   const selectedTimeFilterDay = selectedRequestTimeFilterDay
   const timeFilterCalendarCells = useMemo(() => {
@@ -3324,240 +3378,268 @@ export function UsageStatisticsPanel({
           <div className="aoUsageRequestChartCard">
             <div className="aoSwitchboardSectionHead">
               <div className="aoMiniLabel">Latest 120 Verified Session Requests (Total Tokens)</div>
-              <div className="aoHint">{usageRequestChartShownCount.toLocaleString()} requests shown</div>
             </div>
             {renderedUsageRequestLineSeries.length ? (
-              <div className="aoUsageRequestLineGraphShell">
-                <div className="aoUsageRequestLineGraphWrap">
-                <svg
-                  className="aoUsageRequestLineGraph"
-                  viewBox={`0 0 ${requestChartWidth} ${requestChartHeight}`}
-                  preserveAspectRatio="none"
-                  role="img"
-                  aria-label="Request token trend by verified session"
-                  onMouseLeave={() => {
-                    setLineHoverIndex(null)
-                    setLineHoverX(null)
-                  }}
-                  onMouseMove={(event) => {
-                    const rect = (event.currentTarget as SVGElement).getBoundingClientRect()
-                    const ratio = (event.clientX - rect.left) / Math.max(1, rect.width)
-                    const rawX = ratio * requestChartWidth
-                    const clampedX = Math.max(requestChartMinX, Math.min(requestChartMaxX, rawX))
-                    const idx = Math.round(
-                      ((clampedX - requestChartMinX) / Math.max(1, requestChartMaxX - requestChartMinX)) *
-                        Math.max(1, usageRequestGraphPointCount - 1),
-                    )
-                    const snappedX =
-                      requestChartMinX +
-                      (idx / Math.max(1, usageRequestGraphPointCount - 1)) * (requestChartMaxX - requestChartMinX)
-                    setLineHoverIndex(Math.max(0, Math.min(usageRequestGraphPointCount - 1, idx)))
-                    setLineHoverX(snappedX)
-                  }}
-                >
-                <defs>
-                  <clipPath id={requestLineClipPathId}>
-                    <rect
-                      x={requestChartMinX}
-                      y={requestChartTopY}
-                      width={Math.max(0, requestChartMaxX - requestChartMinX)}
-                      height={Math.max(0, requestChartBottomY - requestChartTopY)}
-                    />
-                  </clipPath>
-                </defs>
-                <line x1={requestChartMinX} y1={requestChartTopY} x2={requestChartMinX} y2={requestChartBottomY} stroke="rgba(13, 18, 32, 0.24)" strokeWidth="1" />
-                <line x1={requestChartMinX} y1={requestChartBottomY} x2={requestChartMaxX} y2={requestChartBottomY} stroke="rgba(13, 18, 32, 0.24)" strokeWidth="1" />
-                <line
-                  x1={requestChartMinX}
-                  y1={(requestChartTopY + requestChartBottomY) / 2}
-                  x2={requestChartMaxX}
-                  y2={(requestChartTopY + requestChartBottomY) / 2}
-                  stroke="rgba(13, 18, 32, 0.14)"
-                  strokeWidth="1"
-                  strokeDasharray="4 4"
-                />
-                <text x={requestChartMinX - 4} y={requestChartTopY + 4} textAnchor="end" fill="rgba(13, 18, 32, 0.55)" fontSize="10">
-                  {usageRequestLineMaxValue.toLocaleString()}
-                </text>
-                <text x={requestChartMinX - 4} y={(requestChartTopY + requestChartBottomY) / 2 + 4} textAnchor="end" fill="rgba(13, 18, 32, 0.48)" fontSize="10">
-                  {Math.round(usageRequestLineMaxValue / 2).toLocaleString()}
-                </text>
-                <text x={requestChartMinX - 4} y={requestChartBottomY + 4} textAnchor="end" fill="rgba(13, 18, 32, 0.48)" fontSize="10">
-                  0
-                </text>
-                <text x={requestChartMinX} y={requestChartBottomY + 16} textAnchor="start" fill="rgba(13, 18, 32, 0.52)" fontSize="10">
-                  Older
-                </text>
-                <text x={requestChartMaxX} y={requestChartBottomY + 16} textAnchor="end" fill="rgba(13, 18, 32, 0.52)" fontSize="10">
-                  Newer
-                </text>
-                <g clipPath={`url(#${requestLineClipPathId})`}>
-                  {renderedUsageRequestLineSeries.map((series) => {
-                    const activeCount = series.present.reduce((sum, isPresent) => sum + (isPresent ? 1 : 0), 0)
-                    const slidingEligible = Boolean(
-                      (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
-                        (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
-                    )
-                    const previewNextValue = Number(
-                      (series as { fallbackPreviewNextValue?: number | null; livePreviewNextValue?: number | null }).fallbackPreviewNextValue ??
-                        (series as { fallbackPreviewNextValue?: number | null; livePreviewNextValue?: number | null }).livePreviewNextValue ??
-                        NaN,
-                    )
-                    const hasPreviewNextValue = Number.isFinite(previewNextValue)
-                    const isSlidingAnimating =
-                      isRequestsTab &&
-                      requestLineSliding &&
-                      slidingEligible
-                    const isGrowingAnimating =
-                      isRequestsTab &&
-                      requestLineAnimPhase > 0 &&
-                      !slidingEligible &&
-                      hasPreviewNextValue &&
-                      activeCount > 1 &&
-                      activeCount < usageRequestGraphPointCount
-                    const providerPoints: Array<{ x: number; y: number }> = []
-                    if (isSlidingAnimating && activeCount > 1) {
-                      for (let idx = 0; idx < activeCount; idx += 1) {
-                        const value = series.values[idx] ?? 0
-                        const x = requestChartMinX + idx * requestLinePointSpacing - requestLineAnimOffsetX
-                        const y =
-                          requestChartBottomY -
-                          (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
-                        providerPoints.push({ x, y })
-                      }
-                      if (hasPreviewNextValue) {
-                        const nextX = requestChartMinX + activeCount * requestLinePointSpacing - requestLineAnimOffsetX
-                        const nextY =
-                          requestChartBottomY -
-                          (previewNextValue / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
-                        providerPoints.push({ x: nextX, y: nextY })
-                      }
-                    } else {
-                      series.values.forEach((value, idx) => {
-                        if (!series.present[idx]) return
-                        const x = requestChartMinX + idx * requestLinePointSpacing
-                        const y =
-                          requestChartBottomY -
-                          (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
-                        providerPoints.push({ x, y })
-                      })
-                    }
-                    if (isGrowingAnimating && providerPoints.length > 1) {
-                      const lastPoint = providerPoints[providerPoints.length - 1]
-                      const previewY = hasPreviewNextValue
-                        ? requestChartBottomY -
-                          (previewNextValue / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
-                        : lastPoint.y
-                      const nextX = Math.min(requestChartMaxX, lastPoint.x + requestLinePointSpacing * requestLineAnimPhase)
-                      const nextY = Math.max(
-                        requestChartTopY,
-                        Math.min(
-                          requestChartBottomY,
-                          lastPoint.y + (previewY - lastPoint.y) * requestLineAnimPhase,
-                        ),
-                      )
-                      providerPoints.push({ x: nextX, y: nextY })
-                    }
-                    if (providerPoints.length <= 1) return null
-                    const pathD = buildSmoothLinePath(providerPoints, { min: requestChartTopY, max: requestChartBottomY })
-                    if (!pathD.trim()) return null
-                    return (
-                      <path
-                        key={`request-line-series-${String((series as { id?: string }).id ?? series.provider)}`}
-                        d={pathD}
-                        fill="none"
-                        stroke={series.color}
-                        strokeWidth={1.8}
-                        opacity={0.82}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    )
-                  })}
-                  {lineHoverX != null ? (
-                    <line
-                      x1={lineHoverX}
-                      y1={requestChartTopY}
-                      x2={lineHoverX}
-                      y2={requestChartBottomY}
-                      stroke="rgba(13, 18, 32, 0.22)"
-                      strokeWidth="1"
-                      strokeDasharray="3 3"
-                    />
-                  ) : null}
-                  {lineHoverIndex != null
-                    ? renderedUsageRequestLineSeries.map((series) => {
-                        if (!series.present[lineHoverIndex]) return null
-                        const value = series.values[lineHoverIndex] ?? 0
-                        const baseX =
-                          requestChartMinX +
-                          (lineHoverIndex / Math.max(1, usageRequestGraphPointCount - 1)) *
-                            (requestChartMaxX - requestChartMinX)
-                        const slidingEligible = Boolean(
-                          (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
-                            (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
-                        )
-                        const isSlidingAnimating =
-                          isRequestsTab &&
-                          requestLineSliding &&
-                          slidingEligible
-                        const x = isSlidingAnimating ? baseX - requestLineAnimOffsetX : baseX
-                        const y =
-                          requestChartBottomY -
-                          (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
-                        return (
-                          <circle
-                            key={`line-hover-dot-${String((series as { id?: string }).id ?? series.provider)}`}
-                            cx={x}
-                            cy={y}
-                            r="2.2"
-                            fill={series.color}
-                          />
-                        )
-                      })
-                    : null}
-                </g>
-                </svg>
-                {lineHoverData ? (
-                  <div className="aoUsageRequestHoverOverlay" aria-live="polite">
-                    <span>
-                      Point {lineHoverData.point}/{usageRequestGraphPointCount} · Total {lineHoverData.total.toLocaleString()}
-                    </span>
-                    {lineHoverData.rows.map((row) => (
-                      <span key={`hover-overlay-${row.id}`} className="aoUsageRequestHoverSummaryItem">
-                        <i style={{ background: row.color }} />
-                        {row.provider}: {row.value.toLocaleString()}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-                {usageRequestSidRowsWithPosition.length ? (
-                  <div
-                    className="aoUsageRequestSidPanel"
-                    aria-label="Verified session ids in chart"
-                    style={{
-                      marginTop: `${requestChartTopY}px`,
-                      height: `${requestChartBottomY - requestChartTopY}px`,
-                    }}
-                  >
-                    <div className="aoMiniLabel aoUsageRequestSidTitle">SID</div>
-                    <div className="aoUsageRequestSidList">
-                      {usageRequestSidRowsWithPosition.map((item) => (
-                        <div
-                          key={`sid-row-${item.id}`}
-                          className="aoUsageRequestSidRow"
-                          style={{ top: `${item.top}px`, zIndex: Math.max(1, Math.round(item.latestValue)) }}
-                        >
-                          <span className="aoUsageRequestSidChip">
-                            <i style={{ background: item.color }} />
-                            <span className="aoUsageRequestSidLabel">{item.sidLabel}</span>
-                          </span>
+              <div className="aoUsageRequestOriginGrid">
+                {([
+                  { key: 'windows' as const, label: 'Windows' },
+                  { key: 'wsl2' as const, label: 'WSL2' },
+                ]).map((originChart) => {
+                  const seriesList = usageRequestLineSeriesByOrigin[originChart.key]
+                  const sidRows = usageRequestSidRowsWithPositionByOrigin[originChart.key]
+                  const isHoveringOrigin = lineHoverOrigin === originChart.key
+                  const hoverX = isHoveringOrigin ? lineHoverX : null
+                  const hoverIndex = isHoveringOrigin ? lineHoverIndex : null
+                  const clipPathId = `${requestLineClipPathId}-${originChart.key}`
+                  return (
+                    <div key={`request-origin-chart-${originChart.key}`} className="aoUsageRequestOriginCard">
+                      <div className="aoSwitchboardSectionHead aoUsageRequestOriginHead">
+                        <div className="aoMiniLabel aoUsageRequestOriginTitle">{originChart.label}</div>
+                      </div>
+                      {seriesList.length ? (
+                        <div className="aoUsageRequestLineGraphShell">
+                          <div className="aoUsageRequestLineGraphWrap">
+                            <svg
+                              ref={originChart.key === 'windows' ? requestChartMeasureRef : undefined}
+                              className="aoUsageRequestLineGraph"
+                              viewBox={`0 0 ${requestChartWidth} ${requestChartHeight}`}
+                              preserveAspectRatio="none"
+                              style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif' }}
+                              role="img"
+                              aria-label={`Request token trend (${originChart.label})`}
+                              onMouseLeave={() => {
+                                if (lineHoverOrigin !== originChart.key) return
+                                setLineHoverOrigin(null)
+                                setLineHoverIndex(null)
+                                setLineHoverX(null)
+                              }}
+                              onMouseMove={(event) => {
+                                const rect = (event.currentTarget as SVGElement).getBoundingClientRect()
+                                const ratio = (event.clientX - rect.left) / Math.max(1, rect.width)
+                                const rawX = ratio * requestChartWidth
+                                const clampedX = Math.max(requestChartMinX, Math.min(requestChartMaxX, rawX))
+                                const idx = Math.round(
+                                  ((clampedX - requestChartMinX) / Math.max(1, requestChartMaxX - requestChartMinX)) *
+                                    Math.max(1, usageRequestGraphPointCount - 1),
+                                )
+                                const snappedX =
+                                  requestChartMinX +
+                                  (idx / Math.max(1, usageRequestGraphPointCount - 1)) * (requestChartMaxX - requestChartMinX)
+                                setLineHoverOrigin(originChart.key)
+                                setLineHoverIndex(Math.max(0, Math.min(usageRequestGraphPointCount - 1, idx)))
+                                setLineHoverX(snappedX)
+                              }}
+                            >
+                              <defs>
+                                <clipPath id={clipPathId}>
+                                  <rect
+                                    x={requestChartMinX}
+                                    y={requestChartTopY}
+                                    width={Math.max(0, requestChartMaxX - requestChartMinX)}
+                                    height={Math.max(0, requestChartBottomY - requestChartTopY)}
+                                  />
+                                </clipPath>
+                              </defs>
+                              <line x1={requestChartMinX} y1={requestChartTopY} x2={requestChartMinX} y2={requestChartBottomY} stroke="rgba(13, 18, 32, 0.24)" strokeWidth="1" />
+                              <line x1={requestChartMinX} y1={requestChartBottomY} x2={requestChartMaxX} y2={requestChartBottomY} stroke="rgba(13, 18, 32, 0.24)" strokeWidth="1" />
+                              <line
+                                x1={requestChartMinX}
+                                y1={(requestChartTopY + requestChartBottomY) / 2}
+                                x2={requestChartMaxX}
+                                y2={(requestChartTopY + requestChartBottomY) / 2}
+                                stroke="rgba(13, 18, 32, 0.14)"
+                                strokeWidth="1"
+                                strokeDasharray="4 4"
+                              />
+                              <text x={requestChartAxisLabelX} y={requestChartTopY + 4} textAnchor="end" fill="rgba(13, 18, 32, 0.56)" fontSize="10">
+                                {formatUsageRequestAxisCompact(usageRequestLineMaxValue)}
+                              </text>
+                              <text x={requestChartAxisLabelX} y={(requestChartTopY + requestChartBottomY) / 2 + 4} textAnchor="end" fill="rgba(13, 18, 32, 0.5)" fontSize="10">
+                                {formatUsageRequestAxisCompact(usageRequestLineMaxValue / 2)}
+                              </text>
+                              <text x={requestChartAxisLabelX} y={requestChartBottomY + 4} textAnchor="end" fill="rgba(13, 18, 32, 0.5)" fontSize="10">
+                                0
+                              </text>
+                              <text x={requestChartXAxisLeftLabelX} y={requestChartXAxisLabelY} textAnchor="start" fill="rgba(13, 18, 32, 0.54)" fontSize="10">
+                                Older
+                              </text>
+                              <text x={requestChartXAxisRightLabelX} y={requestChartXAxisLabelY} textAnchor="end" fill="rgba(13, 18, 32, 0.54)" fontSize="10">
+                                Newer
+                              </text>
+                              <g clipPath={`url(#${clipPathId})`}>
+                                {seriesList.map((series) => {
+                                  const activeCount = series.present.reduce((sum, isPresent) => sum + (isPresent ? 1 : 0), 0)
+                                  const slidingEligible = Boolean(
+                                    (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
+                                      (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
+                                  )
+                                  const previewNextValue = Number(
+                                    (series as { fallbackPreviewNextValue?: number | null; livePreviewNextValue?: number | null }).fallbackPreviewNextValue ??
+                                      (series as { fallbackPreviewNextValue?: number | null; livePreviewNextValue?: number | null }).livePreviewNextValue ??
+                                      NaN,
+                                  )
+                                  const hasPreviewNextValue = Number.isFinite(previewNextValue)
+                                  const isSlidingAnimating =
+                                    isRequestsTab &&
+                                    requestLineSliding &&
+                                    slidingEligible
+                                  const isGrowingAnimating =
+                                    isRequestsTab &&
+                                    requestLineAnimPhase > 0 &&
+                                    !slidingEligible &&
+                                    hasPreviewNextValue &&
+                                    activeCount > 1 &&
+                                    activeCount < usageRequestGraphPointCount
+                                  const providerPoints: Array<{ x: number; y: number }> = []
+                                  if (isSlidingAnimating && activeCount > 1) {
+                                    for (let idx = 0; idx < activeCount; idx += 1) {
+                                      const value = series.values[idx] ?? 0
+                                      const x = requestChartMinX + idx * requestLinePointSpacing - requestLineAnimOffsetX
+                                      const y =
+                                        requestChartBottomY -
+                                        (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                                      providerPoints.push({ x, y })
+                                    }
+                                    if (hasPreviewNextValue) {
+                                      const nextX = requestChartMinX + activeCount * requestLinePointSpacing - requestLineAnimOffsetX
+                                      const nextY =
+                                        requestChartBottomY -
+                                        (previewNextValue / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                                      providerPoints.push({ x: nextX, y: nextY })
+                                    }
+                                  } else {
+                                    series.values.forEach((value, idx) => {
+                                      if (!series.present[idx]) return
+                                      const x = requestChartMinX + idx * requestLinePointSpacing
+                                      const y =
+                                        requestChartBottomY -
+                                        (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                                      providerPoints.push({ x, y })
+                                    })
+                                  }
+                                  if (isGrowingAnimating && providerPoints.length > 1) {
+                                    const lastPoint = providerPoints[providerPoints.length - 1]
+                                    const previewY = hasPreviewNextValue
+                                      ? requestChartBottomY -
+                                        (previewNextValue / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                                      : lastPoint.y
+                                    const nextX = Math.min(requestChartMaxX, lastPoint.x + requestLinePointSpacing * requestLineAnimPhase)
+                                    const nextY = Math.max(
+                                      requestChartTopY,
+                                      Math.min(
+                                        requestChartBottomY,
+                                        lastPoint.y + (previewY - lastPoint.y) * requestLineAnimPhase,
+                                      ),
+                                    )
+                                    providerPoints.push({ x: nextX, y: nextY })
+                                  }
+                                  if (providerPoints.length <= 1) return null
+                                  const pathD = buildSmoothLinePath(providerPoints, { min: requestChartTopY, max: requestChartBottomY })
+                                  if (!pathD.trim()) return null
+                                  return (
+                                    <path
+                                      key={`request-line-series-${String((series as { id?: string }).id ?? series.provider)}`}
+                                      d={pathD}
+                                      fill="none"
+                                      stroke={series.color}
+                                      strokeWidth={1.8}
+                                      opacity={0.82}
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                    />
+                                  )
+                                })}
+                                {hoverX != null ? (
+                                  <line
+                                    x1={hoverX}
+                                    y1={requestChartTopY}
+                                    x2={hoverX}
+                                    y2={requestChartBottomY}
+                                    stroke="rgba(13, 18, 32, 0.22)"
+                                    strokeWidth="1"
+                                    strokeDasharray="3 3"
+                                  />
+                                ) : null}
+                                {hoverIndex != null
+                                  ? seriesList.map((series) => {
+                                      if (!series.present[hoverIndex]) return null
+                                      const value = series.values[hoverIndex] ?? 0
+                                      const baseX =
+                                        requestChartMinX +
+                                        (hoverIndex / Math.max(1, usageRequestGraphPointCount - 1)) *
+                                          (requestChartMaxX - requestChartMinX)
+                                      const slidingEligible = Boolean(
+                                        (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
+                                          (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
+                                      )
+                                      const isSlidingAnimating =
+                                        isRequestsTab &&
+                                        requestLineSliding &&
+                                        slidingEligible
+                                      const x = isSlidingAnimating ? baseX - requestLineAnimOffsetX : baseX
+                                      const y =
+                                        requestChartBottomY -
+                                        (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                                      return (
+                                        <circle
+                                          key={`line-hover-dot-${String((series as { id?: string }).id ?? series.provider)}`}
+                                          cx={x}
+                                          cy={y}
+                                          r="2.2"
+                                          fill={series.color}
+                                        />
+                                      )
+                                    })
+                                  : null}
+                              </g>
+                            </svg>
+                            {isHoveringOrigin && lineHoverData ? (
+                              <div className="aoUsageRequestHoverOverlay" aria-live="polite">
+                                <span>
+                                  Point {lineHoverData.point}/{usageRequestGraphPointCount} · Total {lineHoverData.total.toLocaleString()}
+                                </span>
+                                {lineHoverData.rows.map((row) => (
+                                  <span key={`hover-overlay-${originChart.key}-${row.id}`} className="aoUsageRequestHoverSummaryItem">
+                                    <i style={{ background: row.color }} />
+                                    {row.provider}: {row.value.toLocaleString()}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                          {sidRows.length ? (
+                            <div
+                              className="aoUsageRequestSidPanel"
+                              aria-label={`Verified session ids in ${originChart.label} chart`}
+                              style={{
+                                marginTop: `${requestChartTopY}px`,
+                                height: `${requestChartBottomY - requestChartTopY}px`,
+                              }}
+                            >
+                              <div className="aoMiniLabel aoUsageRequestSidTitle">SID</div>
+                              <div className="aoUsageRequestSidList">
+                                {sidRows.map((item) => (
+                                  <div
+                                    key={`sid-row-${originChart.key}-${item.id}`}
+                                    className="aoUsageRequestSidRow"
+                                    style={{ top: `${item.top}px`, zIndex: Math.max(1, Math.round(item.latestValue)) }}
+                                  >
+                                    <span className="aoUsageRequestSidChip">
+                                      <i style={{ background: item.color }} />
+                                      <span className="aoUsageRequestSidLabel">{item.sidLabel}</span>
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
-                      ))}
+                      ) : (
+                        <div className="aoHint">No recent {originChart.label} verified-session rows for line graph.</div>
+                      )}
                     </div>
-                  </div>
-                ) : null}
+                  )
+                })}
               </div>
             ) : (
               <div className="aoHint">
