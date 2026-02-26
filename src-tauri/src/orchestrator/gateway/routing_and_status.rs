@@ -145,6 +145,12 @@ const BALANCED_CAPACITY_FLOOR_RATIO: f64 = 0.25;
 const BALANCED_CAPACITY_FIT_RANK_SCALE: f64 = 100.0;
 const BALANCED_SESSION_LOAD_WINDOW_MS: u64 = 2 * 60 * 60 * 1000;
 const BALANCED_UNHEALTHY_LOAD_PENALTY: u64 = 2;
+const BALANCED_DAILY_BUDGET_PRESSURE_EXPONENT: f64 = 2.2;
+const BALANCED_DAILY_BUDGET_PRESSURE_SCALE: f64 = 16.0;
+const BALANCED_DAILY_BUDGET_PRESSURE_WARN_RATIO: f64 = 0.90;
+const BALANCED_DAILY_BUDGET_PRESSURE_CRITICAL_RATIO: f64 = 0.98;
+const BALANCED_DAILY_BUDGET_PRESSURE_WARN_FLOOR: u64 = 14;
+const BALANCED_DAILY_BUDGET_PRESSURE_CRITICAL_FLOOR: u64 = 20;
 
 fn balanced_assignment_window(unix_ms: u64) -> u64 {
     unix_ms / BALANCED_ASSIGNMENT_STICKY_MS
@@ -273,6 +279,42 @@ fn provider_capacity_units_for_balancing(
     }
 
     1.0
+}
+
+fn provider_daily_budget_pressure_for_balancing(
+    quota_snapshots: &Value,
+    provider: &str,
+    hard_cap: &crate::orchestrator::secrets::ProviderQuotaHardCapConfig,
+) -> u64 {
+    let Some(snap) = quota_snapshots.get(provider) else {
+        return 0;
+    };
+    let Some(daily_budget) = snap
+        .get("daily_budget_usd")
+        .and_then(|v| v.as_f64())
+        .filter(|v| *v > 0.0)
+    else {
+        return 0;
+    };
+    let daily_spent = snap
+        .get("daily_spent_usd")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0)
+        .max(0.0);
+    let spent_ratio = (daily_spent / daily_budget).clamp(0.0, 2.0);
+    // This is a soft balancing signal and stays active even when hard daily caps are disabled.
+    let mut pressure_units = (spent_ratio.powf(BALANCED_DAILY_BUDGET_PRESSURE_EXPONENT)
+        * BALANCED_DAILY_BUDGET_PRESSURE_SCALE)
+        .round() as u64;
+    // Near hard-cap, increase pressure aggressively so routing drains other providers first.
+    if hard_cap.daily {
+        if spent_ratio >= BALANCED_DAILY_BUDGET_PRESSURE_CRITICAL_RATIO {
+            pressure_units = pressure_units.max(BALANCED_DAILY_BUDGET_PRESSURE_CRITICAL_FLOOR);
+        } else if spent_ratio >= BALANCED_DAILY_BUDGET_PRESSURE_WARN_RATIO {
+            pressure_units = pressure_units.max(BALANCED_DAILY_BUDGET_PRESSURE_WARN_FLOOR);
+        }
+    }
+    pressure_units
 }
 
 fn session_demand_ratio_from_usage(request_count: u64, total_tokens: u64) -> f64 {
@@ -457,11 +499,15 @@ fn pick_balanced_provider(
     }
 
     let mut provider_capacity_units = HashMap::new();
+    let mut provider_daily_budget_pressure = HashMap::new();
     for provider in candidates.iter() {
         let hard_cap = st.secrets.get_provider_quota_hard_cap(provider);
         let units =
             provider_capacity_units_for_balancing(quota_snapshots, provider, &hard_cap).max(1.0);
         provider_capacity_units.insert(provider.clone(), units);
+        let daily_pressure =
+            provider_daily_budget_pressure_for_balancing(quota_snapshots, provider, &hard_cap);
+        provider_daily_budget_pressure.insert(provider.clone(), daily_pressure);
     }
     let max_provider_capacity_units = provider_capacity_units
         .values()
@@ -518,6 +564,10 @@ fn pick_balanced_provider(
             } else {
                 0_u64
             };
+            let daily_budget_pressure_rank = provider_daily_budget_pressure
+                .get(&provider)
+                .copied()
+                .unwrap_or(0);
             // Prefer healthy providers by default, but allow unhealthy retry when load skew is
             // large enough to offset this fixed penalty.
             let provider_pressure_rank = provider_load as u64 + unhealthy_penalty;
@@ -529,6 +579,7 @@ fn pick_balanced_provider(
                 (
                     bucket_pressure_rank,
                     provider_pressure_rank,
+                    daily_budget_pressure_rank,
                     capacity_fit_rank,
                     cost_pressure_rank,
                     preferred_rank,
@@ -1127,6 +1178,112 @@ mod routing_and_status_tests {
             &hard_cap,
         );
         assert_eq!(units, 1.0);
+    }
+
+    #[test]
+    fn provider_daily_budget_pressure_increases_as_daily_budget_is_consumed() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let low = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "daily_spent_usd": 10.0,
+                    "daily_budget_usd": 100.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        let high = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "daily_spent_usd": 96.0,
+                    "daily_budget_usd": 100.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        assert!(high > low, "high={high}, low={low}");
+    }
+
+    #[test]
+    fn provider_daily_budget_pressure_defaults_to_zero_without_daily_budget_fields() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let pressure = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "kind": "token_stats"
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        assert_eq!(pressure, 0);
+    }
+
+    #[test]
+    fn provider_daily_budget_pressure_is_soft_signal_even_without_hard_daily_cap() {
+        let mut hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        hard_cap.daily = false;
+        let pressure = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "daily_spent_usd": 50.0,
+                    "daily_budget_usd": 100.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        assert!(pressure > 0, "pressure should stay as a soft signal; got {pressure}");
+    }
+
+    #[test]
+    fn provider_daily_budget_pressure_distinguishes_lower_spend_levels() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let very_low = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "daily_spent_usd": 5.0,
+                    "daily_budget_usd": 100.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        let medium = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "daily_spent_usd": 30.0,
+                    "daily_budget_usd": 100.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        assert!(
+            medium > very_low,
+            "expected medium spend pressure to exceed very low spend: medium={medium}, very_low={very_low}"
+        );
+    }
+
+    #[test]
+    fn provider_daily_budget_pressure_hard_cap_boosts_near_limit() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let pressure = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "daily_spent_usd": 98.0,
+                    "daily_budget_usd": 100.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        assert!(
+            pressure >= BALANCED_DAILY_BUDGET_PRESSURE_CRITICAL_FLOOR,
+            "expected near-cap pressure floor, got {pressure}"
+        );
     }
 
     #[test]

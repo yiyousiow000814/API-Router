@@ -1636,7 +1636,7 @@ fn decide_provider_balanced_auto_keeps_healthy_when_unhealthy_gain_is_within_mar
 }
 
 #[test]
-fn decide_provider_balanced_auto_prefers_lower_quota_for_new_session_when_loads_tie() {
+fn decide_provider_balanced_auto_prefers_healthier_daily_remaining_when_loads_tie() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = open_store_dir(tmp.path().join("data")).expect("store");
     let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -1737,7 +1737,7 @@ fn decide_provider_balanced_auto_prefers_lower_quota_for_new_session_when_loads_
         .expect("quota p2");
 
     let (picked, reason) = decide_provider(&state, &cfg, "p1", "session-main");
-    assert_eq!(picked, "p1");
+    assert_eq!(picked, "p2");
     assert_eq!(reason, "balanced_auto");
 }
 
