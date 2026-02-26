@@ -275,6 +275,39 @@ fn provider_capacity_units_for_balancing(
     1.0
 }
 
+fn provider_daily_budget_pressure_for_balancing(
+    quota_snapshots: &Value,
+    provider: &str,
+    hard_cap: &crate::orchestrator::secrets::ProviderQuotaHardCapConfig,
+) -> u64 {
+    let Some(snap) = quota_snapshots.get(provider) else {
+        return 0;
+    };
+    let Some(daily_budget) = snap
+        .get("daily_budget_usd")
+        .and_then(|v| v.as_f64())
+        .filter(|v| *v > 0.0)
+    else {
+        return 0;
+    };
+    let daily_spent = snap
+        .get("daily_spent_usd")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0)
+        .max(0.0);
+    let spent_ratio = (daily_spent / daily_budget).clamp(0.0, 2.0);
+    let mut pressure_units = (spent_ratio.powf(2.2) * 8.0).round() as u64;
+    // Near hard-cap, increase pressure aggressively so routing drains other providers first.
+    if hard_cap.daily {
+        if spent_ratio >= 0.98 {
+            pressure_units = pressure_units.max(12);
+        } else if spent_ratio >= 0.90 {
+            pressure_units = pressure_units.max(6);
+        }
+    }
+    pressure_units
+}
+
 fn session_demand_ratio_from_usage(request_count: u64, total_tokens: u64) -> f64 {
     if request_count == 0 {
         // Unknown / fresh sessions are usually lighter and should prefer smaller providers.
@@ -457,11 +490,15 @@ fn pick_balanced_provider(
     }
 
     let mut provider_capacity_units = HashMap::new();
+    let mut provider_daily_budget_pressure = HashMap::new();
     for provider in candidates.iter() {
         let hard_cap = st.secrets.get_provider_quota_hard_cap(provider);
         let units =
             provider_capacity_units_for_balancing(quota_snapshots, provider, &hard_cap).max(1.0);
         provider_capacity_units.insert(provider.clone(), units);
+        let daily_pressure =
+            provider_daily_budget_pressure_for_balancing(quota_snapshots, provider, &hard_cap);
+        provider_daily_budget_pressure.insert(provider.clone(), daily_pressure);
     }
     let max_provider_capacity_units = provider_capacity_units
         .values()
@@ -518,6 +555,10 @@ fn pick_balanced_provider(
             } else {
                 0_u64
             };
+            let daily_budget_pressure_rank = provider_daily_budget_pressure
+                .get(&provider)
+                .copied()
+                .unwrap_or(0);
             // Prefer healthy providers by default, but allow unhealthy retry when load skew is
             // large enough to offset this fixed penalty.
             let provider_pressure_rank = provider_load as u64 + unhealthy_penalty;
@@ -529,6 +570,7 @@ fn pick_balanced_provider(
                 (
                     bucket_pressure_rank,
                     provider_pressure_rank,
+                    daily_budget_pressure_rank,
                     capacity_fit_rank,
                     cost_pressure_rank,
                     preferred_rank,
@@ -1127,6 +1169,47 @@ mod routing_and_status_tests {
             &hard_cap,
         );
         assert_eq!(units, 1.0);
+    }
+
+    #[test]
+    fn provider_daily_budget_pressure_increases_as_daily_budget_is_consumed() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let low = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "daily_spent_usd": 10.0,
+                    "daily_budget_usd": 100.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        let high = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "daily_spent_usd": 96.0,
+                    "daily_budget_usd": 100.0
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        assert!(high > low, "high={high}, low={low}");
+    }
+
+    #[test]
+    fn provider_daily_budget_pressure_defaults_to_zero_without_daily_budget_fields() {
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let pressure = provider_daily_budget_pressure_for_balancing(
+            &json!({
+                "p1": {
+                    "kind": "token_stats"
+                }
+            }),
+            "p1",
+            &hard_cap,
+        );
+        assert_eq!(pressure, 0);
     }
 
     #[test]
