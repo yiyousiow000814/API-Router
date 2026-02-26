@@ -2007,13 +2007,10 @@ export function UsageStatisticsPanel({
       }
     }
   }, [
-    isRequestsTab,
-    requestQueryKey,
     requestGraphQueryKey,
     usageRequestAnalyticsProviderHints,
     usageRequestDailyProviderHints,
     usageRequestGraphBaseRows.length,
-    usageRequestRows,
     usageRequestTestFallbackEnabled,
     usageRequestTestRows,
   ])
