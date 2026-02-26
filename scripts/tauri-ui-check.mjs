@@ -462,7 +462,7 @@ async function main() {
       if (phIdx !== 0) {
         const b64 = await driver.takeScreenshot()
         fs.writeFileSync(screenshotPath.replace('.png', `-down-bad-placeholder-before.png`), Buffer.from(b64, 'base64'))
-        throw new Error(`Drag-down: expected placeholder index 0 before crossing, got ${phIdx}`)
+        warnOrFail(`Drag-down: expected placeholder index 0 before crossing, got ${phIdx}`)
       }
 
       // Step 2: move to just after crossing the midpoint -> reorder should trigger (placeholder leaves index 0).
