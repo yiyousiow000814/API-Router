@@ -1664,7 +1664,7 @@ export function UsageStatisticsPanel({
         if (usageRequestRefreshPendingRef.current) {
           const nextLimit = usageRequestRefreshPendingLimitRef.current
           usageRequestRefreshPendingRef.current = false
-          void refreshUsageRequests(nextLimit)
+          void refreshUsageRequestsRef.current(nextLimit)
         }
       }
     },
@@ -1681,6 +1681,10 @@ export function UsageStatisticsPanel({
       usageRequestTestRows,
     ],
   )
+  const refreshUsageRequestsRef = useRef<(limit: number) => Promise<void>>(refreshUsageRequests)
+  useEffect(() => {
+    refreshUsageRequestsRef.current = refreshUsageRequests
+  }, [refreshUsageRequests])
   const refreshUsageRequestSummary = useCallback(async () => {
     const requestSeq = usageRequestSummaryFetchSeqRef.current + 1
     usageRequestSummaryFetchSeqRef.current = requestSeq
@@ -1785,7 +1789,7 @@ export function UsageStatisticsPanel({
         if (usageRequestRefreshPendingRef.current) {
           const nextLimit = usageRequestRefreshPendingLimitRef.current
           usageRequestRefreshPendingRef.current = false
-          void refreshUsageRequests(nextLimit)
+          void refreshUsageRequestsRef.current(nextLimit)
         }
       }
     },
@@ -2392,7 +2396,7 @@ export function UsageStatisticsPanel({
       if (usageRequestRefreshPendingRef.current) {
         const nextLimit = usageRequestRefreshPendingLimitRef.current
         usageRequestRefreshPendingRef.current = false
-        void refreshUsageRequests(nextLimit)
+        void refreshUsageRequestsRef.current(nextLimit)
       }
     }
   }, [
