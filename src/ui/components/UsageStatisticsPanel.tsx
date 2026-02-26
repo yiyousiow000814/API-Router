@@ -298,6 +298,7 @@ export const USAGE_REQUESTS_CANONICAL_QUERY_KEY = buildUsageRequestsQueryKey({
 const USAGE_REQUESTS_CACHE_PRIMED_EVENT = 'ao:usage-requests-cache-primed'
 const USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS = 4_000
 const USAGE_REQUEST_GRAPH_FETCH_HOURS = 24 * 365 * 20
+const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT = 1000
 export const USAGE_REQUEST_GRAPH_QUERY_KEY = 'usage_request_graph:v1:all-history'
 const USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS = 15_000
 let usageRequestsPageCache: UsageRequestsPageCache | null = null
@@ -616,21 +617,11 @@ export function pickUsageRequestGraphBaseRows(input: {
   cachedGraphRows: UsageRequestEntry[]
   fallbackRows: UsageRequestEntry[]
 }): UsageRequestEntry[] {
-  const preferred = input.isRequestsTab
-    ? [
-        input.requestRows,
-        input.scopedPageRows,
-        input.cachedGraphRows,
-        input.fallbackRows,
-        input.canonicalPageRows,
-      ]
-    : [
-        input.canonicalPageRows,
-        input.scopedPageRows,
-        input.cachedGraphRows,
-        input.requestRows,
-        input.fallbackRows,
-      ]
+  const preferred = [
+    input.canonicalPageRows,
+    input.cachedGraphRows,
+    input.fallbackRows,
+  ]
   for (const rows of preferred) {
     if (rows.length > 0) return rows
   }
@@ -1363,10 +1354,7 @@ export function UsageStatisticsPanel({
     [useGlobalRequestFilters, usageFilterOrigins],
   )
   const requestFetchSessions: string[] | null = null
-  const graphScopedProviderFilter = useMemo(
-    () => normalizeUsageRequestProviderFilter(requestFetchProviders),
-    [requestFetchProviders],
-  )
+  const graphScopedProviderFilter: string[] | null = null
   const hasExplicitTimeFilter = usageRequestTimeFilter.trim().length > 0
   const selectedRequestTimeFilterDay = useMemo(
     () => parseDateInputToDayStart(usageRequestTimeFilter),
@@ -1860,10 +1848,30 @@ export function UsageStatisticsPanel({
         usageRequestGraphRowsCache != null && usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
           ? usageRequestGraphRowsCache
           : null
-      const canonicalPageRows =
+      const canonicalPageRowsFromCache =
         usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
           ? usageRequestsPageCache.rows
           : EMPTY_USAGE_REQUEST_ROWS
+      let canonicalPageRows = canonicalPageRowsFromCache
+      try {
+        const canonicalRes = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
+          ...buildUsageRequestEntriesArgs({
+            hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
+            fromUnixMs: null,
+            toUnixMs: null,
+            providers: null,
+            models: null,
+            origins: null,
+            sessions: null,
+            limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT,
+            offset: 0,
+          }),
+        })
+        if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
+        canonicalPageRows = (canonicalRes.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms)
+      } catch {
+        canonicalPageRows = canonicalPageRowsFromCache
+      }
       const scopedPageRows =
         usageRequestsPageCache != null && usageRequestsPageCache.queryKey === requestQueryKey
           ? usageRequestsPageCache.rows
@@ -2146,14 +2154,10 @@ export function UsageStatisticsPanel({
     if (usageRequestGraphBaseRows.length === 0 && cachedGraph != null) {
       setUsageRequestGraphBaseRows(cachedGraph.baseRows)
       setUsageRequestGraphRowsByProvider(cachedGraph.rowsByProvider)
-    } else if (usageRequestGraphBaseRows.length === 0 && usageRequestRows.length > 0) {
-      const bootstrapRowsByProvider = groupUsageRequestRowsByProvider(usageRequestRows)
-      setUsageRequestGraphBaseRows(usageRequestRows)
-      setUsageRequestGraphRowsByProvider(bootstrapRowsByProvider)
-    } else if (usageRequestGraphBaseRows.length === 0 && cached?.rows?.length) {
-      // Fast first paint from table cache; graph will be refreshed immediately below.
-      const bootstrapRowsByProvider = groupUsageRequestRowsByProvider(cached.rows)
-      setUsageRequestGraphBaseRows(cached.rows)
+    } else if (usageRequestGraphBaseRows.length === 0 && canonicalCached?.rows?.length) {
+      // Keep chart independent from table filters/date window by bootstrapping from canonical rows.
+      const bootstrapRowsByProvider = groupUsageRequestRowsByProvider(canonicalCached.rows)
+      setUsageRequestGraphBaseRows(canonicalCached.rows)
       setUsageRequestGraphRowsByProvider(bootstrapRowsByProvider)
     }
     const isOnlyUnknownFallbackCache =
@@ -2177,9 +2181,9 @@ export function UsageStatisticsPanel({
     const graphBaseCandidate =
       cachedGraph?.baseRows?.length
         ? cachedGraph.baseRows
-        : requestPageCached?.rows?.length
-          ? requestPageCached.rows
-          : usageRequestRows
+        : canonicalCached?.rows?.length
+          ? canonicalCached.rows
+          : EMPTY_USAGE_REQUEST_ROWS
     const expectedGraphProviders = pickUsageRequestDisplayProviders({
       selectedProviders: graphScopedProviderFilter,
       graphProviders: [
@@ -2274,13 +2278,6 @@ export function UsageStatisticsPanel({
     usageRequestRows,
     usageRequestUsingTestFallback,
   ])
-  useEffect(() => {
-    if (!isRequestsTab) return
-    if (!usageRequestRows.length) return
-    setUsageRequestGraphBaseRows((prev) =>
-      areUsageRequestRowsIdentical(prev, usageRequestRows) ? prev : usageRequestRows,
-    )
-  }, [isRequestsTab, usageRequestRows])
   useEffect(() => {
     if (!isRequestsTab) return
     if (!usageRequestGraphBaseRows.length && Object.keys(usageRequestGraphRowsByProvider).length === 0) return
@@ -2463,22 +2460,10 @@ export function UsageStatisticsPanel({
       .map((item) => item.sessionId)
   }, [graphRowsBySessionForRequestRender, shouldPrepareRequestsData])
 
-  const selectedRequestGraphSessions = useMemo(() => {
-    const selected = usageRequestMultiFilters.session
-    if (!selected || selected.length === 0) return null
-    return [...new Set(selected.map((sessionId) => sessionId.trim()).filter(Boolean))]
-  }, [usageRequestMultiFilters.session])
-
   const usageRequestDisplaySessions = useMemo(() => {
     if (!usageRequestSessionOptions.length) return EMPTY_STRING_LIST
-    if (selectedRequestGraphSessions && selectedRequestGraphSessions.length > 0) {
-      const available = new Set(usageRequestSessionOptions)
-      const selected = selectedRequestGraphSessions.filter((sessionId) => available.has(sessionId))
-      const rest = usageRequestSessionOptions.filter((sessionId) => !selected.includes(sessionId))
-      return [...selected, ...rest].slice(0, USAGE_REQUEST_GRAPH_MAX_SESSIONS)
-    }
     return usageRequestSessionOptions.slice(0, USAGE_REQUEST_GRAPH_MAX_SESSIONS)
-  }, [selectedRequestGraphSessions, usageRequestSessionOptions])
+  }, [usageRequestSessionOptions])
   const activeRequestGraphSessions = usageRequestDisplaySessions
 
   const requestGraphColorByProvider = useMemo(() => {
