@@ -843,12 +843,15 @@
   overflow: hidden;
   height: 100%;
   padding-right: 2px;
+  padding-top: 1px;
+  padding-bottom: 1px;
 }
 
 .aoUsageRequestSidRow {
   position: absolute;
   left: 0;
   right: 0;
+  height: 18px;
   display: flex;
   align-items: center;
   transition: top 180ms linear;
@@ -858,7 +861,8 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  width: calc(100% - 2px);
+  width: 100%;
+  box-sizing: border-box;
   padding: 1px 7px;
   border-radius: 999px;
   border: 1px solid rgba(13, 18, 32, 0.14);

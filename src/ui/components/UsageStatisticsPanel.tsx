@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Config, Status, UsageStatistics } from '../types'
 import './UsageStatisticsPanel.css'
@@ -92,6 +92,22 @@ type UsageRequestGraphRowsCache = {
   baseRows: UsageRequestEntry[]
   rowsByProvider: Record<string, UsageRequestEntry[]>
 }
+type UsageRequestLineSeries = {
+  kind: 'session'
+  id: string
+  provider: string
+  providerName: string
+  color: string
+  values: number[]
+  present: boolean[]
+  pointIds: string[]
+}
+type UsageRequestRenderedLineSeries = UsageRequestLineSeries & {
+  fallbackSlidingEligible?: boolean
+  fallbackPreviewNextValue?: number | null
+  liveSlidingEligible?: boolean
+  livePreviewNextValue?: number | null
+}
 const usageRequestRowIdentity = (row: UsageRequestEntry) =>
   [
     row.unix_ms,
@@ -148,6 +164,7 @@ const USAGE_REQUEST_GRAPH_COLORS = [
   '#ff8a3d',
 ] as const
 const USAGE_REQUEST_FALLBACK_LINE_STEP_MS = 820
+const USAGE_REQUEST_LIVE_LINE_TRANSITION_MS = 820
 const isOfficialUsageProvider = (provider: string) => provider.trim().toLowerCase() === 'official'
 const compareUsageProvidersForDisplay = (left: string, right: string) => {
   const leftOfficial = isOfficialUsageProvider(left)
@@ -385,6 +402,84 @@ function mergeUsageRequestRowsUniqueNewestFirst(
   return merged.sort((a, b) => b.unix_ms - a.unix_ms).slice(0, limit)
 }
 
+function areUsageRequestRowsIdentical(left: UsageRequestEntry[], right: UsageRequestEntry[]): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let idx = 0; idx < left.length; idx += 1) {
+    if (usageRequestRowIdentity(left[idx]) !== usageRequestRowIdentity(right[idx])) return false
+  }
+  return true
+}
+
+type UsageRequestLiveLineAnimMeta = {
+  prevValues: number[]
+  prevPresent: boolean[]
+  shiftSteps: number
+  prevLastValue: number
+}
+
+function countUsageRequestLinePoints(present: boolean[]): number {
+  let count = 0
+  for (const value of present) {
+    if (!value) continue
+    count += 1
+  }
+  return count
+}
+
+function detectUsageRequestLineShiftSteps(
+  prevPointIds: string[],
+  prevCount: number,
+  nextPointIds: string[],
+  nextCount: number,
+): number {
+  const overlapCount = Math.min(prevCount, nextCount)
+  if (overlapCount <= 1) return 0
+  const maxShift = Math.max(0, prevCount - 1)
+  for (let shift = 0; shift <= maxShift; shift += 1) {
+    const compareCount = Math.min(prevCount - shift, nextCount)
+    if (compareCount <= 0) continue
+    let matches = true
+    for (let idx = 0; idx < compareCount; idx += 1) {
+      if ((prevPointIds[idx + shift] ?? '') !== (nextPointIds[idx] ?? '')) {
+        matches = false
+        break
+      }
+    }
+    if (matches) return shift
+  }
+  return 0
+}
+
+function cloneUsageRequestLineSeries(series: UsageRequestLineSeries[]): UsageRequestLineSeries[] {
+  return series.map((entry) => ({
+    ...entry,
+    values: [...entry.values],
+    present: [...entry.present],
+    pointIds: [...entry.pointIds],
+  }))
+}
+
+function areUsageRequestLineSeriesIdentical(
+  left: UsageRequestLineSeries[],
+  right: UsageRequestLineSeries[],
+): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let idx = 0; idx < left.length; idx += 1) {
+    const a = left[idx]
+    const b = right[idx]
+    if (a.id !== b.id) return false
+    if (a.present.length !== b.present.length || a.values.length !== b.values.length) return false
+    for (let point = 0; point < a.present.length; point += 1) {
+      if (a.present[point] !== b.present[point]) return false
+      if (a.values[point] !== b.values[point]) return false
+      if ((a.pointIds[point] ?? '') !== (b.pointIds[point] ?? '')) return false
+    }
+  }
+  return true
+}
+
 function primeUsageRequestGraphCacheFromBaseRows(baseRows: UsageRequestEntry[]) {
   if (!baseRows.length) return
   const grouped = groupUsageRequestRowsByProvider(baseRows)
@@ -455,24 +550,36 @@ export function primeUsageRequestsPrefetchCache(payload: {
   dailyTotals?: UsageRequestDailyTotalsCache | null
   usingTestFallback?: boolean
 }) {
+  const incomingRows = payload.rows ?? []
+  const currentCache = usageRequestsPageCache
+  const canReuseCurrentRows =
+    incomingRows.length === 0 &&
+    currentCache != null &&
+    currentCache.queryKey === payload.queryKey &&
+    currentCache.rows.length > 0
+  const nextRows = canReuseCurrentRows ? currentCache.rows : incomingRows
+  const nextHasMore = canReuseCurrentRows ? currentCache.hasMore : Boolean(payload.hasMore)
+  const nextUsingTestFallback = canReuseCurrentRows
+    ? currentCache.usingTestFallback
+    : Boolean(payload.usingTestFallback)
   usageRequestsPageCache = {
     queryKey: payload.queryKey,
-    rows: payload.rows ?? [],
-    hasMore: Boolean(payload.hasMore),
-    usingTestFallback: Boolean(payload.usingTestFallback),
+    rows: nextRows,
+    hasMore: nextHasMore,
+    usingTestFallback: nextUsingTestFallback,
   }
-  if ((payload.rows ?? []).length > 0) {
+  if (nextRows.length > 0) {
     usageRequestsLastNonEmptyPageCache = {
       queryKey: payload.queryKey,
-      rows: payload.rows ?? [],
-      hasMore: Boolean(payload.hasMore),
-      usingTestFallback: Boolean(payload.usingTestFallback),
+      rows: nextRows,
+      hasMore: nextHasMore,
+      usingTestFallback: nextUsingTestFallback,
     }
   }
   if (payload.dailyTotals) {
     usageRequestDailyTotalsCache = payload.dailyTotals
   }
-  primeUsageRequestGraphCacheFromBaseRows(payload.rows ?? [])
+  primeUsageRequestGraphCacheFromBaseRows(nextRows)
   emitUsageRequestsCachePrimed(payload.queryKey)
 }
 
@@ -742,6 +849,7 @@ function buildUsageRequestTestRows(
     const bySessionId = new Map<string, { sessionId: string; provider: string; origin: 'windows' | 'wsl2'; requests: number; verified: boolean }>()
     for (const session of clientSessions ?? []) {
       if (!session) continue
+      if (session.is_agent || session.is_review) continue
       const sessionId = String(session.codex_session_id ?? '').trim() || String(session.id ?? '').trim()
       if (!sessionId) continue
       const providerCandidates = [
@@ -1175,6 +1283,7 @@ export function UsageStatisticsPanel({
     const ids = new Set<string>()
     for (const session of clientSessions ?? []) {
       if (!session?.verified) continue
+      if (session.is_agent || session.is_review) continue
       const codexSessionId = String(session.codex_session_id ?? '').trim()
       if (codexSessionId) ids.add(codexSessionId)
       const fallbackSessionId = String(session.id ?? '').trim()
@@ -1355,6 +1464,8 @@ export function UsageStatisticsPanel({
   const isAnalyticsTab = effectiveDetailsTab === 'analytics'
   const requestsTabSeenRef = useRef(false)
   const justEnteredRequestsTab = isRequestsTab && !requestsTabSeenRef.current
+  const [requestTabImmediateRender, setRequestTabImmediateRender] = useState(false)
+  const shouldUseImmediateRequestRows = isRequestsTab && (justEnteredRequestsTab || requestTabImmediateRender)
   const shouldPrepareRequestsData = isRequestsTab
   const isRequestsOnlyPage = effectiveDetailsTab === 'requests' && !showFilters
   const cachedRequestsPage =
@@ -1371,9 +1482,10 @@ export function UsageStatisticsPanel({
       ? usageRequestGraphRowsCache
       : null
   const deferredUsageRequestRows = useDeferredValue(usageRequestRows)
+  const requestRowsForRender = shouldUseImmediateRequestRows ? usageRequestRows : deferredUsageRequestRows
   const rowsForRequestRender = isRequestsTab
-    ? deferredUsageRequestRows.length > 0
-      ? deferredUsageRequestRows
+    ? requestRowsForRender.length > 0
+      ? requestRowsForRender
       : usageRequestRows.length > 0
         ? usageRequestRows
         : cachedRequestsPage?.rows ??
@@ -1383,11 +1495,15 @@ export function UsageStatisticsPanel({
     : EMPTY_USAGE_REQUEST_ROWS
   const deferredUsageRequestGraphBaseRows = useDeferredValue(usageRequestGraphBaseRows)
   const graphBaseRowsForRequestRender = shouldPrepareRequestsData
-    ? deferredUsageRequestGraphBaseRows.length > 0
-      ? deferredUsageRequestGraphBaseRows
-      : usageRequestGraphBaseRows.length > 0
-        ? usageRequestGraphBaseRows
-        : cachedGraphRows?.baseRows ?? EMPTY_USAGE_REQUEST_ROWS
+    ? deferredUsageRequestGraphBaseRows.length > 0 &&
+      usageRequestGraphBaseRows.length > 0 &&
+      usageRequestRowIdentity(deferredUsageRequestGraphBaseRows[0]) !== usageRequestRowIdentity(usageRequestGraphBaseRows[0])
+      ? usageRequestGraphBaseRows
+      : deferredUsageRequestGraphBaseRows.length > 0
+        ? deferredUsageRequestGraphBaseRows
+        : usageRequestGraphBaseRows.length > 0
+          ? usageRequestGraphBaseRows
+          : cachedGraphRows?.baseRows ?? EMPTY_USAGE_REQUEST_ROWS
     : EMPTY_USAGE_REQUEST_ROWS
   const usageRequestGraphProviderCount = useMemo(
     () => Object.keys(usageRequestGraphRowsByProvider).length,
@@ -1397,6 +1513,19 @@ export function UsageStatisticsPanel({
   useEffect(() => {
     requestsTabSeenRef.current = isRequestsTab
   }, [isRequestsTab])
+  useEffect(() => {
+    if (!isRequestsTab) {
+      setRequestTabImmediateRender(false)
+      return
+    }
+    setRequestTabImmediateRender(true)
+    const timer = window.setTimeout(() => {
+      setRequestTabImmediateRender(false)
+    }, 1500)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [isRequestsTab, requestQueryKey])
 
   useEffect(() => {
     if (!isRequestsTab) return
@@ -1747,9 +1876,9 @@ export function UsageStatisticsPanel({
         return
       }
 
-      if (!usageRequestGraphBaseRows.length && baseRows.length) {
-        setUsageRequestGraphBaseRows(baseRows)
-      }
+      setUsageRequestGraphBaseRows((prev) =>
+        areUsageRequestRowsIdentical(prev, baseRows) ? prev : baseRows,
+      )
       const providerTargets = pickUsageRequestDisplayProviders({
         selectedProviders: graphScopedProviderFilter,
         graphProviders: [
@@ -2131,6 +2260,13 @@ export function UsageStatisticsPanel({
   ])
   useEffect(() => {
     if (!isRequestsTab) return
+    if (!usageRequestRows.length) return
+    setUsageRequestGraphBaseRows((prev) =>
+      areUsageRequestRowsIdentical(prev, usageRequestRows) ? prev : usageRequestRows,
+    )
+  }, [isRequestsTab, usageRequestRows])
+  useEffect(() => {
+    if (!isRequestsTab) return
     if (!usageRequestGraphBaseRows.length && Object.keys(usageRequestGraphRowsByProvider).length === 0) return
     if (requestQueryKey !== USAGE_REQUESTS_CANONICAL_QUERY_KEY) return
     usageRequestGraphRowsCache = {
@@ -2164,9 +2300,7 @@ export function UsageStatisticsPanel({
       void prefetchUsageRequestsPageCache(USAGE_REQUEST_PAGE_SIZE)
       return
     }
-    if (Date.now() - usageRequestGraphLastRefreshAtRef.current > 1_000) {
-      void refreshUsageRequestGraphRows()
-    }
+    void refreshUsageRequestGraphRows()
     void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
   }, [
     isAnalyticsTab,
@@ -2370,7 +2504,7 @@ export function UsageStatisticsPanel({
     return out
   }, [activeRequestGraphSessions, graphRowsBySessionForRequestRender, shouldPrepareRequestsData])
 
-  const usageRequestLineSeries = useMemo(() => {
+  const usageRequestLineSeries = useMemo<UsageRequestLineSeries[]>(() => {
     if (!shouldPrepareRequestsData) return []
     const sessions = [...activeRequestGraphSessions]
     if (!sessions.length) return []
@@ -2378,6 +2512,7 @@ export function UsageStatisticsPanel({
       const providerSeries = sessions.map((sessionId, sessionIndex) => {
         const values = new Array<number>(pointCount).fill(0)
         const present = new Array<boolean>(pointCount).fill(false)
+        const pointIds = new Array<string>(pointCount).fill('')
         const rows = usageRequestRowsBySession.get(sessionId) ?? []
       const count = Math.min(pointCount, rows.length)
       // Plot request points as left-old/right-new:
@@ -2387,6 +2522,7 @@ export function UsageStatisticsPanel({
         const row = rows[count - 1 - idx]
         values[idx] = row.total_tokens
         present[idx] = true
+        pointIds[idx] = usageRequestRowIdentity(row)
       }
       const dominantProvider = requestGraphProviderBySession.get(sessionId) ?? '-'
       return {
@@ -2399,6 +2535,7 @@ export function UsageStatisticsPanel({
           USAGE_REQUEST_GRAPH_COLORS[sessionIndex % USAGE_REQUEST_GRAPH_COLORS.length],
         values,
         present,
+        pointIds,
       }
     })
     return providerSeries
@@ -2410,6 +2547,10 @@ export function UsageStatisticsPanel({
     requestGraphColorByProvider,
     requestGraphProviderBySession,
   ])
+  const previousUsageRequestLineSeriesRef = useRef<UsageRequestLineSeries[]>([])
+  const requestLineLiveAnimMetaRef = useRef<Map<string, UsageRequestLiveLineAnimMeta>>(new Map())
+  const [requestLineLiveAnimElapsedMs, setRequestLineLiveAnimElapsedMs] = useState(0)
+  const [requestLineLiveAnimNonce, setRequestLineLiveAnimNonce] = useState(0)
   const [requestLineAnimElapsedMs, setRequestLineAnimElapsedMs] = useState(0)
   useEffect(() => {
     if (!isRequestsTab || !usageRequestUsingTestFallback || usageRequestLineSeries.length === 0) {
@@ -2425,8 +2566,149 @@ export function UsageStatisticsPanel({
     rafId = window.requestAnimationFrame(run)
     return () => window.cancelAnimationFrame(rafId)
   }, [isRequestsTab, usageRequestLineSeries.length, usageRequestUsingTestFallback])
-  const renderedUsageRequestLineSeries = useMemo(() => {
-    if (!isRequestsTab || !usageRequestUsingTestFallback) return usageRequestLineSeries
+  useLayoutEffect(() => {
+    const nextSeries = cloneUsageRequestLineSeries(usageRequestLineSeries)
+    const previousSeries = previousUsageRequestLineSeriesRef.current
+    previousUsageRequestLineSeriesRef.current = nextSeries
+    if (!isRequestsTab || usageRequestUsingTestFallback) {
+      requestLineLiveAnimMetaRef.current = new Map()
+      setRequestLineLiveAnimElapsedMs(0)
+      return
+    }
+    if (nextSeries.length === 0 || previousSeries.length === 0) return
+    if (areUsageRequestLineSeriesIdentical(previousSeries, nextSeries)) return
+    const previousById = new Map(previousSeries.map((series) => [series.id, series]))
+    const liveMeta = new Map<string, UsageRequestLiveLineAnimMeta>()
+    nextSeries.forEach((series) => {
+      const previous = previousById.get(series.id)
+      if (!previous) return
+      const prevCount = countUsageRequestLinePoints(previous.present)
+      const nextCount = countUsageRequestLinePoints(series.present)
+      if (prevCount <= 0 || nextCount <= 0) return
+      const shiftSteps = detectUsageRequestLineShiftSteps(
+        previous.pointIds,
+        prevCount,
+        series.pointIds,
+        nextCount,
+      )
+      const prevLastIndex = Math.max(0, prevCount - 1)
+      const prevLastValue =
+        previous.values[prevLastIndex] ?? series.values[Math.max(0, nextCount - 1)] ?? 0
+      liveMeta.set(series.id, {
+        prevValues: [...previous.values],
+        prevPresent: [...previous.present],
+        shiftSteps,
+        prevLastValue,
+      })
+    })
+    if (liveMeta.size === 0) return
+    requestLineLiveAnimMetaRef.current = liveMeta
+    setRequestLineLiveAnimElapsedMs(0)
+    setRequestLineLiveAnimNonce((value) => value + 1)
+  }, [isRequestsTab, usageRequestLineSeries, usageRequestUsingTestFallback])
+  useEffect(() => {
+    if (!isRequestsTab || usageRequestUsingTestFallback) return
+    if (requestLineLiveAnimMetaRef.current.size === 0) return
+    const startedAt = performance.now()
+    let rafId = 0
+    const run = (now: number) => {
+      const elapsed = now - startedAt
+      setRequestLineLiveAnimElapsedMs(elapsed)
+      if (elapsed >= USAGE_REQUEST_LIVE_LINE_TRANSITION_MS) return
+      rafId = window.requestAnimationFrame(run)
+    }
+    rafId = window.requestAnimationFrame(run)
+    return () => window.cancelAnimationFrame(rafId)
+  }, [isRequestsTab, requestLineLiveAnimNonce, usageRequestUsingTestFallback])
+  const renderedUsageRequestLineSeries = useMemo<UsageRequestRenderedLineSeries[]>(() => {
+    if (!isRequestsTab) return usageRequestLineSeries
+    if (!usageRequestUsingTestFallback) {
+      const liveMeta = requestLineLiveAnimMetaRef.current
+      const livePhase = Math.max(
+        0,
+        Math.min(1, requestLineLiveAnimElapsedMs / USAGE_REQUEST_LIVE_LINE_TRANSITION_MS),
+      )
+      if (liveMeta.size === 0 || livePhase >= 1) return usageRequestLineSeries
+      return usageRequestLineSeries.map((series) => {
+        const meta = liveMeta.get(series.id)
+        if (!meta) return series
+        const prevCount = countUsageRequestLinePoints(meta.prevPresent)
+        const currentCount = countUsageRequestLinePoints(series.present)
+        const slidingEligible =
+          meta.shiftSteps === 1 &&
+          prevCount >= usageRequestGraphPointCount &&
+          currentCount >= usageRequestGraphPointCount
+        if (slidingEligible) {
+          const values = new Array<number>(usageRequestGraphPointCount).fill(0)
+          const present = new Array<boolean>(usageRequestGraphPointCount).fill(false)
+          let pointIndex = 0
+          for (let idx = 0; idx < meta.prevPresent.length && pointIndex < usageRequestGraphPointCount; idx += 1) {
+            if (!meta.prevPresent[idx]) continue
+            values[pointIndex] = meta.prevValues[idx] ?? 0
+            present[pointIndex] = true
+            pointIndex += 1
+          }
+          const previewNextValue = series.values[Math.max(0, currentCount - 1)] ?? null
+          return {
+            ...series,
+            values,
+            present,
+            liveSlidingEligible: true,
+            livePreviewNextValue: previewNextValue,
+          }
+        }
+
+        const growingEligible =
+          currentCount === prevCount + 1 &&
+          prevCount > 1 &&
+          prevCount < usageRequestGraphPointCount
+        if (growingEligible) {
+          const values = new Array<number>(usageRequestGraphPointCount).fill(0)
+          const present = new Array<boolean>(usageRequestGraphPointCount).fill(false)
+          let pointIndex = 0
+          for (let idx = 0; idx < meta.prevPresent.length && pointIndex < usageRequestGraphPointCount; idx += 1) {
+            if (!meta.prevPresent[idx]) continue
+            values[pointIndex] = meta.prevValues[idx] ?? 0
+            present[pointIndex] = true
+            pointIndex += 1
+          }
+          const previewNextValue =
+            series.values[Math.min(series.values.length - 1, Math.max(0, prevCount))] ??
+            series.values[Math.max(0, currentCount - 1)] ??
+            null
+          return {
+            ...series,
+            values,
+            present,
+            liveSlidingEligible: false,
+            livePreviewNextValue: previewNextValue,
+          }
+        }
+
+        const values = [...series.values]
+        const present = [...series.present]
+        for (let idx = 0; idx < usageRequestGraphPointCount; idx += 1) {
+          const wasPresent = Boolean(meta.prevPresent[idx])
+          const isPresent = Boolean(series.present[idx])
+          if (!wasPresent && !isPresent) {
+            values[idx] = 0
+            present[idx] = false
+            continue
+          }
+          const prevValue = wasPresent ? (meta.prevValues[idx] ?? 0) : meta.prevLastValue
+          const nextValue = isPresent ? (series.values[idx] ?? prevValue) : prevValue
+          values[idx] = Math.round(prevValue + (nextValue - prevValue) * livePhase)
+          present[idx] = isPresent || (wasPresent && livePhase < 1)
+        }
+        return {
+          ...series,
+          values,
+          present,
+          liveSlidingEligible: false,
+          livePreviewNextValue: null,
+        }
+      })
+    }
     return usageRequestLineSeries.map((series) => {
       const baseValues: number[] = []
       for (let idx = 0; idx < series.present.length; idx += 1) {
@@ -2501,20 +2783,39 @@ export function UsageStatisticsPanel({
   }, [
     isRequestsTab,
     requestLineAnimElapsedMs,
+    requestLineLiveAnimElapsedMs,
+    requestLineLiveAnimNonce,
     usageRequestGraphPointCount,
     usageRequestLineSeries,
     usageRequestUsingTestFallback,
   ])
   const requestLineAnimPhase = useMemo(() => {
-    if (!isRequestsTab || !usageRequestUsingTestFallback || usageRequestLineSeries.length === 0) return 0
-    return (requestLineAnimElapsedMs % USAGE_REQUEST_FALLBACK_LINE_STEP_MS) / USAGE_REQUEST_FALLBACK_LINE_STEP_MS
-  }, [isRequestsTab, requestLineAnimElapsedMs, usageRequestLineSeries.length, usageRequestUsingTestFallback])
-  const requestLineFallbackSliding = useMemo(() => {
-    if (!isRequestsTab || !usageRequestUsingTestFallback || renderedUsageRequestLineSeries.length === 0) return false
-    return renderedUsageRequestLineSeries.some((series) =>
-      Boolean((series as { fallbackSlidingEligible?: boolean }).fallbackSlidingEligible),
+    if (!isRequestsTab || usageRequestLineSeries.length === 0) return 0
+    if (usageRequestUsingTestFallback) {
+      return (requestLineAnimElapsedMs % USAGE_REQUEST_FALLBACK_LINE_STEP_MS) / USAGE_REQUEST_FALLBACK_LINE_STEP_MS
+    }
+    if (requestLineLiveAnimMetaRef.current.size === 0) return 0
+    const livePhase = Math.max(
+      0,
+      Math.min(1, requestLineLiveAnimElapsedMs / USAGE_REQUEST_LIVE_LINE_TRANSITION_MS),
     )
-  }, [isRequestsTab, renderedUsageRequestLineSeries, usageRequestUsingTestFallback])
+    return livePhase >= 1 ? 0 : livePhase
+  }, [
+    isRequestsTab,
+    requestLineAnimElapsedMs,
+    requestLineLiveAnimElapsedMs,
+    usageRequestLineSeries.length,
+    usageRequestUsingTestFallback,
+  ])
+  const requestLineSliding = useMemo(() => {
+    if (!isRequestsTab || renderedUsageRequestLineSeries.length === 0) return false
+    return renderedUsageRequestLineSeries.some((series) =>
+      Boolean(
+        (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
+          (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
+      ),
+    )
+  }, [isRequestsTab, renderedUsageRequestLineSeries])
 
   const usageRequestLineMaxValue = useMemo(() => {
     let maxValue = 0
@@ -2541,12 +2842,14 @@ export function UsageStatisticsPanel({
   )
   const usageRequestSessionLegendRows = useMemo(
     () =>
-      renderedUsageRequestLineSeries.map((series) => ({
-        id: String((series as { id?: string }).id ?? series.provider),
-        sidLabel: series.provider,
-        providerName: String((series as { providerName?: string }).providerName ?? '').trim() || '-',
-        color: series.color,
-      })),
+      renderedUsageRequestLineSeries
+        .filter((series) => series.present.reduce((sum, present) => sum + (present ? 1 : 0), 0) > 1)
+        .map((series) => ({
+          id: String((series as { id?: string }).id ?? series.provider),
+          sidLabel: series.provider,
+          providerName: String((series as { providerName?: string }).providerName ?? '').trim() || '-',
+          color: series.color,
+        })),
     [renderedUsageRequestLineSeries],
   )
   const usageRequestChartShownCount = useMemo(() => {
@@ -2743,7 +3046,10 @@ export function UsageStatisticsPanel({
     usageRequestTimeFilter,
   ])
   const deferredFilteredUsageRequestRows = useDeferredValue(filteredUsageRequestRows)
-  const displayedFilteredUsageRequestRows = justEnteredRequestsTab ? filteredUsageRequestRows : deferredFilteredUsageRequestRows
+  const displayedFilteredUsageRequestRows = shouldUseImmediateRequestRows
+    ? filteredUsageRequestRows
+    : deferredFilteredUsageRequestRows
+  const totalRequestRowsForDisplay = rowsForRequestRender.length
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
     if (!hasExplicitTimeFilter) return
@@ -2836,11 +3142,12 @@ export function UsageStatisticsPanel({
   ])
   const usageRequestSidRowsWithPosition = useMemo(() => {
     if (!usageRequestSessionLegendRows.length) return []
-    const rowHeight = 16
+    const rowHeight = 18
+    const edgeInset = 1
     const panelHeight = Math.max(24, requestChartBottomY - requestChartTopY)
     const listHeight = Math.max(24, panelHeight)
-    const minTop = 0
-    const maxTop = Math.max(0, listHeight - rowHeight)
+    const minTop = edgeInset
+    const maxTop = Math.max(edgeInset, listHeight - rowHeight - edgeInset)
     return usageRequestSessionLegendRows
       .map((item) => {
         const series = renderedUsageRequestLineSeries.find(
@@ -3088,25 +3395,28 @@ export function UsageStatisticsPanel({
                   {renderedUsageRequestLineSeries.map((series) => {
                     const activeCount = series.present.reduce((sum, isPresent) => sum + (isPresent ? 1 : 0), 0)
                     const slidingEligible = Boolean(
-                      (series as { fallbackSlidingEligible?: boolean }).fallbackSlidingEligible,
+                      (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
+                        (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
                     )
                     const previewNextValue = Number(
-                      (series as { fallbackPreviewNextValue?: number | null }).fallbackPreviewNextValue ?? NaN,
+                      (series as { fallbackPreviewNextValue?: number | null; livePreviewNextValue?: number | null }).fallbackPreviewNextValue ??
+                        (series as { fallbackPreviewNextValue?: number | null; livePreviewNextValue?: number | null }).livePreviewNextValue ??
+                        NaN,
                     )
                     const hasPreviewNextValue = Number.isFinite(previewNextValue)
-                    const isFallbackAnimating =
+                    const isSlidingAnimating =
                       isRequestsTab &&
-                      usageRequestUsingTestFallback &&
-                      requestLineFallbackSliding &&
+                      requestLineSliding &&
                       slidingEligible
-                    const isFallbackGrowing =
+                    const isGrowingAnimating =
                       isRequestsTab &&
-                      usageRequestUsingTestFallback &&
+                      requestLineAnimPhase > 0 &&
                       !slidingEligible &&
+                      hasPreviewNextValue &&
                       activeCount > 1 &&
                       activeCount < usageRequestGraphPointCount
                     const providerPoints: Array<{ x: number; y: number }> = []
-                    if (isFallbackAnimating && activeCount > 1) {
+                    if (isSlidingAnimating && activeCount > 1) {
                       for (let idx = 0; idx < activeCount; idx += 1) {
                         const value = series.values[idx] ?? 0
                         const x = requestChartMinX + idx * requestLinePointSpacing - requestLineAnimOffsetX
@@ -3132,7 +3442,7 @@ export function UsageStatisticsPanel({
                         providerPoints.push({ x, y })
                       })
                     }
-                    if (isFallbackGrowing && providerPoints.length > 1 && requestLineAnimPhase > 0) {
+                    if (isGrowingAnimating && providerPoints.length > 1) {
                       const lastPoint = providerPoints[providerPoints.length - 1]
                       const previewY = hasPreviewNextValue
                         ? requestChartBottomY -
@@ -3179,19 +3489,19 @@ export function UsageStatisticsPanel({
                     ? renderedUsageRequestLineSeries.map((series) => {
                         if (!series.present[lineHoverIndex]) return null
                         const value = series.values[lineHoverIndex] ?? 0
-                      const baseX =
-                        requestChartMinX +
-                        (lineHoverIndex / Math.max(1, usageRequestGraphPointCount - 1)) *
-                          (requestChartMaxX - requestChartMinX)
-                      const slidingEligible = Boolean(
-                        (series as { fallbackSlidingEligible?: boolean }).fallbackSlidingEligible,
-                      )
-                      const isFallbackAnimating =
-                        isRequestsTab &&
-                        usageRequestUsingTestFallback &&
-                        requestLineFallbackSliding &&
-                        slidingEligible
-                        const x = isFallbackAnimating ? baseX - requestLineAnimOffsetX : baseX
+                        const baseX =
+                          requestChartMinX +
+                          (lineHoverIndex / Math.max(1, usageRequestGraphPointCount - 1)) *
+                            (requestChartMaxX - requestChartMinX)
+                        const slidingEligible = Boolean(
+                          (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
+                            (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
+                        )
+                        const isSlidingAnimating =
+                          isRequestsTab &&
+                          requestLineSliding &&
+                          slidingEligible
+                        const x = isSlidingAnimating ? baseX - requestLineAnimOffsetX : baseX
                         const y =
                           requestChartBottomY -
                           (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
@@ -3252,7 +3562,7 @@ export function UsageStatisticsPanel({
             ) : (
               <div className="aoHint">
                 {verifiedSessionIdSet.size === 0
-                  ? 'No verified sessions yet.'
+                  ? 'No verified non-agent sessions yet.'
                   : 'No recent verified-session rows for line graph.'}
               </div>
             )}
@@ -3744,7 +4054,7 @@ export function UsageStatisticsPanel({
                     {!displayedFilteredUsageRequestRows.length && !usageRequestLoading ? (
                       <tr>
                         <td colSpan={9} className="aoHint">
-                          {defaultTodayOnly && usageRequestHasMore
+                          {defaultTodayOnly && usageRequestHasMore && totalRequestRowsForDisplay === 0
                             ? "Loading today's rows..."
                             : 'No request rows match current filters.'}
                         </td>
@@ -3855,7 +4165,7 @@ export function UsageStatisticsPanel({
                   : 'All loaded'}
             </span>
             <span className="aoHint">
-              {displayedFilteredUsageRequestRows.length.toLocaleString()} / {usageRequestRows.length.toLocaleString()} rows
+              {displayedFilteredUsageRequestRows.length.toLocaleString()} / {totalRequestRowsForDisplay.toLocaleString()} rows
             </span>
           </div>
         </div>
