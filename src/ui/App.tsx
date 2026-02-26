@@ -64,7 +64,7 @@ const RAW_DRAFT_WINDOWS_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.windows.v1'
 const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.wsl2.v1'
 const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
 const EVENT_LOG_PRELOAD_REFRESH_MS = 15_000
-const EVENT_LOG_PRELOAD_LIMIT = 2000
+const EVENT_LOG_PRELOAD_LIMIT = 5000
 export default function App() {
   const isDevPreview = useMemo(() => {
     if (!import.meta.env.DEV) return false

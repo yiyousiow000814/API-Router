@@ -1005,10 +1005,9 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let mut providers = st.router.snapshot(now);
     let manual_override = st.router.manual_override.read().clone();
 
-    let recent_events = st.store.list_recent_error_events(
-        crate::constants::STATUS_EVENT_WINDOW_LIMIT,
-        crate::constants::STATUS_RECENT_ERROR_PREVIEW_LIMIT,
-    );
+    let recent_events = st
+        .store
+        .list_recent_error_events(crate::constants::STATUS_RECENT_ERROR_PREVIEW_LIMIT);
     let metrics = st.store.get_metrics();
     let quota = st.store.list_quota_snapshots();
     for (provider_name, snapshot) in providers.iter_mut() {

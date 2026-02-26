@@ -47,7 +47,6 @@
 .aoEventMessage {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
 }
 
 .aoEventMessageTextBtn {
@@ -93,8 +92,6 @@
 
 .aoEventCopyBtn {
   flex: 0 0 auto;
-  position: relative;
-  z-index: 1;
 }
 
 .aoEventCopySlot {

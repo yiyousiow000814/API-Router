@@ -7,12 +7,11 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
     state.gateway.router.sync_with_config(&cfg, now);
     let providers = state.gateway.router.snapshot(now);
     let manual_override = state.gateway.router.manual_override.read().clone();
-    // Keep status payload small: expose only the latest error preview row, but source it from the
-    // same 200-row Event Log window used by the Events tab.
-    let recent_events = state.gateway.store.list_recent_error_events(
-        crate::constants::STATUS_EVENT_WINDOW_LIMIT,
-        crate::constants::STATUS_RECENT_ERROR_PREVIEW_LIMIT,
-    );
+    // Keep status payload small: expose only a compact latest-error preview.
+    let recent_events = state
+        .gateway
+        .store
+        .list_recent_error_events(crate::constants::STATUS_RECENT_ERROR_PREVIEW_LIMIT);
     let metrics = state.gateway.store.get_metrics();
     let quota = state.gateway.store.list_quota_snapshots();
     let mut providers = providers;

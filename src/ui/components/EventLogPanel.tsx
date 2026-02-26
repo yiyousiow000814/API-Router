@@ -40,7 +40,7 @@ type EventLogChartHover = {
 
 const CHART_WINDOW_DAYS = 60
 const EVENT_LOG_TABLE_PAGE_SIZE = 200
-const EVENT_LOG_FETCH_DEFAULT_LIMIT = 2000
+const EVENT_LOG_FETCH_DEFAULT_LIMIT = 5000
 const EVENT_LOG_FETCH_FILTERED_LIMIT = 5000
 const ALL_LEVELS: EventLevel[] = ['info', 'warning', 'error']
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
@@ -107,6 +107,18 @@ function buildSearchText(e: Status['recent_events'][number]): string {
   return `${e.provider} ${e.level} ${e.code} ${e.message} ${codexSession} ${legacySession} ${wtSession}`.toLowerCase()
 }
 
+function stableFieldsIdentity(fields: Record<string, unknown> | null): string {
+  if (!fields) return ''
+  const keys = Object.keys(fields).sort()
+  const ordered: Record<string, unknown> = {}
+  for (const key of keys) ordered[key] = fields[key]
+  return JSON.stringify(ordered)
+}
+
+function eventLogEntryIdentity(entry: EventLogEntry): string {
+  return `${entry.unix_ms}|${entry.provider}|${entry.level}|${entry.code}|${entry.message}|${stableFieldsIdentity(entry.fields ?? null)}`
+}
+
 function parseDateInputToDayStart(dateText: string): number | null {
   const t = dateText.trim()
   if (!t) return null
@@ -162,6 +174,8 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
   const querySeqRef = useRef(0)
   const yearQuerySeqRef = useRef(0)
   const dailyStatsSeqRef = useRef(0)
+  const focusHydrateSeqRef = useRef(0)
+  const focusHydrateNonceRef = useRef<number | null>(null)
   const handledFocusNonceRef = useRef<number | null>(null)
   const fromDayStart = parseDateInputToDayStart(dateFrom)
   const toDayStart = parseDateInputToDayStart(dateTo)
@@ -188,6 +202,24 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
     } catch {
       // Keep current year list on failure.
     }
+  }, [])
+  const mergeSourceEvents = useCallback((rows: EventLogEntry[]) => {
+    if (!rows.length) return
+    setSourceEvents((prev) => {
+      const seen = new Set(prev.map(eventLogEntryIdentity))
+      const merged = [...prev]
+      let changed = false
+      for (const row of rows) {
+        const key = eventLogEntryIdentity(row)
+        if (seen.has(key)) continue
+        seen.add(key)
+        merged.push(row)
+        changed = true
+      }
+      if (!changed) return prev
+      merged.sort((a, b) => b.unix_ms - a.unix_ms)
+      return merged
+    })
   }, [])
   const fetchEventLogDailyStats = useCallback(async (fromDay: number | null, toDay: number | null) => {
     const fromUnixMs = fromDay == null ? null : fromDay
@@ -245,6 +277,26 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
       // Keep the latest successful snapshot to avoid UI flicker when fetch transiently fails.
     }
   }, [mergeKnownYears])
+  const fetchFocusWindowEntries = useCallback(async (focus: EventLogFocusRequest) => {
+    if (!hasTauriInvoke) return
+    const reqId = ++focusHydrateSeqRef.current
+    const windowMs = 14 * 24 * 60 * 60 * 1000
+    const fromUnixMs = Math.max(0, focus.unixMs - windowMs)
+    const toUnixMs = focus.unixMs + windowMs
+    try {
+      const rows = await invoke<EventLogEntry[]>('get_event_log_entries', {
+        fromUnixMs,
+        toUnixMs,
+        limit: EVENT_LOG_FETCH_FILTERED_LIMIT,
+      })
+      if (focusHydrateSeqRef.current !== reqId) return
+      if (!Array.isArray(rows) || rows.length === 0) return
+      mergeSourceEvents(rows)
+      mergeKnownYears(rows)
+    } catch {
+      // Keep current list if targeted hydration fails.
+    }
+  }, [hasTauriInvoke, mergeKnownYears, mergeSourceEvents])
 
   const now = Date.now()
   const defaultRangeEndDay = startOfDayMs(now)
@@ -290,20 +342,15 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
     [searchFiltered, selectedLevelSet],
   )
   const tableEvents = useMemo(
-    () =>
-      filteredEvents.slice(
-        0,
-        hasDateFilter ? tableVisibleCount : EVENT_LOG_TABLE_PAGE_SIZE,
-      ),
-    [filteredEvents, hasDateFilter, tableVisibleCount],
+    () => filteredEvents.slice(0, tableVisibleCount),
+    [filteredEvents, tableVisibleCount],
   )
-  const canLoadMoreTableEvents = hasDateFilter && tableEvents.length < filteredEvents.length
+  const canLoadMoreTableEvents = tableEvents.length < filteredEvents.length
   const loadMoreTableEvents = useCallback(() => {
-    if (!hasDateFilter) return
     setTableVisibleCount((prev) =>
       Math.min(prev + EVENT_LOG_TABLE_PAGE_SIZE, filteredEvents.length),
     )
-  }, [filteredEvents.length, hasDateFilter])
+  }, [filteredEvents.length])
 
   const fallbackDailyByDayFromEvents = useMemo(() => {
     const out = new Map<number, { total: number; infos: number; warnings: number; errors: number }>()
@@ -456,6 +503,17 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
     setTableVisibleCount(EVENT_LOG_TABLE_PAGE_SIZE)
   }, [dateFrom, dateTo, searchText, selectedLevels])
   useEffect(() => {
+    if (!focusedEvent) return
+    const targetIdentity = eventLogEntryIdentity(focusedEvent)
+    const targetIndex = filteredEvents.findIndex((row) => eventLogEntryIdentity(row) === targetIdentity)
+    if (targetIndex < 0) return
+    const minVisible = Math.min(
+      filteredEvents.length,
+      Math.max(EVENT_LOG_TABLE_PAGE_SIZE, Math.ceil((targetIndex + 1) / EVENT_LOG_TABLE_PAGE_SIZE) * EVENT_LOG_TABLE_PAGE_SIZE),
+    )
+    setTableVisibleCount((prev) => (prev >= minVisible ? prev : minVisible))
+  }, [filteredEvents, focusedEvent])
+  useEffect(() => {
     if (hasTauriInvoke) {
       if (events.length && sourceEvents.length === 0) {
         setSourceEvents([...events].sort((a, b) => b.unix_ms - a.unix_ms))
@@ -526,18 +584,29 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
     setOpenDatePicker(false)
   }, [focusRequest])
   useEffect(() => {
-    if (!focusRequest || !sourceEvents.length) return
+    if (!focusRequest) return
     if (handledFocusNonceRef.current === focusRequest.nonce) return
     const providerNeedle = focusRequest.provider.trim().toLowerCase()
     const messageNeedle = focusRequest.message.trim().toLowerCase()
     const messageProbe = messageNeedle.slice(0, 120)
     const providerErrors = sourceEvents.filter((e) => e.provider.toLowerCase() === providerNeedle && e.level === 'error')
-    if (!providerErrors.length) return
+    if (!providerErrors.length) {
+      if (hasTauriInvoke && focusHydrateNonceRef.current !== focusRequest.nonce) {
+        focusHydrateNonceRef.current = focusRequest.nonce
+        void fetchFocusWindowEntries(focusRequest)
+      }
+      return
+    }
     const matchingMessage = providerErrors.filter((e) => {
       const msg = e.message.toLowerCase()
       if (!messageProbe) return true
       return msg.includes(messageProbe) || messageProbe.includes(msg.slice(0, Math.min(120, msg.length)))
     })
+    if (!matchingMessage.length && hasTauriInvoke && focusHydrateNonceRef.current !== focusRequest.nonce) {
+      focusHydrateNonceRef.current = focusRequest.nonce
+      void fetchFocusWindowEntries(focusRequest)
+      return
+    }
     const candidates = matchingMessage.length ? matchingMessage : providerErrors
     const target = [...candidates].sort(
       (a, b) => Math.abs(a.unix_ms - focusRequest.unixMs) - Math.abs(b.unix_ms - focusRequest.unixMs),
@@ -547,7 +616,7 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
     setFocusNonce(focusRequest.nonce)
     handledFocusNonceRef.current = focusRequest.nonce
     onFocusRequestHandled(focusRequest.nonce)
-  }, [focusRequest, onFocusRequestHandled, sourceEvents])
+  }, [fetchFocusWindowEntries, focusRequest, hasTauriInvoke, onFocusRequestHandled, sourceEvents])
 
   return (
     <div className="aoEventLogLayout">
@@ -939,7 +1008,6 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
       <DashboardEventsSection
         title="Event Log"
         showHeader={false}
-        splitByLevel={false}
         scrollInside
         scrollPersistKey="event_log_table"
         visibleEvents={tableEvents}

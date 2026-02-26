@@ -4,7 +4,7 @@ mod tests {
     use chrono::TimeZone;
 
     #[test]
-    fn list_events_reads_latest_without_full_scan() {
+    fn list_events_range_reads_latest_without_full_scan() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
 
@@ -30,10 +30,46 @@ mod tests {
             .unwrap();
         }
 
-        let out = store.list_events(2);
+        let out = store.list_events_range(None, None, Some(2));
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].get("unix_ms").and_then(|v| v.as_u64()), Some(3000));
         assert_eq!(out[1].get("unix_ms").and_then(|v| v.as_u64()), Some(2000));
+    }
+
+    #[test]
+    fn list_recent_error_events_is_not_limited_by_latest_all_events_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('err-old-a', 10, 'p1', 'error', 'test_event', 'old-a', '{}')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('err-old-b', 20, 'p1', 'error', 'test_event', 'old-b', '{}')",
+                [],
+            )
+            .unwrap();
+            for i in 0..300 {
+                let id = format!("info-{i}");
+                conn.execute(
+                    "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                     VALUES (?1, ?2, 'p1', 'info', 'test_event', 'noise', '{}')",
+                    rusqlite::params![id, 1_000_i64 + i],
+                )
+                .unwrap();
+            }
+        }
+
+        let out = store.list_recent_error_events(2);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].get("message").and_then(|v| v.as_str()), Some("old-b"));
+        assert_eq!(out[1].get("message").and_then(|v| v.as_str()), Some("old-a"));
     }
 
     #[test]

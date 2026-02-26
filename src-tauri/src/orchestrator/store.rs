@@ -198,6 +198,7 @@ impl Store {
               fields_json TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_events_unix_ms ON events(unix_ms DESC);
+            CREATE INDEX IF NOT EXISTS idx_events_level_unix_ms ON events(level, unix_ms DESC);
             CREATE TABLE IF NOT EXISTS event_day_counts(
               day_key TEXT PRIMARY KEY,
               day_start_unix_ms INTEGER NOT NULL,
@@ -1330,18 +1331,20 @@ impl Store {
         }
     }
 
-    pub fn list_events(&self, limit: usize) -> Vec<Value> {
-        let cap = limit.max(1);
+    pub fn list_recent_error_events(&self, max_errors: usize) -> Vec<Value> {
+        let error_cap = max_errors.max(1);
+        let mut out: Vec<Value> = Vec::with_capacity(error_cap.min(128));
         let conn = self.events_db.lock();
         let Ok(mut stmt) = conn.prepare(
             "SELECT unix_ms, provider, level, code, message, fields_json
              FROM events
+             WHERE level = 'error'
              ORDER BY unix_ms DESC
              LIMIT ?1",
         ) else {
-            return Vec::new();
+            return out;
         };
-        let Ok(rows) = stmt.query_map([cap as i64], |row| {
+        let Ok(rows) = stmt.query_map([error_cap as i64], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
@@ -1351,22 +1354,16 @@ impl Store {
                 row.get::<_, String>(5)?,
             ))
         }) else {
-            return Vec::new();
+            return out;
         };
-        rows.flatten()
-            .filter_map(|(unix_ms, provider, level, code, message, fields_json)| {
+        for (unix_ms, provider, level, code, message, fields_json) in rows.flatten() {
+            if let Some(v) =
                 Self::event_from_sql_row(unix_ms, provider, level, code, message, fields_json)
-            })
-            .collect()
-    }
-
-    pub fn list_recent_error_events(&self, window_limit: usize, max_errors: usize) -> Vec<Value> {
-        let error_cap = max_errors.max(1);
-        self.list_events(window_limit)
-            .into_iter()
-            .filter(|event| event.get("level").and_then(Value::as_str) == Some("error"))
-            .take(error_cap)
-            .collect()
+            {
+                out.push(v);
+            }
+        }
+        out
     }
 
     pub fn list_event_years(&self) -> std::collections::BTreeSet<i32> {
