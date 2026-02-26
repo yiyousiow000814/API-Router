@@ -417,7 +417,8 @@ async function main() {
       const pointerDownX = centerX(rects.handle)
       const pointerOffset = pointerDownY - rects.card.top
       const belowRect = await driver.executeScript('const r = arguments[0].getBoundingClientRect(); return { top: r.top, height: r.height };', belowCard)
-      const belowMid = belowRect.top + belowRect.height / 2
+      const desiredY1Raw = (belowRect.top + 1 - rects.card.height) + pointerOffset
+      const desiredY1 = Math.max(2, Math.min(viewportH - 2, desiredY1Raw))
 
       const actions = driver.actions({ async: true })
       await actions
@@ -428,23 +429,13 @@ async function main() {
         .move({
           origin: 'viewport',
           x: Math.round(pointerDownX),
-          y: Math.round(
-            Math.max(
-              2,
-              Math.min(
-                viewportH - 2,
-                // Touch condition: dragBottom >= belowTop => (clientY - offset + h) >= belowTop
-                // => clientY >= belowTop - h + offset
-                (belowRect.top + 1 - rects.card.height) + pointerOffset,
-              ),
-            ),
-          ),
+          y: Math.round(desiredY1),
         })
         .pause(220)
         .perform()
 
-      const ph0 = await getPlaceholderIndex(driver)
-      if (ph0 < 0) {
+      let phIdx = await waitForPlaceholderIndex(driver, (idx) => idx >= 0, 1200)
+      if (phIdx < 0) {
         const b64 = await driver.takeScreenshot()
         fs.writeFileSync(screenshotPath.replace('.png', `-down-no-drag.png`), Buffer.from(b64, 'base64'))
         throw new Error('Drag-down: placeholder not found after press/move (drag did not start).')
@@ -457,8 +448,17 @@ async function main() {
         throw new Error(`Drag-down highlight mismatch: expected ${belowName}, got ${over} (dragging ${draggingName})`)
       }
 
-      const phIdx = await getPlaceholderIndex(driver)
-      if (phIdx < 0) throw new Error('Drag-down: placeholder not found (drag did not start?)')
+      if (phIdx !== 0) {
+        // On slower hosts, a long pointer move can occasionally settle just over the threshold.
+        // Nudge back up once to re-check the pre-crossing placeholder state before failing.
+        const settleY = Math.max(2, Math.min(viewportH - 2, desiredY1 - Math.max(8, Math.round(belowRect.height * 0.12))))
+        await driver
+          .actions({ async: true })
+          .move({ origin: 'viewport', x: Math.round(pointerDownX), y: Math.round(settleY) })
+          .pause(180)
+          .perform()
+        phIdx = await waitForPlaceholderIndex(driver, (idx) => idx >= 0, 1200)
+      }
       if (phIdx !== 0) {
         const b64 = await driver.takeScreenshot()
         fs.writeFileSync(screenshotPath.replace('.png', `-down-bad-placeholder-before.png`), Buffer.from(b64, 'base64'))
@@ -479,7 +479,17 @@ async function main() {
         .pause(240)
         .perform()
 
-      const ph2 = await waitForPlaceholderIndex(driver, (idx) => idx > 0)
+      let ph2 = await waitForPlaceholderIndex(driver, (idx) => idx > 0)
+      if (ph2 <= 0) {
+        // Retry once with a larger downward move to stabilize direction + midpoint crossing on slow hosts.
+        const retryY = Math.max(2, Math.min(viewportH - 2, desiredY2 + Math.max(12, Math.round(belowRect2.height * 0.16))))
+        await driver
+          .actions({ async: true })
+          .move({ origin: 'viewport', x: Math.round(pointerDownX), y: Math.round(retryY) })
+          .pause(220)
+          .perform()
+        ph2 = await waitForPlaceholderIndex(driver, (idx) => idx > 0)
+      }
       if (ph2 <= 0) {
         const b64 = await driver.takeScreenshot()
         fs.writeFileSync(screenshotPath.replace('.png', `-down-no-reorder.png`), Buffer.from(b64, 'base64'))

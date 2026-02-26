@@ -1292,6 +1292,8 @@ export function UsageStatisticsPanel({
     return ids
   }, [clientSessions])
   const usageRequestRefreshInFlightRef = useRef(false)
+  const usageRequestRefreshPendingRef = useRef(false)
+  const usageRequestRefreshPendingLimitRef = useRef(USAGE_REQUEST_PAGE_SIZE)
   const usageRequestGraphRefreshInFlightRef = useRef(false)
   const usageRequestGraphRefreshPendingRef = useRef(false)
   const usageRequestGraphLastRefreshAtRef = useRef(0)
@@ -1300,6 +1302,9 @@ export function UsageStatisticsPanel({
   const usageRequestGraphBaseFetchSeqRef = useRef(0)
   const usageRequestDailyTotalsFetchSeqRef = useRef(0)
   const usageRequestLoadedQueryKeyRef = useRef<string | null>(null)
+  const usageRequestResolvedQueryKeyRef = useRef<string | null>(null)
+  const usageRequestPrevQueryKeyRef = useRef<string | null>(null)
+  const usageRequestLastRenderedRowsRef = useRef<UsageRequestEntry[]>([])
   const usageRequestLastActivityRef = useRef<number | null>(null)
   const usageRequestWasNearBottomRef = useRef(false)
   const usageRequestWarmupAtRef = useRef(0)
@@ -1510,6 +1515,16 @@ export function UsageStatisticsPanel({
     requestsTabSeenRef.current = isRequestsTab
   }, [isRequestsTab])
   useEffect(() => {
+    if (usageRequestPrevQueryKeyRef.current === requestQueryKey) return
+    usageRequestPrevQueryKeyRef.current = requestQueryKey
+    usageRequestResolvedQueryKeyRef.current = null
+  }, [requestQueryKey])
+  useEffect(() => {
+    if (isRequestsTab) return
+    usageRequestLastRenderedRowsRef.current = []
+  }, [isRequestsTab])
+
+  useEffect(() => {
     if (!isRequestsTab) {
       setRequestTabImmediateRender(false)
       return
@@ -1580,7 +1595,11 @@ export function UsageStatisticsPanel({
 
   const refreshUsageRequests = useCallback(
     async (limit: number) => {
-      if (usageRequestRefreshInFlightRef.current) return
+      if (usageRequestRefreshInFlightRef.current) {
+        usageRequestRefreshPendingRef.current = true
+        usageRequestRefreshPendingLimitRef.current = limit
+        return
+      }
       usageRequestRefreshInFlightRef.current = true
       const requestSeq = usageRequestFetchSeqRef.current + 1
       usageRequestFetchSeqRef.current = requestSeq
@@ -1605,6 +1624,7 @@ export function UsageStatisticsPanel({
         const nextRows = res.rows ?? []
         setUsageRequestRows(nextRows)
         setUsageRequestHasMore(Boolean(res.has_more))
+        usageRequestResolvedQueryKeyRef.current = requestQueryKey
         if (nextRows.length > 0) {
           usageRequestsLastNonEmptyPageCache = {
             queryKey: requestQueryKey,
@@ -1621,6 +1641,7 @@ export function UsageStatisticsPanel({
           setUsageRequestHasMore(usageRequestTestRows.length > next.length)
           setUsageRequestUsingTestFallback(true)
           setUsageRequestError('')
+          usageRequestResolvedQueryKeyRef.current = requestQueryKey
           if (next.length > 0) {
             usageRequestsLastNonEmptyPageCache = {
               queryKey: requestQueryKey,
@@ -1633,11 +1654,17 @@ export function UsageStatisticsPanel({
           setUsageRequestRows([])
           setUsageRequestHasMore(false)
           setUsageRequestError(String(e))
+          usageRequestResolvedQueryKeyRef.current = requestQueryKey
         }
       } finally {
         usageRequestRefreshInFlightRef.current = false
         if (usageRequestFetchSeqRef.current === requestSeq) {
           setUsageRequestLoading(false)
+        }
+        if (usageRequestRefreshPendingRef.current) {
+          const nextLimit = usageRequestRefreshPendingLimitRef.current
+          usageRequestRefreshPendingRef.current = false
+          void refreshUsageRequestsRef.current(nextLimit)
         }
       }
     },
@@ -1649,10 +1676,15 @@ export function UsageStatisticsPanel({
       requestFetchOrigins,
       requestFetchSessions,
       requestFetchToUnixMs,
+      requestQueryKey,
       usageRequestTestFallbackEnabled,
       usageRequestTestRows,
     ],
   )
+  const refreshUsageRequestsRef = useRef<(limit: number) => Promise<void>>(refreshUsageRequests)
+  useEffect(() => {
+    refreshUsageRequestsRef.current = refreshUsageRequests
+  }, [refreshUsageRequests])
   const refreshUsageRequestSummary = useCallback(async () => {
     const requestSeq = usageRequestSummaryFetchSeqRef.current + 1
     usageRequestSummaryFetchSeqRef.current = requestSeq
@@ -1754,6 +1786,11 @@ export function UsageStatisticsPanel({
       } finally {
         usageRequestRefreshInFlightRef.current = false
         setUsageRequestMergeTick((tick) => tick + 1)
+        if (usageRequestRefreshPendingRef.current) {
+          const nextLimit = usageRequestRefreshPendingLimitRef.current
+          usageRequestRefreshPendingRef.current = false
+          void refreshUsageRequestsRef.current(nextLimit)
+        }
       }
     },
     [
@@ -1764,6 +1801,8 @@ export function UsageStatisticsPanel({
       requestFetchProviders,
       requestFetchSessions,
       requestFetchToUnixMs,
+      requestQueryKey,
+      refreshUsageRequests,
     ],
   )
   const prefetchUsageRequestsPageCache = useCallback(async (limit: number) => {
@@ -2096,6 +2135,7 @@ export function UsageStatisticsPanel({
     })
     if (!source || source.rows.length === 0) return
     usageRequestLoadedQueryKeyRef.current = source.queryKey
+    usageRequestResolvedQueryKeyRef.current = source.queryKey
     setUsageRequestRows(source.rows)
     setUsageRequestHasMore(source.hasMore)
     setUsageRequestUsingTestFallback(source.usingTestFallback)
@@ -2150,6 +2190,7 @@ export function UsageStatisticsPanel({
       // Prefer showing cached rows immediately when entering Requests, even if previous state belonged to a different query.
       if (usageRequestLoadedQueryKeyRef.current !== requestQueryKey || usageRequestRows.length === 0) {
         usageRequestLoadedQueryKeyRef.current = requestQueryKey
+        usageRequestResolvedQueryKeyRef.current = requestQueryKey
         setUsageRequestRows(requestPageCached.rows)
         setUsageRequestHasMore(requestPageCached.hasMore)
         setUsageRequestUsingTestFallback(requestPageCached.usingTestFallback)
@@ -2193,14 +2234,11 @@ export function UsageStatisticsPanel({
         return
       }
 
-      const shouldRefresh = usageRequestLoadedQueryKeyRef.current !== requestQueryKey || usageRequestRows.length === 0
+      const shouldRefresh =
+        usageRequestLoadedQueryKeyRef.current !== requestQueryKey ||
+        (usageRequestRows.length === 0 && usageRequestResolvedQueryKeyRef.current !== requestQueryKey)
       if (shouldRefresh) {
         usageRequestLoadedQueryKeyRef.current = requestQueryKey
-        if (hasStrictRequestQuery && usageRequestRows.length > 0) {
-          // Strict filters (date/provider/model/origin/session) must not render stale rows.
-          setUsageRequestRows([])
-          setUsageRequestHasMore(false)
-        }
         void refreshUsageRequests(initialRefreshLimit)
         void refreshUsageRequestGraphRows()
         return
@@ -2355,6 +2393,11 @@ export function UsageStatisticsPanel({
     } finally {
       usageRequestRefreshInFlightRef.current = false
       setUsageRequestLoading(false)
+      if (usageRequestRefreshPendingRef.current) {
+        const nextLimit = usageRequestRefreshPendingLimitRef.current
+        usageRequestRefreshPendingRef.current = false
+        void refreshUsageRequestsRef.current(nextLimit)
+      }
     }
   }, [
     requestFetchHours,
@@ -2364,6 +2407,8 @@ export function UsageStatisticsPanel({
     requestFetchProviders,
     requestFetchSessions,
     requestFetchToUnixMs,
+    requestQueryKey,
+    refreshUsageRequests,
     usageRequestHasMore,
     usageRequestLoading,
     usageRequestRows.length,
@@ -3026,6 +3071,19 @@ export function UsageStatisticsPanel({
   const displayedFilteredUsageRequestRows = shouldUseImmediateRequestRows
     ? filteredUsageRequestRows
     : deferredFilteredUsageRequestRows
+  useEffect(() => {
+    if (displayedFilteredUsageRequestRows.length === 0) return
+    usageRequestLastRenderedRowsRef.current = displayedFilteredUsageRequestRows
+  }, [displayedFilteredUsageRequestRows])
+  const showPreviousRowsDuringQuerySwitch =
+    displayedFilteredUsageRequestRows.length === 0 &&
+    hasStrictRequestQuery &&
+    !hasImpossibleRequestFilters &&
+    usageRequestResolvedQueryKeyRef.current !== requestQueryKey &&
+    usageRequestLastRenderedRowsRef.current.length > 0
+  const tableRowsForDisplay = showPreviousRowsDuringQuerySwitch
+    ? usageRequestLastRenderedRowsRef.current
+    : displayedFilteredUsageRequestRows
   const totalRequestRowsForDisplay = rowsForRequestRender.length
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
@@ -4094,16 +4152,18 @@ export function UsageStatisticsPanel({
                     <col className="aoUsageReqColCacheRead" />
                   </colgroup>
                   <tbody>
-                    {!displayedFilteredUsageRequestRows.length && !usageRequestLoading ? (
+                    {!tableRowsForDisplay.length ? (
                       <tr>
                         <td colSpan={9} className="aoHint">
-                          {defaultTodayOnly && usageRequestHasMore && totalRequestRowsForDisplay === 0
+                          {usageRequestLoading
+                            ? 'Loading rows...'
+                            : defaultTodayOnly && usageRequestHasMore && totalRequestRowsForDisplay === 0
                             ? "Loading today's rows..."
                             : 'No request rows match current filters.'}
                         </td>
                       </tr>
                     ) : (
-                      displayedFilteredUsageRequestRows.map((row) => (
+                      tableRowsForDisplay.map((row) => (
                         <tr key={usageRequestRowIdentity(row)}>
                           <td>{fmtWhen(row.unix_ms)}</td>
                           <td className="aoUsageRequestsMono">{resolveRequestProviderName(row.provider)}</td>
@@ -4208,7 +4268,7 @@ export function UsageStatisticsPanel({
                   : 'All loaded'}
             </span>
             <span className="aoHint">
-              {displayedFilteredUsageRequestRows.length.toLocaleString()} / {totalRequestRowsForDisplay.toLocaleString()} rows
+              {tableRowsForDisplay.length.toLocaleString()} / {totalRequestRowsForDisplay.toLocaleString()} rows
             </span>
           </div>
         </div>
