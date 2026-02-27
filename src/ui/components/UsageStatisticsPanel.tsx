@@ -294,7 +294,8 @@ export const USAGE_REQUESTS_CANONICAL_QUERY_KEY = buildUsageRequestsQueryKey({
 const USAGE_REQUESTS_CACHE_PRIMED_EVENT = 'ao:usage-requests-cache-primed'
 const USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS = 4_000
 const USAGE_REQUEST_GRAPH_FETCH_HOURS = 24 * 365 * 20
-const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT = 1000
+const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN = 1000
+const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT = USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN * 2
 export const USAGE_REQUEST_GRAPH_QUERY_KEY = 'usage_request_graph:v1:all-history'
 const USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS = 15_000
 let usageRequestsPageCache: UsageRequestsPageCache | null = null
@@ -1885,21 +1886,56 @@ export function UsageStatisticsPanel({
           : EMPTY_USAGE_REQUEST_ROWS
       let canonicalPageRows = canonicalPageRowsFromCache
       try {
-        const canonicalRes = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-          ...buildUsageRequestEntriesArgs({
-            hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
-            fromUnixMs: null,
-            toUnixMs: null,
-            providers: null,
-            models: null,
-            origins: null,
-            sessions: null,
-            limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT,
-            offset: 0,
-          }),
-        })
+        // Fetch Windows/WSL2 independently so one origin does not starve the other
+        // when the latest global window is skewed.
+        const canonicalByOrigin = await Promise.allSettled(
+          (['windows', 'wsl2'] as const).map((origin) =>
+            invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
+              ...buildUsageRequestEntriesArgs({
+                hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
+                fromUnixMs: null,
+                toUnixMs: null,
+                providers: null,
+                models: null,
+                origins: [origin],
+                sessions: null,
+                limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN,
+                offset: 0,
+              }),
+            }),
+          ),
+        )
         if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
-        canonicalPageRows = (canonicalRes.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms)
+        let mergedByOrigin: UsageRequestEntry[] = EMPTY_USAGE_REQUEST_ROWS
+        for (const result of canonicalByOrigin) {
+          if (result.status !== 'fulfilled') continue
+          const originRows = (result.value.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms)
+          if (!originRows.length) continue
+          mergedByOrigin = mergeUsageRequestRowsUniqueNewestFirst(
+            originRows,
+            mergedByOrigin,
+            USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT,
+          )
+        }
+        if (mergedByOrigin.length > 0) {
+          canonicalPageRows = mergedByOrigin
+        } else {
+          const canonicalRes = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
+            ...buildUsageRequestEntriesArgs({
+              hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
+              fromUnixMs: null,
+              toUnixMs: null,
+              providers: null,
+              models: null,
+              origins: null,
+              sessions: null,
+              limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT,
+              offset: 0,
+            }),
+          })
+          if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
+          canonicalPageRows = (canonicalRes.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms)
+        }
       } catch {
         canonicalPageRows = canonicalPageRowsFromCache
       }
