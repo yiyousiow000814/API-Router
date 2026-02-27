@@ -368,6 +368,17 @@ fn provider_per_request_cost_signal(
     None
 }
 
+fn dense_rank_u64(values: &[u64]) -> HashMap<u64, u64> {
+    let mut unique = values.to_vec();
+    unique.sort_unstable();
+    unique.dedup();
+    unique
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| (value, index as u64))
+        .collect()
+}
+
 fn provider_is_balanced_candidate(
     st: &GatewayState,
     cfg: &AppConfig,
@@ -524,7 +535,7 @@ fn pick_balanced_provider(
     }
     let min_provider_cost = provider_costs.values().copied().fold(f64::INFINITY, f64::min);
     let has_cost_signal = min_provider_cost.is_finite() && min_provider_cost > 0.0;
-    candidates
+    let scored = candidates
         .into_iter()
         .map(|provider| {
             let provider_load = assignment_counts
@@ -576,21 +587,87 @@ fn pick_balanced_provider(
             let hash_rank = balanced_session_provider_score(session_key, &provider);
             (
                 provider,
-                (
-                    bucket_pressure_rank,
-                    provider_pressure_rank,
-                    daily_budget_pressure_rank,
-                    capacity_fit_rank,
-                    cost_pressure_rank,
-                    preferred_rank,
-                    hash_rank,
-                ),
+                bucket_pressure_rank,
+                provider_pressure_rank,
+                daily_budget_pressure_rank,
+                capacity_fit_rank,
+                cost_pressure_rank,
+                preferred_rank,
+                hash_rank,
                 provider_load,
                 bucket_load,
             )
         })
-        .min_by_key(|(_, score, _, _)| *score)
-        .map(|(provider, _, provider_load, bucket_load)| (provider, provider_load, bucket_load))
+        .collect::<Vec<_>>();
+
+    let bucket_ranks = dense_rank_u64(
+        &scored
+            .iter()
+            .map(|(_, bucket, _, _, _, _, _, _, _, _)| *bucket)
+            .collect::<Vec<_>>(),
+    );
+    let provider_ranks = dense_rank_u64(
+        &scored
+            .iter()
+            .map(|(_, _, provider, _, _, _, _, _, _, _)| *provider)
+            .collect::<Vec<_>>(),
+    );
+    let daily_ranks = dense_rank_u64(
+        &scored
+            .iter()
+            .map(|(_, _, _, daily, _, _, _, _, _, _)| *daily)
+            .collect::<Vec<_>>(),
+    );
+    let capacity_ranks = dense_rank_u64(
+        &scored
+            .iter()
+            .map(|(_, _, _, _, capacity, _, _, _, _, _)| *capacity)
+            .collect::<Vec<_>>(),
+    );
+    let cost_ranks = dense_rank_u64(
+        &scored
+            .iter()
+            .map(|(_, _, _, _, _, cost, _, _, _, _)| *cost)
+            .collect::<Vec<_>>(),
+    );
+
+    scored
+        .into_iter()
+        .min_by_key(
+            |(
+                _provider,
+                bucket_pressure_rank,
+                provider_pressure_rank,
+                daily_budget_pressure_rank,
+                capacity_fit_rank,
+                cost_pressure_rank,
+                preferred_rank,
+                hash_rank,
+                _provider_load,
+                _bucket_load,
+            )| {
+                let combined_rank = bucket_ranks
+                    .get(bucket_pressure_rank)
+                    .copied()
+                    .unwrap_or(0)
+                    + provider_ranks
+                        .get(provider_pressure_rank)
+                        .copied()
+                        .unwrap_or(0)
+                    + daily_ranks
+                        .get(daily_budget_pressure_rank)
+                        .copied()
+                        .unwrap_or(0)
+                    + capacity_ranks.get(capacity_fit_rank).copied().unwrap_or(0)
+                    + cost_ranks.get(cost_pressure_rank).copied().unwrap_or(0);
+                (combined_rank, *preferred_rank, *hash_rank)
+            },
+        )
+        .map(
+            |(provider, _, _, _, _, _, _, _, provider_load, bucket_load)| {
+                (provider, provider_load, bucket_load)
+            },
+        )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1283,6 +1360,14 @@ mod routing_and_status_tests {
             pressure >= BALANCED_DAILY_BUDGET_PRESSURE_CRITICAL_FLOOR,
             "expected near-cap pressure floor, got {pressure}"
         );
+    }
+
+    #[test]
+    fn dense_rank_u64_assigns_same_rank_to_equal_values() {
+        let ranks = dense_rank_u64(&[5, 1, 5, 9, 1]);
+        assert_eq!(ranks.get(&1), Some(&0));
+        assert_eq!(ranks.get(&5), Some(&1));
+        assert_eq!(ranks.get(&9), Some(&2));
     }
 
     #[test]
