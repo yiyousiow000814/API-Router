@@ -2,7 +2,6 @@ import type * as React from 'react'
 import type { Config, Status } from '../types'
 import { fmtWhen } from './format'
 import {
-  QUOTA_HARD_CAP_PERIODS,
   getVisibleBudgetHardCapPeriods,
   isBudgetInfoQuota,
 } from './providerBudgetWindows'
@@ -49,7 +48,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
     const hasBudgetInfo = isBudgetInfoQuota(quota)
     const visibleHardCapPeriods = getVisibleBudgetHardCapPeriods(quota)
     const showBudgetWindows = hasBudgetInfo && visibleHardCapPeriods.length > 0
-    const hardCapPeriods = showBudgetWindows ? visibleHardCapPeriods : [...QUOTA_HARD_CAP_PERIODS]
+    const hardCapPeriods = visibleHardCapPeriods
     const budgetHardCapLabel = hardCapPeriods.join('/')
     const allVisibleHardCapsDisabled =
       hardCapPeriods.length > 0 && hardCapPeriods.every((key) => !quotaHardCap[key])
@@ -272,7 +271,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     {showBudgetWindows ? (
                       <div className="aoHint">Hard cap auto-closes this provider when {budgetHardCapLabel} budget is exhausted.</div>
                     ) : (
-                      <div className="aoHint">Budget windows not detected yet. Hard cap toggles are still saved and will apply once usage windows appear.</div>
+                      <div className="aoHint">Budget windows not detected yet. Hard cap options are hidden until usage windows appear.</div>
                     )}
                     {hardCapWarningText ? (
                       <div className="aoHint" style={{ color: 'rgba(145, 12, 43, 0.92)' }}>

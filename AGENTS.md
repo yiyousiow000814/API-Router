@@ -34,6 +34,8 @@
 - **Evidence requirement**: Back conclusions with reproducible commands or steps (state A → change → state B).
 - **Test-first fix flow**: When adding tests or fixing bugs, always follow this sequence: (1) create a reproducible test, (2) verify it fails on current code, (3) implement the fix, (4) verify the test passes.
 - **EXE build workflow**: For local Windows EXE output, prefer `npm run build:root-exe:checked`. Use `npm run build:root-exe` only when UI check is intentionally skipped.
+- **EXE launch path policy (required)**: For manual open/restart requests, launch only repo-root executables: `API Router.exe` (or `API Router [TEST].exe` for test runs). Do not launch `src-tauri/target/release/api_router.exe` directly unless the user explicitly asks for the raw Tauri build artifact.
+- **EXE naming policy (required)**: Treat repo-root `API Router.exe` as the canonical runtime binary name. `api_router.exe` is a build artifact under `src-tauri/target/...` and should not be used as the default launch target.
 - **Line endings**: Use LF as the repository standard. CRLF is only allowed for Windows script files (`.bat`, `.cmd`, `.ps1`).
 - **File size guideline (industry style)**: Prefer small, focused files (roughly 200-500 lines) when practical.
 - **Hard cap**: For non-lock source files, 800 lines is the maximum. If a file goes over 800 lines, split it into coherent modules/files in the same PR unless there is a clear, documented reason not to.

@@ -1,5 +1,5 @@
 import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from '../utils/format'
-import type { Status } from '../types'
+import type { Config, Status } from '../types'
 
 const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
 
@@ -12,12 +12,20 @@ export type LastErrorJump = {
 type Props = {
   providers: string[]
   status: Status
+  config?: Config | null
   refreshingProviders: Record<string, boolean>
   onRefreshQuota: (provider: string) => void
   onOpenLastErrorInEventLog: (payload: LastErrorJump) => void
 }
 
-export function ProvidersTable({ providers, status, refreshingProviders, onRefreshQuota, onOpenLastErrorInEventLog }: Props) {
+export function ProvidersTable({
+  providers,
+  status,
+  config = null,
+  refreshingProviders,
+  onRefreshQuota,
+  onOpenLastErrorInEventLog,
+}: Props) {
   const ONE_DAY_MS = 24 * 60 * 60 * 1000
   const fmtDateOnly = (unixMs: number): string => fmtWhen(unixMs).split(' ')[0] ?? '-'
   const isExpiryUrgent = (unixMs: number): boolean => Number.isFinite(unixMs) && unixMs > 0 && unixMs - Date.now() <= ONE_DAY_MS
@@ -46,6 +54,7 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
           const h = status.providers[p]
           const q = status.quota?.[p]
           const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
+          const quotaHardCap = config?.providers?.[p]?.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
           const isClosed = h.status === 'closed'
           const cooldownActive = !isClosed && h.cooldown_until_unix_ms > Date.now()
           const isActive = (status.active_provider_counts?.[p] ?? 0) > 0
@@ -112,10 +121,14 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
               <div className="aoUsageMini">
                 <div className="aoUsageSplit">
                   <div className="aoUsageText">
-                    <div className="aoUsageLine">
-                      daily: ${fmtUsd(q?.daily_spent_usd)} / ${fmtUsd(q?.daily_budget_usd)}
-                    </div>
                     {(() => {
+                      const usageLines: Array<{ key: string; content: string }> = []
+                      if (quotaHardCap.daily) {
+                        usageLines.push({
+                          key: 'daily',
+                          content: `daily: $${fmtUsd(q?.daily_spent_usd)} / $${fmtUsd(q?.daily_budget_usd)}`,
+                        })
+                      }
                       const hasWeeklySpent = q?.weekly_spent_usd != null
                       const hasWeeklyBudget = q?.weekly_budget_usd != null
                       const hasMonthly = q?.monthly_spent_usd != null || q?.monthly_budget_usd != null
@@ -125,32 +138,32 @@ export function ProvidersTable({ providers, status, refreshingProviders, onRefre
                       // when weekly is deprecated; in that case we show monthly instead.
                       const shouldShowWeekly = hasWeeklySpent && hasWeeklyBudget
 
-                      if (!shouldShowWeekly && hasMonthly) {
-                        return (
-                          <div className="aoUsageLine">
-                            monthly: ${fmtUsd(q?.monthly_spent_usd)} / ${fmtUsd(q?.monthly_budget_usd)}
-                          </div>
-                        )
+                      if (quotaHardCap.weekly && shouldShowWeekly) {
+                        usageLines.push({
+                          key: 'weekly',
+                          content: `weekly: $${fmtUsd(q?.weekly_spent_usd)} / $${fmtUsd(q?.weekly_budget_usd)}`,
+                        })
+                      } else if (quotaHardCap.monthly && hasMonthly) {
+                        usageLines.push({
+                          key: 'monthly',
+                          content: `monthly: $${fmtUsd(q?.monthly_spent_usd)} / $${fmtUsd(q?.monthly_budget_usd)}`,
+                        })
+                      } else if (quotaHardCap.weekly && hasWeeklyBudget) {
+                        usageLines.push({
+                          key: 'weekly-na',
+                          content: `weekly: n/a / $${fmtUsd(q?.weekly_budget_usd)}`,
+                        })
                       }
 
-                      if (shouldShowWeekly) {
-                        const weeklySpent = `$${fmtUsd(q?.weekly_spent_usd)}`
-                        return (
-                          <div className="aoUsageLine">
-                            weekly: {weeklySpent} / ${fmtUsd(q?.weekly_budget_usd)}
-                          </div>
-                        )
+                      if (usageLines.length === 0) {
+                        return <span className="aoHint">-</span>
                       }
 
-                      // Last resort: show whatever we have without rendering confusing "-".
-                      if (hasWeeklyBudget) {
-                        return (
-                          <div className="aoUsageLine">
-                            weekly: n/a / ${fmtUsd(q?.weekly_budget_usd)}
-                          </div>
-                        )
-                      }
-                      return null
+                      return usageLines.map((line) => (
+                        <div key={line.key} className="aoUsageLine">
+                          {line.content}
+                        </div>
+                      ))
                     })()}
                   </div>
                   <button
