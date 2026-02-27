@@ -158,6 +158,15 @@ fn codex_session_id_from_request(headers: &HeaderMap, body: &Value) -> Option<St
     None
 }
 
+fn scrub_session_id_aliases_from_body(body: &mut Value) {
+    let Some(map) = body.as_object_mut() else {
+        return;
+    };
+    for key in ["session_id", "session", "codex_session_id", "codexSessionId"] {
+        map.remove(key);
+    }
+}
+
 fn body_session_source_is_agent(body: &Value) -> bool {
     let source = body
         .get("session_source")
@@ -271,7 +280,9 @@ fn find_codex_session_file_in(base: &Path, session_id: &str) -> Option<PathBuf> 
     }
     let mut stack = vec![sessions_dir];
     while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir).ok()?;
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -346,6 +357,18 @@ fn prefer_newer_session_messages(
     }
 }
 
+fn session_history_snapshot_looks_incomplete(messages: &[Value]) -> bool {
+    // When previous_response_id exists, a stable snapshot should typically end with assistant.
+    // If it ends with user, treat it as a likely partial flush and retry once.
+    !matches!(
+        messages
+            .last()
+            .and_then(|v| v.get("role"))
+            .and_then(|v| v.as_str()),
+        Some("assistant")
+    )
+}
+
 fn ends_with_items(haystack: &[Value], needle: &[Value]) -> bool {
     if needle.is_empty() {
         return true;
@@ -359,7 +382,10 @@ fn ends_with_items(haystack: &[Value], needle: &[Value]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{body_agent_parent_session_id, usage_origin_from_base_url};
+    use super::{
+        body_agent_parent_session_id, session_history_snapshot_looks_incomplete,
+        usage_origin_from_base_url,
+    };
     use serde_json::json;
 
     #[test]
@@ -428,5 +454,32 @@ mod tests {
             }
         });
         assert!(body_agent_parent_session_id(&body).is_none());
+    }
+
+    #[test]
+    fn session_history_snapshot_detects_incomplete_when_last_is_user() {
+        let messages = vec![json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "age?"}]
+        })];
+        assert!(session_history_snapshot_looks_incomplete(&messages));
+    }
+
+    #[test]
+    fn session_history_snapshot_detects_complete_when_last_is_assistant() {
+        let messages = vec![
+            json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "age?"}]
+            }),
+            json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "27"}]
+            }),
+        ];
+        assert!(!session_history_snapshot_looks_incomplete(&messages));
     }
 }

@@ -148,6 +148,7 @@ async fn switches_provider_rebuilds_history_without_prev_id() {
 
     let captured = captured.lock().clone().expect("captured body");
     assert!(captured.get("previous_response_id").is_none());
+    assert!(captured.get("session_id").is_none());
     let expected_input = json!([
         {
             "type": "message",
@@ -318,6 +319,7 @@ async fn switches_provider_rebuilds_history_with_session_alias_header() {
 
     let captured = captured.lock().clone().expect("captured body");
     assert!(captured.get("previous_response_id").is_none());
+    assert!(captured.get("session_id").is_none());
     let expected_input = json!([
         {
             "type": "message",
@@ -488,6 +490,7 @@ async fn switches_provider_rebuilds_history_with_session_id_in_body() {
 
     let captured = captured.lock().clone().expect("captured body");
     assert!(captured.get("previous_response_id").is_none());
+    assert!(captured.get("session_id").is_none());
     let expected_input = json!([
         {
             "type": "message",
