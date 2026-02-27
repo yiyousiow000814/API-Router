@@ -124,6 +124,9 @@ fn usage_origin_from_base_url(base_url: Option<&str>) -> &'static str {
     crate::constants::USAGE_ORIGIN_UNKNOWN
 }
 
+const CODEX_SESSION_BODY_ALIASES: [&str; 3] =
+    ["session_id", "codex_session_id", "codexSessionId"];
+
 fn codex_session_id_from_request(headers: &HeaderMap, body: &Value) -> Option<String> {
     for k in [
         "session_id",
@@ -140,12 +143,7 @@ fn codex_session_id_from_request(headers: &HeaderMap, body: &Value) -> Option<St
             }
         }
     }
-    for k in [
-        "session_id",
-        "session",
-        "codex_session_id",
-        "codexSessionId",
-    ] {
+    for k in CODEX_SESSION_BODY_ALIASES {
         if let Some(v) = body.get(k) {
             if let Some(s) = v.as_str() {
                 let s = s.trim();
@@ -162,7 +160,7 @@ fn scrub_session_id_aliases_from_body(body: &mut Value) {
     let Some(map) = body.as_object_mut() else {
         return;
     };
-    for key in ["session_id", "session", "codex_session_id", "codexSessionId"] {
+    for key in CODEX_SESSION_BODY_ALIASES {
         map.remove(key);
     }
 }
@@ -383,9 +381,11 @@ fn ends_with_items(haystack: &[Value], needle: &[Value]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        body_agent_parent_session_id, session_history_snapshot_looks_incomplete,
+        body_agent_parent_session_id, codex_session_id_from_request,
+        scrub_session_id_aliases_from_body, session_history_snapshot_looks_incomplete,
         usage_origin_from_base_url,
     };
+    use axum::http::HeaderMap;
     use serde_json::json;
 
     #[test]
@@ -481,5 +481,32 @@ mod tests {
             }),
         ];
         assert!(!session_history_snapshot_looks_incomplete(&messages));
+    }
+
+    #[test]
+    fn body_generic_session_field_is_not_used_as_codex_session_id() {
+        let headers = HeaderMap::new();
+        let body = json!({
+            "session": "generic-session",
+        });
+        assert!(codex_session_id_from_request(&headers, &body).is_none());
+    }
+
+    #[test]
+    fn scrub_session_aliases_keeps_generic_session_field() {
+        let mut body = json!({
+            "session": "generic-session",
+            "session_id": "sid",
+            "codex_session_id": "sid2",
+            "codexSessionId": "sid3",
+        });
+        scrub_session_id_aliases_from_body(&mut body);
+        assert_eq!(
+            body.get("session").and_then(|v| v.as_str()),
+            Some("generic-session")
+        );
+        assert!(body.get("session_id").is_none());
+        assert!(body.get("codex_session_id").is_none());
+        assert!(body.get("codexSessionId").is_none());
     }
 }
