@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { Config } from '../types'
+import type { Config, Status } from '../types'
 import { ModalBackdrop } from './ModalBackdrop'
 import type { QuotaHardCapField } from '../hooks/providerActions/useProviderUsageActions'
-import { QUOTA_HARD_CAP_PERIODS } from '../utils/providerBudgetWindows'
+import { getBudgetWindowVisibleByPeriod, QUOTA_HARD_CAP_PERIODS } from '../utils/providerBudgetWindows'
 import { inferGroupUsageBase } from '../utils/groupUsageBase'
 
 type Props = {
   open: boolean
   config: Config | null
+  status: Status | null
   orderedConfigProviders: string[]
   focusProvider?: string | null
   onClose: () => void
@@ -29,6 +30,7 @@ function orderedProviders(config: Config, ordered: string[], includeDisabled = f
 export function ProviderGroupManagerModal({
   open,
   config,
+  status,
   orderedConfigProviders,
   focusProvider,
   onClose,
@@ -261,6 +263,9 @@ export function ProviderGroupManagerModal({
                 {groupEntries.map(({ name, members }) => {
                   const visibleMembers = members.filter((provider) => !config.providers?.[provider]?.disabled)
                   const groupActionTarget = visibleMembers[0] ?? members[0] ?? ''
+                  const visibleHardCapPeriods = QUOTA_HARD_CAP_PERIODS.filter((period) =>
+                    members.some((provider) => getBudgetWindowVisibleByPeriod(status?.quota?.[provider])[period]),
+                  )
                   const groupHardCap = QUOTA_HARD_CAP_PERIODS.reduce(
                     (acc, period) => {
                       acc[period] = members.every(
@@ -355,7 +360,7 @@ export function ProviderGroupManagerModal({
 
                       <div className="aoUsageTop">
                         <div className="aoUsageHardCapInline">
-                          {QUOTA_HARD_CAP_PERIODS.map((period) => (
+                          {visibleHardCapPeriods.map((period) => (
                             <label key={`group-hard-cap-${name}-${period}`} className="aoUsageHardCapItem">
                               <input
                                 type="checkbox"
@@ -374,6 +379,9 @@ export function ProviderGroupManagerModal({
                           ))}
                         </div>
                       </div>
+                      {visibleHardCapPeriods.length === 0 ? (
+                        <div className="aoHint">Budget windows not detected yet. Hard cap options are hidden until usage windows appear.</div>
+                      ) : null}
                       {showUsageBaseWarning ? (
                         <div className="aoHint aoHintWarning">
                           Warning: Group members should share the same usage base URL (usage fetch endpoint, not provider base URL).

@@ -1381,6 +1381,7 @@ export default function App() {
       <ProviderGroupManagerModal
         open={providerGroupManagerOpen}
         config={config}
+        status={status}
         orderedConfigProviders={orderedConfigProviders}
         focusProvider={providerGroupManagerFocusProvider}
         onClose={() => {
