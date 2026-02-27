@@ -433,7 +433,7 @@ function countUsageRequestLinePoints(present: boolean[]): number {
   return count
 }
 
-function detectUsageRequestLineShiftSteps(
+export function detectUsageRequestLineShiftSteps(
   prevPointIds: string[],
   prevCount: number,
   nextPointIds: string[],
@@ -455,6 +455,42 @@ function detectUsageRequestLineShiftSteps(
     if (matches) return shift
   }
   return 0
+}
+
+export function resolveUsageRequestSlideSteps(rawSteps: number, maxShiftSteps: number): number {
+  const parsed = Math.floor(Number(rawSteps))
+  const safeRaw = Number.isFinite(parsed) ? parsed : 1
+  const safeMax = Math.max(1, Math.floor(Number(maxShiftSteps)) || 1)
+  return Math.max(1, Math.min(safeRaw, safeMax))
+}
+
+export function resolveUsageRequestSlidingPreview(input: {
+  values: number[]
+  currentCount: number
+  shiftSteps: number
+  maxShiftSteps: number
+}): { slideSteps: number; previewNextValues: number[]; previewNextValue: number | null } {
+  const slideSteps = resolveUsageRequestSlideSteps(input.shiftSteps, input.maxShiftSteps)
+  const previewNextValues = input.values.slice(
+    Math.max(0, input.currentCount - slideSteps),
+    input.currentCount,
+  )
+  const previewNextValue =
+    previewNextValues[previewNextValues.length - 1] ??
+    input.values[Math.max(0, input.currentCount - 1)] ??
+    null
+  return { slideSteps, previewNextValues, previewNextValue }
+}
+
+export function calculateUsageRequestSlideOffsetX(
+  requestLineAnimPhase: number,
+  requestLinePointSpacing: number,
+  slideSteps: number,
+): number {
+  const phase = Math.max(0, Math.min(1, Number(requestLineAnimPhase)))
+  const spacing = Number.isFinite(requestLinePointSpacing) ? requestLinePointSpacing : 0
+  const steps = Math.max(1, Math.floor(Number(slideSteps)) || 1)
+  return phase * spacing * steps
 }
 
 function cloneUsageRequestLineSeries(series: UsageRequestLineSeries[]): UsageRequestLineSeries[] {
@@ -2769,15 +2805,12 @@ export function UsageStatisticsPanel({
             present[pointIndex] = true
             pointIndex += 1
           }
-          const slideSteps = Math.max(1, Math.min(meta.shiftSteps, usageRequestGraphPointCount - 1))
-          const previewNextValues = series.values.slice(
-            Math.max(0, currentCount - slideSteps),
+          const { slideSteps, previewNextValues, previewNextValue } = resolveUsageRequestSlidingPreview({
+            values: series.values,
             currentCount,
-          )
-          const previewNextValue =
-            previewNextValues[previewNextValues.length - 1] ??
-            series.values[Math.max(0, currentCount - 1)] ??
-            null
+            shiftSteps: meta.shiftSteps,
+            maxShiftSteps: usageRequestGraphPointCount - 1,
+          })
           return {
             ...series,
             values,
@@ -3601,18 +3634,13 @@ export function UsageStatisticsPanel({
                                     (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
                                       (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
                                   )
-                                  const slideSteps = Math.max(
-                                    1,
-                                    Math.floor(
-                                      Number(
-                                        (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
-                                          .fallbackSlidingShiftSteps ??
-                                          (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
-                                            .liveSlidingShiftSteps ??
-                                          1,
-                                      ),
-                                    ) || 1,
-                                  )
+                                  const rawSlideSteps =
+                                    (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
+                                      .fallbackSlidingShiftSteps ??
+                                    (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
+                                      .liveSlidingShiftSteps ??
+                                    1
+                                  const slideSteps = resolveUsageRequestSlideSteps(rawSlideSteps, usageRequestGraphPointCount - 1)
                                   const previewNextValuesRaw =
                                     (series as { fallbackPreviewNextValues?: number[] | null; livePreviewNextValues?: number[] | null })
                                       .fallbackPreviewNextValues ??
@@ -3630,7 +3658,11 @@ export function UsageStatisticsPanel({
                                       ? [previewNextValue]
                                       : []
                                   const hasPreviewNextValue = previewNextValues.length > 0
-                                  const slideOffsetX = requestLineAnimPhase * requestLinePointSpacing * slideSteps
+                                  const slideOffsetX = calculateUsageRequestSlideOffsetX(
+                                    requestLineAnimPhase,
+                                    requestLinePointSpacing,
+                                    slideSteps,
+                                  )
                                   const isSlidingAnimating =
                                     isRequestsTab &&
                                     requestLineSliding &&
@@ -3731,24 +3763,23 @@ export function UsageStatisticsPanel({
                                         (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
                                           (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
                                       )
-                                      const slideSteps = Math.max(
-                                        1,
-                                        Math.floor(
-                                          Number(
-                                            (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
-                                              .fallbackSlidingShiftSteps ??
-                                              (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
-                                                .liveSlidingShiftSteps ??
-                                              1,
-                                          ),
-                                        ) || 1,
-                                      )
+                                      const rawSlideSteps =
+                                        (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
+                                          .fallbackSlidingShiftSteps ??
+                                        (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
+                                          .liveSlidingShiftSteps ??
+                                        1
+                                      const slideSteps = resolveUsageRequestSlideSteps(rawSlideSteps, usageRequestGraphPointCount - 1)
                                       const isSlidingAnimating =
                                         isRequestsTab &&
                                         requestLineSliding &&
                                         slidingEligible &&
                                         countUsageRequestLinePoints(series.present) > 1
-                                      const slideOffsetX = requestLineAnimPhase * requestLinePointSpacing * slideSteps
+                                      const slideOffsetX = calculateUsageRequestSlideOffsetX(
+                                        requestLineAnimPhase,
+                                        requestLinePointSpacing,
+                                        slideSteps,
+                                      )
                                       const x = isSlidingAnimating ? baseX - slideOffsetX : baseX
                                       const y =
                                         requestChartBottomY -
