@@ -42,10 +42,6 @@ fn contains_tool_value(value: &Value) -> bool {
     }
 }
 
-fn session_key_from_request(headers: &HeaderMap, body: &Value) -> Option<String> {
-    codex_session_id_from_request(headers, body)
-}
-
 fn request_base_url_hint(headers: &HeaderMap, listen_port: u16) -> Option<String> {
     let host_raw = headers
         .get(header::HOST)
@@ -126,10 +122,6 @@ fn usage_origin_from_base_url(base_url: Option<&str>) -> &'static str {
         return crate::constants::USAGE_ORIGIN_WINDOWS;
     }
     crate::constants::USAGE_ORIGIN_UNKNOWN
-}
-
-fn codex_session_id_for_display(headers: &HeaderMap, body: &Value) -> Option<String> {
-    codex_session_id_from_request(headers, body)
 }
 
 fn codex_session_id_from_request(headers: &HeaderMap, body: &Value) -> Option<String> {
@@ -287,7 +279,11 @@ fn find_codex_session_file_in(base: &Path, session_id: &str) -> Option<PathBuf> 
                 continue;
             }
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.contains(session_id) && name.ends_with(".jsonl") {
+                if name.ends_with(".jsonl")
+                    && name
+                        .strip_suffix(".jsonl")
+                        .is_some_and(|stem| stem.ends_with(session_id))
+                {
                     return Some(path);
                 }
             }
@@ -335,6 +331,7 @@ fn prefer_newer_session_messages(
     primary: Option<Vec<Value>>,
     secondary: Option<Vec<Value>>,
 ) -> Option<Vec<Value>> {
+    // Codex session jsonl writes are append-only; a larger item count is the fresher snapshot.
     match (primary, secondary) {
         (None, None) => None,
         (Some(primary), None) => Some(primary),

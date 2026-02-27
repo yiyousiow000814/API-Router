@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
@@ -76,4 +77,31 @@ fn setup_codex_session(
     }
     std::fs::write(&session_file, body_txt).unwrap();
     guard
+}
+
+fn locate_codex_session_file(tmp: &tempfile::TempDir, session_id: &str) -> PathBuf {
+    let mut stack = vec![tmp.path().join("sessions")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|v| v.to_str()) else {
+                continue;
+            };
+            if name.ends_with(".jsonl")
+                && name
+                    .strip_suffix(".jsonl")
+                    .is_some_and(|stem| stem.ends_with(session_id))
+            {
+                return path;
+            }
+        }
+    }
+    panic!("session file not found for {session_id}");
 }

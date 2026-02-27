@@ -596,7 +596,10 @@ async fn switches_provider_rebuilds_history_when_session_file_flush_is_delayed()
     let store = open_store_dir(tmp.path().join("data")).expect("store");
     let secrets = SecretStore::new(tmp.path().join("secrets.json"));
     let session_id = "session-switch-delayed-flush";
-    let initial_lines = [
+    let initial_lines: [serde_json::Value; 0] = [];
+    let _guard = setup_codex_session(&tmp, session_id, &initial_lines);
+    let session_file = locate_codex_session_file(&tmp, session_id);
+    let delayed_lines = [
         json!({
             "type": "response_item",
             "payload": {
@@ -613,17 +616,6 @@ async fn switches_provider_rebuilds_history_when_session_file_flush_is_delayed()
                 "content": [{"type": "output_text", "text": "codex"}]
             }
         }),
-    ];
-    let _guard = setup_codex_session(&tmp, session_id, &initial_lines);
-
-    let session_file = tmp
-        .path()
-        .join("sessions")
-        .join("2026")
-        .join("01")
-        .join("31")
-        .join(format!("rollout-2026-01-31T00-00-00-{session_id}.jsonl"));
-    let delayed_lines = [
         json!({
             "type": "response_item",
             "payload": {
@@ -641,8 +633,8 @@ async fn switches_provider_rebuilds_history_when_session_file_flush_is_delayed()
             }
         }),
     ];
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(30));
         let mut body_txt = String::new();
         for line in delayed_lines {
             body_txt.push_str(&line.to_string());
@@ -697,6 +689,7 @@ async fn switches_provider_rebuilds_history_when_session_file_flush_is_delayed()
         )
         .await
         .unwrap();
+    writer.join().expect("join delayed session writer");
     assert_eq!(resp.status(), StatusCode::OK);
 
     let captured = captured.lock().clone().expect("captured body");

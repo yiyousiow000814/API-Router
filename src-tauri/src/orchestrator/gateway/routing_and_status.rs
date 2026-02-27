@@ -1063,8 +1063,7 @@ async fn models(
 
     // Respect per-session preferred providers (keyed by Codex session id). Fall back to the global
     // preferred provider.
-    let session_key = session_key_from_request(&headers, &Value::Null)
-        .or_else(|| codex_session_id_for_display(&headers, &Value::Null))
+    let session_key = codex_session_id_from_request(&headers, &Value::Null)
         .unwrap_or_else(|| format!("peer:{peer}"));
 
     let preferred = cfg
