@@ -294,9 +294,11 @@ export const USAGE_REQUESTS_CANONICAL_QUERY_KEY = buildUsageRequestsQueryKey({
 const USAGE_REQUESTS_CACHE_PRIMED_EVENT = 'ao:usage-requests-cache-primed'
 const USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS = 4_000
 const USAGE_REQUEST_GRAPH_FETCH_HOURS = 24 * 365 * 20
+const USAGE_REQUEST_GRAPH_BASE_FETCH_ORIGINS = ['windows', 'wsl2', 'unknown'] as const
 const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN = 1000
 const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_FALLBACK = USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN
-const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT = USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN * 2
+const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT =
+  USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN * USAGE_REQUEST_GRAPH_BASE_FETCH_ORIGINS.length
 export const USAGE_REQUEST_GRAPH_QUERY_KEY = 'usage_request_graph:v1:all-history'
 const USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS = 15_000
 let usageRequestsPageCache: UsageRequestsPageCache | null = null
@@ -1890,7 +1892,7 @@ export function UsageStatisticsPanel({
         // Fetch Windows/WSL2 independently so one origin does not starve the other
         // when the latest global window is skewed.
         const canonicalByOrigin = await Promise.allSettled(
-          (['windows', 'wsl2', 'unknown'] as const).map((origin) =>
+          USAGE_REQUEST_GRAPH_BASE_FETCH_ORIGINS.map((origin) =>
             invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
               ...buildUsageRequestEntriesArgs({
                 hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
