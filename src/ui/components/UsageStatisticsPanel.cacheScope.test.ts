@@ -4,6 +4,7 @@ import {
   detectUsageRequestLineShiftSteps,
   buildUsageRequestsQueryKey,
   filterUsageRequestRowsByProviderIds,
+  isRequestsTabActivationEdge,
   mergeUsageRequestGraphRowsFromRealtime,
   normalizeUsageRequestProviderFilter,
   pickUsageRequestGraphBaseRows,
@@ -319,5 +320,34 @@ describe('provider filter helpers', () => {
     const filtered = filterUsageRequestRowsByProviderIds(rows as any, ['groupA-provider-1'])
     expect(filtered).toHaveLength(1)
     expect(filtered[0].provider).toBe('groupA-provider-1')
+  })
+})
+
+describe('isRequestsTabActivationEdge', () => {
+  it('returns true on first transition into Requests tab', () => {
+    expect(
+      isRequestsTabActivationEdge({
+        isRequestsTab: true,
+        wasRequestsTab: false,
+      }),
+    ).toBe(true)
+  })
+
+  it('returns false when already staying on Requests tab', () => {
+    expect(
+      isRequestsTabActivationEdge({
+        isRequestsTab: true,
+        wasRequestsTab: true,
+      }),
+    ).toBe(false)
+  })
+
+  it('returns false when leaving Requests tab', () => {
+    expect(
+      isRequestsTabActivationEdge({
+        isRequestsTab: false,
+        wasRequestsTab: true,
+      }),
+    ).toBe(false)
   })
 })
