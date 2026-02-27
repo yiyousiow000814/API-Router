@@ -629,6 +629,20 @@ export function pickUsageRequestGraphBaseRows(input: {
   return EMPTY_USAGE_REQUEST_ROWS
 }
 
+export function mergeUsageRequestGraphRowsFromRealtime(input: {
+  currentGraphRows: UsageRequestEntry[]
+  incomingRows: UsageRequestEntry[]
+  limit: number
+}): UsageRequestEntry[] {
+  if (input.incomingRows.length === 0) return input.currentGraphRows
+  const merged = mergeUsageRequestRowsUniqueNewestFirst(
+    input.incomingRows,
+    input.currentGraphRows,
+    Math.max(1, input.limit),
+  )
+  return areUsageRequestRowsIdentical(input.currentGraphRows, merged) ? input.currentGraphRows : merged
+}
+
 export function normalizeUsageRequestProviderFilter(
   providers: string[] | null,
 ): string[] | null {
@@ -1772,6 +1786,32 @@ export function UsageStatisticsPanel({
         if (usageRequestFetchSeqRef.current !== requestSeq) return
         const incoming = res.rows ?? []
         if (!incoming.length) return
+        if (!hasExplicitRequestFilters) {
+          setUsageRequestGraphBaseRows((prev) =>
+            mergeUsageRequestGraphRowsFromRealtime({
+              currentGraphRows: prev,
+              incomingRows: incoming,
+              limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT,
+            }),
+          )
+          const graphCache =
+            usageRequestGraphRowsCache != null && usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
+              ? usageRequestGraphRowsCache
+              : null
+          const currentGraphRows = graphCache?.baseRows ?? EMPTY_USAGE_REQUEST_ROWS
+          const mergedGraphRows = mergeUsageRequestGraphRowsFromRealtime({
+            currentGraphRows,
+            incomingRows: incoming,
+            limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT,
+          })
+          if (mergedGraphRows !== currentGraphRows) {
+            usageRequestGraphRowsCache = {
+              queryKey: requestGraphQueryKey,
+              baseRows: mergedGraphRows,
+              rowsByProvider: graphCache?.rowsByProvider ?? {},
+            }
+          }
+        }
         setUsageRequestRows((prev) => {
           if (!prev.length) return incoming
           const seen = new Set(prev.map(usageRequestRowIdentity))
@@ -1809,6 +1849,8 @@ export function UsageStatisticsPanel({
       requestFetchProviders,
       requestFetchSessions,
       requestFetchToUnixMs,
+      hasExplicitRequestFilters,
+      requestGraphQueryKey,
       requestQueryKey,
       refreshUsageRequests,
     ],

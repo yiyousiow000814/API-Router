@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildUsageRequestsQueryKey,
   filterUsageRequestRowsByProviderIds,
+  mergeUsageRequestGraphRowsFromRealtime,
   normalizeUsageRequestProviderFilter,
   pickUsageRequestGraphBaseRows,
   resolveRequestPageCached,
@@ -207,6 +208,44 @@ describe('pickUsageRequestGraphBaseRows', () => {
       fallbackRows: [...fallbackRows],
     })
     expect(picked[0]?.provider).toBe('fallback_provider')
+  })
+})
+
+describe('mergeUsageRequestGraphRowsFromRealtime', () => {
+  const makeRow = (sessionId: string, unixMs: number) => ({
+    provider: 'provider',
+    api_key_ref: '-',
+    model: 'm',
+    origin: 'windows',
+    session_id: sessionId,
+    unix_ms: unixMs,
+    input_tokens: 1,
+    output_tokens: 1,
+    total_tokens: 2,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+  })
+
+  it('prepends new realtime rows and keeps newest-first unique order', () => {
+    const current = [makeRow('s2', 2000), makeRow('s1', 1000)]
+    const incoming = [makeRow('s4', 4000), makeRow('s3', 3000), makeRow('s2', 2000)]
+    const merged = mergeUsageRequestGraphRowsFromRealtime({
+      currentGraphRows: current as any,
+      incomingRows: incoming as any,
+      limit: 10,
+    })
+    expect(merged.map((row) => row.session_id)).toEqual(['s4', 's3', 's2', 's1'])
+  })
+
+  it('returns previous array when incoming rows are already known', () => {
+    const current = [makeRow('s2', 2000), makeRow('s1', 1000)]
+    const incoming = [makeRow('s2', 2000)]
+    const merged = mergeUsageRequestGraphRowsFromRealtime({
+      currentGraphRows: current as any,
+      incomingRows: incoming as any,
+      limit: 10,
+    })
+    expect(merged).toBe(current)
   })
 })
 
