@@ -105,9 +105,13 @@ type UsageRequestLineSeries = {
 }
 type UsageRequestRenderedLineSeries = UsageRequestLineSeries & {
   fallbackSlidingEligible?: boolean
+  fallbackSlidingShiftSteps?: number
   fallbackPreviewNextValue?: number | null
+  fallbackPreviewNextValues?: number[] | null
   liveSlidingEligible?: boolean
+  liveSlidingShiftSteps?: number
   livePreviewNextValue?: number | null
+  livePreviewNextValues?: number[] | null
 }
 const usageRequestRowIdentity = (row: UsageRequestEntry) =>
   [
@@ -429,7 +433,7 @@ function countUsageRequestLinePoints(present: boolean[]): number {
   return count
 }
 
-function detectUsageRequestLineShiftSteps(
+export function detectUsageRequestLineShiftSteps(
   prevPointIds: string[],
   prevCount: number,
   nextPointIds: string[],
@@ -451,6 +455,42 @@ function detectUsageRequestLineShiftSteps(
     if (matches) return shift
   }
   return 0
+}
+
+export function resolveUsageRequestSlideSteps(rawSteps: number, maxShiftSteps: number): number {
+  const parsed = Math.floor(Number(rawSteps))
+  const safeRaw = Number.isFinite(parsed) ? parsed : 1
+  const safeMax = Math.max(1, Math.floor(Number(maxShiftSteps)) || 1)
+  return Math.max(1, Math.min(safeRaw, safeMax))
+}
+
+export function resolveUsageRequestSlidingPreview(input: {
+  values: number[]
+  currentCount: number
+  shiftSteps: number
+  maxShiftSteps: number
+}): { slideSteps: number; previewNextValues: number[]; previewNextValue: number | null } {
+  const slideSteps = resolveUsageRequestSlideSteps(input.shiftSteps, input.maxShiftSteps)
+  const previewNextValues = input.values.slice(
+    Math.max(0, input.currentCount - slideSteps),
+    input.currentCount,
+  )
+  const previewNextValue =
+    previewNextValues[previewNextValues.length - 1] ??
+    input.values[Math.max(0, input.currentCount - 1)] ??
+    null
+  return { slideSteps, previewNextValues, previewNextValue }
+}
+
+export function calculateUsageRequestSlideOffsetX(
+  requestLineAnimPhase: number,
+  requestLinePointSpacing: number,
+  slideSteps: number,
+): number {
+  const phase = Math.max(0, Math.min(1, Number(requestLineAnimPhase)))
+  const spacing = Number.isFinite(requestLinePointSpacing) ? requestLinePointSpacing : 0
+  const steps = Math.max(1, Math.floor(Number(slideSteps)) || 1)
+  return phase * spacing * steps
 }
 
 function cloneUsageRequestLineSeries(series: UsageRequestLineSeries[]): UsageRequestLineSeries[] {
@@ -623,6 +663,20 @@ export function pickUsageRequestGraphBaseRows(input: {
     if (rows.length > 0) return rows
   }
   return EMPTY_USAGE_REQUEST_ROWS
+}
+
+export function mergeUsageRequestGraphRowsFromRealtime(input: {
+  currentGraphRows: UsageRequestEntry[]
+  incomingRows: UsageRequestEntry[]
+  limit: number
+}): UsageRequestEntry[] {
+  if (input.incomingRows.length === 0) return input.currentGraphRows
+  const merged = mergeUsageRequestRowsUniqueNewestFirst(
+    input.incomingRows,
+    input.currentGraphRows,
+    Math.max(1, input.limit),
+  )
+  return areUsageRequestRowsIdentical(input.currentGraphRows, merged) ? input.currentGraphRows : merged
 }
 
 export function normalizeUsageRequestProviderFilter(
@@ -1768,6 +1822,32 @@ export function UsageStatisticsPanel({
         if (usageRequestFetchSeqRef.current !== requestSeq) return
         const incoming = res.rows ?? []
         if (!incoming.length) return
+        if (!hasExplicitRequestFilters) {
+          setUsageRequestGraphBaseRows((prev) =>
+            mergeUsageRequestGraphRowsFromRealtime({
+              currentGraphRows: prev,
+              incomingRows: incoming,
+              limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT,
+            }),
+          )
+          const graphCache =
+            usageRequestGraphRowsCache != null && usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
+              ? usageRequestGraphRowsCache
+              : null
+          const currentGraphRows = graphCache?.baseRows ?? EMPTY_USAGE_REQUEST_ROWS
+          const mergedGraphRows = mergeUsageRequestGraphRowsFromRealtime({
+            currentGraphRows,
+            incomingRows: incoming,
+            limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT,
+          })
+          if (mergedGraphRows !== currentGraphRows) {
+            usageRequestGraphRowsCache = {
+              queryKey: requestGraphQueryKey,
+              baseRows: mergedGraphRows,
+              rowsByProvider: graphCache?.rowsByProvider ?? {},
+            }
+          }
+        }
         setUsageRequestRows((prev) => {
           if (!prev.length) return incoming
           const seen = new Set(prev.map(usageRequestRowIdentity))
@@ -1805,6 +1885,8 @@ export function UsageStatisticsPanel({
       requestFetchProviders,
       requestFetchSessions,
       requestFetchToUnixMs,
+      hasExplicitRequestFilters,
+      requestGraphQueryKey,
       requestQueryKey,
       refreshUsageRequests,
     ],
@@ -2710,7 +2792,7 @@ export function UsageStatisticsPanel({
         const prevCount = countUsageRequestLinePoints(meta.prevPresent)
         const currentCount = countUsageRequestLinePoints(series.present)
         const slidingEligible =
-          meta.shiftSteps === 1 &&
+          meta.shiftSteps >= 1 &&
           prevCount >= usageRequestGraphPointCount &&
           currentCount >= usageRequestGraphPointCount
         if (slidingEligible) {
@@ -2723,13 +2805,20 @@ export function UsageStatisticsPanel({
             present[pointIndex] = true
             pointIndex += 1
           }
-          const previewNextValue = series.values[Math.max(0, currentCount - 1)] ?? null
+          const { slideSteps, previewNextValues, previewNextValue } = resolveUsageRequestSlidingPreview({
+            values: series.values,
+            currentCount,
+            shiftSteps: meta.shiftSteps,
+            maxShiftSteps: usageRequestGraphPointCount - 1,
+          })
           return {
             ...series,
             values,
             present,
             liveSlidingEligible: true,
+            liveSlidingShiftSteps: slideSteps,
             livePreviewNextValue: previewNextValue,
+            livePreviewNextValues: previewNextValues,
           }
         }
 
@@ -2756,7 +2845,12 @@ export function UsageStatisticsPanel({
             values,
             present,
             liveSlidingEligible: false,
+            liveSlidingShiftSteps: 1,
             livePreviewNextValue: previewNextValue,
+            livePreviewNextValues:
+              previewNextValue == null || !Number.isFinite(previewNextValue)
+                ? null
+                : [previewNextValue],
           }
         }
 
@@ -2780,7 +2874,9 @@ export function UsageStatisticsPanel({
           values,
           present,
           liveSlidingEligible: false,
+          liveSlidingShiftSteps: 1,
           livePreviewNextValue: null,
+          livePreviewNextValues: null,
         }
       })
     }
@@ -2796,7 +2892,9 @@ export function UsageStatisticsPanel({
         return {
           ...series,
           fallbackSlidingEligible: false,
+          fallbackSlidingShiftSteps: 1,
           fallbackPreviewNextValue: null as number | null,
+          fallbackPreviewNextValues: null as number[] | null,
         }
       }
       const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
@@ -2852,7 +2950,9 @@ export function UsageStatisticsPanel({
         values,
         present,
         fallbackSlidingEligible: slidingEligible,
+        fallbackSlidingShiftSteps: 1,
         fallbackPreviewNextValue: previewNextValue,
+        fallbackPreviewNextValues: [previewNextValue],
       }
     })
   }, [
@@ -3202,7 +3302,6 @@ export function UsageStatisticsPanel({
   }, [isRequestsTab, requestChartMeasureOrigin])
   const requestLinePointSpacing =
     (requestChartMaxX - requestChartMinX) / Math.max(1, usageRequestGraphPointCount - 1)
-  const requestLineAnimOffsetX = requestLineAnimPhase * requestLinePointSpacing
   const requestLineClipPathIdRef = useRef(`aoUsageRequestLineClip-${Math.random().toString(36).slice(2, 10)}`)
   const requestLineClipPathId = requestLineClipPathIdRef.current
   const [lineHoverOrigin, setLineHoverOrigin] = useState<'wsl2' | 'windows' | null>(null)
@@ -3535,16 +3634,40 @@ export function UsageStatisticsPanel({
                                     (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
                                       (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
                                   )
+                                  const rawSlideSteps =
+                                    (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
+                                      .fallbackSlidingShiftSteps ??
+                                    (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
+                                      .liveSlidingShiftSteps ??
+                                    1
+                                  const slideSteps = resolveUsageRequestSlideSteps(rawSlideSteps, usageRequestGraphPointCount - 1)
+                                  const previewNextValuesRaw =
+                                    (series as { fallbackPreviewNextValues?: number[] | null; livePreviewNextValues?: number[] | null })
+                                      .fallbackPreviewNextValues ??
+                                    (series as { fallbackPreviewNextValues?: number[] | null; livePreviewNextValues?: number[] | null })
+                                      .livePreviewNextValues ??
+                                    null
                                   const previewNextValue = Number(
                                     (series as { fallbackPreviewNextValue?: number | null; livePreviewNextValue?: number | null }).fallbackPreviewNextValue ??
                                       (series as { fallbackPreviewNextValue?: number | null; livePreviewNextValue?: number | null }).livePreviewNextValue ??
                                       NaN,
                                   )
-                                  const hasPreviewNextValue = Number.isFinite(previewNextValue)
+                                  const previewNextValues = Array.isArray(previewNextValuesRaw)
+                                    ? previewNextValuesRaw.filter((value) => Number.isFinite(value))
+                                    : Number.isFinite(previewNextValue)
+                                      ? [previewNextValue]
+                                      : []
+                                  const hasPreviewNextValue = previewNextValues.length > 0
+                                  const slideOffsetX = calculateUsageRequestSlideOffsetX(
+                                    requestLineAnimPhase,
+                                    requestLinePointSpacing,
+                                    slideSteps,
+                                  )
                                   const isSlidingAnimating =
                                     isRequestsTab &&
                                     requestLineSliding &&
-                                    slidingEligible
+                                    slidingEligible &&
+                                    activeCount > 1
                                   const isGrowingAnimating =
                                     isRequestsTab &&
                                     requestLineAnimPhase > 0 &&
@@ -3556,17 +3679,22 @@ export function UsageStatisticsPanel({
                                   if (isSlidingAnimating && activeCount > 1) {
                                     for (let idx = 0; idx < activeCount; idx += 1) {
                                       const value = series.values[idx] ?? 0
-                                      const x = requestChartMinX + idx * requestLinePointSpacing - requestLineAnimOffsetX
+                                      const x = requestChartMinX + idx * requestLinePointSpacing - slideOffsetX
                                       const y =
                                         requestChartBottomY -
                                         (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
                                       providerPoints.push({ x, y })
                                     }
-                                    if (hasPreviewNextValue) {
-                                      const nextX = requestChartMinX + activeCount * requestLinePointSpacing - requestLineAnimOffsetX
+                                    const previewCount = Math.min(slideSteps, previewNextValues.length)
+                                    for (let previewIdx = 0; previewIdx < previewCount; previewIdx += 1) {
+                                      const previewValue = previewNextValues[previewNextValues.length - previewCount + previewIdx] ?? 0
+                                      const nextX =
+                                        requestChartMinX +
+                                        (activeCount + previewIdx) * requestLinePointSpacing -
+                                        slideOffsetX
                                       const nextY =
                                         requestChartBottomY -
-                                        (previewNextValue / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                                        (previewValue / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
                                       providerPoints.push({ x: nextX, y: nextY })
                                     }
                                   } else {
@@ -3583,7 +3711,8 @@ export function UsageStatisticsPanel({
                                     const lastPoint = providerPoints[providerPoints.length - 1]
                                     const previewY = hasPreviewNextValue
                                       ? requestChartBottomY -
-                                        (previewNextValue / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                                        ((previewNextValues[previewNextValues.length - 1] ?? 0) / usageRequestLineMaxValue) *
+                                          (requestChartBottomY - requestChartTopY)
                                       : lastPoint.y
                                     const nextX = Math.min(requestChartMaxX, lastPoint.x + requestLinePointSpacing * requestLineAnimPhase)
                                     const nextY = Math.max(
@@ -3634,11 +3763,24 @@ export function UsageStatisticsPanel({
                                         (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
                                           (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
                                       )
+                                      const rawSlideSteps =
+                                        (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
+                                          .fallbackSlidingShiftSteps ??
+                                        (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
+                                          .liveSlidingShiftSteps ??
+                                        1
+                                      const slideSteps = resolveUsageRequestSlideSteps(rawSlideSteps, usageRequestGraphPointCount - 1)
                                       const isSlidingAnimating =
                                         isRequestsTab &&
                                         requestLineSliding &&
-                                        slidingEligible
-                                      const x = isSlidingAnimating ? baseX - requestLineAnimOffsetX : baseX
+                                        slidingEligible &&
+                                        countUsageRequestLinePoints(series.present) > 1
+                                      const slideOffsetX = calculateUsageRequestSlideOffsetX(
+                                        requestLineAnimPhase,
+                                        requestLinePointSpacing,
+                                        slideSteps,
+                                      )
+                                      const x = isSlidingAnimating ? baseX - slideOffsetX : baseX
                                       const y =
                                         requestChartBottomY -
                                         (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)

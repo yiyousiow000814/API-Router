@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  calculateUsageRequestSlideOffsetX,
+  detectUsageRequestLineShiftSteps,
   buildUsageRequestsQueryKey,
   filterUsageRequestRowsByProviderIds,
+  mergeUsageRequestGraphRowsFromRealtime,
   normalizeUsageRequestProviderFilter,
   pickUsageRequestGraphBaseRows,
+  resolveUsageRequestSlidingPreview,
   resolveRequestPageCached,
   resolveRequestTableSummary,
   resolveSummaryFetchWindow,
@@ -207,6 +211,73 @@ describe('pickUsageRequestGraphBaseRows', () => {
       fallbackRows: [...fallbackRows],
     })
     expect(picked[0]?.provider).toBe('fallback_provider')
+  })
+})
+
+describe('mergeUsageRequestGraphRowsFromRealtime', () => {
+  const makeRow = (sessionId: string, unixMs: number) => ({
+    provider: 'provider',
+    api_key_ref: '-',
+    model: 'm',
+    origin: 'windows',
+    session_id: sessionId,
+    unix_ms: unixMs,
+    input_tokens: 1,
+    output_tokens: 1,
+    total_tokens: 2,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+  })
+
+  it('prepends new realtime rows and keeps newest-first unique order', () => {
+    const current = [makeRow('s2', 2000), makeRow('s1', 1000)]
+    const incoming = [makeRow('s4', 4000), makeRow('s3', 3000), makeRow('s2', 2000)]
+    const merged = mergeUsageRequestGraphRowsFromRealtime({
+      currentGraphRows: current as any,
+      incomingRows: incoming as any,
+      limit: 10,
+    })
+    expect(merged.map((row) => row.session_id)).toEqual(['s4', 's3', 's2', 's1'])
+  })
+
+  it('returns previous array when incoming rows are already known', () => {
+    const current = [makeRow('s2', 2000), makeRow('s1', 1000)]
+    const incoming = [makeRow('s2', 2000)]
+    const merged = mergeUsageRequestGraphRowsFromRealtime({
+      currentGraphRows: current as any,
+      incomingRows: incoming as any,
+      limit: 10,
+    })
+    expect(merged).toBe(current)
+  })
+})
+
+describe('request graph sliding helpers', () => {
+  it('detects multi-step point-id shift for sliding animation', () => {
+    const shift = detectUsageRequestLineShiftSteps(
+      ['a', 'b', 'c', 'd', 'e'],
+      5,
+      ['c', 'd', 'e', 'f', 'g'],
+      5,
+    )
+    expect(shift).toBe(2)
+  })
+
+  it('extracts preview tail values for multi-step live sliding', () => {
+    const preview = resolveUsageRequestSlidingPreview({
+      values: [10, 20, 30, 40, 50],
+      currentCount: 5,
+      shiftSteps: 3,
+      maxShiftSteps: 4,
+    })
+    expect(preview.slideSteps).toBe(3)
+    expect(preview.previewNextValues).toEqual([30, 40, 50])
+    expect(preview.previewNextValue).toBe(50)
+  })
+
+  it('computes per-series slide offset with phase and step count', () => {
+    const offset = calculateUsageRequestSlideOffsetX(0.5, 12, 3)
+    expect(offset).toBe(18)
   })
 })
 
