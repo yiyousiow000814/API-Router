@@ -42,16 +42,6 @@ fn contains_tool_value(value: &Value) -> bool {
     }
 }
 
-fn session_key_from_request(headers: &HeaderMap, body: &Value) -> Option<String> {
-    let v = headers.get("session_id")?.to_str().ok()?;
-    let v = v.trim();
-    if v.is_empty() {
-        return None;
-    }
-    let _ = body;
-    Some(v.to_string())
-}
-
 fn request_base_url_hint(headers: &HeaderMap, listen_port: u16) -> Option<String> {
     let host_raw = headers
         .get(header::HOST)
@@ -134,7 +124,10 @@ fn usage_origin_from_base_url(base_url: Option<&str>) -> &'static str {
     crate::constants::USAGE_ORIGIN_UNKNOWN
 }
 
-fn codex_session_id_for_display(headers: &HeaderMap, body: &Value) -> Option<String> {
+const CODEX_SESSION_BODY_ALIASES: [&str; 3] =
+    ["session_id", "codex_session_id", "codexSessionId"];
+
+fn codex_session_id_from_request(headers: &HeaderMap, body: &Value) -> Option<String> {
     for k in [
         "session_id",
         "x-session-id",
@@ -150,12 +143,7 @@ fn codex_session_id_for_display(headers: &HeaderMap, body: &Value) -> Option<Str
             }
         }
     }
-    for k in [
-        "session_id",
-        "session",
-        "codex_session_id",
-        "codexSessionId",
-    ] {
+    for k in CODEX_SESSION_BODY_ALIASES {
         if let Some(v) = body.get(k) {
             if let Some(s) = v.as_str() {
                 let s = s.trim();
@@ -166,6 +154,15 @@ fn codex_session_id_for_display(headers: &HeaderMap, body: &Value) -> Option<Str
         }
     }
     None
+}
+
+fn scrub_session_id_aliases_from_body(body: &mut Value) {
+    let Some(map) = body.as_object_mut() else {
+        return;
+    };
+    for key in CODEX_SESSION_BODY_ALIASES {
+        map.remove(key);
+    }
 }
 
 fn body_session_source_is_agent(body: &Value) -> bool {
@@ -281,7 +278,9 @@ fn find_codex_session_file_in(base: &Path, session_id: &str) -> Option<PathBuf> 
     }
     let mut stack = vec![sessions_dir];
     while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir).ok()?;
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -289,7 +288,11 @@ fn find_codex_session_file_in(base: &Path, session_id: &str) -> Option<PathBuf> 
                 continue;
             }
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.contains(session_id) && name.ends_with(".jsonl") {
+                if name.ends_with(".jsonl")
+                    && name
+                        .strip_suffix(".jsonl")
+                        .is_some_and(|stem| stem.ends_with(session_id))
+                {
                     return Some(path);
                 }
             }
@@ -333,6 +336,37 @@ fn load_codex_session_messages(session_id: &str) -> Option<Vec<Value>> {
     Some(items)
 }
 
+fn prefer_newer_session_messages(
+    primary: Option<Vec<Value>>,
+    secondary: Option<Vec<Value>>,
+) -> Option<Vec<Value>> {
+    // Codex session jsonl writes are append-only; a larger item count is the fresher snapshot.
+    match (primary, secondary) {
+        (None, None) => None,
+        (Some(primary), None) => Some(primary),
+        (None, Some(secondary)) => Some(secondary),
+        (Some(primary), Some(secondary)) => {
+            if secondary.len() > primary.len() {
+                Some(secondary)
+            } else {
+                Some(primary)
+            }
+        }
+    }
+}
+
+fn session_history_snapshot_looks_incomplete(messages: &[Value]) -> bool {
+    // When previous_response_id exists, a stable snapshot should typically end with assistant.
+    // If it ends with user, treat it as a likely partial flush and retry once.
+    !matches!(
+        messages
+            .last()
+            .and_then(|v| v.get("role"))
+            .and_then(|v| v.as_str()),
+        Some("assistant")
+    )
+}
+
 fn ends_with_items(haystack: &[Value], needle: &[Value]) -> bool {
     if needle.is_empty() {
         return true;
@@ -346,7 +380,12 @@ fn ends_with_items(haystack: &[Value], needle: &[Value]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{body_agent_parent_session_id, usage_origin_from_base_url};
+    use super::{
+        body_agent_parent_session_id, codex_session_id_from_request,
+        scrub_session_id_aliases_from_body, session_history_snapshot_looks_incomplete,
+        usage_origin_from_base_url,
+    };
+    use axum::http::HeaderMap;
     use serde_json::json;
 
     #[test]
@@ -415,5 +454,59 @@ mod tests {
             }
         });
         assert!(body_agent_parent_session_id(&body).is_none());
+    }
+
+    #[test]
+    fn session_history_snapshot_detects_incomplete_when_last_is_user() {
+        let messages = vec![json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "age?"}]
+        })];
+        assert!(session_history_snapshot_looks_incomplete(&messages));
+    }
+
+    #[test]
+    fn session_history_snapshot_detects_complete_when_last_is_assistant() {
+        let messages = vec![
+            json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "age?"}]
+            }),
+            json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "27"}]
+            }),
+        ];
+        assert!(!session_history_snapshot_looks_incomplete(&messages));
+    }
+
+    #[test]
+    fn body_generic_session_field_is_not_used_as_codex_session_id() {
+        let headers = HeaderMap::new();
+        let body = json!({
+            "session": "generic-session",
+        });
+        assert!(codex_session_id_from_request(&headers, &body).is_none());
+    }
+
+    #[test]
+    fn scrub_session_aliases_keeps_generic_session_field() {
+        let mut body = json!({
+            "session": "generic-session",
+            "session_id": "sid",
+            "codex_session_id": "sid2",
+            "codexSessionId": "sid3",
+        });
+        scrub_session_id_aliases_from_body(&mut body);
+        assert_eq!(
+            body.get("session").and_then(|v| v.as_str()),
+            Some("generic-session")
+        );
+        assert!(body.get("session_id").is_none());
+        assert!(body.get("codex_session_id").is_none());
+        assert!(body.get("codexSessionId").is_none());
     }
 }

@@ -295,6 +295,7 @@ pub fn build_router(state: GatewayState) -> Router {
 }
 
 include!("gateway/request_helpers.rs");
+const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
 
 pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {
     let cfg = state.cfg.read().clone();
@@ -333,17 +334,15 @@ async fn responses(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let codex_session_key = session_key_from_request(&headers, &body);
-    let codex_session_display = codex_session_id_for_display(&headers, &body);
+    let codex_session_id = codex_session_id_from_request(&headers, &body);
     let requested_model = body
         .get("model")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(|v| v.to_string());
-    let session_key = codex_session_display
+    let session_key = codex_session_id
         .as_deref()
-        .or(codex_session_key.as_deref())
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("peer:{peer}"));
     let client_session = windows_terminal::infer_wt_session(peer, cfg.listen.port);
@@ -561,6 +560,7 @@ async fn responses(
                 has_prev && provider_supports_prev && !switching_provider && !retried_without_prev;
 
             let mut body_for_provider = base_body.clone();
+            scrub_session_id_aliases_from_body(&mut body_for_provider);
             if !use_prev_id {
                 body_for_provider
                     .as_object_mut()
@@ -571,12 +571,12 @@ async fn responses(
                     // No previous response id to reconstruct; pass only the current input.
                     Value::Array(current_items.clone())
                 } else {
-                    let Some(session_id) = codex_session_key.as_deref() else {
+                    let Some(session_id) = codex_session_id.as_deref() else {
                         return (
                             StatusCode::BAD_REQUEST,
                             Json(json!({
                                 "error": {
-                                    "message": "missing session_id header for codex session history",
+                                    "message": "missing codex session id for session history",
                                     "type": "invalid_request_error"
                                 }
                             })),
@@ -584,7 +584,30 @@ async fn responses(
                             .into_response();
                     };
                     if session_messages.is_none() {
-                        session_messages = load_codex_session_messages(session_id);
+                        let initial_messages = load_codex_session_messages(session_id);
+                        // Codex may flush session jsonl slightly after the previous response is visible.
+                        // Only on provider-switch path, retry once when the snapshot looks
+                        // empty/incomplete to reduce stale-history reuse without adding
+                        // latency on first-attempt request paths.
+                        let should_retry = if switching_provider {
+                            match initial_messages.as_deref() {
+                                None => true,
+                                Some(items) => session_history_snapshot_looks_incomplete(items),
+                            }
+                        } else {
+                            false
+                        };
+                        let retried_messages = if should_retry {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                SESSION_HISTORY_FLUSH_RETRY_DELAY_MS,
+                            ))
+                            .await;
+                            load_codex_session_messages(session_id)
+                        } else {
+                            None
+                        };
+                        session_messages =
+                            prefer_newer_session_messages(initial_messages, retried_messages);
                     }
                     let Some(mut items) = session_messages.clone() else {
                         return (

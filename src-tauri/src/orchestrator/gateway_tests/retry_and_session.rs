@@ -148,6 +148,7 @@ async fn switches_provider_rebuilds_history_without_prev_id() {
 
     let captured = captured.lock().clone().expect("captured body");
     assert!(captured.get("previous_response_id").is_none());
+    assert!(captured.get("session_id").is_none());
     let expected_input = json!([
         {
             "type": "message",
@@ -163,6 +164,564 @@ async fn switches_provider_rebuilds_history_without_prev_id() {
             "type": "message",
             "role": "user",
             "content": [{"type": "input_text", "text": "second"}]
+        }
+    ]);
+    assert_eq!(captured.get("input").unwrap(), &expected_input);
+}
+
+#[tokio::test]
+async fn switches_provider_rebuilds_history_with_session_alias_header() {
+    let captured = Arc::new(Mutex::new(None));
+    let captured2 = captured.clone();
+
+    let app_ok = Router::new().route(
+        "/v1/responses",
+        post(move |Json(body): Json<serde_json::Value>| {
+            *captured2.lock() = Some(body);
+            async move {
+                Json(json!({
+                    "id": "resp_ok",
+                    "output": [{"content": [{"type": "output_text", "text": "ok"}]}]
+                }))
+            }
+        }),
+    );
+    let ok_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ok_addr = ok_listener.local_addr().unwrap();
+    let ok_base = format!("http://{}:{}/v1", ok_addr.ip(), ok_addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(ok_listener, app_ok).await;
+    });
+
+    let app_fail = Router::new().route(
+        "/v1/responses",
+        post(|| async move {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "fail"})),
+            )
+        }),
+    );
+    let fail_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fail_addr = fail_listener.local_addr().unwrap();
+    let fail_base = format!("http://{}:{}/v1", fail_addr.ip(), fail_addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(fail_listener, app_fail).await;
+    });
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+            auto_return_to_preferred: false,
+            preferred_stable_seconds: 1,
+            failure_threshold: 1,
+            cooldown_seconds: 1,
+            request_timeout_seconds: 5,
+        },
+        providers: std::collections::BTreeMap::from([
+            (
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: fail_base,
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "P2".to_string(),
+                    base_url: ok_base,
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+        ]),
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+    let session_id = "session-switch-alias";
+    let lines = [
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "first"}]
+            }
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "reply"}]
+            }
+        }),
+    ];
+    let _guard = setup_codex_session(&tmp, session_id, &lines);
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store: store.clone(),
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state);
+    let cur_input = json!([{
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "second"}]
+    }]);
+    let body = json!({
+        "model": "gpt-test",
+        "input": cur_input,
+        "previous_response_id": "resp_prev",
+        "stream": false
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("x-codex-session-id", session_id)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let captured = captured.lock().clone().expect("captured body");
+    assert!(captured.get("previous_response_id").is_none());
+    assert!(captured.get("session_id").is_none());
+    let expected_input = json!([
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "first"}]
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "reply"}]
+        },
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "second"}]
+        }
+    ]);
+    assert_eq!(captured.get("input").unwrap(), &expected_input);
+}
+
+#[tokio::test]
+async fn switches_provider_rebuilds_history_with_session_id_in_body() {
+    let captured = Arc::new(Mutex::new(None));
+    let captured2 = captured.clone();
+
+    let app_ok = Router::new().route(
+        "/v1/responses",
+        post(move |Json(body): Json<serde_json::Value>| {
+            *captured2.lock() = Some(body);
+            async move {
+                Json(json!({
+                    "id": "resp_ok",
+                    "output": [{"content": [{"type": "output_text", "text": "ok"}]}]
+                }))
+            }
+        }),
+    );
+    let ok_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ok_addr = ok_listener.local_addr().unwrap();
+    let ok_base = format!("http://{}:{}/v1", ok_addr.ip(), ok_addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(ok_listener, app_ok).await;
+    });
+
+    let app_fail = Router::new().route(
+        "/v1/responses",
+        post(|| async move {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "fail"})),
+            )
+        }),
+    );
+    let fail_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fail_addr = fail_listener.local_addr().unwrap();
+    let fail_base = format!("http://{}:{}/v1", fail_addr.ip(), fail_addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(fail_listener, app_fail).await;
+    });
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+            auto_return_to_preferred: false,
+            preferred_stable_seconds: 1,
+            failure_threshold: 1,
+            cooldown_seconds: 1,
+            request_timeout_seconds: 5,
+        },
+        providers: std::collections::BTreeMap::from([
+            (
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: fail_base,
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "P2".to_string(),
+                    base_url: ok_base,
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+        ]),
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+    let session_id = "session-switch-body";
+    let lines = [
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "first"}]
+            }
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "reply"}]
+            }
+        }),
+    ];
+    let _guard = setup_codex_session(&tmp, session_id, &lines);
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store: store.clone(),
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state);
+    let cur_input = json!([{
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "second"}]
+    }]);
+    let body = json!({
+        "model": "gpt-test",
+        "input": cur_input,
+        "session_id": session_id,
+        "previous_response_id": "resp_prev",
+        "stream": false
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method("POST")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let captured = captured.lock().clone().expect("captured body");
+    assert!(captured.get("previous_response_id").is_none());
+    assert!(captured.get("session_id").is_none());
+    let expected_input = json!([
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "first"}]
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "reply"}]
+        },
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "second"}]
+        }
+    ]);
+    assert_eq!(captured.get("input").unwrap(), &expected_input);
+}
+
+#[tokio::test]
+async fn switches_provider_rebuilds_history_when_session_file_flush_is_delayed() {
+    let captured = Arc::new(Mutex::new(None));
+    let captured2 = captured.clone();
+
+    let app_ok = Router::new().route(
+        "/v1/responses",
+        post(move |Json(body): Json<serde_json::Value>| {
+            *captured2.lock() = Some(body);
+            async move {
+                Json(json!({
+                    "id": "resp_ok",
+                    "output": [{"content": [{"type": "output_text", "text": "ok"}]}]
+                }))
+            }
+        }),
+    );
+    let ok_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ok_addr = ok_listener.local_addr().unwrap();
+    let ok_base = format!("http://{}:{}/v1", ok_addr.ip(), ok_addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(ok_listener, app_ok).await;
+    });
+
+    let app_fail = Router::new().route(
+        "/v1/responses",
+        post(|| async move {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "fail"})),
+            )
+        }),
+    );
+    let fail_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fail_addr = fail_listener.local_addr().unwrap();
+    let fail_base = format!("http://{}:{}/v1", fail_addr.ip(), fail_addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(fail_listener, app_fail).await;
+    });
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+            auto_return_to_preferred: false,
+            preferred_stable_seconds: 1,
+            failure_threshold: 1,
+            cooldown_seconds: 1,
+            request_timeout_seconds: 5,
+        },
+        providers: std::collections::BTreeMap::from([
+            (
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: fail_base,
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "P2".to_string(),
+                    base_url: ok_base,
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+        ]),
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+    let session_id = "session-switch-delayed-flush";
+    let initial_lines: [serde_json::Value; 0] = [];
+    let _guard = setup_codex_session(&tmp, session_id, &initial_lines);
+    let session_file = locate_codex_session_file(&tmp, session_id);
+    let delayed_lines = [
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "name"}]
+            }
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "codex"}]
+            }
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "age?"}]
+            }
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "27"}]
+            }
+        }),
+    ];
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let mut body_txt = String::new();
+        for line in delayed_lines {
+            body_txt.push_str(&line.to_string());
+            body_txt.push('\n');
+        }
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&session_file)
+            .expect("open session file for append");
+        file.write_all(body_txt.as_bytes())
+            .expect("append delayed session lines");
+        file.flush().expect("flush delayed session lines");
+    });
+
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store: store.clone(),
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state);
+    let cur_input = json!([{
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "age?"}]
+    }]);
+    let body = json!({
+        "model": "gpt-test",
+        "input": cur_input,
+        "previous_response_id": "resp_prev",
+        "stream": false
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("session_id", session_id)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    writer.join().expect("join delayed session writer");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let captured = captured.lock().clone().expect("captured body");
+    assert!(captured.get("previous_response_id").is_none());
+    let expected_input = json!([
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "name"}]
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "codex"}]
+        },
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "age?"}]
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "27"}]
+        },
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "age?"}]
         }
     ]);
     assert_eq!(captured.get("input").unwrap(), &expected_input);
