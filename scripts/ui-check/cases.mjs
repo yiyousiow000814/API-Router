@@ -1326,6 +1326,20 @@ export async function runPricingTimelineModalCase(driver, screenshotPath) {
     By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Pricing Timeline']]`),
     15000,
   )
+  await driver.wait(
+    async () => {
+      const hasTable = await driver.executeScript(
+        `
+          const root = arguments[0];
+          return !!root.querySelector('.aoUsageScheduleTable');
+        `,
+        modal,
+      )
+      return Boolean(hasTable)
+    },
+    15000,
+    'Pricing Timeline table should be visible after modal loads',
+  )
   const probe = await driver.executeScript(
     `
       const root = arguments[0];
