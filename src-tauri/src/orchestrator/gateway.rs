@@ -295,6 +295,7 @@ pub fn build_router(state: GatewayState) -> Router {
 }
 
 include!("gateway/request_helpers.rs");
+const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
 
 pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {
     let cfg = state.cfg.read().clone();
@@ -584,7 +585,16 @@ async fn responses(
                             .into_response();
                     };
                     if session_messages.is_none() {
-                        session_messages = load_codex_session_messages(session_id);
+                        let initial_messages = load_codex_session_messages(session_id);
+                        // Codex may flush session jsonl slightly after the previous response is visible.
+                        // On fallback/provider-switch path, retry once to reduce stale-history reuse.
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            SESSION_HISTORY_FLUSH_RETRY_DELAY_MS,
+                        ))
+                        .await;
+                        let retried_messages = load_codex_session_messages(session_id);
+                        session_messages =
+                            prefer_newer_session_messages(initial_messages, retried_messages);
                     }
                     let Some(mut items) = session_messages.clone() else {
                         return (

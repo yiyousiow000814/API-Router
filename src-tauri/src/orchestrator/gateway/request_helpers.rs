@@ -331,6 +331,24 @@ fn load_codex_session_messages(session_id: &str) -> Option<Vec<Value>> {
     Some(items)
 }
 
+fn prefer_newer_session_messages(
+    primary: Option<Vec<Value>>,
+    secondary: Option<Vec<Value>>,
+) -> Option<Vec<Value>> {
+    match (primary, secondary) {
+        (None, None) => None,
+        (Some(primary), None) => Some(primary),
+        (None, Some(secondary)) => Some(secondary),
+        (Some(primary), Some(secondary)) => {
+            if secondary.len() > primary.len() {
+                Some(secondary)
+            } else {
+                Some(primary)
+            }
+        }
+    }
+}
+
 fn ends_with_items(haystack: &[Value], needle: &[Value]) -> bool {
     if needle.is_empty() {
         return true;
