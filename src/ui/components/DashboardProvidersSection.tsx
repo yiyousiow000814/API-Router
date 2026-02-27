@@ -1,10 +1,11 @@
 import { ProvidersTable } from './ProvidersTable'
 import type { LastErrorJump } from './ProvidersTable'
-import type { Status } from '../types'
+import type { Config, Status } from '../types'
 
 type Props = {
   providers: string[]
   status: Status
+  config: Config | null
   refreshingProviders: Record<string, boolean>
   onRefreshQuota: (provider: string) => void
   onOpenConfigModal: () => void
@@ -14,6 +15,7 @@ type Props = {
 export function DashboardProvidersSection({
   providers,
   status,
+  config,
   refreshingProviders,
   onRefreshQuota,
   onOpenConfigModal,
@@ -35,6 +37,7 @@ export function DashboardProvidersSection({
       <ProvidersTable
         providers={providers}
         status={status}
+        config={config}
         refreshingProviders={refreshingProviders}
         onRefreshQuota={onRefreshQuota}
         onOpenLastErrorInEventLog={onOpenLastErrorInEventLog}

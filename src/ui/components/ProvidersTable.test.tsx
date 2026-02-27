@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { ProvidersTable } from './ProvidersTable'
-import type { Status } from '../types'
+import type { Config, Status } from '../types'
 
 function buildStatus(): Status {
   return {
@@ -127,5 +127,45 @@ describe('ProvidersTable', () => {
     )
     const jumpButtons = html.match(/aoLastErrorViewBtn/g) ?? []
     expect(jumpButtons).toHaveLength(2)
+  })
+
+  it('hides unticked hard-cap usage rows from dashboard usage preview', () => {
+    const config: Config = {
+      listen: { host: '127.0.0.1', port: 4000 },
+      routing: {
+        preferred_provider: 'packycode',
+        auto_return_to_preferred: true,
+        preferred_stable_seconds: 30,
+        failure_threshold: 2,
+        cooldown_seconds: 20,
+        request_timeout_seconds: 60,
+      },
+      providers: {
+        packycode: {
+          display_name: 'Packy Code',
+          base_url: 'https://example.com',
+          has_key: true,
+          quota_hard_cap: {
+            daily: true,
+            weekly: false,
+            monthly: true,
+          },
+        },
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['packycode']}
+        status={buildStatus()}
+        config={config}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('daily:')
+    expect(html).not.toContain('weekly:')
   })
 })

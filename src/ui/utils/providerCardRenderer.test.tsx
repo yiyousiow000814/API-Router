@@ -65,6 +65,20 @@ function buildStatus(): Status {
   }
 }
 
+function buildStatusWithoutDetectedWindows(): Status {
+  const status = buildStatus()
+  status.quota.p1 = {
+    ...status.quota.p1,
+    daily_spent_usd: null,
+    daily_budget_usd: null,
+    weekly_spent_usd: null,
+    weekly_budget_usd: null,
+    monthly_spent_usd: null,
+    monthly_budget_usd: null,
+  }
+  return status
+}
+
 function renderCardHtml(config: Config, status: Status): string {
   const setProviderNameDrafts = (() => undefined) as React.Dispatch<
     React.SetStateAction<Record<string, string>>
@@ -121,5 +135,13 @@ describe('provider usage controls rendering', () => {
     expect(html).toContain('Usage controls are managed in Group Manager.')
     expect(html).toContain('Open Group Manager')
     expect(html).toContain('Current group: alpha')
+  })
+
+  it('hides hard-cap checkboxes when budget windows are not detected yet', () => {
+    const html = renderCardHtml(buildConfig(null), buildStatusWithoutDetectedWindows())
+    expect(html).toContain('Budget windows not detected yet. Hard cap options are hidden until usage windows appear.')
+    expect(html).not.toContain('daily hard cap')
+    expect(html).not.toContain('weekly hard cap')
+    expect(html).not.toContain('monthly hard cap')
   })
 })

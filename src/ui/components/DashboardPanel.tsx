@@ -105,6 +105,7 @@ export function DashboardPanel({
       <DashboardProvidersSection
         providers={providers}
         status={status}
+        config={config}
         refreshingProviders={refreshingProviders}
         onRefreshQuota={onRefreshQuota}
         onOpenConfigModal={onOpenConfigModal}
