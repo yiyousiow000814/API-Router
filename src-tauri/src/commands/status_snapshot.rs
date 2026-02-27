@@ -193,6 +193,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
                     crate::platform::windows_terminal::is_pid_alive,
                     crate::platform::windows_terminal::is_wt_session_alive,
                     wsl_discovery_miss_count,
+                    discovery_is_fresh,
                 );
                 if !(keep || v.is_agent || v.is_review) {
                     removed_main_sessions.push(codex_id);
@@ -503,6 +504,7 @@ fn should_keep_runtime_session(
     is_pid_alive: fn(u32) -> bool,
     is_wt_session_alive: fn(&str) -> bool,
     wsl_discovery_miss_count: u8,
+    discovery_is_fresh: bool,
 ) -> bool {
     const WSL_MAX_DISCOVERY_MISSES: u8 = 3;
     const PIDLESS_WT_MAX_STALE_MS: u64 = 15 * 60 * 1000;
@@ -520,7 +522,7 @@ fn should_keep_runtime_session(
         if is_wsl_marker {
             // WSL sessions usually have pid=0 on Windows side. Use consecutive discovery misses
             // to avoid flicker from one-off scan failures while still removing quickly after Ctrl+C.
-            if wsl_discovery_miss_count >= WSL_MAX_DISCOVERY_MISSES {
+            if discovery_is_fresh && wsl_discovery_miss_count >= WSL_MAX_DISCOVERY_MISSES {
                 return false;
             }
         }
@@ -532,7 +534,7 @@ fn should_keep_runtime_session(
                 return false;
             }
             // WT tab identity is a hard liveness boundary for pid=0 sessions.
-            if !is_wt_session_alive(wt) {
+            if discovery_is_fresh && !is_wt_session_alive(wt) {
                 return false;
             }
         } else if !active {
@@ -2121,7 +2123,7 @@ mod tests {
             confirmed_router: true,
         };
 
-        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 3);
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 3, true);
         assert!(!keep);
     }
 
@@ -2143,12 +2145,12 @@ mod tests {
             confirmed_router: true,
         };
 
-        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 1);
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 1, true);
         assert!(keep);
     }
 
     #[test]
-    fn active_wsl_session_drops_when_discovery_is_stale() {
+    fn active_wsl_session_keeps_when_discovery_is_stale() {
         let now = 100_000_u64;
         let entry = ClientSessionRuntime {
             codex_session_id: "wsl-active".to_string(),
@@ -2165,8 +2167,8 @@ mod tests {
             confirmed_router: true,
         };
 
-        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 3);
-        assert!(!keep);
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 3, false);
+        assert!(keep);
     }
 
     #[test]
@@ -2187,7 +2189,7 @@ mod tests {
             confirmed_router: true,
         };
 
-        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 0);
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 0, true);
         assert!(keep);
     }
 
@@ -2209,8 +2211,30 @@ mod tests {
             confirmed_router: true,
         };
 
-        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 0);
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 0, true);
         assert!(!keep);
+    }
+
+    #[test]
+    fn pidless_wt_session_keeps_on_stale_discovery_even_if_wt_probe_fails() {
+        let now = 2_000_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "pidless-stale-probe".to_string(),
+            pid: 0,
+            wt_session: Some("abc-wt".to_string()),
+            last_request_unix_ms: now.saturating_sub(5_000),
+            last_discovered_unix_ms: now.saturating_sub(5_000),
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            agent_parent_session_id: None,
+            is_agent: false,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| false, 0, false);
+        assert!(keep);
     }
 
     #[test]
