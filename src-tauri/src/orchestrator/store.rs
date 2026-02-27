@@ -230,6 +230,10 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_usage_requests_model_lc ON usage_requests(lower(model));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_origin_lc ON usage_requests(lower(origin));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_session_lc ON usage_requests(lower(session_id));
+            CREATE INDEX IF NOT EXISTS idx_usage_requests_provider_lc_unix_ms_id
+              ON usage_requests(lower(provider), unix_ms DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_usage_requests_origin_lc_unix_ms_id
+              ON usage_requests(lower(origin), unix_ms DESC, id DESC);
             CREATE TABLE IF NOT EXISTS usage_request_day_provider_totals(
               day_key TEXT NOT NULL,
               provider TEXT NOT NULL,
