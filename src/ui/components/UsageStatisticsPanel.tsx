@@ -3289,6 +3289,14 @@ export function UsageStatisticsPanel({
     usageRequestLineMaxValue,
     usageRequestLineSeriesByOrigin,
   ])
+  const usageRequestOriginCharts = useMemo(
+    () =>
+      ([
+        { key: 'windows' as const, label: 'Windows' },
+        { key: 'wsl2' as const, label: 'WSL2' },
+      ]).filter((originChart) => usageRequestLineSeriesByOrigin[originChart.key].length > 0),
+    [usageRequestLineSeriesByOrigin],
+  )
   const selectedTimeFilterDay = selectedRequestTimeFilterDay
   const timeFilterCalendarCells = useMemo(() => {
     const monthStart = timePickerMonthStartMs
@@ -3435,12 +3443,9 @@ export function UsageStatisticsPanel({
                 Latest {USAGE_REQUEST_GRAPH_SOURCE_LIMIT} Verified Session Requests (Total Tokens)
               </div>
             </div>
-            {renderedUsageRequestLineSeries.length ? (
-              <div className="aoUsageRequestOriginGrid">
-                {([
-                  { key: 'windows' as const, label: 'Windows' },
-                  { key: 'wsl2' as const, label: 'WSL2' },
-                ]).map((originChart) => {
+            {usageRequestOriginCharts.length ? (
+              <div className={`aoUsageRequestOriginGrid${usageRequestOriginCharts.length === 1 ? ' is-single' : ''}`}>
+                {usageRequestOriginCharts.map((originChart) => {
                   const seriesList = usageRequestLineSeriesByOrigin[originChart.key]
                   const sidRows = usageRequestSidRowsWithPositionByOrigin[originChart.key]
                   const isHoveringOrigin = lineHoverOrigin === originChart.key
@@ -3452,8 +3457,7 @@ export function UsageStatisticsPanel({
                       <div className="aoSwitchboardSectionHead aoUsageRequestOriginHead">
                         <div className="aoMiniLabel aoUsageRequestOriginTitle">{originChart.label}</div>
                       </div>
-                      {seriesList.length ? (
-                        <div className="aoUsageRequestLineGraphShell">
+                      <div className="aoUsageRequestLineGraphShell">
                           <div className="aoUsageRequestLineGraphWrap">
                             <svg
                               ref={originChart.key === requestChartMeasureOrigin ? requestChartMeasureRef : undefined}
@@ -3689,9 +3693,6 @@ export function UsageStatisticsPanel({
                             </div>
                           ) : null}
                         </div>
-                      ) : (
-                        <div className="aoHint">No recent {originChart.label} verified-session rows for line graph.</div>
-                      )}
                     </div>
                   )
                 })}
