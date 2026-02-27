@@ -1636,7 +1636,7 @@ fn decide_provider_balanced_auto_keeps_healthy_when_unhealthy_gain_is_within_mar
 }
 
 #[test]
-fn decide_provider_balanced_auto_prefers_healthier_daily_remaining_when_loads_tie() {
+fn decide_provider_balanced_auto_weights_daily_remaining_with_other_signals() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = open_store_dir(tmp.path().join("data")).expect("store");
     let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -1737,7 +1737,10 @@ fn decide_provider_balanced_auto_prefers_healthier_daily_remaining_when_loads_ti
         .expect("quota p2");
 
     let (picked, reason) = decide_provider(&state, &cfg, "p1", "session-main");
-    assert_eq!(picked, "p2");
+    assert_eq!(
+        picked, "p1",
+        "daily remaining is one equal-weight signal and may be offset by other balancing signals"
+    );
     assert_eq!(reason, "balanced_auto");
 }
 
@@ -2025,7 +2028,7 @@ fn decide_provider_balanced_auto_heavy_session_prefers_lower_per_request_cost() 
 }
 
 #[test]
-fn decide_provider_balanced_auto_prioritizes_load_pressure_over_capacity_and_cost() {
+fn decide_provider_balanced_auto_no_longer_hard_prioritizes_load_pressure() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = open_store_dir(tmp.path().join("data")).expect("store");
     let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -2151,8 +2154,8 @@ fn decide_provider_balanced_auto_prioritizes_load_pressure_over_capacity_and_cos
 
     let (picked, reason) = decide_provider(&state, &cfg, "p1", "session-heavy-pressure");
     assert_eq!(
-        picked, "p1",
-        "load pressure should win before capacity/cost tie-breakers"
+        picked, "p2",
+        "load pressure is blended with capacity, cost, and budget pressure under equal weighting"
     );
     assert_eq!(reason, "balanced_auto");
 }
