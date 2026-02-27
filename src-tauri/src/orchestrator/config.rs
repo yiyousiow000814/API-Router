@@ -126,7 +126,7 @@ impl AppConfig {
                 auto_return_to_preferred: true,
                 preferred_stable_seconds: 30,
                 failure_threshold: 2,
-                cooldown_seconds: 30,
+                cooldown_seconds: 60,
                 // Streamed responses can be long-lived; keep a larger default to avoid
                 // premature timeouts on slower providers/networks.
                 request_timeout_seconds: 300,
