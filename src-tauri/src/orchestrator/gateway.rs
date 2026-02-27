@@ -586,12 +586,16 @@ async fn responses(
                     if session_messages.is_none() {
                         let initial_messages = load_codex_session_messages(session_id);
                         // Codex may flush session jsonl slightly after the previous response is visible.
-                        // On fallback/provider-switch path, retry once when the snapshot looks
+                        // Only on provider-switch path, retry once when the snapshot looks
                         // empty/incomplete to reduce stale-history reuse without adding
-                        // unconditional latency.
-                        let should_retry = match initial_messages.as_deref() {
-                            None => true,
-                            Some(items) => session_history_snapshot_looks_incomplete(items),
+                        // latency on first-attempt request paths.
+                        let should_retry = if switching_provider {
+                            match initial_messages.as_deref() {
+                                None => true,
+                                Some(items) => session_history_snapshot_looks_incomplete(items),
+                            }
+                        } else {
+                            false
                         };
                         let retried_messages = if should_retry {
                             tokio::time::sleep(std::time::Duration::from_millis(
