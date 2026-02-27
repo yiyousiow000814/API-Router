@@ -755,6 +755,10 @@
   gap: 8px;
 }
 
+.aoUsageRequestOriginGrid.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .aoUsageRequestOriginCard {
   border: none;
   border-radius: 0;

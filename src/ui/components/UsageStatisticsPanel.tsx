@@ -294,7 +294,11 @@ export const USAGE_REQUESTS_CANONICAL_QUERY_KEY = buildUsageRequestsQueryKey({
 const USAGE_REQUESTS_CACHE_PRIMED_EVENT = 'ao:usage-requests-cache-primed'
 const USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS = 4_000
 const USAGE_REQUEST_GRAPH_FETCH_HOURS = 24 * 365 * 20
-const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT = 1000
+const USAGE_REQUEST_GRAPH_BASE_FETCH_ORIGINS = ['windows', 'wsl2', 'unknown'] as const
+const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN = 1000
+const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_FALLBACK = USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN
+const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT =
+  USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN * USAGE_REQUEST_GRAPH_BASE_FETCH_ORIGINS.length
 export const USAGE_REQUEST_GRAPH_QUERY_KEY = 'usage_request_graph:v1:all-history'
 const USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS = 15_000
 let usageRequestsPageCache: UsageRequestsPageCache | null = null
@@ -1885,21 +1889,56 @@ export function UsageStatisticsPanel({
           : EMPTY_USAGE_REQUEST_ROWS
       let canonicalPageRows = canonicalPageRowsFromCache
       try {
-        const canonicalRes = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-          ...buildUsageRequestEntriesArgs({
-            hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
-            fromUnixMs: null,
-            toUnixMs: null,
-            providers: null,
-            models: null,
-            origins: null,
-            sessions: null,
-            limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT,
-            offset: 0,
-          }),
-        })
+        // Fetch Windows/WSL2 independently so one origin does not starve the other
+        // when the latest global window is skewed.
+        const canonicalByOrigin = await Promise.allSettled(
+          USAGE_REQUEST_GRAPH_BASE_FETCH_ORIGINS.map((origin) =>
+            invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
+              ...buildUsageRequestEntriesArgs({
+                hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
+                fromUnixMs: null,
+                toUnixMs: null,
+                providers: null,
+                models: null,
+                origins: [origin],
+                sessions: null,
+                limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN,
+                offset: 0,
+              }),
+            }),
+          ),
+        )
         if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
-        canonicalPageRows = (canonicalRes.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms)
+        let mergedByOrigin: UsageRequestEntry[] = EMPTY_USAGE_REQUEST_ROWS
+        for (const result of canonicalByOrigin) {
+          if (result.status !== 'fulfilled') continue
+          const originRows = (result.value.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms)
+          if (!originRows.length) continue
+          mergedByOrigin = mergeUsageRequestRowsUniqueNewestFirst(
+            originRows,
+            mergedByOrigin,
+            USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT,
+          )
+        }
+        if (mergedByOrigin.length > 0) {
+          canonicalPageRows = mergedByOrigin
+        } else {
+          const canonicalRes = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
+            ...buildUsageRequestEntriesArgs({
+              hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
+              fromUnixMs: null,
+              toUnixMs: null,
+              providers: null,
+              models: null,
+              origins: null,
+              sessions: null,
+              limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_FALLBACK,
+              offset: 0,
+            }),
+          })
+          if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
+          canonicalPageRows = (canonicalRes.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms)
+        }
       } catch {
         canonicalPageRows = canonicalPageRowsFromCache
       }
@@ -3253,6 +3292,14 @@ export function UsageStatisticsPanel({
     usageRequestLineMaxValue,
     usageRequestLineSeriesByOrigin,
   ])
+  const usageRequestOriginCharts = useMemo(
+    () =>
+      ([
+        { key: 'windows' as const, label: 'Windows' },
+        { key: 'wsl2' as const, label: 'WSL2' },
+      ]).filter((originChart) => usageRequestLineSeriesByOrigin[originChart.key].length > 0),
+    [usageRequestLineSeriesByOrigin],
+  )
   const selectedTimeFilterDay = selectedRequestTimeFilterDay
   const timeFilterCalendarCells = useMemo(() => {
     const monthStart = timePickerMonthStartMs
@@ -3399,12 +3446,9 @@ export function UsageStatisticsPanel({
                 Latest {USAGE_REQUEST_GRAPH_SOURCE_LIMIT} Verified Session Requests (Total Tokens)
               </div>
             </div>
-            {renderedUsageRequestLineSeries.length ? (
-              <div className="aoUsageRequestOriginGrid">
-                {([
-                  { key: 'windows' as const, label: 'Windows' },
-                  { key: 'wsl2' as const, label: 'WSL2' },
-                ]).map((originChart) => {
+            {usageRequestOriginCharts.length ? (
+              <div className={`aoUsageRequestOriginGrid${usageRequestOriginCharts.length === 1 ? ' is-single' : ''}`}>
+                {usageRequestOriginCharts.map((originChart) => {
                   const seriesList = usageRequestLineSeriesByOrigin[originChart.key]
                   const sidRows = usageRequestSidRowsWithPositionByOrigin[originChart.key]
                   const isHoveringOrigin = lineHoverOrigin === originChart.key
@@ -3416,8 +3460,7 @@ export function UsageStatisticsPanel({
                       <div className="aoSwitchboardSectionHead aoUsageRequestOriginHead">
                         <div className="aoMiniLabel aoUsageRequestOriginTitle">{originChart.label}</div>
                       </div>
-                      {seriesList.length ? (
-                        <div className="aoUsageRequestLineGraphShell">
+                      <div className="aoUsageRequestLineGraphShell">
                           <div className="aoUsageRequestLineGraphWrap">
                             <svg
                               ref={originChart.key === requestChartMeasureOrigin ? requestChartMeasureRef : undefined}
@@ -3653,9 +3696,6 @@ export function UsageStatisticsPanel({
                             </div>
                           ) : null}
                         </div>
-                      ) : (
-                        <div className="aoHint">No recent {originChart.label} verified-session rows for line graph.</div>
-                      )}
                     </div>
                   )
                 })}
