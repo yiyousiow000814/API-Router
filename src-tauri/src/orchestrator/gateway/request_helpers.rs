@@ -43,13 +43,7 @@ fn contains_tool_value(value: &Value) -> bool {
 }
 
 fn session_key_from_request(headers: &HeaderMap, body: &Value) -> Option<String> {
-    let v = headers.get("session_id")?.to_str().ok()?;
-    let v = v.trim();
-    if v.is_empty() {
-        return None;
-    }
-    let _ = body;
-    Some(v.to_string())
+    codex_session_id_from_request(headers, body)
 }
 
 fn request_base_url_hint(headers: &HeaderMap, listen_port: u16) -> Option<String> {
@@ -135,6 +129,10 @@ fn usage_origin_from_base_url(base_url: Option<&str>) -> &'static str {
 }
 
 fn codex_session_id_for_display(headers: &HeaderMap, body: &Value) -> Option<String> {
+    codex_session_id_from_request(headers, body)
+}
+
+fn codex_session_id_from_request(headers: &HeaderMap, body: &Value) -> Option<String> {
     for k in [
         "session_id",
         "x-session-id",
