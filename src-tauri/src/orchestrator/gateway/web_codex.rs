@@ -7,6 +7,7 @@ use tokio::process::Command;
 
 const WEB_CODEX_INDEX_HTML: &str = include_str!("../../../../codex-web.html");
 const WEB_CODEX_APP_JS: &str = include_str!("../../../../src/ui/codex-web-dev.js");
+const WEB_CODEX_ICON_SVG: &str = include_str!("../../../../src/ui/assets/codex-color.svg");
 const AO_ICON_PNG: &[u8] = include_bytes!("../../../../public/ao-icon.png");
 const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TERMINAL_COMMAND_LEN: usize = 4000;
@@ -203,6 +204,15 @@ async fn codex_web_app_js() -> Response {
         StatusCode::OK,
         [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
         WEB_CODEX_APP_JS,
+    )
+        .into_response()
+}
+
+async fn codex_web_icon_svg() -> Response {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+        WEB_CODEX_ICON_SVG,
     )
         .into_response()
 }

@@ -44,8 +44,16 @@ export default defineConfig({
       name: 'codex-web-dev-route',
       configureServer(server) {
         const htmlPath = path.resolve(process.cwd(), 'codex-web.html')
+        const iconPath = path.resolve(process.cwd(), 'src', 'ui', 'assets', 'codex-color.svg')
         server.middlewares.use((req, _res, next) => {
           const url = req.url || ''
+          if (url === '/codex-web/codex-icon.svg' || url.startsWith('/codex-web/codex-icon.svg?')) {
+            const svg = fs.readFileSync(iconPath, 'utf-8')
+            _res.statusCode = 200
+            _res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8')
+            _res.end(svg)
+            return
+          }
           const isCodexWeb = url === '/codex-web' || url.startsWith('/codex-web?')
           const isSandboxWeb = url === '/sandbox/codex-web' || url.startsWith('/sandbox/codex-web?')
           if (!isCodexWeb && !isSandboxWeb) {

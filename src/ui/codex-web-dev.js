@@ -563,7 +563,7 @@ function renderThreads(items) {
       const card = document.createElement("button");
       card.className = `itemCard${id && id === state.activeThreadId ? " active" : ""}`;
       card.innerHTML =
-        `<div class="row"><button class="threadFavBtn${isFavorite ? " active" : ""}" data-thread-fav="${escapeHtml(id)}">★</button>` +
+        `<div class="row"><button class="threadFavBtn${isFavorite ? " active" : ""}" data-thread-fav="${escapeHtml(id)}"><span class="starGlyph" aria-hidden="true">★</span></button>` +
         `<div class="itemTitle">${escapeHtml(title)}</div><div class="grow"></div>` +
         `<div class="itemSub mono">${escapeHtml(age)}</div></div>` +
         `<div class="itemSub">${escapeHtml(subText)}</div>`;

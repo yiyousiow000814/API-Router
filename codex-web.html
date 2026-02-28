@@ -90,7 +90,6 @@
       width: 24px;
       height: 24px;
       display: inline-block;
-      object-fit: contain;
       border: none;
       background: transparent;
     }
@@ -223,6 +222,10 @@
       padding: 0;
       margin-right: 6px;
     }
+    .threadFavBtn .starGlyph {
+      display: block;
+      transform: translateY(-1px);
+    }
     .threadFavBtn.active {
       border-color: rgba(255, 201, 86, 0.8);
       color: #f7c75e;
@@ -333,10 +336,9 @@
       margin-bottom: 4px;
     }
     .welcomeLogo {
-      width: 44px;
-      height: 44px;
+      width: 55px;
+      height: 55px;
       display: inline-block;
-      object-fit: contain;
       border: none;
       background: transparent;
     }
@@ -989,7 +991,7 @@
   <div class="shell">
     <section class="topbar">
       <div class="topbarRow">
-        <div class="brand"><img class="brandIcon" src="https://unpkg.com/@lobehub/icons-static-svg@latest/icons/codex-color.svg" alt="Codex" /> Web Codex</div>
+        <div class="brand"><img class="brandIcon" src="/codex-web/codex-icon.svg" alt="Codex" /> Web Codex</div>
         <span id="statusBadge" class="status warn">Disconnected</span>
         <span id="sandboxBadge" class="status warn" style="display:none;">Sandbox (Read-only)</span>
       </div>
@@ -1082,7 +1084,7 @@
         <div id="chatBox" class="messages">
           <div id="welcomeCard" class="welcomeCard">
             <div class="welcomeBrand">
-              <img class="welcomeLogo" src="https://unpkg.com/@lobehub/icons-static-svg@latest/icons/codex-color.svg" alt="Codex" />
+              <img class="welcomeLogo" src="/codex-web/codex-icon.svg" alt="Codex" />
               <div class="welcomeTitle">Codex</div>
             </div>
             <button id="welcomeWorkspaceBtn" class="welcomeSetting">
