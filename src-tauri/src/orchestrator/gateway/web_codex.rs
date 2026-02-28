@@ -985,7 +985,7 @@ fn extract_user_preview_from_session_file(path: &Path) -> Option<String> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
     let mut fallback_event_preview: Option<String> = None;
-    let mut last_user_preview: Option<String> = None;
+    let mut first_user_preview: Option<String> = None;
     for line in reader.lines().take(320).map_while(Result::ok) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -1024,12 +1024,14 @@ fn extract_user_preview_from_session_file(path: &Path) -> Option<String> {
         for item in content {
             if let Some(text) = item.get("text").and_then(|x| x.as_str()) {
                 if let Some(normalized) = normalize_preview_text(text) {
-                    last_user_preview = Some(normalized);
+                    if first_user_preview.is_none() {
+                        first_user_preview = Some(normalized);
+                    }
                 }
             }
         }
     }
-    last_user_preview.or(fallback_event_preview)
+    first_user_preview.or(fallback_event_preview)
 }
 
 fn normalize_thread_path(raw: &str) -> PathBuf {
@@ -1241,7 +1243,7 @@ fn parse_history_preview_map(history_path: &Path) -> HashMap<String, String> {
             .and_then(|x| x.as_str())
             .map(str::trim)
             .unwrap_or_default();
-        if !text.is_empty() {
+        if !text.is_empty() && !map.contains_key(id) {
             map.insert(id.to_string(), text.to_string());
         }
     }
@@ -1409,7 +1411,7 @@ if history_path.exists():
                     continue
                 sid = str(row.get("session_id") or "").strip()
                 text = str(row.get("text") or "").strip()
-                if sid and text:
+                if sid and text and sid not in preview_map:
                     preview_map[sid] = text
     except Exception:
         pass
