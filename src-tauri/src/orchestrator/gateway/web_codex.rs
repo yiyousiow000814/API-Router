@@ -845,10 +845,64 @@ fn extract_items_array(value: &Value) -> Vec<Value> {
 }
 
 fn merge_items_without_duplicates(mut base: Vec<Value>, extra: Vec<Value>) -> Vec<Value> {
+    fn merge_thread_item(base_item: &mut Value, extra_item: &Value) {
+        let (Some(base_obj), Some(extra_obj)) = (base_item.as_object_mut(), extra_item.as_object()) else {
+            return;
+        };
+
+        let base_preview_empty = base_obj
+            .get("preview")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .map(|v| v.is_empty())
+            .unwrap_or(true);
+        if base_preview_empty {
+            if let Some(preview) = extra_obj.get("preview").and_then(|v| v.as_str()) {
+                if !preview.trim().is_empty() {
+                    base_obj.insert("preview".to_string(), Value::String(preview.to_string()));
+                }
+            }
+        }
+
+        for key in ["path", "source", "workspace", "cwd"] {
+            if !base_obj.contains_key(key) {
+                if let Some(v) = extra_obj.get(key) {
+                    base_obj.insert(key.to_string(), v.clone());
+                }
+            }
+        }
+
+        for key in ["isSubagent", "isAuxiliary"] {
+            let base_true = base_obj.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
+            let extra_true = extra_obj.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
+            if !base_true && extra_true {
+                base_obj.insert(key.to_string(), Value::Bool(true));
+            }
+        }
+
+        let base_updated = base_obj.get("updatedAt").and_then(|v| v.as_i64()).unwrap_or(0);
+        let extra_updated = extra_obj.get("updatedAt").and_then(|v| v.as_i64()).unwrap_or(0);
+        if extra_updated > base_updated {
+            base_obj.insert("updatedAt".to_string(), Value::from(extra_updated));
+        }
+
+        let base_created = base_obj.get("createdAt").and_then(|v| v.as_i64()).unwrap_or(0);
+        let extra_created = extra_obj.get("createdAt").and_then(|v| v.as_i64()).unwrap_or(0);
+        if base_created == 0 && extra_created > 0 {
+            base_obj.insert("createdAt".to_string(), Value::from(extra_created));
+        }
+    }
+
     let mut seen = std::collections::HashSet::new();
+    let mut index_by_id = std::collections::HashMap::<String, usize>::new();
     for item in &base {
         if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
             seen.insert(id.to_string());
+        }
+    }
+    for (idx, item) in base.iter().enumerate() {
+        if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+            index_by_id.insert(id.to_string(), idx);
         }
     }
     for item in extra {
@@ -859,8 +913,15 @@ fn merge_items_without_duplicates(mut base: Vec<Value>, extra: Vec<Value>) -> Ve
         else {
             continue;
         };
-        if seen.insert(id) {
+        if seen.insert(id.clone()) {
+            index_by_id.insert(id, base.len());
             base.push(item);
+            continue;
+        }
+        if let Some(existing_idx) = index_by_id.get(&id).copied() {
+            if let Some(existing) = base.get_mut(existing_idx) {
+                merge_thread_item(existing, &item);
+            }
         }
     }
     base
@@ -1241,10 +1302,14 @@ fn parse_history_preview_map(history_path: &Path) -> HashMap<String, String> {
         let text = v
             .get("text")
             .and_then(|x| x.as_str())
-            .map(str::trim)
-            .unwrap_or_default();
-        if !text.is_empty() && !map.contains_key(id) {
-            map.insert(id.to_string(), text.to_string());
+            .and_then(normalize_preview_text);
+        if let Some(text) = text {
+            if !map.contains_key(id)
+                && !is_auxiliary_preview(&text)
+                && !is_auxiliary_instruction_text(&text)
+            {
+                map.insert(id.to_string(), text);
+            }
         }
     }
     map
@@ -1423,6 +1488,7 @@ for p in sessions_dir.rglob("*.jsonl"):
     sid = ""
     cwd = ""
     created_at = 0
+    is_subagent = False
     updated_at = int(p.stat().st_mtime)
     try:
         with p.open("r", encoding="utf-8", errors="ignore") as fh:
@@ -1442,6 +1508,11 @@ for p in sessions_dir.rglob("*.jsonl"):
                     sid = str(payload.get("id") or payload.get("session_id") or sid).strip()
                     cwd = str(payload.get("cwd") or cwd).strip()
                     created_raw = payload.get("created_at") or payload.get("createdAt")
+                    source = payload.get("source") or {}
+                    source_subagent = source.get("subagent")
+                    has_agent_role = bool(str(payload.get("agent_role") or "").strip())
+                    has_agent_nickname = bool(str(payload.get("agent_nickname") or "").strip())
+                    is_subagent = bool(source_subagent) or has_agent_role or has_agent_nickname
                     try:
                         created_at = int(created_raw or 0)
                     except Exception:
@@ -1466,6 +1537,8 @@ for p in sessions_dir.rglob("*.jsonl"):
         "preview": preview_map.get(sid, ""),
         "path": str(p),
         "source": "wsl-fallback",
+        "isSubagent": is_subagent,
+        "isAuxiliary": False,
         "status": {"type": "notLoaded"},
         "createdAt": created_at or updated_at,
         "updatedAt": updated_at,
