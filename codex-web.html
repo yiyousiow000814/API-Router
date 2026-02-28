@@ -19,7 +19,11 @@
       --danger: #ff3d66;
       --warn: #c48914;
       --radius: 14px;
-      --shadow: 0 16px 40px rgba(13, 18, 32, 0.14);
+      --shadow: 0 16px 20px rgba(13, 18, 32, 0.14);
+      --thread-card-bg: #ffffff;
+      --thread-card-active-bg: #ffffff;
+      --thread-group-bg: #ffffff;
+      --thread-group-header-bg: #ffffff;
     }
 
     * { box-sizing: border-box; }
@@ -142,10 +146,11 @@
     }
 
     .panel {
-      border: 1px solid var(--line);
+      border: none;
       background: linear-gradient(180deg, var(--panel), var(--panel-2));
       border-radius: var(--radius);
       box-shadow: var(--shadow);
+      overflow: hidden;
       min-height: 0;
       height: 100%;
       display: grid;
@@ -221,7 +226,7 @@
     .itemList { display: grid; gap: 8px; }
     .itemCard {
       border: 1px solid rgba(13, 18, 32, 0.14);
-      background: rgba(255, 255, 255, 0.98);
+      background: var(--thread-card-bg);
       border-radius: 12px;
       padding: 8px;
       color: #0d1220;
@@ -232,7 +237,7 @@
     .itemCard:hover { border-color: #434a58; }
     .itemCard.active {
       border-color: rgba(40, 199, 217, 0.55);
-      background: linear-gradient(135deg, rgba(40, 199, 217, 0.14), rgba(242, 193, 77, 0.14));
+      background: var(--thread-card-active-bg);
     }
     .threadFavBtn {
       border: 1px solid rgba(99, 113, 136, 0.35);
@@ -266,7 +271,7 @@
       border: 1px solid rgba(13, 18, 32, 0.14);
       border-radius: 12px;
       overflow: hidden;
-      background: rgba(255, 255, 255, 0.94);
+      background: var(--thread-group-bg);
     }
     .groupHeader {
       width: 100%;
@@ -278,7 +283,7 @@
       border-radius: 0;
       padding: 8px 10px;
       text-align: left;
-      background: rgba(250, 252, 255, 0.96);
+      background: var(--thread-group-header-bg);
     }
     .groupChevron {
       width: 14px;
@@ -355,7 +360,7 @@
     }
     .welcomeCard {
       width: min(100%, 440px);
-      margin: 20px auto 6px;
+      margin: clamp(52px, 22vh, 220px) auto 6px;
       display: grid;
       gap: 12px;
     }
@@ -471,6 +476,7 @@
       display: grid;
       gap: 8px;
       background: linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(244, 248, 255, 0.84));
+      border-radius: 0 0 var(--radius) var(--radius);
     }
     .mobileComposerRow { display: flex; align-items: center; gap: 8px; }
     .mobilePromptWrap {
@@ -699,9 +705,10 @@
       border: none;
       background: transparent;
       color: #1b2940;
-      padding: 8px 4px 8px;
+      padding: 6px 4px;
       text-align: left;
       font-weight: 600;
+      line-height: 1.2;
     }
     .settingsIcon {
       width: 18px;
@@ -805,23 +812,30 @@
       position: relative;
       overflow: hidden;
       background: #ffffff;
+      border-radius: var(--radius);
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
     }
     .leftPanel .panelBody {
       min-height: 0;
       overflow: auto;
-      padding-bottom: 56px;
+      padding-bottom: 0;
     }
     .leftPanel .panelFooter {
       pointer-events: none;
-      position: absolute;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      margin-top: 0;
       background: #ffffff;
+      display: flex;
+      align-items: center;
+      min-height: 52px;
+      padding: 10px 10px calc(14px + env(safe-area-inset-bottom, 0px));
+      border-top: 1px solid rgba(13, 18, 32, 0.1);
+      border-bottom-left-radius: var(--radius);
+      border-bottom-right-radius: var(--radius);
+      overflow: hidden;
     }
     .leftPanel .panelFooter .drawerSettingsBtn {
       pointer-events: auto;
+      transform: translateY(-1px);
     }
 
     @media (max-width: 1080px) {
@@ -926,7 +940,7 @@
         display: none;
       }
       .welcomeCard {
-        margin-top: 8px;
+        margin-top: clamp(28px, 16vh, 120px);
       }
       .welcomeTitle {
         font-size: 28px;
@@ -947,7 +961,7 @@
         bottom: 10px;
         width: clamp(260px, 65vw, 320px);
         z-index: 40;
-        box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
+        box-shadow: none;
         transition: transform 180ms ease;
         border-color: #32405b;
       }
@@ -956,32 +970,17 @@
         transform: translateX(-108%);
         background: #ffffff;
         border-color: rgba(13, 18, 32, 0.14);
+        border-radius: var(--radius);
+        overflow: hidden;
       }
       .leftPanel .panelHeader {
         display: none;
       }
-      .leftPanel {
-        display: flex;
-        flex-direction: column;
-      }
       .leftPanel .panelBody {
-        flex: 1;
-        min-height: 0;
-        overflow: auto;
-        padding-bottom: 56px;
+        padding-bottom: 0;
       }
       .leftPanel .panelFooter {
-        display: block;
-        margin-top: 0;
-        border-top-color: rgba(13, 18, 32, 0.1);
-        padding-top: 10px;
-        padding-bottom: 10px;
-        background: #ffffff;
-        pointer-events: none;
-        position: absolute;
-        left: 0;
-        right: 0;
-        bottom: 0;
+        padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
       }
       .leftPanel .panelFooter .drawerSettingsBtn {
         pointer-events: auto;
@@ -1009,7 +1008,7 @@
         border-right: none;
         border-top: none;
         border-bottom: 1px solid rgba(13, 18, 32, 0.14);
-        background: rgba(255, 255, 255, 0.98);
+        background: var(--thread-card-bg);
         margin: 0;
         padding: 10px 8px;
       }
@@ -1024,11 +1023,11 @@
         border-radius: 10px;
         overflow: hidden;
         border-color: rgba(13, 18, 32, 0.14);
-        background: rgba(255, 255, 255, 0.94);
+        background: var(--thread-group-bg);
       }
       .leftPanel .groupHeader {
         border-bottom-color: rgba(13, 18, 32, 0.1);
-        background: #ffffff;
+        background: var(--thread-group-header-bg);
         border-radius: 0;
       }
       .leftPanel .groupCount {
@@ -1064,9 +1063,11 @@
       }
       body.drawer-left-open .leftPanel {
         transform: translateX(0);
+        box-shadow: 0 24px 20px rgba(0, 0, 0, 0.35);
       }
       body.drawer-right-open .rightPanel {
         transform: translateX(0);
+        box-shadow: 0 24px 20px rgba(0, 0, 0, 0.35);
       }
       .msg {
         padding-left: 4px;
