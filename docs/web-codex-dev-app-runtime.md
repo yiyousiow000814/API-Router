@@ -20,8 +20,8 @@
 
 The app runtime serves Web Codex assets via Rust constants:
 
-- `WEB_CODEX_INDEX_HTML = include_str!("web_codex_page.html")`
-- `WEB_CODEX_APP_JS = include_str!("web_codex_app.js")`
+- `WEB_CODEX_INDEX_HTML = include_str!("../../../../codex-web.html")`
+- `WEB_CODEX_APP_JS = include_str!("../../../../src/ui/codex-web-dev.js")`
 
 `include_str!` embeds file contents into the compiled binary at build time.  
 That is why runtime UI changes are not visible until you rebuild/restart.
@@ -32,4 +32,3 @@ That is why runtime UI changes are not visible until you rebuild/restart.
 2. Start Vite dev server on `5173`.
 3. Open `http://127.0.0.1:5173/codex-web` for hot-reload UI work.
 4. When ready to ship, rebuild app/runtime and verify `http://127.0.0.1:4000/codex-web`.
-

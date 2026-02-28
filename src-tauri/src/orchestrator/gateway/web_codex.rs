@@ -5,8 +5,8 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-const WEB_CODEX_INDEX_HTML: &str = include_str!("web_codex_page.html");
-const WEB_CODEX_APP_JS: &str = include_str!("web_codex_app.js");
+const WEB_CODEX_INDEX_HTML: &str = include_str!("../../../../codex-web.html");
+const WEB_CODEX_APP_JS: &str = include_str!("../../../../src/ui/codex-web-dev.js");
 const AO_ICON_PNG: &[u8] = include_bytes!("../../../../public/ao-icon.png");
 const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TERMINAL_COMMAND_LEN: usize = 4000;
