@@ -14,7 +14,7 @@ use axum::http::request::Parts;
 use axum::http::Request;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::Router;
 use bytes::Bytes;
 use parking_lot::RwLock;
@@ -283,6 +283,41 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
         .route("/responses", post(responses))
+        .route("/codex-web", get(codex_web_index))
+        .route("/codex-web/app.js", get(codex_web_app_js))
+        .route("/ao-icon.png", get(codex_web_logo_png))
+        .route("/codex/health", get(codex_health))
+        .route("/codex/ws", get(codex_ws))
+        .route("/codex/auth/verify", post(codex_auth_verify))
+        .route(
+            "/codex/hosts",
+            get(codex_hosts_list).post(codex_hosts_create),
+        )
+        .route(
+            "/codex/hosts/:id",
+            patch(codex_hosts_update).delete(codex_hosts_delete),
+        )
+        .route("/codex/models", get(codex_models))
+        .route("/codex/approvals/pending", get(codex_pending_approvals))
+        .route("/codex/user-input/pending", get(codex_pending_user_inputs))
+        .route(
+            "/codex/threads",
+            get(codex_threads_list).post(codex_threads_create),
+        )
+        .route("/codex/threads/:id/resume", post(codex_thread_resume))
+        .route("/codex/turns/start", post(codex_turn_start))
+        .route("/codex/turns/stream", post(codex_turn_stream))
+        .route("/codex/turns/:id/interrupt", post(codex_turn_interrupt))
+        .route("/codex/approvals/:id/resolve", post(codex_approval_resolve))
+        .route(
+            "/codex/user-input/:id/resolve",
+            post(codex_user_input_resolve),
+        )
+        .route("/codex/attachments/upload", post(codex_attachments_upload))
+        .route("/codex/slash/execute", post(codex_slash_execute))
+        .route("/codex/terminal/exec", post(codex_terminal_exec))
+        .route("/codex/version-info", get(codex_version_info))
+        .route("/codex/rpc", post(codex_rpc_proxy))
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)
 }
@@ -295,6 +330,7 @@ pub fn build_router(state: GatewayState) -> Router {
 }
 
 include!("gateway/request_helpers.rs");
+include!("gateway/web_codex.rs");
 const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
 
 pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {

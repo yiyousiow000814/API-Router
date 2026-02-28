@@ -7,7 +7,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 static APP_SERVER: OnceLock<Mutex<Option<AppServer>>> = OnceLock::new();
 
@@ -186,7 +186,15 @@ pub async fn request(method: &str, params: Value) -> Result<Value, String> {
     match server.request(method, params).await {
         Ok(result) => Ok(result),
         Err(e) => {
-            *guard = None;
+            let lower = e.to_ascii_lowercase();
+            let should_respawn = lower.contains("closed")
+                || lower.contains("exited")
+                || lower.contains("missing result")
+                || lower.contains("failed to open codex stdin")
+                || lower.contains("failed to open codex stdout");
+            if should_respawn {
+                *guard = None;
+            }
             Err(e)
         }
     }

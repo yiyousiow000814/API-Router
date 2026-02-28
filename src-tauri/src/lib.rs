@@ -14,7 +14,7 @@ use crate::orchestrator::gateway::serve_in_background;
 use crate::orchestrator::store::unix_ms;
 use chrono::{Duration as ChronoDuration, Local};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn normalize_profile_name(raw: &str) -> String {
     let trimmed = raw.trim().to_ascii_lowercase();
@@ -90,6 +90,20 @@ fn should_reset_profile_data(profile: &str, is_ui_tauri: bool) -> bool {
 
 fn should_seed_mock_data(profile: &str, is_ui_tauri: bool) -> bool {
     !is_ui_tauri && profile == "test"
+}
+
+fn resolve_codex_home(user_data_dir: &Path, _is_ui_tauri: bool, _app_profile: &str) -> PathBuf {
+    let isolated = user_data_dir.join("codex-home");
+
+    if let Ok(explicit) = std::env::var("API_ROUTER_CODEX_HOME") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+
+    // Keep app auth/session isolated by default so login state is stable inside API Router.
+    isolated
 }
 
 fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
@@ -337,11 +351,12 @@ pub fn run() {
                 let _ = std::fs::create_dir_all(&user_data_dir);
             }
 
-            // Isolate Codex auth/session from the default ~/.codex directory to avoid overwrites.
-            // This keeps the app's login independent from CLI logins.
-            let codex_home = user_data_dir.join("codex-home");
+            // Share the existing ~/.codex history in the default profile so Web Codex can
+            // show real chats, while still allowing isolated homes for test/non-default profiles.
+            let codex_home = resolve_codex_home(&user_data_dir, is_ui_tauri, &app_profile);
             let _ = std::fs::create_dir_all(&codex_home);
             std::env::set_var("CODEX_HOME", &codex_home);
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", &user_data_dir);
 
             let state = build_state(
                 user_data_dir.join("config.toml"),
@@ -495,6 +510,7 @@ pub fn run() {
             commands::wsl_gateway_access_quick_status,
             commands::wsl_gateway_authorize_access,
             commands::wsl_gateway_revoke_access,
+            commands::tailscale_status,
             commands::codex_account_login,
             commands::codex_account_logout,
             commands::codex_account_refresh,

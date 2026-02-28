@@ -1,0 +1,1145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Web Codex</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fb;
+      --panel: rgba(255, 255, 255, 0.9);
+      --panel-2: rgba(255, 255, 255, 0.96);
+      --line: rgba(13, 18, 32, 0.14);
+      --line-soft: rgba(13, 18, 32, 0.1);
+      --text: #0d1220;
+      --muted: rgba(13, 18, 32, 0.64);
+      --accent: #28c7d9;
+      --accent-2: #f2c14d;
+      --danger: #ff3d66;
+      --warn: #c48914;
+      --radius: 14px;
+      --shadow: 0 16px 40px rgba(13, 18, 32, 0.14);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(1100px 680px at 16% -8%, rgba(40, 199, 217, 0.2), transparent 58%),
+        radial-gradient(1100px 680px at 94% 0%, rgba(242, 193, 77, 0.2), transparent 60%),
+        linear-gradient(180deg, #ffffff, var(--bg));
+      color: var(--text);
+      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    .shell {
+      height: 100%;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 10px;
+      padding: 10px;
+    }
+
+    .topbar {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(245, 249, 255, 0.92));
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 10px 12px;
+      display: grid;
+      gap: 6px;
+    }
+
+    .topbarRow {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .topbarRow.actions { justify-content: flex-end; gap: 6px; }
+    .topAction {
+      border-radius: 999px;
+      padding: 6px 11px;
+      font-size: 12px;
+      border: 1px solid rgba(13, 18, 32, 0.16);
+      background: rgba(255, 255, 255, 0.92);
+      color: #263247;
+      min-height: 32px;
+    }
+    .mobileNavBtn { display: none; }
+    .topAction.primary {
+      border-color: rgba(40, 199, 217, 0.5);
+      background: linear-gradient(135deg, rgba(40, 199, 217, 0.2), rgba(242, 193, 77, 0.2));
+      color: #0d1220;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      letter-spacing: .02em;
+      margin-right: auto;
+    }
+
+    .brandIcon {
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      border: 1px solid rgba(122, 180, 255, 0.6);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      color: #d8e8ff;
+      background: radial-gradient(circle at 30% 30%, rgba(122, 180, 255, 0.22), rgba(26, 36, 51, 0.95));
+      box-shadow: inset 0 0 0 1px rgba(234, 240, 255, 0.08);
+    }
+
+    .status {
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(40, 199, 217, 0.35);
+      color: #0d1220;
+      background: rgba(40, 199, 217, 0.12);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .status.warn {
+      color: var(--warn);
+      border-color: rgba(255, 203, 102, 0.4);
+      background: rgba(255, 203, 102, 0.1);
+    }
+
+    .layout {
+      min-height: 0;
+      height: 100%;
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 10px;
+    }
+    .layout.left-hidden {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .layout.left-hidden .leftPanel {
+      display: none;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, var(--panel), var(--panel-2));
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      min-height: 0;
+      height: 100%;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
+
+    .panelHeader {
+      padding: 10px;
+      border-bottom: 1px solid var(--line-soft);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .panelTitle {
+      font-size: 12px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+      margin-right: auto;
+    }
+    .workspaceSwitch {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-right: 6px;
+    }
+    .workspaceBtn {
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 11px;
+      min-height: 26px;
+      border: 1px solid rgba(13, 18, 32, 0.18);
+      background: rgba(255, 255, 255, 0.9);
+      color: #47556d;
+    }
+    .workspaceBtn.active {
+      border-color: rgba(40, 199, 217, 0.55);
+      background: linear-gradient(135deg, rgba(40, 199, 217, 0.2), rgba(242, 193, 77, 0.2));
+      color: #0d1220;
+      font-weight: 600;
+    }
+
+    .panelBody {
+      min-height: 0;
+      overflow: auto;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .panelFooter {
+      padding: 10px;
+      border-top: 1px solid var(--line-soft);
+      display: grid;
+      gap: 8px;
+    }
+
+    .itemList { display: grid; gap: 8px; }
+    .itemCard {
+      border: 1px solid #2a3448;
+      background: linear-gradient(180deg, rgba(18, 25, 39, 0.95), rgba(13, 18, 30, 0.95));
+      border-radius: 12px;
+      padding: 8px;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+      width: 100%;
+    }
+    .itemCard:hover { border-color: rgba(121, 180, 255, 0.6); }
+    .itemCard.active {
+      border-color: rgba(121, 180, 255, 0.9);
+      background: linear-gradient(180deg, rgba(38, 56, 88, 0.62), rgba(18, 28, 44, 0.9));
+    }
+    .threadFavBtn {
+      border: 1px solid rgba(112, 128, 156, 0.4);
+      background: rgba(20, 27, 40, 0.6);
+      color: #94a4bf;
+      width: 18px;
+      height: 18px;
+      flex: 0 0 18px;
+      border-radius: 10px;
+      font-size: 10px;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
+      margin-right: 6px;
+    }
+    .threadFavBtn.active {
+      border-color: rgba(255, 201, 86, 0.8);
+      color: #f7c75e;
+      background: rgba(255, 202, 84, 0.14);
+    }
+    .itemTitle { font-weight: 500; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .itemSub { font-size: 11px; color: var(--muted); margin-top: 3px; }
+    .groupCard {
+      border: 1px solid #2a3448;
+      border-radius: 12px;
+      overflow: hidden;
+      background: linear-gradient(180deg, rgba(16, 23, 36, 0.95), rgba(11, 16, 27, 0.95));
+    }
+    .groupHeader {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: none;
+      border-bottom: 1px solid #263149;
+      border-radius: 0;
+      padding: 8px 10px;
+      text-align: left;
+      background: rgba(22, 32, 50, 0.82);
+    }
+    .groupChevron {
+      width: 14px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .groupCount {
+      margin-left: auto;
+      border: 1px solid #32415f;
+      border-radius: 999px;
+      padding: 1px 7px;
+      color: #c5d1ea;
+      font-size: 10px;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+    }
+    .groupBody {
+      display: grid;
+      gap: 6px;
+      padding: 8px;
+      max-height: 46vh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
+    }
+    .itemCard .row { min-width: 0; }
+    .itemCard .row .itemTitle { flex: 1 1 auto; min-width: 0; }
+    .groupBody.collapsed {
+      display: none;
+    }
+
+    .messages {
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 12px;
+      display: grid;
+      align-content: start;
+      gap: 2px;
+      background: rgba(255, 255, 255, 0.56);
+      border-top: 1px solid var(--line-soft);
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .settingsTab {
+      min-height: 0;
+      overflow: auto;
+      padding: 12px;
+      display: none;
+      background: rgba(255, 255, 255, 0.56);
+      border-top: 1px solid var(--line-soft);
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .settingsTab.show {
+      display: grid;
+      align-content: start;
+      gap: 10px;
+    }
+    .settingsCard {
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      padding: 8px 10px 0;
+      display: grid;
+      gap: 10px;
+    }
+    .settingsRow {
+      display: grid;
+      gap: 6px;
+    }
+    .settingsActions {
+      margin-top: 18px;
+    }
+    .welcomeCard {
+      width: min(100%, 440px);
+      margin: 20px auto 6px;
+      display: grid;
+      gap: 12px;
+    }
+    .welcomeBrand {
+      display: grid;
+      justify-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .welcomeLogo {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+      letter-spacing: 0.02em;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      background: linear-gradient(135deg, rgba(40, 199, 217, 0.14), rgba(242, 193, 77, 0.12));
+      color: #0d1220;
+    }
+    .welcomeTitle {
+      font-size: 32px;
+      line-height: 1.1;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .welcomeSub {
+      font-size: 12px;
+      color: #637188;
+    }
+    .welcomeSetting {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(13, 18, 32, 0.16);
+      background: rgba(255, 255, 255, 0.94);
+      color: #223047;
+      text-align: left;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .welcomeSetting .muted {
+      font-size: 12px;
+    }
+    .welcomeChevron {
+      color: #637188;
+      font-size: 14px;
+    }
+    .welcomePrompts {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 4px;
+    }
+    .welcomePrompt {
+      border: 1px solid rgba(13, 18, 32, 0.16);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.94);
+      color: #223047;
+      padding: 12px 10px;
+      text-align: left;
+      min-height: 74px;
+      font-size: 11px;
+      line-height: 1.35;
+      white-space: normal;
+      word-break: break-word;
+    }
+    .chatEmpty {
+      margin: 2px 0 0;
+      max-width: 100%;
+      border: 1px dashed rgba(13, 18, 32, 0.18);
+      border-radius: 12px;
+      padding: 10px 12px;
+      color: #637188;
+      text-align: left;
+      background: rgba(255, 255, 255, 0.74);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .msg {
+      max-width: 100%;
+      border-radius: 12px;
+      padding: 10px 12px;
+      border: 1px solid transparent;
+      background: transparent;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg.assistant {
+      padding-left: 2px;
+      color: #2c3950;
+    }
+    .msg.user {
+      margin-left: auto;
+      max-width: min(84%, 760px);
+      border-color: rgba(40, 199, 217, 0.4);
+      background: linear-gradient(135deg, rgba(40, 199, 217, 0.2), rgba(242, 193, 77, 0.16));
+      color: #0d1220;
+      padding: 7px 10px;
+    }
+    .msg.system {
+      border-color: rgba(255, 203, 102, 0.4);
+      background: rgba(43, 33, 13, 0.42);
+    }
+    .msgHead { font-size: 11px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+    .msg.assistant .msgHead,
+    .msg.user .msgHead { display: none; }
+
+    .composer {
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(244, 248, 255, 0.84));
+    }
+    .mobileComposerRow { display: none; }
+    .mobilePromptWrap {
+      flex: 1;
+      min-width: 0;
+      position: relative;
+    }
+    .mobilePromptInput {
+      flex: 1;
+      min-width: 0;
+      border-radius: 999px;
+      min-height: 40px;
+      width: 100%;
+      padding-right: 38px;
+      background: rgba(255, 255, 255, 0.94);
+      border-color: rgba(13, 18, 32, 0.16);
+      color: #0d1220;
+      font-size: 13px;
+      font-weight: 400;
+    }
+    .mobileCircleBtn {
+      width: 40px;
+      height: 40px;
+      border-radius: 999px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 21px;
+      line-height: 1;
+      border-color: rgba(13, 18, 32, 0.16);
+      background: rgba(255, 255, 255, 0.92);
+      color: #1b2a3f;
+    }
+    #mobileAttachBtn {
+      transform: none;
+      position: relative;
+      padding: 0;
+    }
+    .mobileAttachGlyph {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -58%);
+      font-size: 24px;
+      line-height: 1;
+      font-weight: 500;
+    }
+    .mobileSendBtn {
+      position: absolute;
+      right: 4px;
+      top: 4px;
+      width: 32px;
+      height: 32px;
+      font-size: 18px;
+      font-weight: 700;
+      border: none;
+      border-radius: 999px;
+      background: rgba(220, 227, 238, 0.9);
+      color: #586175;
+      opacity: 0.72;
+      pointer-events: auto;
+      z-index: 2;
+      transition: opacity 120ms ease;
+    }
+    .mobilePromptWrap.has-text .mobileSendBtn {
+      opacity: 1;
+      pointer-events: auto;
+      background: linear-gradient(135deg, rgba(40, 199, 217, 0.48), rgba(242, 193, 77, 0.5));
+      color: #1a2436;
+    }
+
+    .row { display: flex; gap: 8px; align-items: center; }
+    .row.wrap { flex-wrap: wrap; }
+    .grow { flex: 1; min-width: 0; }
+
+    input, textarea, button, select {
+      border: 1px solid rgba(13, 18, 32, 0.16);
+      background: rgba(255, 255, 255, 0.92);
+      color: var(--text);
+      border-radius: 10px;
+      font: inherit;
+      padding: 8px 10px;
+      outline: none;
+    }
+    input:focus, textarea:focus, select:focus {
+      border-color: rgba(40, 199, 217, 0.55);
+      box-shadow: 0 0 0 3px rgba(40, 199, 217, 0.12);
+    }
+    textarea {
+      width: 100%;
+      min-height: 84px;
+      resize: vertical;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 500;
+      letter-spacing: .01em;
+      white-space: nowrap;
+    }
+    button.primary {
+      border-color: rgba(40, 199, 217, 0.5);
+      background: linear-gradient(135deg, rgba(40, 199, 217, 0.2), rgba(242, 193, 77, 0.2));
+    }
+    button.warn {
+      border-color: rgba(255, 203, 102, 0.45);
+      background: rgba(71, 52, 20, 0.55);
+    }
+    button.danger {
+      border-color: rgba(255, 111, 133, 0.5);
+      background: rgba(73, 27, 37, 0.58);
+    }
+
+    .muted { color: var(--muted); font-size: 12px; }
+    .mono { font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; }
+    .pillRow { display: flex; gap: 6px; flex-wrap: wrap; }
+    .pill {
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      color: #3d4b65;
+      background: rgba(255, 255, 255, 0.9);
+    }
+    .sectionTitle {
+      font-size: 11px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: #637188;
+      margin-top: 2px;
+    }
+    .sectionBlock {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .drawerBody {
+      align-content: start;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+      gap: 8px;
+    }
+    .drawerBody .itemList {
+      min-height: 0;
+      overflow: auto;
+      padding-right: 2px;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
+      align-content: start;
+      grid-auto-rows: max-content;
+      scrollbar-width: none;
+    }
+    .drawerBody .itemList::-webkit-scrollbar { width: 0; height: 0; }
+    .drawerBrandRow {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 2px 4px;
+      color: #1b2940;
+      font-weight: 500;
+      font-size: 13px;
+    }
+    .drawerBrandLogo {
+      width: 20px;
+      height: 20px;
+      border-radius: 7px;
+      display: inline-block;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      background: #ffffff;
+      object-fit: cover;
+    }
+    .drawerNewBtn {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.9);
+      border-color: rgba(13, 18, 32, 0.14);
+      color: #16233a;
+      padding: 8px 12px;
+      text-align: left;
+      font-size: 12px;
+    }
+    .drawerNewBtn .plus {
+      margin-right: 8px;
+      font-size: 17px;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transform: translateY(-1px);
+      opacity: 0.9;
+    }
+    .drawerItemBtn {
+      display: flex;
+      align-items: center;
+      text-align: left;
+      border-radius: 10px;
+      padding: 7px 11px;
+      border-color: rgba(13, 18, 32, 0.14);
+      background: rgba(255, 255, 255, 0.9);
+    }
+    .drawerTextNav {
+      border: none;
+      background: transparent;
+      border-radius: 0;
+      padding: 8px 2px 8px;
+    }
+    .drawerSettingsBtn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 10px;
+      border: none;
+      background: transparent;
+      color: #1b2940;
+      padding: 8px 4px 8px;
+      text-align: left;
+      font-weight: 600;
+    }
+    .settingsIcon {
+      width: 18px;
+      height: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #1b2940;
+      opacity: 0.98;
+    }
+    .settingsIcon svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+    }
+    .drawerLabel {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #1b2940;
+      font-weight: 500;
+      font-size: 12px;
+    }
+    .drawerInlineIcon {
+      width: 16px;
+      height: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #5f6d84;
+      flex: 0 0 16px;
+    }
+    .drawerInlineIcon svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .drawerHint {
+      display: block;
+      margin-top: 2px;
+      font-size: 12px;
+      color: #637188;
+    }
+    .drawerSectionTitle {
+      margin-top: 2px;
+      font-size: 10px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #637188;
+      font-weight: 600;
+    }
+    .drawerWorkspaceSwitch {
+      display: flex;
+      gap: 6px;
+    }
+    .setupSteps {
+      margin: 0;
+      padding-left: 18px;
+      display: grid;
+      gap: 4px;
+    }
+
+    .drawerBackdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(13, 18, 32, 0.24);
+      backdrop-filter: blur(1px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 160ms ease;
+      z-index: 30;
+    }
+    .drawerBackdrop.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .term {
+      max-height: 140px;
+      overflow: auto;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 12px;
+      white-space: pre-wrap;
+      background: rgba(255, 255, 255, 0.9);
+      color: #223047;
+      min-height: 36px;
+    }
+    .term.is-empty {
+      color: #8a95ab;
+    }
+
+    @media (max-width: 1080px) {
+      body {
+        background:
+          radial-gradient(900px 560px at 12% -8%, rgba(40, 199, 217, 0.2), transparent 58%),
+          radial-gradient(900px 560px at 94% -6%, rgba(242, 193, 77, 0.2), transparent 60%),
+          linear-gradient(180deg, #ffffff, #f6f8fb);
+      }
+      .layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(0, 1fr);
+      }
+      .layout.left-hidden {
+        grid-template-columns: 1fr;
+      }
+      .shell {
+        grid-template-rows: 1fr;
+        padding: 8px;
+        gap: 0;
+      }
+      .topbar {
+        display: none;
+      }
+      .topbarRow.actions { justify-content: flex-start; }
+      #statusLine {
+        display: none;
+      }
+      .panelHeader, .panelBody, .panelFooter, .composer {
+        padding-left: 8px;
+        padding-right: 8px;
+      }
+      .chatPanel {
+        min-height: 0;
+        border-radius: 14px;
+        overflow: hidden;
+      }
+      .messages {
+        min-height: 0;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        border-top: none;
+        border-bottom: none;
+      }
+      .settingsTab {
+        border-top: none;
+        border-bottom: none;
+        padding-top: 8px;
+        padding-bottom: 8px;
+      }
+      .chatPanel .panelHeader {
+        border-bottom: none;
+        background: transparent;
+        justify-content: flex-start;
+        gap: 10px;
+        padding-top: 10px;
+        padding-bottom: 8px;
+      }
+      .chatPanel .panelHeader .panelTitle {
+        margin-right: 0;
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 16px;
+        font-weight: 500;
+        color: #0d1220;
+      }
+      .mobileNavBtn {
+        display: inline-flex;
+        min-height: 0;
+        border: none;
+        background: transparent;
+        padding: 0 2px;
+        width: auto;
+        height: auto;
+        color: #0d1220;
+      }
+      .chatPanel .panelHeader select,
+      .chatPanel .panelHeader input,
+      .chatPanel .panelHeader .warn {
+        display: none;
+      }
+      .welcomeCard {
+        margin-top: 8px;
+      }
+      .welcomeTitle {
+        font-size: 28px;
+      }
+      #chatEmpty {
+        display: none;
+      }
+      .composer textarea,
+      .composer .row.wrap,
+      #attachmentPills {
+        display: none;
+      }
+      .mobileComposerRow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .leftPanel,
+      .rightPanel {
+        position: fixed;
+        top: 10px;
+        bottom: 10px;
+        width: clamp(260px, 65vw, 320px);
+        z-index: 40;
+        box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
+        transition: transform 180ms ease;
+        border-color: #32405b;
+      }
+      .leftPanel {
+        left: 10px;
+        transform: translateX(-108%);
+        background: #f7fbff;
+        border-color: rgba(13, 18, 32, 0.14);
+      }
+      .leftPanel .panelHeader {
+        display: none;
+      }
+      .leftPanel {
+        display: flex;
+        flex-direction: column;
+      }
+      .leftPanel .panelBody {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+      }
+      .leftPanel .panelFooter {
+        display: block;
+        margin-top: auto;
+        border-top-color: rgba(13, 18, 32, 0.1);
+        padding-top: 10px;
+        padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+        background: #f7fbff;
+      }
+      .leftPanel .panelFooter .muted,
+      .leftPanel .panelFooter #activeThreadId {
+        display: none;
+      }
+      .leftPanel input,
+      .leftPanel textarea,
+      .leftPanel select {
+        background: rgba(255, 255, 255, 0.92);
+        border-color: rgba(13, 18, 32, 0.16);
+        color: #0d1220;
+      }
+      .leftPanel input:focus,
+      .leftPanel textarea:focus,
+      .leftPanel select:focus {
+        border-color: #434a58;
+        box-shadow: 0 0 0 2px rgba(148, 157, 173, 0.12);
+      }
+      .leftPanel .itemCard {
+        border-radius: 0;
+        border-left: none;
+        border-right: none;
+        border-top: none;
+        border-bottom: 1px solid rgba(13, 18, 32, 0.14);
+        background: rgba(255, 255, 255, 0.98);
+        margin: 0;
+        padding: 10px 8px;
+      }
+      .leftPanel .groupBody {
+        gap: 0;
+        padding: 0;
+      }
+      .leftPanel .groupBody .itemCard:last-child {
+        border-bottom: none;
+      }
+      .leftPanel .groupCard {
+        border-radius: 10px;
+        overflow: hidden;
+        border-color: rgba(13, 18, 32, 0.14);
+        background: rgba(255, 255, 255, 0.94);
+      }
+      .leftPanel .groupHeader {
+        border-bottom-color: rgba(13, 18, 32, 0.1);
+        background: rgba(250, 252, 255, 0.96);
+        border-radius: 0;
+      }
+      .leftPanel .groupCount {
+        border-color: rgba(13, 18, 32, 0.14);
+        color: #4a556b;
+        background: transparent;
+      }
+      .leftPanel .drawerSectionTitle,
+      .leftPanel .sectionTitle {
+        color: #637188;
+      }
+      .leftPanel .itemTitle,
+      .leftPanel .drawerLabel {
+        color: #0d1220;
+      }
+      .leftPanel .itemSub,
+      .leftPanel .drawerHint {
+        color: #637188;
+      }
+      .leftPanel .threadFavBtn {
+        border-color: rgba(99, 113, 136, 0.35);
+        background: rgba(99, 113, 136, 0.14);
+        color: #516078;
+      }
+      .leftPanel .threadFavBtn.active {
+        border-color: rgba(224, 171, 37, 0.9);
+        color: #b07a00;
+        background: rgba(224, 171, 37, 0.18);
+      }
+      .rightPanel {
+        right: 10px;
+        transform: translateX(108%);
+      }
+      body.drawer-left-open .leftPanel {
+        transform: translateX(0);
+      }
+      body.drawer-right-open .rightPanel {
+        transform: translateX(0);
+      }
+      .msg {
+        padding-left: 4px;
+        padding-right: 4px;
+      }
+      .msg.user {
+        max-width: 92%;
+        padding: 6px 9px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="topbar">
+      <div class="topbarRow">
+        <div class="brand"><span class="brandIcon">&gt;_</span> Web Codex</div>
+        <span id="statusBadge" class="status warn">Disconnected</span>
+        <span id="sandboxBadge" class="status warn" style="display:none;">Sandbox (Read-only)</span>
+      </div>
+      <div class="topbarRow">
+        <button id="openThreadsBtn" class="topAction">Chats</button>
+        <button id="openToolsBtn" class="topAction">Tools</button>
+        <button id="connectBtn" class="topAction primary">Connect</button>
+        <button id="refreshAllBtn" class="topAction">Refresh</button>
+      </div>
+      <div id="statusLine" class="muted">Ready.</div>
+    </section>
+
+    <main id="mainLayout" class="layout">
+      <section class="panel leftPanel">
+        <div class="panelHeader">
+          <div class="panelTitle">Chats</div>
+          <button id="toggleSidebarBtn" title="Collapse/expand sidebar">Sidebar</button>
+          <button id="reloadThreadsBtn">Reload</button>
+          <button id="newThreadBtn" class="primary">New</button>
+        </div>
+        <div class="panelBody drawerBody">
+          <div class="drawerBrandRow"><img class="drawerBrandLogo" src="/ao-icon.png" alt="API Router logo" /><span>API Router</span></div>
+          <div id="drawerWorkspaceSwitch" class="drawerWorkspaceSwitch">
+            <button id="drawerWorkspaceWindowsBtn" class="workspaceBtn">WIN</button>
+            <button id="drawerWorkspaceWslBtn" class="workspaceBtn">WSL2</button>
+          </div>
+          <button id="leftNewChatBtn" class="drawerNewBtn"><span class="plus">+</span>New chat</button>
+          <div class="drawerSectionTitle">Start Directory</div>
+          <button id="leftStartDirBtn" class="drawerItemBtn">
+            <span class="drawerLabel">
+              <span class="drawerInlineIcon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M3 6.8a1.8 1.8 0 0 1 1.8-1.8h4.3l1.6 2h8.5A1.8 1.8 0 0 1 21 8.8v8.4a1.8 1.8 0 0 1-1.8 1.8H4.8A1.8 1.8 0 0 1 3 17.2z"></path>
+                </svg>
+              </span>
+              <span id="drawerWorkspaceText">Bridge default workspace</span>
+            </span>
+          </button>
+          <div class="drawerSectionTitle">Chats</div>
+          <input id="threadSearchInput" class="mono" placeholder="Search chats" />
+          <div id="threadList" class="itemList"></div>
+        </div>
+        <div class="panelFooter">
+          <button id="leftSettingsBtn" class="drawerSettingsBtn">
+            <span class="settingsIcon" aria-hidden="true">
+              <svg viewBox="0 0 16 16">
+                <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492a3.246 3.246 0 0 0 0-6.492M5.754 8a2.246 2.246 0 1 1 4.492 0a2.246 2.246 0 0 1-4.492 0"></path>
+                <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.42 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115z"></path>
+              </svg>
+            </span>
+            <span class="drawerLabel">Settings</span>
+          </button>
+          <div class="muted">Active thread</div>
+          <div id="activeThreadId" class="mono muted">(none)</div>
+        </div>
+      </section>
+
+      <section class="panel chatPanel">
+        <div class="panelHeader">
+          <button id="mobileMenuBtn" class="topAction mobileNavBtn">☰</button>
+          <div class="panelTitle">New chat</div>
+          <div id="headerWorkspaceSwitch" class="workspaceSwitch">
+            <button id="workspaceWindowsBtn" class="workspaceBtn">WIN</button>
+            <button id="workspaceWslBtn" class="workspaceBtn">WSL2</button>
+          </div>
+          <div class="grow"></div>
+          <input id="turnIdInput" class="mono" style="width:160px;" placeholder="turn id" />
+          <button id="interruptBtn" class="warn">Stop</button>
+        </div>
+        <div id="settingsTab" class="settingsTab">
+          <div class="settingsCard">
+            <div id="settingsInfoSection">
+              <div class="drawerSectionTitle" style="margin-top:0;">Environment</div>
+              <div class="settingsRow">
+                <div class="muted">Codex Version (Windows)</div>
+                <div id="windowsCodexVersion" class="mono">Detecting...</div>
+              </div>
+              <div class="settingsRow">
+                <div class="muted">Codex Version (WSL2)</div>
+                <div id="wslCodexVersion" class="mono">Detecting...</div>
+              </div>
+              <div class="drawerSectionTitle" style="margin-top:14px;">Alerts</div>
+              <div class="row wrap settingsActions">
+                <button id="enableNotifBtn">Enable notifications</button>
+                <span id="notifState" class="muted">Notification: off</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="chatBox" class="messages">
+          <div id="welcomeCard" class="welcomeCard">
+            <div class="welcomeBrand">
+              <span class="welcomeLogo">&gt;_</span>
+              <div class="welcomeTitle">Codex</div>
+            </div>
+            <button id="welcomeWorkspaceBtn" class="welcomeSetting">
+              <span id="welcomeWorkspaceText">Bridge default workspace</span>
+              <span class="welcomeChevron">›</span>
+            </button>
+            <div class="welcomePrompts">
+              <button id="quickPrompt1" class="welcomePrompt">Explain the current codebase structure</button>
+              <button id="quickPrompt2" class="welcomePrompt">Write tests for the main module</button>
+            </div>
+          </div>
+          <div id="chatEmpty" class="chatEmpty">
+            Select or create a thread, then start chatting with Codex.
+            <br />
+            Slash, attachments, approvals, and interrupt are all available here.
+          </div>
+        </div>
+        <div class="composer">
+          <textarea id="promptInput" placeholder="Ask Codex..."></textarea>
+          <div class="row wrap">
+            <input id="slashInput" class="grow mono" placeholder="/model gpt-5 /plan on /rename name" />
+            <button id="runSlashBtn">Run Slash</button>
+          </div>
+          <div id="attachmentPills" class="pillRow"></div>
+          <div class="row wrap">
+            <input id="attachInput" type="file" style="display:none;" />
+            <button id="pickAttachmentBtn">+ Attachment</button>
+            <button id="sendBtn" class="primary">Send</button>
+          </div>
+          <div class="mobileComposerRow">
+            <button id="mobileAttachBtn" class="mobileCircleBtn"><span class="mobileAttachGlyph">+</span></button>
+            <div id="mobilePromptWrap" class="mobilePromptWrap">
+              <input id="mobilePromptInput" class="mobilePromptInput" placeholder="Message Codex..." />
+              <button id="mobileSendBtn" class="mobileCircleBtn mobileSendBtn">↑</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <input id="tokenInput" type="hidden" />
+    </main>
+  </div>
+  <div id="mobileDrawerBackdrop" class="drawerBackdrop"></div>
+  <script>window.__WEB_CODEX_EMBEDDED_TOKEN__ = "__WEB_CODEX_EMBEDDED_TOKEN__";</script>
+  <script src="/codex-web/app.js"></script>
+</body>
+</html>

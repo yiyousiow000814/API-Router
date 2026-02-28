@@ -24,7 +24,7 @@ log = "0.4"
 tauri = { version = "2.9.5", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 tauri-plugin-single-instance = "2"
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
 http = "1"
 hyper = { version = "1", features = ["http1", "server"] }
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "time"] }
@@ -36,9 +36,10 @@ parking_lot = "0.12"
 sled = "0.34"
 toml = "0.8"
 anyhow = "1"
-futures-util = "0.3"
+futures-util = { version = "0.3", features = ["sink"] }
 async-stream = "0.3"
 bytes = "1"
+base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
 urlencoding = "2"
 fastrand = "2"

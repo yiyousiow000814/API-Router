@@ -3,10 +3,11 @@ import { EventLogPanel, type EventLogFocusRequest } from './EventLogPanel'
 import { ProviderSwitchboardPanel } from './ProviderSwitchboardPanel'
 import { UsageAnalyticsPanel } from './UsageAnalyticsPanel'
 import { UsageRequestsPanel } from './UsageRequestsPanel'
+import { WebCodexPanel } from './WebCodexPanel'
 import type { LastErrorJump } from './ProvidersTable'
 
 type Props = {
-  activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
+  activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log' | 'web_codex'
   status: any
   config: any
   providers: any[]
@@ -104,6 +105,10 @@ export function AppMainContent(props: Props) {
         onFocusRequestHandled={onEventLogFocusRequestHandled}
       />
     )
+  }
+
+  if (activePage === 'web_codex') {
+    return <WebCodexPanel />
   }
 
   if (!status) {
