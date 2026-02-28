@@ -92,7 +92,16 @@ function applyWorkspaceUi() {
   const headerSwitch = byId("headerWorkspaceSwitch");
   const drawerSwitch = byId("drawerWorkspaceSwitch");
   const showDual = hasDualWorkspaceTargets();
-  if (headerSwitch) headerSwitch.style.display = showDual && state.activeMainTab !== "settings" ? "" : "none";
+  if (headerSwitch) {
+    if (state.activeMainTab === "settings") {
+      headerSwitch.style.display = "none";
+    } else {
+      // Keep header height/layout stable while capability detection is loading.
+      headerSwitch.style.display = "inline-flex";
+      headerSwitch.style.visibility = showDual ? "visible" : "hidden";
+      headerSwitch.style.pointerEvents = showDual ? "auto" : "none";
+    }
+  }
   if (drawerSwitch) drawerSwitch.style.display = showDual ? "" : "none";
   if (winBtn) winBtn.classList.toggle("active", target === "windows");
   if (wslBtn) wslBtn.classList.toggle("active", target === "wsl2");

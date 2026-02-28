@@ -71,6 +71,17 @@
       min-height: 32px;
     }
     .mobileNavBtn { display: none; }
+    .hamburgerIcon {
+      width: 20px;
+      height: 20px;
+      display: block;
+    }
+    .hamburgerIcon line {
+      stroke: currentColor;
+      stroke-width: 2.2;
+      stroke-linecap: round;
+      shape-rendering: geometricPrecision;
+    }
     .topAction.primary {
       border-color: rgba(40, 199, 217, 0.5);
       background: linear-gradient(135deg, rgba(40, 199, 217, 0.2), rgba(242, 193, 77, 0.2));
@@ -812,8 +823,27 @@
         background: transparent;
         justify-content: flex-start;
         gap: 10px;
-        padding-top: 10px;
-        padding-bottom: 8px;
+        padding-top: 8px;
+        padding-bottom: 6px;
+        align-items: center;
+        flex-wrap: nowrap;
+        min-height: 44px;
+      }
+      .chatPanel .panelHeader .grow {
+        display: none;
+      }
+      .chatPanel .panelHeader .mobileNavBtn {
+        margin-top: 0;
+        margin-bottom: 0;
+        align-self: center;
+      }
+      .chatPanel .panelHeader .panelTitle {
+        line-height: 1;
+        display: inline-flex;
+        align-items: center;
+      }
+      .chatPanel .panelHeader .workspaceSwitch {
+        align-self: center;
       }
       .chatPanel .panelHeader .panelTitle {
         margin-right: 0;
@@ -1051,7 +1081,13 @@
 
       <section class="panel chatPanel">
         <div class="panelHeader">
-          <button id="mobileMenuBtn" class="topAction mobileNavBtn">☰</button>
+          <button id="mobileMenuBtn" class="topAction mobileNavBtn" aria-label="Open sidebar">
+            <svg class="hamburgerIcon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <line x1="4" y1="7" x2="20" y2="7"></line>
+              <line x1="4" y1="12" x2="20" y2="12"></line>
+              <line x1="4" y1="17" x2="20" y2="17"></line>
+            </svg>
+          </button>
           <div class="panelTitle">New chat</div>
           <div id="headerWorkspaceSwitch" class="workspaceSwitch">
             <button id="workspaceWindowsBtn" class="workspaceBtn">WIN</button>
