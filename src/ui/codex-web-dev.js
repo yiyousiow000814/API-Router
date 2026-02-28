@@ -53,8 +53,10 @@ function bindInput(id, eventName, handler) {
 }
 
 function setStatus(message, isWarn = false) {
-  byId("statusLine").textContent = message || "";
+  const statusLine = byId("statusLine");
+  if (statusLine) statusLine.textContent = message || "";
   const badge = byId("statusBadge");
+  if (!badge) return;
   if (/connected|ok|sent|selected|resumed/i.test(message || "")) {
     badge.textContent = "Connected";
     badge.classList.remove("warn");
@@ -83,6 +85,12 @@ function hasDualWorkspaceTargets() {
   return !!(state.workspaceAvailability.windowsInstalled && state.workspaceAvailability.wsl2Installed);
 }
 
+function isWorkspaceAvailable(target) {
+  return target === "wsl2"
+    ? !!state.workspaceAvailability.wsl2Installed
+    : !!state.workspaceAvailability.windowsInstalled;
+}
+
 function applyWorkspaceUi() {
   const target = getWorkspaceTarget();
   const winBtn = byId("workspaceWindowsBtn");
@@ -91,18 +99,25 @@ function applyWorkspaceUi() {
   const drawerWslBtn = byId("drawerWorkspaceWslBtn");
   const headerSwitch = byId("headerWorkspaceSwitch");
   const drawerSwitch = byId("drawerWorkspaceSwitch");
-  const showDual = hasDualWorkspaceTargets();
+  const canUseWindows = isWorkspaceAvailable("windows");
+  const canUseWsl2 = isWorkspaceAvailable("wsl2");
+
   if (headerSwitch) {
     if (state.activeMainTab === "settings") {
       headerSwitch.style.display = "none";
     } else {
-      // Keep header height/layout stable while capability detection is loading.
       headerSwitch.style.display = "inline-flex";
-      headerSwitch.style.visibility = showDual ? "visible" : "hidden";
-      headerSwitch.style.pointerEvents = showDual ? "auto" : "none";
+      headerSwitch.style.visibility = "visible";
+      headerSwitch.style.pointerEvents = "auto";
     }
   }
-  if (drawerSwitch) drawerSwitch.style.display = showDual ? "" : "none";
+  if (drawerSwitch) drawerSwitch.style.display = "";
+
+  if (winBtn) winBtn.disabled = !canUseWindows;
+  if (wslBtn) wslBtn.disabled = !canUseWsl2;
+  if (drawerWinBtn) drawerWinBtn.disabled = !canUseWindows;
+  if (drawerWslBtn) drawerWslBtn.disabled = !canUseWsl2;
+
   if (winBtn) winBtn.classList.toggle("active", target === "windows");
   if (wslBtn) wslBtn.classList.toggle("active", target === "wsl2");
   if (drawerWinBtn) drawerWinBtn.classList.toggle("active", target === "windows");
@@ -181,7 +196,8 @@ function updateWorkspaceAvailability(windowsInstalled, wsl2Installed) {
 
 async function setWorkspaceTarget(nextTarget) {
   const target = normalizeWorkspaceTarget(nextTarget);
-  if (!hasDualWorkspaceTargets()) return;
+  if (!isWorkspaceAvailable(target)) return;
+  if (state.workspaceTarget === target) return;
   state.workspaceTarget = target;
   state.collapsedWorkspaceKeys.clear();
   localStorage.setItem(WORKSPACE_TARGET_KEY, target);
@@ -226,8 +242,6 @@ function addChat(role, text) {
   const box = byId("chatBox");
   const welcome = byId("welcomeCard");
   if (welcome) welcome.style.display = "none";
-  const empty = byId("chatEmpty");
-  if (empty) empty.remove();
   const node = document.createElement("div");
   node.className = `msg ${role}`.trim();
   node.innerHTML = `<div class="msgHead">${escapeHtml(role)}</div>${escapeHtml(text || "")}`;
@@ -236,13 +250,10 @@ function addChat(role, text) {
 }
 
 function getPromptValue() {
-  const desktop = byId("promptInput").value.trim();
-  if (desktop) return desktop;
   return byId("mobilePromptInput")?.value?.trim() || "";
 }
 
 function clearPromptValue() {
-  byId("promptInput").value = "";
   const mobile = byId("mobilePromptInput");
   if (mobile) mobile.value = "";
   updateMobileComposerState();
@@ -273,7 +284,7 @@ function setMainTab(tab) {
   if (settingsInfoSection) settingsInfoSection.style.display = "";
   if (chatBox) chatBox.style.display = isSideTab ? "none" : "";
   if (composer) composer.style.display = isSideTab ? "none" : "";
-  if (headerSwitch) headerSwitch.style.display = isSideTab ? "none" : (hasDualWorkspaceTargets() ? "" : "none");
+  if (headerSwitch) headerSwitch.style.display = isSideTab ? "none" : "";
   if (panelTitle) panelTitle.textContent = state.activeMainTab === "settings" ? "Settings" : "New chat";
 }
 
@@ -434,19 +445,14 @@ async function api(path, options = {}) {
 
 function setActiveHost(id) {
   state.activeHostId = id || "";
-  byId("activeHostId").textContent = state.activeHostId || "(none)";
+  const activeHostLabel = byId("activeHostId");
+  if (activeHostLabel) activeHostLabel.textContent = state.activeHostId || "(none)";
 }
 
 function setActiveThread(id) {
   state.activeThreadId = id || "";
-  byId("activeThreadId").textContent = state.activeThreadId || "(none)";
-}
-
-function toggleSidebar() {
-  state.sidebarCollapsed = !state.sidebarCollapsed;
-  const layout = byId("mainLayout");
-  layout.classList.toggle("left-hidden", state.sidebarCollapsed);
-  byId("toggleSidebarBtn").textContent = state.sidebarCollapsed ? "Show" : "Sidebar";
+  const activeThreadLabel = byId("activeThreadId");
+  if (activeThreadLabel) activeThreadLabel.textContent = state.activeThreadId || "(none)";
 }
 
 function workspaceKeyOfThread(thread) {
@@ -569,8 +575,10 @@ function renderThreads(items) {
         "";
       const subText = age ? `Last updated ${age}` : (id && title !== id ? id : "");
       const isFavorite = !!(id && favoriteSet.has(id));
-      const card = document.createElement("button");
+      const card = document.createElement("div");
       card.className = `itemCard${id && id === state.activeThreadId ? " active" : ""}`;
+      card.setAttribute("role", "button");
+      card.tabIndex = 0;
       card.innerHTML =
         `<div class="row"><button class="threadFavBtn${isFavorite ? " active" : ""}" data-thread-fav="${escapeHtml(id)}"><span class="starGlyph" aria-hidden="true">★</span></button>` +
         `<div class="itemTitle">${escapeHtml(title)}</div><div class="grow"></div>` +
@@ -588,13 +596,22 @@ function renderThreads(items) {
           renderThreads(state.threadItems);
         };
       }
-      card.onclick = async () => {
+      const openThread = async () => {
         if (!id) return;
         await api(`/codex/threads/${encodeURIComponent(id)}/resume`, { method: "POST", body: {} });
         setActiveThread(id);
         setStatus(`Resumed thread ${id}`);
         hideWelcomeCard();
         setMobileTab("chat");
+      };
+      card.onclick = () => {
+        openThread().catch((e) => setStatus(e.message, true));
+      };
+      card.onkeydown = (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openThread().catch((e) => setStatus(e.message, true));
+        }
       };
       return card;
   };
@@ -827,8 +844,6 @@ async function sendTurn() {
     const reqId = nextReqId();
     let text = "";
     hideWelcomeCard();
-    const empty = byId("chatEmpty");
-    if (empty) empty.remove();
     const msg = document.createElement("div");
     msg.className = "msg assistant";
     msg.innerHTML = `<div class="msgHead">assistant</div><div></div>`;
@@ -845,13 +860,10 @@ async function sendTurn() {
             body.textContent = text;
           }
           if (typeof data.threadId === "string" && data.threadId) setActiveThread(data.threadId);
-          if (typeof data.turnId === "string" && data.turnId) byId("turnIdInput").value = data.turnId;
         } else if (type === "completed") {
           const result = data.result || {};
           const threadId = result.threadId || result.thread_id || result?.thread?.id || state.activeThreadId;
-          const turnId = result.turnId || result.turn_id || result?.turn?.id || "";
           if (threadId) setActiveThread(threadId);
-          if (turnId) byId("turnIdInput").value = turnId;
           if (!text.trim()) body.textContent = normalizeTextPayload(result);
           maybeNotifyTurnDone(body.textContent || "");
           state.wsReqHandlers.delete(reqId);
@@ -878,8 +890,6 @@ async function sendTurn() {
     const fallback = await api("/codex/turns/start", { method: "POST", body: payload });
     const threadId = fallback.threadId || fallback.thread_id || fallback?.thread?.id || state.activeThreadId;
     if (threadId) setActiveThread(threadId);
-    const turnId = fallback.turnId || fallback.turn_id || fallback?.turn?.id || "";
-    if (turnId) byId("turnIdInput").value = turnId;
     addChat("assistant", normalizeTextPayload(fallback.result || fallback));
     await refreshThreads();
     return;
@@ -887,8 +897,6 @@ async function sendTurn() {
 
   let text = "";
   hideWelcomeCard();
-  const empty = byId("chatEmpty");
-  if (empty) empty.remove();
   const msg = document.createElement("div");
   msg.className = "msg assistant";
   msg.innerHTML = `<div class="msgHead">assistant</div><div></div>`;
@@ -923,13 +931,10 @@ async function sendTurn() {
           body.textContent = text;
         }
         if (typeof data.threadId === "string" && data.threadId) setActiveThread(data.threadId);
-        if (typeof data.turnId === "string" && data.turnId) byId("turnIdInput").value = data.turnId;
       } else if (evtName === "completed") {
         const result = data.result || {};
         const threadId = result.threadId || result.thread_id || result?.thread?.id || state.activeThreadId;
         if (threadId) setActiveThread(threadId);
-        const turnId = result.turnId || result.turn_id || result?.turn?.id || "";
-        if (turnId) byId("turnIdInput").value = turnId;
         if (!text.trim()) body.textContent = normalizeTextPayload(result);
         maybeNotifyTurnDone(body.textContent || "");
       } else if (evtName === "error") {
@@ -938,22 +943,6 @@ async function sendTurn() {
     }
   }
   await refreshThreads();
-}
-
-async function interruptTurn() {
-  if (blockInSandbox("interrupt turn")) return;
-  const turnId = byId("turnIdInput").value.trim();
-  if (!turnId) throw new Error("turn id is required");
-  await api(`/codex/turns/${encodeURIComponent(turnId)}/interrupt`, { method: "POST", body: {} });
-  setStatus(`Interrupt sent: ${turnId}`);
-}
-
-async function runSlash() {
-  if (blockInSandbox("slash command")) return;
-  const command = byId("slashInput").value.trim();
-  if (!command) return;
-  const data = await api("/codex/slash/execute", { method: "POST", body: { command, threadId: state.activeThreadId || null } });
-  addChat("system", JSON.stringify(data, null, 2));
 }
 
 async function uploadAttachment(file) {
@@ -1011,12 +1000,6 @@ async function resolveUserInput() {
 }
 
 function setMobileTab(tab) {
-  const isMobile = window.matchMedia("(max-width: 1080px)").matches;
-  if (!isMobile) {
-    document.body.classList.remove("drawer-left-open", "drawer-right-open");
-    byId("mobileDrawerBackdrop").classList.remove("show");
-    return;
-  }
   document.body.classList.remove("drawer-left-open", "drawer-right-open");
   if (tab === "threads") document.body.classList.add("drawer-left-open");
   if (tab === "tools") document.body.classList.add("drawer-right-open");
@@ -1024,23 +1007,13 @@ function setMobileTab(tab) {
 }
 
 function wireActions() {
-  bindClick("connectBtn", () => connect().catch((e) => setStatus(e.message, true)));
-  bindClick("refreshAllBtn", () => refreshAll().catch((e) => setStatus(e.message, true)));
-  bindClick("connectFromToolsBtn", () => connect().catch((e) => setStatus(e.message, true)));
-  bindClick("refreshFromToolsBtn", () => refreshAll().catch((e) => setStatus(e.message, true)));
-  bindClick("reloadThreadsBtn", () => refreshThreads().catch((e) => setStatus(e.message, true)));
-  bindClick("newThreadBtn", () => newThread().catch((e) => setStatus(e.message, true)));
   bindClick("addHostBtn", () => addHost().catch((e) => setStatus(e.message, true)));
-  bindClick("sendBtn", () => sendTurn().catch((e) => setStatus(e.message, true)));
-  bindClick("interruptBtn", () => interruptTurn().catch((e) => setStatus(e.message, true)));
-  bindClick("runSlashBtn", () => runSlash().catch((e) => setStatus(e.message, true)));
   bindClick("resolveApprovalBtn", () => resolveApproval().catch((e) => setStatus(e.message, true)));
   bindClick("resolveUserInputBtn", () => resolveUserInput().catch((e) => setStatus(e.message, true)));
   bindClick("refreshPendingBtn", () => refreshPending().catch((e) => setStatus(e.message, true)));
   bindInput("attachInput", "change", (event) => {
     uploadAttachment(event.target?.files?.[0]).catch((e) => setStatus(e.message, true));
   });
-  bindClick("pickAttachmentBtn", () => byId("attachInput")?.click());
   bindClick("mobileAttachBtn", () => byId("attachInput")?.click());
   bindClick("mobileSendBtn", () => sendTurn().catch((e) => setStatus(e.message, true)));
   bindInput("mobilePromptInput", "input", () => updateMobileComposerState());
@@ -1063,12 +1036,6 @@ function wireActions() {
   bindClick("dismissGuideBtn", () => {
     localStorage.setItem(GUIDE_DISMISSED_KEY, "1");
     if (byId("guideList")) byId("guideList").style.display = "none";
-  });
-  bindClick("toggleSidebarBtn", () => toggleSidebar());
-  bindClick("openThreadsBtn", () => setMobileTab("threads"));
-  bindClick("openToolsBtn", () => {
-    setMainTab("settings");
-    refreshCodexVersions().catch(() => {});
   });
   bindClick("mobileMenuBtn", () => setMobileTab("threads"));
   bindClick("mobileDrawerBackdrop", () => setMobileTab("chat"));
@@ -1096,13 +1063,11 @@ function wireActions() {
   bindClick("drawerWorkspaceWslBtn", () => setWorkspaceTarget("wsl2").catch((e) => setStatus(e.message, true)));
   bindClick("quickPrompt1", () => {
     const text = "Explain the current codebase structure";
-    byId("promptInput").value = text;
     if (byId("mobilePromptInput")) byId("mobilePromptInput").value = text;
     updateMobileComposerState();
   });
   bindClick("quickPrompt2", () => {
     const text = "Write tests for the main module";
-    byId("promptInput").value = text;
     if (byId("mobilePromptInput")) byId("mobilePromptInput").value = text;
     updateMobileComposerState();
   });
@@ -1112,7 +1077,7 @@ function wireActions() {
     renderThreads(state.threadItems);
   };
   window.addEventListener("resize", () => {
-    if (!window.matchMedia("(max-width: 1080px)").matches) setMobileTab("chat");
+    setMobileTab("chat");
   });
 }
 
@@ -1138,7 +1103,8 @@ function bootstrap() {
   updateWorkspaceAvailability(false, false);
   applyWorkspaceUi();
   if (SANDBOX_MODE) {
-    byId("sandboxBadge").style.display = "inline-flex";
+    const sandboxBadge = byId("sandboxBadge");
+    if (sandboxBadge) sandboxBadge.style.display = "inline-flex";
     setStatus("Sandbox mode enabled: read-only preview against live data.", true);
   } else {
     setStatus("Ready.");
@@ -1151,7 +1117,6 @@ function bootstrap() {
   updateMobileComposerState();
   syncSettingsControlsFromMain();
   updateWelcomeSelections();
-  if (byId("toggleSidebarBtn")) byId("toggleSidebarBtn").textContent = "Sidebar";
   setMainTab("chat");
   wireActions();
   setMobileTab("chat");
