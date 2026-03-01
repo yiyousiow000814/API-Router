@@ -621,15 +621,17 @@ function renderThreads(items) {
     const group = document.createElement("section");
     group.className = "groupCard";
     const header = document.createElement("button");
-    header.className = "groupHeader";
     const collapsed = state.collapsedWorkspaceKeys.has(sectionKey);
+    header.className = `groupHeader${collapsed ? " is-collapsed" : ""}`;
     const animClass =
       state.lastChevronToggleKey === sectionKey
         ? (state.lastChevronToggleCollapsed ? " anim-close" : " anim-open")
         : "";
     header.innerHTML =
       `<span class="itemTitle">${escapeHtml(sectionTitle)}</span>` +
-      `<span class="groupChevron chevronGlyph${collapsed ? " is-collapsed" : ""}${animClass}">›</span>`;
+      `<span class="groupChevron${collapsed ? " is-collapsed" : ""}${animClass}" aria-hidden="true">` +
+      `<svg class="groupChevronIcon" viewBox="0 0 16 16" focusable="false"><path d="M6 4l4 4-4 4"></path></svg>` +
+      `</span>`;
     header.onclick = () => {
       if (state.collapsedWorkspaceKeys.has(sectionKey)) state.collapsedWorkspaceKeys.delete(sectionKey);
       else state.collapsedWorkspaceKeys.add(sectionKey);
@@ -669,15 +671,17 @@ function renderThreads(items) {
     const group = document.createElement("section");
     group.className = "groupCard";
     const header = document.createElement("button");
-    header.className = "groupHeader";
     const collapsed = state.collapsedWorkspaceKeys.has(workspaceKey);
+    header.className = `groupHeader${collapsed ? " is-collapsed" : ""}`;
     const animClass =
       state.lastChevronToggleKey === workspaceKey
         ? (state.lastChevronToggleCollapsed ? " anim-close" : " anim-open")
         : "";
     header.innerHTML =
       `<span class="itemTitle">${escapeHtml(workspace)}</span>` +
-      `<span class="groupChevron chevronGlyph${collapsed ? " is-collapsed" : ""}${animClass}">›</span>`;
+      `<span class="groupChevron${collapsed ? " is-collapsed" : ""}${animClass}" aria-hidden="true">` +
+      `<svg class="groupChevronIcon" viewBox="0 0 16 16" focusable="false"><path d="M6 4l4 4-4 4"></path></svg>` +
+      `</span>`;
     header.onclick = () => {
       if (state.collapsedWorkspaceKeys.has(workspaceKey)) {
         // Open this group and keep others collapsed (single-expanded behavior).

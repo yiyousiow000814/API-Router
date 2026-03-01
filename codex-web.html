@@ -283,6 +283,9 @@
       text-align: left;
       background: var(--thread-group-header-bg);
     }
+    .groupHeader.is-collapsed {
+      border-bottom-color: transparent;
+    }
     .chevronGlyph {
       color: #637188;
       font-size: 14px;
@@ -292,13 +295,27 @@
     }
     .groupChevron {
       margin-left: auto;
-      width: 14px;
-      display: inline-block;
-      text-align: center;
+      width: 18px;
+      height: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transform-origin: 50% 50%;
       transform: rotate(90deg);
+      color: #637188;
     }
     .groupChevron.is-collapsed {
       transform: rotate(0deg);
+    }
+    .groupChevronIcon {
+      width: 14px;
+      height: 14px;
+      display: block;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
     }
     .groupChevron.anim-open {
       animation: chevron-open 0.16s ease;
@@ -1026,21 +1043,23 @@
       }
       .leftPanel .groupBody {
         gap: 0;
-        padding: 0;
+        padding: 0 8px 0 0;
+        scrollbar-gutter: stable;
       }
       .leftPanel .groupBody .itemCard:last-child {
         border-bottom: none;
       }
       .leftPanel .groupCard {
-        border-radius: 10px;
-        overflow: hidden;
-        border-color: rgba(13, 18, 32, 0.14);
-        background: var(--thread-group-bg);
+        border: none;
+        border-radius: 0;
+        overflow: visible;
+        background: transparent;
       }
       .leftPanel .groupHeader {
-        border-bottom-color: rgba(13, 18, 32, 0.1);
-        background: var(--thread-group-header-bg);
+        border: none;
+        background: transparent;
         border-radius: 0;
+        padding: 8px 10px;
       }
       .leftPanel .drawerSectionTitle,
       .leftPanel .sectionTitle {
