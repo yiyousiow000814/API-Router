@@ -11,29 +11,9 @@ function resolveGatewayTokenFromSecrets(): string {
     if (!fs.existsSync(secretsPath)) return ''
     const raw = fs.readFileSync(secretsPath, 'utf-8')
     const parsed = JSON.parse(raw) as { providers?: Record<string, unknown> }
-    const token = String(parsed?.providers?.['__gateway_token__'] ?? '').trim()
-    return token
+    return String(parsed?.providers?.['__gateway_token__'] ?? '').trim()
   } catch {
     return ''
-  }
-}
-
-async function resolveEmbeddedTokenLiteral(): Promise<string> {
-  try {
-    const target = `${gatewayProxyTarget.replace(/\/+$/, '')}/codex-web`
-    const res = await fetch(target)
-    if (!res.ok) {
-      const fallbackToken = resolveGatewayTokenFromSecrets()
-      return JSON.stringify(fallbackToken)
-    }
-    const html = await res.text()
-    const match = html.match(/window\.__WEB_CODEX_EMBEDDED_TOKEN__\s*=\s*(".*?");/)
-    if (match?.[1]) return match[1]
-    const fallbackToken = resolveGatewayTokenFromSecrets()
-    return JSON.stringify(fallbackToken)
-  } catch {
-    const fallbackToken = resolveGatewayTokenFromSecrets()
-    return JSON.stringify(fallbackToken)
   }
 }
 
@@ -62,8 +42,11 @@ export default defineConfig({
           }
           void (async () => {
             let html = fs.readFileSync(htmlPath, 'utf-8')
-            const tokenLiteral = await resolveEmbeddedTokenLiteral()
-            html = html.replace('"__WEB_CODEX_EMBEDDED_TOKEN__"', tokenLiteral)
+            const gatewayToken = resolveGatewayTokenFromSecrets()
+            html = html.replace(
+              '<script src="/codex-web/app.js"></script>',
+              '<script type="module" src="/src/ui/codex-web-dev.js"></script>',
+            )
             if (isSandboxWeb) {
               html = html.replace(
                 '<script type="module" src="/src/ui/codex-web-dev.js"></script>',
@@ -73,6 +56,12 @@ export default defineConfig({
             const transformed = await server.transformIndexHtml(req.url || '/codex-web', html)
             _res.statusCode = 200
             _res.setHeader('Content-Type', 'text/html; charset=utf-8')
+            if (gatewayToken) {
+              _res.setHeader(
+                'Set-Cookie',
+                `api_router_gateway_token=${gatewayToken}; Path=/codex; HttpOnly; SameSite=Strict`,
+              )
+            }
             _res.end(transformed)
           })()
           return

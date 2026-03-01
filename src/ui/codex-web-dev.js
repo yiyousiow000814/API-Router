@@ -24,15 +24,13 @@ const GUIDE_DISMISSED_KEY = "web_codex_guide_dismissed_v2";
 const TOKEN_STORAGE_KEY = "web_codex_token_v1";
 const WORKSPACE_TARGET_KEY = "web_codex_workspace_target_v1";
 const FAVORITE_THREADS_KEY = "web_codex_favorite_threads_v1";
-const EMBEDDED_TOKEN_RAW = typeof window !== "undefined" ? window.__WEB_CODEX_EMBEDDED_TOKEN__ : "";
 const SANDBOX_MODE =
   window.__WEB_CODEX_SANDBOX__ === true ||
   window.location.pathname.startsWith("/sandbox/") ||
   new URLSearchParams(window.location.search).get("sandbox") === "1";
 
 function getEmbeddedToken() {
-  const raw = String(EMBEDDED_TOKEN_RAW || "").trim();
-  if (!raw || raw === "__WEB_CODEX_EMBEDDED_TOKEN__") return "";
+  const raw = "";
   return raw;
 }
 
@@ -157,9 +155,9 @@ function detectThreadWorkspaceTarget(thread) {
 
 function shouldRenderThreadForCurrentTarget(thread) {
   if (!hasDualWorkspaceTargets()) return true;
-  const threadTarget = detectThreadWorkspaceTarget(thread);
-  if (threadTarget === "unknown") return getWorkspaceTarget() === "windows";
-  return threadTarget === getWorkspaceTarget();
+  const target = detectThreadWorkspaceTarget(thread);
+  if (target === "unknown") return true;
+  return target === getWorkspaceTarget();
 }
 
 function applyThreadFilter() {
@@ -203,7 +201,7 @@ async function setWorkspaceTarget(nextTarget) {
   localStorage.setItem(WORKSPACE_TARGET_KEY, target);
   applyWorkspaceUi();
   setStatus(`Workspace target: ${target.toUpperCase()}`);
-  applyThreadFilter();
+  await refreshThreads(target);
 }
 
 function blockInSandbox(actionLabel) {
@@ -763,10 +761,14 @@ function applyPendingPayloads(approvals, userInputs) {
   renderPendingLists();
 }
 
-async function refreshThreads() {
-  const data = await api("/codex/threads");
-  state.threadItemsAll = ensureArrayItems(data.items);
-  updateWorkspaceAvailabilityFromThreads(state.threadItemsAll);
+async function refreshThreads(workspaceTarget = getWorkspaceTarget()) {
+  const target = normalizeWorkspaceTarget(workspaceTarget);
+  const workspace = encodeURIComponent(target);
+  const data = await api(`/codex/threads?workspace=${workspace}`);
+  const items = ensureArrayItems(data.items);
+  if (getWorkspaceTarget() !== target) return;
+  state.threadItemsAll = items;
+  updateWorkspaceAvailabilityFromThreads(items);
   applyThreadFilter();
 }
 
@@ -795,13 +797,16 @@ async function refreshAll() {
 }
 
 async function connect() {
-  state.token = byId("tokenInput").value.trim();
-  localStorage.setItem(TOKEN_STORAGE_KEY, state.token);
+  const inputToken = byId("tokenInput")?.value?.trim() || "";
+  const managedToken = getEmbeddedToken();
+  state.token = inputToken || (managedToken ? managedToken : String(state.token || "").trim());
+  if (managedToken) localStorage.removeItem(TOKEN_STORAGE_KEY);
+  else localStorage.setItem(TOKEN_STORAGE_KEY, state.token);
   await api("/codex/auth/verify", { method: "POST", body: {} });
   connectWs();
   setStatus("Connected.");
-  await refreshAll();
   await refreshCodexVersions().catch((e) => setStatus(e.message, true));
+  await refreshAll();
   setMainTab("chat");
   setMobileTab("chat");
 }
@@ -1096,8 +1101,8 @@ function bootstrap() {
   }
   const initialToken = embeddedToken || savedToken;
   if (initialToken) {
-    byId("tokenInput").value = initialToken;
     state.token = initialToken;
+    if (!embeddedToken) byId("tokenInput").value = initialToken;
   }
   state.workspaceTarget = normalizeWorkspaceTarget(savedWorkspaceTarget);
   updateWorkspaceAvailability(false, false);
@@ -1120,8 +1125,8 @@ function bootstrap() {
   setMainTab("chat");
   wireActions();
   setMobileTab("chat");
-  refreshCodexVersions().catch(() => {});
-  if (initialToken) connect().catch((e) => setStatus(e.message, true));
+  // Always attempt connect: gateway auth can now come from HttpOnly cookie.
+  connect().catch((e) => setStatus(e.message, true));
 }
 
 bootstrap();

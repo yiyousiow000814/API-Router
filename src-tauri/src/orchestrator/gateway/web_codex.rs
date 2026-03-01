@@ -14,6 +14,9 @@ const MAX_TERMINAL_COMMAND_LEN: usize = 4000;
 const MAX_TERMINAL_OUTPUT_BYTES: usize = 512 * 1024;
 const TERMINAL_TIMEOUT_SECS: u64 = 20;
 const VERSION_TIMEOUT_SECS: u64 = 8;
+const VERSION_DETECT_TIMEOUT_SECS: u64 = 3;
+const VERSION_INFO_CACHE_SECS: i64 = 30;
+const THREADS_INDEX_STALE_SECS: i64 = 15;
 
 #[derive(Serialize)]
 struct ApiErrorBody<'a> {
@@ -63,13 +66,29 @@ fn auth_bearer_token(headers: &HeaderMap) -> Option<&str> {
     Some(auth[prefix.len()..].trim())
 }
 
+fn auth_cookie_token(headers: &HeaderMap) -> Option<&str> {
+    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
+    for part in cookie_header.split(';') {
+        let trimmed = part.trim();
+        let (name, value) = trimmed.split_once('=')?;
+        if name.trim() == "api_router_gateway_token" {
+            let v = value.trim();
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
 fn require_codex_auth(st: &GatewayState, headers: &HeaderMap) -> Option<Response> {
     let expected = st.secrets.get_gateway_token()?;
     let expected = expected.trim();
     if expected.is_empty() {
         return None;
     }
-    let Some(tok) = auth_bearer_token(headers) else {
+    let tok = auth_bearer_token(headers).or_else(|| auth_cookie_token(headers));
+    let Some(tok) = tok else {
         return Some(api_error(
             StatusCode::UNAUTHORIZED,
             "missing or invalid Authorization header",
@@ -96,6 +115,9 @@ fn is_codex_ws_authorized(st: &GatewayState, headers: &HeaderMap, query: &WsQuer
         return true;
     }
     if let Some(tok) = auth_bearer_token(headers) {
+        return tok == expected;
+    }
+    if let Some(tok) = auth_cookie_token(headers) {
         return tok == expected;
     }
     query.token.as_deref().map(str::trim) == Some(expected)
@@ -189,11 +211,17 @@ async fn codex_rpc_call(method: &str, params: Value) -> Result<Value, Response> 
 
 async fn codex_web_index(State(st): State<GatewayState>) -> Response {
     let embedded_token = st.secrets.get_gateway_token().unwrap_or_default();
-    let token_json = serde_json::to_string(embedded_token.trim()).unwrap_or_else(|_| "\"\"".to_string());
-    let html = WEB_CODEX_INDEX_HTML.replace("\"__WEB_CODEX_EMBEDDED_TOKEN__\"", &token_json);
+    let html = WEB_CODEX_INDEX_HTML;
+    let cookie = format!(
+        "api_router_gateway_token={}; Path=/codex; HttpOnly; SameSite=Strict",
+        embedded_token.trim()
+    );
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::SET_COOKIE, cookie.as_str()),
+        ],
         html,
     )
         .into_response()
@@ -816,6 +844,100 @@ fn workspace_is_wsl2(value: &str) -> bool {
 
 fn workspace_is_windows(value: &str) -> bool {
     value.trim().eq_ignore_ascii_case("windows")
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspaceTarget {
+    Windows,
+    Wsl2,
+}
+
+impl WorkspaceTarget {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Windows => "windows",
+            Self::Wsl2 => "wsl2",
+        }
+    }
+}
+
+#[derive(Default)]
+struct WorkspaceThreadsBucket {
+    items: Vec<Value>,
+    updated_at_unix_secs: i64,
+    refreshing: bool,
+}
+
+#[derive(Default)]
+struct ThreadsWorkspaceIndex {
+    windows: WorkspaceThreadsBucket,
+    wsl2: WorkspaceThreadsBucket,
+}
+
+fn parse_workspace_target(value: &str) -> Option<WorkspaceTarget> {
+    if workspace_is_wsl2(value) {
+        Some(WorkspaceTarget::Wsl2)
+    } else if workspace_is_windows(value) {
+        Some(WorkspaceTarget::Windows)
+    } else {
+        None
+    }
+}
+
+fn current_unix_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|v| v.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn threads_workspace_index() -> &'static std::sync::Mutex<ThreadsWorkspaceIndex> {
+    static INDEX: std::sync::OnceLock<std::sync::Mutex<ThreadsWorkspaceIndex>> = std::sync::OnceLock::new();
+    INDEX.get_or_init(|| std::sync::Mutex::new(ThreadsWorkspaceIndex::default()))
+}
+
+fn lock_threads_workspace_index() -> std::sync::MutexGuard<'static, ThreadsWorkspaceIndex> {
+    match threads_workspace_index().lock() {
+        Ok(v) => v,
+        Err(err) => err.into_inner(),
+    }
+}
+
+fn workspace_bucket_ref(
+    index: &ThreadsWorkspaceIndex,
+    target: WorkspaceTarget,
+) -> &WorkspaceThreadsBucket {
+    match target {
+        WorkspaceTarget::Windows => &index.windows,
+        WorkspaceTarget::Wsl2 => &index.wsl2,
+    }
+}
+
+fn workspace_bucket_mut(
+    index: &mut ThreadsWorkspaceIndex,
+    target: WorkspaceTarget,
+) -> &mut WorkspaceThreadsBucket {
+    match target {
+        WorkspaceTarget::Windows => &mut index.windows,
+        WorkspaceTarget::Wsl2 => &mut index.wsl2,
+    }
+}
+
+fn invalidate_workspace_threads_index(target: Option<WorkspaceTarget>) {
+    let mut index = lock_threads_workspace_index();
+    match target {
+        Some(target) => {
+            let bucket = workspace_bucket_mut(&mut index, target);
+            bucket.updated_at_unix_secs = 0;
+            bucket.refreshing = false;
+        }
+        None => {
+            index.windows.updated_at_unix_secs = 0;
+            index.windows.refreshing = false;
+            index.wsl2.updated_at_unix_secs = 0;
+            index.wsl2.refreshing = false;
+        }
+    }
 }
 
 fn thread_is_wsl2(thread: &Value) -> bool {
@@ -1518,10 +1640,12 @@ for p in sessions_dir.rglob("*.jsonl"):
                     sid = str(payload.get("id") or payload.get("session_id") or sid).strip()
                     cwd = str(payload.get("cwd") or cwd).strip()
                     created_raw = payload.get("created_at") or payload.get("createdAt")
-                    source = payload.get("source") or {}
-                    source_subagent = source.get("subagent")
-                    has_agent_role = bool(str(payload.get("agent_role") or "").strip())
-                    has_agent_nickname = bool(str(payload.get("agent_nickname") or "").strip())
+                    source = payload.get("source")
+                    source_subagent = source.get("subagent") if isinstance(source, dict) else None
+                    agent_role = payload.get("agent_role")
+                    agent_nickname = payload.get("agent_nickname")
+                    has_agent_role = isinstance(agent_role, str) and bool(agent_role.strip())
+                    has_agent_nickname = isinstance(agent_nickname, str) and bool(agent_nickname.strip())
                     is_subagent = bool(source_subagent) or has_agent_role or has_agent_nickname
                     try:
                         created_at = int(created_raw or 0)
@@ -1584,6 +1708,107 @@ PY"#;
     serde_json::from_str::<Vec<Value>>(&text).unwrap_or_default()
 }
 
+async fn rebuild_workspace_thread_items(target: WorkspaceTarget) -> Vec<Value> {
+    let params = json!({ "workspace": target.as_str() });
+    let mut items = match codex_rpc_call("thread/list", params).await {
+        Ok(v) => extract_items_array(&v),
+        Err(_) => Vec::new(),
+    };
+
+    match target {
+        WorkspaceTarget::Windows => {
+            items.retain(thread_is_windows);
+            let fallback = fetch_windows_threads_fallback();
+            items = merge_items_without_duplicates(items, fallback);
+        }
+        WorkspaceTarget::Wsl2 => {
+            items.retain(thread_is_wsl2);
+            let fallback = fetch_wsl2_threads_fallback().await;
+            items = merge_items_without_duplicates(items, fallback);
+        }
+    }
+
+    hydrate_missing_previews_from_session_files(&mut items);
+    filter_auxiliary_threads(&mut items);
+    sort_threads_by_updated_desc(&mut items);
+    if items.len() > 600 {
+        items.truncate(600);
+    }
+    items
+}
+
+async fn refresh_workspace_thread_index(target: WorkspaceTarget) {
+    let items = rebuild_workspace_thread_items(target).await;
+    let mut index = lock_threads_workspace_index();
+    let bucket = workspace_bucket_mut(&mut index, target);
+    bucket.items = items;
+    bucket.updated_at_unix_secs = current_unix_secs();
+    bucket.refreshing = false;
+}
+
+async fn ensure_workspace_index_fresh(target: WorkspaceTarget) {
+    let now = current_unix_secs();
+    enum Action {
+        None,
+        SyncRefresh,
+        AsyncRefresh,
+    }
+    let action = {
+        let mut index = lock_threads_workspace_index();
+        let bucket = workspace_bucket_mut(&mut index, target);
+        let has_items = !bucket.items.is_empty();
+        let stale = now.saturating_sub(bucket.updated_at_unix_secs) >= THREADS_INDEX_STALE_SECS;
+        if !has_items && !bucket.refreshing {
+            bucket.refreshing = true;
+            Action::SyncRefresh
+        } else if stale && !bucket.refreshing {
+            bucket.refreshing = true;
+            Action::AsyncRefresh
+        } else {
+            Action::None
+        }
+    };
+
+    match action {
+        Action::None => {}
+        Action::SyncRefresh => {
+            refresh_workspace_thread_index(target).await;
+        }
+        Action::AsyncRefresh => {
+            tokio::spawn(async move {
+                refresh_workspace_thread_index(target).await;
+            });
+        }
+    }
+}
+
+async fn ensure_threads_index_for_request(workspace: Option<WorkspaceTarget>) {
+    match workspace {
+        Some(target) => ensure_workspace_index_fresh(target).await,
+        None => {
+            let ((), ()) = tokio::join!(
+                ensure_workspace_index_fresh(WorkspaceTarget::Windows),
+                ensure_workspace_index_fresh(WorkspaceTarget::Wsl2)
+            );
+        }
+    }
+}
+
+fn read_thread_items_from_index(workspace: Option<WorkspaceTarget>) -> Vec<Value> {
+    let index = lock_threads_workspace_index();
+    match workspace {
+        Some(target) => workspace_bucket_ref(&index, target).items.clone(),
+        None => {
+            let mut merged = merge_items_without_duplicates(
+                index.windows.items.clone(),
+                index.wsl2.items.clone(),
+            );
+            sort_threads_by_updated_desc(&mut merged);
+            merged
+        }
+    }
+}
+
 fn build_threads_response(items: Vec<Value>) -> Response {
     Json(json!({
         "items": {
@@ -1613,43 +1838,10 @@ async fn codex_threads_list(
         return resp;
     }
     let requested_workspace = query.workspace.unwrap_or_default();
-    let params = json!({ "workspace": requested_workspace.clone() });
-    match codex_rpc_call("thread/list", params).await {
-        Ok(v) => {
-            let mut base_items = extract_items_array(&v);
-            if workspace_is_wsl2(&requested_workspace) {
-                base_items.retain(thread_is_wsl2);
-            } else if workspace_is_windows(&requested_workspace) {
-                base_items.retain(thread_is_windows);
-            }
-            let should_try_windows_fallback = !workspace_is_wsl2(&requested_workspace);
-            if should_try_windows_fallback {
-                let windows_fallback = fetch_windows_threads_fallback();
-                if workspace_is_windows(&requested_workspace) {
-                    base_items = merge_items_without_duplicates(Vec::new(), windows_fallback);
-                } else {
-                    base_items = merge_items_without_duplicates(base_items, windows_fallback);
-                }
-            }
-            let should_try_wsl_fallback = !workspace_is_windows(&requested_workspace)
-                && (!workspace_is_wsl2(&requested_workspace)
-                    || base_items.is_empty()
-                    || !base_items.iter().any(thread_is_wsl2));
-            if should_try_wsl_fallback {
-                let fallback_items = fetch_wsl2_threads_fallback().await;
-                if workspace_is_wsl2(&requested_workspace) {
-                    base_items = merge_items_without_duplicates(Vec::new(), fallback_items);
-                } else {
-                    base_items = merge_items_without_duplicates(base_items, fallback_items);
-                }
-            }
-            hydrate_missing_previews_from_session_files(&mut base_items);
-            filter_auxiliary_threads(&mut base_items);
-            sort_threads_by_updated_desc(&mut base_items);
-            build_threads_response(base_items)
-        }
-        Err(resp) => resp,
-    }
+    let target = parse_workspace_target(&requested_workspace);
+    ensure_threads_index_for_request(target).await;
+    let items = read_thread_items_from_index(target);
+    build_threads_response(items)
 }
 
 #[derive(Deserialize)]
@@ -1670,7 +1862,14 @@ async fn codex_threads_create(
     }
     let params = json!({ "workspace": req.workspace, "title": req.title });
     match codex_rpc_call("thread/new", params).await {
-        Ok(v) => Json(v).into_response(),
+        Ok(v) => {
+            let target = req
+                .workspace
+                .as_deref()
+                .and_then(parse_workspace_target);
+            invalidate_workspace_threads_index(target);
+            Json(v).into_response()
+        }
         Err(resp) => resp,
     }
 }
@@ -1685,7 +1884,10 @@ async fn codex_thread_resume(
     }
     let params = json!({ "threadId": id });
     match crate::codex_app_server::request("thread/resume", params.clone()).await {
-        Ok(v) => Json(v).into_response(),
+        Ok(v) => {
+            invalidate_workspace_threads_index(None);
+            Json(v).into_response()
+        }
         Err(first_error) => {
             let lower = first_error.to_ascii_lowercase();
             let missing_rollout =
@@ -1694,7 +1896,10 @@ async fn codex_thread_resume(
                 match import_windows_rollout_into_codex_home(&id) {
                     Ok(true) => {
                         match crate::codex_app_server::request("thread/resume", params).await {
-                            Ok(v) => Json(v).into_response(),
+                            Ok(v) => {
+                                invalidate_workspace_threads_index(None);
+                                Json(v).into_response()
+                            }
                             Err(second_error) => api_error_detail(
                                 StatusCode::BAD_GATEWAY,
                                 "failed to resume thread",
@@ -1705,7 +1910,10 @@ async fn codex_thread_resume(
                     Ok(false) => match import_wsl_rollout_into_codex_home(&id) {
                         Ok(true) => {
                             match crate::codex_app_server::request("thread/resume", params).await {
-                                Ok(v) => Json(v).into_response(),
+                                Ok(v) => {
+                                    invalidate_workspace_threads_index(None);
+                                    Json(v).into_response()
+                                }
                                 Err(second_error) => api_error_detail(
                                     StatusCode::BAD_GATEWAY,
                                     "failed to resume thread",
@@ -1771,7 +1979,10 @@ async fn codex_turn_start(
         "collaborationMode": req.collaboration_mode.unwrap_or_else(|| "default".to_string()),
     });
     match codex_rpc_call("turn/start", params).await {
-        Ok(v) => Json(v).into_response(),
+        Ok(v) => {
+            invalidate_workspace_threads_index(None);
+            Json(v).into_response()
+        }
         Err(resp) => resp,
     }
 }
@@ -1845,6 +2056,7 @@ async fn codex_turn_stream(
         yield Ok::<Bytes, std::convert::Infallible>(started);
         match call {
             Ok(result) => {
+                invalidate_workspace_threads_index(None);
                 let thread_id = result
                     .get("threadId")
                     .or_else(|| result.get("thread_id"))
@@ -2105,7 +2317,7 @@ struct TerminalExecRequest {
     cwd: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct CodexVersionInfo {
     windows: String,
     wsl2: String,
@@ -2115,13 +2327,33 @@ struct CodexVersionInfo {
     wsl2_installed: bool,
 }
 
+#[derive(Clone)]
+struct CodexVersionInfoCache {
+    value: CodexVersionInfo,
+    updated_at_unix_secs: i64,
+}
+
+fn codex_version_info_cache() -> &'static std::sync::Mutex<Option<CodexVersionInfoCache>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<CodexVersionInfoCache>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn lock_codex_version_info_cache(
+) -> std::sync::MutexGuard<'static, Option<CodexVersionInfoCache>> {
+    match codex_version_info_cache().lock() {
+        Ok(v) => v,
+        Err(err) => err.into_inner(),
+    }
+}
+
 async fn run_version_cmd(mut cmd: Command) -> Option<String> {
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::null());
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     let timed = tokio::time::timeout(
-        std::time::Duration::from_secs(VERSION_TIMEOUT_SECS),
+        std::time::Duration::from_secs(VERSION_DETECT_TIMEOUT_SECS),
         cmd.output(),
     )
     .await
@@ -2174,15 +2406,28 @@ async fn codex_version_info(
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
-    let windows = detect_windows_codex_version().await;
-    let wsl2 = detect_wsl_codex_version().await;
-    Json(CodexVersionInfo {
+    let now = current_unix_secs();
+    if let Some(cached) = lock_codex_version_info_cache().clone() {
+        if now.saturating_sub(cached.updated_at_unix_secs) < VERSION_INFO_CACHE_SECS {
+            return Json(cached.value).into_response();
+        }
+    }
+
+    let (windows, wsl2) = tokio::join!(detect_windows_codex_version(), detect_wsl_codex_version());
+    let payload = CodexVersionInfo {
         windows_installed: windows != "Not installed",
         wsl2_installed: wsl2 != "Not installed",
         windows,
         wsl2,
-    })
-    .into_response()
+    };
+    {
+        let mut cache = lock_codex_version_info_cache();
+        *cache = Some(CodexVersionInfoCache {
+            value: payload.clone(),
+            updated_at_unix_secs: now,
+        });
+    }
+    Json(payload).into_response()
 }
 
 async fn codex_terminal_exec(
