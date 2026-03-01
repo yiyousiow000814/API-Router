@@ -903,6 +903,7 @@ fn decide_provider_with_balanced_mode(
     if cfg.routing.route_mode == crate::orchestrator::config::RouteMode::BalancedAuto
         && clear_usage_confirmation_requirement
     {
+        let router_snapshot_for_recovery = st.router.snapshot(now_ms);
         let mut quota_closed_states: HashMap<String, bool> = HashMap::new();
         for provider_name in cfg.providers.keys() {
             let hard_cap = st.secrets.get_provider_quota_hard_cap(provider_name);
@@ -924,6 +925,29 @@ fn decide_provider_with_balanced_mode(
                     "cleared balanced assignments after closed provider reopened",
                     json!({
                         "reopened_providers": reopened_providers,
+                        "cleared_session_route_assignments": cleared_assignments
+                    }),
+                );
+            }
+        }
+
+        let mut unhealthy_states: HashMap<String, bool> = HashMap::new();
+        for provider_name in cfg.providers.keys() {
+            let is_unhealthy =
+                provider_is_unhealthy_or_cooldown(&router_snapshot_for_recovery, provider_name);
+            unhealthy_states.insert(provider_name.clone(), is_unhealthy);
+        }
+        let recovered_unhealthy_providers = st.router.record_unhealthy_states(&unhealthy_states);
+        if !recovered_unhealthy_providers.is_empty() {
+            let cleared_assignments = st.store.delete_all_session_route_assignments();
+            if cleared_assignments > 0 {
+                st.store.add_event(
+                    "gateway",
+                    "info",
+                    "routing.balanced_reassign_on_health_recovery",
+                    "cleared balanced assignments after unhealthy provider recovered",
+                    json!({
+                        "recovered_providers": recovered_unhealthy_providers,
                         "cleared_session_route_assignments": cleared_assignments
                     }),
                 );
