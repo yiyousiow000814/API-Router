@@ -304,6 +304,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn successful_quota_refresh_promotes_unknown_provider_to_healthy() {
+        let (base, _h) = start_mock_server(true).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "k1").unwrap();
+        let st = mk_state(format!("{base}/v1"), secrets);
+
+        let before = st.router.snapshot(unix_ms());
+        assert_eq!(
+            before.get("p1").map(|snapshot| snapshot.status.as_str()),
+            Some("unknown")
+        );
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        assert!(snap.last_error.is_empty());
+        assert!(snap.updated_at_unix_ms > 0);
+
+        let after = st.router.snapshot(unix_ms());
+        let health = after.get("p1").expect("provider health snapshot");
+        assert_eq!(health.status, "healthy");
+        assert_eq!(health.consecutive_failures, 0);
+    }
+
+    #[tokio::test]
     async fn token_stats_keeps_package_expiry_empty_for_non_packycode_sources() {
         let (base, _h) = start_mock_server(true).await;
         let tmp = tempfile::tempdir().unwrap();
