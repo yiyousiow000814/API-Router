@@ -286,13 +286,6 @@
     .groupHeader.is-collapsed {
       border-bottom-color: transparent;
     }
-    .chevronGlyph {
-      color: #637188;
-      font-size: 14px;
-      line-height: 1;
-      font-family: "Segoe UI", "Inter", sans-serif;
-      font-weight: 600;
-    }
     .groupChevron {
       margin-left: auto;
       width: 18px;
@@ -438,7 +431,15 @@
     .welcomeSetting .muted {
       font-size: 12px;
     }
-    .welcomeChevron {}
+    .welcomeChevron {
+      width: 18px;
+      height: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #637188;
+      flex: 0 0 18px;
+    }
     .welcomePrompts {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -1231,7 +1232,9 @@
             </div>
             <button id="welcomeWorkspaceBtn" class="welcomeSetting">
               <span id="welcomeWorkspaceText">Bridge default workspace</span>
-              <span class="welcomeChevron chevronGlyph">›</span>
+              <span class="welcomeChevron" aria-hidden="true">
+                <svg class="groupChevronIcon" viewBox="0 0 16 16" focusable="false"><path d="M6 4l4 4-4 4"></path></svg>
+              </span>
             </button>
             <div class="welcomePrompts">
               <button id="quickPrompt1" class="welcomePrompt">Explain the current codebase structure</button>
