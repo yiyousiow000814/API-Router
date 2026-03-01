@@ -248,12 +248,22 @@
       background: #ffffff;
       box-shadow: 0 14px 32px rgba(13, 18, 32, 0.18);
       padding: 6px;
-      display: none;
+      display: grid;
+      gap: 2px;
+      opacity: 0;
+      transform: translateY(-4px) scale(0.98);
+      transform-origin: top left;
+      pointer-events: none;
+      visibility: hidden;
+      transition: opacity 140ms ease, transform 160ms ease, visibility 160ms step-end;
       scrollbar-width: thin;
     }
     .chatPanel .panelHeader .headerModelPicker.open .headerModelMenu {
-      display: grid;
-      gap: 2px;
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      pointer-events: auto;
+      visibility: visible;
+      transition: opacity 140ms ease, transform 160ms ease, visibility 0ms step-start;
     }
     .chatPanel .panelHeader .headerModelOption {
       border: none;
