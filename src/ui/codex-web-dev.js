@@ -581,7 +581,7 @@ function renderThreads(items) {
       card.setAttribute("role", "button");
       card.tabIndex = 0;
       card.innerHTML =
-        `<div class="row"><button class="threadFavBtn${isFavorite ? " active" : ""}" data-thread-fav="${escapeHtml(id)}"><span class="starGlyph" aria-hidden="true">★</span></button>` +
+        `<div class="row"><button class="threadFavBtn${isFavorite ? " active" : ""}" data-thread-fav="${escapeHtml(id)}" aria-label="${isFavorite ? "Unfavorite" : "Favorite"}"><span class="starGlyph" aria-hidden="true">${isFavorite ? "★" : "☆"}</span></button>` +
         `<div class="itemTitle">${escapeHtml(title)}</div>` +
         `<div class="itemSub mono">${escapeHtml(age)}</div></div>`;
       const favBtn = card.querySelector(".threadFavBtn");
