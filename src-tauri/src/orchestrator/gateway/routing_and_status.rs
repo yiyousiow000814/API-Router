@@ -915,21 +915,6 @@ fn decide_provider_with_balanced_mode(
             quota_closed_states.insert(provider_name.clone(), is_closed);
         }
         let reopened_providers = st.router.record_quota_closed_states(&quota_closed_states);
-        if !reopened_providers.is_empty() {
-            let cleared_assignments = st.store.delete_all_session_route_assignments();
-            if cleared_assignments > 0 {
-                st.store.add_event(
-                    "gateway",
-                    "info",
-                    "routing.balanced_reassign_on_reopen",
-                    "cleared balanced assignments after closed provider reopened",
-                    json!({
-                        "reopened_providers": reopened_providers,
-                        "cleared_session_route_assignments": cleared_assignments
-                    }),
-                );
-            }
-        }
 
         let mut unhealthy_states: HashMap<String, bool> = HashMap::new();
         for provider_name in cfg.providers.keys() {
@@ -938,19 +923,33 @@ fn decide_provider_with_balanced_mode(
             unhealthy_states.insert(provider_name.clone(), is_unhealthy);
         }
         let recovered_unhealthy_providers = st.router.record_unhealthy_states(&unhealthy_states);
-        if !recovered_unhealthy_providers.is_empty() {
+        if !reopened_providers.is_empty() || !recovered_unhealthy_providers.is_empty() {
             let cleared_assignments = st.store.delete_all_session_route_assignments();
             if cleared_assignments > 0 {
-                st.store.add_event(
-                    "gateway",
-                    "info",
-                    "routing.balanced_reassign_on_health_recovery",
-                    "cleared balanced assignments after unhealthy provider recovered",
-                    json!({
-                        "recovered_providers": recovered_unhealthy_providers,
-                        "cleared_session_route_assignments": cleared_assignments
-                    }),
-                );
+                if !reopened_providers.is_empty() {
+                    st.store.add_event(
+                        "gateway",
+                        "info",
+                        "routing.balanced_reassign_on_reopen",
+                        "cleared balanced assignments after closed provider reopened",
+                        json!({
+                            "reopened_providers": reopened_providers,
+                            "cleared_session_route_assignments": cleared_assignments
+                        }),
+                    );
+                }
+                if !recovered_unhealthy_providers.is_empty() {
+                    st.store.add_event(
+                        "gateway",
+                        "info",
+                        "routing.balanced_reassign_on_health_recovery",
+                        "cleared balanced assignments after unhealthy provider recovered",
+                        json!({
+                            "recovered_providers": recovered_unhealthy_providers,
+                            "cleared_session_route_assignments": cleared_assignments
+                        }),
+                    );
+                }
             }
         }
     }
