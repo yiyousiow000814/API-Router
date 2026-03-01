@@ -178,6 +178,113 @@
       margin-left: auto;
       margin-right: 0;
     }
+    .chatPanel .panelHeader .workspaceBadge {
+      margin-left: auto;
+      margin-right: 0;
+    }
+    .chatPanel .panelHeader .panelTitle {
+      display: none;
+    }
+    .chatPanel .panelHeader .headerModelPicker {
+      position: relative;
+      margin-right: auto;
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+    }
+    .chatPanel .panelHeader .headerModelTrigger {
+      border: none;
+      background: transparent;
+      padding: 0;
+      margin: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: #0d1220;
+      font-size: 16px;
+      font-weight: 500;
+      line-height: 1;
+      min-width: 0;
+    }
+    .chatPanel .panelHeader .headerModelText {
+      min-width: 0;
+      max-width: min(56vw, 340px);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chatPanel .panelHeader .headerModelChevron {
+      width: 14px;
+      height: 14px;
+      color: #5a6475;
+      display: inline-flex;
+      transition: transform 150ms ease;
+      transform-origin: center center;
+    }
+    .chatPanel .panelHeader .headerModelChevron svg {
+      width: 14px;
+      height: 14px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.9;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      display: block;
+    }
+    .chatPanel .panelHeader .headerModelPicker.open .headerModelChevron {
+      transform: rotate(180deg);
+    }
+    .chatPanel .panelHeader .headerModelMenu {
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 0;
+      z-index: 60;
+      min-width: 220px;
+      max-width: min(82vw, 340px);
+      max-height: min(56vh, 320px);
+      overflow: auto;
+      border-radius: 12px;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      background: #ffffff;
+      box-shadow: 0 14px 32px rgba(13, 18, 32, 0.18);
+      padding: 6px;
+      display: none;
+      scrollbar-width: thin;
+    }
+    .chatPanel .panelHeader .headerModelPicker.open .headerModelMenu {
+      display: grid;
+      gap: 2px;
+    }
+    .chatPanel .panelHeader .headerModelOption {
+      border: none;
+      background: transparent;
+      border-radius: 8px;
+      min-height: 30px;
+      padding: 6px 9px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: #1b2940;
+      font-size: 12px;
+      text-align: left;
+    }
+    .chatPanel .panelHeader .headerModelOption:hover {
+      background: rgba(13, 18, 32, 0.06);
+    }
+    .chatPanel .panelHeader .headerModelOption.active {
+      background: rgba(40, 199, 217, 0.12);
+      color: #0d1220;
+      font-weight: 600;
+    }
+    .chatPanel .panelHeader .headerModelOption .check {
+      opacity: 0;
+      color: #0a7082;
+      font-weight: 700;
+    }
+    .chatPanel .panelHeader .headerModelOption.active .check {
+      opacity: 1;
+    }
     .chatPanel .panelHeader .grow {
       display: none;
     }
@@ -206,6 +313,42 @@
       opacity: 0.45;
       cursor: not-allowed;
       filter: grayscale(0.28);
+    }
+    .workspaceBadge {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 4px 10px;
+      min-height: 26px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      border: 1px solid rgba(13, 18, 32, 0.2);
+      color: #47556d;
+      background: rgba(255, 255, 255, 0.92);
+      user-select: none;
+      white-space: nowrap;
+    }
+    .workspaceBadge.show {
+      display: inline-flex;
+    }
+    .workspaceBadge.is-win {
+      border-color: rgba(40, 199, 217, 0.6);
+      background: rgba(238, 252, 255, 0.92);
+      color: #0a7082;
+    }
+    .workspaceBadge.is-wsl2 {
+      border-color: rgba(182, 139, 86, 0.6);
+      background: rgba(255, 246, 234, 0.95);
+      color: #8b6433;
+    }
+    .workspaceBadge.enter {
+      animation: workspaceBadgeEnter 180ms cubic-bezier(.22, .61, .36, 1);
+    }
+    @keyframes workspaceBadgeEnter {
+      from { opacity: 0; transform: translateX(10px) scale(0.96); }
+      to { opacity: 1; transform: translateX(0) scale(1); }
     }
 
     .panelBody {
@@ -991,11 +1134,28 @@
       }
       .chatPanel .panelHeader .panelTitle {
         line-height: 1;
-        display: inline-flex;
+        display: none;
         align-items: center;
       }
       .chatPanel .panelHeader .workspaceSwitch {
         align-self: center;
+      }
+      .chatPanel .panelHeader .workspaceBadge {
+        align-self: center;
+      }
+      .chatPanel .panelHeader #headerModelPicker {
+        display: inline-flex;
+        max-width: 52vw;
+      }
+      .chatPanel .panelHeader .headerModelTrigger {
+        font-size: 16px;
+      }
+      .chatPanel .panelHeader .headerModelText {
+        max-width: 42vw;
+      }
+      .chatPanel .panelHeader .headerModelMenu {
+        min-width: 190px;
+        max-width: 74vw;
       }
       .chatPanel .panelHeader .panelTitle {
         margin-right: 0;
@@ -1255,10 +1415,22 @@
             </svg>
           </button>
           <div class="panelTitle">New chat</div>
+          <div id="headerModelPicker" class="headerModelPicker">
+            <button id="headerModelTrigger" class="headerModelTrigger" type="button" aria-haspopup="listbox" aria-expanded="false">
+              <span id="headerModelLabel" class="headerModelText">Codex</span>
+              <span class="headerModelChevron" aria-hidden="true">
+                <svg viewBox="0 0 16 16" focusable="false">
+                  <path d="M4.5 6.2l3.5 3.6 3.5-3.6"></path>
+                </svg>
+              </span>
+            </button>
+            <div id="headerModelMenu" class="headerModelMenu" role="listbox" aria-label="Model options"></div>
+          </div>
           <div id="headerWorkspaceSwitch" class="workspaceSwitch">
             <button id="workspaceWindowsBtn" class="workspaceBtn">WIN</button>
             <button id="workspaceWslBtn" class="workspaceBtn">WSL2</button>
           </div>
+          <div id="headerWorkspaceBadge" class="workspaceBadge" aria-live="polite"></div>
           <div class="grow"></div>
         </div>
         <div id="settingsTab" class="settingsTab">

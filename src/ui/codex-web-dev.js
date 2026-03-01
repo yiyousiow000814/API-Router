@@ -21,6 +21,11 @@ const state = {
   lastChevronToggleKey: "",
   lastChevronToggleCollapsed: false,
   threadPullRefreshing: false,
+  activeThreadStarted: false,
+  activeThreadModelLabel: "",
+  activeThreadWorkspace: "windows",
+  modelOptions: [],
+  selectedModel: "",
 };
 
 const GUIDE_DISMISSED_KEY = "web_codex_guide_dismissed_v2";
@@ -90,6 +95,168 @@ function getWorkspaceLabel() {
   return getWorkspaceTarget() === "wsl2" ? "Bridge WSL2 workspace" : "Bridge Windows workspace";
 }
 
+function getActiveWorkspaceBadgeLabel() {
+  return state.activeThreadWorkspace === "wsl2" ? "WSL2" : "WIN";
+}
+
+function pickActiveThreadModelLabel(thread) {
+  const directModel = thread?.model;
+  if (typeof directModel === "string" && directModel.trim()) return directModel.trim();
+  if (directModel && typeof directModel === "object") {
+    const modelId = String(directModel.id || "").trim();
+    if (modelId) return modelId;
+  }
+  const topLevelModel = String(thread?.modelName || thread?.model_name || "").trim();
+  if (topLevelModel) return topLevelModel;
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  const lastTurn = turns.length ? turns[turns.length - 1] : null;
+  const turnModel = String(lastTurn?.model || "").trim();
+  if (turnModel) return turnModel;
+  return "";
+}
+
+function syncActiveThreadMetaFromList(threadId = state.activeThreadId) {
+  if (!threadId) return;
+  const thread = state.threadItemsAll.find((item) => (item?.id || item?.threadId || "") === threadId);
+  if (!thread) return;
+  const target = detectThreadWorkspaceTarget(thread);
+  if (target !== "unknown") state.activeThreadWorkspace = target;
+  const modelLabel = pickActiveThreadModelLabel(thread);
+  if (modelLabel) state.activeThreadModelLabel = modelLabel;
+}
+
+function updateHeaderUi(animateBadge = false) {
+  const panelTitle = document.querySelector(".chatPanel .panelHeader .panelTitle");
+  const headerSwitch = byId("headerWorkspaceSwitch");
+  const headerBadge = byId("headerWorkspaceBadge");
+  const modelPicker = byId("headerModelPicker");
+  const modelLabel = byId("headerModelLabel");
+  const inSettings = state.activeMainTab === "settings";
+  const showBadge = !inSettings && state.activeThreadStarted;
+  const displayModel = state.activeThreadModelLabel || state.selectedModel || "Codex";
+  const displayTitle = displayModel;
+
+  if (panelTitle) {
+    if (inSettings) {
+      panelTitle.style.display = "";
+      panelTitle.textContent = "Settings";
+    } else {
+      panelTitle.style.display = "none";
+      panelTitle.textContent = "";
+    }
+  }
+
+  if (modelPicker) modelPicker.style.display = inSettings ? "none" : "inline-flex";
+  if (modelLabel) modelLabel.textContent = displayTitle;
+  if (inSettings) setHeaderModelMenuOpen(false);
+
+  if (headerSwitch) {
+    headerSwitch.style.display = !inSettings && !showBadge ? "inline-flex" : "none";
+    headerSwitch.style.visibility = "visible";
+    headerSwitch.style.pointerEvents = "auto";
+  }
+
+  if (!headerBadge) return;
+  if (!showBadge) {
+    headerBadge.classList.remove("show", "enter", "is-win", "is-wsl2");
+    headerBadge.textContent = "";
+    return;
+  }
+
+  const badgeLabel = getActiveWorkspaceBadgeLabel();
+  headerBadge.textContent = badgeLabel;
+  headerBadge.classList.add("show");
+  headerBadge.classList.toggle("is-win", badgeLabel === "WIN");
+  headerBadge.classList.toggle("is-wsl2", badgeLabel === "WSL2");
+  if (animateBadge) {
+    headerBadge.classList.remove("enter");
+    // Force reflow so repeated toggles replay the transition.
+    void headerBadge.offsetWidth;
+    headerBadge.classList.add("enter");
+  } else {
+    headerBadge.classList.remove("enter");
+  }
+}
+
+function normalizeModelOption(item) {
+  if (!item || typeof item !== "object") return null;
+  const id =
+    String(item.id || item.model || item.name || "").trim();
+  if (!id) return null;
+  const label = String(item.displayName || item.title || item.name || id).trim() || id;
+  const isDefault = !!(item.isDefault || item.default || item.recommended);
+  return { id, label, isDefault };
+}
+
+function setHeaderModelMenuOpen(open) {
+  const picker = byId("headerModelPicker");
+  const trigger = byId("headerModelTrigger");
+  if (!picker || !trigger) return;
+  picker.classList.toggle("open", !!open);
+  trigger.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function renderHeaderModelMenu() {
+  const menu = byId("headerModelMenu");
+  if (!menu) return;
+  const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+  menu.innerHTML = "";
+  if (!options.length) {
+    const muted = document.createElement("div");
+    muted.className = "muted";
+    muted.textContent = "No models available";
+    menu.appendChild(muted);
+    return;
+  }
+  const current = state.selectedModel || options.find((item) => item.isDefault)?.id || options[0].id;
+  for (const model of options) {
+    const optionBtn = document.createElement("button");
+    optionBtn.type = "button";
+    optionBtn.className = `headerModelOption${model.id === current ? " active" : ""}`;
+    optionBtn.setAttribute("role", "option");
+    optionBtn.setAttribute("aria-selected", model.id === current ? "true" : "false");
+    optionBtn.innerHTML = `<span>${escapeHtml(model.label || model.id)}</span><span class="check" aria-hidden="true">✓</span>`;
+    optionBtn.onclick = () => {
+      state.selectedModel = model.id;
+      if (state.activeThreadStarted) state.activeThreadModelLabel = model.id;
+      renderHeaderModelMenu();
+      updateHeaderUi();
+      setHeaderModelMenuOpen(false);
+    };
+    menu.appendChild(optionBtn);
+  }
+}
+
+function syncHeaderModelPicker() {
+  const picker = byId("headerModelPicker");
+  if (!picker) return;
+  const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+  if (!options.length) {
+    state.selectedModel = "";
+    renderHeaderModelMenu();
+    updateHeaderUi();
+    return;
+  }
+  const selected = state.selectedModel && options.some((item) => item.id === state.selectedModel)
+    ? state.selectedModel
+    : options.find((item) => item.isDefault)?.id || options[0].id;
+  state.selectedModel = selected;
+  renderHeaderModelMenu();
+  updateHeaderUi();
+}
+
+async function refreshModels() {
+  const data = await api("/codex/models");
+  const rawItems = ensureArrayItems(data.items);
+  const mapped = [];
+  for (const item of rawItems) {
+    const normalized = normalizeModelOption(item);
+    if (normalized) mapped.push(normalized);
+  }
+  state.modelOptions = mapped;
+  syncHeaderModelPicker();
+}
+
 function hasDualWorkspaceTargets() {
   return !!(state.workspaceAvailability.windowsInstalled && state.workspaceAvailability.wsl2Installed);
 }
@@ -106,20 +273,9 @@ function applyWorkspaceUi() {
   const wslBtn = byId("workspaceWslBtn");
   const drawerWinBtn = byId("drawerWorkspaceWindowsBtn");
   const drawerWslBtn = byId("drawerWorkspaceWslBtn");
-  const headerSwitch = byId("headerWorkspaceSwitch");
   const drawerSwitch = byId("drawerWorkspaceSwitch");
   const canUseWindows = isWorkspaceAvailable("windows");
   const canUseWsl2 = isWorkspaceAvailable("wsl2");
-
-  if (headerSwitch) {
-    if (state.activeMainTab === "settings") {
-      headerSwitch.style.display = "none";
-    } else {
-      headerSwitch.style.display = "inline-flex";
-      headerSwitch.style.visibility = "visible";
-      headerSwitch.style.pointerEvents = "auto";
-    }
-  }
   if (drawerSwitch) drawerSwitch.style.display = "";
 
   if (winBtn) winBtn.disabled = !canUseWindows;
@@ -136,6 +292,7 @@ function applyWorkspaceUi() {
   const welcome = byId("welcomeWorkspaceText");
   if (drawer) drawer.textContent = label;
   if (welcome) welcome.textContent = label;
+  updateHeaderUi();
 }
 
 function detectThreadWorkspaceTarget(thread) {
@@ -273,6 +430,19 @@ function hideWelcomeCard() {
   if (welcome) welcome.style.display = "none";
 }
 
+function showWelcomeCard() {
+  const welcome = byId("welcomeCard");
+  if (welcome) welcome.style.display = "";
+}
+
+function clearChatMessages() {
+  const box = byId("chatBox");
+  if (!box) return;
+  const nodes = box.querySelectorAll(".msg");
+  for (const node of nodes) node.remove();
+  box.scrollTop = 0;
+}
+
 function updateMobileComposerState() {
   const wrap = byId("mobilePromptWrap");
   const input = byId("mobilePromptInput");
@@ -286,15 +456,12 @@ function setMainTab(tab) {
   const settingsInfoSection = byId("settingsInfoSection");
   const chatBox = byId("chatBox");
   const composer = document.querySelector(".composer");
-  const panelTitle = document.querySelector(".chatPanel .panelHeader .panelTitle");
-  const headerSwitch = byId("headerWorkspaceSwitch");
   const isSideTab = state.activeMainTab === "settings";
   if (settingsTab) settingsTab.classList.toggle("show", isSideTab);
   if (settingsInfoSection) settingsInfoSection.style.display = "";
   if (chatBox) chatBox.style.display = isSideTab ? "none" : "";
   if (composer) composer.style.display = isSideTab ? "none" : "";
-  if (headerSwitch) headerSwitch.style.display = isSideTab ? "none" : "";
-  if (panelTitle) panelTitle.textContent = state.activeMainTab === "settings" ? "Settings" : "New chat";
+  updateHeaderUi();
 }
 
 function syncSettingsControlsFromMain() {
@@ -393,6 +560,103 @@ function normalizeTextPayload(result) {
   return JSON.stringify(result, null, 2);
 }
 
+function compactAttachmentLabel(value, maxLen = 38) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^data:/i.test(text)) return "inline-image";
+  let candidate = text;
+  if (/^https?:\/\//i.test(text)) {
+    try {
+      const parsed = new URL(text);
+      const pathname = parsed.pathname || "";
+      const segments = pathname.split("/").filter(Boolean);
+      candidate = segments[segments.length - 1] || parsed.hostname || text;
+    } catch {
+      candidate = text;
+    }
+  } else {
+    const normalized = text.replace(/[\\/]+$/, "");
+    const segments = normalized.split(/[\\/]/).filter(Boolean);
+    candidate = segments[segments.length - 1] || normalized || text;
+  }
+  if (candidate.length <= maxLen) return candidate;
+  return `${candidate.slice(0, maxLen - 1)}…`;
+}
+
+function normalizeThreadItemText(item) {
+  if (!item || typeof item !== "object") return "";
+  const type = String(item.type || "").trim();
+  if (!type) return "";
+  if (type === "agentMessage" || type === "assistantMessage") {
+    return String(item.text || "").trim();
+  }
+  if (type !== "userMessage") return "";
+  const content = Array.isArray(item.content) ? item.content : [];
+  const lines = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const partType = String(part.type || "").trim();
+    if (partType === "text") {
+      const text = String(part.text || "").trim();
+      if (text) lines.push(text);
+    } else if (partType === "mention") {
+      const path = compactAttachmentLabel(part.path);
+      if (path) lines.push(`[file: ${path}]`);
+    } else if (partType === "localImage") {
+      const path = compactAttachmentLabel(part.path);
+      if (path) lines.push(`[image: ${path}]`);
+    } else if (partType === "image") {
+      const url = compactAttachmentLabel(part.url);
+      if (url) lines.push(`[image: ${url}]`);
+    }
+  }
+  return lines.join("\n").trim();
+}
+
+function mapThreadReadMessages(thread) {
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  const messages = [];
+  for (const turn of turns) {
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    for (const item of items) {
+      const type = String(item?.type || "").trim();
+      const text = normalizeThreadItemText(item);
+      if (!text) continue;
+      if (type === "userMessage") messages.push({ role: "user", text });
+      else if (type === "agentMessage" || type === "assistantMessage") messages.push({ role: "assistant", text });
+    }
+  }
+  return messages;
+}
+
+async function loadThreadMessages(threadId, options = {}) {
+  if (!threadId) return;
+  const rpc = await api("/codex/rpc", {
+    method: "POST",
+    body: {
+      method: "thread/read",
+      params: {
+        threadId,
+        includeTurns: true,
+      },
+    },
+  });
+  const thread = rpc?.result?.thread || null;
+  const messages = mapThreadReadMessages(thread);
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  state.activeThreadStarted = messages.length > 0 || turns.length > 0;
+  const modelLabel = pickActiveThreadModelLabel(thread);
+  if (modelLabel) state.activeThreadModelLabel = modelLabel;
+  else state.activeThreadModelLabel = state.selectedModel || "";
+  const target = detectThreadWorkspaceTarget(thread);
+  if (target !== "unknown") state.activeThreadWorkspace = target;
+  clearChatMessages();
+  for (const msg of messages) addChat(msg.role, msg.text);
+  if (state.activeThreadStarted) hideWelcomeCard();
+  else showWelcomeCard();
+  updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+}
+
 function ensureArrayItems(value) {
   if (Array.isArray(value)) return value;
   if (Array.isArray(value?.data)) return value.data;
@@ -464,8 +728,16 @@ function setActiveHost(id) {
 
 function setActiveThread(id) {
   state.activeThreadId = id || "";
+  if (!state.activeThreadId) {
+    state.activeThreadStarted = false;
+    state.activeThreadModelLabel = "";
+    state.activeThreadWorkspace = getWorkspaceTarget();
+  } else {
+    syncActiveThreadMetaFromList(state.activeThreadId);
+  }
   const activeThreadLabel = byId("activeThreadId");
   if (activeThreadLabel) activeThreadLabel.textContent = state.activeThreadId || "(none)";
+  updateHeaderUi();
 }
 
 function workspaceKeyOfThread(thread) {
@@ -478,12 +750,6 @@ function workspaceKeyOfThread(thread) {
     "";
   const text = String(raw || "").trim();
   if (!text) return "Bridge default workspace";
-  const homeLikeMatch =
-    text.match(/^\/home\/([^\\/]+)$/i) ||
-    text.match(/^\/users\/([^\\/]+)$/i) ||
-    text.match(/^[a-z]:\\users\\([^\\\/]+)$/i) ||
-    text.match(/^\\\\wsl\.localhost\\[^\\\/]+\\home\\([^\\\/]+)$/i);
-  if (homeLikeMatch) return "Home";
   const normalized = text
     .replace(/^\\\\\?\\/, "")
     .replace(/^\\\\\?\\UNC\\/, "\\\\")
@@ -609,8 +875,9 @@ function renderThreads(items) {
         if (!id) return;
         await api(`/codex/threads/${encodeURIComponent(id)}/resume`, { method: "POST", body: {} });
         setActiveThread(id);
+        await loadThreadMessages(id, { animateBadge: true });
         setStatus(`Resumed thread ${id}`);
-        hideWelcomeCard();
+        setMainTab("chat");
         setMobileTab("chat");
       };
       card.onclick = () => {
@@ -895,7 +1162,9 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget()) {
   if (getWorkspaceTarget() !== target) return;
   state.threadItemsAll = items;
   updateWorkspaceAvailabilityFromThreads(items);
+  syncActiveThreadMetaFromList();
   applyThreadFilter();
+  updateHeaderUi();
 }
 
 async function refreshHosts() {
@@ -931,6 +1200,7 @@ async function connect() {
   await api("/codex/auth/verify", { method: "POST", body: {} });
   connectWs();
   setStatus("Connected.");
+  await refreshModels().catch((e) => setStatus(e.message, true));
   await refreshCodexVersions().catch((e) => setStatus(e.message, true));
   await refreshAll();
   setMainTab("chat");
@@ -950,9 +1220,26 @@ async function addHost() {
 
 async function newThread() {
   if (blockInSandbox("new thread")) return;
+  // Immediately switch UI back to the fresh-chat state.
+  setActiveThread("");
+  state.activeThreadStarted = false;
+  state.activeThreadModelLabel = state.selectedModel || "";
+  state.activeThreadWorkspace = getWorkspaceTarget();
+  clearChatMessages();
+  showWelcomeCard();
+  updateHeaderUi();
+
   const data = await api("/codex/threads", { method: "POST", body: { workspace: getWorkspaceTarget() } });
   const id = data.id || data.threadId || data?.thread?.id || "";
-  if (id) setActiveThread(id);
+  if (id) {
+    setActiveThread(id);
+    state.activeThreadStarted = false;
+    state.activeThreadModelLabel = state.selectedModel || "";
+    state.activeThreadWorkspace = getWorkspaceTarget();
+    clearChatMessages();
+    showWelcomeCard();
+    updateHeaderUi();
+  }
   await refreshThreads();
   setMainTab("chat");
 }
@@ -964,8 +1251,14 @@ async function sendTurn() {
   const payload = {
     threadId: state.activeThreadId || null,
     prompt,
+    model: state.selectedModel || undefined,
     collaborationMode: "default",
   };
+  const shouldAnimateWorkspaceBadge = !state.activeThreadStarted;
+  state.activeThreadStarted = true;
+  state.activeThreadWorkspace = getWorkspaceTarget();
+  if (state.selectedModel) state.activeThreadModelLabel = state.selectedModel;
+  updateHeaderUi(shouldAnimateWorkspaceBadge);
   addChat("user", prompt);
   setMainTab("chat");
   clearPromptValue();
@@ -1192,6 +1485,30 @@ function wireActions() {
   bindClick("workspaceWslBtn", () => setWorkspaceTarget("wsl2").catch((e) => setStatus(e.message, true)));
   bindClick("drawerWorkspaceWindowsBtn", () => setWorkspaceTarget("windows").catch((e) => setStatus(e.message, true)));
   bindClick("drawerWorkspaceWslBtn", () => setWorkspaceTarget("wsl2").catch((e) => setStatus(e.message, true)));
+  const headerModelPicker = byId("headerModelPicker");
+  const headerModelTrigger = byId("headerModelTrigger");
+  if (headerModelTrigger) {
+    headerModelTrigger.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const isOpen = !!headerModelPicker?.classList.contains("open");
+      setHeaderModelMenuOpen(!isOpen);
+    };
+    headerModelTrigger.onkeydown = (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        const isOpen = !!headerModelPicker?.classList.contains("open");
+        setHeaderModelMenuOpen(!isOpen);
+      } else if (event.key === "Escape") {
+        setHeaderModelMenuOpen(false);
+      }
+    };
+  }
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!headerModelPicker || !(target instanceof Node)) return;
+    if (!headerModelPicker.contains(target)) setHeaderModelMenuOpen(false);
+  });
   bindClick("quickPrompt1", () => {
     const text = "Explain the current codebase structure";
     if (byId("mobilePromptInput")) byId("mobilePromptInput").value = text;
@@ -1232,8 +1549,10 @@ function bootstrap() {
     if (!embeddedToken) byId("tokenInput").value = initialToken;
   }
   state.workspaceTarget = normalizeWorkspaceTarget(savedWorkspaceTarget);
+  state.activeThreadWorkspace = state.workspaceTarget;
   updateWorkspaceAvailability(false, false);
   applyWorkspaceUi();
+  syncHeaderModelPicker();
   if (SANDBOX_MODE) {
     const sandboxBadge = byId("sandboxBadge");
     if (sandboxBadge) sandboxBadge.style.display = "inline-flex";
