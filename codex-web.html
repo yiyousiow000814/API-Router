@@ -513,6 +513,10 @@
       border-top: none;
       border-bottom: none;
     }
+    .messages > * {
+      min-width: 0;
+      max-width: 100%;
+    }
     .settingsTab {
       min-height: 0;
       overflow: auto;
@@ -633,6 +637,7 @@
 
     .msg {
       max-width: 100%;
+      min-width: 0;
       border-radius: 12px;
       padding: 10px 12px;
       border: 1px solid transparent;
@@ -656,6 +661,7 @@
     }
     .msg.user {
       margin-left: auto;
+      margin-right: 2px;
       max-width: min(84%, 760px);
       border-color: rgba(40, 199, 217, 0.4);
       background: linear-gradient(135deg, rgba(40, 199, 217, 0.2), rgba(242, 193, 77, 0.16));
@@ -671,11 +677,13 @@
     .msg.user .msgHead { display: none; }
     .msgBody {
       line-height: 1.5;
+      min-width: 0;
       white-space: normal;
       overflow-wrap: anywhere;
     }
     .msgBody p {
       margin: 0 0 8px;
+      min-width: 0;
     }
     .msgBody p:last-child {
       margin-bottom: 0;
@@ -690,6 +698,7 @@
     }
     .msgBody li {
       margin: 2px 0;
+      min-width: 0;
     }
     .msgBody strong {
       font-weight: 700;
@@ -703,6 +712,8 @@
       background: transparent;
       color: #18233a;
       white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .msgCodeBlock {
       margin: 6px 0 10px;
@@ -726,6 +737,8 @@
       text-decoration: underline;
       text-decoration-thickness: 1px;
       text-underline-offset: 2px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .msgLink:hover {
       color: #2d4f7c;
@@ -738,6 +751,8 @@
       text-underline-offset: 2px;
       text-decoration-color: rgba(44, 57, 80, 0.5);
       cursor: default;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
 
     .composer {
