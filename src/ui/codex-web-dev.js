@@ -26,6 +26,7 @@ const state = {
   activeThreadWorkspace: "windows",
   modelOptions: [],
   selectedModel: "",
+  openingThreadReqId: 0,
 };
 
 const GUIDE_DISMISSED_KEY = "web_codex_guide_dismissed_v2";
@@ -404,15 +405,200 @@ function escapeHtml(input) {
     .replace(/'/g, "&#39;");
 }
 
-function addChat(role, text) {
+function isHttpUrl(value) {
+  return /^https?:\/\//i.test(String(value || "").trim());
+}
+
+function looksLikeFileRef(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return (
+    /^%[A-Za-z0-9_]+%[\\/]/.test(text) ||
+    /^[a-z]:[\\/]/i.test(text) ||
+    text.startsWith("/") ||
+    text.startsWith("\\\\") ||
+    text.includes("\\") ||
+    /(?:^|\/)[^/\s]+\.[a-z0-9]{1,8}(?::\d+(?::\d+)?)?(?:#L\d+(?:C\d+)?)?$/i.test(text)
+  );
+}
+
+function fileRefDisplayLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  let base = text;
+  base = base.replace(/(#L\d+(?:C\d+)?)$/i, "");
+  base = base.replace(/(:\d+(?::\d+)?)$/, "");
+  const normalized = base.replace(/[\\/]+$/, "");
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  const fileName = parts[parts.length - 1] || normalized || text;
+  return fileName;
+}
+
+function buildMessageLink(label, href, preferFileLabel = false) {
+  const rawHref = String(href || "").trim();
+  const rawLabel = String(label || rawHref).trim();
+  const shouldUseFileLabel =
+    !!preferFileLabel || looksLikeFileRef(rawLabel) || looksLikeFileRef(rawHref);
+  const fileLabelSource = looksLikeFileRef(rawLabel) ? rawLabel : rawHref;
+  const resolvedLabel = shouldUseFileLabel
+    ? fileRefDisplayLabel(fileLabelSource || rawLabel || rawHref)
+    : rawLabel;
+  const safeLabel = escapeHtml(resolvedLabel || rawHref || "link");
+  const openExternal = isHttpUrl(rawHref);
+  if (!openExternal) return `<span class="msgPseudoLink">${safeLabel}</span>`;
+  const safeHref = escapeHtml(rawHref);
+  return `<a class="msgLink" href="${safeHref}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`;
+}
+
+function renderInlineMessageText(text) {
+  const source = String(text || "");
+  const tokenPattern = /\[([^\]\n]+)\]\(([^)\n]+)\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|(https?:\/\/[^\s<>()]+)|((?:(?:%[A-Za-z0-9_]+%[\\/]|[A-Za-z]:[\\/]|\\\\[^\\\s]+[\\/]|(?:[A-Za-z0-9_.-]+[\\/]))?[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})(?::\d+(?::\d+)?)?(?:#L\d+(?:C\d+)?)?)/g;
+  let cursor = 0;
+  let html = "";
+  for (const match of source.matchAll(tokenPattern)) {
+    const full = match[0];
+    const index = match.index || 0;
+    if (index > cursor) html += escapeHtml(source.slice(cursor, index));
+    if (match[1] && match[2]) {
+      const href = match[2].trim();
+      html += buildMessageLink(match[1], href, looksLikeFileRef(href) || looksLikeFileRef(match[1]));
+    } else if (match[3]) {
+      const inlineCode = String(match[3] || "").trim();
+      if (looksLikeFileRef(inlineCode)) {
+        html += `<span class="msgPseudoLink">${escapeHtml(fileRefDisplayLabel(inlineCode))}</span>`;
+      } else {
+        html += `<code class="msgInlineCode">${escapeHtml(match[3])}</code>`;
+      }
+    } else if (match[4]) {
+      html += `<strong>${escapeHtml(match[4])}</strong>`;
+    } else if (match[5]) {
+      html += buildMessageLink(match[5], match[5], false);
+    } else if (match[6]) {
+      html += buildMessageLink(match[6], match[6], true);
+    } else {
+      html += escapeHtml(full);
+    }
+    cursor = index + full.length;
+  }
+  if (cursor < source.length) html += escapeHtml(source.slice(cursor));
+  return html;
+}
+
+function renderMessageRichHtml(text) {
+  const source = String(text || "").replace(/\r\n/g, "\n");
+  if (!source.trim()) return "";
+  const segments = source.split("```");
+  let html = "";
+  const isListLine = (line) => /^(\s*)([-*•]|\d+\.)\s+/.test(line);
+  const stripListMarker = (line) => line.replace(/^(\s*)([-*•]|\d+\.)\s+/, "");
+  for (let i = 0; i < segments.length; i += 1) {
+    const segment = segments[i];
+    if (i % 2 === 1) {
+      const code = segment.replace(/^\w+\n/, "").replace(/\n$/, "");
+      html += `<pre class="msgCodeBlock"><code>${escapeHtml(code)}</code></pre>`;
+      continue;
+    }
+    const lines = segment.split("\n");
+    let paragraphLines = [];
+    const flushParagraph = () => {
+      if (!paragraphLines.length) return;
+      html += `<p>${paragraphLines.map((line) => renderInlineMessageText(line)).join("<br>")}</p>`;
+      paragraphLines = [];
+    };
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx += 1) {
+      const line = lines[lineIdx];
+      if (!line.trim()) {
+        flushParagraph();
+        continue;
+      }
+      if (isListLine(line)) {
+        flushParagraph();
+        const listLines = [line];
+        for (let nextIdx = lineIdx + 1; nextIdx < lines.length; nextIdx += 1) {
+          const nextLine = lines[nextIdx];
+          if (!nextLine.trim()) break;
+          if (!isListLine(nextLine)) break;
+          listLines.push(nextLine);
+          lineIdx = nextIdx;
+        }
+        const ordered = /^\s*\d+\.\s+/.test(listLines[0]);
+        html += ordered ? "<ol>" : "<ul>";
+        for (const itemLine of listLines) {
+          html += `<li>${renderInlineMessageText(stripListMarker(itemLine))}</li>`;
+        }
+        html += ordered ? "</ol>" : "</ul>";
+        continue;
+      }
+      paragraphLines.push(line);
+    }
+    flushParagraph();
+  }
+  return html || `<p>${escapeHtml(source)}</p>`;
+}
+
+function renderMessageBody(role, text) {
+  if (role === "assistant" || role === "system" || role === "user") return renderMessageRichHtml(text);
+  return `<p>${escapeHtml(text || "").replace(/\n/g, "<br>")}</p>`;
+}
+
+function wireMessageLinks(container) {
+  if (!container) return;
+}
+
+function animateMessageNode(node, delayMs = 0) {
+  if (delayMs > 0) node.style.setProperty("--msg-enter-delay", `${Math.floor(delayMs)}ms`);
+  else node.style.removeProperty("--msg-enter-delay");
+  node.classList.add("msg-enter");
+  node.addEventListener("animationend", () => {
+    node.classList.remove("msg-enter");
+    node.style.removeProperty("--msg-enter-delay");
+  }, { once: true });
+}
+
+function setChatOpening(isOpening) {
+  const overlay = byId("chatOpeningOverlay");
+  const box = byId("chatBox");
+  if (!overlay) return;
+  if (isOpening) {
+    clearChatMessages();
+    hideWelcomeCard();
+    if (box) box.scrollTop = 0;
+  }
+  overlay.classList.toggle("show", !!isOpening);
+}
+
+function addChat(role, text, options = {}) {
   const box = byId("chatBox");
   const welcome = byId("welcomeCard");
+  if (!box) return;
   if (welcome) welcome.style.display = "none";
   const node = document.createElement("div");
   node.className = `msg ${role}`.trim();
-  node.innerHTML = `<div class="msgHead">${escapeHtml(role)}</div>${escapeHtml(text || "")}`;
+  node.innerHTML = `<div class="msgHead">${escapeHtml(role)}</div><div class="msgBody">${renderMessageBody(role, text)}</div>`;
+  wireMessageLinks(node);
+  if (options.animate !== false) {
+    const defaultDelay = role === "assistant" || role === "system" ? 50 : 0;
+    const delayMs = Number.isFinite(Number(options.delayMs)) ? Number(options.delayMs) : defaultDelay;
+    animateMessageNode(node, delayMs);
+  }
   box.appendChild(node);
-  box.scrollTop = box.scrollHeight;
+  if (options.scroll !== false) box.scrollTop = box.scrollHeight;
+}
+
+function createAssistantStreamingMessage() {
+  const msg = document.createElement("div");
+  msg.className = "msg assistant";
+  msg.innerHTML = `<div class="msgHead">assistant</div><div class="msgBody"></div>`;
+  animateMessageNode(msg, 50);
+  const body = msg.querySelector(".msgBody");
+  return { msg, body };
+}
+
+function finalizeAssistantMessage(msgNode, bodyNode, text) {
+  if (!msgNode || !bodyNode) return;
+  const finalText = String(text || "").trim();
+  bodyNode.innerHTML = renderMessageBody("assistant", finalText);
+  wireMessageLinks(msgNode);
 }
 
 function getPromptValue() {
@@ -600,14 +786,14 @@ function normalizeThreadItemText(item) {
       const text = String(part.text || "").trim();
       if (text) lines.push(text);
     } else if (partType === "mention") {
-      const path = compactAttachmentLabel(part.path);
-      if (path) lines.push(`[file: ${path}]`);
+      const fileName = compactAttachmentLabel(part.path);
+      if (fileName) lines.push(`[file: ${fileName}]`);
     } else if (partType === "localImage") {
-      const path = compactAttachmentLabel(part.path);
-      if (path) lines.push(`[image: ${path}]`);
+      const fileName = compactAttachmentLabel(part.path);
+      if (fileName) lines.push(`[image: ${fileName}]`);
     } else if (partType === "image") {
-      const url = compactAttachmentLabel(part.url);
-      if (url) lines.push(`[image: ${url}]`);
+      const fileName = compactAttachmentLabel(part.url);
+      if (fileName) lines.push(`[image: ${fileName}]`);
     }
   }
   return lines.join("\n").trim();
@@ -651,7 +837,9 @@ async function loadThreadMessages(threadId, options = {}) {
   const target = detectThreadWorkspaceTarget(thread);
   if (target !== "unknown") state.activeThreadWorkspace = target;
   clearChatMessages();
-  for (const msg of messages) addChat(msg.role, msg.text);
+  for (const msg of messages) addChat(msg.role, msg.text, { scroll: false });
+  const box = byId("chatBox");
+  if (box) box.scrollTop = box.scrollHeight;
   if (state.activeThreadStarted) hideWelcomeCard();
   else showWelcomeCard();
   updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
@@ -873,12 +1061,19 @@ function renderThreads(items) {
       }
       const openThread = async () => {
         if (!id) return;
-        await api(`/codex/threads/${encodeURIComponent(id)}/resume`, { method: "POST", body: {} });
-        setActiveThread(id);
-        await loadThreadMessages(id, { animateBadge: true });
-        setStatus(`Resumed thread ${id}`);
+        const reqId = state.openingThreadReqId + 1;
+        state.openingThreadReqId = reqId;
         setMainTab("chat");
         setMobileTab("chat");
+        setChatOpening(true);
+        try {
+          await api(`/codex/threads/${encodeURIComponent(id)}/resume`, { method: "POST", body: {} });
+          setActiveThread(id);
+          await loadThreadMessages(id, { animateBadge: true });
+          setStatus(`Resumed thread ${id}`);
+        } finally {
+          if (state.openingThreadReqId === reqId) setChatOpening(false);
+        }
       };
       card.onclick = () => {
         openThread().catch((e) => setStatus(e.message, true));
@@ -1220,6 +1415,7 @@ async function addHost() {
 
 async function newThread() {
   if (blockInSandbox("new thread")) return;
+  setChatOpening(false);
   // Immediately switch UI back to the fresh-chat state.
   setActiveThread("");
   state.activeThreadStarted = false;
@@ -1268,10 +1464,8 @@ async function sendTurn() {
     const reqId = nextReqId();
     let text = "";
     hideWelcomeCard();
-    const msg = document.createElement("div");
-    msg.className = "msg assistant";
-    msg.innerHTML = `<div class="msgHead">assistant</div><div></div>`;
-    const body = msg.querySelector("div:last-child");
+    const { msg, body } = createAssistantStreamingMessage();
+    if (!body) return;
     byId("chatBox").appendChild(msg);
     byId("chatBox").scrollTop = byId("chatBox").scrollHeight;
     await new Promise((resolve) => {
@@ -1288,12 +1482,14 @@ async function sendTurn() {
           const result = data.result || {};
           const threadId = result.threadId || result.thread_id || result?.thread?.id || state.activeThreadId;
           if (threadId) setActiveThread(threadId);
-          if (!text.trim()) body.textContent = normalizeTextPayload(result);
-          maybeNotifyTurnDone(body.textContent || "");
+          if (!text.trim()) text = normalizeTextPayload(result);
+          finalizeAssistantMessage(msg, body, text);
+          maybeNotifyTurnDone(text || "");
           state.wsReqHandlers.delete(reqId);
           resolve();
         } else if (type === "error") {
           setStatus(evt.message || "WS stream error.", true);
+          finalizeAssistantMessage(msg, body, text);
           state.wsReqHandlers.delete(reqId);
           resolve();
         }
@@ -1321,10 +1517,8 @@ async function sendTurn() {
 
   let text = "";
   hideWelcomeCard();
-  const msg = document.createElement("div");
-  msg.className = "msg assistant";
-  msg.innerHTML = `<div class="msgHead">assistant</div><div></div>`;
-  const body = msg.querySelector("div:last-child");
+  const { msg, body } = createAssistantStreamingMessage();
+  if (!body) return;
   byId("chatBox").appendChild(msg);
   byId("chatBox").scrollTop = byId("chatBox").scrollHeight;
 
@@ -1359,13 +1553,15 @@ async function sendTurn() {
         const result = data.result || {};
         const threadId = result.threadId || result.thread_id || result?.thread?.id || state.activeThreadId;
         if (threadId) setActiveThread(threadId);
-        if (!text.trim()) body.textContent = normalizeTextPayload(result);
-        maybeNotifyTurnDone(body.textContent || "");
+        if (!text.trim()) text = normalizeTextPayload(result);
+        finalizeAssistantMessage(msg, body, text);
+        maybeNotifyTurnDone(text || "");
       } else if (evtName === "error") {
         setStatus(data?.message || "Stream error.", true);
       }
     }
   }
+  if (body.childNodes.length === 0) finalizeAssistantMessage(msg, body, text);
   await refreshThreads();
 }
 

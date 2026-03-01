@@ -193,6 +193,8 @@
       align-items: center;
     }
     .chatPanel .panelHeader .headerModelTrigger {
+      -webkit-appearance: none;
+      appearance: none;
       border: none;
       background: transparent;
       padding: 0;
@@ -203,8 +205,10 @@
       color: #0d1220;
       font-size: 16px;
       font-weight: 500;
-      line-height: 1;
+      line-height: 1.2;
       min-width: 0;
+      transform: translateZ(0);
+      backface-visibility: hidden;
     }
     .chatPanel .panelHeader .headerModelText {
       min-width: 0;
@@ -212,6 +216,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      line-height: 1.2;
     }
     .chatPanel .panelHeader .headerModelChevron {
       width: 14px;
@@ -251,19 +256,19 @@
       display: grid;
       gap: 2px;
       opacity: 0;
-      transform: translateY(-4px) scale(0.98);
+      transform: translate3d(0, -6px, 0);
       transform-origin: top left;
       pointer-events: none;
       visibility: hidden;
-      transition: opacity 140ms ease, transform 160ms ease, visibility 160ms step-end;
+      transition: opacity 150ms ease, transform 180ms ease;
+      will-change: opacity, transform;
       scrollbar-width: thin;
     }
     .chatPanel .panelHeader .headerModelPicker.open .headerModelMenu {
       opacity: 1;
-      transform: translateY(0) scale(1);
+      transform: translate3d(0, 0, 0);
       pointer-events: auto;
       visibility: visible;
-      transition: opacity 140ms ease, transform 160ms ease, visibility 0ms step-start;
     }
     .chatPanel .panelHeader .headerModelOption {
       border: none;
@@ -499,6 +504,7 @@
       min-height: 0;
       overflow-y: auto;
       overflow-x: hidden;
+      position: relative;
       padding: 12px;
       display: grid;
       align-content: start;
@@ -631,8 +637,18 @@
       padding: 10px 12px;
       border: 1px solid transparent;
       background: transparent;
-      white-space: pre-wrap;
+      white-space: normal;
       word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .msg.msg-enter {
+      animation: msg-enter 300ms cubic-bezier(.22, .61, .36, 1) both;
+      animation-delay: var(--msg-enter-delay, 0ms);
+      will-change: opacity, transform;
+    }
+    @keyframes msg-enter {
+      from { opacity: 0; transform: translate3d(0, -10px, 0); }
+      to { opacity: 1; transform: translate3d(0, 0, 0); }
     }
     .msg.assistant {
       padding-left: 2px;
@@ -653,6 +669,76 @@
     .msgHead { font-size: 11px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
     .msg.assistant .msgHead,
     .msg.user .msgHead { display: none; }
+    .msgBody {
+      line-height: 1.5;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .msgBody p {
+      margin: 0 0 8px;
+    }
+    .msgBody p:last-child {
+      margin-bottom: 0;
+    }
+    .msgBody ul {
+      margin: 4px 0 8px 18px;
+      padding: 0;
+    }
+    .msgBody ol {
+      margin: 4px 0 8px 18px;
+      padding: 0;
+    }
+    .msgBody li {
+      margin: 2px 0;
+    }
+    .msgBody strong {
+      font-weight: 700;
+      color: #0d1220;
+    }
+    .msgInlineCode {
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 12px;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: #18233a;
+      white-space: normal;
+    }
+    .msgCodeBlock {
+      margin: 6px 0 10px;
+      border: 1px solid rgba(13, 18, 32, 0.16);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.72);
+      padding: 10px 12px;
+      overflow-x: auto;
+    }
+    .msgCodeBlock code {
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre;
+      display: block;
+      color: #18233a;
+    }
+    .msgLink {
+      color: #3f5d85;
+      font-weight: 400;
+      text-decoration: underline;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 2px;
+    }
+    .msgLink:hover {
+      color: #2d4f7c;
+    }
+    .msgPseudoLink {
+      color: inherit;
+      font-weight: 400;
+      text-decoration: underline;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 2px;
+      text-decoration-color: rgba(44, 57, 80, 0.5);
+      cursor: default;
+    }
 
     .composer {
       padding: 10px;
@@ -660,6 +746,33 @@
       gap: 8px;
       background: linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(244, 248, 255, 0.84));
       border-radius: 0 0 var(--radius) var(--radius);
+    }
+    .chatOpeningOverlay {
+      position: absolute;
+      inset: 0;
+      z-index: 6;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: #637188;
+      font-size: 12px;
+      pointer-events: none;
+    }
+    .chatOpeningOverlay.show {
+      display: flex;
+    }
+    .chatOpeningSpinner {
+      width: 20px;
+      height: 20px;
+      border-radius: 999px;
+      border: 2px solid rgba(99, 113, 136, 0.28);
+      border-top-color: #637188;
+      animation: chat-opening-spin 0.8s linear infinite;
+    }
+    @keyframes chat-opening-spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
     }
     .mobileComposerRow { display: flex; align-items: center; gap: 8px; }
     .mobilePromptWrap {
@@ -999,10 +1112,15 @@
       font-weight: 600;
     }
     .drawerWorkspaceSwitch {
-      display: none;
+      display: inline-flex;
       gap: 6px;
       margin-left: auto;
       flex: 0 0 auto;
+    }
+    @media (min-width: 1081px) {
+      .chatPanel .panelHeader .workspaceSwitch {
+        display: none !important;
+      }
     }
     .setupSteps {
       margin: 0;
@@ -1054,6 +1172,36 @@
       min-height: 0;
       overflow: auto;
       padding-bottom: 0;
+    }
+    .leftPanel .itemCard {
+      border-radius: 0;
+      border-left: none;
+      border-right: none;
+      border-top: none;
+      border-bottom: 1px solid rgba(13, 18, 32, 0.14);
+      background: var(--thread-card-bg);
+      margin: 0;
+      padding: 10px 8px;
+    }
+    .leftPanel .groupBody {
+      gap: 0;
+      padding: 0 8px 0 0;
+      scrollbar-gutter: stable;
+    }
+    .leftPanel .groupBody .itemCard:last-child {
+      border-bottom: none;
+    }
+    .leftPanel .groupCard {
+      border: none;
+      border-radius: 0;
+      overflow: visible;
+      background: transparent;
+    }
+    .leftPanel .groupHeader {
+      border: none;
+      background: transparent;
+      border-radius: 0;
+      padding: 8px 10px;
     }
     .leftPanel .panelFooter {
       pointer-events: none;
@@ -1253,36 +1401,6 @@
         border-color: #434a58;
         box-shadow: 0 0 0 2px rgba(148, 157, 173, 0.12);
       }
-      .leftPanel .itemCard {
-        border-radius: 0;
-        border-left: none;
-        border-right: none;
-        border-top: none;
-        border-bottom: 1px solid rgba(13, 18, 32, 0.14);
-        background: var(--thread-card-bg);
-        margin: 0;
-        padding: 10px 8px;
-      }
-      .leftPanel .groupBody {
-        gap: 0;
-        padding: 0 8px 0 0;
-        scrollbar-gutter: stable;
-      }
-      .leftPanel .groupBody .itemCard:last-child {
-        border-bottom: none;
-      }
-      .leftPanel .groupCard {
-        border: none;
-        border-radius: 0;
-        overflow: visible;
-        background: transparent;
-      }
-      .leftPanel .groupHeader {
-        border: none;
-        background: transparent;
-        border-radius: 0;
-        padding: 8px 10px;
-      }
       .leftPanel .drawerSectionTitle,
       .leftPanel .sectionTitle {
         color: #637188;
@@ -1479,6 +1597,10 @@
               <button id="quickPrompt1" class="welcomePrompt">Explain the current codebase structure</button>
               <button id="quickPrompt2" class="welcomePrompt">Write tests for the main module</button>
             </div>
+          </div>
+          <div id="chatOpeningOverlay" class="chatOpeningOverlay" aria-live="polite">
+            <div class="chatOpeningSpinner" aria-hidden="true"></div>
+            <div>Opening chat...</div>
           </div>
         </div>
         <div class="composer">
