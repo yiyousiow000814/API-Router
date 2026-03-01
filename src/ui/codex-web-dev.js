@@ -18,6 +18,8 @@ const state = {
     wsl2Installed: false,
   },
   favoriteThreadIds: new Set(),
+  lastChevronToggleKey: "",
+  lastChevronToggleCollapsed: false,
 };
 
 const GUIDE_DISMISSED_KEY = "web_codex_guide_dismissed_v2";
@@ -340,8 +342,8 @@ function relativeTimeLabel(input) {
     ts = input > 1e12 ? input : input * 1000;
   } else if (typeof input === "string") {
     const trimmed = input.trim();
-    if (/^\d+$/.test(trimmed)) {
-      const num = Number(trimmed);
+    if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+      const num = Number.parseFloat(trimmed);
       ts = num > 1e12 ? num : num * 1000;
     } else {
       ts = Date.parse(trimmed);
@@ -351,10 +353,14 @@ function relativeTimeLabel(input) {
   }
   if (!Number.isFinite(ts)) return "";
   const deltaSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (deltaSec < 60) return "now";
-  if (deltaSec < 3600) return `${Math.floor(deltaSec / 60)}m`;
-  if (deltaSec < 86400) return `${Math.floor(deltaSec / 3600)}h`;
-  return `${Math.floor(deltaSec / 86400)}d`;
+  if (deltaSec < 86400) return "today";
+  if (deltaSec < 2592000) return `${Math.floor(deltaSec / 86400)}d`;
+  if (deltaSec < 31536000) return `${Math.floor(deltaSec / 2592000)}m`;
+  return `${Math.floor(deltaSec / 31536000)}y`;
+}
+
+function pickThreadTimestamp(thread) {
+  return thread?.updatedAt || "";
 }
 
 function renderAttachmentPills(files) {
@@ -568,10 +574,7 @@ function renderThreads(items) {
         (preview ? truncateLabel(preview, 40) : "") ||
         id ||
         "(unnamed)";
-      const age =
-        relativeTimeLabel(thread.updatedAt || thread.updated_at || thread.lastUpdatedAt || thread.createdAt) ||
-        "";
-      const subText = age ? `Last updated ${age}` : (id && title !== id ? id : "");
+      const age = relativeTimeLabel(pickThreadTimestamp(thread)) || "";
       const isFavorite = !!(id && favoriteSet.has(id));
       const card = document.createElement("div");
       card.className = `itemCard${id && id === state.activeThreadId ? " active" : ""}`;
@@ -579,9 +582,8 @@ function renderThreads(items) {
       card.tabIndex = 0;
       card.innerHTML =
         `<div class="row"><button class="threadFavBtn${isFavorite ? " active" : ""}" data-thread-fav="${escapeHtml(id)}"><span class="starGlyph" aria-hidden="true">★</span></button>` +
-        `<div class="itemTitle">${escapeHtml(title)}</div><div class="grow"></div>` +
-        `<div class="itemSub mono">${escapeHtml(age)}</div></div>` +
-        `<div class="itemSub">${escapeHtml(subText)}</div>`;
+        `<div class="itemTitle">${escapeHtml(title)}</div>` +
+        `<div class="itemSub mono">${escapeHtml(age)}</div></div>`;
       const favBtn = card.querySelector(".threadFavBtn");
       if (favBtn) {
         favBtn.onclick = (event) => {
@@ -621,13 +623,18 @@ function renderThreads(items) {
     const header = document.createElement("button");
     header.className = "groupHeader";
     const collapsed = state.collapsedWorkspaceKeys.has(sectionKey);
+    const animClass =
+      state.lastChevronToggleKey === sectionKey
+        ? (state.lastChevronToggleCollapsed ? " anim-close" : " anim-open")
+        : "";
     header.innerHTML =
-      `<span class="groupChevron">${collapsed ? "▶" : "▼"}</span>` +
       `<span class="itemTitle">${escapeHtml(sectionTitle)}</span>` +
-      `<span class="groupCount">${sectionItems.length}</span>`;
+      `<span class="groupChevron chevronGlyph${collapsed ? " is-collapsed" : ""}${animClass}">›</span>`;
     header.onclick = () => {
       if (state.collapsedWorkspaceKeys.has(sectionKey)) state.collapsedWorkspaceKeys.delete(sectionKey);
       else state.collapsedWorkspaceKeys.add(sectionKey);
+      state.lastChevronToggleKey = sectionKey;
+      state.lastChevronToggleCollapsed = state.collapsedWorkspaceKeys.has(sectionKey);
       renderThreads(state.threadItems);
     };
     group.appendChild(header);
@@ -664,10 +671,13 @@ function renderThreads(items) {
     const header = document.createElement("button");
     header.className = "groupHeader";
     const collapsed = state.collapsedWorkspaceKeys.has(workspaceKey);
+    const animClass =
+      state.lastChevronToggleKey === workspaceKey
+        ? (state.lastChevronToggleCollapsed ? " anim-close" : " anim-open")
+        : "";
     header.innerHTML =
-      `<span class="groupChevron">${collapsed ? "▶" : "▼"}</span>` +
       `<span class="itemTitle">${escapeHtml(workspace)}</span>` +
-      `<span class="groupCount">${filtered.length}</span>`;
+      `<span class="groupChevron chevronGlyph${collapsed ? " is-collapsed" : ""}${animClass}">›</span>`;
     header.onclick = () => {
       if (state.collapsedWorkspaceKeys.has(workspaceKey)) {
         // Open this group and keep others collapsed (single-expanded behavior).
@@ -677,6 +687,8 @@ function renderThreads(items) {
         // Collapse this group when tapping it again.
         state.collapsedWorkspaceKeys.add(workspaceKey);
       }
+      state.lastChevronToggleKey = workspaceKey;
+      state.lastChevronToggleCollapsed = state.collapsedWorkspaceKeys.has(workspaceKey);
       renderThreads(state.threadItems);
     };
     group.appendChild(header);
@@ -689,6 +701,8 @@ function renderThreads(items) {
     list.appendChild(group);
   }
   if (!renderedThreads) list.innerHTML = `<div class="muted">No threads match search.</div>`;
+  state.lastChevronToggleKey = "";
+  state.lastChevronToggleCollapsed = false;
 }
 
 function renderHosts(items) {

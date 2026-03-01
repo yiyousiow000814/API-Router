@@ -976,6 +976,106 @@ fn extract_items_array(value: &Value) -> Vec<Value> {
     Vec::new()
 }
 
+fn parse_json_i64(value: &Value) -> Option<i64> {
+    if let Some(v) = value.as_i64() {
+        return Some(v);
+    }
+    if let Some(v) = value.as_u64().and_then(|n| i64::try_from(n).ok()) {
+        return Some(v);
+    }
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<i64>().ok())
+}
+
+fn first_i64_field(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<i64> {
+    for key in keys {
+        if let Some(v) = obj.get(*key).and_then(parse_json_i64) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn parse_uuid_v7_millis(id: &str) -> Option<i64> {
+    let trimmed = id.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() < 18 || bytes[8] != b'-' || bytes[13] != b'-' {
+        return None;
+    }
+    let version = bytes[14].to_ascii_lowercase();
+    if version != b'7' {
+        return None;
+    }
+    let high = &trimmed[0..8];
+    let mid = &trimmed[9..13];
+    let millis_hex = format!("{high}{mid}");
+    u64::from_str_radix(&millis_hex, 16)
+        .ok()
+        .and_then(|v| i64::try_from(v).ok())
+}
+
+fn normalize_thread_item_shape(item: &mut Value) {
+    let Some(obj) = item.as_object_mut() else {
+        return;
+    };
+
+    if !obj.contains_key("id") {
+        if let Some(id) = obj
+            .get("thread_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            obj.insert("id".to_string(), Value::String(id.to_string()));
+        }
+    }
+
+    let mut created_at = first_i64_field(obj, &["createdAt", "created_at"]).unwrap_or(0);
+    if created_at <= 0 {
+        if let Some(path) = obj.get("path").and_then(|v| v.as_str()) {
+            let fs_created = file_updated_unix_secs(Path::new(path));
+            if fs_created > 0 {
+                created_at = fs_created;
+            }
+        }
+    }
+    if created_at > 0 {
+        obj.insert("createdAt".to_string(), Value::from(created_at));
+    }
+
+    let mut updated_at = first_i64_field(obj, &["updatedAt", "updated_at"]).unwrap_or(0);
+    if updated_at <= 0 {
+        if let Some(path) = obj.get("path").and_then(|v| v.as_str()) {
+            let fs_updated = file_updated_unix_secs(Path::new(path));
+            if fs_updated > 0 {
+                updated_at = fs_updated;
+            }
+        }
+    }
+    if updated_at <= 0 {
+        if let Some(id) = obj.get("id").and_then(|v| v.as_str()) {
+            if let Some(from_id_millis) = parse_uuid_v7_millis(id) {
+                updated_at = from_id_millis;
+            }
+        }
+    }
+    if updated_at <= 0 {
+        updated_at = created_at;
+    }
+    if updated_at > 0 {
+        obj.insert("updatedAt".to_string(), Value::from(updated_at));
+    }
+}
+
+fn normalize_thread_items_shape(items: &mut [Value]) {
+    for item in items {
+        normalize_thread_item_shape(item);
+    }
+}
+
 fn merge_items_without_duplicates(mut base: Vec<Value>, extra: Vec<Value>) -> Vec<Value> {
     fn merge_thread_item(base_item: &mut Value, extra_item: &Value) {
         let (Some(base_obj), Some(extra_obj)) = (base_item.as_object_mut(), extra_item.as_object()) else {
@@ -1728,6 +1828,7 @@ async fn rebuild_workspace_thread_items(target: WorkspaceTarget) -> Vec<Value> {
         }
     }
 
+    normalize_thread_items_shape(&mut items);
     hydrate_missing_previews_from_session_files(&mut items);
     filter_auxiliary_threads(&mut items);
     sort_threads_by_updated_desc(&mut items);

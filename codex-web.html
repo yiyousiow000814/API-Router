@@ -285,21 +285,36 @@
       text-align: left;
       background: var(--thread-group-header-bg);
     }
-    .groupChevron {
-      width: 14px;
-      text-align: center;
-      color: var(--muted);
-      font-size: 11px;
+    .chevronGlyph {
+      color: #637188;
+      font-size: 14px;
+      line-height: 1;
+      font-family: "Segoe UI", "Inter", sans-serif;
+      font-weight: 600;
     }
-    .groupCount {
+    .groupChevron {
       margin-left: auto;
-      border: 1px solid rgba(13, 18, 32, 0.14);
-      border-radius: 999px;
-      padding: 1px 7px;
-      color: #4a556b;
-      font-size: 10px;
-      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-      background: transparent;
+      width: 14px;
+      display: inline-block;
+      text-align: center;
+      transform: rotate(90deg);
+    }
+    .groupChevron.is-collapsed {
+      transform: rotate(0deg);
+    }
+    .groupChevron.anim-open {
+      animation: chevron-open 0.16s ease;
+    }
+    .groupChevron.anim-close {
+      animation: chevron-close 0.16s ease;
+    }
+    @keyframes chevron-open {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(90deg); }
+    }
+    @keyframes chevron-close {
+      from { transform: rotate(90deg); }
+      to { transform: rotate(0deg); }
     }
     .groupBody {
       display: grid;
@@ -311,8 +326,10 @@
       -webkit-overflow-scrolling: touch;
       touch-action: pan-y;
     }
-    .itemCard .row { min-width: 0; }
-    .itemCard .row .itemTitle { flex: 1 1 auto; min-width: 0; }
+    .itemCard .row { min-width: 0; width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 8px; align-items: center; }
+    .itemCard .row .itemTitle { min-width: 0; max-width: 100%; display: block; }
+    .itemSub.mono { margin-top: 0; white-space: nowrap; flex: 0 0 auto; }
+    .itemCard .row .itemSub.mono { margin-left: 0; text-align: right; }
     .groupBody.collapsed {
       display: none;
     }
@@ -406,10 +423,7 @@
     .welcomeSetting .muted {
       font-size: 12px;
     }
-    .welcomeChevron {
-      color: #637188;
-      font-size: 14px;
-    }
+    .welcomeChevron {}
     .welcomePrompts {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -959,7 +973,7 @@
         position: fixed;
         top: 10px;
         bottom: 10px;
-        width: clamp(260px, 65vw, 320px);
+        width: clamp(260px, 70vw, 320px);
         z-index: 40;
         box-shadow: none;
         transition: transform 180ms ease;
@@ -1029,11 +1043,6 @@
         border-bottom-color: rgba(13, 18, 32, 0.1);
         background: var(--thread-group-header-bg);
         border-radius: 0;
-      }
-      .leftPanel .groupCount {
-        border-color: rgba(13, 18, 32, 0.14);
-        color: #4a556b;
-        background: transparent;
       }
       .leftPanel .drawerSectionTitle,
       .leftPanel .sectionTitle {
@@ -1180,7 +1189,7 @@
             </div>
             <button id="welcomeWorkspaceBtn" class="welcomeSetting">
               <span id="welcomeWorkspaceText">Bridge default workspace</span>
-              <span class="welcomeChevron">›</span>
+              <span class="welcomeChevron chevronGlyph">›</span>
             </button>
             <div class="welcomePrompts">
               <button id="quickPrompt1" class="welcomePrompt">Explain the current codebase structure</button>
