@@ -662,8 +662,59 @@
       align-content: start;
       grid-auto-rows: max-content;
       scrollbar-width: none;
+      transition: transform 140ms ease;
     }
     .drawerBody .itemList::-webkit-scrollbar { width: 0; height: 0; }
+    .threadPullHint {
+      height: 0;
+      opacity: 0;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #637188;
+      font-size: 11px;
+      font-weight: 600;
+      transition: height 140ms ease, opacity 140ms ease;
+      pointer-events: none;
+      margin-top: -2px;
+    }
+    .threadPullHintInner {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 0;
+    }
+    .threadPullSpinner {
+      position: absolute;
+      right: 100%;
+      margin-right: 6px;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      border: 2px solid rgba(99, 113, 136, 0.28);
+      border-top-color: #5f74a5;
+      animation: threadPullSpin 0.75s linear infinite;
+      animation-play-state: paused;
+      opacity: 0;
+      transition: opacity 120ms ease;
+    }
+    .threadPullHint.refreshing .threadPullSpinner {
+      opacity: 1;
+      animation-play-state: running;
+    }
+    .threadPullText {
+      white-space: nowrap;
+    }
+    .threadPullHint.show {
+      height: 18px;
+      opacity: 0.95;
+    }
+    @keyframes threadPullSpin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
     .drawerBrandRow {
       display: flex;
       align-items: center;
@@ -1173,6 +1224,12 @@
           </button>
           <div class="drawerSectionTitle">Chats</div>
           <input id="threadSearchInput" class="mono" placeholder="Search chats" />
+          <div id="threadPullHint" class="threadPullHint" aria-live="polite">
+            <span class="threadPullHintInner">
+              <span class="threadPullSpinner" aria-hidden="true"></span>
+              <span id="threadPullHintText" class="threadPullText"></span>
+            </span>
+          </div>
           <div id="threadList" class="itemList"></div>
         </div>
         <div class="panelFooter">

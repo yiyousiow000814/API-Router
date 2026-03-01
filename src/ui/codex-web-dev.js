@@ -20,6 +20,7 @@ const state = {
   favoriteThreadIds: new Set(),
   lastChevronToggleKey: "",
   lastChevronToggleCollapsed: false,
+  threadPullRefreshing: false,
 };
 
 const GUIDE_DISMISSED_KEY = "web_codex_guide_dismissed_v2";
@@ -30,6 +31,10 @@ const SANDBOX_MODE =
   window.__WEB_CODEX_SANDBOX__ === true ||
   window.location.pathname.startsWith("/sandbox/") ||
   new URLSearchParams(window.location.search).get("sandbox") === "1";
+const THREAD_PULL_REFRESH_TRIGGER_PX = 44;
+const THREAD_PULL_REFRESH_MAX_PX = 84;
+const THREAD_PULL_REFRESH_MIN_MS = 520;
+const THREAD_PULL_HINT_CLEAR_DELAY_MS = 160;
 
 function getEmbeddedToken() {
   const raw = "";
@@ -50,6 +55,10 @@ function bindInput(id, eventName, handler) {
   const el = byId(id);
   if (!el) return;
   el.addEventListener(eventName, handler);
+}
+
+function waitMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function setStatus(message, isWarn = false) {
@@ -709,6 +718,105 @@ function renderThreads(items) {
   state.lastChevronToggleCollapsed = false;
 }
 
+async function refreshThreadsFromPullGesture() {
+  if (state.threadPullRefreshing) return;
+  const list = byId("threadList");
+  const hint = byId("threadPullHint");
+  const hintText = byId("threadPullHintText");
+  if (!list || !hint || !hintText) return;
+  const startedAt = Date.now();
+  state.threadPullRefreshing = true;
+  list.style.transition = "transform 140ms ease";
+  list.style.transform = `translateY(${Math.round(THREAD_PULL_REFRESH_TRIGGER_PX * 0.45)}px)`;
+  hint.classList.add("show");
+  hint.classList.add("refreshing");
+  hintText.textContent = "Refreshing chats...";
+  try {
+    await refreshThreads(getWorkspaceTarget());
+    setStatus(`Refreshed ${getWorkspaceTarget().toUpperCase()} chats.`);
+  } catch (error) {
+    setStatus(error?.message || "Refresh failed.", true);
+  } finally {
+    const elapsed = Date.now() - startedAt;
+    if (elapsed < THREAD_PULL_REFRESH_MIN_MS) await waitMs(THREAD_PULL_REFRESH_MIN_MS - elapsed);
+    state.threadPullRefreshing = false;
+    setTimeout(() => {
+      list.style.transform = "";
+      hint.classList.remove("show");
+      hint.classList.remove("refreshing");
+      setTimeout(() => {
+        if (!state.threadPullRefreshing) hintText.textContent = "";
+      }, THREAD_PULL_HINT_CLEAR_DELAY_MS);
+    }, 120);
+  }
+}
+
+function wireThreadPullToRefresh() {
+  const list = byId("threadList");
+  const hint = byId("threadPullHint");
+  const hintText = byId("threadPullHintText");
+  if (!list || !hint || !hintText) return;
+  let startY = 0;
+  let pullPx = 0;
+  let tracking = false;
+
+  const resetPull = () => {
+    pullPx = 0;
+    list.style.transition = "transform 140ms ease";
+    list.style.transform = "";
+    if (!state.threadPullRefreshing) {
+      hint.classList.remove("show");
+      hint.classList.remove("refreshing");
+      hintText.textContent = "";
+    }
+  };
+
+  list.addEventListener("touchstart", (event) => {
+    if (state.threadPullRefreshing) return;
+    if (event.touches.length !== 1) return;
+    if (list.scrollTop > 0) return;
+    startY = event.touches[0].clientY;
+    pullPx = 0;
+    tracking = true;
+  }, { passive: true });
+
+  list.addEventListener("touchmove", (event) => {
+    if (!tracking || state.threadPullRefreshing) return;
+    const y = event.touches[0]?.clientY ?? startY;
+    const raw = y - startY;
+    if (raw <= 0) {
+      resetPull();
+      return;
+    }
+    if (list.scrollTop > 0) {
+      tracking = false;
+      resetPull();
+      return;
+    }
+    event.preventDefault();
+    pullPx = Math.min(THREAD_PULL_REFRESH_MAX_PX, raw * 0.55);
+    list.style.transition = "none";
+    list.style.transform = `translateY(${Math.round(pullPx)}px)`;
+    hint.classList.add("show");
+    hint.classList.remove("refreshing");
+    hintText.textContent =
+      pullPx >= THREAD_PULL_REFRESH_TRIGGER_PX ? "Release to refresh" : "Pull to refresh";
+  }, { passive: false });
+
+  const endPull = () => {
+    if (!tracking) return;
+    tracking = false;
+    if (pullPx >= THREAD_PULL_REFRESH_TRIGGER_PX && !state.threadPullRefreshing) {
+      refreshThreadsFromPullGesture().catch(() => {});
+      return;
+    }
+    resetPull();
+  };
+
+  list.addEventListener("touchend", endPull, { passive: true });
+  list.addEventListener("touchcancel", endPull, { passive: true });
+}
+
 function renderHosts(items) {
   const list = byId("hostList");
   list.innerHTML = "";
@@ -1099,6 +1207,7 @@ function wireActions() {
     state.threadSearchQuery = String(event?.target?.value || "");
     renderThreads(state.threadItems);
   };
+  wireThreadPullToRefresh();
   window.addEventListener("resize", () => {
     setMobileTab("chat");
   });
