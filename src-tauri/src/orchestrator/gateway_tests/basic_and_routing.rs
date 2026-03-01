@@ -1378,6 +1378,139 @@ fn decide_provider_balanced_auto_reassigns_immediately_after_closed_provider_reo
 }
 
 #[test]
+fn decide_provider_balanced_auto_reassigns_after_unhealthy_provider_recovers() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut providers = std::collections::BTreeMap::new();
+    for name in ["p1", "p2"] {
+        providers.insert(
+            name.to_string(),
+            ProviderConfig {
+                display_name: name.to_uppercase(),
+                base_url: format!("https://{name}.example.com"),
+                group: None,
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+    }
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 4000,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 30,
+            failure_threshold: 10,
+            cooldown_seconds: 30,
+            request_timeout_seconds: 300,
+        },
+        providers,
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+    let now = unix_ms();
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg.clone())),
+        router: Arc::new(RouterState::new(&cfg, now)),
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::from([
+            (
+                "session-main".to_string(),
+                crate::orchestrator::gateway::ClientSessionRuntime {
+                    codex_session_id: "session-main".to_string(),
+                    pid: 1,
+                    wt_session: Some("wt-main".to_string()),
+                    last_request_unix_ms: now,
+                    last_discovered_unix_ms: now,
+                    last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                    last_reported_model: None,
+                    last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    agent_parent_session_id: None,
+                    is_agent: false,
+                    is_review: false,
+                    confirmed_router: true,
+                },
+            ),
+            (
+                "session-side".to_string(),
+                crate::orchestrator::gateway::ClientSessionRuntime {
+                    codex_session_id: "session-side".to_string(),
+                    pid: 2,
+                    wt_session: Some("wt-side".to_string()),
+                    last_request_unix_ms: now,
+                    last_discovered_unix_ms: now,
+                    last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                    last_reported_model: None,
+                    last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    agent_parent_session_id: None,
+                    is_agent: false,
+                    is_review: false,
+                    confirmed_router: true,
+                },
+            ),
+        ]))),
+    };
+
+    state
+        .store
+        .put_quota_snapshot(
+            "p1",
+            &serde_json::json!({
+                "remaining": 100.0,
+                "updated_at_unix_ms": now,
+                "last_error": ""
+            }),
+        )
+        .expect("seed p1 quota");
+    state
+        .store
+        .put_quota_snapshot(
+            "p2",
+            &serde_json::json!({
+                "remaining": 100.0,
+                "updated_at_unix_ms": now,
+                "last_error": ""
+            }),
+        )
+        .expect("seed p2 quota");
+
+    state.router.mark_failure("p1", &cfg, "boom", now);
+    let (first_pick, first_reason) = decide_provider(&state, &cfg, "p1", "session-main");
+    assert_eq!(first_pick, "p2");
+    assert_eq!(first_reason, "balanced_auto");
+    let initial_assignment = state
+        .store
+        .get_session_route_assignment("session-main")
+        .expect("initial assignment");
+    assert_eq!(initial_assignment.provider, "p2");
+
+    state.router.mark_success("p1", now.saturating_add(1));
+    let (second_pick, second_reason) = decide_provider(&state, &cfg, "p1", "session-main");
+    assert_eq!(second_pick, "p1");
+    assert_eq!(second_reason, "balanced_auto");
+    let reassigned = state
+        .store
+        .get_session_route_assignment("session-main")
+        .expect("reassigned");
+    assert_eq!(reassigned.provider, "p1");
+}
+
+#[test]
 fn decide_provider_balanced_auto_prefers_healthy_when_load_gap_is_small() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = open_store_dir(tmp.path().join("data")).expect("store");

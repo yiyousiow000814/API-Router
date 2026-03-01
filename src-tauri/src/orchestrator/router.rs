@@ -56,6 +56,7 @@ pub struct RouterState {
     pub manual_override: RwLock<Option<String>>,
     health: RwLock<HashMap<String, ProviderHealth>>,
     quota_closed_by_provider: RwLock<HashMap<String, bool>>,
+    unhealthy_by_provider: RwLock<HashMap<String, bool>>,
     balanced_main_session_ids: RwLock<Option<BTreeSet<String>>>,
 }
 
@@ -126,13 +127,16 @@ impl RouterState {
             health.insert(name.clone(), ProviderHealth::new(now_ms));
         }
         let mut quota_closed_by_provider = HashMap::new();
+        let mut unhealthy_by_provider = HashMap::new();
         for name in cfg.providers.keys() {
             quota_closed_by_provider.insert(name.clone(), false);
+            unhealthy_by_provider.insert(name.clone(), false);
         }
         Self {
             manual_override: RwLock::new(None),
             health: RwLock::new(health),
             quota_closed_by_provider: RwLock::new(quota_closed_by_provider),
+            unhealthy_by_provider: RwLock::new(unhealthy_by_provider),
             balanced_main_session_ids: RwLock::new(None),
         }
     }
@@ -156,6 +160,12 @@ impl RouterState {
             quota_closed.entry(name.clone()).or_insert(false);
         }
         quota_closed.retain(|name, _| cfg.providers.contains_key(name));
+
+        let mut unhealthy = self.unhealthy_by_provider.write();
+        for name in cfg.providers.keys() {
+            unhealthy.entry(name.clone()).or_insert(false);
+        }
+        unhealthy.retain(|name, _| cfg.providers.contains_key(name));
     }
 
     pub fn record_quota_closed_states(&self, states: &HashMap<String, bool>) -> Vec<String> {
@@ -171,6 +181,21 @@ impl RouterState {
         }
         quota_closed.retain(|provider, _| states.contains_key(provider));
         reopened
+    }
+
+    pub fn record_unhealthy_states(&self, states: &HashMap<String, bool>) -> Vec<String> {
+        let mut unhealthy = self.unhealthy_by_provider.write();
+        let mut recovered = Vec::new();
+        for (provider, is_unhealthy) in states {
+            let was_unhealthy = unhealthy
+                .insert(provider.clone(), *is_unhealthy)
+                .unwrap_or(false);
+            if was_unhealthy && !*is_unhealthy {
+                recovered.push(provider.clone());
+            }
+        }
+        unhealthy.retain(|provider, _| states.contains_key(provider));
+        recovered
     }
 
     pub fn record_balanced_main_sessions(&self, session_ids: &BTreeSet<String>) -> bool {
@@ -204,6 +229,16 @@ impl RouterState {
 
             if h.consecutive_failures >= cfg.routing.failure_threshold {
                 h.cooldown_until_unix_ms = now_ms + (cfg.routing.cooldown_seconds * 1000);
+            }
+        }
+    }
+
+    pub fn mark_usage_refresh_success(&self, provider: &str, now_ms: u64) {
+        let mut health = self.health.write();
+        if let Some(h) = health.get_mut(provider) {
+            if matches!(h.state, HealthState::Unknown) {
+                h.state = HealthState::Healthy;
+                h.last_ok_at_unix_ms = now_ms;
             }
         }
     }
@@ -357,5 +392,41 @@ mod tests {
 
         assert_eq!(health.last_error.len(), 900);
         assert_eq!(health.last_error, long_error);
+    }
+
+    #[test]
+    fn usage_refresh_success_promotes_unknown_only() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 10;
+        let provider = "official";
+        let router = RouterState::new(&cfg, 0);
+
+        router.mark_usage_refresh_success(provider, 1_000);
+        let snapshot = router.snapshot(1_000);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+        assert_eq!(health.status, "healthy");
+        assert_eq!(health.last_ok_at_unix_ms, 1_000);
+
+        router.mark_failure(provider, &cfg, "boom", 2_000);
+        router.mark_usage_refresh_success(provider, 3_000);
+        let snapshot = router.snapshot(3_000);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+        assert_eq!(health.status, "unhealthy");
+        assert_eq!(health.last_ok_at_unix_ms, 1_000);
+    }
+
+    #[test]
+    fn unhealthy_state_recovery_tracks_transition() {
+        let cfg = AppConfig::default_config();
+        let router = RouterState::new(&cfg, 0);
+        let provider = "official".to_string();
+
+        let mut first = HashMap::new();
+        first.insert(provider.clone(), true);
+        assert!(router.record_unhealthy_states(&first).is_empty());
+
+        let mut second = HashMap::new();
+        second.insert(provider.clone(), false);
+        assert_eq!(router.record_unhealthy_states(&second), vec![provider]);
     }
 }

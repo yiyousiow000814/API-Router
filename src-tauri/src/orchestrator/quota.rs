@@ -264,6 +264,8 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
     let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
     track_budget_spend(st, provider_name, snap);
     if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
+        st.router
+            .mark_usage_refresh_success(provider_name, snap.updated_at_unix_ms);
         st.store.reset_ledger(provider_name);
     }
     // Avoid spamming the event log on routine/background refreshes. Only surface failures here;
