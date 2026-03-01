@@ -23,7 +23,8 @@
     "build:root-exe:checked": "node scripts/run-ui-tauri-if-windows.mjs && npm run build:root-exe",
     "ui:e2e:requests-reload": "node scripts/tauri-e2e-requests-reload.mjs",
     "ui:e2e:requests-graph-hydration": "node scripts/tauri-e2e-requests-graph-hydration.mjs",
-    "test": "npm run check:gateway-provider-id && vitest run"
+    "test": "npm run check:gateway-provider-id && vitest run",
+    "bench:thread-open": "node scripts/benchmark-thread-open-latency.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.6",

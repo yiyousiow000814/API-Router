@@ -1417,11 +1417,7 @@ fn import_windows_rollout_into_codex_home(thread_id: &str) -> Result<bool, Strin
     let Some(src_file) = find_rollout_file_by_thread_id(&src_root, thread_id) else {
         return Ok(false);
     };
-    let dst_dir = codex_home_dir_result()?.join("sessions").join("imported");
-    std::fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
-    let dst_file = dst_dir.join(format!("{thread_id}.jsonl"));
-    std::fs::copy(src_file, dst_file).map_err(|e| e.to_string())?;
-    Ok(true)
+    import_rollout_file_into_codex_home(thread_id, src_file.as_path())
 }
 
 fn is_safe_thread_id(thread_id: &str) -> bool {
@@ -1436,33 +1432,20 @@ fn find_wsl_rollout_file_by_thread_id(thread_id: &str) -> Option<PathBuf> {
         return None;
     }
     let script = format!(
-        "python3 - <<'PY'\nfrom pathlib import Path\nneedle = '{thread_id}'\nroot = Path.home() / '.codex' / 'sessions'\nif not root.exists():\n    raise SystemExit(0)\nfor p in root.rglob('*.jsonl'):\n    if needle in p.name:\n        print(str(p))\n        break\nPY"
+        "python3 - <<'PY'\nfrom pathlib import Path\nimport os\nneedle = '{thread_id}'\nroot = Path.home() / '.codex' / 'sessions'\ndistro = (os.environ.get('WSL_DISTRO_NAME') or '').strip()\nif not root.exists():\n    raise SystemExit(0)\nfor p in root.rglob('*.jsonl'):\n    if needle in p.name:\n        text = str(p)\n        if distro and text.startswith('/'):\n            print('\\\\\\\\wsl.localhost\\\\' + distro + text.replace('/', '\\\\'))\n        else:\n            print(text)\n        break\nPY"
     );
-    let output = std::process::Command::new("wsl.exe")
-        .arg("-e")
-        .arg("bash")
-        .arg("-lc")
-        .arg(script)
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("wsl.exe");
+    cmd.arg("-e").arg("bash").arg("-lc").arg(script);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
-    let linux_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if linux_path.is_empty() {
-        return None;
-    }
-    let windows_path_output = std::process::Command::new("wsl.exe")
-        .arg("-e")
-        .arg("wslpath")
-        .arg("-w")
-        .arg(linux_path)
-        .output()
-        .ok()?;
-    if !windows_path_output.status.success() {
-        return None;
-    }
-    let windows_path = String::from_utf8_lossy(&windows_path_output.stdout)
+    let windows_path = String::from_utf8_lossy(&output.stdout)
         .trim()
         .to_string();
     if windows_path.is_empty() {
@@ -1476,14 +1459,312 @@ fn import_wsl_rollout_into_codex_home(thread_id: &str) -> Result<bool, String> {
     let Some(src_file) = find_wsl_rollout_file_by_thread_id(thread_id) else {
         return Ok(false);
     };
-    if !src_file.exists() {
+    import_rollout_file_into_codex_home(thread_id, src_file.as_path())
+}
+
+fn import_rollout_file_into_codex_home(thread_id: &str, src_file: &Path) -> Result<bool, String> {
+    if !src_file.exists() || !src_file.is_file() {
+        return Ok(false);
+    }
+    let file_name = src_file
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or_default();
+    let is_jsonl = src_file
+        .extension()
+        .and_then(|v| v.to_str())
+        .map(|v| v.eq_ignore_ascii_case("jsonl"))
+        .unwrap_or(false);
+    if !is_jsonl || !file_name.contains(thread_id) {
         return Ok(false);
     }
     let dst_dir = codex_home_dir_result()?.join("sessions").join("imported");
     std::fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
     let dst_file = dst_dir.join(format!("{thread_id}.jsonl"));
+    if dst_file.exists() {
+        let src_meta = std::fs::metadata(src_file).ok();
+        let dst_meta = std::fs::metadata(&dst_file).ok();
+        if let (Some(src_meta), Some(dst_meta)) = (src_meta, dst_meta) {
+            let same_len = src_meta.len() == dst_meta.len();
+            let up_to_date = match (src_meta.modified().ok(), dst_meta.modified().ok()) {
+                (Some(src_modified), Some(dst_modified)) => dst_modified >= src_modified,
+                _ => same_len,
+            };
+            if same_len && up_to_date {
+                return Ok(true);
+            }
+        }
+    }
     std::fs::copy(src_file, dst_file).map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+fn linux_wsl_path_to_windows_path(path: &str) -> Option<PathBuf> {
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+    let trimmed = path.trim();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+    let mut cmd = std::process::Command::new("wsl.exe");
+    cmd.arg("-e").arg("wslpath").arg("-w").arg(trimmed);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let windows_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if windows_path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(windows_path))
+    }
+}
+
+fn import_wsl_rollout_from_known_path(thread_id: &str, rollout_path: &str) -> Result<bool, String> {
+    if !cfg!(target_os = "windows") || !is_safe_thread_id(thread_id) {
+        return Ok(false);
+    }
+    let trimmed = rollout_path.trim();
+    if trimmed.is_empty() {
+        return Ok(false);
+    }
+    let src_path = linux_wsl_path_to_windows_path(trimmed)
+        .unwrap_or_else(|| PathBuf::from(trimmed));
+    import_rollout_file_into_codex_home(thread_id, src_path.as_path())
+}
+
+fn resume_import_order(workspace_hint: Option<WorkspaceTarget>) -> Vec<WorkspaceTarget> {
+    match workspace_hint {
+        Some(target) => vec![target],
+        None => vec![WorkspaceTarget::Windows, WorkspaceTarget::Wsl2],
+    }
+}
+
+fn should_try_known_wsl_rollout_path(
+    workspace_hint: Option<WorkspaceTarget>,
+    rollout_path: Option<&str>,
+) -> bool {
+    if !matches!(workspace_hint, Some(WorkspaceTarget::Wsl2)) {
+        return false;
+    }
+    rollout_path
+        .map(str::trim)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
+fn indexed_thread_rollout_path(thread_id: &str, workspace_hint: WorkspaceTarget) -> Option<String> {
+    let index = lock_threads_workspace_index();
+    let bucket = workspace_bucket_ref(&index, workspace_hint);
+    for item in &bucket.items {
+        let id = item
+            .get("id")
+            .or_else(|| item.get("threadId"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or_default();
+        if id != thread_id {
+            continue;
+        }
+        let path = item.get("path").and_then(|v| v.as_str()).map(str::trim)?;
+        if !path.is_empty() {
+            return Some(path.to_string());
+        }
+    }
+    None
+}
+
+fn indexed_thread_rollout_path_any(thread_id: &str) -> Option<String> {
+    indexed_thread_rollout_path(thread_id, WorkspaceTarget::Windows)
+        .or_else(|| indexed_thread_rollout_path(thread_id, WorkspaceTarget::Wsl2))
+}
+
+fn normalize_rollout_hint_path_for_fs(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    if trimmed.starts_with('/') {
+        if let Some(converted) = linux_wsl_path_to_windows_path(trimmed) {
+            return converted;
+        }
+    }
+    normalize_thread_path(trimmed)
+}
+
+fn resolve_history_rollout_path(
+    thread_id: &str,
+    workspace_hint: Option<WorkspaceTarget>,
+    rollout_path_hint: Option<&str>,
+) -> Option<PathBuf> {
+    if let Some(hint) = rollout_path_hint.map(str::trim).filter(|v| !v.is_empty()) {
+        let path = normalize_rollout_hint_path_for_fs(hint);
+        if path.exists() && path.is_file() {
+            return Some(path);
+        }
+    }
+
+    let indexed_hint = match workspace_hint {
+        Some(target) => indexed_thread_rollout_path(thread_id, target),
+        None => indexed_thread_rollout_path_any(thread_id),
+    };
+    if let Some(path_hint) = indexed_hint {
+        let path = normalize_rollout_hint_path_for_fs(&path_hint);
+        if path.exists() && path.is_file() {
+            return Some(path);
+        }
+    }
+
+    match workspace_hint {
+        Some(WorkspaceTarget::Windows) => {
+            let windows_sessions = default_windows_codex_dir().map(|p| p.join("sessions"))?;
+            find_rollout_file_by_thread_id(&windows_sessions, thread_id)
+        }
+        Some(WorkspaceTarget::Wsl2) => find_wsl_rollout_file_by_thread_id(thread_id),
+        None => {
+            let from_windows = default_windows_codex_dir()
+                .map(|p| p.join("sessions"))
+                .and_then(|dir| find_rollout_file_by_thread_id(&dir, thread_id));
+            from_windows.or_else(|| find_wsl_rollout_file_by_thread_id(thread_id))
+        }
+    }
+}
+
+fn text_from_message_content(content: &[Value]) -> String {
+    let mut chunks = Vec::new();
+    for part in content {
+        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                chunks.push(trimmed.to_string());
+            }
+        }
+    }
+    chunks.join("\n")
+}
+
+fn parse_thread_from_rollout_file(path: &Path, fallback_thread_id: &str) -> Option<Value> {
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let mut thread_id = fallback_thread_id.trim().to_string();
+    let mut cwd = String::new();
+    let mut model = String::new();
+    let mut model_provider = String::new();
+    let mut created_at = 0_i64;
+    let mut turns = Vec::new();
+
+    for line in reader.lines().map_while(Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+
+        if v.get("type").and_then(|x| x.as_str()) == Some("session_meta") {
+            if let Some(payload) = v.get("payload").and_then(|x| x.as_object()) {
+                if let Some(id) = payload
+                    .get("id")
+                    .or_else(|| payload.get("session_id"))
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|x| !x.is_empty())
+                {
+                    thread_id = id.to_string();
+                }
+                if let Some(raw_cwd) = payload
+                    .get("cwd")
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|x| !x.is_empty())
+                {
+                    cwd = raw_cwd.to_string();
+                }
+                if let Some(raw_model) = payload
+                    .get("model")
+                    .or_else(|| payload.get("model_name"))
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|x| !x.is_empty())
+                {
+                    model = raw_model.to_string();
+                }
+                if let Some(raw_provider) = payload
+                    .get("model_provider")
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|x| !x.is_empty())
+                {
+                    model_provider = raw_provider.to_string();
+                }
+                created_at = payload
+                    .get("created_at")
+                    .or_else(|| payload.get("createdAt"))
+                    .and_then(parse_json_i64)
+                    .unwrap_or(created_at);
+            }
+            continue;
+        }
+
+        if v.get("type").and_then(|x| x.as_str()) != Some("response_item") {
+            continue;
+        }
+        let Some(payload) = v.get("payload").and_then(|x| x.as_object()) else {
+            continue;
+        };
+        if payload.get("type").and_then(|x| x.as_str()) != Some("message") {
+            continue;
+        }
+        let role = payload
+            .get("role")
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .unwrap_or_default();
+        if role != "user" && role != "assistant" {
+            continue;
+        }
+        let content = payload
+            .get("content")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let item = if role == "user" {
+            json!({
+                "type": "userMessage",
+                "content": content,
+            })
+        } else {
+            let text = text_from_message_content(&content);
+            if text.trim().is_empty() {
+                continue;
+            }
+            json!({
+                "type": "assistantMessage",
+                "text": text,
+            })
+        };
+        turns.push(json!({ "items": [item] }));
+    }
+
+    if thread_id.trim().is_empty() {
+        return None;
+    }
+    let updated_at = file_updated_unix_secs(path);
+    let created_at = if created_at > 0 { created_at } else { updated_at };
+    Some(json!({
+        "id": thread_id,
+        "cwd": cwd,
+        "model": model,
+        "modelProvider": model_provider,
+        "path": path.to_string_lossy().to_string(),
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "turns": turns,
+    }))
 }
 
 fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -1685,10 +1966,12 @@ async fn fetch_wsl2_threads_fallback() -> Vec<Value> {
 import json
 import re
 from pathlib import Path
+import os
 
 root = Path.home() / ".codex"
 sessions_dir = root / "sessions"
 history_path = root / "history.jsonl"
+distro = (os.environ.get("WSL_DISTRO_NAME") or "").strip()
 
 if not sessions_dir.exists():
     print("[]")
@@ -1715,6 +1998,12 @@ if history_path.exists():
 
 items_by_id = {}
 id_re = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", re.IGNORECASE)
+
+def to_windows_path(path_obj: Path) -> str:
+    text = str(path_obj)
+    if distro and text.startswith("/"):
+        return "\\\\wsl.localhost\\{}{}".format(distro, text.replace("/", "\\"))
+    return text
 
 for p in sessions_dir.rglob("*.jsonl"):
     sid = ""
@@ -1769,7 +2058,7 @@ for p in sessions_dir.rglob("*.jsonl"):
         "cwd": cwd,
         "workspace": "wsl2",
         "preview": preview_map.get(sid, ""),
-        "path": str(p),
+        "path": to_windows_path(p),
         "source": "wsl-fallback",
         "isSubagent": is_subagent,
         "isAuxiliary": False,
@@ -1975,14 +2264,73 @@ async fn codex_threads_create(
     }
 }
 
-async fn codex_thread_resume(
+async fn codex_thread_history(
     State(st): State<GatewayState>,
     headers: HeaderMap,
+    Query(query): Query<ThreadResumeQuery>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
+    let workspace_hint = query.workspace.as_deref().and_then(parse_workspace_target);
+    let rollout_hint = query
+        .rollout_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| match workspace_hint {
+            Some(target) => indexed_thread_rollout_path(&id, target),
+            None => indexed_thread_rollout_path_any(&id),
+        });
+
+    let Some(path) = resolve_history_rollout_path(&id, workspace_hint, rollout_hint.as_deref())
+    else {
+        return api_error(StatusCode::NOT_FOUND, "thread history file not found");
+    };
+    let Some(thread) = parse_thread_from_rollout_file(&path, &id) else {
+        return api_error(StatusCode::NOT_FOUND, "thread history unavailable");
+    };
+    Json(json!({ "thread": thread })).into_response()
+}
+
+async fn codex_thread_resume(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+    Query(query): Query<ThreadResumeQuery>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Some(resp) = require_codex_auth(&st, &headers) {
+        return resp;
+    }
+    let workspace_hint = query.workspace.as_deref().and_then(parse_workspace_target);
+    let rollout_hint = if matches!(workspace_hint, Some(WorkspaceTarget::Wsl2)) {
+        query
+            .rollout_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| indexed_thread_rollout_path(&id, WorkspaceTarget::Wsl2))
+    } else {
+        None
+    };
+    if should_try_known_wsl_rollout_path(workspace_hint, rollout_hint.as_deref()) {
+        if let Some(rollout_path) = rollout_hint.as_deref() {
+            match import_wsl_rollout_from_known_path(&id, rollout_path) {
+                Ok(_) => {}
+                Err(import_error) => {
+                    return api_error_detail(
+                        StatusCode::BAD_GATEWAY,
+                        "failed to resume thread",
+                        format!("import failed: {import_error}"),
+                    );
+                }
+            }
+        }
+    }
+
     let params = json!({ "threadId": id });
     match crate::codex_app_server::request("thread/resume", params.clone()).await {
         Ok(v) => {
@@ -1994,51 +2342,70 @@ async fn codex_thread_resume(
             let missing_rollout =
                 lower.contains("no rollout found") || lower.contains("thread id");
             if missing_rollout {
-                match import_windows_rollout_into_codex_home(&id) {
-                    Ok(true) => {
-                        match crate::codex_app_server::request("thread/resume", params).await {
-                            Ok(v) => {
-                                invalidate_workspace_threads_index(None);
-                                Json(v).into_response()
+                if should_try_known_wsl_rollout_path(workspace_hint, rollout_hint.as_deref()) {
+                    if let Some(rollout_path) = rollout_hint.as_deref() {
+                        match import_wsl_rollout_from_known_path(&id, rollout_path) {
+                            Ok(true) => {
+                                match crate::codex_app_server::request("thread/resume", params.clone()).await {
+                                    Ok(v) => {
+                                        invalidate_workspace_threads_index(None);
+                                        return Json(v).into_response();
+                                    }
+                                    Err(second_error) => {
+                                        return api_error_detail(
+                                            StatusCode::BAD_GATEWAY,
+                                            "failed to resume thread",
+                                            second_error,
+                                        );
+                                    }
+                                }
                             }
-                            Err(second_error) => api_error_detail(
-                                StatusCode::BAD_GATEWAY,
-                                "failed to resume thread",
-                                second_error,
-                            ),
+                            Ok(false) => {}
+                            Err(import_error) => {
+                                return api_error_detail(
+                                    StatusCode::BAD_GATEWAY,
+                                    "failed to resume thread",
+                                    format!("{first_error}; import failed: {import_error}"),
+                                );
+                            }
                         }
                     }
-                    Ok(false) => match import_wsl_rollout_into_codex_home(&id) {
-                        Ok(true) => {
-                            match crate::codex_app_server::request("thread/resume", params).await {
-                                Ok(v) => {
-                                    invalidate_workspace_threads_index(None);
-                                    Json(v).into_response()
-                                }
-                                Err(second_error) => api_error_detail(
+                }
+                let import_order = resume_import_order(workspace_hint);
+                for target in import_order {
+                    let import_result = match target {
+                        WorkspaceTarget::Windows => import_windows_rollout_into_codex_home(&id),
+                        WorkspaceTarget::Wsl2 => import_wsl_rollout_into_codex_home(&id),
+                    };
+                    match import_result {
+                        Ok(true) => match crate::codex_app_server::request("thread/resume", params.clone()).await {
+                            Ok(v) => {
+                                invalidate_workspace_threads_index(None);
+                                return Json(v).into_response();
+                            }
+                            Err(second_error) => {
+                                return api_error_detail(
                                     StatusCode::BAD_GATEWAY,
                                     "failed to resume thread",
                                     second_error,
-                                ),
+                                );
                             }
+                        },
+                        Ok(false) => continue,
+                        Err(import_error) => {
+                            return api_error_detail(
+                                StatusCode::BAD_GATEWAY,
+                                "failed to resume thread",
+                                format!("{first_error}; import failed: {import_error}"),
+                            );
                         }
-                        Ok(false) => api_error_detail(
-                            StatusCode::BAD_GATEWAY,
-                            "failed to resume thread",
-                            first_error,
-                        ),
-                        Err(import_error) => api_error_detail(
-                            StatusCode::BAD_GATEWAY,
-                            "failed to resume thread",
-                            format!("{first_error}; import failed: {import_error}"),
-                        ),
-                    },
-                    Err(import_error) => api_error_detail(
-                        StatusCode::BAD_GATEWAY,
-                        "failed to resume thread",
-                        format!("{first_error}; import failed: {import_error}"),
-                    ),
+                    }
                 }
+                api_error_detail(
+                    StatusCode::BAD_GATEWAY,
+                    "failed to resume thread",
+                    first_error,
+                )
             } else {
                 api_error_detail(
                     StatusCode::BAD_GATEWAY,
@@ -2048,6 +2415,14 @@ async fn codex_thread_resume(
             }
         }
     }
+}
+
+#[derive(Deserialize)]
+struct ThreadResumeQuery {
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(default, rename = "rolloutPath")]
+    rollout_path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2627,7 +3002,10 @@ async fn codex_rpc_proxy(
 
 #[cfg(test)]
 mod web_codex_tests {
-    use super::{parse_slash_command, split_stream_chunks, truncate_output, MAX_TERMINAL_OUTPUT_BYTES};
+    use super::{
+        parse_slash_command, resume_import_order, should_try_known_wsl_rollout_path,
+        split_stream_chunks, truncate_output, WorkspaceTarget, MAX_TERMINAL_OUTPUT_BYTES,
+    };
 
     #[test]
     fn parse_plan_variants() {
@@ -2662,5 +3040,37 @@ mod web_codex_tests {
         let (text, truncated) = truncate_output(&input);
         assert!(truncated);
         assert_eq!(text.len(), MAX_TERMINAL_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn resume_import_order_respects_workspace_hint() {
+        let default_order = resume_import_order(None);
+        assert_eq!(
+            default_order,
+            vec![WorkspaceTarget::Windows, WorkspaceTarget::Wsl2]
+        );
+
+        let wsl_order = resume_import_order(Some(WorkspaceTarget::Wsl2));
+        assert_eq!(wsl_order, vec![WorkspaceTarget::Wsl2]);
+
+        let windows_order = resume_import_order(Some(WorkspaceTarget::Windows));
+        assert_eq!(windows_order, vec![WorkspaceTarget::Windows]);
+    }
+
+    #[test]
+    fn known_wsl_rollout_path_only_applies_to_wsl_with_path() {
+        assert!(should_try_known_wsl_rollout_path(
+            Some(WorkspaceTarget::Wsl2),
+            Some("C:\\\\tmp\\\\a.jsonl")
+        ));
+        assert!(!should_try_known_wsl_rollout_path(
+            Some(WorkspaceTarget::Wsl2),
+            Some("   ")
+        ));
+        assert!(!should_try_known_wsl_rollout_path(
+            Some(WorkspaceTarget::Windows),
+            Some("C:\\\\tmp\\\\a.jsonl")
+        ));
+        assert!(!should_try_known_wsl_rollout_path(None, Some("C:\\\\tmp\\\\a.jsonl")));
     }
 }

@@ -8,6 +8,10 @@ const state = {
   pendingUserInputs: [],
   threadItemsAll: [],
   threadItems: [],
+  threadItemsByWorkspace: {
+    windows: [],
+    wsl2: [],
+  },
   collapsedWorkspaceKeys: new Set(),
   sidebarCollapsed: false,
   threadSearchQuery: "",
@@ -27,6 +31,7 @@ const state = {
   modelOptions: [],
   selectedModel: "",
   openingThreadReqId: 0,
+  pendingThreadResumes: new Map(),
 };
 
 const GUIDE_DISMISSED_KEY = "web_codex_guide_dismissed_v2";
@@ -41,6 +46,8 @@ const THREAD_PULL_REFRESH_TRIGGER_PX = 44;
 const THREAD_PULL_REFRESH_MAX_PX = 84;
 const THREAD_PULL_REFRESH_MIN_MS = 520;
 const THREAD_PULL_HINT_CLEAR_DELAY_MS = 160;
+const MOBILE_PROMPT_MIN_HEIGHT_PX = 40;
+const MOBILE_PROMPT_MAX_HEIGHT_PX = 420;
 
 function getEmbeddedToken() {
   const raw = "";
@@ -65,6 +72,33 @@ function bindInput(id, eventName, handler) {
 
 function waitMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function mobilePromptMaxHeightPx() {
+  if (typeof window === "undefined") return MOBILE_PROMPT_MAX_HEIGHT_PX;
+  const fromViewport = Math.floor(window.innerHeight * 0.45);
+  return Math.max(132, Math.min(MOBILE_PROMPT_MAX_HEIGHT_PX, fromViewport));
+}
+
+function registerPendingThreadResume(threadId, promise) {
+  if (!threadId || !promise) return;
+  state.pendingThreadResumes.set(threadId, promise);
+  promise.finally(() => {
+    if (state.pendingThreadResumes.get(threadId) === promise) {
+      state.pendingThreadResumes.delete(threadId);
+    }
+  });
+}
+
+async function waitPendingThreadResume(threadId) {
+  if (!threadId) return;
+  const pending = state.pendingThreadResumes.get(threadId);
+  if (!pending) return;
+  try {
+    await pending;
+  } catch (_) {
+    // Keep send flow resilient; resume errors are surfaced by status updates.
+  }
 }
 
 function setStatus(message, isWarn = false) {
@@ -370,7 +404,16 @@ async function setWorkspaceTarget(nextTarget) {
   localStorage.setItem(WORKSPACE_TARGET_KEY, target);
   applyWorkspaceUi();
   setStatus(`Workspace target: ${target.toUpperCase()}`);
-  await refreshThreads(target);
+  const cached = Array.isArray(state.threadItemsByWorkspace[target])
+    ? state.threadItemsByWorkspace[target]
+    : [];
+  if (cached.length) {
+    state.threadItemsAll = cached;
+    syncActiveThreadMetaFromList();
+    applyThreadFilter();
+    updateHeaderUi();
+  }
+  refreshThreads(target).catch((e) => setStatus(e.message, true));
 }
 
 function blockInSandbox(actionLabel) {
@@ -425,13 +468,23 @@ function looksLikeFileRef(value) {
 function fileRefDisplayLabel(value) {
   const text = String(value || "").trim();
   if (!text) return "";
+  let suffix = "";
   let base = text;
-  base = base.replace(/(#L\d+(?:C\d+)?)$/i, "");
-  base = base.replace(/(:\d+(?::\d+)?)$/, "");
+  const hashMatch = base.match(/(#L\d+(?:C\d+)?)$/i);
+  if (hashMatch) {
+    suffix = hashMatch[1];
+    base = base.slice(0, -suffix.length);
+  } else {
+    const colonMatch = base.match(/(:\d+(?::\d+)?)$/);
+    if (colonMatch) {
+      suffix = colonMatch[1];
+      base = base.slice(0, -suffix.length);
+    }
+  }
   const normalized = base.replace(/[\\/]+$/, "");
   const parts = normalized.split(/[\\/]/).filter(Boolean);
   const fileName = parts[parts.length - 1] || normalized || text;
-  return fileName;
+  return `${fileName}${suffix}`;
 }
 
 function buildMessageLink(label, href, preferFileLabel = false) {
@@ -489,8 +542,13 @@ function renderMessageRichHtml(text) {
   if (!source.trim()) return "";
   const segments = source.split("```");
   let html = "";
-  const isListLine = (line) => /^(\s*)([-*•]|\d+\.)\s+/.test(line);
-  const stripListMarker = (line) => line.replace(/^(\s*)([-*•]|\d+\.)\s+/, "");
+  const parseListLine = (line) => {
+    const match = String(line || "").match(/^(\s*)([-*•]|\d+\.)\s+(.+)$/);
+    if (!match) return null;
+    const indent = String(match[1] || "").replace(/\t/g, "  ").length;
+    return { indent, marker: match[2], text: match[3] };
+  };
+  const isListLine = (line) => !!parseListLine(line);
   for (let i = 0; i < segments.length; i += 1) {
     const segment = segments[i];
     if (i % 2 === 1) {
@@ -521,10 +579,14 @@ function renderMessageRichHtml(text) {
           listLines.push(nextLine);
           lineIdx = nextIdx;
         }
-        const ordered = /^\s*\d+\.\s+/.test(listLines[0]);
+        const firstParsed = parseListLine(listLines[0]);
+        const ordered = !!(firstParsed && /^\d+\.$/.test(firstParsed.marker));
         html += ordered ? "<ol>" : "<ul>";
         for (const itemLine of listLines) {
-          html += `<li>${renderInlineMessageText(stripListMarker(itemLine))}</li>`;
+          const parsed = parseListLine(itemLine);
+          if (!parsed) continue;
+          const depth = Math.min(6, Math.floor(parsed.indent / 2));
+          html += `<li class="msgListItem depth-${depth}">${renderInlineMessageText(parsed.text)}</li>`;
         }
         html += ordered ? "</ol>" : "</ul>";
         continue;
@@ -633,6 +695,11 @@ function updateMobileComposerState() {
   const wrap = byId("mobilePromptWrap");
   const input = byId("mobilePromptInput");
   if (!wrap || !input) return;
+  input.style.height = "auto";
+  const maxHeight = mobilePromptMaxHeightPx();
+  const nextHeight = Math.min(Math.max(input.scrollHeight, MOBILE_PROMPT_MIN_HEIGHT_PX), maxHeight);
+  input.style.height = `${nextHeight}px`;
+  input.style.overflowY = input.scrollHeight > nextHeight ? "auto" : "hidden";
   wrap.classList.toggle("has-text", !!String(input.value || "").trim());
 }
 
@@ -815,19 +882,7 @@ function mapThreadReadMessages(thread) {
   return messages;
 }
 
-async function loadThreadMessages(threadId, options = {}) {
-  if (!threadId) return;
-  const rpc = await api("/codex/rpc", {
-    method: "POST",
-    body: {
-      method: "thread/read",
-      params: {
-        threadId,
-        includeTurns: true,
-      },
-    },
-  });
-  const thread = rpc?.result?.thread || null;
+function applyThreadToChat(thread, options = {}) {
   const messages = mapThreadReadMessages(thread);
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
   state.activeThreadStarted = messages.length > 0 || turns.length > 0;
@@ -843,6 +898,22 @@ async function loadThreadMessages(threadId, options = {}) {
   if (state.activeThreadStarted) hideWelcomeCard();
   else showWelcomeCard();
   updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+}
+
+async function loadThreadMessages(threadId, options = {}) {
+  if (!threadId) return;
+  const rpc = await api("/codex/rpc", {
+    method: "POST",
+    body: {
+      method: "thread/read",
+      params: {
+        threadId,
+        includeTurns: true,
+      },
+    },
+  });
+  const thread = rpc?.result?.thread || null;
+  applyThreadToChat(thread, options);
 }
 
 function ensureArrayItems(value) {
@@ -1067,12 +1138,40 @@ function renderThreads(items) {
         setMobileTab("chat");
         setChatOpening(true);
         try {
-          await api(`/codex/threads/${encodeURIComponent(id)}/resume`, { method: "POST", body: {} });
-          setActiveThread(id);
-          await loadThreadMessages(id, { animateBadge: true });
-          setStatus(`Resumed thread ${id}`);
-        } finally {
+          const workspaceHint = detectThreadWorkspaceTarget(thread);
+          const label = workspaceHint === "wsl2" ? "WSL2" : workspaceHint === "windows" ? "WIN" : "AUTO";
+          const resumeQuery = [];
+          if (workspaceHint === "windows" || workspaceHint === "wsl2") {
+            resumeQuery.push(`workspace=${encodeURIComponent(workspaceHint)}`);
+          }
+          if (workspaceHint === "wsl2") {
+            const rolloutPath = String(thread?.path || "").trim();
+            if (rolloutPath) resumeQuery.push(`rolloutPath=${encodeURIComponent(rolloutPath)}`);
+          }
+          const resumePath = resumeQuery.length
+            ? `/codex/threads/${encodeURIComponent(id)}/resume?${resumeQuery.join("&")}`
+            : `/codex/threads/${encodeURIComponent(id)}/resume`;
+          const resumeTask = (async () => {
+            const resumeStartMs = performance.now();
+            const resumeResult = await api(resumePath, { method: "POST", body: {} });
+            const resumeLatencyMs = Math.round(performance.now() - resumeStartMs);
+            if (state.openingThreadReqId !== reqId) return;
+            setActiveThread(id);
+            const resumedThread = resumeResult?.thread || resumeResult?.result?.thread || null;
+            if (resumedThread && Array.isArray(resumedThread.turns)) {
+              applyThreadToChat(resumedThread, { animateBadge: true });
+            } else {
+              await loadThreadMessages(id, { animateBadge: true });
+            }
+            setStatus(`Resumed ${label} ${truncateLabel(id, 12)} in ${resumeLatencyMs}ms`);
+          })();
+          registerPendingThreadResume(id, resumeTask);
+
+          await resumeTask;
           if (state.openingThreadReqId === reqId) setChatOpening(false);
+        } catch (error) {
+          if (state.openingThreadReqId === reqId) setChatOpening(false);
+          throw error;
         }
       };
       card.onclick = () => {
@@ -1354,6 +1453,7 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget()) {
   const workspace = encodeURIComponent(target);
   const data = await api(`/codex/threads?workspace=${workspace}`);
   const items = ensureArrayItems(data.items);
+  state.threadItemsByWorkspace[target] = items;
   if (getWorkspaceTarget() !== target) return;
   state.threadItemsAll = items;
   updateWorkspaceAvailabilityFromThreads(items);
@@ -1444,6 +1544,7 @@ async function sendTurn() {
   if (blockInSandbox("send turn")) return;
   const prompt = getPromptValue();
   if (!prompt) return;
+  await waitPendingThreadResume(state.activeThreadId);
   const payload = {
     threadId: state.activeThreadId || null,
     prompt,
@@ -1640,7 +1741,7 @@ function wireActions() {
   bindInput("mobilePromptInput", "keyup", () => updateMobileComposerState());
   bindInput("mobilePromptInput", "change", () => updateMobileComposerState());
   bindInput("mobilePromptInput", "keydown", (event) => {
-    if (event.key === "Enter") {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       sendTurn().catch((e) => setStatus(e.message, true));
     }
@@ -1722,6 +1823,7 @@ function wireActions() {
   };
   wireThreadPullToRefresh();
   window.addEventListener("resize", () => {
+    updateMobileComposerState();
     setMobileTab("chat");
   });
 }

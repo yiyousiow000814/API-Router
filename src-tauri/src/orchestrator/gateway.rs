@@ -305,6 +305,7 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
             "/codex/threads",
             get(codex_threads_list).post(codex_threads_create),
         )
+        .route("/codex/threads/:id/history", get(codex_thread_history))
         .route("/codex/threads/:id/resume", post(codex_thread_resume))
         .route("/codex/turns/start", post(codex_turn_start))
         .route("/codex/turns/stream", post(codex_turn_stream))
