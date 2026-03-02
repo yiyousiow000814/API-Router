@@ -896,6 +896,41 @@ function stickChatToBottomFor(ms) {
   setTimeout(() => updateScrollToBottomBtn(), 260);
 }
 
+function smoothScrollChatToBottom(durationMs = 280) {
+  const box = byId("chatBox");
+  if (!box) return;
+  const prefersReduced =
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (prefersReduced) {
+    stickChatToBottomFor(600);
+    return;
+  }
+
+  const startTop = box.scrollTop;
+  const targetTop = box.scrollHeight;
+  if (targetTop <= startTop + 1) return;
+
+  const startedAt = performance.now();
+  state.chatAutoStickUntil = Date.now() + Math.max(900, durationMs + 500);
+
+  const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+  const step = (now) => {
+    const t = Math.min(1, (now - startedAt) / Math.max(1, durationMs));
+    const eased = easeOutCubic(t);
+    box.scrollTop = Math.round(startTop + (targetTop - startTop) * eased);
+    updateScrollToBottomBtn();
+    if (t < 1) requestAnimationFrame(step);
+    else {
+      // Ensure we're truly pinned at the end (handles fractional pixels / late layout).
+      scrollChatToBottom({ force: true });
+      updateScrollToBottomBtn();
+    }
+  };
+  requestAnimationFrame(step);
+}
+
 function ensureScrollToBottomBtn() {
   const chatPanel = document.querySelector("section.panel.chatPanel");
   if (!chatPanel) return null;
@@ -906,14 +941,7 @@ function ensureScrollToBottomBtn() {
   if (!btn.__wired) {
     btn.__wired = true;
     btn.onclick = () => {
-      const chat = byId("chatBox");
-      if (!chat) return;
-      try {
-        chat.scrollTo({ top: chat.scrollHeight, behavior: "smooth" });
-      } catch {
-        chat.scrollTop = chat.scrollHeight;
-      }
-      stickChatToBottomFor(900);
+      smoothScrollChatToBottom(320);
       updateScrollToBottomBtn();
     };
   }

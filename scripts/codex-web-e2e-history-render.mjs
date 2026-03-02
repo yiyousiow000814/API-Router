@@ -274,6 +274,23 @@ async function main() {
       const btn = document.getElementById('scrollToBottomBtn');
       if (btn) btn.click();
     `)
+    // Should animate (not "snap") to bottom: on the next animation frame we should not yet be at bottom.
+    const animProbe = await driver.executeAsyncScript(`
+      const done = arguments[0];
+      const box = document.getElementById('chatBox');
+      const btn = document.getElementById('scrollToBottomBtn');
+      if (!box || !btn) return done({ ok: false, error: 'missing box/btn' });
+      const before = box.scrollTop;
+      const target = box.scrollHeight - box.clientHeight;
+      btn.click();
+      requestAnimationFrame(() => {
+        const after = box.scrollTop;
+        const dist = (box.scrollHeight - (after + box.clientHeight));
+        done({ ok: true, before, after, dist, target });
+      });
+    `)
+    if (!animProbe?.ok) throw new Error(`anim probe failed: ${animProbe?.error || 'unknown'}`)
+    if (Number(animProbe.dist || 0) <= 18) throw new Error('expected scroll-to-bottom to animate (not land at bottom within 1 frame)')
     await waitFor(async () => {
       const near = await driver.executeScript(`
         const box = document.getElementById('chatBox');
