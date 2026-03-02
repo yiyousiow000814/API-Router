@@ -729,7 +729,8 @@
     .msgAttachments.mosaic {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       grid-auto-rows: 1fr;
-      max-width: min(520px, 100%);
+      /* Keep chat readable: thumbnails should be "preview-sized" (tap to view). */
+      max-width: min(320px, 100%);
     }
     .msgAttachmentCard {
       border: 1px solid rgba(13, 18, 32, 0.12);
@@ -946,6 +947,7 @@
       }
       .imageViewerBody { padding: 10px; }
       .imageViewerNav { display: none; }
+      .msgAttachments.mosaic { max-width: 100%; }
     }
     .msgBody p {
       margin: 0 0 8px;
