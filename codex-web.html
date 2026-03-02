@@ -727,10 +727,15 @@
       margin-bottom: 8px;
     }
     .msgAttachments.mosaic {
+      display: inline-grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       grid-auto-rows: 1fr;
       /* Keep chat readable: thumbnails should be "preview-sized" (tap to view). */
       max-width: min(320px, 100%);
+      margin: 0 auto 8px;
+    }
+    .msgAttachments.mosaic.cols-3 {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }
     .msgAttachmentCard {
       border: 1px solid rgba(13, 18, 32, 0.12);

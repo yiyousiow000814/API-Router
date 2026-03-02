@@ -232,6 +232,10 @@ async function main() {
       const mr = firstMosaic?.getBoundingClientRect?.();
       const firstTile = firstMosaic?.querySelector?.('.msgAttachmentCard') || null;
       const tr = firstTile?.getBoundingClientRect?.();
+      const allMosaics = Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachments.mosaic'));
+      const lastMosaic = allMosaics[allMosaics.length - 1] || null;
+      const lastTiles = lastMosaic ? Array.from(lastMosaic.querySelectorAll('.msgAttachmentCard')) : [];
+      const lastTileTops = lastTiles.map((n) => Math.round(n.getBoundingClientRect().top));
       return {
         ok: true,
         hasAgents: /AGENTS\\.md instructions|<INSTRUCTIONS>/i.test(text),
@@ -245,6 +249,8 @@ async function main() {
         firstMosaicOverlay: firstMosaic ? Array.from(firstMosaic.querySelectorAll('.msgAttachmentMoreOverlay')).map((n) => n.textContent || '') : [],
         firstMosaicWidth: mr ? mr.width : 0,
         firstTileAspect: tr && tr.width ? (tr.height / tr.width) : 0,
+        lastMosaicTileCount: lastTiles.length,
+        lastMosaicTileTops: lastTileTops,
       };
     `)
     if (!checks?.ok) throw new Error('checks failed')
@@ -262,6 +268,11 @@ async function main() {
     if (Number(checks.firstMosaicWidth || 0) > 320) throw new Error(`expected mosaic width <= 320px, got ${checks.firstMosaicWidth}`)
     if (!(Number(checks.firstTileAspect || 0) > 0 && Number(checks.firstTileAspect || 0) <= 0.82)) {
       throw new Error(`expected mosaic tiles to be wider than tall (aspect<=0.82), got ${checks.firstTileAspect}`)
+    }
+    // 3-image message should not leave an empty column; we render it as a 3-column single-row mosaic.
+    if (Number(checks.lastMosaicTileCount || 0) !== 3) throw new Error(`expected last mosaic to have 3 tiles, got ${checks.lastMosaicTileCount}`)
+    if (Array.isArray(checks.lastMosaicTileTops) && new Set(checks.lastMosaicTileTops).size !== 1) {
+      throw new Error(`expected 3-image mosaic tiles to be on one row, got tops=${JSON.stringify(checks.lastMosaicTileTops)}`)
     }
 
     // Clicking a tile should open a viewer (gallery / filmstrip lives there).

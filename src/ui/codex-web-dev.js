@@ -799,7 +799,8 @@ function renderMessageAttachments(attachments) {
       const overlay = idx === 3 && remaining > 0 ? `<div class="msgAttachmentMoreOverlay">+${remaining}</div>` : "";
       nodes.push(renderTile(src, label, overlay));
     }
-    return `<div class="msgAttachments mosaic">${nodes.join("")}</div>`;
+    const mosaicClass = shown.length === 3 ? "mosaic cols-3" : "mosaic";
+    return `<div class="msgAttachments ${mosaicClass}">${nodes.join("")}</div>`;
   }
 
   for (const img of imgs) {
