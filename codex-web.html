@@ -749,7 +749,8 @@
       gap: 0;
       overflow: hidden;
       position: relative;
-      aspect-ratio: 1 / 1;
+      /* WhatsApp-like: reduce vertical footprint vs square tiles. */
+      aspect-ratio: 4 / 3;
     }
     .msgAttachmentCard.tile .msgAttachmentImage {
       max-height: none;

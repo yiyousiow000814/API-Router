@@ -229,6 +229,9 @@ async function main() {
       const text = document.getElementById('chatBox')?.innerText || '';
       const mosaics = Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachments.mosaic'));
       const firstMosaic = mosaics[0] || null;
+      const mr = firstMosaic?.getBoundingClientRect?.();
+      const firstTile = firstMosaic?.querySelector?.('.msgAttachmentCard') || null;
+      const tr = firstTile?.getBoundingClientRect?.();
       return {
         ok: true,
         hasAgents: /AGENTS\\.md instructions|<INSTRUCTIONS>/i.test(text),
@@ -240,6 +243,8 @@ async function main() {
         mosaicCount: mosaics.length,
         firstMosaicTileCount: firstMosaic ? firstMosaic.querySelectorAll('.msgAttachmentCard').length : 0,
         firstMosaicOverlay: firstMosaic ? Array.from(firstMosaic.querySelectorAll('.msgAttachmentMoreOverlay')).map((n) => n.textContent || '') : [],
+        firstMosaicWidth: mr ? mr.width : 0,
+        firstTileAspect: tr && tr.width ? (tr.height / tr.width) : 0,
       };
     `)
     if (!checks?.ok) throw new Error('checks failed')
@@ -254,6 +259,10 @@ async function main() {
       throw new Error(`expected mosaic to show "+2" overlay, got ${JSON.stringify(checks.firstMosaicOverlay || [])}`)
     }
     if (!(Number(checks.mosaicCount || 0) >= 2)) throw new Error('expected 3-image message to also render as mosaic (uniform tiles)')
+    if (Number(checks.firstMosaicWidth || 0) > 380) throw new Error(`expected mosaic width <= 380px, got ${checks.firstMosaicWidth}`)
+    if (!(Number(checks.firstTileAspect || 0) > 0 && Number(checks.firstTileAspect || 0) <= 0.82)) {
+      throw new Error(`expected mosaic tiles to be wider than tall (aspect<=0.82), got ${checks.firstTileAspect}`)
+    }
 
     // Clicking a tile should open a viewer (gallery / filmstrip lives there).
     await driver.executeScript(`
