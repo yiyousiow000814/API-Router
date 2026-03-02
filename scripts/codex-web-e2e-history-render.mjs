@@ -351,6 +351,40 @@ async function main() {
     if (!focusCheck.btnDisabled) throw new Error('expected hidden scroll-to-bottom to be disabled (not focusable)')
     if (focusCheck.activeId === 'scrollToBottomBtn') throw new Error('expected focus to not remain on hidden scroll-to-bottom button')
 
+    // Notifications should be able to render tool-like messages live (clawdex-style).
+    const notif = await driver.executeAsyncScript(`
+      const done = arguments[0];
+      const h = window.__webCodexE2E;
+      if (!h || typeof h.emitWsPayload !== 'function') return done({ ok: false, error: 'emitWsPayload missing' });
+      const payload = {
+        type: 'rpc.notification',
+        payload: {
+          method: 'item/created',
+          params: {
+            msg: {
+              type: 'commandExecution',
+              status: 'completed',
+              command: 'echo hello',
+              exitCode: 0,
+              output: 'hello',
+              thread_id: (h && h._activeThreadId) || 'e2e_1',
+            }
+          }
+        }
+      };
+      const res = h.emitWsPayload(payload);
+      // Let the DOM update and message animation attach.
+      requestAnimationFrame(() => done(res));
+    `)
+    if (!notif?.ok) throw new Error(`emit notification failed: ${notif?.error || 'unknown'}`)
+    await waitFor(async () => {
+      const count = await driver.executeScript(`
+        const nodes = Array.from(document.querySelectorAll('#chatBox .msg.system.kind-tool .msgBody'));
+        return nodes.filter((n) => (n.textContent || '').includes('Ran')).length;
+      `)
+      return Number(count || 0) >= 1
+    }, 8000, 'live tool-like notification to render')
+
     // Live updates (streaming deltas) should "push up" smoothly, not jump to create a blank gap.
     const liveFollowProbe = await driver.executeAsyncScript(`
       const done = arguments[0];

@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::OnceLock;
@@ -8,8 +9,35 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const NOTIFICATION_QUEUE_CAP: usize = 2048;
 
 static APP_SERVER: OnceLock<Mutex<Option<AppServer>>> = OnceLock::new();
+static NOTIFICATIONS: OnceLock<Mutex<VecDeque<Value>>> = OnceLock::new();
+
+fn notifications_queue() -> &'static Mutex<VecDeque<Value>> {
+    NOTIFICATIONS.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+async fn push_notification(value: Value) {
+    let q = notifications_queue();
+    let mut guard = q.lock().await;
+    guard.push_back(value);
+    while guard.len() > NOTIFICATION_QUEUE_CAP {
+        guard.pop_front();
+    }
+}
+
+pub async fn drain_notifications(max: usize) -> Vec<Value> {
+    let cap = max.clamp(1, NOTIFICATION_QUEUE_CAP);
+    let q = notifications_queue();
+    let mut guard = q.lock().await;
+    let mut out = Vec::new();
+    while out.len() < cap {
+        let Some(v) = guard.pop_front() else { break };
+        out.push(v);
+    }
+    out
+}
 
 fn resolve_codex_cmd() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
@@ -147,6 +175,14 @@ async fn read_response(
                 continue;
             }
             if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                // Notifications (no id) can arrive while we're waiting for a response.
+                // Capture them so the gateway can forward them to UIs (thinking/tool progress).
+                if value.get("id").is_none()
+                    && value.get("method").and_then(|v| v.as_str()).is_some()
+                {
+                    push_notification(value).await;
+                    continue;
+                }
                 if value.get("id") == Some(&Value::from(request_id)) {
                     return Ok(value);
                 }

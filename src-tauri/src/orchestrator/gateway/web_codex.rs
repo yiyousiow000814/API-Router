@@ -457,6 +457,23 @@ async fn codex_ws_poll_pending_events(
             }
         }
     }
+
+    // Forward codex app-server JSON-RPC notifications (best-effort).
+    // These are used by UIs to render "thinking"/tool progress live.
+    let notifications = crate::codex_app_server::drain_notifications(64).await;
+    for notif in notifications {
+        if !send_ws_json(
+            socket,
+            &json!({
+                "type": "rpc.notification",
+                "payload": notif
+            }),
+        )
+        .await
+        {
+            return false;
+        }
+    }
     true
 }
 

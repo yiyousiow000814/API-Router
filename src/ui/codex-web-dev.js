@@ -1901,6 +1901,64 @@ function toToolLikeMessage(item) {
   return null;
 }
 
+function notificationToToolItem(notification) {
+  const record = toRecord(notification);
+  const params = toRecord(record?.params) || toRecord(record?.payload) || null;
+  if (!params) return null;
+  const msg =
+    toRecord(params?.msg) ||
+    toRecord(params?.item) ||
+    toRecord(params?.delta) ||
+    toRecord(params?.event) ||
+    null;
+  return msg;
+}
+
+function renderLiveNotification(notification) {
+  const record = toRecord(notification);
+  const method = readString(record?.method) || "";
+  if (!method) return;
+  const threadId = extractNotificationThreadId(record);
+  if (!threadId || threadId !== state.activeThreadId) return;
+
+  // Render "tool-like" items immediately (command/tool/edit/search/etc).
+  const toolItem = notificationToToolItem(record);
+  if (toolItem) {
+    const toolLike = toToolLikeMessage(toolItem);
+    if (toolLike) {
+      addChat("system", toolLike, { kind: "tool", scroll: false });
+      scheduleChatLiveFollow(900);
+      return;
+    }
+  }
+
+  // Fallback: show a lightweight "thinking" indicator for running turns.
+  const params = toRecord(record?.params) || null;
+  const status = normalizeType(params?.status) || normalizeType(params?.turn?.status) || normalizeType(params?.thread?.status);
+  const isRunning = /running|inprogress|working|queued/.test(status || "") || method.includes("turn/started") || method.includes("turn/started");
+  if (isRunning) {
+    const box = byId("chatBox");
+    if (!box) return;
+    const existing = box.querySelector('.msg.system.kind-thinking[data-thinking="1"]');
+    if (!existing) {
+      addChat("system", "- Thinking…", { kind: "thinking", scroll: false });
+      try {
+        const last = box.lastElementChild;
+        if (last && last.classList && last.classList.contains("kind-thinking")) last.setAttribute("data-thinking", "1");
+      } catch {}
+      scheduleChatLiveFollow(800);
+    }
+    return;
+  }
+  if (method.includes("turn/completed") || method.includes("turn/finished") || method.includes("turn/failed") || method.includes("turn/cancelled")) {
+    try {
+      const box = byId("chatBox");
+      const node = box?.querySelector?.('.msg.system.kind-thinking[data-thinking="1"]') || null;
+      if (node) node.remove();
+    } catch {}
+  }
+}
+
 function mapThreadReadMessages(thread) {
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
   const messages = [];
@@ -2219,44 +2277,50 @@ function connectWs() {
     } catch {
       return;
     }
-    if (payload.reqId && state.wsReqHandlers.has(payload.reqId)) {
-      state.wsReqHandlers.get(payload.reqId)(payload);
-      return;
-    }
-    if (payload.type === "approval.requested") {
-      applyPendingPayloads(payload.payload, state.pendingUserInputs);
-      addChat("system", "approval requested");
-      return;
-    }
-    if (payload.type === "user_input.requested") {
-      applyPendingPayloads(state.pendingApprovals, payload.payload);
-      addChat("system", "request_user_input requested");
-      return;
-    }
-    if (payload.type === "events.snapshot") {
-      applyPendingPayloads(payload?.payload?.approvals || [], payload?.payload?.userInputs || []);
-      return;
-    }
-    if (payload.type === "rpc.notification") {
-      const notification = payload.payload || {};
-      const record = toRecord(notification);
-      const method = readString(record?.method) || "";
-      if (!method) return;
-      const eventId = extractNotificationEventId(record);
-      if (eventId !== null) {
-        if (eventId === 1 && state.wsLastEventId > 1) resetEventReplayState();
-        if (eventId <= state.wsLastEventId) return;
-        if (state.wsRecentEventIds.has(eventId)) return;
-        markEventIdSeen(eventId);
-        state.wsLastEventId = Math.max(state.wsLastEventId, eventId);
-      }
-      const threadId = extractNotificationThreadId(record);
-      if (shouldRefreshThreadsFromNotification(method)) scheduleThreadRefresh();
-      if (threadId && shouldRefreshActiveThreadFromNotification(method)) scheduleActiveThreadRefresh(threadId);
-      return;
-    }
-    if (payload.type === "subscribed") setStatus("WS subscribed.");
+    handleWsPayload(payload);
   };
+}
+
+function handleWsPayload(payload) {
+  if (!payload || typeof payload !== "object") return;
+  if (payload.reqId && state.wsReqHandlers.has(payload.reqId)) {
+    state.wsReqHandlers.get(payload.reqId)(payload);
+    return;
+  }
+  if (payload.type === "approval.requested") {
+    applyPendingPayloads(payload.payload, state.pendingUserInputs);
+    addChat("system", "approval requested");
+    return;
+  }
+  if (payload.type === "user_input.requested") {
+    applyPendingPayloads(state.pendingApprovals, payload.payload);
+    addChat("system", "request_user_input requested");
+    return;
+  }
+  if (payload.type === "events.snapshot") {
+    applyPendingPayloads(payload?.payload?.approvals || [], payload?.payload?.userInputs || []);
+    return;
+  }
+  if (payload.type === "rpc.notification") {
+    const notification = payload.payload || {};
+    const record = toRecord(notification);
+    const method = readString(record?.method) || "";
+    if (!method) return;
+    const eventId = extractNotificationEventId(record);
+    if (eventId !== null) {
+      if (eventId === 1 && state.wsLastEventId > 1) resetEventReplayState();
+      if (eventId <= state.wsLastEventId) return;
+      if (state.wsRecentEventIds.has(eventId)) return;
+      markEventIdSeen(eventId);
+      state.wsLastEventId = Math.max(state.wsLastEventId, eventId);
+    }
+    const threadId = extractNotificationThreadId(record);
+    if (shouldRefreshThreadsFromNotification(method)) scheduleThreadRefresh();
+    if (threadId && shouldRefreshActiveThreadFromNotification(method)) scheduleActiveThreadRefresh(threadId);
+    renderLiveNotification(notification);
+    return;
+  }
+  if (payload.type === "subscribed") setStatus("WS subscribed.");
 }
 
 function renderThreads(items) {
@@ -3195,6 +3259,7 @@ function bootstrap() {
     if (params.get("e2e") === "1" && !window.__webCodexE2E) {
       const historyByThreadId = new Map();
       window.__webCodexE2E = {
+        _activeThreadId: "",
         seedThreads(count = 260) {
           const items = [];
           for (let i = 0; i < count; i += 1) {
@@ -3229,12 +3294,21 @@ function bootstrap() {
         async openThread(threadId) {
           const id = String(threadId || "").trim();
           if (!id) return { ok: false, error: "missing threadId" };
+          this._activeThreadId = id;
           setMainTab("chat");
           setMobileTab("chat");
           setActiveThread(id);
           setChatOpening(false);
           await loadThreadMessages(id, { animateBadge: true, forceRender: true, stickToBottom: true });
           return { ok: true };
+        },
+        emitWsPayload(payload) {
+          try {
+            handleWsPayload(payload);
+            return { ok: true };
+          } catch (e) {
+            return { ok: false, error: String(e && e.message ? e.message : e) };
+          }
         },
       };
       setStatus("E2E mode enabled.", true);
