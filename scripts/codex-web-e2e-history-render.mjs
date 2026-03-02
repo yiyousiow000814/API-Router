@@ -177,6 +177,15 @@ async function main() {
             { type: 'input_image', image_url: dataUrl },
           ] }] },
           { items: [{ type: 'assistantMessage', text: 'Saw it.' }] },
+          { items: [{ type: 'userMessage', content: [
+            { type: 'input_text', text: '[Image #A]\\n[image: inline-image-a]\\n3-up' },
+            { type: 'input_image', image_url: dataUrl },
+            { type: 'input_text', text: '[Image #B]\\n[image: inline-image-b]' },
+            { type: 'input_image', image_url: dataUrl },
+            { type: 'input_text', text: '[Image #C]\\n[image: inline-image-c]' },
+            { type: 'input_image', image_url: dataUrl },
+          ] }] },
+          { items: [{ type: 'assistantMessage', text: Array.from({ length: 120 }).map((_, i) => 'line ' + String(i + 1)).join('\\n') }] },
         ],
       };
       h.setThreadHistory(threadId, thread);
@@ -199,8 +208,27 @@ async function main() {
       return Number(count || 0) >= 2
     }, 15000, 'chat to render')
 
+    // Opening a thread should land near the bottom (latest messages visible).
+    const scrollChecks = await driver.executeScript(`
+      const box = document.getElementById('chatBox');
+      if (!box) return { ok: false, error: 'no chatBox' };
+      return {
+        ok: true,
+        scrollTop: box.scrollTop,
+        scrollHeight: box.scrollHeight,
+        clientHeight: box.clientHeight,
+      };
+    `)
+    if (!scrollChecks?.ok) throw new Error(`scroll checks failed: ${scrollChecks?.error || 'unknown'}`)
+    if (!(Number(scrollChecks.scrollTop || 0) > 0)) throw new Error('expected chat to be scrolled down on open (not at top)')
+    if (Number(scrollChecks.scrollTop || 0) + Number(scrollChecks.clientHeight || 0) < Number(scrollChecks.scrollHeight || 0) - 60) {
+      throw new Error('expected chat to land near bottom on open')
+    }
+
     const checks = await driver.executeScript(`
       const text = document.getElementById('chatBox')?.innerText || '';
+      const mosaics = Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachments.mosaic'));
+      const firstMosaic = mosaics[0] || null;
       return {
         ok: true,
         hasAgents: /AGENTS\\.md instructions|<INSTRUCTIONS>/i.test(text),
@@ -208,9 +236,10 @@ async function main() {
         hasImagePlaceholder: /\\[image:/i.test(text),
         userImgs: document.querySelectorAll('#chatBox .msg.user img.msgAttachmentImage').length,
         hasCaption: Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachmentCaption, #chatBox .msg.user .msgAttachmentLabelBadge')).some((n) => /Image\\s*#1/i.test(n.textContent || '')),
-        mosaic: !!document.querySelector('#chatBox .msg.user .msgAttachments.mosaic'),
-        mosaicTileCount: document.querySelectorAll('#chatBox .msg.user .msgAttachments.mosaic .msgAttachmentCard').length,
-        mosaicOverlay: Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachments.mosaic .msgAttachmentMoreOverlay')).map((n) => n.textContent || ''),
+        mosaic: mosaics.length > 0,
+        mosaicCount: mosaics.length,
+        firstMosaicTileCount: firstMosaic ? firstMosaic.querySelectorAll('.msgAttachmentCard').length : 0,
+        firstMosaicOverlay: firstMosaic ? Array.from(firstMosaic.querySelectorAll('.msgAttachmentMoreOverlay')).map((n) => n.textContent || '') : [],
       };
     `)
     if (!checks?.ok) throw new Error('checks failed')
@@ -220,10 +249,11 @@ async function main() {
     if (!(Number(checks.userImgs || 0) >= 4)) throw new Error(`expected at least four rendered user images, got ${checks.userImgs}`)
     if (!checks.hasCaption) throw new Error('expected image caption (Image #1) to be rendered next to the image')
     if (!checks.mosaic) throw new Error('expected many images to collapse into a mosaic attachment grid')
-    if (Number(checks.mosaicTileCount || 0) !== 4) throw new Error(`expected mosaic to show 4 tiles, got ${checks.mosaicTileCount}`)
-    if (!Array.isArray(checks.mosaicOverlay) || !checks.mosaicOverlay.some((t) => /\+2/.test(String(t)))) {
-      throw new Error(`expected mosaic to show "+2" overlay, got ${JSON.stringify(checks.mosaicOverlay || [])}`)
+    if (Number(checks.firstMosaicTileCount || 0) !== 4) throw new Error(`expected mosaic to show 4 tiles, got ${checks.firstMosaicTileCount}`)
+    if (!Array.isArray(checks.firstMosaicOverlay) || !checks.firstMosaicOverlay.some((t) => /\+2/.test(String(t)))) {
+      throw new Error(`expected mosaic to show "+2" overlay, got ${JSON.stringify(checks.firstMosaicOverlay || [])}`)
     }
+    if (!(Number(checks.mosaicCount || 0) >= 2)) throw new Error('expected 3-image message to also render as mosaic (uniform tiles)')
 
     // Clicking a tile should open a viewer (gallery / filmstrip lives there).
     await driver.executeScript(`

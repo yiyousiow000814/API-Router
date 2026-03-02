@@ -59,6 +59,7 @@ const state = {
   lastChevronToggleCollapsed: false,
   threadPullRefreshing: false,
   activeThreadStarted: false,
+  chatAutoStickUntil: 0,
   activeThreadModelLabel: "",
   activeThreadWorkspace: "windows",
   modelOptions: [],
@@ -773,26 +774,30 @@ function renderMessageAttachments(attachments) {
       `${extraHtml}` +
     `</button>`;
 
-  // WhatsApp-like: when there are many images, collapse to a 2x2 mosaic to avoid taking over the chat.
-  if (imgs.length > 4) {
-    const shown = imgs.slice(0, 4);
-    const remaining = imgs.length - 4;
+  const renderTile = (src, label, overlay = "") => {
+    if (canShowPreview(src)) {
+      return (
+        `<button class="msgAttachmentCard tile" type="button" data-image-src="${escapeHtml(src)}" data-image-label="${escapeHtml(label)}">` +
+          `<img class="msgAttachmentImage" alt="${escapeHtml(label || "image")}" src="${escapeHtml(src)}" />` +
+          `<div class="msgAttachmentLabelBadge mono">${escapeHtml(label || "image")}</div>` +
+          `${overlay}` +
+        `</button>`
+      );
+    }
+    return renderMissingTile(label, overlay);
+  };
+
+  // WhatsApp-like: for 2+ images, always use a uniform mosaic grid (consistent tile sizing).
+  // When there are many images, collapse to a 2x2 mosaic with a "+N" overlay.
+  if (imgs.length >= 2) {
+    const shown = imgs.length > 4 ? imgs.slice(0, 4) : imgs;
+    const remaining = Math.max(0, imgs.length - shown.length);
     for (let idx = 0; idx < shown.length; idx += 1) {
       const img = shown[idx];
       const src = img.src.trim();
       const label = String(img.label || "").trim() || `Image #${idx + 1}`;
       const overlay = idx === 3 && remaining > 0 ? `<div class="msgAttachmentMoreOverlay">+${remaining}</div>` : "";
-      if (canShowPreview(src)) {
-        nodes.push(
-          `<button class="msgAttachmentCard tile" type="button" data-image-src="${escapeHtml(src)}" data-image-label="${escapeHtml(label)}">` +
-            `<img class="msgAttachmentImage" alt="${escapeHtml(label || "image")}" src="${escapeHtml(src)}" />` +
-            `<div class="msgAttachmentLabelBadge mono">${escapeHtml(label || "image")}</div>` +
-            `${overlay}` +
-          `</button>`
-        );
-      } else {
-        nodes.push(renderMissingTile(label, overlay));
-      }
+      nodes.push(renderTile(src, label, overlay));
     }
     return `<div class="msgAttachments mosaic">${nodes.join("")}</div>`;
   }
@@ -871,6 +876,28 @@ function ensureImageViewer() {
 
 let imageViewerState = null;
 
+function isChatNearBottom() {
+  const box = byId("chatBox");
+  if (!box) return true;
+  return box.scrollTop + box.clientHeight >= box.scrollHeight - 80;
+}
+
+function scrollChatToBottom({ force = false } = {}) {
+  const box = byId("chatBox");
+  if (!box) return;
+  if (!force && !isChatNearBottom()) return;
+  box.scrollTop = box.scrollHeight;
+}
+
+function stickChatToBottomFor(ms) {
+  state.chatAutoStickUntil = Date.now() + Math.max(0, Number(ms || 0));
+  scrollChatToBottom({ force: true });
+  // Images/layout can settle on the next frame(s); keep the box pinned briefly.
+  requestAnimationFrame(() => scrollChatToBottom({ force: Date.now() <= state.chatAutoStickUntil }));
+  requestAnimationFrame(() => scrollChatToBottom({ force: Date.now() <= state.chatAutoStickUntil }));
+  setTimeout(() => scrollChatToBottom({ force: Date.now() <= state.chatAutoStickUntil }), 220);
+}
+
 function dataUrlToBlob(dataUrl) {
   const match = /^data:([^;,]+)?(?:;charset=[^;,]+)?(;base64)?,(.*)$/i.exec(String(dataUrl || ""));
   if (!match) return null;
@@ -938,6 +965,16 @@ function setViewerIndex(nextIndex) {
       // Keep the selected thumb in view (important on mobile).
       active.scrollIntoView({ block: "nearest", inline: "center" });
     }
+    // Some mobile browsers ignore inline:"center"; manually nudge scroll so the active thumb is centered.
+    try {
+      const fr = film.getBoundingClientRect();
+      const ar = active?.getBoundingClientRect?.();
+      if (fr && ar && Number.isFinite(ar.left) && Number.isFinite(fr.left)) {
+        const filmCenter = fr.left + fr.width / 2;
+        const activeCenter = ar.left + ar.width / 2;
+        film.scrollLeft += activeCenter - filmCenter;
+      }
+    } catch {}
   }
 }
 
@@ -1168,6 +1205,20 @@ function wireMessageAttachments(container) {
     card.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") open(event);
     });
+  }
+
+  // If images load after we already scrolled, keep the chat pinned to bottom while opening (or if user is near bottom).
+  const imgs = container.querySelectorAll("img.msgAttachmentImage");
+  for (const img of imgs) {
+    if (img.__wiredLoad) continue;
+    img.__wiredLoad = true;
+    const onSettled = () => {
+      const now = Date.now();
+      const force = now <= Number(state.chatAutoStickUntil || 0);
+      scrollChatToBottom({ force });
+    };
+    img.addEventListener("load", onSettled, { once: true });
+    img.addEventListener("error", onSettled, { once: true });
   }
 }
 
@@ -1775,6 +1826,8 @@ function applyThreadToChat(thread, options = {}) {
     if (box) box.scrollTop = box.scrollHeight;
   }
 
+  if (options.stickToBottom) stickChatToBottomFor(1200);
+
   if (state.activeThreadStarted) hideWelcomeCard();
   else showWelcomeCard();
   updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
@@ -2115,6 +2168,7 @@ function renderThreads(items) {
             signal: controller.signal,
             workspace: workspaceHint === "unknown" ? "" : workspaceHint,
             rolloutPath,
+            stickToBottom: true,
           });
           const historyLatencyMs = Math.round(performance.now() - historyStartMs);
           if (state.openingThreadReqId === reqId) {
@@ -2960,7 +3014,7 @@ function bootstrap() {
           setMobileTab("chat");
           setActiveThread(id);
           setChatOpening(false);
-          await loadThreadMessages(id, { animateBadge: true, forceRender: true });
+          await loadThreadMessages(id, { animateBadge: true, forceRender: true, stickToBottom: true });
           return { ok: true };
         },
       };
