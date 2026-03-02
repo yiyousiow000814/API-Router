@@ -63,6 +63,10 @@ const state = {
   chatAutoStickToken: 0,
   chatSmoothScrollUntil: 0,
   chatSmoothScrollToken: 0,
+  chatLiveFollowUntil: 0,
+  chatLiveFollowToken: 0,
+  chatLiveFollowRaf: 0,
+  chatLiveFollowLastBtnMs: 0,
   activeThreadModelLabel: "",
   activeThreadWorkspace: "windows",
   modelOptions: [],
@@ -91,6 +95,8 @@ const ACTIVE_THREAD_LIVE_POLL_MS = 1500;
 const RECENT_EVENT_ID_CACHE_SIZE = 2048;
 const MOBILE_PROMPT_MIN_HEIGHT_PX = 40;
 const MOBILE_PROMPT_MAX_HEIGHT_PX = 420;
+const CHAT_LIVE_FOLLOW_MAX_STEP_PX = 42;
+const CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS = 66;
 
 function dbgSet(patch) {
   try {
@@ -909,6 +915,69 @@ function stickChatToBottomFor(ms) {
   setTimeout(() => updateScrollToBottomBtn(), 260);
 }
 
+function canStartChatLiveFollow() {
+  const now = Date.now();
+  if (now <= Number(state.chatSmoothScrollUntil || 0)) return false;
+  if (now <= Number(state.chatAutoStickUntil || 0)) return true;
+  return isChatNearBottom();
+}
+
+function stopChatLiveFollow() {
+  state.chatLiveFollowUntil = 0;
+  state.chatLiveFollowToken = (Number(state.chatLiveFollowToken || 0) + 1) | 0;
+  if (state.chatLiveFollowRaf) {
+    try {
+      cancelAnimationFrame(state.chatLiveFollowRaf);
+    } catch {}
+    state.chatLiveFollowRaf = 0;
+  }
+}
+
+function scheduleChatLiveFollow(extraMs = 520) {
+  const box = byId("chatBox");
+  if (!box) return;
+  const now = Date.now();
+  const alreadyFollowing = now <= Number(state.chatLiveFollowUntil || 0);
+  if (!alreadyFollowing && !canStartChatLiveFollow()) return;
+  state.chatLiveFollowUntil = Math.max(Number(state.chatLiveFollowUntil || 0), now + Math.max(0, Number(extraMs || 0)));
+  if (state.chatLiveFollowRaf) return;
+
+  state.chatLiveFollowToken = (Number(state.chatLiveFollowToken || 0) + 1) | 0;
+  const token = state.chatLiveFollowToken;
+  const step = () => {
+    state.chatLiveFollowRaf = 0;
+    if (token !== state.chatLiveFollowToken) return;
+    const now2 = Date.now();
+    if (now2 > Number(state.chatLiveFollowUntil || 0)) return;
+    if (now2 <= Number(state.chatSmoothScrollUntil || 0)) return;
+
+    const targetTop = Math.max(0, box.scrollHeight - box.clientHeight);
+    const dist = targetTop - box.scrollTop;
+    if (dist <= 0.5) {
+      if (now2 - Number(state.chatLiveFollowLastBtnMs || 0) >= CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS) {
+        state.chatLiveFollowLastBtnMs = now2;
+        updateScrollToBottomBtn();
+      }
+      // Keep the follow loop alive a little while; more deltas may arrive.
+      state.chatLiveFollowRaf = requestAnimationFrame(step);
+      return;
+    }
+
+    // "Inertial" approach: small smooth increments, capped to avoid big single-frame jumps.
+    const rawStep = Math.max(1, dist * 0.22);
+    const maxStep = Math.min(CHAT_LIVE_FOLLOW_MAX_STEP_PX, Math.max(10, dist * 0.35));
+    const delta = Math.min(rawStep, maxStep);
+    box.scrollTop += delta;
+
+    if (now2 - Number(state.chatLiveFollowLastBtnMs || 0) >= CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS) {
+      state.chatLiveFollowLastBtnMs = now2;
+      updateScrollToBottomBtn();
+    }
+    state.chatLiveFollowRaf = requestAnimationFrame(step);
+  };
+  state.chatLiveFollowRaf = requestAnimationFrame(step);
+}
+
 function smoothScrollChatToBottom(durationMs = undefined) {
   const box = byId("chatBox");
   if (!box) return;
@@ -939,6 +1008,7 @@ function smoothScrollChatToBottom(durationMs = undefined) {
   state.chatSmoothScrollUntil = Date.now() + Math.max(0, dur + 250);
   // Cancel any pending stick-to-bottom timers from older interactions.
   state.chatAutoStickToken = (Number(state.chatAutoStickToken || 0) + 1) | 0;
+  stopChatLiveFollow();
   state.chatAutoStickUntil = Date.now() + Math.max(900, dur + 500);
   dbgSet({
     lastSmoothScrollStartAt: Date.now(),
@@ -2850,7 +2920,8 @@ async function sendTurn() {
     const { msg, body } = createAssistantStreamingMessage();
     if (!body) return;
     byId("chatBox").appendChild(msg);
-    stickChatToBottomFor(1600);
+    // Don't "snap" to bottom for live streaming; follow smoothly as content grows.
+    scheduleChatLiveFollow(900);
     await new Promise((resolve) => {
       state.wsReqHandlers.set(reqId, (evt) => {
         const type = evt.type;
@@ -2860,8 +2931,8 @@ async function sendTurn() {
             text += (text ? " " : "") + data.text;
             body.textContent = text;
           }
-          // Keep the streaming assistant pinned when the user hasn't intentionally scrolled away.
-          scrollChatToBottom({ force: Date.now() <= Number(state.chatAutoStickUntil || 0) || isChatNearBottom() });
+          // Keep the streaming assistant near bottom without snapping.
+          scheduleChatLiveFollow(700);
           if (typeof data.threadId === "string" && data.threadId) setActiveThread(data.threadId);
         } else if (type === "completed") {
           const result = data.result || {};
@@ -2869,12 +2940,14 @@ async function sendTurn() {
           if (threadId) setActiveThread(threadId);
           if (!text.trim()) text = normalizeTextPayload(result);
           finalizeAssistantMessage(msg, body, text);
+          scheduleChatLiveFollow(800);
           maybeNotifyTurnDone(text || "");
           state.wsReqHandlers.delete(reqId);
           resolve();
         } else if (type === "error") {
           setStatus(evt.message || "WS stream error.", true);
           finalizeAssistantMessage(msg, body, text);
+          scheduleChatLiveFollow(800);
           state.wsReqHandlers.delete(reqId);
           resolve();
         }
@@ -2905,7 +2978,7 @@ async function sendTurn() {
   const { msg, body } = createAssistantStreamingMessage();
   if (!body) return;
   byId("chatBox").appendChild(msg);
-  stickChatToBottomFor(1600);
+  scheduleChatLiveFollow(900);
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -2933,7 +3006,7 @@ async function sendTurn() {
           text += (text ? " " : "") + delta;
           body.textContent = text;
         }
-        scrollChatToBottom({ force: Date.now() <= Number(state.chatAutoStickUntil || 0) || isChatNearBottom() });
+        scheduleChatLiveFollow(700);
         if (typeof data.threadId === "string" && data.threadId) setActiveThread(data.threadId);
       } else if (evtName === "completed") {
         const result = data.result || {};
@@ -2941,6 +3014,7 @@ async function sendTurn() {
         if (threadId) setActiveThread(threadId);
         if (!text.trim()) text = normalizeTextPayload(result);
         finalizeAssistantMessage(msg, body, text);
+        scheduleChatLiveFollow(800);
         maybeNotifyTurnDone(text || "");
       } else if (evtName === "error") {
         setStatus(data?.message || "Stream error.", true);
@@ -3224,11 +3298,38 @@ function bootstrap() {
           if (dist > 180) {
             state.chatAutoStickUntil = 0;
             state.chatAutoStickToken = (Number(state.chatAutoStickToken || 0) + 1) | 0;
+            stopChatLiveFollow();
           }
         },
         { passive: true }
       );
       updateScrollToBottomBtn();
+    }
+  } catch {}
+  // Live follow: when new content is appended while the user is near bottom (streaming deltas),
+  // smoothly follow the bottom instead of snapping (prevents "blank jump" then fade-in).
+  try {
+    const chatBox = byId("chatBox");
+    if (chatBox && !chatBox.__wiredLiveFollow) {
+      chatBox.__wiredLiveFollow = true;
+      let scheduled = false;
+      const schedule = () => {
+        if (scheduled) return;
+        scheduled = true;
+        requestAnimationFrame(() => {
+          scheduled = false;
+          scheduleChatLiveFollow(520);
+        });
+      };
+      const obs = new MutationObserver(() => {
+        // Ignore while an explicit smooth-scroll is running (user-initiated).
+        if (Date.now() <= Number(state.chatSmoothScrollUntil || 0)) return;
+        const now = Date.now();
+        const alreadyFollowing = now <= Number(state.chatLiveFollowUntil || 0);
+        if (!alreadyFollowing && !canStartChatLiveFollow()) return;
+        schedule();
+      });
+      obs.observe(chatBox, { childList: true, subtree: true, characterData: true });
     }
   } catch {}
   startThreadAutoRefreshLoop();

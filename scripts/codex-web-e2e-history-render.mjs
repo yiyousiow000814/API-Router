@@ -351,6 +351,59 @@ async function main() {
     if (!focusCheck.btnDisabled) throw new Error('expected hidden scroll-to-bottom to be disabled (not focusable)')
     if (focusCheck.activeId === 'scrollToBottomBtn') throw new Error('expected focus to not remain on hidden scroll-to-bottom button')
 
+    // Live updates (streaming deltas) should "push up" smoothly, not jump to create a blank gap.
+    const liveFollowProbe = await driver.executeAsyncScript(`
+      const done = arguments[0];
+      const box = document.getElementById('chatBox');
+      if (!box) return done({ ok: false, error: 'missing chatBox' });
+
+      // Start at bottom so "new content appended" latches into live follow.
+      box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
+      box.dispatchEvent(new Event('scroll'));
+
+      const msg = document.createElement('div');
+      msg.className = 'msg assistant';
+      msg.innerHTML = '<div class="msgHead">assistant</div><div class="msgBody"></div>';
+      const body = msg.querySelector('.msgBody');
+      body.textContent = 'streaming...';
+      box.appendChild(msg);
+
+      const start = Date.now();
+      const tops = [];
+      function sample() {
+        tops.push(Number(box.scrollTop || 0));
+        if (Date.now() - start > 1100) return finish();
+        requestAnimationFrame(sample);
+      }
+
+      function finish() {
+        let maxDelta = 0;
+        let movingFrames = 0;
+        for (let i = 1; i < tops.length; i += 1) {
+          const d = Math.abs(tops[i] - tops[i - 1]);
+          if (d > maxDelta) maxDelta = d;
+          if (d > 0.5) movingFrames += 1;
+        }
+        done({ ok: true, maxDelta, movingFrames, frames: tops.length });
+      }
+
+      // Simulate streaming text growing the last message (like deltas).
+      let i = 0;
+      function tick() {
+        i += 1;
+        body.textContent += '\\n' + ('line ' + i + ' ' + 'x'.repeat(120));
+        if (i >= 18) return;
+        setTimeout(tick, 28);
+      }
+      setTimeout(tick, 24);
+      requestAnimationFrame(sample);
+    `)
+    if (!liveFollowProbe?.ok) throw new Error(`live follow probe failed: ${liveFollowProbe?.error || 'unknown'}`)
+    if (Number(liveFollowProbe.movingFrames || 0) < 6)
+      throw new Error(`expected live updates to scroll over multiple frames (movingFrames>=6), got ${liveFollowProbe.movingFrames} probe=${JSON.stringify(liveFollowProbe)}`)
+    if (Number(liveFollowProbe.maxDelta || 0) > 80)
+      throw new Error(`expected live updates to avoid large single-frame jumps (maxDelta<=80px), got ${liveFollowProbe.maxDelta} probe=${JSON.stringify(liveFollowProbe)}`)
+
     const checks = await driver.executeScript(`
       const text = document.getElementById('chatBox')?.innerText || '';
       const mosaics = Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachments.mosaic'));
