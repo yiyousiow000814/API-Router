@@ -131,6 +131,67 @@ async function main() {
       return !!ok
     }, 20000, '__webCodexE2E init')
 
+    // Regression: reasoning-effort picker should live next to the model label (not inside the model menu).
+    {
+      const seededModels = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.setModels !== 'function') return { ok: false, error: 'setModels missing' };
+        h.setModels([
+          {
+            id: 'gpt-5.3-codex',
+            displayName: 'gpt-5.3-codex',
+            isDefault: true,
+            defaultReasoningEffort: 'medium',
+            supportedReasoningEfforts: [
+              { effort: 'low', description: 'fast' },
+              { effort: 'medium', description: 'default' },
+              { effort: 'high', description: 'deep' },
+              { effort: 'xhigh', description: 'deepest' },
+            ],
+          },
+        ]);
+        return { ok: true };
+      `)
+      if (!seededModels?.ok) throw new Error(`seed models failed: ${seededModels?.error || 'unknown'}`)
+
+      const ui = await driver.executeScript(`
+        const picker = document.getElementById('headerEffortPicker');
+        const label = document.getElementById('headerEffortLabel');
+        const menu = document.getElementById('headerModelMenu');
+        const inModelMenu = menu ? /Reasoning/i.test(menu.textContent || '') : false;
+        return {
+          pickerVisible: !!(picker && picker.offsetParent),
+          label: String(label?.textContent || '').trim(),
+          inModelMenu,
+        };
+      `)
+      if (!ui?.pickerVisible) throw new Error('expected headerEffortPicker to be visible')
+      if (ui?.label !== 'medium') throw new Error(`expected effort label to default to medium, got ${JSON.stringify(ui?.label || '')}`)
+      if (ui?.inModelMenu) throw new Error('expected model menu to not contain a Reasoning row (effort picker moved to header)')
+
+      await driver.findElement(By.id('headerEffortBtn')).click()
+      await waitFor(async () => {
+        const open = await driver.executeScript(`return !!document.getElementById('headerEffortPicker')?.classList.contains('open');`)
+        return !!open
+      }, 8000, 'headerEffortPicker.open')
+
+      const pickedLow = await driver.executeScript(`
+        const menu = document.getElementById('headerEffortMenu');
+        const btns = menu ? Array.from(menu.querySelectorAll('button')) : [];
+        const low = btns.find((b) => String(b.textContent || '').trim() === 'low');
+        if (!low) return { ok: false, error: 'low option missing' };
+        low.click();
+        return { ok: true };
+      `)
+      if (!pickedLow?.ok) throw new Error(`failed to pick low effort: ${pickedLow?.error || 'unknown'}`)
+
+      const labelAfter = await driver.executeScript(`
+        const label = document.getElementById('headerEffortLabel');
+        return String(label?.textContent || '').trim();
+      `)
+      if (labelAfter !== 'low') throw new Error(`expected effort label to update to low, got ${JSON.stringify(labelAfter)}`)
+    }
+
     // Regression (mobile): while "Opening chat..." overlay is shown, the sidebar menu button should
     // remain clickable (overlay must not cover the header).
     {

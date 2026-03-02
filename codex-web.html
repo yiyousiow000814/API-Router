@@ -310,22 +310,13 @@
       color: #0d1220;
       font-weight: 600;
     }
-    .chatPanel .panelHeader .headerModelEffortRow {
-      display: grid;
-      grid-template-columns: auto 1fr;
+    .headerEffortPicker {
+      position: relative;
+      display: inline-flex;
       align-items: center;
-      gap: 8px;
-      padding: 6px 8px 8px;
-      border-bottom: 1px solid rgba(13, 18, 32, 0.08);
-      margin-bottom: 6px;
+      margin-left: -2px;
     }
-    .chatPanel .panelHeader .headerModelEffortRow .effortBtns {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-    .chatPanel .panelHeader .headerModelEffortRow .effortBtn {
+    .headerEffortBtn {
       border: 1px solid rgba(13, 18, 32, 0.14);
       background: rgba(255, 255, 255, 0.92);
       border-radius: 999px;
@@ -333,10 +324,67 @@
       font-size: 12px;
       color: #1b2940;
       line-height: 1.1;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      min-height: 28px;
     }
-    .chatPanel .panelHeader .headerModelEffortRow .effortBtn.active {
-      border-color: rgba(40, 199, 217, 0.5);
-      background: rgba(40, 199, 217, 0.14);
+    .headerEffortBtn .chev {
+      width: 12px;
+      height: 12px;
+      display: block;
+      transition: transform 160ms ease;
+    }
+    .headerEffortPicker.open .headerEffortBtn .chev { transform: rotate(180deg); }
+    .headerEffortMenu {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      z-index: 60;
+      min-width: 140px;
+      max-width: 70vw;
+      overflow: auto;
+      border-radius: 12px;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      background: #ffffff;
+      box-shadow: 0 14px 32px rgba(13, 18, 32, 0.18);
+      padding: 6px;
+      display: none;
+      gap: 2px;
+      opacity: 0;
+      transform: translate3d(0, -6px, 0);
+      transform-origin: top right;
+      pointer-events: none;
+      visibility: hidden;
+      transition: opacity 150ms ease, transform 180ms ease;
+      will-change: opacity, transform;
+      scrollbar-width: thin;
+    }
+    .headerEffortPicker.open .headerEffortMenu {
+      display: grid;
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+      pointer-events: auto;
+      visibility: visible;
+    }
+    .headerEffortOption {
+      border: none;
+      background: transparent;
+      border-radius: 8px;
+      min-height: 30px;
+      padding: 6px 9px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: #1b2940;
+      font-size: 12px;
+      text-align: left;
+    }
+    .headerEffortOption:hover { background: rgba(13, 18, 32, 0.06); }
+    .headerEffortOption.active {
+      background: rgba(40, 199, 217, 0.12);
+      color: #0d1220;
       font-weight: 600;
     }
     .chatPanel .panelHeader .headerModelOption .check {
@@ -1985,6 +2033,15 @@
               </span>
             </button>
             <div id="headerModelMenu" class="headerModelMenu" role="listbox" aria-label="Model options"></div>
+          </div>
+          <div id="headerEffortPicker" class="headerEffortPicker">
+            <button id="headerEffortBtn" class="headerEffortBtn" type="button" aria-haspopup="listbox" aria-expanded="false">
+              <span id="headerEffortLabel" class="mono">medium</span>
+              <svg class="chev" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M4.5 6.2l3.5 3.6 3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+              </svg>
+            </button>
+            <div id="headerEffortMenu" class="headerEffortMenu" role="listbox" aria-label="Reasoning effort options"></div>
           </div>
           <div id="headerWorkspaceSwitch" class="workspaceSwitch">
             <button id="workspaceWindowsBtn" class="workspaceBtn">WIN</button>

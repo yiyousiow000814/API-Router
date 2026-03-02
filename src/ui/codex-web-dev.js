@@ -340,6 +340,8 @@ function updateHeaderUi(animateBadge = false) {
   const headerBadge = byId("headerWorkspaceBadge");
   const modelPicker = byId("headerModelPicker");
   const modelLabel = byId("headerModelLabel");
+  const effortPicker = byId("headerEffortPicker");
+  const effortLabel = byId("headerEffortLabel");
   const inSettings = state.activeMainTab === "settings";
   const showBadge = !inSettings && state.activeThreadStarted;
   // Always prefer the currently selected model (the one we'll use for new turns).
@@ -360,6 +362,21 @@ function updateHeaderUi(animateBadge = false) {
   if (modelPicker) modelPicker.style.display = inSettings ? "none" : "inline-flex";
   if (modelLabel) modelLabel.textContent = displayTitle;
   if (inSettings) setHeaderModelMenuOpen(false);
+
+  // Reasoning effort is per-model; hide the picker when unavailable or when in Settings.
+  {
+    const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+    const active = options.find((x) => x && x.id === state.selectedModel) || options.find((x) => x && x.isDefault) || options[0] || null;
+    const supported = Array.isArray(active?.supportedReasoningEfforts) ? active.supportedReasoningEfforts : [];
+    const showEffort = !inSettings && supported.length > 0;
+    if (effortPicker) effortPicker.style.display = showEffort ? "inline-flex" : "none";
+    if (!showEffort) setHeaderEffortMenuOpen(false);
+    if (effortLabel) {
+      const fallback = String(active?.defaultReasoningEffort || supported[0]?.effort || "").trim();
+      const label = String(state.selectedReasoningEffort || localStorage.getItem(REASONING_EFFORT_KEY) || fallback || "").trim();
+      effortLabel.textContent = label || "";
+    }
+  }
 
   if (headerSwitch) {
     headerSwitch.style.display = !inSettings && !showBadge ? "inline-flex" : "none";
@@ -417,6 +434,49 @@ function setHeaderModelMenuOpen(open) {
   trigger.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
+function setHeaderEffortMenuOpen(open) {
+  const picker = byId("headerEffortPicker");
+  const trigger = byId("headerEffortBtn");
+  if (!picker || !trigger) return;
+  picker.classList.toggle("open", !!open);
+  trigger.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function renderHeaderEffortMenu() {
+  const menu = byId("headerEffortMenu");
+  if (!menu) return;
+  const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+  const active = options.find((x) => x && x.id === state.selectedModel) || options.find((x) => x && x.isDefault) || options[0] || null;
+  const supported = Array.isArray(active?.supportedReasoningEfforts) ? active.supportedReasoningEfforts : [];
+  menu.innerHTML = "";
+  if (!supported.length) {
+    setHeaderEffortMenuOpen(false);
+    return;
+  }
+  const fallback = String(active?.defaultReasoningEffort || supported[0]?.effort || "").trim();
+  const current = String(state.selectedReasoningEffort || localStorage.getItem(REASONING_EFFORT_KEY) || fallback || "").trim();
+  for (const item of supported) {
+    const effort = String(item?.effort || "").trim();
+    if (!effort) continue;
+    const optionBtn = document.createElement("button");
+    optionBtn.type = "button";
+    optionBtn.className = `headerEffortOption${effort === current ? " active" : ""}`;
+    optionBtn.setAttribute("role", "option");
+    optionBtn.setAttribute("aria-selected", effort === current ? "true" : "false");
+    optionBtn.textContent = effort;
+    const title = String(item?.description || "").trim();
+    if (title) optionBtn.title = title;
+    optionBtn.onclick = () => {
+      state.selectedReasoningEffort = effort;
+      localStorage.setItem(REASONING_EFFORT_KEY, effort);
+      renderHeaderEffortMenu();
+      updateHeaderUi();
+      setHeaderEffortMenuOpen(false);
+    };
+    menu.appendChild(optionBtn);
+  }
+}
+
 function renderHeaderModelMenu() {
   const menu = byId("headerModelMenu");
   if (!menu) return;
@@ -428,37 +488,6 @@ function renderHeaderModelMenu() {
     muted.textContent = "No models available";
     menu.appendChild(muted);
     return;
-  }
-
-  // Reasoning effort selector (dynamic, driven by /codex/models).
-  const activeModelId = state.selectedModel || options.find((item) => item.isDefault)?.id || options[0].id;
-  const activeModel = options.find((x) => x.id === activeModelId) || options[0];
-  const supported = Array.isArray(activeModel?.supportedReasoningEfforts) ? activeModel.supportedReasoningEfforts : [];
-  if (supported.length) {
-    const row = document.createElement("div");
-    row.className = "headerModelEffortRow";
-    const cur = String(state.selectedReasoningEffort || activeModel.defaultReasoningEffort || supported[0]?.effort || "").trim();
-    row.innerHTML =
-      `<div class="muted">Reasoning</div>` +
-      `<div class="effortBtns" role="group" aria-label="Reasoning effort"></div>`;
-    const btnBox = row.querySelector(".effortBtns");
-    for (const item of supported) {
-      const effort = String(item.effort || "").trim();
-      if (!effort) continue;
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = `effortBtn${effort === cur ? " active" : ""}`;
-      btn.textContent = effort;
-      btn.title = String(item.description || "").trim();
-      btn.onclick = () => {
-        state.selectedReasoningEffort = effort;
-        localStorage.setItem(REASONING_EFFORT_KEY, effort);
-        renderHeaderModelMenu();
-        updateHeaderUi();
-      };
-      btnBox.appendChild(btn);
-    }
-    menu.appendChild(row);
   }
 
   const current = state.selectedModel || options.find((item) => item.isDefault)?.id || options[0].id;
@@ -484,6 +513,7 @@ function renderHeaderModelMenu() {
         }
       }
       renderHeaderModelMenu();
+      renderHeaderEffortMenu();
       updateHeaderUi();
       setHeaderModelMenuOpen(false);
     };
@@ -499,6 +529,7 @@ function syncHeaderModelPicker() {
     state.selectedModel = "";
     state.selectedReasoningEffort = "";
     renderHeaderModelMenu();
+    renderHeaderEffortMenu();
     updateHeaderUi();
     return;
   }
@@ -520,6 +551,7 @@ function syncHeaderModelPicker() {
     state.selectedReasoningEffort = persisted;
   }
   renderHeaderModelMenu();
+  renderHeaderEffortMenu();
   updateHeaderUi();
 }
 
@@ -3517,12 +3549,14 @@ function wireActions() {
       event.preventDefault();
       event.stopPropagation();
       const isOpen = !!headerModelPicker?.classList.contains("open");
+      setHeaderEffortMenuOpen(false);
       setHeaderModelMenuOpen(!isOpen);
     };
     headerModelTrigger.onkeydown = (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         const isOpen = !!headerModelPicker?.classList.contains("open");
+        setHeaderEffortMenuOpen(false);
         setHeaderModelMenuOpen(!isOpen);
       } else if (event.key === "Escape") {
         setHeaderModelMenuOpen(false);
@@ -3533,6 +3567,35 @@ function wireActions() {
     const target = event.target;
     if (!headerModelPicker || !(target instanceof Node)) return;
     if (!headerModelPicker.contains(target)) setHeaderModelMenuOpen(false);
+  });
+
+  const headerEffortPicker = byId("headerEffortPicker");
+  const headerEffortBtn = byId("headerEffortBtn");
+  if (headerEffortBtn) {
+    headerEffortBtn.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      renderHeaderEffortMenu();
+      const isOpen = !!headerEffortPicker?.classList.contains("open");
+      setHeaderModelMenuOpen(false);
+      setHeaderEffortMenuOpen(!isOpen);
+    };
+    headerEffortBtn.onkeydown = (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        renderHeaderEffortMenu();
+        const isOpen = !!headerEffortPicker?.classList.contains("open");
+        setHeaderModelMenuOpen(false);
+        setHeaderEffortMenuOpen(!isOpen);
+      } else if (event.key === "Escape") {
+        setHeaderEffortMenuOpen(false);
+      }
+    };
+  }
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!headerEffortPicker || !(target instanceof Node)) return;
+    if (!headerEffortPicker.contains(target)) setHeaderEffortMenuOpen(false);
   });
   bindClick("quickPrompt1", () => {
     const text = "Explain the current codebase structure";
@@ -3565,6 +3628,12 @@ function bootstrap() {
       const historyByThreadId = new Map();
       window.__webCodexE2E = {
         _activeThreadId: "",
+        setModels(items) {
+          // Keep this in the UI module to avoid requiring a running gateway for model-dependent UI tests.
+          state.modelOptions = ensureArrayItems(items).map(normalizeModelOption).filter(Boolean);
+          syncHeaderModelPicker();
+          return { ok: true, count: state.modelOptions.length };
+        },
         seedThreads(count = 260) {
           const items = [];
           for (let i = 0; i < count; i += 1) {
