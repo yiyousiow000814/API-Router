@@ -165,6 +165,8 @@ async function main() {
           { items: [{ type: 'userMessage', content: [
             { type: 'input_text', text: '<image name=[Image #1]>\\n[image: inline-image]\\n</image>\\nHello' },
             { type: 'input_image', image_url: dataUrl },
+            { type: 'input_text', text: '[Image #2]\\n[image: inline-image-2]\\nNext' },
+            { type: 'input_image', image_url: dataUrl },
           ] }] },
           { items: [{ type: 'assistantMessage', text: 'Saw it.' }] },
         ],
@@ -204,7 +206,7 @@ async function main() {
     if (checks.hasAgents) throw new Error('AGENTS bootstrap prompt should be hidden from chat rendering')
     if (checks.hasImageTag) throw new Error('raw <image name=[Image #...]> blocks should not be rendered verbatim')
     if (checks.hasImagePlaceholder) throw new Error('textual [image: ...] placeholders should not be rendered (render images instead)')
-    if (!(Number(checks.userImgs || 0) >= 1)) throw new Error(`expected at least one rendered user image, got ${checks.userImgs}`)
+    if (!(Number(checks.userImgs || 0) >= 2)) throw new Error(`expected at least two rendered user images, got ${checks.userImgs}`)
     if (!checks.hasCaption) throw new Error('expected image caption (Image #1) to be rendered next to the image')
 
     // Clicking the image should open a viewer (zoom/download UI lives there).
@@ -237,6 +239,47 @@ async function main() {
     if (Math.abs(Number(viewerChecks.rect?.left || 0)) > 2) throw new Error(`expected viewer backdrop to start near left=0, got ${viewerChecks.rect?.left}`)
     if (Number(viewerChecks.rect?.width || 0) < Number(viewerChecks.vw || 0) * 0.95) throw new Error('expected viewer backdrop to span viewport width')
     if (Number(viewerChecks.rect?.height || 0) < Number(viewerChecks.vh || 0) * 0.95) throw new Error('expected viewer backdrop to span viewport height')
+
+    // Regression: viewer should support navigating between multiple images in the chat.
+    // We accept either a filmstrip thumbnail list or a next button; at minimum, selecting the 2nd image
+    // should update the viewer title.
+    const navOk = await driver.executeScript(`
+      const title = document.getElementById('imageViewerTitle');
+      if (!title) return { ok: false, error: 'no title' };
+      const thumbs = Array.from(document.querySelectorAll('[data-qa=\"image-viewer-thumb\"]'));
+      if (thumbs.length >= 2) {
+        const before = title.textContent || '';
+        thumbs[1].scrollIntoView?.({ block: 'center', inline: 'center' });
+        thumbs[1].click();
+        return {
+          ok: true,
+          mode: 'thumbs',
+          before,
+          after: title.textContent || '',
+          thumbLabels: thumbs.map((t) => t.getAttribute('aria-label') || '').slice(0, 6),
+        };
+      }
+      const next = document.querySelector('[data-qa=\"image-viewer-next\"]');
+      if (next) {
+        const before = title.textContent || '';
+        next.click();
+        return { ok: true, mode: 'next', before, after: title.textContent || '' };
+      }
+      return { ok: false, error: 'no thumbs or next button' };
+    `)
+    if (!navOk?.ok) throw new Error(`expected viewer navigation UI (thumbs/next): ${navOk?.error || 'unknown'}`)
+    {
+      const started = Date.now()
+      let last = ''
+      while (Date.now() - started < 5000) {
+        // eslint-disable-next-line no-await-in-loop
+        last = await driver.executeScript(`return document.getElementById('imageViewerTitle')?.textContent || ''`)
+        if (/Image\s*#2/i.test(String(last))) break
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(200)
+      }
+      if (!/Image\s*#2/i.test(String(last))) throw new Error(`expected viewer title to become Image #2, got: ${JSON.stringify(String(last))}`)
+    }
 
     console.log('[ui:e2e:codex-history-render] PASS')
   } finally {

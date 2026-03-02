@@ -800,6 +800,7 @@
       overflow: hidden;
       display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
+      position: relative;
     }
     .imageViewerTop,
     .imageViewerBottom {
@@ -819,6 +820,7 @@
       display: grid;
       place-items: center;
       padding: 12px;
+      touch-action: none;
     }
     .imageViewerImg {
       max-width: 100%;
@@ -827,8 +829,65 @@
       border-radius: 12px;
       border: 1px solid rgba(13, 18, 32, 0.12);
       background: #ffffff;
+      will-change: transform;
     }
-    .imageViewerZoom { width: 220px; }
+    .imageViewerIconBtn {
+      border: none;
+      background: transparent;
+      padding: 6px;
+      border-radius: 10px;
+      color: #253047;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 34px;
+      min-height: 34px;
+    }
+    .imageViewerIconBtn:hover { background: rgba(13, 18, 32, 0.06); }
+    .imageViewerIconBtn svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      display: block;
+    }
+    .imageViewerNav {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 2;
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      box-shadow: 0 10px 22px rgba(13, 18, 32, 0.18);
+    }
+    .imageViewerNav.prev { left: 10px; }
+    .imageViewerNav.next { right: 10px; }
+    .imageViewerNav[disabled] { opacity: 0.45; pointer-events: none; }
+    .imageViewerFilmstrip {
+      display: flex;
+      gap: 8px;
+      overflow: auto;
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.94);
+      border-top: 1px solid rgba(13, 18, 32, 0.1);
+      scrollbar-width: thin;
+    }
+    .imageViewerThumb {
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      border-radius: 10px;
+      padding: 2px;
+      background: #ffffff;
+      width: 64px;
+      height: 46px;
+      flex: 0 0 auto;
+      overflow: hidden;
+      cursor: pointer;
+    }
+    .imageViewerThumb.active { border-color: rgba(40, 199, 217, 0.7); box-shadow: 0 0 0 3px rgba(40, 199, 217, 0.14); }
+    .imageViewerThumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; display: block; }
     @media (max-width: 560px) {
       .imageViewerBackdrop { padding: 0; }
       .imageViewer {
@@ -837,6 +896,8 @@
         height: 100dvh;
         border-radius: 0;
       }
+      .imageViewerBody { padding: 10px; }
+      .imageViewerNav { display: none; }
     }
     .msgBody p {
       margin: 0 0 8px;
