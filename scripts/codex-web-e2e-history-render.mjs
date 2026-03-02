@@ -186,6 +186,7 @@ async function main() {
         hasImageTag: /<image\\s+name=\\[Image\\s+#\\d+\\]>/i.test(text) || /<\\/image>/i.test(text),
         hasImagePlaceholder: /\\[image:/i.test(text),
         userImgs: document.querySelectorAll('#chatBox .msg.user img.msgAttachmentImage').length,
+        hasCaption: Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachmentCaption')).some((n) => /Image\\s*#1/i.test(n.textContent || '')),
       };
     `)
     if (!checks?.ok) throw new Error('checks failed')
@@ -193,6 +194,17 @@ async function main() {
     if (checks.hasImageTag) throw new Error('raw <image name=[Image #...]> blocks should not be rendered verbatim')
     if (checks.hasImagePlaceholder) throw new Error('textual [image: ...] placeholders should not be rendered (render images instead)')
     if (!(Number(checks.userImgs || 0) >= 1)) throw new Error(`expected at least one rendered user image, got ${checks.userImgs}`)
+    if (!checks.hasCaption) throw new Error('expected image caption (Image #1) to be rendered next to the image')
+
+    // Clicking the image should open a viewer (zoom/download UI lives there).
+    await driver.executeScript(`
+      const img = document.querySelector('#chatBox .msg.user img.msgAttachmentImage');
+      if (img) img.click();
+    `)
+    await waitFor(async () => {
+      const open = await driver.executeScript(`return !!document.getElementById('imageViewerBackdrop')?.classList.contains('show');`)
+      return !!open
+    }, 8000, 'image viewer to open')
 
     console.log('[ui:e2e:codex-history-render] PASS')
   } finally {

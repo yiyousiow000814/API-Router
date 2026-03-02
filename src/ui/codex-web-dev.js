@@ -766,12 +766,23 @@ function renderMessageAttachments(attachments) {
   const nodes = [];
   for (const img of imgs) {
     const src = img.src.trim();
+    const label = String(img.label || "").trim();
     // Allow data URLs and http(s). For local paths, we just show a chip for now
     // because the browser context may not have file access.
     if (/^data:image\//i.test(src) || /^https?:\/\//i.test(src)) {
-      nodes.push(`<img class="msgAttachmentImage" alt="${escapeHtml(img.label || "image")}" src="${escapeHtml(src)}" />`);
+      nodes.push(
+        `<button class="msgAttachmentCard" type="button" data-image-src="${escapeHtml(src)}" data-image-label="${escapeHtml(label)}">` +
+          `<img class="msgAttachmentImage" alt="${escapeHtml(label || "image")}" src="${escapeHtml(src)}" />` +
+          `<div class="msgAttachmentCaption mono">${escapeHtml(label || "image")}</div>` +
+        `</button>`
+      );
     } else {
-      nodes.push(`<div class="msgAttachmentChip mono">[image]</div>`);
+      nodes.push(
+        `<button class="msgAttachmentCard msgAttachmentCard-missing" type="button" data-image-src="" data-image-label="${escapeHtml(label)}">` +
+          `<div class="msgAttachmentChip mono">[image]</div>` +
+          `<div class="msgAttachmentCaption mono">${escapeHtml(label || "image")}</div>` +
+        `</button>`
+      );
     }
   }
   return `<div class="msgAttachments">${nodes.join("")}</div>`;
@@ -779,6 +790,109 @@ function renderMessageAttachments(attachments) {
 
 function wireMessageLinks(container) {
   if (!container) return;
+}
+
+function ensureImageViewer() {
+  if (byId("imageViewerBackdrop")) return;
+  const backdrop = document.createElement("div");
+  backdrop.id = "imageViewerBackdrop";
+  backdrop.className = "imageViewerBackdrop";
+  backdrop.innerHTML =
+    `<div class="imageViewer" role="dialog" aria-modal="true" aria-label="Image viewer">` +
+      `<div class="imageViewerTop">` +
+        `<div id="imageViewerTitle" class="imageViewerTitle mono"></div>` +
+        `<div class="grow"></div>` +
+        `<button id="imageViewerDownloadBtn" class="topAction" type="button">Download</button>` +
+        `<button id="imageViewerCloseBtn" class="topAction" type="button">Close</button>` +
+      `</div>` +
+      `<div class="imageViewerBody">` +
+        `<img id="imageViewerImg" class="imageViewerImg" alt="" />` +
+      `</div>` +
+      `<div class="imageViewerBottom">` +
+        `<button id="imageViewerZoomOutBtn" class="topAction" type="button">-</button>` +
+        `<input id="imageViewerZoom" class="imageViewerZoom" type="range" min="1" max="4" step="0.25" value="1" />` +
+        `<button id="imageViewerZoomInBtn" class="topAction" type="button">+</button>` +
+      `</div>` +
+    `</div>`;
+  document.body.appendChild(backdrop);
+
+  const close = () => backdrop.classList.remove("show");
+  backdrop.addEventListener("click", (event) => {
+    if (event.target === backdrop) close();
+  });
+  const closeBtn = byId("imageViewerCloseBtn");
+  if (closeBtn) closeBtn.onclick = close;
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && backdrop.classList.contains("show")) close();
+  });
+}
+
+function openImageViewer(src, label) {
+  ensureImageViewer();
+  const backdrop = byId("imageViewerBackdrop");
+  const img = byId("imageViewerImg");
+  const title = byId("imageViewerTitle");
+  const zoom = byId("imageViewerZoom");
+  const download = byId("imageViewerDownloadBtn");
+  if (!backdrop || !img || !zoom) return;
+
+  const safeLabel = String(label || "").trim() || "image";
+  const safeSrc = String(src || "").trim();
+  if (title) title.textContent = safeLabel;
+  img.src = safeSrc;
+  img.alt = safeLabel;
+  zoom.value = "1";
+  img.style.transform = "scale(1)";
+
+  const applyZoom = (value) => {
+    const z = Math.max(1, Math.min(4, Number(value || 1)));
+    img.style.transform = `scale(${z})`;
+  };
+  zoom.oninput = () => applyZoom(zoom.value);
+
+  const zOut = byId("imageViewerZoomOutBtn");
+  const zIn = byId("imageViewerZoomInBtn");
+  if (zOut) zOut.onclick = () => {
+    zoom.value = String(Math.max(1, Number(zoom.value) - 0.25));
+    applyZoom(zoom.value);
+  };
+  if (zIn) zIn.onclick = () => {
+    zoom.value = String(Math.min(4, Number(zoom.value) + 0.25));
+    applyZoom(zoom.value);
+  };
+
+  if (download) {
+    download.onclick = () => {
+      if (!safeSrc) return;
+      const a = document.createElement("a");
+      a.href = safeSrc;
+      a.download = safeLabel.replace(/[^\w.-]+/g, "_") || "image";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    };
+  }
+
+  backdrop.classList.add("show");
+}
+
+function wireMessageAttachments(container) {
+  const cards = container.querySelectorAll(".msgAttachmentCard");
+  for (const card of cards) {
+    if (card.__wired) continue;
+    card.__wired = true;
+    const src = card.getAttribute("data-image-src") || "";
+    const label = card.getAttribute("data-image-label") || "";
+    const open = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (src) openImageViewer(src, label);
+    };
+    card.addEventListener("click", open);
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") open(event);
+    });
+  }
 }
 
 function animateMessageNode(node, delayMs = 0) {
@@ -816,6 +930,7 @@ function addChat(role, text, options = {}) {
   const bodyHtml = renderMessageBody(role, text);
   node.innerHTML = `<div class="msgHead">${escapeHtml(headLabel)}</div><div class="msgBody">${attachmentsHtml}${bodyHtml}</div>`;
   wireMessageLinks(node);
+  wireMessageAttachments(node);
   if (options.animate !== false) {
     const defaultDelay = role === "assistant" || role === "system" ? 50 : 0;
     const delayMs = Number.isFinite(Number(options.delayMs)) ? Number(options.delayMs) : defaultDelay;
@@ -1065,13 +1180,30 @@ function parseUserMessageParts(item) {
   const lines = [];
   const images = [];
   const mentions = [];
+  const pendingImageLabels = [];
   const norm = (value) => String(value || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const partType = norm(part.type);
     if (partType === "text" || partType === "inputtext") {
-      const text = stripCodexImageBlocks(String(part.text || "")).trim();
-      if (text) lines.push(text);
+      const raw = stripCodexImageBlocks(String(part.text || "")).trim();
+      if (raw) {
+        const kept = [];
+        for (const line of raw.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const m = /^\[(Image\s*#\d+)\]$/i.exec(trimmed);
+          if (m) {
+            pendingImageLabels.push(m[1].replace(/\s+/g, " ").trim());
+            continue;
+          }
+          // Drop "[image: ...]" placeholders; we render thumbnails instead.
+          if (/^\[(image:[^\]]+)\]$/i.test(trimmed)) continue;
+          kept.push(line);
+        }
+        const text = kept.join("\n").trim();
+        if (text) lines.push(text);
+      }
       continue;
     }
     if (partType === "mention") {
@@ -1082,17 +1214,26 @@ function parseUserMessageParts(item) {
     if (partType === "localimage") {
       const fileName = compactAttachmentLabel(part.path);
       const path = String(part.path || "").trim();
-      if (path) images.push({ src: path, label: fileName || "image", kind: "path" });
+      if (path) {
+        const label = pendingImageLabels.shift() || fileName || `Image ${images.length + 1}`;
+        images.push({ src: path, label, kind: "path" });
+      }
       continue;
     }
     if (partType === "image") {
       const url = String(part.url || "").trim();
-      if (url) images.push({ src: url, label: compactAttachmentLabel(url) || "image", kind: "url" });
+      if (url) {
+        const label = pendingImageLabels.shift() || compactAttachmentLabel(url) || `Image ${images.length + 1}`;
+        images.push({ src: url, label, kind: "url" });
+      }
       continue;
     }
     if (partType === "inputimage") {
       const url = String(part.image_url || "").trim();
-      if (url) images.push({ src: url, label: "image", kind: "url" });
+      if (url) {
+        const label = pendingImageLabels.shift() || `Image ${images.length + 1}`;
+        images.push({ src: url, label, kind: "url" });
+      }
       continue;
     }
   }
