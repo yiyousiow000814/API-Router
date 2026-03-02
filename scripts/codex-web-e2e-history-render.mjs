@@ -131,6 +131,54 @@ async function main() {
       return !!ok
     }, 20000, '__webCodexE2E init')
 
+    // Regression (mobile): while "Opening chat..." overlay is shown, the sidebar menu button should
+    // remain clickable (overlay must not cover the header).
+    {
+      const originalRect = await driver.manage().window().getRect()
+      await driver.manage().window().setRect({ ...originalRect, width: 420, height: 900 })
+      await driver.executeScript(`
+        document.getElementById('chatOpeningOverlay')?.classList.add('show');
+      `)
+      await waitFor(async () => {
+        try {
+          const el = await driver.findElement(By.id('mobileMenuBtn'))
+          return !!el
+        } catch {
+          return false
+        }
+      }, 8000, 'mobileMenuBtn element')
+
+      const hitTest = await driver.executeScript(`
+        const btn = document.getElementById('mobileMenuBtn');
+        if (!btn) return { ok: false, error: 'missing mobileMenuBtn' };
+        const r = btn.getBoundingClientRect();
+        const x = Math.floor(r.left + r.width / 2);
+        const y = Math.floor(r.top + r.height / 2);
+        const hit = document.elementFromPoint(x, y);
+        const within = !!(hit && (hit === btn || btn.contains(hit)));
+        return {
+          ok: true,
+          within,
+          hitTag: hit?.tagName || '',
+          hitId: hit?.id || '',
+          hitClass: typeof hit?.className === 'string' ? hit.className : String(hit?.className || ''),
+        };
+      `)
+      if (!hitTest?.ok) throw new Error(`mobile menu hit test failed: ${hitTest?.error || 'unknown'}`)
+      if (!hitTest?.within) {
+        throw new Error(`expected mobile menu to be topmost (hit within mobileMenuBtn), got tag=${hitTest.hitTag} id=${hitTest.hitId} class=${hitTest.hitClass}`)
+      }
+
+      await driver.findElement(By.id('mobileMenuBtn')).click()
+      await waitFor(async () => {
+        const isOpen = await driver.executeScript(`return document.body.classList.contains('drawer-left-open');`)
+        return !!isOpen
+      }, 8000, 'drawer-left-open after menu click')
+
+      await driver.executeScript(`document.getElementById('chatOpeningOverlay')?.classList.remove('show');`)
+      await driver.manage().window().setRect(originalRect)
+    }
+
     // Seed a single deterministic thread.
     const seeded = await driver.executeScript(`
       const h = window.__webCodexE2E;
@@ -227,6 +275,53 @@ async function main() {
     if (Number(scrollChecks.scrollTop || 0) + Number(scrollChecks.clientHeight || 0) < Number(scrollChecks.scrollHeight || 0) - 60) {
       throw new Error('expected chat to land near bottom on open')
     }
+
+    // Regression: opening a chat should remain pinned to bottom even if layout shifts shortly after
+    // (e.g. late fonts/image sizing). Without repeated stick-to-bottom, the view can drift above bottom.
+    await driver.executeScript(`
+      const box = document.getElementById('chatBox');
+      const last = box ? box.querySelector('.msg:last-of-type .msgBody') : null;
+      if (last) {
+        setTimeout(() => {
+          last.textContent = (last.textContent || '') + '\\n' + Array.from({ length: 40 }).map((_, i) => 'late line ' + i + ' ' + 'x'.repeat(120)).join('\\n');
+        }, 650);
+      }
+    `)
+    await new Promise((r) => setTimeout(r, 1100))
+    const pinnedAfterShift = await driver.executeScript(`
+      const box = document.getElementById('chatBox');
+      if (!box) return false;
+      return box.scrollTop + box.clientHeight >= box.scrollHeight - 80;
+    `)
+    if (!pinnedAfterShift) throw new Error('expected chat to stay pinned near bottom after a late layout shift')
+
+    // Regression: if the user is pinned at bottom, a new incoming message (append-only) should keep
+    // the view at bottom even when the new message is tall enough to push content far above bottom.
+    // Bug: our live-follow loop auto-scrolls, but the scroll handler mis-classified that as user
+    // scroll and stopped the follow, leaving the view "stuck" above bottom.
+    await driver.executeScript(`
+      const h = window.__webCodexE2E;
+      if (!h) return;
+      const threadId = h._activeThreadId || 'e2e_1';
+      const cur = h.getThreadHistory(threadId);
+      if (!cur) return;
+      const cloned = JSON.parse(JSON.stringify(cur));
+      const turns = Array.isArray(cloned.turns) ? cloned.turns : [];
+      turns.push({
+        items: [{ type: 'assistantMessage', text: Array.from({ length: 70 }).map((_, i) => 'incoming line ' + i + ' ' + 'y'.repeat(140)).join('\\n') }],
+      });
+      cloned.turns = turns;
+      h.setThreadHistory(threadId, cloned);
+      // Simulate the active-thread poll applying new history.
+      if (typeof h.refreshActiveThread === 'function') h.refreshActiveThread();
+    `)
+    await new Promise((r) => setTimeout(r, 1400))
+    const pinnedAfterIncoming = await driver.executeScript(`
+      const box = document.getElementById('chatBox');
+      if (!box) return false;
+      return box.scrollTop + box.clientHeight >= box.scrollHeight - 80;
+    `)
+    if (!pinnedAfterIncoming) throw new Error('expected pinned chat to auto-follow bottom after an incoming message')
 
     // When scrolled up meaningfully, a floating "scroll to bottom" button should appear; clicking it scrolls to bottom.
     {

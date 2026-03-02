@@ -67,6 +67,14 @@ const state = {
   chatLiveFollowToken: 0,
   chatLiveFollowRaf: 0,
   chatLiveFollowLastBtnMs: 0,
+  chatUserScrolledAwayAt: 0,
+  // When true, treat the chat as "pinned" to bottom: new content should keep following bottom
+  // unless the user explicitly scrolls away.
+  chatPinnedToBottom: true,
+  // Suppress scroll-intent updates for short windows when we update scrollTop programmatically
+  // (live-follow / stick-to-bottom). This prevents the scroll handler from interpreting our
+  // own auto-scroll as the user's "scroll away", which would stop following.
+  chatProgrammaticScrollUntil: 0,
   activeThreadModelLabel: "",
   activeThreadWorkspace: "windows",
   modelOptions: [],
@@ -897,6 +905,10 @@ function scrollChatToBottom({ force = false } = {}) {
   const box = byId("chatBox");
   if (!box) return;
   if (!force && !isChatNearBottom()) return;
+  // Mark as pinned so future messages keep following bottom.
+  state.chatPinnedToBottom = true;
+  state.chatUserScrolledAwayAt = 0;
+  state.chatProgrammaticScrollUntil = Date.now() + 260;
   dbgSet({ lastScrollChatToBottomAt: Date.now(), lastScrollChatToBottomForce: !!force });
   // Use the actual max scrollTop to avoid a clamp-induced "micro jump" at the end.
   box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
@@ -907,6 +919,8 @@ function stickChatToBottomFor(ms) {
   state.chatAutoStickToken = (Number(state.chatAutoStickToken || 0) + 1) | 0;
   const token = state.chatAutoStickToken;
   state.chatAutoStickUntil = Date.now() + Math.max(0, Number(ms || 0));
+  state.chatPinnedToBottom = true;
+  state.chatUserScrolledAwayAt = 0;
   scrollChatToBottom({ force: true });
   // Images/layout can settle on the next frame(s); keep the box pinned briefly.
   requestAnimationFrame(() => scrollChatToBottom({ force: token === state.chatAutoStickToken && Date.now() <= state.chatAutoStickUntil }));
@@ -919,6 +933,10 @@ function canStartChatLiveFollow() {
   const now = Date.now();
   if (now <= Number(state.chatSmoothScrollUntil || 0)) return false;
   if (now <= Number(state.chatAutoStickUntil || 0)) return true;
+  if (state.chatPinnedToBottom) return true;
+  // If the user hasn't intentionally scrolled away, allow live-follow to recover from
+  // drift caused by late layout changes (fonts/images), even if we're a bit above bottom.
+  if (!Number(state.chatUserScrolledAwayAt || 0)) return true;
   return isChatNearBottom();
 }
 
@@ -967,6 +985,8 @@ function scheduleChatLiveFollow(extraMs = 520) {
     const rawStep = Math.max(1, dist * 0.22);
     const maxStep = Math.min(CHAT_LIVE_FOLLOW_MAX_STEP_PX, Math.max(10, dist * 0.35));
     const delta = Math.min(rawStep, maxStep);
+    // Prevent our own auto-scroll from being interpreted as "user scrolled away" by the scroll handler.
+    state.chatProgrammaticScrollUntil = now2 + 160;
     box.scrollTop += delta;
 
     if (now2 - Number(state.chatLiveFollowLastBtnMs || 0) >= CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS) {
@@ -1047,6 +1067,9 @@ function smoothScrollChatToBottom(durationMs = undefined) {
     if (t < 1) requestAnimationFrame(step);
     else {
       // Ensure we're truly pinned at the end (handles fractional pixels / late layout).
+      state.chatPinnedToBottom = true;
+      state.chatUserScrolledAwayAt = 0;
+      state.chatProgrammaticScrollUntil = Date.now() + 260;
       box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
       updateScrollToBottomBtn();
       dbgSet({ lastSmoothScrollEndedAt: Date.now(), lastSmoothScrollEndedTop: box.scrollTop, lastSmoothScrollTail: tail.slice() });
@@ -1473,7 +1496,14 @@ function addChat(role, text, options = {}) {
     animateMessageNode(node, delayMs);
   }
   box.appendChild(node);
-  if (options.scroll !== false) box.scrollTop = box.scrollHeight;
+  if (options.scroll !== false) {
+    state.chatPinnedToBottom = true;
+    state.chatUserScrolledAwayAt = 0;
+    state.chatProgrammaticScrollUntil = Date.now() + 260;
+    box.scrollTop = box.scrollHeight;
+    // Images can settle after append; keep following briefly.
+    scheduleChatLiveFollow(800);
+  }
   updateScrollToBottomBtn();
 }
 
@@ -2082,10 +2112,6 @@ function applyThreadToChat(thread, options = {}) {
   }
 
   const box = byId("chatBox");
-  const nearBottom = !!(
-    box &&
-    box.scrollTop + box.clientHeight >= box.scrollHeight - 80
-  );
 
   const prevMessages = Array.isArray(state.activeThreadMessages) ? state.activeThreadMessages : [];
   const isSamePrefix = (a, b) => {
@@ -2128,7 +2154,7 @@ function applyThreadToChat(thread, options = {}) {
         updateLastNode(b.role, b.text); 
         state.activeThreadMessages = messages; 
         state.activeThreadRenderSig = renderSig; 
-        if (nearBottom) scheduleChatLiveFollow(900); 
+        if (canStartChatLiveFollow()) scheduleChatLiveFollow(900); 
         if (state.activeThreadStarted) hideWelcomeCard(); 
         else showWelcomeCard(); 
         updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted)); 
@@ -2145,13 +2171,17 @@ function applyThreadToChat(thread, options = {}) {
     }
     state.activeThreadMessages = messages; 
     state.activeThreadRenderSig = renderSig; 
-    if (nearBottom) scheduleChatLiveFollow(900); 
+    // If the user is pinned, jump to the new max scrollTop immediately (avoid "stuck above bottom"
+    // when the incoming message is tall), then keep following briefly as images settle.
+    if (state.chatPinnedToBottom) scrollChatToBottom({ force: true });
+    if (canStartChatLiveFollow()) scheduleChatLiveFollow(1100); 
   } else { 
     clearChatMessages(); 
     for (const msg of messages) addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
     state.activeThreadMessages = messages; 
     state.activeThreadRenderSig = renderSig; 
-    if (nearBottom) scheduleChatLiveFollow(1100); 
+    if (state.chatPinnedToBottom) scrollChatToBottom({ force: true });
+    if (canStartChatLiveFollow()) scheduleChatLiveFollow(1100); 
     else if (box) box.scrollTop = box.scrollHeight; 
   } 
 
@@ -2473,7 +2503,7 @@ function renderThreads(items) {
           renderThreads(state.threadItems);
         };
       }
-      const openThread = async () => {
+      const openThread = async () => { 
         if (!id) return;
         if (id === state.activeThreadId && state.activeMainTab === "chat" && state.activeThreadStarted) {
           return;
@@ -2494,22 +2524,22 @@ function renderThreads(items) {
         const rolloutPath = String(thread?.path || "").trim();
         state.activeThreadRolloutPath = rolloutPath;
         setChatOpening(true);
-        try {
+        try { 
           const workspaceHint = detectThreadWorkspaceTarget(thread);
           const label = workspaceHint === "wsl2" ? "WSL2" : workspaceHint === "windows" ? "WIN" : "AUTO";
           // 1) Show full history immediately from the local JSONL file (matches `codex resume` output).
           const historyStartMs = performance.now();
-          await loadThreadMessages(id, {
+          await loadThreadMessages(id, { 
             animateBadge: true,
             signal: controller.signal,
             workspace: workspaceHint === "unknown" ? "" : workspaceHint,
             rolloutPath,
-            stickToBottom: true,
-          });
+            stickToBottom: true, 
+          }); 
           const historyLatencyMs = Math.round(performance.now() - historyStartMs);
-          if (state.openingThreadReqId === reqId) {
-            setStatus(`Loaded history ${label} ${truncateLabel(id, 12)} in ${historyLatencyMs}ms`);
-          }
+          if (state.openingThreadReqId === reqId) { 
+            setStatus(`Loaded history ${label} ${truncateLabel(id, 12)} in ${historyLatencyMs}ms`); 
+          } 
 
           // 2) Resume in background so the thread is runnable for new turns.
           const resumeQuery = [];
@@ -2528,8 +2558,13 @@ function renderThreads(items) {
             });
           registerPendingThreadResume(id, resumeTask);
 
-          if (state.openingThreadReqId === reqId) setChatOpening(false);
-        } catch (error) {
+          if (state.openingThreadReqId === reqId) {
+            setChatOpening(false);
+            // Some webviews occasionally ignore the first scrollTop set during heavy layout.
+            // Force a short "pin to bottom" after the overlay hides so we reliably land on latest.
+            stickChatToBottomFor(900);
+          }
+        } catch (error) { 
           if (error && (error.name === "AbortError" || String(error.message || "").includes("aborted"))) {
             return;
           }
@@ -3365,6 +3400,12 @@ function bootstrap() {
           await loadThreadMessages(id, { animateBadge: true, forceRender: true, stickToBottom: true });
           return { ok: true };
         },
+        async refreshActiveThread() {
+          const id = String(this._activeThreadId || state.activeThreadId || "").trim();
+          if (!id) return { ok: false, error: "missing active threadId" };
+          await loadThreadMessages(id, { animateBadge: false, forceRender: true });
+          return { ok: true };
+        },
         emitWsPayload(payload) {
           try {
             handleWsPayload(payload);
@@ -3455,7 +3496,16 @@ function bootstrap() {
           // snap them back down due to timers (e.g. chat opening / message settle).
           const now = Date.now();
           if (now <= Number(state.chatSmoothScrollUntil || 0)) return;
+          if (now <= Number(state.chatProgrammaticScrollUntil || 0)) return;
           const dist = chatBox.scrollHeight - (chatBox.scrollTop + chatBox.clientHeight);
+          // Track explicit user intent: if they scroll away meaningfully, stop auto-follow.
+          if (dist > 180) {
+            state.chatUserScrolledAwayAt = now;
+            state.chatPinnedToBottom = false;
+          } else if (dist <= 120) {
+            state.chatUserScrolledAwayAt = 0;
+            state.chatPinnedToBottom = true;
+          }
           if (dist > 180) {
             state.chatAutoStickUntil = 0;
             state.chatAutoStickToken = (Number(state.chatAutoStickToken || 0) + 1) | 0;

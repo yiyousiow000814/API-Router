@@ -183,6 +183,11 @@
       gap: 8px;
       flex-wrap: wrap;
     }
+    /* Keep header actions clickable even when in-panel overlays are visible (e.g. "Opening chat..."). */
+    .chatPanel .panelHeader {
+      position: relative;
+      z-index: 40;
+    }
 
     .panelTitle {
       font-size: 12px;
