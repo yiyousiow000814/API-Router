@@ -79,6 +79,9 @@ async function main() {
   if (!/left:\s*0/i.test(backdropBlock)) throw new Error('expected .imageViewerBackdrop to set left: 0 (mobile fixed overlay)')
   if (!/right:\s*0/i.test(backdropBlock)) throw new Error('expected .imageViewerBackdrop to set right: 0 (mobile fixed overlay)')
   if (!/bottom:\s*0/i.test(backdropBlock)) throw new Error('expected .imageViewerBackdrop to set bottom: 0 (mobile fixed overlay)')
+  if (!/scrollbar-gutter:\s*stable/i.test(html)) throw new Error('expected .messages to set scrollbar-gutter: stable (no jiggle on image load)')
+  if (!/animation:\s*msg-enter\s*360ms/i.test(html)) throw new Error('expected msg-enter animation to be slowed to 360ms')
+  if (!/animation-duration:\s*288ms/i.test(html)) throw new Error('expected tool msg-enter animation to be slowed to 288ms')
 
   const devProc = await ensureDevServerReady()
   let driver = null

@@ -526,6 +526,8 @@
       overflow-y: auto;
       overflow-x: hidden;
       position: relative;
+      /* Prevent 1-2px layout "jiggle" when scrollbars appear/disappear as images load. */
+      scrollbar-gutter: stable;
       padding: 12px;
       display: grid;
       align-content: start;
@@ -702,7 +704,7 @@
       overflow-wrap: anywhere;
     }
     .msg.msg-enter {
-      animation: msg-enter 300ms cubic-bezier(.22, .61, .36, 1) both;
+      animation: msg-enter 360ms cubic-bezier(.22, .61, .36, 1) both;
       animation-delay: var(--msg-enter-delay, 0ms);
       will-change: opacity, transform;
     }
@@ -745,7 +747,7 @@
     }
     .msg.system.kind-tool.msg-enter {
       animation-name: msg-enter-tool;
-      animation-duration: 240ms;
+      animation-duration: 288ms;
     }
     @keyframes msg-enter-tool {
       from { opacity: 0; transform: translate3d(0, -6px, 0); }
