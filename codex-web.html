@@ -534,6 +534,40 @@
       border-top: none;
       border-bottom: none;
     }
+    .scrollToBottomBtn {
+      position: absolute;
+      right: 14px;
+      bottom: 14px;
+      width: 44px;
+      height: 44px;
+      border-radius: 999px;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: 0 14px 26px rgba(13, 18, 32, 0.18);
+      display: grid;
+      place-items: center;
+      opacity: 0;
+      transform: translateY(10px);
+      pointer-events: none;
+      transition: opacity 160ms ease, transform 180ms ease;
+      z-index: 20;
+    }
+    .scrollToBottomBtn.show {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+    .scrollToBottomBtn:hover { border-color: rgba(40, 199, 217, 0.55); }
+    .scrollToBottomBtn svg {
+      width: 18px;
+      height: 18px;
+      stroke: #1b2940;
+      fill: none;
+      stroke-width: 2.2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      display: block;
+    }
     .messages > * {
       min-width: 0;
       max-width: 100%;

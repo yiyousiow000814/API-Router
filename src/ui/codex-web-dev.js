@@ -885,6 +885,36 @@ function stickChatToBottomFor(ms) {
   setTimeout(() => scrollChatToBottom({ force: Date.now() <= state.chatAutoStickUntil }), 220);
 }
 
+function ensureScrollToBottomBtn() {
+  const box = byId("chatBox");
+  if (!box) return null;
+  let btn = byId("scrollToBottomBtn");
+  if (btn) return btn;
+  btn = document.createElement("button");
+  btn.id = "scrollToBottomBtn";
+  btn.type = "button";
+  btn.className = "scrollToBottomBtn";
+  btn.setAttribute("aria-label", "Scroll to bottom");
+  btn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v12"></path><path d="M7.5 13.5L12 18l4.5-4.5"></path></svg>`;
+  btn.onclick = () => {
+    const chat = byId("chatBox");
+    if (!chat) return;
+    chat.scrollTop = chat.scrollHeight;
+    updateScrollToBottomBtn();
+  };
+  box.appendChild(btn);
+  return btn;
+}
+
+function updateScrollToBottomBtn() {
+  const box = byId("chatBox");
+  if (!box) return;
+  const btn = ensureScrollToBottomBtn();
+  if (!btn) return;
+  const show = !isChatNearBottom() && box.scrollHeight > box.clientHeight + 40;
+  btn.classList.toggle("show", !!show);
+}
+
 function dataUrlToBlob(dataUrl) {
   const match = /^data:([^;,]+)?(?:;charset=[^;,]+)?(;base64)?,(.*)$/i.exec(String(dataUrl || ""));
   if (!match) return null;
@@ -1207,6 +1237,7 @@ function wireMessageAttachments(container) {
     img.addEventListener("load", onSettled, { once: true });
     img.addEventListener("error", onSettled, { once: true });
   }
+  updateScrollToBottomBtn();
 }
 
 function animateMessageNode(node, delayMs = 0) {
@@ -1255,6 +1286,7 @@ function addChat(role, text, options = {}) {
   }
   box.appendChild(node);
   if (options.scroll !== false) box.scrollTop = box.scrollHeight;
+  updateScrollToBottomBtn();
 }
 
 function createAssistantStreamingMessage() {
@@ -1821,6 +1853,7 @@ function applyThreadToChat(thread, options = {}) {
   if (state.activeThreadStarted) hideWelcomeCard();
   else showWelcomeCard();
   updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+  updateScrollToBottomBtn();
 }
 
 async function loadThreadMessages(threadId, options = {}) {
@@ -3051,6 +3084,16 @@ function bootstrap() {
   updateWelcomeSelections();
   setMainTab("chat");
   wireActions();
+  // Floating "scroll to bottom" affordance (ChatGPT-style).
+  try {
+    const chatBox = byId("chatBox");
+    if (chatBox && !chatBox.__wiredScrollToBottom) {
+      chatBox.__wiredScrollToBottom = true;
+      ensureScrollToBottomBtn();
+      chatBox.addEventListener("scroll", () => updateScrollToBottomBtn(), { passive: true });
+      updateScrollToBottomBtn();
+    }
+  } catch {}
   startThreadAutoRefreshLoop();
   startActiveThreadLivePollLoop();
   setMobileTab("chat");

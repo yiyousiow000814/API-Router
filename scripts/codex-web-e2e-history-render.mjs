@@ -225,6 +225,32 @@ async function main() {
       throw new Error('expected chat to land near bottom on open')
     }
 
+    // When scrolled up, a floating "scroll to bottom" button should appear; clicking it jumps to bottom.
+    await driver.executeScript(`
+      const box = document.getElementById('chatBox');
+      if (box) box.scrollTop = 0;
+    `)
+    await waitFor(async () => {
+      const shown = await driver.executeScript(`return !!document.getElementById('scrollToBottomBtn')?.classList.contains('show');`)
+      return !!shown
+    }, 8000, 'scroll-to-bottom button to show when not near bottom')
+    await driver.executeScript(`
+      const btn = document.getElementById('scrollToBottomBtn');
+      if (btn) btn.click();
+    `)
+    await waitFor(async () => {
+      const near = await driver.executeScript(`
+        const box = document.getElementById('chatBox');
+        if (!box) return false;
+        return box.scrollTop + box.clientHeight >= box.scrollHeight - 80;
+      `)
+      return !!near
+    }, 8000, 'scroll-to-bottom click to land near bottom')
+    await waitFor(async () => {
+      const shown = await driver.executeScript(`return !!document.getElementById('scrollToBottomBtn')?.classList.contains('show');`)
+      return !shown
+    }, 8000, 'scroll-to-bottom button to hide near bottom')
+
     const checks = await driver.executeScript(`
       const text = document.getElementById('chatBox')?.innerText || '';
       const mosaics = Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachments.mosaic'));
