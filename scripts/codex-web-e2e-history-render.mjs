@@ -1,4 +1,6 @@
 import process from 'node:process'
+import fs from 'node:fs'
+import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { Builder, By } from 'selenium-webdriver'
 import edge from 'selenium-webdriver/edge.js'
@@ -69,6 +71,15 @@ async function ensureDevServerReady() {
 }
 
 async function main() {
+  // Regression: the image viewer must use explicit edges (top/left/right/bottom) because some mobile
+  // webviews have spotty support for `inset: 0` on fixed elements.
+  const html = fs.readFileSync(path.join(repoRoot, 'codex-web.html'), 'utf8')
+  const backdropBlock = /\.imageViewerBackdrop\s*\{[\s\S]*?\}/m.exec(html)?.[0] || ''
+  if (!/top:\s*0/i.test(backdropBlock)) throw new Error('expected .imageViewerBackdrop to set top: 0 (mobile fixed overlay)')
+  if (!/left:\s*0/i.test(backdropBlock)) throw new Error('expected .imageViewerBackdrop to set left: 0 (mobile fixed overlay)')
+  if (!/right:\s*0/i.test(backdropBlock)) throw new Error('expected .imageViewerBackdrop to set right: 0 (mobile fixed overlay)')
+  if (!/bottom:\s*0/i.test(backdropBlock)) throw new Error('expected .imageViewerBackdrop to set bottom: 0 (mobile fixed overlay)')
+
   const devProc = await ensureDevServerReady()
   let driver = null
   try {
@@ -205,6 +216,27 @@ async function main() {
       const open = await driver.executeScript(`return !!document.getElementById('imageViewerBackdrop')?.classList.contains('show');`)
       return !!open
     }, 8000, 'image viewer to open')
+
+    // Viewer backdrop must cover the viewport (avoids "in-flow" rendering on some mobile browsers).
+    const viewerChecks = await driver.executeScript(`
+      const backdrop = document.getElementById('imageViewerBackdrop');
+      if (!backdrop) return { ok: false, error: 'no backdrop' };
+      const cs = window.getComputedStyle(backdrop);
+      const rect = backdrop.getBoundingClientRect();
+      return {
+        ok: true,
+        position: cs.position,
+        rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+        vw: window.innerWidth,
+        vh: window.innerHeight,
+      };
+    `)
+    if (!viewerChecks?.ok) throw new Error(`viewer checks failed: ${viewerChecks?.error || 'unknown'}`)
+    if (viewerChecks.position !== 'fixed') throw new Error(`expected viewer backdrop position:fixed, got ${viewerChecks.position}`)
+    if (Math.abs(Number(viewerChecks.rect?.top || 0)) > 2) throw new Error(`expected viewer backdrop to start near top=0, got ${viewerChecks.rect?.top}`)
+    if (Math.abs(Number(viewerChecks.rect?.left || 0)) > 2) throw new Error(`expected viewer backdrop to start near left=0, got ${viewerChecks.rect?.left}`)
+    if (Number(viewerChecks.rect?.width || 0) < Number(viewerChecks.vw || 0) * 0.95) throw new Error('expected viewer backdrop to span viewport width')
+    if (Number(viewerChecks.rect?.height || 0) < Number(viewerChecks.vh || 0) * 0.95) throw new Error('expected viewer backdrop to span viewport height')
 
     console.log('[ui:e2e:codex-history-render] PASS')
   } finally {

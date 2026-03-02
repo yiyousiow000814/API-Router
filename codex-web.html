@@ -767,15 +767,23 @@
     }
     .imageViewerBackdrop {
       position: fixed;
-      inset: 0;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
       background: rgba(13, 18, 32, 0.55);
+      -webkit-backdrop-filter: blur(10px);
       backdrop-filter: blur(10px);
       opacity: 0;
       pointer-events: none;
       transition: opacity 160ms ease;
       z-index: 90;
-      display: grid;
-      place-items: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       padding: 16px;
     }
     .imageViewerBackdrop.show {
@@ -821,6 +829,15 @@
       background: #ffffff;
     }
     .imageViewerZoom { width: 220px; }
+    @media (max-width: 560px) {
+      .imageViewerBackdrop { padding: 0; }
+      .imageViewer {
+        width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        border-radius: 0;
+      }
+    }
     .msgBody p {
       margin: 0 0 8px;
       min-width: 0;
