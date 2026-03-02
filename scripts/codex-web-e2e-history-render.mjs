@@ -175,6 +175,17 @@ async function main() {
         return !!isOpen
       }, 8000, 'drawer-left-open after menu click')
 
+      // When drawer is open, only one workspace switch should be visible (avoid duplicate WIN/WSL2).
+      const wsUi = await driver.executeScript(`
+        const header = document.getElementById('headerWorkspaceSwitch');
+        const drawer = document.getElementById('drawerWorkspaceSwitch');
+        const headerVisible = !!(header && header.offsetParent);
+        const drawerVisible = !!(drawer && drawer.offsetParent);
+        return { headerVisible, drawerVisible };
+      `)
+      if (wsUi?.headerVisible) throw new Error('expected headerWorkspaceSwitch to be hidden while drawer is open (avoid duplicate workspace toggles)')
+      if (!wsUi?.drawerVisible) throw new Error('expected drawerWorkspaceSwitch to remain visible while drawer is open')
+
       await driver.executeScript(`document.getElementById('chatOpeningOverlay')?.classList.remove('show');`)
       await driver.manage().window().setRect(originalRect)
     }

@@ -1546,6 +1546,12 @@
       pointer-events: auto;
     }
 
+    /* When the left drawer (threads) is open on mobile, avoid duplicated workspace toggles:
+       show the drawer's WIN/WSL2 switch, hide the header's. */
+    body.drawer-left-open #headerWorkspaceSwitch {
+      display: none !important;
+    }
+
     .term {
       max-height: 140px;
       overflow: auto;
