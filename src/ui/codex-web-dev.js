@@ -1488,6 +1488,12 @@ function createAssistantStreamingMessage() {
 
 function finalizeAssistantMessage(msgNode, bodyNode, text) {
   if (!msgNode || !bodyNode) return;
+  // Clear any transient "thinking" indicator once we have final assistant output.
+  try {
+    const box = byId("chatBox");
+    const node = box?.querySelector?.('.msg.system.kind-thinking[data-thinking="1"]') || null;
+    if (node) node.remove();
+  } catch {}
   const finalText = String(text || "").trim();
   bodyNode.innerHTML = renderMessageBody("assistant", finalText);
   wireMessageLinks(msgNode);
@@ -2064,16 +2070,16 @@ function applyThreadToChat(thread, options = {}) {
     if (allButLastSame && prevMessages.length) {
       const a = prevMessages[prevMessages.length - 1];
       const b = messages[messages.length - 1];
-      if (a.role === b.role && a.kind === b.kind && a.text !== b.text) {
-        updateLastNode(b.role, b.text);
-        state.activeThreadMessages = messages;
-        state.activeThreadRenderSig = renderSig;
-        if (nearBottom && box) box.scrollTop = box.scrollHeight;
-        if (state.activeThreadStarted) hideWelcomeCard();
-        else showWelcomeCard();
-        updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
-        return;
-      }
+      if (a.role === b.role && a.kind === b.kind && a.text !== b.text) { 
+        updateLastNode(b.role, b.text); 
+        state.activeThreadMessages = messages; 
+        state.activeThreadRenderSig = renderSig; 
+        if (nearBottom) scheduleChatLiveFollow(900); 
+        if (state.activeThreadStarted) hideWelcomeCard(); 
+        else showWelcomeCard(); 
+        updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted)); 
+        return; 
+      } 
     }
   }
 
@@ -2083,16 +2089,17 @@ function applyThreadToChat(thread, options = {}) {
       const msg = messages[i];
       addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
     }
-    state.activeThreadMessages = messages;
-    state.activeThreadRenderSig = renderSig;
-    if (nearBottom && box) box.scrollTop = box.scrollHeight;
-  } else {
-    clearChatMessages();
+    state.activeThreadMessages = messages; 
+    state.activeThreadRenderSig = renderSig; 
+    if (nearBottom) scheduleChatLiveFollow(900); 
+  } else { 
+    clearChatMessages(); 
     for (const msg of messages) addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
-    state.activeThreadMessages = messages;
-    state.activeThreadRenderSig = renderSig;
-    if (box) box.scrollTop = box.scrollHeight;
-  }
+    state.activeThreadMessages = messages; 
+    state.activeThreadRenderSig = renderSig; 
+    if (nearBottom) scheduleChatLiveFollow(1100); 
+    else if (box) box.scrollTop = box.scrollHeight; 
+  } 
 
   if (options.stickToBottom) stickChatToBottomFor(1200);
 

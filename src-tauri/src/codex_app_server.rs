@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -6,6 +7,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::oneshot;
 use tokio::sync::Mutex;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -67,6 +69,13 @@ fn build_codex_command() -> Command {
     cmd
 }
 
+#[cfg(test)]
+pub async fn _clear_notifications_for_test() {
+    let q = notifications_queue();
+    let mut guard = q.lock().await;
+    guard.clear();
+}
+
 async fn write_json_line(
     stdin: &mut tokio::process::ChildStdin,
     value: &serde_json::Value,
@@ -81,10 +90,59 @@ async fn write_json_line(
     Ok(())
 }
 
+#[derive(Default)]
+struct PendingRouter {
+    pending: Mutex<HashMap<i64, oneshot::Sender<Value>>>,
+}
+
+impl PendingRouter {
+    async fn register(&self, id: i64) -> oneshot::Receiver<Value> {
+        let (tx, rx) = oneshot::channel();
+        let mut guard = self.pending.lock().await;
+        guard.insert(id, tx);
+        rx
+    }
+
+    async fn deliver(&self, id: i64, value: Value) -> bool {
+        let tx = {
+            let mut guard = self.pending.lock().await;
+            guard.remove(&id)
+        };
+        if let Some(tx) = tx {
+            let _ = tx.send(value);
+            return true;
+        }
+        false
+    }
+}
+
+async fn route_stdout_lines(
+    stdout: tokio::process::ChildStdout,
+    router: std::sync::Arc<PendingRouter>,
+) {
+    let mut reader = BufReader::new(stdout).lines();
+    while let Ok(Some(line)) = reader.next_line().await {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if let Some(id) = value.get("id").and_then(|v| v.as_i64()) {
+            let _ = router.deliver(id, value).await;
+            continue;
+        }
+        if value.get("method").and_then(|v| v.as_str()).is_some() {
+            push_notification(value).await;
+        }
+    }
+}
+
 struct AppServer {
     child: tokio::process::Child,
     stdin: tokio::process::ChildStdin,
-    stdout: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    router: std::sync::Arc<PendingRouter>,
+    _stdout_task: tokio::task::JoinHandle<()>,
     next_id: i64,
 }
 
@@ -97,7 +155,7 @@ impl AppServer {
             .spawn()
             .map_err(|e| format!("failed to start codex app-server: {e}"))?;
 
-        let mut stdin = child
+        let stdin = child
             .stdin
             .take()
             .ok_or_else(|| "failed to open codex stdin".to_string())?;
@@ -105,34 +163,41 @@ impl AppServer {
             .stdout
             .take()
             .ok_or_else(|| "failed to open codex stdout".to_string())?;
-        let mut reader = BufReader::new(stdout).lines();
 
-        let init_id = 1;
-        let init = serde_json::json!({
-            "id": init_id,
-            "method": "initialize",
-            "params": {
-                "clientInfo": {
-                    "name": "API Router",
-                    "version": env!("CARGO_PKG_VERSION")
-                }
-            }
+        let router = std::sync::Arc::new(PendingRouter::default());
+        let router_for_task = router.clone();
+        let stdout_task = tokio::spawn(async move {
+            route_stdout_lines(stdout, router_for_task).await;
         });
-        write_json_line(&mut stdin, &init).await?;
-        let _ = read_response(&mut reader, init_id).await?;
+
+        // Initialize via normal request path so notifications can be captured concurrently.
+        let mut server = Self {
+            child,
+            stdin,
+            router,
+            _stdout_task: stdout_task,
+            next_id: 1,
+        };
+        let _ = server
+            .request(
+                "initialize",
+                serde_json::json!({
+                    "clientInfo": {
+                        "name": "API Router",
+                        "version": env!("CARGO_PKG_VERSION")
+                    }
+                }),
+            )
+            .await?;
 
         let initialized = serde_json::json!({
             "method": "initialized",
             "params": {}
         });
-        write_json_line(&mut stdin, &initialized).await?;
+        write_json_line(&mut server.stdin, &initialized).await?;
 
-        Ok(Self {
-            child,
-            stdin,
-            stdout: reader,
-            next_id: 2,
-        })
+        server.next_id = 2;
+        Ok(server)
     }
 
     fn is_dead(&mut self) -> Result<bool, String> {
@@ -160,50 +225,90 @@ impl AppServer {
             "method": method,
             "params": params
         });
+        let rx = self.router.register(request_id).await;
         write_json_line(&mut self.stdin, &request).await?;
-        read_response(&mut self.stdout, request_id).await
+
+        let response = tokio::time::timeout(REQUEST_TIMEOUT, rx)
+            .await
+            .map_err(|_| "codex app-server timed out".to_string())?
+            .map_err(|_| "codex app-server closed before responding".to_string())?;
+
+        if let Some(err) = response.get("error") {
+            if let Some(msg) = err.get("message").and_then(|v| v.as_str()) {
+                return Err(msg.to_string());
+            }
+            return Err("codex app-server error".to_string());
+        }
+
+        response
+            .get("result")
+            .cloned()
+            .ok_or_else(|| "codex app-server response missing result".to_string())
     }
 }
 
-async fn read_response(
-    reader: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
-    request_id: i64,
-) -> Result<Value, String> {
-    let response = tokio::time::timeout(REQUEST_TIMEOUT, async {
-        while let Some(line) = reader.next_line().await.map_err(|e| e.to_string())? {
-            if line.trim().is_empty() {
-                continue;
-            }
-            if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                // Notifications (no id) can arrive while we're waiting for a response.
-                // Capture them so the gateway can forward them to UIs (thinking/tool progress).
-                if value.get("id").is_none()
-                    && value.get("method").and_then(|v| v.as_str()).is_some()
-                {
-                    push_notification(value).await;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn stdout_router_captures_notifications_and_delivers_responses() {
+        _clear_notifications_for_test().await;
+
+        let (mut w, r) = tokio::io::duplex(8 * 1024);
+        // duplex gives us AsyncRead/Write; wrap the reader side into the same route function
+        // by faking a ChildStdout via a pipe-like approach is not possible, so we test the core
+        // logic by writing into a BufReader<DuplexStream> here.
+        //
+        // We keep this test close to production behavior: parse JSON lines and route by id.
+        let router = std::sync::Arc::new(PendingRouter::default());
+
+        let router_for_task = router.clone();
+        let read_task = tokio::spawn(async move {
+            let mut reader = BufReader::new(r).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                if line.trim().is_empty() {
                     continue;
                 }
-                if value.get("id") == Some(&Value::from(request_id)) {
-                    return Ok(value);
+                let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if let Some(id) = value.get("id").and_then(|v| v.as_i64()) {
+                    let _ = router_for_task.deliver(id, value).await;
+                    continue;
+                }
+                if value.get("method").and_then(|v| v.as_str()).is_some() {
+                    push_notification(value).await;
                 }
             }
-        }
-        Err("codex app-server closed before responding".to_string())
-    })
-    .await
-    .map_err(|_| "codex app-server timed out".to_string())??;
+        });
 
-    if let Some(err) = response.get("error") {
-        if let Some(msg) = err.get("message").and_then(|v| v.as_str()) {
-            return Err(msg.to_string());
-        }
-        return Err("codex app-server error".to_string());
+        // Register a pending request and send a notification + response lines.
+        let rx = router.register(99).await;
+        let notif = serde_json::json!({"method":"turn/status","params":{"thread_id":"t1","status":"running"}});
+        let resp = serde_json::json!({"id":99,"result":{"ok":true}});
+        w.write_all(notif.to_string().as_bytes()).await.unwrap();
+        w.write_all(b"\n").await.unwrap();
+        w.write_all(resp.to_string().as_bytes()).await.unwrap();
+        w.write_all(b"\n").await.unwrap();
+        w.shutdown().await.unwrap();
+
+        let got = tokio::time::timeout(Duration::from_millis(800), rx)
+            .await
+            .expect("response timeout")
+            .expect("oneshot dropped");
+        assert_eq!(got.get("id").and_then(|v| v.as_i64()), Some(99));
+
+        let drained = drain_notifications(8).await;
+        assert!(!drained.is_empty(), "expected at least one notification");
+        assert_eq!(
+            drained[0].get("method").and_then(|v| v.as_str()),
+            Some("turn/status")
+        );
+
+        let _ = read_task.await;
     }
-
-    response
-        .get("result")
-        .cloned()
-        .ok_or_else(|| "codex app-server response missing result".to_string())
 }
 
 pub async fn request(method: &str, params: Value) -> Result<Value, String> {

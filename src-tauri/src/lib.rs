@@ -1,6 +1,7 @@
 mod app_state;
 mod codex_app_server;
 mod codex_cli_swap;
+mod codex_home_env;
 mod commands;
 mod constants;
 mod orchestrator;
@@ -355,7 +356,11 @@ pub fn run() {
             // show real chats, while still allowing isolated homes for test/non-default profiles.
             let codex_home = resolve_codex_home(&user_data_dir, is_ui_tauri, &app_profile);
             let _ = std::fs::create_dir_all(&codex_home);
-            std::env::set_var("CODEX_HOME", &codex_home);
+            // Coordinate with tests/commands that also set CODEX_HOME (process-global env).
+            {
+                let _lock = crate::codex_home_env::lock_env();
+                std::env::set_var("CODEX_HOME", &codex_home);
+            }
             std::env::set_var("API_ROUTER_USER_DATA_DIR", &user_data_dir);
 
             let state = build_state(

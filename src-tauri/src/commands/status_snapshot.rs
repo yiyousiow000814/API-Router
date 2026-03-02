@@ -1955,8 +1955,7 @@ mod tests {
         )
         .unwrap();
 
-        let prev_codex_home = std::env::var("CODEX_HOME").ok();
-        std::env::set_var("CODEX_HOME", &codex_home);
+        let _codex_home_guard = crate::codex_home_env::CodexHomeEnvGuard::set(&codex_home);
 
         let mut map = std::collections::HashMap::new();
         map.insert(
@@ -1996,13 +1995,8 @@ mod tests {
 
         backfill_main_confirmation_from_verified_agent(&mut map, 2_000);
 
-        match prev_codex_home {
-            Some(v) => std::env::set_var("CODEX_HOME", v),
-            None => std::env::remove_var("CODEX_HOME"),
-        }
-
-        let main = map.get(main_sid).expect("main row");
-        assert!(main.confirmed_router);
+        let main = map.get(main_sid).expect("main row"); 
+        assert!(main.confirmed_router); 
         assert_eq!(
             main.last_reported_model_provider.as_deref(),
             Some(GATEWAY_MODEL_PROVIDER_ID)
