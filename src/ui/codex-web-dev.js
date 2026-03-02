@@ -2159,9 +2159,70 @@ function mapThreadReadMessages(thread) {
   return messages;
 }
 
-async function applyThreadToChat(thread, options = {}) {
-  const messages = mapThreadReadMessages(thread);
+async function mapThreadReadMessagesAsync(thread, options = {}) {
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  const messages = [];
+  let seenNonBootstrapUser = false;
+  let seenAssistant = false;
+  const token = Number(options.token || 0);
+  let itemsSeen = 0;
+
+  for (const turn of turns) {
+    const items = ensureArrayItems(turn?.items);
+    for (const item of items) {
+      // Allow cancellation mid-mapping (e.g. user switches chats).
+      if (token && token !== Number(state.chatRenderToken || 0)) return messages;
+      itemsSeen += 1;
+      if (itemsSeen % 120 === 0) {
+        // Yield so the UI stays interactive (header buttons remain clickable).
+        // eslint-disable-next-line no-await-in-loop
+        await nextFrame();
+      }
+
+      if (!item || typeof item !== "object") continue;
+      const type = String(item.type || "").trim();
+      if (!type) continue;
+      if (type === "userMessage") {
+        const parsed = parseUserMessageContent(item.content || item.input || item);
+        let text = stripInlineImageMarkers(parsed.text || "");
+        // Hide the Codex-injected agents prompt for conversation history (matches clawdex).
+        if (!seenNonBootstrapUser && !seenAssistant && text) {
+          const normalized = text.replace(/\r\n/g, "\n").trim();
+          if (looksLikeAgentsBootstrap(normalized)) {
+            // Don't record this as a real user message.
+            continue;
+          }
+        }
+        if (text || parsed.images.length) {
+          messages.push({ role: "user", text, kind: "", images: parsed.images });
+          if (text) seenNonBootstrapUser = true;
+        }
+        continue;
+      }
+      const text = normalizeThreadItemText(item);
+      if (text) {
+        if (type === "agentMessage" || type === "assistantMessage") {
+          messages.push({ role: "assistant", text, kind: "" });
+          seenAssistant = true;
+        }
+        continue;
+      }
+      const toolLike = toToolLikeMessage(item);
+      if (toolLike) messages.push({ role: "system", text: toolLike, kind: "tool" });
+    }
+  }
+  return messages;
+}
+
+async function applyThreadToChat(thread, options = {}) {
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  // One token covers mapping + rendering so async stages can cancel coherently.
+  const renderToken = (Number(state.chatRenderToken || 0) + 1) | 0;
+  state.chatRenderToken = renderToken;
+  const messages =
+    (turns.length >= 120 || !!options.slowRender)
+      ? await mapThreadReadMessagesAsync(thread, { token: renderToken })
+      : mapThreadReadMessages(thread);
   const lastMsg = messages.length ? messages[messages.length - 1] : null;
   const renderSig = [
     String(thread?.id || state.activeThreadId || ""),
@@ -2252,7 +2313,7 @@ async function applyThreadToChat(thread, options = {}) {
     // This prevents the header (hamburger / model picker / workspace toggle) from feeling "locked".
     const shouldAsyncRender = messages.length >= 80 || !!options.slowRender;
     if (shouldAsyncRender) {
-      await renderChatFull(messages, { slowRender: !!options.slowRender });
+      await renderChatFull(messages, { slowRender: !!options.slowRender, token: renderToken });
     } else {
       clearChatMessages();
       for (const msg of messages) addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
@@ -2338,18 +2399,17 @@ async function renderChatFull(messages, options = {}) {
   const box = byId("chatBox");
   if (!box) return;
 
-  // Cancel any previous in-flight async render.
-  state.chatRenderToken = (Number(state.chatRenderToken || 0) + 1) | 0;
-  const token = state.chatRenderToken;
+  const token = Number(options.token || 0);
 
   clearChatMessages();
   // Keep render state in sync even if we yield.
   state.activeThreadMessages = [];
 
   const slowYield = !!options.slowRender;
-  const batchSize = Math.max(6, Math.min(28, Number(options.batchSize || 14)));
+  // Smaller batches yield more often, keeping the header responsive while opening huge chats.
+  const batchSize = slowYield ? 6 : Math.max(8, Math.min(28, Number(options.batchSize || 14)));
   for (let i = 0; i < messages.length; i += batchSize) {
-    if (token !== state.chatRenderToken) return; // superseded
+    if (token && token !== Number(state.chatRenderToken || 0)) return; // superseded
     const frag = document.createDocumentFragment();
     const end = Math.min(messages.length, i + batchSize);
     for (let j = i; j < end; j += 1) {
@@ -2374,10 +2434,6 @@ async function renderChatFull(messages, options = {}) {
     // (This is the root cause of "can't click header while opening".)
     // eslint-disable-next-line no-await-in-loop
     await nextFrame();
-    if (slowYield) {
-      // eslint-disable-next-line no-await-in-loop
-      await waitMs(12);
-    }
   }
 }
 

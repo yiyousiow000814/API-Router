@@ -218,8 +218,8 @@ async function main() {
         if (!h) return { ok: false, error: 'missing e2e hook' };
         const threadId = 'e2e_1';
         const turns = [];
-        for (let i = 0; i < 520; i += 1) {
-          turns.push({ items: [{ type: 'assistantMessage', text: 'msg ' + i + '\\n' + Array.from({ length: 3 }).map(() => 'x'.repeat(180)).join('\\n') }] });
+        for (let i = 0; i < 1400; i += 1) {
+          turns.push({ items: [{ type: 'assistantMessage', text: 'msg ' + i + '\\n' + Array.from({ length: 6 }).map(() => 'x'.repeat(260)).join('\\n') }] });
         }
         const thread = { id: threadId, cwd: 'API-Router', workspace: 'windows', turns };
         h.setThreadHistory(threadId, thread);
