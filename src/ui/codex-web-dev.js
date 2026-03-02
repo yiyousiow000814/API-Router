@@ -1013,6 +1013,18 @@ function updateScrollToBottomBtn() {
   const show = !isChatNearBottomForJumpBtn() && box.scrollHeight > box.clientHeight + 40;
   btn.classList.toggle("show", !!show);
   btn.setAttribute("aria-hidden", show ? "false" : "true");
+  // When hidden, make it non-focusable to avoid "aria-hidden on focused element" warnings.
+  // (Some browsers keep focus on the previously clicked button even after hiding it.)
+  if (!show) {
+    btn.disabled = true;
+    btn.tabIndex = -1;
+    try {
+      if (document.activeElement === btn) btn.blur();
+    } catch {}
+  } else {
+    btn.disabled = false;
+    btn.tabIndex = 0;
+  }
 }
 
 function dataUrlToBlob(dataUrl) {

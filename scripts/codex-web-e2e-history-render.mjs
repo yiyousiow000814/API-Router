@@ -335,6 +335,21 @@ async function main() {
       const shown = await driver.executeScript(`return !!document.getElementById('scrollToBottomBtn')?.classList.contains('show');`)
       return !shown
     }, 8000, 'scroll-to-bottom button to hide near bottom')
+    // When hidden, the button should not keep focus (avoids aria-hidden focused descendant warnings).
+    const focusCheck = await driver.executeScript(`
+      const btn = document.getElementById('scrollToBottomBtn');
+      const active = document.activeElement;
+      return {
+        ok: true,
+        btnHidden: btn ? btn.getAttribute('aria-hidden') : null,
+        btnDisabled: btn ? !!btn.disabled : null,
+        activeId: active ? active.id : null,
+      };
+    `)
+    if (!focusCheck?.ok) throw new Error('focus check failed')
+    if (String(focusCheck.btnHidden) !== 'true') throw new Error(`expected hidden scroll-to-bottom to set aria-hidden=true, got ${focusCheck.btnHidden}`)
+    if (!focusCheck.btnDisabled) throw new Error('expected hidden scroll-to-bottom to be disabled (not focusable)')
+    if (focusCheck.activeId === 'scrollToBottomBtn') throw new Error('expected focus to not remain on hidden scroll-to-bottom button')
 
     const checks = await driver.executeScript(`
       const text = document.getElementById('chatBox')?.innerText || '';
