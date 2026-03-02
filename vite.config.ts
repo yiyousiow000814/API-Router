@@ -34,8 +34,16 @@ export default defineConfig({
             _res.end(svg)
             return
           }
-          const isCodexWeb = url === '/codex-web' || url.startsWith('/codex-web?')
-          const isSandboxWeb = url === '/sandbox/codex-web' || url.startsWith('/sandbox/codex-web?')
+          const isCodexWeb =
+            url === '/codex-web' ||
+            url === '/codex-web/' ||
+            url.startsWith('/codex-web?') ||
+            url.startsWith('/codex-web/?')
+          const isSandboxWeb =
+            url === '/sandbox/codex-web' ||
+            url === '/sandbox/codex-web/' ||
+            url.startsWith('/sandbox/codex-web?') ||
+            url.startsWith('/sandbox/codex-web/?')
           if (!isCodexWeb && !isSandboxWeb) {
             next()
             return

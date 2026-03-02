@@ -17,6 +17,7 @@ const VERSION_TIMEOUT_SECS: u64 = 8;
 const VERSION_DETECT_TIMEOUT_SECS: u64 = 3;
 const VERSION_INFO_CACHE_SECS: i64 = 30;
 const THREADS_INDEX_STALE_SECS: i64 = 15;
+const THREADS_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
 
 #[derive(Serialize)]
 struct ApiErrorBody<'a> {
@@ -1170,6 +1171,33 @@ fn sort_threads_by_updated_desc(items: &mut [Value]) {
     items.reverse();
 }
 
+fn item_updated_unix_secs(item: &Value) -> i64 {
+    let raw = item
+        .get("updatedAt")
+        .and_then(|v| v.as_i64())
+        .or_else(|| item.get("createdAt").and_then(|v| v.as_i64()))
+        .unwrap_or(0);
+    if raw <= 0 {
+        return 0;
+    }
+    // Some sources may encode updatedAt as unix millis (e.g., UUIDv7 millis). Normalize to secs.
+    if raw > 1_000_000_000_000 {
+        raw / 1000
+    } else {
+        raw
+    }
+}
+
+fn filter_old_threads(items: &mut Vec<Value>, now_unix_secs: i64) {
+    items.retain(|item| {
+        let updated = item_updated_unix_secs(item);
+        if updated <= 0 {
+            return true;
+        }
+        now_unix_secs.saturating_sub(updated) <= THREADS_MAX_AGE_SECS
+    });
+}
+
 fn normalize_preview_text(raw: &str) -> Option<String> {
     let text = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = text.trim();
@@ -1968,7 +1996,8 @@ import re
 from pathlib import Path
 import os
 
-root = Path.home() / ".codex"
+codex_home = (os.environ.get("CODEX_HOME") or "").strip()
+root = Path(codex_home) if codex_home else (Path.home() / ".codex")
 sessions_dir = root / "sessions"
 history_path = root / "history.jsonl"
 distro = (os.environ.get("WSL_DISTRO_NAME") or "").strip()
@@ -2120,6 +2149,7 @@ async fn rebuild_workspace_thread_items(target: WorkspaceTarget) -> Vec<Value> {
     normalize_thread_items_shape(&mut items);
     hydrate_missing_previews_from_session_files(&mut items);
     filter_auxiliary_threads(&mut items);
+    filter_old_threads(&mut items, current_unix_secs());
     sort_threads_by_updated_desc(&mut items);
     if items.len() > 600 {
         items.truncate(600);

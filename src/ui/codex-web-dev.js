@@ -1,7 +1,13 @@
+try {
+  window.__webCodexScriptLoaded = true;
+} catch {}
+
 const state = {
   token: "",
   activeHostId: "",
   activeThreadId: "",
+  activeThreadRolloutPath: "",
+  openingThreadAbort: null,
   ws: null,
   wsReqHandlers: new Map(),
   pendingApprovals: [],
@@ -12,6 +18,33 @@ const state = {
     windows: [],
     wsl2: [],
   },
+  threadListRenderSigByWorkspace: {
+    windows: "",
+    wsl2: "",
+  },
+  threadListLoading: false,
+  threadListLoadingTarget: "",
+  threadRefreshAbortByWorkspace: {
+    windows: null,
+    wsl2: null,
+  },
+  threadRefreshReqSeqByWorkspace: {
+    windows: 0,
+    wsl2: 0,
+  },
+  threadAutoRefreshLastMsByWorkspace: {
+    windows: 0,
+    wsl2: 0,
+  },
+  threadAutoRefreshInFlight: false,
+  scheduledRefreshTimer: null,
+  activeThreadRefreshTimer: null,
+  activeThreadLivePolling: false,
+  activeThreadRenderSig: "",
+  activeThreadMessages: [],
+  wsLastEventId: 0,
+  wsRecentEventIds: new Set(),
+  wsRecentEventIdQueue: [],
   collapsedWorkspaceKeys: new Set(),
   sidebarCollapsed: false,
   threadSearchQuery: "",
@@ -46,6 +79,12 @@ const THREAD_PULL_REFRESH_TRIGGER_PX = 44;
 const THREAD_PULL_REFRESH_MAX_PX = 84;
 const THREAD_PULL_REFRESH_MIN_MS = 520;
 const THREAD_PULL_HINT_CLEAR_DELAY_MS = 160;
+const THREAD_REFRESH_DEBOUNCE_MS = 260;
+const THREAD_AUTO_REFRESH_CONNECTED_MS = 2000;
+const THREAD_AUTO_REFRESH_DISCONNECTED_MS = 3500;
+const ACTIVE_THREAD_REFRESH_DEBOUNCE_MS = 380;
+const ACTIVE_THREAD_LIVE_POLL_MS = 1500;
+const RECENT_EVENT_ID_CACHE_SIZE = 2048;
 const MOBILE_PROMPT_MIN_HEIGHT_PX = 40;
 const MOBILE_PROMPT_MAX_HEIGHT_PX = 420;
 
@@ -101,6 +140,92 @@ async function waitPendingThreadResume(threadId) {
   }
 }
 
+function toRecord(value) {
+  return value && typeof value === "object" ? value : null;
+}
+
+function readString(value) {
+  return typeof value === "string" ? value : null;
+}
+
+function readNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function resetEventReplayState() {
+  state.wsLastEventId = 0;
+  state.wsRecentEventIds = new Set();
+  state.wsRecentEventIdQueue = [];
+}
+
+function markEventIdSeen(eventId) {
+  if (!Number.isInteger(eventId) || eventId < 1) return;
+  state.wsRecentEventIds.add(eventId);
+  state.wsRecentEventIdQueue.push(eventId);
+  while (state.wsRecentEventIdQueue.length > RECENT_EVENT_ID_CACHE_SIZE) {
+    const removed = state.wsRecentEventIdQueue.shift();
+    if (Number.isInteger(removed)) state.wsRecentEventIds.delete(removed);
+  }
+}
+
+function extractNotificationEventId(notification) {
+  const record = toRecord(notification);
+  const id = readNumber(record?.eventId) ?? readNumber(record?.event_id);
+  if (id === null) return null;
+  const normalized = Math.floor(id);
+  return normalized > 0 ? normalized : null;
+}
+
+function extractNotificationThreadId(notification) {
+  const record = toRecord(notification);
+  const params = toRecord(record?.params);
+  const msg = toRecord(params?.msg);
+  const thread = toRecord(params?.thread) || toRecord(params?.threadState) || toRecord(params?.thread_state);
+  const source = toRecord(params?.source) || toRecord(msg?.source);
+  const subagent = toRecord(toRecord(source?.subagent)?.thread_spawn);
+  return (
+    readString(msg?.thread_id) ||
+    readString(msg?.threadId) ||
+    readString(msg?.conversation_id) ||
+    readString(msg?.conversationId) ||
+    readString(params?.thread_id) ||
+    readString(params?.threadId) ||
+    readString(thread?.id) ||
+    readString(thread?.thread_id) ||
+    readString(thread?.threadId) ||
+    readString(source?.thread_id) ||
+    readString(source?.threadId) ||
+    readString(source?.parent_thread_id) ||
+    readString(source?.parentThreadId) ||
+    readString(subagent?.parent_thread_id) ||
+    null
+  );
+}
+
+function shouldRefreshThreadsFromNotification(method) {
+  return (
+    method.startsWith("thread/") ||
+    method.startsWith("turn/") ||
+    method.startsWith("item/") ||
+    method.startsWith("codex/event/")
+  );
+}
+
+function shouldRefreshActiveThreadFromNotification(method) {
+  return (
+    method.startsWith("turn/") ||
+    method.startsWith("item/") ||
+    method.startsWith("codex/event/") ||
+    method === "thread/name/updated" ||
+    method === "thread/status/changed"
+  );
+}
+
 function setStatus(message, isWarn = false) {
   const statusLine = byId("statusLine");
   if (statusLine) statusLine.textContent = message || "";
@@ -116,6 +241,26 @@ function setStatus(message, isWarn = false) {
     badge.textContent = "Disconnected";
     badge.classList.add("warn");
   }
+}
+
+function scheduleThreadRefresh(delayMs = THREAD_REFRESH_DEBOUNCE_MS) {
+  if (state.scheduledRefreshTimer) clearTimeout(state.scheduledRefreshTimer);
+  state.scheduledRefreshTimer = setTimeout(() => {
+    state.scheduledRefreshTimer = null;
+    refreshThreads(getWorkspaceTarget(), { force: false, silent: true }).catch(() => {});
+  }, delayMs);
+}
+
+function scheduleActiveThreadRefresh(threadId, delayMs = ACTIVE_THREAD_REFRESH_DEBOUNCE_MS) {
+  if (!threadId || threadId !== state.activeThreadId) return;
+  if (state.activeThreadRefreshTimer) clearTimeout(state.activeThreadRefreshTimer);
+  state.activeThreadRefreshTimer = setTimeout(async () => {
+    state.activeThreadRefreshTimer = null;
+    const activeId = state.activeThreadId || "";
+    if (!activeId || activeId !== threadId) return;
+    if (state.activeThreadId !== threadId) return;
+    loadThreadMessages(threadId, { animateBadge: false }).catch(() => {});
+  }, delayMs);
 }
 
 function normalizeWorkspaceTarget(value) {
@@ -156,6 +301,8 @@ function syncActiveThreadMetaFromList(threadId = state.activeThreadId) {
   if (!thread) return;
   const target = detectThreadWorkspaceTarget(thread);
   if (target !== "unknown") state.activeThreadWorkspace = target;
+  const rolloutPath = String(thread?.path || "").trim();
+  if (rolloutPath) state.activeThreadRolloutPath = rolloutPath;
   const modelLabel = pickActiveThreadModelLabel(thread);
   if (modelLabel) state.activeThreadModelLabel = modelLabel;
 }
@@ -412,8 +559,17 @@ async function setWorkspaceTarget(nextTarget) {
     syncActiveThreadMetaFromList();
     applyThreadFilter();
     updateHeaderUi();
+  } else {
+    // Avoid showing stale chats from the previous workspace while the new list is loading.
+    state.threadItemsAll = [];
+    syncActiveThreadMetaFromList();
+    state.threadListLoading = true;
+    state.threadListLoadingTarget = target;
+    applyThreadFilter();
+    updateHeaderUi();
+    setStatus(`Loading ${target.toUpperCase()} chats...`);
   }
-  refreshThreads(target).catch((e) => setStatus(e.message, true));
+  refreshThreads(target, { force: true }).catch((e) => setStatus(e.message, true));
 }
 
 function blockInSandbox(actionLabel) {
@@ -603,6 +759,24 @@ function renderMessageBody(role, text) {
   return `<p>${escapeHtml(text || "").replace(/\n/g, "<br>")}</p>`;
 }
 
+function renderMessageAttachments(attachments) {
+  const items = Array.isArray(attachments) ? attachments : [];
+  const imgs = items.filter((it) => it && typeof it === "object" && typeof it.src === "string" && it.src.trim());
+  if (!imgs.length) return "";
+  const nodes = [];
+  for (const img of imgs) {
+    const src = img.src.trim();
+    // Allow data URLs and http(s). For local paths, we just show a chip for now
+    // because the browser context may not have file access.
+    if (/^data:image\//i.test(src) || /^https?:\/\//i.test(src)) {
+      nodes.push(`<img class="msgAttachmentImage" alt="${escapeHtml(img.label || "image")}" src="${escapeHtml(src)}" />`);
+    } else {
+      nodes.push(`<div class="msgAttachmentChip mono">[image]</div>`);
+    }
+  }
+  return `<div class="msgAttachments">${nodes.join("")}</div>`;
+}
+
 function wireMessageLinks(container) {
   if (!container) return;
 }
@@ -635,8 +809,12 @@ function addChat(role, text, options = {}) {
   if (!box) return;
   if (welcome) welcome.style.display = "none";
   const node = document.createElement("div");
-  node.className = `msg ${role}`.trim();
-  node.innerHTML = `<div class="msgHead">${escapeHtml(role)}</div><div class="msgBody">${renderMessageBody(role, text)}</div>`;
+  const kind = typeof options.kind === "string" && options.kind.trim() ? options.kind.trim() : "";
+  node.className = `msg ${role}${kind ? ` kind-${kind}` : ""}`.trim();
+  const headLabel = kind && role === "system" ? kind : role;
+  const attachmentsHtml = renderMessageAttachments(options.attachments);
+  const bodyHtml = renderMessageBody(role, text);
+  node.innerHTML = `<div class="msgHead">${escapeHtml(headLabel)}</div><div class="msgBody">${attachmentsHtml}${bodyHtml}</div>`;
   wireMessageLinks(node);
   if (options.animate !== false) {
     const defaultDelay = role === "assistant" || role === "system" ? 50 : 0;
@@ -689,6 +867,8 @@ function clearChatMessages() {
   const nodes = box.querySelectorAll(".msg");
   for (const node of nodes) node.remove();
   box.scrollTop = 0;
+  state.activeThreadRenderSig = "";
+  state.activeThreadMessages = [];
 }
 
 function updateMobileComposerState() {
@@ -836,47 +1016,246 @@ function compactAttachmentLabel(value, maxLen = 38) {
   return `${candidate.slice(0, maxLen - 1)}…`;
 }
 
+function stripCodexImageBlocks(text) {
+  const source = String(text || "");
+  if (!source) return "";
+  // Codex / this chat environment may serialize images as XML-ish blocks:
+  // <image name=[Image #1]> ... </image>. We render them as a simple placeholder.
+  let replaced = source.replace(
+    /<image\s+name=(?:\[[^\]]+\]|"[^"]+"|'[^']+')\s*>[\s\S]*?<\/image>/gi,
+    (match) => {
+      const name = /name=(?:\[([^\]]+)\]|"([^"]+)"|'([^']+)')/i.exec(match);
+      const label = (name?.[1] || name?.[2] || name?.[3] || "").trim();
+      return label ? `[${label}]` : "[image]";
+    },
+  );
+  // Some environments emit only the opening tag (no closing </image>).
+  replaced = replaced.replace(
+    /<image\s+name=(?:\[([^\]]+)\]|"([^"]+)"|'([^']+)')\s*\/?>/gi,
+    (_m, a, b, c) => {
+      const label = String(a || b || c || "").trim();
+      return label ? `[${label}]` : "[image]";
+    },
+  );
+  replaced = replaced.replace(/<\/image>/gi, "");
+  return replaced;
+}
+
+function isBootstrapAgentsPrompt(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  const head = s.slice(0, 320);
+  // Hide the repository bootstrap prompt that Codex injects (matches what users report in the UI).
+  if (/^#\s*AGENTS\.md instructions\b/i.test(head)) return true;
+  if (/<INSTRUCTIONS>/i.test(head) && /Agents Documentation|Agent Defaults|PR-first/i.test(head)) return true;
+  return false;
+}
+
+function stripStandaloneImageRefs(text) {
+  // Remove lines that are just image placeholders (typically injected by the environment),
+  // but only when we are already rendering image attachments separately.
+  return String(text || "")
+    .replace(/^\s*\[(?:Image\s*#\d+|image:[^\]]+)\]\s*$/gmi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function parseUserMessageParts(item) {
+  const content = Array.isArray(item?.content) ? item.content : [];
+  const lines = [];
+  const images = [];
+  const mentions = [];
+  const norm = (value) => String(value || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const partType = norm(part.type);
+    if (partType === "text" || partType === "inputtext") {
+      const text = stripCodexImageBlocks(String(part.text || "")).trim();
+      if (text) lines.push(text);
+      continue;
+    }
+    if (partType === "mention") {
+      const fileName = compactAttachmentLabel(part.path);
+      if (fileName) mentions.push({ kind: "file", label: fileName, path: String(part.path || "") });
+      continue;
+    }
+    if (partType === "localimage") {
+      const fileName = compactAttachmentLabel(part.path);
+      const path = String(part.path || "").trim();
+      if (path) images.push({ src: path, label: fileName || "image", kind: "path" });
+      continue;
+    }
+    if (partType === "image") {
+      const url = String(part.url || "").trim();
+      if (url) images.push({ src: url, label: compactAttachmentLabel(url) || "image", kind: "url" });
+      continue;
+    }
+    if (partType === "inputimage") {
+      const url = String(part.image_url || "").trim();
+      if (url) images.push({ src: url, label: "image", kind: "url" });
+      continue;
+    }
+  }
+  let text = lines.join("\n").trim();
+  if (images.length) text = stripStandaloneImageRefs(text);
+  return { text, images, mentions };
+}
+
 function normalizeThreadItemText(item) {
   if (!item || typeof item !== "object") return "";
   const type = String(item.type || "").trim();
   if (!type) return "";
   if (type === "agentMessage" || type === "assistantMessage") {
-    return String(item.text || "").trim();
+    return stripCodexImageBlocks(String(item.text || "")).trim();
   }
   if (type !== "userMessage") return "";
-  const content = Array.isArray(item.content) ? item.content : [];
-  const lines = [];
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    const partType = String(part.type || "").trim();
-    if (partType === "text") {
-      const text = String(part.text || "").trim();
-      if (text) lines.push(text);
-    } else if (partType === "mention") {
-      const fileName = compactAttachmentLabel(part.path);
-      if (fileName) lines.push(`[file: ${fileName}]`);
-    } else if (partType === "localImage") {
-      const fileName = compactAttachmentLabel(part.path);
-      if (fileName) lines.push(`[image: ${fileName}]`);
-    } else if (partType === "image") {
-      const fileName = compactAttachmentLabel(part.url);
-      if (fileName) lines.push(`[image: ${fileName}]`);
-    }
+  return parseUserMessageParts(item).text;
+}
+
+function normalizeType(value) {
+  return String(value || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+}
+
+function normalizeInline(value, maxChars) {
+  const text = typeof value === "string" ? value : "";
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return null;
+  if (cleaned.length <= maxChars) return cleaned;
+  return `${cleaned.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
+function normalizeMultiline(value, maxChars) {
+  const text = typeof value === "string" ? value : "";
+  const cleaned = text
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/\r\n/g, "\n")
+    .trim();
+  if (!cleaned) return null;
+  if (cleaned.length <= maxChars) return cleaned;
+  return `${cleaned.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
+function toStructuredPreview(value, maxChars) {
+  if (value == null) return null;
+  if (typeof value === "string") return normalizeMultiline(value, maxChars);
+  try {
+    return normalizeMultiline(JSON.stringify(value, null, 2), maxChars);
+  } catch {
+    return null;
   }
-  return lines.join("\n").trim();
+}
+
+function toToolLikeMessage(item) {
+  const itemType = normalizeType(item?.type);
+  if (!itemType) return null;
+
+  if (itemType === "plan") {
+    return normalizeMultiline(item?.text, 1800) || null;
+  }
+
+  if (itemType === "commandexecution") {
+    const command = normalizeInline(item?.command, 240) ?? "command";
+    const status = normalizeType(item?.status);
+    const output =
+      normalizeMultiline(item?.aggregatedOutput, 2400) ??
+      normalizeMultiline(item?.aggregated_output, 2400) ??
+      normalizeMultiline(item?.output, 2400);
+    const exitCode = readNumber(item?.exitCode) ?? readNumber(item?.exit_code);
+    const title =
+      status === "failed" || status === "error"
+        ? `- Command failed \`${command}\``
+        : `- Ran \`${command}\``;
+    const lines = [title];
+    if (exitCode !== null) lines.push(`  - exit code ${String(exitCode)}`);
+    if (output) lines.push(`  - ${output.replace(/\n/g, "\n    ")}`);
+    return lines.join("\n");
+  }
+
+  if (itemType === "mcptoolcall") {
+    const server = normalizeInline(item?.server, 120);
+    const tool = normalizeInline(item?.tool, 120);
+    const label = [server, tool].filter(Boolean).join(" / ") || "MCP tool call";
+    const status = normalizeType(item?.status);
+    const err = toRecord(item?.error);
+    const errMsg = normalizeInline(err?.message, 240) ?? normalizeInline(item?.error, 240);
+    const result = toStructuredPreview(item?.result, 240);
+    const detail =
+      status === "failed" || status === "error"
+        ? (errMsg ?? result)
+        : (result ?? errMsg);
+    const title =
+      status === "failed" || status === "error"
+        ? `- Tool failed \`${label}\``
+        : `- Called tool \`${label}\``;
+    return detail ? `${title}\n  - ${detail.replace(/\n/g, "\n    ")}` : title;
+  }
+
+  if (itemType === "websearch") {
+    const query = normalizeInline(item?.query, 180);
+    const action = toRecord(item?.action);
+    const actionType = normalizeType(action?.type);
+    let detail = query;
+    if (actionType === "openpage") {
+      detail = normalizeInline(action?.url, 240) ?? detail;
+    } else if (actionType === "findinpage") {
+      const url = normalizeInline(action?.url, 180);
+      const pattern = normalizeInline(action?.pattern, 120);
+      detail = [url, pattern ? `pattern: ${pattern}` : null].filter(Boolean).join(" | ") || detail;
+    }
+    const title = query ? `- Searched web for "${query}"` : "- Searched web";
+    return detail && detail !== query ? `${title}\n  - ${detail}` : title;
+  }
+
+  if (itemType === "filechange") {
+    const status = normalizeType(item?.status);
+    const changeCount = Array.isArray(item?.changes) ? item.changes.length : 0;
+    const title =
+      status === "failed" || status === "error"
+        ? "- File changes failed"
+        : "- Applied file changes";
+    return changeCount > 0 ? `${title}\n  - ${String(changeCount)} file(s) changed` : title;
+  }
+
+  if (itemType === "enteredreviewmode") return "- Entered review mode";
+  if (itemType === "exitedreviewmode") return "- Exited review mode";
+  if (itemType === "contextcompaction") return "- Compacted conversation context";
+
+  return null;
 }
 
 function mapThreadReadMessages(thread) {
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
   const messages = [];
+  let seenAssistant = false;
+  let seenNonBootstrapUser = false;
   for (const turn of turns) {
     const items = Array.isArray(turn?.items) ? turn.items : [];
     for (const item of items) {
       const type = String(item?.type || "").trim();
+      if (type === "userMessage") {
+        const parsed = parseUserMessageParts(item);
+        const text = parsed.text;
+        // Only hide Codex bootstrap prompt when it appears as the initial seed
+        // before the first assistant output (so user pastes later are not hidden).
+        if (text && isBootstrapAgentsPrompt(text) && !seenAssistant && !seenNonBootstrapUser) {
+          continue;
+        }
+        if (text || parsed.images.length) {
+          messages.push({ role: "user", text, kind: "", images: parsed.images });
+          if (text) seenNonBootstrapUser = true;
+        }
+        continue;
+      }
       const text = normalizeThreadItemText(item);
-      if (!text) continue;
-      if (type === "userMessage") messages.push({ role: "user", text });
-      else if (type === "agentMessage" || type === "assistantMessage") messages.push({ role: "assistant", text });
+      if (text) {
+        if (type === "agentMessage" || type === "assistantMessage") {
+          messages.push({ role: "assistant", text, kind: "" });
+          seenAssistant = true;
+        }
+        continue;
+      }
+      const toolLike = toToolLikeMessage(item);
+      if (toolLike) messages.push({ role: "system", text: toolLike, kind: "tool" });
     }
   }
   return messages;
@@ -885,16 +1264,100 @@ function mapThreadReadMessages(thread) {
 function applyThreadToChat(thread, options = {}) {
   const messages = mapThreadReadMessages(thread);
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  const lastMsg = messages.length ? messages[messages.length - 1] : null;
+  const renderSig = [
+    String(thread?.id || state.activeThreadId || ""),
+    String(turns.length),
+    String(messages.length),
+    String(lastMsg?.role || ""),
+    String(lastMsg?.text || ""),
+  ].join("::");
   state.activeThreadStarted = messages.length > 0 || turns.length > 0;
   const modelLabel = pickActiveThreadModelLabel(thread);
   if (modelLabel) state.activeThreadModelLabel = modelLabel;
   else state.activeThreadModelLabel = state.selectedModel || "";
   const target = detectThreadWorkspaceTarget(thread);
   if (target !== "unknown") state.activeThreadWorkspace = target;
-  clearChatMessages();
-  for (const msg of messages) addChat(msg.role, msg.text, { scroll: false });
+  if (!options.forceRender && state.activeThreadRenderSig === renderSig) {
+    if (state.activeThreadStarted) hideWelcomeCard();
+    else showWelcomeCard();
+    updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+    return;
+  }
+
   const box = byId("chatBox");
-  if (box) box.scrollTop = box.scrollHeight;
+  const nearBottom = !!(
+    box &&
+    box.scrollTop + box.clientHeight >= box.scrollHeight - 80
+  );
+
+  const prevMessages = Array.isArray(state.activeThreadMessages) ? state.activeThreadMessages : [];
+  const isSamePrefix = (a, b) => {
+    if (a.length > b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i].role !== b[i].role) return false;
+      if (a[i].kind !== b[i].kind) return false;
+      if (a[i].text !== b[i].text) return false;
+    }
+    return true;
+  };
+
+  const updateLastNode = (role, text) => {
+    if (!box) return false;
+    const nodes = box.querySelectorAll(".msg");
+    const last = nodes.length ? nodes[nodes.length - 1] : null;
+    if (!last) return false;
+    if (!last.classList.contains(role)) return false;
+    const body = last.querySelector(".msgBody");
+    if (!body) return false;
+    body.innerHTML = renderMessageBody(role, text);
+    return true;
+  };
+
+  if (prevMessages.length && messages.length === prevMessages.length) {
+    // Common "live" case: the last assistant message grows while streaming.
+    let allButLastSame = true;
+    for (let i = 0; i < prevMessages.length - 1; i += 1) {
+      const a = prevMessages[i];
+      const b = messages[i];
+      if (a.role !== b.role || a.kind !== b.kind || a.text !== b.text) {
+        allButLastSame = false;
+        break;
+      }
+    }
+    if (allButLastSame && prevMessages.length) {
+      const a = prevMessages[prevMessages.length - 1];
+      const b = messages[messages.length - 1];
+      if (a.role === b.role && a.kind === b.kind && a.text !== b.text) {
+        updateLastNode(b.role, b.text);
+        state.activeThreadMessages = messages;
+        state.activeThreadRenderSig = renderSig;
+        if (nearBottom && box) box.scrollTop = box.scrollHeight;
+        if (state.activeThreadStarted) hideWelcomeCard();
+        else showWelcomeCard();
+        updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+        return;
+      }
+    }
+  }
+
+  if (isSamePrefix(prevMessages, messages)) {
+    // Append-only update: avoid full re-render to keep scroll position stable.
+    for (let i = prevMessages.length; i < messages.length; i += 1) {
+      const msg = messages[i];
+      addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
+    }
+    state.activeThreadMessages = messages;
+    state.activeThreadRenderSig = renderSig;
+    if (nearBottom && box) box.scrollTop = box.scrollHeight;
+  } else {
+    clearChatMessages();
+    for (const msg of messages) addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
+    state.activeThreadMessages = messages;
+    state.activeThreadRenderSig = renderSig;
+    if (box) box.scrollTop = box.scrollHeight;
+  }
+
   if (state.activeThreadStarted) hideWelcomeCard();
   else showWelcomeCard();
   updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
@@ -902,6 +1365,39 @@ function applyThreadToChat(thread, options = {}) {
 
 async function loadThreadMessages(threadId, options = {}) {
   if (!threadId) return;
+  try {
+    const e2e = window.__webCodexE2E;
+    if (e2e && typeof e2e.getThreadHistory === "function") {
+      const seeded = e2e.getThreadHistory(threadId);
+      if (seeded) {
+        applyThreadToChat(seeded, options);
+        return;
+      }
+    }
+  } catch (_) {
+    // Ignore and continue with normal fetch paths.
+  }
+  try {
+    const query = [];
+    const workspace = options.workspace || state.activeThreadWorkspace || "";
+    if (workspace === "windows" || workspace === "wsl2") {
+      query.push(`workspace=${encodeURIComponent(workspace)}`);
+    }
+    const rolloutPath = String(options.rolloutPath || state.activeThreadRolloutPath || "").trim();
+    if (rolloutPath) query.push(`rolloutPath=${encodeURIComponent(rolloutPath)}`);
+    const path = query.length
+      ? `/codex/threads/${encodeURIComponent(threadId)}/history?${query.join("&")}`
+      : `/codex/threads/${encodeURIComponent(threadId)}/history`;
+    const history = await api(path, { method: "GET", signal: options.signal });
+    if (state.activeThreadId && state.activeThreadId !== threadId) return;
+    const thread = history?.thread || history?.result?.thread || null;
+    if (thread) {
+      applyThreadToChat(thread, options);
+      return;
+    }
+  } catch (_) {
+    // Fall back to codex RPC for cases where history is unavailable (best-effort).
+  }
   const rpc = await api("/codex/rpc", {
     method: "POST",
     body: {
@@ -911,7 +1407,9 @@ async function loadThreadMessages(threadId, options = {}) {
         includeTurns: true,
       },
     },
+    signal: options.signal,
   });
+  if (state.activeThreadId && state.activeThreadId !== threadId) return;
   const thread = rpc?.result?.thread || null;
   applyThreadToChat(thread, options);
 }
@@ -971,6 +1469,7 @@ async function api(path, options = {}) {
     method: options.method || "GET",
     headers,
     body: options.body ? JSON.stringify(options.body) : undefined,
+    signal: options.signal,
   });
   const payload = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -986,7 +1485,9 @@ function setActiveHost(id) {
 }
 
 function setActiveThread(id) {
+  const prev = state.activeThreadId || "";
   state.activeThreadId = id || "";
+  if (prev !== state.activeThreadId) state.activeThreadRenderSig = "";
   if (!state.activeThreadId) {
     state.activeThreadStarted = false;
     state.activeThreadModelLabel = "";
@@ -1055,12 +1556,44 @@ function connectWs() {
       applyPendingPayloads(payload?.payload?.approvals || [], payload?.payload?.userInputs || []);
       return;
     }
+    if (payload.type === "rpc.notification") {
+      const notification = payload.payload || {};
+      const record = toRecord(notification);
+      const method = readString(record?.method) || "";
+      if (!method) return;
+      const eventId = extractNotificationEventId(record);
+      if (eventId !== null) {
+        if (eventId === 1 && state.wsLastEventId > 1) resetEventReplayState();
+        if (eventId <= state.wsLastEventId) return;
+        if (state.wsRecentEventIds.has(eventId)) return;
+        markEventIdSeen(eventId);
+        state.wsLastEventId = Math.max(state.wsLastEventId, eventId);
+      }
+      const threadId = extractNotificationThreadId(record);
+      if (shouldRefreshThreadsFromNotification(method)) scheduleThreadRefresh();
+      if (threadId && shouldRefreshActiveThreadFromNotification(method)) scheduleActiveThreadRefresh(threadId);
+      return;
+    }
     if (payload.type === "subscribed") setStatus("WS subscribed.");
   };
 }
 
 function renderThreads(items) {
   const list = byId("threadList");
+  const prevListScrollTop = list?.scrollTop ?? 0;
+  const shouldRestoreListScroll = prevListScrollTop > 0;
+  const prevGroupScroll = new Map();
+  const pendingScrollRestores = [];
+  try {
+    const groups = Array.from(list?.querySelectorAll?.(".groupCard[data-group-key]") || []);
+    for (const group of groups) {
+      const key = String(group.getAttribute("data-group-key") || "").trim();
+      if (!key) continue;
+      const body = group.querySelector(".groupBody");
+      if (!body) continue;
+      if (body.scrollTop > 0) prevGroupScroll.set(key, body.scrollTop);
+    }
+  } catch {}
   list.innerHTML = "";
   const query = state.threadSearchQuery.trim().toLowerCase();
   const groups = new Map();
@@ -1074,6 +1607,10 @@ function renderThreads(items) {
   }
   const entries = Array.from(groups.entries()).map(([k, v]) => [groupLabels.get(k) || k, v, k]);
   if (!entries.length) {
+    if (state.threadListLoading && state.threadListLoadingTarget === getWorkspaceTarget()) {
+      list.innerHTML = `<div class="muted">Loading chats...</div>`;
+      return;
+    }
     if (state.threadItemsAll.length && hasDualWorkspaceTargets()) {
       list.innerHTML = `<div class="muted">No ${escapeHtml(getWorkspaceTarget().toUpperCase())} chats yet.</div>`;
     } else {
@@ -1132,46 +1669,67 @@ function renderThreads(items) {
       }
       const openThread = async () => {
         if (!id) return;
+        if (id === state.activeThreadId && state.activeMainTab === "chat" && state.activeThreadStarted) {
+          return;
+        }
         const reqId = state.openingThreadReqId + 1;
         state.openingThreadReqId = reqId;
+        if (state.openingThreadAbort) {
+          try {
+            state.openingThreadAbort.abort();
+          } catch {}
+        }
+        const controller = new AbortController();
+        state.openingThreadAbort = controller;
         setMainTab("chat");
         setMobileTab("chat");
+        // Set active thread immediately so background refresh doesn't keep re-rendering the previous chat.
+        setActiveThread(id);
+        const rolloutPath = String(thread?.path || "").trim();
+        state.activeThreadRolloutPath = rolloutPath;
         setChatOpening(true);
         try {
           const workspaceHint = detectThreadWorkspaceTarget(thread);
           const label = workspaceHint === "wsl2" ? "WSL2" : workspaceHint === "windows" ? "WIN" : "AUTO";
+          // 1) Show full history immediately from the local JSONL file (matches `codex resume` output).
+          const historyStartMs = performance.now();
+          await loadThreadMessages(id, {
+            animateBadge: true,
+            signal: controller.signal,
+            workspace: workspaceHint === "unknown" ? "" : workspaceHint,
+            rolloutPath,
+          });
+          const historyLatencyMs = Math.round(performance.now() - historyStartMs);
+          if (state.openingThreadReqId === reqId) {
+            setStatus(`Loaded history ${label} ${truncateLabel(id, 12)} in ${historyLatencyMs}ms`);
+          }
+
+          // 2) Resume in background so the thread is runnable for new turns.
           const resumeQuery = [];
           if (workspaceHint === "windows" || workspaceHint === "wsl2") {
             resumeQuery.push(`workspace=${encodeURIComponent(workspaceHint)}`);
           }
-          if (workspaceHint === "wsl2") {
-            const rolloutPath = String(thread?.path || "").trim();
-            if (rolloutPath) resumeQuery.push(`rolloutPath=${encodeURIComponent(rolloutPath)}`);
-          }
+          if (rolloutPath) resumeQuery.push(`rolloutPath=${encodeURIComponent(rolloutPath)}`);
           const resumePath = resumeQuery.length
             ? `/codex/threads/${encodeURIComponent(id)}/resume?${resumeQuery.join("&")}`
             : `/codex/threads/${encodeURIComponent(id)}/resume`;
-          const resumeTask = (async () => {
-            const resumeStartMs = performance.now();
-            const resumeResult = await api(resumePath, { method: "POST", body: {} });
-            const resumeLatencyMs = Math.round(performance.now() - resumeStartMs);
-            if (state.openingThreadReqId !== reqId) return;
-            setActiveThread(id);
-            const resumedThread = resumeResult?.thread || resumeResult?.result?.thread || null;
-            if (resumedThread && Array.isArray(resumedThread.turns)) {
-              applyThreadToChat(resumedThread, { animateBadge: true });
-            } else {
-              await loadThreadMessages(id, { animateBadge: true });
-            }
-            setStatus(`Resumed ${label} ${truncateLabel(id, 12)} in ${resumeLatencyMs}ms`);
-          })();
+          const resumeTask = api(resumePath, { method: "POST", body: {}, signal: controller.signal })
+            .then(() => null)
+            .catch(() => null)
+            .finally(() => {
+              if (state.openingThreadReqId === reqId) scheduleThreadRefresh();
+            });
           registerPendingThreadResume(id, resumeTask);
 
-          await resumeTask;
           if (state.openingThreadReqId === reqId) setChatOpening(false);
         } catch (error) {
+          if (error && (error.name === "AbortError" || String(error.message || "").includes("aborted"))) {
+            return;
+          }
           if (state.openingThreadReqId === reqId) setChatOpening(false);
           throw error;
+        } finally {
+          if (state.openingThreadAbort === controller) state.openingThreadAbort = null;
         }
       };
       card.onclick = () => {
@@ -1190,6 +1748,7 @@ function renderThreads(items) {
     if (!sectionItems.length) return;
     const group = document.createElement("section");
     group.className = "groupCard";
+    group.setAttribute("data-group-key", String(sectionKey));
     const header = document.createElement("button");
     const collapsed = state.collapsedWorkspaceKeys.has(sectionKey);
     header.className = `groupHeader${collapsed ? " is-collapsed" : ""}`;
@@ -1215,6 +1774,10 @@ function renderThreads(items) {
       body.className = "groupBody";
       for (const thread of sectionItems) body.appendChild(renderThreadCard(thread));
       group.appendChild(body);
+      const prevTop = prevGroupScroll.get(String(sectionKey));
+      if (typeof prevTop === "number" && Number.isFinite(prevTop) && prevTop > 0) {
+        pendingScrollRestores.push({ node: body, top: prevTop });
+      }
     }
     list.appendChild(group);
     renderedThreads += sectionItems.length;
@@ -1240,6 +1803,7 @@ function renderThreads(items) {
     renderedThreads += filtered.length;
     const group = document.createElement("section");
     group.className = "groupCard";
+    group.setAttribute("data-group-key", String(workspaceKey));
     const header = document.createElement("button");
     const collapsed = state.collapsedWorkspaceKeys.has(workspaceKey);
     header.className = `groupHeader${collapsed ? " is-collapsed" : ""}`;
@@ -1271,12 +1835,31 @@ function renderThreads(items) {
       body.className = "groupBody";
       for (const thread of filtered) body.appendChild(renderThreadCard(thread));
       group.appendChild(body);
+      const prevTop = prevGroupScroll.get(String(workspaceKey));
+      if (typeof prevTop === "number" && Number.isFinite(prevTop) && prevTop > 0) {
+        pendingScrollRestores.push({ node: body, top: prevTop });
+      }
     }
     list.appendChild(group);
   }
   if (!renderedThreads) list.innerHTML = `<div class="muted">No threads match search.</div>`;
   state.lastChevronToggleKey = "";
   state.lastChevronToggleCollapsed = false;
+  if (shouldRestoreListScroll || pendingScrollRestores.length) {
+    requestAnimationFrame(() => {
+      for (const item of pendingScrollRestores) {
+        const node = item?.node;
+        const prevTop = Number(item?.top || 0);
+        if (!node || !Number.isFinite(prevTop) || prevTop <= 0) continue;
+        const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
+        node.scrollTop = Math.min(prevTop, maxTop);
+      }
+      if (shouldRestoreListScroll) {
+        const maxTop = Math.max(0, list.scrollHeight - list.clientHeight);
+        list.scrollTop = Math.min(prevListScrollTop, maxTop);
+      }
+    });
+  }
 }
 
 async function refreshThreadsFromPullGesture() {
@@ -1293,7 +1876,7 @@ async function refreshThreadsFromPullGesture() {
   hint.classList.add("refreshing");
   hintText.textContent = "Refreshing chats...";
   try {
-    await refreshThreads(getWorkspaceTarget());
+    await refreshThreads(getWorkspaceTarget(), { force: true });
     setStatus(`Refreshed ${getWorkspaceTarget().toUpperCase()} chats.`);
   } catch (error) {
     setStatus(error?.message || "Refresh failed.", true);
@@ -1378,6 +1961,43 @@ function wireThreadPullToRefresh() {
   list.addEventListener("touchcancel", endPull, { passive: true });
 }
 
+function startThreadAutoRefreshLoop() {
+  setInterval(() => {
+    if (state.threadAutoRefreshInFlight) return;
+    const target = getWorkspaceTarget();
+    const isConnected = !!(state.ws && state.ws.readyState === WebSocket.OPEN);
+    const minInterval = isConnected ? THREAD_AUTO_REFRESH_CONNECTED_MS : THREAD_AUTO_REFRESH_DISCONNECTED_MS;
+    const now = Date.now();
+    const lastMs = state.threadAutoRefreshLastMsByWorkspace?.[target] || 0;
+    if (now - lastMs < minInterval) return;
+    state.threadAutoRefreshLastMsByWorkspace[target] = now;
+    const force = now - lastMs > 10000;
+    state.threadAutoRefreshInFlight = true;
+    refreshThreads(target, { force, silent: true })
+      .catch(() => null)
+      .finally(() => {
+        state.threadAutoRefreshInFlight = false;
+      });
+  }, 1000);
+}
+
+function startActiveThreadLivePollLoop() {
+  setInterval(async () => {
+    const threadId = state.activeThreadId || "";
+    if (!threadId) return;
+    if (state.activeMainTab !== "chat") return;
+    if (state.activeThreadLivePolling) return;
+    state.activeThreadLivePolling = true;
+    try {
+      await loadThreadMessages(threadId, { animateBadge: false });
+    } catch {
+      // Best-effort polling for external updates.
+    } finally {
+      state.activeThreadLivePolling = false;
+    }
+  }, ACTIVE_THREAD_LIVE_POLL_MS);
+}
+
 function renderHosts(items) {
   const list = byId("hostList");
   list.innerHTML = "";
@@ -1448,18 +2068,67 @@ function applyPendingPayloads(approvals, userInputs) {
   renderPendingLists();
 }
 
-async function refreshThreads(workspaceTarget = getWorkspaceTarget()) {
+async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = {}) {
   const target = normalizeWorkspaceTarget(workspaceTarget);
+  const reqSeq = (state.threadRefreshReqSeqByWorkspace[target] || 0) + 1;
+  state.threadRefreshReqSeqByWorkspace[target] = reqSeq;
+
+  if (state.threadRefreshAbortByWorkspace[target]) {
+    try {
+      state.threadRefreshAbortByWorkspace[target].abort();
+    } catch {}
+  }
+  const controller = new AbortController();
+  state.threadRefreshAbortByWorkspace[target] = controller;
+
+  const force = options.force === true;
+  const silent = options.silent === true;
   const workspace = encodeURIComponent(target);
-  const data = await api(`/codex/threads?workspace=${workspace}`);
-  const items = ensureArrayItems(data.items);
-  state.threadItemsByWorkspace[target] = items;
-  if (getWorkspaceTarget() !== target) return;
-  state.threadItemsAll = items;
-  updateWorkspaceAvailabilityFromThreads(items);
-  syncActiveThreadMetaFromList();
-  applyThreadFilter();
-  updateHeaderUi();
+  const query = force ? `workspace=${workspace}&force=true` : `workspace=${workspace}`;
+  const activeBefore = getWorkspaceTarget() === target;
+
+  if (activeBefore && !silent) {
+    state.threadListLoading = true;
+    state.threadListLoadingTarget = target;
+    renderThreads(state.threadItems);
+  }
+
+  try {
+    const data = await api(`/codex/threads?${query}`, { signal: controller.signal });
+    if ((state.threadRefreshReqSeqByWorkspace[target] || 0) !== reqSeq) return;
+    const items = ensureArrayItems(data.items).map((item) => {
+      if (!item || typeof item !== "object") return item;
+      return {
+        ...item,
+        workspace: String(item.workspace || "").trim() || target,
+      };
+    });
+    const nextSig = items
+      .map((item) => {
+        const id = item?.id || item?.threadId || "";
+        const ts = item?.updatedAt ?? item?.createdAt ?? "";
+        return `${id}:${ts}`;
+      })
+      .join("|");
+    state.threadItemsByWorkspace[target] = items;
+    if (getWorkspaceTarget() !== target) return;
+    // If nothing changed, avoid re-rendering (keeps scroll position stable and reduces work on mobile).
+    if (!force && state.threadListRenderSigByWorkspace[target] === nextSig) return;
+    state.threadListRenderSigByWorkspace[target] = nextSig;
+    state.threadItemsAll = items;
+    updateWorkspaceAvailabilityFromThreads(items);
+    syncActiveThreadMetaFromList();
+    applyThreadFilter();
+    updateHeaderUi();
+  } finally {
+    if (state.threadRefreshAbortByWorkspace[target] === controller) {
+      state.threadRefreshAbortByWorkspace[target] = null;
+    }
+    if ((state.threadRefreshReqSeqByWorkspace[target] || 0) === reqSeq && getWorkspaceTarget() === target && !silent) {
+      state.threadListLoading = false;
+      state.threadListLoadingTarget = "";
+    }
+  }
 }
 
 async function refreshHosts() {
@@ -1829,6 +2498,59 @@ function wireActions() {
 }
 
 function bootstrap() {
+  // E2E-only hooks (guarded). This avoids relying on a running gateway just to validate
+  // UI behaviors like scroll anchoring, scrollbar hiding, and history rendering.
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("e2e") === "1" && !window.__webCodexE2E) {
+      const historyByThreadId = new Map();
+      window.__webCodexE2E = {
+        seedThreads(count = 260) {
+          const items = [];
+          for (let i = 0; i < count; i += 1) {
+            items.push({
+              id: `e2e_${i}`,
+              title: `Row ${i}`,
+              preview: `preview ${i}`,
+              cwd: i % 2 === 0 ? "API-Router" : "XAUUSD-Calendar-Agent",
+              workspace: i % 3 === 0 ? "wsl2" : "windows",
+              createdAt: Math.floor(Date.now() / 1000) - i * 60,
+              updatedAt: Math.floor(Date.now() / 1000) - i * 60,
+            });
+          }
+          state.threadItemsByWorkspace.windows = items.filter((x) => x.workspace !== "wsl2");
+          state.threadItemsByWorkspace.wsl2 = items.filter((x) => x.workspace === "wsl2");
+          state.threadItemsAll = items;
+          applyThreadFilter();
+          return { ok: true, count: items.length };
+        },
+        rerenderThreads() {
+          renderThreads(state.threadItems);
+          return { ok: true };
+        },
+        setThreadHistory(threadId, thread) {
+          if (!threadId || !thread) return { ok: false };
+          historyByThreadId.set(String(threadId), thread);
+          return { ok: true };
+        },
+        getThreadHistory(threadId) {
+          return historyByThreadId.get(String(threadId || ""));
+        },
+        async openThread(threadId) {
+          const id = String(threadId || "").trim();
+          if (!id) return { ok: false, error: "missing threadId" };
+          setMainTab("chat");
+          setMobileTab("chat");
+          setActiveThread(id);
+          setChatOpening(false);
+          await loadThreadMessages(id, { animateBadge: true, forceRender: true });
+          return { ok: true };
+        },
+      };
+      setStatus("E2E mode enabled.", true);
+    }
+  } catch {}
+
   const embeddedToken = getEmbeddedToken();
   const savedToken = localStorage.getItem(TOKEN_STORAGE_KEY) || "";
   const savedWorkspaceTarget = localStorage.getItem(WORKSPACE_TARGET_KEY) || "windows";
@@ -1868,6 +2590,8 @@ function bootstrap() {
   updateWelcomeSelections();
   setMainTab("chat");
   wireActions();
+  startThreadAutoRefreshLoop();
+  startActiveThreadLivePollLoop();
   setMobileTab("chat");
   // Always attempt connect: gateway auth can now come from HttpOnly cookie.
   connect().catch((e) => setStatus(e.message, true));
