@@ -228,10 +228,13 @@ async function main() {
       throw new Error('expected chat to land near bottom on open')
     }
 
-    // When scrolled up slightly, a floating "scroll to bottom" button should appear; clicking it scrolls to bottom.
+    // When scrolled up meaningfully, a floating "scroll to bottom" button should appear; clicking it scrolls to bottom.
     await driver.executeScript(`
       const box = document.getElementById('chatBox');
-      if (box) box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight - 90);
+      if (box) {
+        box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight - 260);
+        box.dispatchEvent(new Event('scroll'));
+      }
     `)
     await waitFor(async () => {
       const shown = await driver.executeScript(`return !!document.getElementById('scrollToBottomBtn')?.classList.contains('show');`)

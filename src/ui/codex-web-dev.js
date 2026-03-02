@@ -870,10 +870,12 @@ function isChatNearBottom() {
 }
 
 function isChatNearBottomForJumpBtn() {
-  // Show the jump-to-bottom affordance as soon as the user scrolls up a little.
+  // Show when the user scrolls up a meaningful amount (ChatGPT-like),
+  // not just by a couple of pixels.
   const box = byId("chatBox");
   if (!box) return true;
-  return box.scrollTop + box.clientHeight >= box.scrollHeight - 18;
+  const dist = box.scrollHeight - (box.scrollTop + box.clientHeight);
+  return dist <= 180;
 }
 
 function scrollChatToBottom({ force = false } = {}) {
@@ -911,6 +913,7 @@ function ensureScrollToBottomBtn() {
     } catch {
       chat.scrollTop = chat.scrollHeight;
     }
+    stickChatToBottomFor(900);
     updateScrollToBottomBtn();
   };
   box.appendChild(btn);
@@ -2731,6 +2734,7 @@ async function sendTurn() {
   if (state.selectedModel) state.activeThreadModelLabel = state.selectedModel;
   updateHeaderUi(shouldAnimateWorkspaceBadge);
   addChat("user", prompt);
+  stickChatToBottomFor(1200);
   setMainTab("chat");
   clearPromptValue();
   connectWs();
@@ -2742,7 +2746,7 @@ async function sendTurn() {
     const { msg, body } = createAssistantStreamingMessage();
     if (!body) return;
     byId("chatBox").appendChild(msg);
-    byId("chatBox").scrollTop = byId("chatBox").scrollHeight;
+    stickChatToBottomFor(1600);
     await new Promise((resolve) => {
       state.wsReqHandlers.set(reqId, (evt) => {
         const type = evt.type;
@@ -2752,6 +2756,8 @@ async function sendTurn() {
             text += (text ? " " : "") + data.text;
             body.textContent = text;
           }
+          // Keep the streaming assistant pinned when the user hasn't intentionally scrolled away.
+          scrollChatToBottom({ force: Date.now() <= Number(state.chatAutoStickUntil || 0) || isChatNearBottom() });
           if (typeof data.threadId === "string" && data.threadId) setActiveThread(data.threadId);
         } else if (type === "completed") {
           const result = data.result || {};
@@ -2795,7 +2801,7 @@ async function sendTurn() {
   const { msg, body } = createAssistantStreamingMessage();
   if (!body) return;
   byId("chatBox").appendChild(msg);
-  byId("chatBox").scrollTop = byId("chatBox").scrollHeight;
+  stickChatToBottomFor(1600);
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -2823,6 +2829,7 @@ async function sendTurn() {
           text += (text ? " " : "") + delta;
           body.textContent = text;
         }
+        scrollChatToBottom({ force: Date.now() <= Number(state.chatAutoStickUntil || 0) || isChatNearBottom() });
         if (typeof data.threadId === "string" && data.threadId) setActiveThread(data.threadId);
       } else if (evtName === "completed") {
         const result = data.result || {};
