@@ -869,6 +869,13 @@ function isChatNearBottom() {
   return box.scrollTop + box.clientHeight >= box.scrollHeight - 80;
 }
 
+function isChatNearBottomForJumpBtn() {
+  // Show the jump-to-bottom affordance as soon as the user scrolls up a little.
+  const box = byId("chatBox");
+  if (!box) return true;
+  return box.scrollTop + box.clientHeight >= box.scrollHeight - 18;
+}
+
 function scrollChatToBottom({ force = false } = {}) {
   const box = byId("chatBox");
   if (!box) return;
@@ -899,7 +906,11 @@ function ensureScrollToBottomBtn() {
   btn.onclick = () => {
     const chat = byId("chatBox");
     if (!chat) return;
-    chat.scrollTop = chat.scrollHeight;
+    try {
+      chat.scrollTo({ top: chat.scrollHeight, behavior: "smooth" });
+    } catch {
+      chat.scrollTop = chat.scrollHeight;
+    }
     updateScrollToBottomBtn();
   };
   box.appendChild(btn);
@@ -911,7 +922,7 @@ function updateScrollToBottomBtn() {
   if (!box) return;
   const btn = ensureScrollToBottomBtn();
   if (!btn) return;
-  const show = !isChatNearBottom() && box.scrollHeight > box.clientHeight + 40;
+  const show = !isChatNearBottomForJumpBtn() && box.scrollHeight > box.clientHeight + 40;
   btn.classList.toggle("show", !!show);
 }
 
