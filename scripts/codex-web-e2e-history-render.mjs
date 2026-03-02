@@ -167,6 +167,14 @@ async function main() {
             { type: 'input_image', image_url: dataUrl },
             { type: 'input_text', text: '[Image #2]\\n[image: inline-image-2]\\nNext' },
             { type: 'input_image', image_url: dataUrl },
+            { type: 'input_text', text: '[Image #3]\\n[image: inline-image-3]' },
+            { type: 'input_image', image_url: dataUrl },
+            { type: 'input_text', text: '[Image #4]\\n[image: inline-image-4]' },
+            { type: 'input_image', image_url: dataUrl },
+            { type: 'input_text', text: '[Image #5]\\n[image: inline-image-5]' },
+            { type: 'input_image', image_url: dataUrl },
+            { type: 'input_text', text: '[Image #6]\\n[image: inline-image-6]' },
+            { type: 'input_image', image_url: dataUrl },
           ] }] },
           { items: [{ type: 'assistantMessage', text: 'Saw it.' }] },
         ],
@@ -199,25 +207,69 @@ async function main() {
         hasImageTag: /<image\\s+name=\\[Image\\s+#\\d+\\]>/i.test(text) || /<\\/image>/i.test(text),
         hasImagePlaceholder: /\\[image:/i.test(text),
         userImgs: document.querySelectorAll('#chatBox .msg.user img.msgAttachmentImage').length,
-        hasCaption: Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachmentCaption')).some((n) => /Image\\s*#1/i.test(n.textContent || '')),
+        hasCaption: Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachmentCaption, #chatBox .msg.user .msgAttachmentLabelBadge')).some((n) => /Image\\s*#1/i.test(n.textContent || '')),
+        mosaic: !!document.querySelector('#chatBox .msg.user .msgAttachments.mosaic'),
+        mosaicTileCount: document.querySelectorAll('#chatBox .msg.user .msgAttachments.mosaic .msgAttachmentCard').length,
+        mosaicOverlay: Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachments.mosaic .msgAttachmentMoreOverlay')).map((n) => n.textContent || ''),
       };
     `)
     if (!checks?.ok) throw new Error('checks failed')
     if (checks.hasAgents) throw new Error('AGENTS bootstrap prompt should be hidden from chat rendering')
     if (checks.hasImageTag) throw new Error('raw <image name=[Image #...]> blocks should not be rendered verbatim')
     if (checks.hasImagePlaceholder) throw new Error('textual [image: ...] placeholders should not be rendered (render images instead)')
-    if (!(Number(checks.userImgs || 0) >= 2)) throw new Error(`expected at least two rendered user images, got ${checks.userImgs}`)
+    if (!(Number(checks.userImgs || 0) >= 4)) throw new Error(`expected at least four rendered user images, got ${checks.userImgs}`)
     if (!checks.hasCaption) throw new Error('expected image caption (Image #1) to be rendered next to the image')
+    if (!checks.mosaic) throw new Error('expected many images to collapse into a mosaic attachment grid')
+    if (Number(checks.mosaicTileCount || 0) !== 4) throw new Error(`expected mosaic to show 4 tiles, got ${checks.mosaicTileCount}`)
+    if (!Array.isArray(checks.mosaicOverlay) || !checks.mosaicOverlay.some((t) => /\+2/.test(String(t)))) {
+      throw new Error(`expected mosaic to show "+2" overlay, got ${JSON.stringify(checks.mosaicOverlay || [])}`)
+    }
 
-    // Clicking the image should open a viewer (zoom/download UI lives there).
+    // Clicking a tile should open a viewer (gallery / filmstrip lives there).
     await driver.executeScript(`
-      const img = document.querySelector('#chatBox .msg.user img.msgAttachmentImage');
-      if (img) img.click();
+      const tiles = Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachments.mosaic .msgAttachmentCard'));
+      if (tiles[3]) tiles[3].click();
     `)
     await waitFor(async () => {
       const open = await driver.executeScript(`return !!document.getElementById('imageViewerBackdrop')?.classList.contains('show');`)
       return !!open
     }, 8000, 'image viewer to open')
+
+    // It should open at the clicked image (Image #4) and keep the active thumb visible (not stuck at far left).
+    {
+      const started = Date.now()
+      let last = ''
+      while (Date.now() - started < 8000) {
+        // eslint-disable-next-line no-await-in-loop
+        last = await driver.executeScript(`return document.getElementById('imageViewerTitle')?.textContent || ''`)
+        if (/Image\s*#4/i.test(String(last))) break
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(200)
+      }
+      if (!/Image\s*#4/i.test(String(last))) throw new Error(`expected viewer to open on Image #4, got: ${JSON.stringify(String(last))}`)
+    }
+
+    const filmstripVisible = await driver.executeScript(`
+      const film = document.getElementById('imageViewerFilmstrip');
+      const active = film?.querySelector('.imageViewerThumb.active');
+      if (!film || !active) return { ok: false, error: 'film/active missing' };
+      const fr = film.getBoundingClientRect();
+      const ar = active.getBoundingClientRect();
+      return {
+        ok: true,
+        film: { left: fr.left, right: fr.right },
+        active: { left: ar.left, right: ar.right },
+        clientWidth: film.clientWidth,
+        scrollWidth: film.scrollWidth,
+        scrollLeft: film.scrollLeft,
+      };
+    `)
+    if (!filmstripVisible?.ok) throw new Error(`filmstrip visibility check failed: ${filmstripVisible?.error || 'unknown'}`)
+    if (Number(filmstripVisible.scrollWidth || 0) > Number(filmstripVisible.clientWidth || 0) + 4) {
+      if (!(Number(filmstripVisible.scrollLeft || 0) > 0)) throw new Error('expected filmstrip to auto-scroll near active image (scrollLeft > 0)')
+    }
+    if (Number(filmstripVisible.active.left || 0) < Number(filmstripVisible.film.left || 0) - 1) throw new Error('expected active thumb to be visible in filmstrip (left clipped)')
+    if (Number(filmstripVisible.active.right || 0) > Number(filmstripVisible.film.right || 0) + 1) throw new Error('expected active thumb to be visible in filmstrip (right clipped)')
 
     // Viewer backdrop must cover the viewport (avoids "in-flow" rendering on some mobile browsers).
     const viewerChecks = await driver.executeScript(`

@@ -726,6 +726,11 @@
       gap: 8px;
       margin-bottom: 8px;
     }
+    .msgAttachments.mosaic {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-auto-rows: 1fr;
+      max-width: min(520px, 100%);
+    }
     .msgAttachmentCard {
       border: 1px solid rgba(13, 18, 32, 0.12);
       border-radius: 12px;
@@ -739,6 +744,47 @@
     .msgAttachmentCard:hover { border-color: rgba(40, 199, 217, 0.45); }
     .msgAttachmentCard:active { transform: translateY(1px); }
     .msgAttachmentCard-missing { cursor: default; }
+    .msgAttachmentCard.tile {
+      padding: 0;
+      gap: 0;
+      overflow: hidden;
+      position: relative;
+      aspect-ratio: 1 / 1;
+    }
+    .msgAttachmentCard.tile .msgAttachmentImage {
+      max-height: none;
+      height: 100%;
+      border-radius: 0;
+      border: none;
+    }
+    .msgAttachmentLabelBadge {
+      position: absolute;
+      left: 8px;
+      bottom: 8px;
+      padding: 4px 7px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.7);
+      background: rgba(13, 18, 32, 0.55);
+      color: rgba(255, 255, 255, 0.92);
+      font-size: 11px;
+      line-height: 1;
+      max-width: calc(100% - 16px);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .msgAttachmentMoreOverlay {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      background: rgba(13, 18, 32, 0.42);
+      color: rgba(255, 255, 255, 0.95);
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      text-shadow: 0 10px 20px rgba(0, 0, 0, 0.35);
+    }
     .msgAttachmentImage {
       width: 100%;
       max-height: 260px;
@@ -874,6 +920,7 @@
       background: rgba(255, 255, 255, 0.94);
       border-top: 1px solid rgba(13, 18, 32, 0.1);
       scrollbar-width: thin;
+      scroll-behavior: smooth;
     }
     .imageViewerThumb {
       border: 1px solid rgba(13, 18, 32, 0.14);

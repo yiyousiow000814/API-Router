@@ -764,12 +764,45 @@ function renderMessageAttachments(attachments) {
   const imgs = items.filter((it) => it && typeof it === "object" && typeof it.src === "string" && it.src.trim());
   if (!imgs.length) return "";
   const nodes = [];
+
+  const canShowPreview = (src) => /^data:image\//i.test(src) || /^https?:\/\//i.test(src);
+  const renderMissingTile = (label, extraHtml = "") =>
+    `<button class="msgAttachmentCard msgAttachmentCard-missing tile" type="button" data-image-src="" data-image-label="${escapeHtml(label)}">` +
+      `<div class="msgAttachmentChip mono">[image]</div>` +
+      `<div class="msgAttachmentLabelBadge mono">${escapeHtml(label || "image")}</div>` +
+      `${extraHtml}` +
+    `</button>`;
+
+  // WhatsApp-like: when there are many images, collapse to a 2x2 mosaic to avoid taking over the chat.
+  if (imgs.length > 4) {
+    const shown = imgs.slice(0, 4);
+    const remaining = imgs.length - 4;
+    for (let idx = 0; idx < shown.length; idx += 1) {
+      const img = shown[idx];
+      const src = img.src.trim();
+      const label = String(img.label || "").trim() || `Image #${idx + 1}`;
+      const overlay = idx === 3 && remaining > 0 ? `<div class="msgAttachmentMoreOverlay">+${remaining}</div>` : "";
+      if (canShowPreview(src)) {
+        nodes.push(
+          `<button class="msgAttachmentCard tile" type="button" data-image-src="${escapeHtml(src)}" data-image-label="${escapeHtml(label)}">` +
+            `<img class="msgAttachmentImage" alt="${escapeHtml(label || "image")}" src="${escapeHtml(src)}" />` +
+            `<div class="msgAttachmentLabelBadge mono">${escapeHtml(label || "image")}</div>` +
+            `${overlay}` +
+          `</button>`
+        );
+      } else {
+        nodes.push(renderMissingTile(label, overlay));
+      }
+    }
+    return `<div class="msgAttachments mosaic">${nodes.join("")}</div>`;
+  }
+
   for (const img of imgs) {
     const src = img.src.trim();
     const label = String(img.label || "").trim();
     // Allow data URLs and http(s). For local paths, we just show a chip for now
     // because the browser context may not have file access.
-    if (/^data:image\//i.test(src) || /^https?:\/\//i.test(src)) {
+    if (canShowPreview(src)) {
       nodes.push(
         `<button class="msgAttachmentCard" type="button" data-image-src="${escapeHtml(src)}" data-image-label="${escapeHtml(label)}">` +
           `<img class="msgAttachmentImage" alt="${escapeHtml(label || "image")}" src="${escapeHtml(src)}" />` +
@@ -899,6 +932,11 @@ function setViewerIndex(nextIndex) {
     for (const n of nodes) {
       const i = Number(n.getAttribute("data-index") || "0");
       n.classList.toggle("active", i === idx);
+    }
+    const active = film.querySelector(`[data-qa='image-viewer-thumb'][data-index='${idx}']`);
+    if (active && typeof active.scrollIntoView === "function") {
+      // Keep the selected thumb in view (important on mobile).
+      active.scrollIntoView({ block: "nearest", inline: "center" });
     }
   }
 }
