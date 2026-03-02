@@ -236,13 +236,18 @@ async function main() {
       const lastMosaic = allMosaics[allMosaics.length - 1] || null;
       const lastTiles = lastMosaic ? Array.from(lastMosaic.querySelectorAll('.msgAttachmentCard')) : [];
       const lastTileTops = lastTiles.map((n) => Math.round(n.getBoundingClientRect().top));
+      const firstMsg = firstMosaic ? firstMosaic.closest('.msg.user') : null;
+      const firstMsgRect = firstMsg ? firstMsg.getBoundingClientRect() : null;
+      const labelNodes = Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachmentCaption, #chatBox .msg.user .msgAttachmentLabelBadge'));
+      const labelTexts = labelNodes.map((n) => (n.textContent || '').trim()).filter(Boolean);
       return {
         ok: true,
         hasAgents: /AGENTS\\.md instructions|<INSTRUCTIONS>/i.test(text),
         hasImageTag: /<image\\s+name=\\[Image\\s+#\\d+\\]>/i.test(text) || /<\\/image>/i.test(text),
         hasImagePlaceholder: /\\[image:/i.test(text),
         userImgs: document.querySelectorAll('#chatBox .msg.user img.msgAttachmentImage').length,
-        hasCaption: Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachmentCaption, #chatBox .msg.user .msgAttachmentLabelBadge')).some((n) => /Image\\s*#1/i.test(n.textContent || '')),
+        hasCaption: labelTexts.some((t) => /^#1$/i.test(t)),
+        hasVerboseImageLabel: labelTexts.some((t) => /Image\\s*#\\d+/i.test(t)),
         mosaic: mosaics.length > 0,
         mosaicCount: mosaics.length,
         firstMosaicTileCount: firstMosaic ? firstMosaic.querySelectorAll('.msgAttachmentCard').length : 0,
@@ -251,6 +256,7 @@ async function main() {
         firstTileAspect: tr && tr.width ? (tr.height / tr.width) : 0,
         lastMosaicTileCount: lastTiles.length,
         lastMosaicTileTops: lastTileTops,
+        firstMsgWidth: firstMsgRect ? firstMsgRect.width : 0,
       };
     `)
     if (!checks?.ok) throw new Error('checks failed')
@@ -258,7 +264,8 @@ async function main() {
     if (checks.hasImageTag) throw new Error('raw <image name=[Image #...]> blocks should not be rendered verbatim')
     if (checks.hasImagePlaceholder) throw new Error('textual [image: ...] placeholders should not be rendered (render images instead)')
     if (!(Number(checks.userImgs || 0) >= 4)) throw new Error(`expected at least four rendered user images, got ${checks.userImgs}`)
-    if (!checks.hasCaption) throw new Error('expected image caption (Image #1) to be rendered next to the image')
+    if (!checks.hasCaption) throw new Error('expected image caption (#1) to be rendered on the image')
+    if (checks.hasVerboseImageLabel) throw new Error('expected image labels to be simplified (#1), not "Image #1"')
     if (!checks.mosaic) throw new Error('expected many images to collapse into a mosaic attachment grid')
     if (Number(checks.firstMosaicTileCount || 0) !== 4) throw new Error(`expected mosaic to show 4 tiles, got ${checks.firstMosaicTileCount}`)
     if (!Array.isArray(checks.firstMosaicOverlay) || !checks.firstMosaicOverlay.some((t) => /\+2/.test(String(t)))) {
@@ -268,6 +275,10 @@ async function main() {
     if (Number(checks.firstMosaicWidth || 0) > 320) throw new Error(`expected mosaic width <= 320px, got ${checks.firstMosaicWidth}`)
     if (!(Number(checks.firstTileAspect || 0) > 0 && Number(checks.firstTileAspect || 0) <= 0.82)) {
       throw new Error(`expected mosaic tiles to be wider than tall (aspect<=0.82), got ${checks.firstTileAspect}`)
+    }
+    // User bubble should stay compact when it includes attachments + text (avoid large empty backgrounds).
+    if (Number(checks.firstMsgWidth || 0) > Number(checks.firstMosaicWidth || 0) + 46) {
+      throw new Error(`expected user bubble width ~= mosaic width, got msg=${checks.firstMsgWidth} mosaic=${checks.firstMosaicWidth}`)
     }
     // 3-image message should not leave an empty column; we render it as a 3-column single-row mosaic.
     if (Number(checks.lastMosaicTileCount || 0) !== 3) throw new Error(`expected last mosaic to have 3 tiles, got ${checks.lastMosaicTileCount}`)

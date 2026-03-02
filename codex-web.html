@@ -689,6 +689,12 @@
       color: #0d1220;
       padding: 7px 10px;
     }
+    /* When a user message has attachments, keep the bubble compact to avoid large empty backgrounds. */
+    .msg.user.withAttachments {
+      display: inline-block;
+      width: fit-content;
+      max-width: min(360px, 100%);
+    }
     .msg.system {
       border-color: rgba(255, 203, 102, 0.4);
       background: rgba(43, 33, 13, 0.42);
@@ -736,6 +742,9 @@
     }
     .msgAttachments.mosaic.cols-3 {
       grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .msgAttachments.mosaic.single {
+      grid-template-columns: 1fr;
     }
     .msgAttachmentCard {
       border: 1px solid rgba(13, 18, 32, 0.12);

@@ -767,10 +767,16 @@ function renderMessageAttachments(attachments) {
   const nodes = [];
 
   const canShowPreview = (src) => /^data:image\//i.test(src) || /^https?:\/\//i.test(src);
+  const displayAttachmentLabel = (label) => {
+    const s = String(label || "").trim();
+    const m = /^Image\s*#(\d+)\s*$/i.exec(s);
+    if (m) return `#${m[1]}`;
+    return s;
+  };
   const renderMissingTile = (label, extraHtml = "") =>
     `<button class="msgAttachmentCard msgAttachmentCard-missing tile" type="button" data-image-src="" data-image-label="${escapeHtml(label)}">` +
       `<div class="msgAttachmentChip mono">[image]</div>` +
-      `<div class="msgAttachmentLabelBadge mono">${escapeHtml(label || "image")}</div>` +
+      `<div class="msgAttachmentLabelBadge mono">${escapeHtml(displayAttachmentLabel(label) || "image")}</div>` +
       `${extraHtml}` +
     `</button>`;
 
@@ -779,7 +785,7 @@ function renderMessageAttachments(attachments) {
       return (
         `<button class="msgAttachmentCard tile" type="button" data-image-src="${escapeHtml(src)}" data-image-label="${escapeHtml(label)}">` +
           `<img class="msgAttachmentImage" alt="${escapeHtml(label || "image")}" src="${escapeHtml(src)}" />` +
-          `<div class="msgAttachmentLabelBadge mono">${escapeHtml(label || "image")}</div>` +
+          `<div class="msgAttachmentLabelBadge mono">${escapeHtml(displayAttachmentLabel(label) || "image")}</div>` +
           `${overlay}` +
         `</button>`
       );
@@ -787,44 +793,24 @@ function renderMessageAttachments(attachments) {
     return renderMissingTile(label, overlay);
   };
 
-  // WhatsApp-like: for 2+ images, always use a uniform mosaic grid (consistent tile sizing).
-  // When there are many images, collapse to a 2x2 mosaic with a "+N" overlay.
-  if (imgs.length >= 2) {
-    const shown = imgs.length > 4 ? imgs.slice(0, 4) : imgs;
-    const remaining = Math.max(0, imgs.length - shown.length);
-    for (let idx = 0; idx < shown.length; idx += 1) {
-      const img = shown[idx];
-      const src = img.src.trim();
-      const label = String(img.label || "").trim() || `Image #${idx + 1}`;
-      const overlay = idx === 3 && remaining > 0 ? `<div class="msgAttachmentMoreOverlay">+${remaining}</div>` : "";
-      nodes.push(renderTile(src, label, overlay));
-    }
-    const mosaicClass = shown.length === 3 ? "mosaic cols-3" : "mosaic";
-    return `<div class="msgAttachments ${mosaicClass}">${nodes.join("")}</div>`;
-  }
-
-  for (const img of imgs) {
+  // WhatsApp-like: always render images as a compact, uniform tile grid.
+  // - 1 image: 1 column
+  // - 3 images: 3 columns (avoid awkward "gap" layout)
+  // - 4+ images: 2x2 with "+N" overlay
+  const shown = imgs.length > 4 ? imgs.slice(0, 4) : imgs;
+  const remaining = Math.max(0, imgs.length - shown.length);
+  for (let idx = 0; idx < shown.length; idx += 1) {
+    const img = shown[idx];
     const src = img.src.trim();
-    const label = String(img.label || "").trim();
-    // Allow data URLs and http(s). For local paths, we just show a chip for now
-    // because the browser context may not have file access.
-    if (canShowPreview(src)) {
-      nodes.push(
-        `<button class="msgAttachmentCard" type="button" data-image-src="${escapeHtml(src)}" data-image-label="${escapeHtml(label)}">` +
-          `<img class="msgAttachmentImage" alt="${escapeHtml(label || "image")}" src="${escapeHtml(src)}" />` +
-          `<div class="msgAttachmentCaption mono">${escapeHtml(label || "image")}</div>` +
-        `</button>`
-      );
-    } else {
-      nodes.push(
-        `<button class="msgAttachmentCard msgAttachmentCard-missing" type="button" data-image-src="" data-image-label="${escapeHtml(label)}">` +
-          `<div class="msgAttachmentChip mono">[image]</div>` +
-          `<div class="msgAttachmentCaption mono">${escapeHtml(label || "image")}</div>` +
-        `</button>`
-      );
-    }
+    const label = String(img.label || "").trim() || `Image #${idx + 1}`;
+    const overlay = idx === 3 && remaining > 0 ? `<div class="msgAttachmentMoreOverlay">+${remaining}</div>` : "";
+    nodes.push(renderTile(src, label, overlay));
   }
-  return `<div class="msgAttachments">${nodes.join("")}</div>`;
+  const mosaicClass =
+    shown.length === 1 ? "mosaic single" :
+    shown.length === 3 ? "mosaic cols-3" :
+    "mosaic";
+  return `<div class="msgAttachments ${mosaicClass}">${nodes.join("")}</div>`;
 }
 
 function wireMessageLinks(container) {
@@ -1252,7 +1238,10 @@ function addChat(role, text, options = {}) {
   if (welcome) welcome.style.display = "none";
   const node = document.createElement("div");
   const kind = typeof options.kind === "string" && options.kind.trim() ? options.kind.trim() : "";
-  node.className = `msg ${role}${kind ? ` kind-${kind}` : ""}`.trim();
+  const hasAttachments = Array.isArray(options.attachments) && options.attachments.length > 0;
+  const hasText = !!String(text || "").trim();
+  const attachmentClass = role === "user" && hasAttachments && hasText ? " withAttachments" : "";
+  node.className = `msg ${role}${kind ? ` kind-${kind}` : ""}${attachmentClass}`.trim();
   const headLabel = kind && role === "system" ? kind : role;
   const attachmentsHtml = renderMessageAttachments(options.attachments);
   const bodyHtml = renderMessageBody(role, text);
