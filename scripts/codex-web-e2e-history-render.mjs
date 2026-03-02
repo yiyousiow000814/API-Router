@@ -270,10 +270,6 @@ async function main() {
     if (Number(centered.deltaX || 0) > 8) throw new Error(`expected scroll-to-bottom button to be centered (deltaX<=8px), got ${centered.deltaX}`)
     if (Number(centered.deltaBottom || 0) > 160) throw new Error(`expected scroll-to-bottom button to sit near bottom of chat area (deltaBottom<=160px), got ${centered.deltaBottom}`)
     if (Number(centered.w || 0) > 40 || Number(centered.h || 0) > 40) throw new Error(`expected scroll-to-bottom button to be compact (<=40px), got ${centered.w}x${centered.h}`)
-    await driver.executeScript(`
-      const btn = document.getElementById('scrollToBottomBtn');
-      if (btn) btn.click();
-    `)
     // Should animate (not "snap") to bottom: on the next animation frame we should not yet be at bottom.
     const animProbe = await driver.executeAsyncScript(`
       const done = arguments[0];

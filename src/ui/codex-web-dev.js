@@ -896,7 +896,7 @@ function stickChatToBottomFor(ms) {
   setTimeout(() => updateScrollToBottomBtn(), 260);
 }
 
-function smoothScrollChatToBottom(durationMs = 280) {
+function smoothScrollChatToBottom(durationMs = null) {
   const box = byId("chatBox");
   if (!box) return;
   const prefersReduced =
@@ -911,13 +911,19 @@ function smoothScrollChatToBottom(durationMs = 280) {
   const startTop = box.scrollTop;
   const targetTop = box.scrollHeight;
   if (targetTop <= startTop + 1) return;
+  const distancePx = Math.max(0, targetTop - startTop);
+
+  // Natural / inertial feel: larger distances take longer, with caps to avoid "forever" scrolling.
+  // pxPerMs ~ 2.1 => ~2100px/sec baseline.
+  const computedDuration = Math.round(Math.max(240, Math.min(900, distancePx / 2.1)));
+  const dur = Number.isFinite(Number(durationMs)) ? Math.round(Number(durationMs)) : computedDuration;
 
   const startedAt = performance.now();
-  state.chatAutoStickUntil = Date.now() + Math.max(900, durationMs + 500);
+  state.chatAutoStickUntil = Date.now() + Math.max(900, dur + 500);
 
   const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
   const step = (now) => {
-    const t = Math.min(1, (now - startedAt) / Math.max(1, durationMs));
+    const t = Math.min(1, (now - startedAt) / Math.max(1, dur));
     const eased = easeOutCubic(t);
     box.scrollTop = Math.round(startTop + (targetTop - startTop) * eased);
     updateScrollToBottomBtn();
@@ -941,7 +947,7 @@ function ensureScrollToBottomBtn() {
   if (!btn.__wired) {
     btn.__wired = true;
     btn.onclick = () => {
-      smoothScrollChatToBottom(320);
+      smoothScrollChatToBottom();
       updateScrollToBottomBtn();
     };
   }
