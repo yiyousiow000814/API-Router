@@ -59,6 +59,7 @@ const state = {
   lastChevronToggleCollapsed: false,
   threadPullRefreshing: false,
   activeThreadStarted: false,
+  chatRenderToken: 0,
   chatAutoStickUntil: 0,
   chatAutoStickToken: 0,
   chatSmoothScrollUntil: 0,
@@ -79,6 +80,7 @@ const state = {
   activeThreadWorkspace: "windows",
   modelOptions: [],
   selectedModel: "",
+  selectedReasoningEffort: "",
   openingThreadReqId: 0,
   pendingThreadResumes: new Map(),
 };
@@ -87,6 +89,7 @@ const GUIDE_DISMISSED_KEY = "web_codex_guide_dismissed_v2";
 const TOKEN_STORAGE_KEY = "web_codex_token_v1";
 const WORKSPACE_TARGET_KEY = "web_codex_workspace_target_v1";
 const FAVORITE_THREADS_KEY = "web_codex_favorite_threads_v1";
+const REASONING_EFFORT_KEY = "web_codex_reasoning_effort_v1";
 const SANDBOX_MODE =
   window.__WEB_CODEX_SANDBOX__ === true ||
   window.location.pathname.startsWith("/sandbox/") ||
@@ -339,7 +342,9 @@ function updateHeaderUi(animateBadge = false) {
   const modelLabel = byId("headerModelLabel");
   const inSettings = state.activeMainTab === "settings";
   const showBadge = !inSettings && state.activeThreadStarted;
-  const displayModel = state.activeThreadModelLabel || state.selectedModel || "Codex";
+  // Always prefer the currently selected model (the one we'll use for new turns).
+  // Thread history metadata can drift due to Codex migrations (e.g. 5.2 -> 5.3).
+  const displayModel = state.selectedModel || state.activeThreadModelLabel || "Codex";
   const displayTitle = displayModel;
 
   if (panelTitle) {
@@ -391,7 +396,17 @@ function normalizeModelOption(item) {
   if (!id) return null;
   const label = String(item.displayName || item.title || item.name || id).trim() || id;
   const isDefault = !!(item.isDefault || item.default || item.recommended);
-  return { id, label, isDefault };
+  const supportedReasoningEfforts = ensureArrayItems(item.supportedReasoningEfforts).map((x) => {
+    if (!x || typeof x !== "object") return null;
+    const effort = String(x.reasoningEffort || x.effort || "").trim();
+    if (!effort) return null;
+    return {
+      effort,
+      description: String(x.description || "").trim(),
+    };
+  }).filter(Boolean);
+  const defaultReasoningEffort = String(item.defaultReasoningEffort || "").trim();
+  return { id, label, isDefault, supportedReasoningEfforts, defaultReasoningEffort };
 }
 
 function setHeaderModelMenuOpen(open) {
@@ -414,6 +429,38 @@ function renderHeaderModelMenu() {
     menu.appendChild(muted);
     return;
   }
+
+  // Reasoning effort selector (dynamic, driven by /codex/models).
+  const activeModelId = state.selectedModel || options.find((item) => item.isDefault)?.id || options[0].id;
+  const activeModel = options.find((x) => x.id === activeModelId) || options[0];
+  const supported = Array.isArray(activeModel?.supportedReasoningEfforts) ? activeModel.supportedReasoningEfforts : [];
+  if (supported.length) {
+    const row = document.createElement("div");
+    row.className = "headerModelEffortRow";
+    const cur = String(state.selectedReasoningEffort || activeModel.defaultReasoningEffort || supported[0]?.effort || "").trim();
+    row.innerHTML =
+      `<div class="muted">Reasoning</div>` +
+      `<div class="effortBtns" role="group" aria-label="Reasoning effort"></div>`;
+    const btnBox = row.querySelector(".effortBtns");
+    for (const item of supported) {
+      const effort = String(item.effort || "").trim();
+      if (!effort) continue;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `effortBtn${effort === cur ? " active" : ""}`;
+      btn.textContent = effort;
+      btn.title = String(item.description || "").trim();
+      btn.onclick = () => {
+        state.selectedReasoningEffort = effort;
+        localStorage.setItem(REASONING_EFFORT_KEY, effort);
+        renderHeaderModelMenu();
+        updateHeaderUi();
+      };
+      btnBox.appendChild(btn);
+    }
+    menu.appendChild(row);
+  }
+
   const current = state.selectedModel || options.find((item) => item.isDefault)?.id || options[0].id;
   for (const model of options) {
     const optionBtn = document.createElement("button");
@@ -425,6 +472,17 @@ function renderHeaderModelMenu() {
     optionBtn.onclick = () => {
       state.selectedModel = model.id;
       if (state.activeThreadStarted) state.activeThreadModelLabel = model.id;
+      // If the current effort isn't supported by the new model, fall back to the model default.
+      const supported = Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : [];
+      if (supported.length) {
+        const currentEffort = String(localStorage.getItem(REASONING_EFFORT_KEY) || state.selectedReasoningEffort || "").trim();
+        const ok = currentEffort && supported.some((x) => x && x.effort === currentEffort);
+        const next = ok ? currentEffort : String(model.defaultReasoningEffort || supported[0]?.effort || "").trim();
+        if (next) {
+          state.selectedReasoningEffort = next;
+          localStorage.setItem(REASONING_EFFORT_KEY, next);
+        }
+      }
       renderHeaderModelMenu();
       updateHeaderUi();
       setHeaderModelMenuOpen(false);
@@ -439,6 +497,7 @@ function syncHeaderModelPicker() {
   const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
   if (!options.length) {
     state.selectedModel = "";
+    state.selectedReasoningEffort = "";
     renderHeaderModelMenu();
     updateHeaderUi();
     return;
@@ -447,6 +506,19 @@ function syncHeaderModelPicker() {
     ? state.selectedModel
     : options.find((item) => item.isDefault)?.id || options[0].id;
   state.selectedModel = selected;
+
+  // Pick reasoning effort: prefer persisted value if supported by the selected model, otherwise use model default.
+  const active = options.find((x) => x.id === selected) || options[0];
+  const supported = Array.isArray(active?.supportedReasoningEfforts) ? active.supportedReasoningEfforts : [];
+  const persisted = String(localStorage.getItem(REASONING_EFFORT_KEY) || "").trim();
+  if (supported.length) {
+    const ok = persisted && supported.some((x) => x && x.effort === persisted);
+    const next = ok ? persisted : String(active.defaultReasoningEffort || supported[0]?.effort || "").trim();
+    state.selectedReasoningEffort = next;
+    if (next) localStorage.setItem(REASONING_EFFORT_KEY, next);
+  } else {
+    state.selectedReasoningEffort = persisted;
+  }
   renderHeaderModelMenu();
   updateHeaderUi();
 }
@@ -2087,7 +2159,7 @@ function mapThreadReadMessages(thread) {
   return messages;
 }
 
-function applyThreadToChat(thread, options = {}) {
+async function applyThreadToChat(thread, options = {}) {
   const messages = mapThreadReadMessages(thread);
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
   const lastMsg = messages.length ? messages[messages.length - 1] : null;
@@ -2175,11 +2247,18 @@ function applyThreadToChat(thread, options = {}) {
     // when the incoming message is tall), then keep following briefly as images settle.
     if (state.chatPinnedToBottom) scrollChatToBottom({ force: true });
     if (canStartChatLiveFollow()) scheduleChatLiveFollow(1100); 
-  } else { 
-    clearChatMessages(); 
-    for (const msg of messages) addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
-    state.activeThreadMessages = messages; 
-    state.activeThreadRenderSig = renderSig; 
+  } else {
+    // For large histories, render in batches so the UI remains interactive while opening.
+    // This prevents the header (hamburger / model picker / workspace toggle) from feeling "locked".
+    const shouldAsyncRender = messages.length >= 80 || !!options.slowRender;
+    if (shouldAsyncRender) {
+      await renderChatFull(messages, { slowRender: !!options.slowRender });
+    } else {
+      clearChatMessages();
+      for (const msg of messages) addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
+    }
+    state.activeThreadMessages = messages;
+    state.activeThreadRenderSig = renderSig;
     if (state.chatPinnedToBottom) scrollChatToBottom({ force: true });
     if (canStartChatLiveFollow()) scheduleChatLiveFollow(1100); 
     else if (box) box.scrollTop = box.scrollHeight; 
@@ -2200,7 +2279,7 @@ async function loadThreadMessages(threadId, options = {}) {
     if (e2e && typeof e2e.getThreadHistory === "function") {
       const seeded = e2e.getThreadHistory(threadId);
       if (seeded) {
-        applyThreadToChat(seeded, options);
+        await applyThreadToChat(seeded, options);
         return;
       }
     }
@@ -2222,7 +2301,7 @@ async function loadThreadMessages(threadId, options = {}) {
     if (state.activeThreadId && state.activeThreadId !== threadId) return;
     const thread = history?.thread || history?.result?.thread || null;
     if (thread) {
-      applyThreadToChat(thread, options);
+      await applyThreadToChat(thread, options);
       return;
     }
   } catch (_) {
@@ -2241,7 +2320,7 @@ async function loadThreadMessages(threadId, options = {}) {
   });
   if (state.activeThreadId && state.activeThreadId !== threadId) return;
   const thread = rpc?.result?.thread || null;
-  applyThreadToChat(thread, options);
+  await applyThreadToChat(thread, options);
 }
 
 function ensureArrayItems(value) {
@@ -2249,6 +2328,57 @@ function ensureArrayItems(value) {
   if (Array.isArray(value?.data)) return value.data;
   if (Array.isArray(value?.items)) return value.items;
   return value ? [value] : [];
+}
+
+function nextFrame() {
+  return new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+async function renderChatFull(messages, options = {}) {
+  const box = byId("chatBox");
+  if (!box) return;
+
+  // Cancel any previous in-flight async render.
+  state.chatRenderToken = (Number(state.chatRenderToken || 0) + 1) | 0;
+  const token = state.chatRenderToken;
+
+  clearChatMessages();
+  // Keep render state in sync even if we yield.
+  state.activeThreadMessages = [];
+
+  const slowYield = !!options.slowRender;
+  const batchSize = Math.max(6, Math.min(28, Number(options.batchSize || 14)));
+  for (let i = 0; i < messages.length; i += batchSize) {
+    if (token !== state.chatRenderToken) return; // superseded
+    const frag = document.createDocumentFragment();
+    const end = Math.min(messages.length, i + batchSize);
+    for (let j = i; j < end; j += 1) {
+      const msg = messages[j];
+      // Render without auto-scrolling per message; we'll handle stick-to-bottom after.
+      const node = document.createElement("div");
+      const kind = typeof msg.kind === "string" && msg.kind.trim() ? msg.kind.trim() : "";
+      const hasAttachments = Array.isArray(msg.images) && msg.images.length > 0;
+      const hasText = !!String(msg.text || "").trim();
+      const attachmentClass = msg.role === "user" && hasAttachments && hasText ? " withAttachments" : "";
+      node.className = `msg ${msg.role}${kind ? ` kind-${kind}` : ""}${attachmentClass}`.trim();
+      const headLabel = kind && msg.role === "system" ? kind : msg.role;
+      const attachmentsHtml = renderMessageAttachments(msg.images || []);
+      const bodyHtml = renderMessageBody(msg.role, msg.text);
+      node.innerHTML = `<div class="msgHead">${escapeHtml(headLabel)}</div><div class="msgBody">${attachmentsHtml}${bodyHtml}</div>`;
+      wireMessageLinks(node);
+      wireMessageAttachments(node);
+      frag.appendChild(node);
+    }
+    box.appendChild(frag);
+    // Yield so the UI remains responsive while opening large chats.
+    // (This is the root cause of "can't click header while opening".)
+    // eslint-disable-next-line no-await-in-loop
+    await nextFrame();
+    if (slowYield) {
+      // eslint-disable-next-line no-await-in-loop
+      await waitMs(12);
+    }
+  }
 }
 
 function nextReqId() {
@@ -3007,6 +3137,26 @@ async function connect() {
   connectWs();
   setStatus("Connected.");
   await refreshModels().catch((e) => setStatus(e.message, true));
+  // Initialize from the user's actual Codex CLI config (Windows) so the header reflects
+  // what the terminal uses (e.g. gpt-5.2), not just the provider's "default" model.
+  try {
+    const cfg = await api("/codex/cli-config");
+    const win = cfg?.windows || null;
+    const winModel = String(win?.model || "").trim();
+    const winEffort = String(win?.reasoningEffort || win?.reasoning_effort || "").trim();
+    if (winModel) {
+      const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+      if (options.some((x) => x && x.id === winModel)) {
+        state.selectedModel = winModel;
+        if (state.activeThreadStarted) state.activeThreadModelLabel = winModel;
+      }
+      if (winEffort) {
+        state.selectedReasoningEffort = winEffort;
+        localStorage.setItem(REASONING_EFFORT_KEY, winEffort);
+      }
+      syncHeaderModelPicker();
+    }
+  } catch {}
   await refreshCodexVersions().catch((e) => setStatus(e.message, true));
   await refreshAll();
   setMainTab("chat");
@@ -3060,6 +3210,7 @@ async function sendTurn() {
     threadId: state.activeThreadId || null,
     prompt,
     model: state.selectedModel || undefined,
+    reasoningEffort: state.selectedReasoningEffort || undefined,
     collaborationMode: "default",
   };
   const shouldAnimateWorkspaceBadge = !state.activeThreadStarted;
@@ -3399,6 +3550,31 @@ function bootstrap() {
           setChatOpening(false);
           await loadThreadMessages(id, { animateBadge: true, forceRender: true, stickToBottom: true });
           return { ok: true };
+        },
+        startOpenThreadSlow(threadId, opts = {}) {
+          const id = String(threadId || "").trim();
+          if (!id) return { ok: false, error: "missing threadId" };
+          this._activeThreadId = id;
+          setMainTab("chat");
+          setMobileTab("chat");
+          setActiveThread(id);
+          setChatOpening(true);
+          // Intentionally slow, chunked render for regression testing "header remains clickable while opening".
+          window.__webCodexE2E_openPromise = loadThreadMessages(id, {
+            animateBadge: true,
+            forceRender: true,
+            stickToBottom: true,
+            slowRender: true,
+          });
+          return { ok: true };
+        },
+        async awaitSlowOpenDone() {
+          try {
+            await window.__webCodexE2E_openPromise;
+            return { ok: true };
+          } catch (e) {
+            return { ok: false, error: String(e && e.message ? e.message : e) };
+          }
         },
         async refreshActiveThread() {
           const id = String(this._activeThreadId || state.activeThreadId || "").trim();

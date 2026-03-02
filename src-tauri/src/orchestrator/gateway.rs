@@ -299,6 +299,7 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
             patch(codex_hosts_update).delete(codex_hosts_delete),
         )
         .route("/codex/models", get(codex_models))
+        .route("/codex/cli-config", get(codex_cli_config))
         .route("/codex/approvals/pending", get(codex_pending_approvals))
         .route("/codex/user-input/pending", get(codex_pending_user_inputs))
         .route(

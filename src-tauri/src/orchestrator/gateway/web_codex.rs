@@ -101,6 +101,56 @@ fn require_codex_auth(st: &GatewayState, headers: &HeaderMap) -> Option<Response
     None
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CliConfigSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
+}
+
+fn extract_model_and_effort_from_toml(txt: &str) -> CliConfigSnapshot {
+    let parsed = toml::from_str::<toml::Value>(txt)
+        .unwrap_or(toml::Value::Table(Default::default()));
+    let model = parsed
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let reasoning_effort = parsed
+        .get("model_reasoning_effort")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    CliConfigSnapshot {
+        model,
+        reasoning_effort,
+    }
+}
+
+async fn codex_cli_config(State(st): State<GatewayState>, headers: HeaderMap) -> Response {
+    if let Some(resp) = require_codex_auth(&st, &headers) {
+        return resp;
+    }
+
+    // Best-effort: read the user's actual Windows Codex config.toml (what `codex` CLI uses).
+    let windows_cfg = default_windows_codex_dir()
+        .map(|p| p.join("config.toml"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|txt| extract_model_and_effort_from_toml(&txt))
+        .unwrap_or(CliConfigSnapshot {
+            model: None,
+            reasoning_effort: None,
+        });
+
+    Json(json!({
+        "windows": windows_cfg,
+        "wsl2": Value::Null
+    }))
+    .into_response()
+}
+
 #[derive(Deserialize)]
 struct WsQuery {
     #[serde(default)]
@@ -2266,6 +2316,59 @@ async fn codex_models(State(st): State<GatewayState>, headers: HeaderMap) -> Res
     }
 }
 
+#[cfg(test)]
+mod cli_config_tests {
+    use super::extract_model_and_effort_from_toml;
+
+    #[test]
+    fn parses_model_and_effort() {
+        let txt = r#"
+model = "gpt-5.2"
+model_reasoning_effort = "medium"
+"#;
+        let snap = extract_model_and_effort_from_toml(txt);
+        assert_eq!(snap.model.as_deref(), Some("gpt-5.2"));
+        assert_eq!(snap.reasoning_effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn ignores_empty_values() {
+        let txt = r#"
+model = ""
+model_reasoning_effort = "   "
+"#;
+        let snap = extract_model_and_effort_from_toml(txt);
+        assert_eq!(snap.model.as_deref(), None);
+        assert_eq!(snap.reasoning_effort.as_deref(), None);
+    }
+}
+
+#[cfg(test)]
+mod turn_start_request_tests {
+    use super::TurnStartRequest;
+
+    #[test]
+    fn turn_start_request_accepts_reasoning_effort() {
+        let raw = r#"{"threadId":"t1","prompt":"hi","model":"gpt-5.2","reasoningEffort":"high","collaborationMode":"default"}"#;
+        let req: TurnStartRequest = serde_json::from_str(raw).expect("deserialize");
+        assert_eq!(req.model.as_deref(), Some("gpt-5.2"));
+        assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
+    }
+}
+
+#[cfg(test)]
+mod split_stream_chunks_tests {
+    use super::split_stream_chunks;
+
+    #[test]
+    fn chunks_split_on_newlines_and_length() {
+        let txt = "line1\nline2\n".to_string() + &"x".repeat(120);
+        let chunks = split_stream_chunks(&txt);
+        assert!(chunks.len() >= 4, "expected multiple chunks, got {}", chunks.len());
+        assert!(chunks.iter().any(|c| c.contains('\n')), "expected newline-preserving chunks");
+    }
+}
+
 async fn codex_threads_list(
     State(st): State<GatewayState>,
     headers: HeaderMap,
@@ -2481,6 +2584,8 @@ struct TurnStartRequest {
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
+    reasoning_effort: Option<String>,
+    #[serde(default)]
     collaboration_mode: Option<String>,
 }
 
@@ -2499,6 +2604,7 @@ async fn codex_turn_start(
         "threadId": req.thread_id,
         "prompt": req.prompt,
         "model": req.model,
+        "reasoningEffort": req.reasoning_effort,
         "collaborationMode": req.collaboration_mode.unwrap_or_else(|| "default".to_string()),
     });
     match codex_rpc_call("turn/start", params).await {
@@ -2511,24 +2617,49 @@ async fn codex_turn_start(
 }
 
 fn split_stream_chunks(text: &str) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    for part in text.split_whitespace() {
-        if !current.is_empty() {
-            current.push(' ');
+    // Visual-friendly chunking for the web UI "live" animation:
+    // - Prefer splitting on newline boundaries when present.
+    // - Otherwise, split into small-ish character chunks so `.streamChunk` animations are visible.
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+
+    let push_cur = |out: &mut Vec<String>, cur: &mut String| {
+        let trimmed = cur.trim_matches(' ');
+        if !trimmed.is_empty() {
+            out.push(trimmed.to_string());
         }
-        current.push_str(part);
-        if current.len() >= 80 {
-            chunks.push(std::mem::take(&mut current));
+        cur.clear();
+    };
+
+    // Keep the existing "collapse whitespace" semantics (matches legacy tests) while preserving
+    // newline boundaries as explicit chunk separators.
+    let lines: Vec<&str> = text.split('\n').collect();
+    for (idx, line) in lines.iter().enumerate() {
+        for word in line.split_whitespace() {
+            if cur.is_empty() {
+                cur.push_str(word);
+            } else {
+                // Avoid mid-word splits: only split on word boundaries.
+                if cur.len().saturating_add(1).saturating_add(word.len()) >= 44 {
+                    push_cur(&mut out, &mut cur);
+                    cur.push_str(word);
+                } else {
+                    cur.push(' ');
+                    cur.push_str(word);
+                }
+            }
+        }
+        // Preserve explicit newlines between lines.
+        if idx + 1 < lines.len() {
+            push_cur(&mut out, &mut cur);
+            out.push("\n".to_string());
         }
     }
-    if !current.is_empty() {
-        chunks.push(current);
+    push_cur(&mut out, &mut cur);
+    if out.is_empty() {
+        out.push(String::new());
     }
-    if chunks.is_empty() {
-        chunks.push(String::new());
-    }
-    chunks
+    out
 }
 
 fn sse_event(name: &str, value: &Value) -> Bytes {
@@ -2571,6 +2702,7 @@ async fn codex_turn_stream(
         "threadId": req.thread_id,
         "prompt": req.prompt,
         "model": req.model,
+        "reasoningEffort": req.reasoning_effort,
         "collaborationMode": req.collaboration_mode.unwrap_or_else(|| "default".to_string()),
     });
     let started = sse_event("started", &json!({ "ok": true }));

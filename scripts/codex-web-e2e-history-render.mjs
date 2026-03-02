@@ -209,6 +209,59 @@ async function main() {
     `)
     if (!seeded?.ok) throw new Error(`seed failed: ${seeded?.error || 'unknown'} debug=${JSON.stringify(seeded?.debug || {})}`)
 
+    // Regression (mobile): opening a very large chat must not "freeze" header clicks.
+    // Historically, synchronous DOM insertion for long histories blocked the event loop,
+    // making the hamburger/model picker feel unclickable until loading finished.
+    {
+      const bigSeed = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        if (!h) return { ok: false, error: 'missing e2e hook' };
+        const threadId = 'e2e_1';
+        const turns = [];
+        for (let i = 0; i < 520; i += 1) {
+          turns.push({ items: [{ type: 'assistantMessage', text: 'msg ' + i + '\\n' + Array.from({ length: 3 }).map(() => 'x'.repeat(180)).join('\\n') }] });
+        }
+        const thread = { id: threadId, cwd: 'API-Router', workspace: 'windows', turns };
+        h.setThreadHistory(threadId, thread);
+        return { ok: true, threadId };
+      `)
+      if (!bigSeed?.ok) throw new Error(`big seed failed: ${bigSeed?.error || 'unknown'}`)
+
+      const originalRect = await driver.manage().window().getRect()
+      await driver.manage().window().setRect({ ...originalRect, width: 420, height: 900 })
+
+      const startedSlow = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        return h?.startOpenThreadSlow?.('e2e_1') || { ok: false, error: 'startOpenThreadSlow missing' };
+      `)
+      if (!startedSlow?.ok) throw new Error(`startOpenThreadSlow failed: ${startedSlow?.error || 'unknown'}`)
+
+      await waitFor(async () => {
+        const shown = await driver.executeScript(`return !!document.getElementById('chatOpeningOverlay')?.classList.contains('show');`)
+        return !!shown
+      }, 8000, 'chatOpeningOverlay.show (slow open)')
+
+      const clickStart = Date.now()
+      await driver.findElement(By.id('mobileMenuBtn')).click()
+      await waitFor(async () => {
+        const isOpen = await driver.executeScript(`return document.body.classList.contains('drawer-left-open');`)
+        return !!isOpen
+      }, 2500, 'drawer-left-open during slow open')
+      const clickLatency = Date.now() - clickStart
+      if (clickLatency > 700) throw new Error(`expected header click to respond during slow open (<=700ms), got ${clickLatency}ms`)
+
+      const done = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.awaitSlowOpenDone !== 'function') return done({ ok: false, error: 'awaitSlowOpenDone missing' });
+        h.awaitSlowOpenDone().then(done).catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!done?.ok) throw new Error(`slow open did not complete: ${done?.error || 'unknown'}`)
+
+      await driver.executeScript(`document.body.classList.remove('drawer-left-open'); document.getElementById('mobileDrawerBackdrop')?.classList.remove('show');`)
+      await driver.manage().window().setRect(originalRect)
+    }
+
     // Provide a history that includes:
     // - a Codex-injected AGENTS prompt (should be hidden)
     // - image tags + inline image placeholders in text (should be stripped)
