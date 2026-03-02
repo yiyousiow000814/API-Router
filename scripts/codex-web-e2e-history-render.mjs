@@ -438,6 +438,38 @@ async function main() {
     if (Number(liveFollowProbe.maxDelta || 0) > 80)
       throw new Error(`expected live updates to avoid large single-frame jumps (maxDelta<=80px), got ${liveFollowProbe.maxDelta} probe=${JSON.stringify(liveFollowProbe)}`)
 
+    // Streaming rendering should be incremental (chunk-by-chunk DOM nodes), not just one big textContent update.
+    const streamingDomProbe = await driver.executeAsyncScript(`
+      const done = arguments[0];
+      const box = document.getElementById('chatBox');
+      const h = window.__webCodexE2E;
+      if (!box || !h) return done({ ok: false, error: 'missing chatBox/e2e' });
+      box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
+      box.dispatchEvent(new Event('scroll'));
+
+      if (typeof h.createStreamingMessage !== 'function' || typeof h.appendStreamingDelta !== 'function') {
+        return done({ ok: false, error: 'streaming hooks missing' });
+      }
+      const created = h.createStreamingMessage();
+      if (!created || !created.ok) return done({ ok: false, error: 'createStreamingMessage failed' });
+
+      let i = 0;
+      function tick() {
+        i += 1;
+        h.appendStreamingDelta('line ' + i + '\\n');
+        if (i >= 10) return;
+        setTimeout(tick, 18);
+      }
+      setTimeout(tick, 16);
+      setTimeout(() => {
+        const chunks = box.querySelectorAll('.msg.assistant .streamChunk').length;
+        done({ ok: true, chunks });
+      }, 420);
+    `)
+    if (!streamingDomProbe?.ok) throw new Error(`streaming DOM probe failed: ${streamingDomProbe?.error || 'unknown'}`)
+    if (Number(streamingDomProbe.chunks || 0) < 6)
+      throw new Error(`expected streaming to render multiple .streamChunk nodes (>=6), got ${streamingDomProbe.chunks}`)
+
     const checks = await driver.executeScript(`
       const text = document.getElementById('chatBox')?.innerText || '';
       const mosaics = Array.from(document.querySelectorAll('#chatBox .msg.user .msgAttachments.mosaic'));

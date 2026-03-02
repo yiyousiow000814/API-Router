@@ -1486,6 +1486,56 @@ function createAssistantStreamingMessage() {
   return { msg, body };
 }
 
+function ensureStreamingBody(body) {
+  if (!body) return null;
+  try {
+    body.setAttribute("data-streaming", "1");
+  } catch {}
+  let box = body.querySelector(".streamChunks");
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "streamChunks";
+    body.textContent = "";
+    body.appendChild(box);
+  }
+  if (!body.__streaming) {
+    body.__streaming = { pending: "", scheduled: false };
+  }
+  return { box, st: body.__streaming };
+}
+
+function flushStreamingBody(body) {
+  const prepared = ensureStreamingBody(body);
+  if (!prepared) return;
+  const { box, st } = prepared;
+  const pending = String(st.pending || "");
+  st.pending = "";
+  st.scheduled = false;
+  if (!pending) return;
+
+  const parts = pending.split("\n");
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i];
+    if (part) {
+      const span = document.createElement("span");
+      span.className = "streamChunk";
+      span.textContent = part;
+      box.appendChild(span);
+    }
+    if (i !== parts.length - 1) box.appendChild(document.createElement("br"));
+  }
+}
+
+function appendStreamingDelta(body, text) {
+  const prepared = ensureStreamingBody(body);
+  if (!prepared) return;
+  const { st } = prepared;
+  st.pending += String(text || "");
+  if (st.scheduled) return;
+  st.scheduled = true;
+  requestAnimationFrame(() => flushStreamingBody(body));
+}
+
 function finalizeAssistantMessage(msgNode, bodyNode, text) {
   if (!msgNode || !bodyNode) return;
   // Clear any transient "thinking" indicator once we have final assistant output.
@@ -1495,6 +1545,10 @@ function finalizeAssistantMessage(msgNode, bodyNode, text) {
     if (node) node.remove();
   } catch {}
   const finalText = String(text || "").trim();
+  try {
+    bodyNode.removeAttribute("data-streaming");
+    bodyNode.__streaming = null;
+  } catch {}
   bodyNode.innerHTML = renderMessageBody("assistant", finalText);
   wireMessageLinks(msgNode);
 }
@@ -2999,8 +3053,9 @@ async function sendTurn() {
         const data = evt.payload || {};
         if (type === "delta") {
           if (typeof data.text === "string" && data.text) {
-            text += (text ? " " : "") + data.text;
-            body.textContent = text;
+            const chunk = (text ? " " : "") + data.text;
+            text += chunk;
+            appendStreamingDelta(body, chunk);
           }
           // Keep the streaming assistant near bottom without snapping.
           scheduleChatLiveFollow(700);
@@ -3074,8 +3129,9 @@ async function sendTurn() {
       if (evtName === "delta") {
         const delta = typeof data.text === "string" ? data.text : "";
         if (delta) {
-          text += (text ? " " : "") + delta;
-          body.textContent = text;
+          const chunk = (text ? " " : "") + delta;
+          text += chunk;
+          appendStreamingDelta(body, chunk);
         }
         scheduleChatLiveFollow(700);
         if (typeof data.threadId === "string" && data.threadId) setActiveThread(data.threadId);
@@ -3312,6 +3368,30 @@ function bootstrap() {
         emitWsPayload(payload) {
           try {
             handleWsPayload(payload);
+            return { ok: true };
+          } catch (e) {
+            return { ok: false, error: String(e && e.message ? e.message : e) };
+          }
+        },
+        createStreamingMessage() {
+          try {
+            const created = createAssistantStreamingMessage();
+            const msg = created?.msg;
+            const body = created?.body;
+            const box = byId("chatBox");
+            if (!msg || !body || !box) return { ok: false };
+            box.appendChild(msg);
+            return { ok: true };
+          } catch (e) {
+            return { ok: false, error: String(e && e.message ? e.message : e) };
+          }
+        },
+        appendStreamingDelta(text) {
+          try {
+            const box = byId("chatBox");
+            const body = box?.querySelector?.(".msg.assistant:last-of-type .msgBody") || null;
+            if (!body) return { ok: false, error: "missing streaming body" };
+            appendStreamingDelta(body, String(text || ""));
             return { ok: true };
           } catch (e) {
             return { ok: false, error: String(e && e.message ? e.message : e) };

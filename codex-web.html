@@ -709,15 +709,15 @@
       word-break: break-word;
       overflow-wrap: anywhere;
     }
-    .msg.msg-enter {
-      animation: msg-enter 360ms cubic-bezier(.22, .61, .36, 1) both;
-      animation-delay: var(--msg-enter-delay, 0ms);
-      will-change: opacity, transform;
-    }
-    @keyframes msg-enter {
-      from { opacity: 0; transform: translate3d(0, -10px, 0); }
-      to { opacity: 1; transform: translate3d(0, 0, 0); }
-    }
+    .msg.msg-enter { 
+      animation: msg-enter 360ms linear both; 
+      animation-delay: var(--msg-enter-delay, 0ms); 
+      will-change: opacity, transform; 
+    } 
+    @keyframes msg-enter { 
+      from { opacity: 0; transform: translate3d(0, -10px, 0); } 
+      to { opacity: 1; transform: translate3d(0, 0, 0); } 
+    } 
     .msg.assistant {
       padding-left: 2px;
       color: #2c3950;
@@ -762,12 +762,29 @@
     .msgHead { font-size: 11px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
     .msg.assistant .msgHead,
     .msg.user .msgHead { display: none; }
-    .msgBody {
-      line-height: 1.5;
-      min-width: 0;
-      white-space: normal;
-      overflow-wrap: anywhere;
-    }
+    .msgBody { 
+      line-height: 1.5; 
+      min-width: 0; 
+      white-space: normal; 
+      overflow-wrap: anywhere; 
+    } 
+    .msgBody[data-streaming="1"] { 
+      white-space: pre-wrap; 
+    } 
+    .streamChunks { 
+      display: inline; 
+    } 
+    .streamChunk { 
+      display: inline; 
+      opacity: 0; 
+      transform: translate3d(-4px, 0, 0); 
+      animation: stream-chunk-in 140ms cubic-bezier(.22, .61, .36, 1) forwards; 
+      will-change: opacity, transform; 
+    } 
+    @keyframes stream-chunk-in { 
+      from { opacity: 0; transform: translate3d(-4px, 0, 0); } 
+      to { opacity: 1; transform: translate3d(0, 0, 0); } 
+    } 
     .msgAttachments {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
