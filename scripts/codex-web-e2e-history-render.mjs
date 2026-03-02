@@ -270,23 +270,59 @@ async function main() {
     if (Number(centered.deltaX || 0) > 8) throw new Error(`expected scroll-to-bottom button to be centered (deltaX<=8px), got ${centered.deltaX}`)
     if (Number(centered.deltaBottom || 0) > 160) throw new Error(`expected scroll-to-bottom button to sit near bottom of chat area (deltaBottom<=160px), got ${centered.deltaBottom}`)
     if (Number(centered.w || 0) > 40 || Number(centered.h || 0) > 40) throw new Error(`expected scroll-to-bottom button to be compact (<=40px), got ${centered.w}x${centered.h}`)
-    // Should animate (not "snap") to bottom: on the next animation frame we should not yet be at bottom.
+    // Should animate (not "snap") to bottom, and take a noticeable amount of time (not a "flash").
     const animProbe = await driver.executeAsyncScript(`
       const done = arguments[0];
       const box = document.getElementById('chatBox');
       const btn = document.getElementById('scrollToBottomBtn');
       if (!box || !btn) return done({ ok: false, error: 'missing box/btn' });
       const before = box.scrollTop;
-      const target = box.scrollHeight - box.clientHeight;
+      const startedWall = Date.now();
+      const onclickStr = String(btn.onclick || '');
       btn.click();
-      requestAnimationFrame(() => {
+
+      let checkedFirstFrame = false;
+      function tick() {
+        const nowWall = Date.now();
         const after = box.scrollTop;
         const dist = (box.scrollHeight - (after + box.clientHeight));
-        done({ ok: true, before, after, dist, target });
-      });
+        if (!checkedFirstFrame) {
+          checkedFirstFrame = true;
+          if (dist <= 18) return done({ ok: false, error: 'snap-within-1-frame', before, after, dist });
+        }
+        const dbg = window.__webCodexDbg || null;
+        const endedAt = dbg && typeof dbg.lastSmoothScrollEndedAt === 'number' ? dbg.lastSmoothScrollEndedAt : 0;
+        const startedAt = dbg && typeof dbg.lastSmoothScrollStartAt === 'number' ? dbg.lastSmoothScrollStartAt : startedWall;
+        if (endedAt && endedAt >= startedWall) {
+          return done({
+            ok: true,
+            before,
+            after,
+            dist,
+            elapsedMs: endedAt - startedAt,
+            onclickHasSmooth: onclickStr.includes('smoothScrollChatToBottom'),
+            rafIsNative: String(window.requestAnimationFrame || '').includes('[native code]'),
+            dbg,
+          });
+        }
+        if (nowWall - startedWall > 5000) return done({ ok: false, error: 'timeout', before, after, dist, dbg });
+        requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
     `)
-    if (!animProbe?.ok) throw new Error(`anim probe failed: ${animProbe?.error || 'unknown'}`)
-    if (Number(animProbe.dist || 0) <= 18) throw new Error('expected scroll-to-bottom to animate (not land at bottom within 1 frame)')
+    if (!animProbe?.ok) throw new Error(`anim probe failed: ${animProbe?.error || 'unknown'} probe=${JSON.stringify(animProbe)}`)
+    if (Number(animProbe.elapsedMs || 0) < 350)
+      throw new Error(`expected scroll-to-bottom animation to be noticeable (>=350ms), got ${animProbe.elapsedMs}ms probe=${JSON.stringify(animProbe)}`)
+    // End of animation should not "snap" a large distance in the final frame(s).
+    // (This commonly happens when forcing scrollTop=scrollHeight and letting the browser clamp.)
+    const tail = animProbe?.dbg?.lastSmoothScrollTail;
+    if (Array.isArray(tail) && tail.length >= 2) {
+      const a = Number(tail[tail.length - 2]);
+      const b = Number(tail[tail.length - 1]);
+      const delta = Math.abs(b - a);
+      if (Number.isFinite(delta) && delta > 120)
+        throw new Error(`expected smooth scroll to settle without a big last-frame snap (delta<=120px), got ${delta}px tail=${JSON.stringify(tail)}`)
+    }
     await waitFor(async () => {
       const near = await driver.executeScript(`
         const box = document.getElementById('chatBox');

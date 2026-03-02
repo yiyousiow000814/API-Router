@@ -60,6 +60,9 @@ const state = {
   threadPullRefreshing: false,
   activeThreadStarted: false,
   chatAutoStickUntil: 0,
+  chatAutoStickToken: 0,
+  chatSmoothScrollUntil: 0,
+  chatSmoothScrollToken: 0,
   activeThreadModelLabel: "",
   activeThreadWorkspace: "windows",
   modelOptions: [],
@@ -88,6 +91,12 @@ const ACTIVE_THREAD_LIVE_POLL_MS = 1500;
 const RECENT_EVENT_ID_CACHE_SIZE = 2048;
 const MOBILE_PROMPT_MIN_HEIGHT_PX = 40;
 const MOBILE_PROMPT_MAX_HEIGHT_PX = 420;
+
+function dbgSet(patch) {
+  try {
+    window.__webCodexDbg = Object.assign(window.__webCodexDbg || {}, patch || {});
+  } catch {}
+}
 
 function getEmbeddedToken() {
   const raw = "";
@@ -882,56 +891,96 @@ function scrollChatToBottom({ force = false } = {}) {
   const box = byId("chatBox");
   if (!box) return;
   if (!force && !isChatNearBottom()) return;
-  box.scrollTop = box.scrollHeight;
+  dbgSet({ lastScrollChatToBottomAt: Date.now(), lastScrollChatToBottomForce: !!force });
+  // Use the actual max scrollTop to avoid a clamp-induced "micro jump" at the end.
+  box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
   updateScrollToBottomBtn();
 }
 
 function stickChatToBottomFor(ms) {
+  state.chatAutoStickToken = (Number(state.chatAutoStickToken || 0) + 1) | 0;
+  const token = state.chatAutoStickToken;
   state.chatAutoStickUntil = Date.now() + Math.max(0, Number(ms || 0));
   scrollChatToBottom({ force: true });
   // Images/layout can settle on the next frame(s); keep the box pinned briefly.
-  requestAnimationFrame(() => scrollChatToBottom({ force: Date.now() <= state.chatAutoStickUntil }));
-  requestAnimationFrame(() => scrollChatToBottom({ force: Date.now() <= state.chatAutoStickUntil }));
-  setTimeout(() => scrollChatToBottom({ force: Date.now() <= state.chatAutoStickUntil }), 220);
+  requestAnimationFrame(() => scrollChatToBottom({ force: token === state.chatAutoStickToken && Date.now() <= state.chatAutoStickUntil }));
+  requestAnimationFrame(() => scrollChatToBottom({ force: token === state.chatAutoStickToken && Date.now() <= state.chatAutoStickUntil }));
+  setTimeout(() => scrollChatToBottom({ force: token === state.chatAutoStickToken && Date.now() <= state.chatAutoStickUntil }), 220);
   setTimeout(() => updateScrollToBottomBtn(), 260);
 }
 
-function smoothScrollChatToBottom(durationMs = null) {
+function smoothScrollChatToBottom(durationMs = undefined) {
   const box = byId("chatBox");
   if (!box) return;
   const prefersReduced =
     typeof window !== "undefined" &&
     typeof window.matchMedia === "function" &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (prefersReduced) {
-    stickChatToBottomFor(600);
-    return;
-  }
 
   const startTop = box.scrollTop;
-  const targetTop = box.scrollHeight;
-  if (targetTop <= startTop + 1) return;
-  const distancePx = Math.max(0, targetTop - startTop);
+  const initialTargetTop = Math.max(0, box.scrollHeight - box.clientHeight);
+  if (initialTargetTop <= startTop + 1) return;
+  const distancePx = Math.max(0, initialTargetTop - startTop);
 
-  // Natural / inertial feel: larger distances take longer, with caps to avoid "forever" scrolling.
-  // pxPerMs ~ 2.1 => ~2100px/sec baseline.
-  const computedDuration = Math.round(Math.max(240, Math.min(900, distancePx / 2.1)));
-  const dur = Number.isFinite(Number(durationMs)) ? Math.round(Number(durationMs)) : computedDuration;
+  // Natural / inertial feel: use sqrt(distance) so small jumps aren't "flashy",
+  // and large jumps don't take forever. Keep a slightly shorter profile for
+  // reduced-motion setups, but still animated (user feedback prefers some motion).
+  const computedDuration = prefersReduced
+    ? Math.round(Math.max(240, Math.min(520, 80 + Math.sqrt(distancePx) * 18)))
+    : Math.round(Math.max(420, Math.min(1400, 100 + Math.sqrt(distancePx) * 24)));
+  const dur =
+    durationMs == null || !Number.isFinite(Number(durationMs))
+      ? computedDuration
+      : Math.max(1, Math.round(Number(durationMs)));
 
-  const startedAt = performance.now();
+  let startedAt = null;
+  state.chatSmoothScrollToken = (Number(state.chatSmoothScrollToken || 0) + 1) | 0;
+  const token = state.chatSmoothScrollToken;
+  state.chatSmoothScrollUntil = Date.now() + Math.max(0, dur + 250);
+  // Cancel any pending stick-to-bottom timers from older interactions.
+  state.chatAutoStickToken = (Number(state.chatAutoStickToken || 0) + 1) | 0;
   state.chatAutoStickUntil = Date.now() + Math.max(900, dur + 500);
+  dbgSet({
+    lastSmoothScrollStartAt: Date.now(),
+    lastSmoothScrollDurMs: dur,
+    lastSmoothScrollStartTop: startTop,
+    lastSmoothScrollInitialTargetTop: initialTargetTop,
+  });
+
+  // Reduce layout thrash on huge chats: don't read scrollHeight/clientHeight every frame.
+  let sampledTargetTop = initialTargetTop;
+  let lastSampleMs = 0;
+  let lastBtnUpdateMs = 0;
+  const tail = [];
 
   const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
   const step = (now) => {
+    if (token !== state.chatSmoothScrollToken) return; // superseded by a newer smooth scroll
+    if (startedAt == null) startedAt = now;
     const t = Math.min(1, (now - startedAt) / Math.max(1, dur));
     const eased = easeOutCubic(t);
-    box.scrollTop = Math.round(startTop + (targetTop - startTop) * eased);
-    updateScrollToBottomBtn();
+    // Re-sample max scrollTop occasionally to account for late layout (images, font load),
+    // but avoid doing it every frame.
+    if (now - lastSampleMs >= 90) {
+      lastSampleMs = now;
+      sampledTargetTop = Math.max(0, box.scrollHeight - box.clientHeight);
+    }
+    box.scrollTop = startTop + (sampledTargetTop - startTop) * eased;
+    // Keep just the tail of scroll positions so tests can assert "no big snap at the end".
+    tail.push(box.scrollTop);
+    while (tail.length > 10) tail.shift();
+    if (t === 0) dbgSet({ lastSmoothScrollFirstFrameAt: Date.now(), lastSmoothScrollFirstFrameTop: box.scrollTop });
+    if (now - lastBtnUpdateMs >= 66) {
+      lastBtnUpdateMs = now;
+      updateScrollToBottomBtn();
+    }
     if (t < 1) requestAnimationFrame(step);
     else {
       // Ensure we're truly pinned at the end (handles fractional pixels / late layout).
-      scrollChatToBottom({ force: true });
+      box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
       updateScrollToBottomBtn();
+      dbgSet({ lastSmoothScrollEndedAt: Date.now(), lastSmoothScrollEndedTop: box.scrollTop, lastSmoothScrollTail: tail.slice() });
+      if (token === state.chatSmoothScrollToken) state.chatSmoothScrollUntil = 0;
     }
   };
   requestAnimationFrame(step);
@@ -1282,6 +1331,12 @@ function wireMessageAttachments(container) {
     img.__wiredLoad = true;
     const onSettled = () => {
       const now = Date.now();
+      // While the user is explicitly smooth-scrolling to bottom, avoid snapping the scrollTop
+      // due to late image loads; the animation already tracks scrollHeight changes.
+      if (now <= Number(state.chatSmoothScrollUntil || 0)) {
+        updateScrollToBottomBtn();
+        return;
+      }
       const force = now <= Number(state.chatAutoStickUntil || 0);
       scrollChatToBottom({ force });
     };
@@ -3145,7 +3200,22 @@ function bootstrap() {
     if (chatBox && !chatBox.__wiredScrollToBottom) {
       chatBox.__wiredScrollToBottom = true;
       ensureScrollToBottomBtn();
-      chatBox.addEventListener("scroll", () => updateScrollToBottomBtn(), { passive: true });
+      chatBox.addEventListener(
+        "scroll",
+        () => {
+          updateScrollToBottomBtn();
+          // If the user scrolls away from bottom, cancel any pending "auto-stick" so we don't
+          // snap them back down due to timers (e.g. chat opening / message settle).
+          const now = Date.now();
+          if (now <= Number(state.chatSmoothScrollUntil || 0)) return;
+          const dist = chatBox.scrollHeight - (chatBox.scrollTop + chatBox.clientHeight);
+          if (dist > 180) {
+            state.chatAutoStickUntil = 0;
+            state.chatAutoStickToken = (Number(state.chatAutoStickToken || 0) + 1) | 0;
+          }
+        },
+        { passive: true }
+      );
       updateScrollToBottomBtn();
     }
   } catch {}
