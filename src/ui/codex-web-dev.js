@@ -883,6 +883,7 @@ function scrollChatToBottom({ force = false } = {}) {
   if (!box) return;
   if (!force && !isChatNearBottom()) return;
   box.scrollTop = box.scrollHeight;
+  updateScrollToBottomBtn();
 }
 
 function stickChatToBottomFor(ms) {
@@ -892,31 +893,32 @@ function stickChatToBottomFor(ms) {
   requestAnimationFrame(() => scrollChatToBottom({ force: Date.now() <= state.chatAutoStickUntil }));
   requestAnimationFrame(() => scrollChatToBottom({ force: Date.now() <= state.chatAutoStickUntil }));
   setTimeout(() => scrollChatToBottom({ force: Date.now() <= state.chatAutoStickUntil }), 220);
+  setTimeout(() => updateScrollToBottomBtn(), 260);
 }
 
 function ensureScrollToBottomBtn() {
+  const chatPanel = document.querySelector("section.panel.chatPanel");
+  if (!chatPanel) return null;
   const box = byId("chatBox");
   if (!box) return null;
-  let btn = byId("scrollToBottomBtn");
-  if (btn) return btn;
-  btn = document.createElement("button");
-  btn.id = "scrollToBottomBtn";
-  btn.type = "button";
-  btn.className = "scrollToBottomBtn";
-  btn.setAttribute("aria-label", "Scroll to bottom");
-  btn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v12"></path><path d="M7.5 13.5L12 18l4.5-4.5"></path></svg>`;
-  btn.onclick = () => {
-    const chat = byId("chatBox");
-    if (!chat) return;
-    try {
-      chat.scrollTo({ top: chat.scrollHeight, behavior: "smooth" });
-    } catch {
-      chat.scrollTop = chat.scrollHeight;
-    }
-    stickChatToBottomFor(900);
-    updateScrollToBottomBtn();
-  };
-  box.appendChild(btn);
+  const btn = byId("scrollToBottomBtn");
+  if (!btn) return null;
+  if (!btn.__wired) {
+    btn.__wired = true;
+    btn.onclick = () => {
+      const chat = byId("chatBox");
+      if (!chat) return;
+      try {
+        chat.scrollTo({ top: chat.scrollHeight, behavior: "smooth" });
+      } catch {
+        chat.scrollTop = chat.scrollHeight;
+      }
+      stickChatToBottomFor(900);
+      updateScrollToBottomBtn();
+    };
+  }
+  // Ensure the button is positioned relative to the chat panel, not inside the scrolled content.
+  if (btn.parentElement !== chatPanel) chatPanel.appendChild(btn);
   return btn;
 }
 
@@ -927,6 +929,7 @@ function updateScrollToBottomBtn() {
   if (!btn) return;
   const show = !isChatNearBottomForJumpBtn() && box.scrollHeight > box.clientHeight + 40;
   btn.classList.toggle("show", !!show);
+  btn.setAttribute("aria-hidden", show ? "false" : "true");
 }
 
 function dataUrlToBlob(dataUrl) {

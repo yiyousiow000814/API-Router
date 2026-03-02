@@ -539,7 +539,8 @@
     .scrollToBottomBtn {
       position: absolute;
       left: 50%;
-      bottom: 14px;
+      /* Sit above the composer (which can grow). Uses a conservative offset. */
+      bottom: 78px;
       width: 44px;
       height: 44px;
       border-radius: 999px;
@@ -589,6 +590,9 @@
       display: grid;
       align-content: start;
       gap: 10px;
+    }
+    .chatPanel {
+      position: relative;
     }
     .settingsCard {
       border: none;
@@ -1937,6 +1941,9 @@
           <div id="headerWorkspaceBadge" class="workspaceBadge" aria-live="polite"></div>
           <div class="grow"></div>
         </div>
+        <button id="scrollToBottomBtn" class="scrollToBottomBtn" type="button" aria-label="Scroll to bottom" aria-hidden="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v12"></path><path d="M7.5 13.5L12 18l4.5-4.5"></path></svg>
+        </button>
         <div id="settingsTab" class="settingsTab">
           <div class="settingsCard">
             <div id="settingsInfoSection">

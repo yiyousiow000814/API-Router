@@ -229,6 +229,21 @@ async function main() {
     }
 
     // When scrolled up meaningfully, a floating "scroll to bottom" button should appear; clicking it scrolls to bottom.
+    {
+      const shown = await driver.executeScript(`return !!document.getElementById('scrollToBottomBtn')?.classList.contains('show');`)
+      if (shown) throw new Error('expected scroll-to-bottom button to be hidden when landing at bottom')
+    }
+    await driver.executeScript(`
+      const box = document.getElementById('chatBox');
+      if (box) {
+        box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight - 60);
+        box.dispatchEvent(new Event('scroll'));
+      }
+    `)
+    await waitFor(async () => {
+      const shown = await driver.executeScript(`return !!document.getElementById('scrollToBottomBtn')?.classList.contains('show');`)
+      return !shown
+    }, 8000, 'scroll-to-bottom button to stay hidden after small scroll')
     await driver.executeScript(`
       const box = document.getElementById('chatBox');
       if (box) {
@@ -249,10 +264,11 @@ async function main() {
       const cr = box.getBoundingClientRect();
       const btnCenter = br.left + br.width / 2;
       const boxCenter = cr.left + cr.width / 2;
-      return { ok: true, delta: Math.abs(btnCenter - boxCenter) };
+      return { ok: true, deltaX: Math.abs(btnCenter - boxCenter), deltaBottom: Math.abs(cr.bottom - br.bottom) };
     `)
     if (!centered?.ok) throw new Error('expected scroll-to-bottom button to exist for centering check')
-    if (Number(centered.delta || 0) > 8) throw new Error(`expected scroll-to-bottom button to be centered (delta<=8px), got ${centered.delta}`)
+    if (Number(centered.deltaX || 0) > 8) throw new Error(`expected scroll-to-bottom button to be centered (deltaX<=8px), got ${centered.deltaX}`)
+    if (Number(centered.deltaBottom || 0) > 160) throw new Error(`expected scroll-to-bottom button to sit near bottom of chat area (deltaBottom<=160px), got ${centered.deltaBottom}`)
     await driver.executeScript(`
       const btn = document.getElementById('scrollToBottomBtn');
       if (btn) btn.click();
