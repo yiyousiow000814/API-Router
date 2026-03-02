@@ -264,11 +264,12 @@ async function main() {
       const cr = box.getBoundingClientRect();
       const btnCenter = br.left + br.width / 2;
       const boxCenter = cr.left + cr.width / 2;
-      return { ok: true, deltaX: Math.abs(btnCenter - boxCenter), deltaBottom: Math.abs(cr.bottom - br.bottom) };
+      return { ok: true, deltaX: Math.abs(btnCenter - boxCenter), deltaBottom: Math.abs(cr.bottom - br.bottom), w: br.width, h: br.height };
     `)
     if (!centered?.ok) throw new Error('expected scroll-to-bottom button to exist for centering check')
     if (Number(centered.deltaX || 0) > 8) throw new Error(`expected scroll-to-bottom button to be centered (deltaX<=8px), got ${centered.deltaX}`)
     if (Number(centered.deltaBottom || 0) > 160) throw new Error(`expected scroll-to-bottom button to sit near bottom of chat area (deltaBottom<=160px), got ${centered.deltaBottom}`)
+    if (Number(centered.w || 0) > 40 || Number(centered.h || 0) > 40) throw new Error(`expected scroll-to-bottom button to be compact (<=40px), got ${centered.w}x${centered.h}`)
     await driver.executeScript(`
       const btn = document.getElementById('scrollToBottomBtn');
       if (btn) btn.click();
