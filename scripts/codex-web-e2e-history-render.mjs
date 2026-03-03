@@ -82,6 +82,12 @@ async function main() {
   if (!/scrollbar-gutter:\s*stable/i.test(html)) throw new Error('expected .messages to set scrollbar-gutter: stable (no jiggle on image load)')
   if (!/animation:\s*msg-enter\s*360ms/i.test(html)) throw new Error('expected msg-enter animation to be slowed to 360ms')
   if (!/animation-duration:\s*288ms/i.test(html)) throw new Error('expected tool msg-enter animation to be slowed to 288ms')
+  if (!/\.chatPanel\s+\.panelHeader\s+\.headerModelMenu\s*\{[\s\S]*box-shadow:\s*none/i.test(html)) {
+    throw new Error('expected model menu to disable box-shadow')
+  }
+  if (!/\.effortInlineOverlay\s*\{[\s\S]*box-shadow:\s*none/i.test(html)) {
+    throw new Error('expected reasoning-effort submenu to disable box-shadow')
+  }
 
   const devProc = await ensureDevServerReady()
   let driver = null
@@ -131,6 +137,35 @@ async function main() {
       return !!ok
     }, 20000, '__webCodexE2E init')
 
+    // Regression: while models are still loading, the header should say "Loading models..." and
+    // the model picker should not open a menu that says "No models available".
+    {
+      const forced = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.setModelLoading !== 'function') return { ok: false, error: 'setModelLoading missing' };
+        return h.setModelLoading(true);
+      `)
+      if (!forced?.ok) throw new Error(`failed to force model loading state: ${forced?.error || 'unknown'}`)
+
+      const pre = await driver.executeScript(`
+        const label = document.getElementById('headerModelLabel');
+        const trigger = document.getElementById('headerModelTrigger');
+        const picker = document.getElementById('headerModelPicker');
+        return {
+          label: String(label?.textContent || '').trim(),
+          ariaDisabled: String(trigger?.getAttribute('aria-disabled') || '').trim(),
+          open: !!picker?.classList.contains('open'),
+        };
+      `)
+      if (pre?.label !== 'Loading models...') throw new Error(`expected header model label to show Loading models..., got ${JSON.stringify(pre?.label || '')}`)
+      if (pre?.ariaDisabled !== 'true') throw new Error(`expected header model trigger aria-disabled=true while loading, got ${JSON.stringify(pre?.ariaDisabled || '')}`)
+
+      await driver.executeScript(`document.getElementById('headerModelTrigger')?.click?.();`)
+      await new Promise((r) => setTimeout(r, 250))
+      const stillClosed = await driver.executeScript(`return !!document.getElementById('headerModelPicker')?.classList.contains('open');`)
+      if (stillClosed) throw new Error('expected model picker to stay closed while models are loading')
+    }
+
     // Regression: reasoning-effort selector should be a nested submenu to the RIGHT of the active model option
     // (ChatGPT-style: show current effort + chevron, click chevron opens a submenu).
     // This test runs in e2e mode without requiring a running gateway.
@@ -178,8 +213,8 @@ async function main() {
       const selectedModelStaysOpen = await driver.executeScript(`
         const menu = document.getElementById('headerModelMenu');
         const btns = menu ? Array.from(menu.querySelectorAll('.headerModelOption')) : [];
-        const target = btns.find((b) => /gpt-5\\.3-codex/.test(String(b.textContent || '')));
-        if (!target) return { ok: false, error: 'missing model option gpt-5.3-codex' };
+        const target = btns.find((b) => /5\\.3-codex/.test(String(b.textContent || '')));
+        if (!target) return { ok: false, error: 'missing model option 5.3-codex' };
         target.click();
         const open = !!document.getElementById('headerModelPicker')?.classList.contains('open');
         const active = document.querySelector('#headerModelMenu .headerModelOption.active .modelLabel');
@@ -187,7 +222,7 @@ async function main() {
       `)
       if (!selectedModelStaysOpen?.ok) throw new Error(`model select probe failed: ${selectedModelStaysOpen?.error || 'unknown'}`)
       if (!selectedModelStaysOpen?.open) throw new Error('expected model menu to stay open after selecting a model')
-      if (selectedModelStaysOpen.active !== 'gpt-5.3-codex') throw new Error(`expected active model to become gpt-5.3-codex, got ${JSON.stringify(selectedModelStaysOpen.active)}`)
+      if (selectedModelStaysOpen.active !== '5.3-codex') throw new Error(`expected active model to become 5.3-codex, got ${JSON.stringify(selectedModelStaysOpen.active)}`)
 
       const reasoningUi = await driver.executeScript(`
         const menu = document.getElementById('headerModelMenu');
@@ -197,12 +232,16 @@ async function main() {
         const legacyPills = activeOption ? activeOption.querySelector('.effortPills') : null;
         const label = String(activeOption?.querySelector('.effortSubLabel')?.textContent || '').trim();
         const chev = activeOption ? activeOption.querySelector('.effortSubChevron') : null;
+        const allChevs = Array.from(menu.querySelectorAll('.effortSubChevron')).length;
+        const modelCount = Array.from(menu.querySelectorAll('.headerModelOption')).length;
         return {
           ok: true,
           hasLegacyRow: !!legacyRow,
           hasLegacyPills: !!legacyPills,
           hasActiveOption: !!activeOption,
           hasChevron: !!chev,
+          allChevs,
+          modelCount,
           label,
         };
       `)
@@ -211,7 +250,10 @@ async function main() {
       if (!reasoningUi?.hasActiveOption) throw new Error('expected an active model option in the menu')
       if (reasoningUi?.hasLegacyPills) throw new Error('expected legacy multi-pill effort selector to be removed (must be compact dropdown)')
       if (!reasoningUi?.hasChevron) throw new Error('expected .effortSubChevron to exist next to active model')
-      if (reasoningUi?.label !== 'medium') throw new Error(`expected default effort label medium, got ${JSON.stringify(reasoningUi?.label || '')}`)
+      if (Number(reasoningUi?.allChevs || 0) !== Number(reasoningUi?.modelCount || 0)) {
+        throw new Error(`expected a chevron for each model row, got chevs=${JSON.stringify(reasoningUi?.allChevs || 0)} models=${JSON.stringify(reasoningUi?.modelCount || 0)}`)
+      }
+      if (reasoningUi?.label) throw new Error(`expected no inline effort label in the model row, got ${JSON.stringify(reasoningUi?.label || '')}`)
 
       const pickedHigh = await driver.executeScript(`
         const opt = document.querySelector('#headerModelMenu .headerModelOption.active');
@@ -222,14 +264,22 @@ async function main() {
         const overlay = document.getElementById('effortInlineOverlay');
         if (!overlay || !overlay.classList.contains('show')) {
           // Some flows auto-open the effort overlay after selecting a model; if it isn't open yet, open it now.
-          trigger.click();
+          // In the new UX, selecting the model auto-opens; as a fallback, click the model row itself.
+          opt?.click?.();
         }
         if (!document.getElementById('effortInlineOverlay')?.classList.contains('show')) {
           // Ensure it opens on the first click.
-          trigger.click();
+          opt?.click?.();
         }
         const overlay2 = document.getElementById('effortInlineOverlay');
         if (!overlay2 || !overlay2.classList.contains('show')) return { ok: false, error: 'missing inline effort overlay' };
+
+        // Overlay should render to the RIGHT of the model menu (nested submenu), not below.
+        const menuRect = document.getElementById('headerModelMenu')?.getBoundingClientRect();
+        const overlayRectOpen = overlay2.getBoundingClientRect();
+        const rightOfMenu = !!(menuRect && overlayRectOpen && overlayRectOpen.left >= menuRect.right - 2);
+        const gap = !!(menuRect && overlayRectOpen) ? Math.round(Math.max(0, overlayRectOpen.left - menuRect.right)) : -1;
+
         const high = Array.from(overlay2.querySelectorAll('.effortInlineOption')).find((b) => {
           const label = b.querySelector('.label');
           return String(label?.textContent || '').trim() === 'high';
@@ -237,23 +287,16 @@ async function main() {
         if (!high) return { ok: false, error: 'missing high option' };
         high.click();
         const pickerOpen2 = !!document.getElementById('headerModelPicker')?.classList.contains('open');
-        if (!pickerOpen2) return { ok: false, error: 'model picker closed after selecting effort' };
-        const opt2 = document.querySelector('#headerModelMenu .headerModelOption.active');
-        const label = String(opt2?.querySelector('.effortSubLabel')?.textContent || '').trim();
-        const chev2 = opt2 ? opt2.querySelector('.effortSubChevron') : null;
-        const expanded = String(chev2?.getAttribute('aria-expanded') || '').trim();
-        // Re-open should take ONE click (no stale "open" state / arrow direction).
-        chev2?.click();
-        const overlay3 = document.getElementById('effortInlineOverlay');
-        const reopened = !!overlay3?.classList.contains('show');
-        return { ok: true, label, expanded, reopened };
+        const overlayGone = !document.getElementById('effortInlineOverlay')?.classList.contains('show');
+        const headerEffort = String(document.getElementById('headerReasoningEffort')?.textContent || '').trim();
+        return { ok: true, pickerOpen2, overlayGone, headerEffort, rightOfMenu, gap };
       `)
       if (!pickedHigh?.ok) throw new Error(`failed to pick high: ${pickedHigh?.error || 'unknown'}`)
-      if (pickedHigh.label !== 'high') throw new Error(`expected effort label high after click, got ${JSON.stringify(pickedHigh.label)}`)
-      if (pickedHigh.expanded && pickedHigh.expanded !== 'false') {
-        throw new Error(`expected effort trigger aria-expanded=false after selection, got ${JSON.stringify(pickedHigh.expanded)}`)
-      }
-      if (!pickedHigh.reopened) throw new Error('expected effort overlay to reopen on first click (no double-click needed)')
+      if (pickedHigh.pickerOpen2) throw new Error('expected model menu to close after selecting reasoning effort')
+      if (!pickedHigh.overlayGone) throw new Error('expected effort submenu overlay to close after selecting reasoning effort')
+      if (pickedHigh.headerEffort !== 'high') throw new Error(`expected headerReasoningEffort to show high, got ${JSON.stringify(pickedHigh.headerEffort)}`)
+      if (!pickedHigh.rightOfMenu) throw new Error('expected effort overlay to appear to the right of model menu')
+      if (typeof pickedHigh.gap === 'number' && pickedHigh.gap > 3) throw new Error(`expected effort submenu gap <= 3px, got ${pickedHigh.gap}px`)
 
       // Close via outside click (more reliable than re-clicking the trigger across webviews).
       await driver.executeScript(`document.body.click();`)

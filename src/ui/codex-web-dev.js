@@ -79,6 +79,7 @@ const state = {
   activeThreadModelLabel: "",
   activeThreadWorkspace: "windows",
   modelOptions: [],
+  modelOptionsLoading: true,
   selectedModel: "",
   selectedReasoningEffort: "",
   inlineEffortMenuOpen: false,
@@ -342,11 +343,14 @@ function updateHeaderUi(animateBadge = false) {
   const headerBadge = byId("headerWorkspaceBadge");
   const modelPicker = byId("headerModelPicker");
   const modelLabel = byId("headerModelLabel");
+  const headerEffort = byId("headerReasoningEffort");
   const inSettings = state.activeMainTab === "settings";
   const showBadge = !inSettings && state.activeThreadStarted;
   // Always prefer the currently selected model (the one we'll use for new turns).
   // Thread history metadata can drift due to Codex migrations (e.g. 5.2 -> 5.3).
-  const displayModel = state.selectedModel || state.activeThreadModelLabel || "Codex";
+  const displayModel = state.modelOptionsLoading
+    ? "Loading models..."
+    : (compactModelLabel(state.selectedModel) || compactModelLabel(state.activeThreadModelLabel) || "Codex");
   const displayTitle = displayModel;
 
   if (panelTitle) {
@@ -362,6 +366,34 @@ function updateHeaderUi(animateBadge = false) {
   if (modelPicker) modelPicker.style.display = inSettings ? "none" : "inline-flex";
   if (modelLabel) modelLabel.textContent = displayTitle;
   if (inSettings) setHeaderModelMenuOpen(false);
+
+  // Disable model picker interaction until models are loaded.
+  {
+    const trigger = byId("headerModelTrigger");
+    if (trigger) {
+      const disabled = !!(!inSettings && state.modelOptionsLoading);
+      trigger.setAttribute("aria-disabled", disabled ? "true" : "false");
+      trigger.classList.toggle("disabled", disabled);
+      trigger.style.pointerEvents = disabled ? "none" : "auto";
+    }
+  }
+
+  // Header reasoning effort label (only when supported by the selected model).
+  if (headerEffort) {
+    const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+    const active = options.find((x) => x && x.id === state.selectedModel) || null;
+    const supported = Array.isArray(active?.supportedReasoningEfforts) ? active.supportedReasoningEfforts : [];
+    const showEffort = !inSettings && !state.modelOptionsLoading && supported.length > 0;
+    if (!showEffort) {
+      headerEffort.style.display = "none";
+      headerEffort.textContent = "";
+    } else {
+      const fallback = String(active.defaultReasoningEffort || supported[0]?.effort || "").trim();
+      const cur = String(localStorage.getItem(REASONING_EFFORT_KEY) || state.selectedReasoningEffort || fallback || "").trim();
+      headerEffort.style.display = "inline-flex";
+      headerEffort.textContent = cur;
+    }
+  }
 
   if (headerSwitch) {
     headerSwitch.style.display = !inSettings && !showBadge ? "inline-flex" : "none";
@@ -415,6 +447,7 @@ function setHeaderModelMenuOpen(open) {
   const picker = byId("headerModelPicker");
   const trigger = byId("headerModelTrigger");
   if (!picker || !trigger) return;
+  if (open && state.modelOptionsLoading) return;
   picker.classList.toggle("open", !!open);
   trigger.setAttribute("aria-expanded", open ? "true" : "false");
   if (!open) {
@@ -444,8 +477,9 @@ function closeInlineEffortOverlay() {
   // Keep the trigger state consistent (aria-expanded).
   try {
     const menu = byId("headerModelMenu");
-    const trigger = menu?.querySelector?.(".effortSubChevron[aria-expanded='true']") || null;
-    if (trigger) trigger.setAttribute("aria-expanded", "false");
+    for (const trigger of Array.from(menu?.querySelectorAll?.(".effortSubChevron[aria-expanded='true']") || [])) {
+      trigger.setAttribute("aria-expanded", "false");
+    }
   } catch {}
 }
 
@@ -475,12 +509,17 @@ function openInlineEffortOverlay(anchorEl, model) {
     .filter(Boolean)
     .join("");
 
-  // Position: prefer below-right; if it would overflow bottom, flip above.
+  // Position: place the effort submenu to the RIGHT of the model menu (ChatGPT-style),
+  // vertically aligned near the clicked chevron.
   const r = anchorEl.getBoundingClientRect();
+  const menuEl = byId("headerModelMenu") || byId("headerModelPicker");
+  const menuRect = menuEl ? menuEl.getBoundingClientRect() : null;
   const padding = 6;
-  overlay.style.left = `${Math.max(padding, Math.min(window.innerWidth - padding, r.right))}px`;
-  overlay.style.top = `${Math.max(padding, Math.min(window.innerHeight - padding, r.bottom + 6))}px`;
-  overlay.style.transformOrigin = "top right";
+  const baseLeft = menuRect ? menuRect.right + 2 : r.right + 2;
+  const baseTop = Math.max(padding, Math.min(window.innerHeight - padding, r.top - 6));
+  overlay.style.left = `${Math.round(baseLeft)}px`;
+  overlay.style.top = `${Math.round(baseTop)}px`;
+  overlay.style.transformOrigin = "top left";
   overlay.classList.add("show");
 
   // Sync trigger state to "open".
@@ -494,13 +533,13 @@ function openInlineEffortOverlay(anchorEl, model) {
       const or = overlay.getBoundingClientRect();
       let left = or.left;
       let top = or.top;
-      if (or.right > window.innerWidth - padding) left -= (or.right - (window.innerWidth - padding));
-      if (or.left < padding) left += (padding - or.left);
-      if (or.bottom > window.innerHeight - padding) {
-        // flip above anchor
-        top = Math.max(padding, r.top - 6 - or.height);
-        overlay.style.transformOrigin = "bottom right";
+      if (or.right > window.innerWidth - padding) {
+        // Flip to the left side of the model menu if needed.
+        left = menuRect ? Math.max(padding, menuRect.left - 10 - or.width) : Math.max(padding, r.left - 10 - or.width);
+        overlay.style.transformOrigin = "top right";
       }
+      if (or.left < padding) left = padding;
+      if (or.bottom > window.innerHeight - padding) top = Math.max(padding, window.innerHeight - padding - or.height);
       overlay.style.left = `${Math.round(left)}px`;
       overlay.style.top = `${Math.round(top)}px`;
     } catch {}
@@ -518,9 +557,9 @@ function openInlineEffortOverlay(anchorEl, model) {
       state.inlineEffortMenuOpen = false;
       state.inlineEffortMenuForModel = "";
       closeInlineEffortOverlay();
-      // Update the inline label (re-render is simplest and keeps active styling correct).
-      renderHeaderModelMenu();
       updateHeaderUi();
+      // After selecting an effort, close both menus (matches expected UX).
+      setHeaderModelMenuOpen(false);
     });
   }
 }
@@ -552,26 +591,21 @@ function renderHeaderModelMenu() {
     optionBtn.setAttribute("aria-selected", model.id === current ? "true" : "false");
 
     // Inline effort selector lives to the RIGHT of the ACTIVE model option only.
-    let effortHtml = "";
-    if (model.id === current) {
-      const supported = Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : [];
-      if (supported.length) {
-        const fallback = String(model.defaultReasoningEffort || supported[0]?.effort || "").trim();
-        const cur = String(localStorage.getItem(REASONING_EFFORT_KEY) || state.selectedReasoningEffort || fallback || "").trim();
-        const inlineOpen = !!(state.inlineEffortMenuOpen && state.inlineEffortMenuForModel === model.id);
-        effortHtml =
-          `<span class="effortSubLabel mono">${escapeHtml(cur)}</span>` +
-          `<span class="effortSubChevron" role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="${inlineOpen ? "true" : "false"}" data-model-id="${escapeAttr(model.id)}">` +
-          `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">` +
-          `<path d="M4.5 6.2l3.5 3.6 3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>` +
-          `</svg>` +
-          `</span>`;
-      }
-    }
+    // UX: always show a right chevron on each model row. Clicking it opens the effort submenu to the right.
+    // If the model doesn't support efforts, chevron is disabled but still reserves space so menu width is stable.
+    const supported = Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : [];
+    const canOpenEffort = supported.length > 0;
+    const inlineOpen = !!(state.inlineEffortMenuOpen && state.inlineEffortMenuForModel === model.id);
+    const effortHtml =
+      `<span class="effortSubChevron${canOpenEffort ? "" : " disabled"}" role="button" tabindex="${canOpenEffort ? "0" : "-1"}" aria-haspopup="listbox" aria-expanded="${inlineOpen ? "true" : "false"}" aria-disabled="${canOpenEffort ? "false" : "true"}" data-model-id="${escapeAttr(model.id)}">` +
+      `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">` +
+      `<path d="M4.5 6.2l3.5 3.6 3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>` +
+      `</svg>` +
+      `</span>`;
 
     optionBtn.innerHTML =
-      `<span class="modelLabel">${escapeHtml(model.label || model.id)}</span>` +
-      `<span class="modelRight">${effortHtml}<span class="check" aria-hidden="true">✓</span></span>`;
+      `<span class="modelLabel">${escapeHtml(compactModelLabel(model.label || model.id))}</span>` +
+      `<span class="modelRight">${effortHtml}</span>`;
     optionBtn.addEventListener("click", (event) => {
       event.preventDefault();
       // Prevent the document-level click handler from closing the menu after we re-render the list.
@@ -581,14 +615,13 @@ function renderHeaderModelMenu() {
       // Some webviews still dispatch a click on the parent <button> even if the child stops propagation,
       // so we double-guard here.
       const target = event?.target;
-      if (target instanceof Node && target.closest?.(".effortSubChevron")) return;
+      // Chevron is indicator-only; no special-case needed.
 
       state.selectedModel = model.id;
       if (state.activeThreadStarted) state.activeThreadModelLabel = model.id;
 
       // Keep the model menu open so the user can immediately pick reasoning effort without re-opening.
       // If the current effort isn't supported by the new model, fall back to the model default.
-      const supported = Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : [];
       if (supported.length) {
         const currentEffort = String(localStorage.getItem(REASONING_EFFORT_KEY) || state.selectedReasoningEffort || "").trim();
         const ok = currentEffort && supported.some((x) => x && x.effort === currentEffort);
@@ -597,6 +630,7 @@ function renderHeaderModelMenu() {
           state.selectedReasoningEffort = next;
           localStorage.setItem(REASONING_EFFORT_KEY, next);
         }
+        // Auto-open effort submenu on model selection.
         state.inlineEffortMenuOpen = true;
         state.inlineEffortMenuForModel = model.id;
       } else {
@@ -606,13 +640,12 @@ function renderHeaderModelMenu() {
       renderHeaderModelMenu();
       updateHeaderUi();
 
-      // Auto-open the effort overlay for the newly selected model (if it supports efforts).
       if (supported.length) {
         requestAnimationFrame(() => {
-          const active = menu.querySelector(".headerModelOption.active .effortSubChevron");
+          const activeChevron = menu.querySelector(".headerModelOption.active .effortSubChevron");
           const options2 = Array.isArray(state.modelOptions) ? state.modelOptions : [];
           const activeModel = options2.find((x) => x && x.id === state.selectedModel) || null;
-          if (active && activeModel) openInlineEffortOverlay(active, activeModel);
+          if (activeChevron && activeModel) openInlineEffortOverlay(activeChevron, activeModel);
         });
       } else {
         closeInlineEffortOverlay();
@@ -621,30 +654,7 @@ function renderHeaderModelMenu() {
     menu.appendChild(optionBtn);
   }
 
-  // Effort submenu chevron interactions (must not select/close the model option).
-  for (const trigger of Array.from(menu.querySelectorAll(".effortSubChevron"))) {
-    const onToggle = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const modelId = String(trigger.getAttribute("data-model-id") || current).trim();
-      const open = String(trigger.getAttribute("aria-expanded") || "") === "true";
-      state.inlineEffortMenuOpen = !open;
-      state.inlineEffortMenuForModel = state.inlineEffortMenuOpen ? modelId : "";
-      trigger.setAttribute("aria-expanded", open ? "false" : "true");
-      if (!open) {
-        const options2 = Array.isArray(state.modelOptions) ? state.modelOptions : [];
-        const activeModel = options2.find((x) => x && x.id === modelId) || null;
-        if (activeModel) openInlineEffortOverlay(trigger, activeModel);
-      } else {
-        closeInlineEffortOverlay();
-      }
-    };
-    trigger.addEventListener("click", onToggle);
-    trigger.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      onToggle(event);
-    });
-  }
+  // Effort chevron is an indicator only; selecting a model row opens the submenu automatically.
 }
 
 function syncHeaderModelPicker() {
@@ -680,15 +690,22 @@ function syncHeaderModelPicker() {
 }
 
 async function refreshModels() {
-  const data = await api("/codex/models");
-  const rawItems = ensureArrayItems(data.items);
-  const mapped = [];
-  for (const item of rawItems) {
-    const normalized = normalizeModelOption(item);
-    if (normalized) mapped.push(normalized);
+  state.modelOptionsLoading = true;
+  updateHeaderUi();
+  try {
+    const data = await api("/codex/models");
+    const rawItems = ensureArrayItems(data.items);
+    const mapped = [];
+    for (const item of rawItems) {
+      const normalized = normalizeModelOption(item);
+      if (normalized) mapped.push(normalized);
+    }
+    state.modelOptions = mapped;
+    syncHeaderModelPicker();
+  } finally {
+    state.modelOptionsLoading = false;
+    updateHeaderUi();
   }
-  state.modelOptions = mapped;
-  syncHeaderModelPicker();
 }
 
 function hasDualWorkspaceTargets() {
@@ -859,6 +876,12 @@ function escapeHtml(input) {
 function escapeAttr(input) {
   // We only interpolate simple string attributes (e.g. title, data-*); use the same escaping as HTML.
   return escapeHtml(input);
+}
+
+function compactModelLabel(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  return text.startsWith("gpt-") ? text.slice(4) : text;
 }
 
 function inModelMenu(node) {
@@ -3625,12 +3648,14 @@ function wireActions() {
     headerModelTrigger.onclick = (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (state.modelOptionsLoading) return;
       const isOpen = !!headerModelPicker?.classList.contains("open");
       setHeaderModelMenuOpen(!isOpen);
     };
     headerModelTrigger.onkeydown = (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
+        if (state.modelOptionsLoading) return;
         const isOpen = !!headerModelPicker?.classList.contains("open");
         setHeaderModelMenuOpen(!isOpen);
       } else if (event.key === "Escape") {
@@ -3677,9 +3702,17 @@ function bootstrap() {
       const historyByThreadId = new Map();
       window.__webCodexE2E = {
         _activeThreadId: "",
+        setModelLoading(loading = true) {
+          state.modelOptionsLoading = !!loading;
+          if (loading) state.modelOptions = [];
+          setHeaderModelMenuOpen(false);
+          updateHeaderUi();
+          return { ok: true, loading: state.modelOptionsLoading };
+        },
         setModels(items) {
           // E2E helper: seed deterministic models without requiring a running gateway.
           state.modelOptions = ensureArrayItems(items).map(normalizeModelOption).filter(Boolean);
+          state.modelOptionsLoading = false;
           // Populate state even if the picker hasn't rendered yet (avoid brittle DOM timing in tests).
           const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
           state.selectedModel = options.find((x) => x && x.isDefault)?.id || options[0]?.id || "";

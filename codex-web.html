@@ -223,10 +223,27 @@
       color: #0d1220;
       font-size: 16px;
       font-weight: 500;
-      line-height: 1.2;
+      line-height: 1;
       min-width: 0;
       transform: translateZ(0);
       backface-visibility: hidden;
+    }
+    .chatPanel .panelHeader .headerModelTrigger.disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+    .chatPanel .panelHeader .headerReasoningEffort {
+      display: none;
+      margin-left: 6px;
+      padding: 0;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      font-size: 12px;
+      font-weight: 600;
+      color: rgba(13, 18, 32, 0.72);
+      line-height: 1;
+      transform: translateY(-0.5px);
     }
     .chatPanel .panelHeader .headerModelText {
       min-width: 0;
@@ -234,7 +251,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      line-height: 1.2;
+      line-height: 1;
     }
     .chatPanel .panelHeader .headerModelChevron {
       width: 14px;
@@ -269,7 +286,7 @@
       border-radius: 12px;
       border: 1px solid rgba(13, 18, 32, 0.14);
       background: #ffffff;
-      box-shadow: 0 14px 32px rgba(13, 18, 32, 0.18);
+      box-shadow: none;
       padding: 6px;
       display: grid;
       gap: 2px;
@@ -325,12 +342,6 @@
       position: relative;
     }
 
-    .chatPanel .panelHeader .headerModelOption .effortSubLabel {
-      font-size: 11px;
-      color: rgba(13, 18, 32, 0.72);
-      line-height: 1.1;
-      white-space: nowrap;
-    }
     .chatPanel .panelHeader .headerModelOption .effortSubChevron {
       width: 18px;
       height: 18px;
@@ -338,13 +349,21 @@
       align-items: center;
       justify-content: center;
       border-radius: 999px;
-      cursor: pointer;
+      cursor: default;
       user-select: none;
       color: rgba(13, 18, 32, 0.6);
     }
+    .chatPanel .panelHeader .headerModelOption .effortSubChevron.disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
     .chatPanel .panelHeader .headerModelOption .effortSubChevron:hover {
-      background: rgba(13, 18, 32, 0.06);
-      color: rgba(13, 18, 32, 0.8);
+      background: transparent;
+      color: rgba(13, 18, 32, 0.6);
+    }
+    .chatPanel .panelHeader .headerModelOption .effortSubChevron.disabled:hover {
+      background: transparent;
+      color: rgba(13, 18, 32, 0.6);
     }
     .chatPanel .panelHeader .headerModelOption .effortSubChevron svg {
       width: 12px;
@@ -356,6 +375,7 @@
       outline: 2px solid rgba(40, 199, 217, 0.55);
       outline-offset: 1px;
     }
+    .chatPanel .panelHeader .headerModelOption .effortSubChevron { outline: none; }
 
     /* Effort menu is rendered in a fixed overlay (portal) so it can overflow past the model menu scroll clip. */
     .effortInlineOverlay {
@@ -368,13 +388,13 @@
       border-radius: 12px;
       border: 1px solid rgba(13, 18, 32, 0.14);
       background: #ffffff;
-      box-shadow: 0 14px 32px rgba(13, 18, 32, 0.18);
+      box-shadow: none;
       padding: 6px;
       gap: 2px;
       display: none;
       opacity: 0;
-      transform: translate3d(0, -6px, 0);
-      transform-origin: top right;
+      transform: translate3d(-6px, 0, 0);
+      transform-origin: top left;
       pointer-events: none;
       visibility: hidden;
       transition: opacity 150ms ease, transform 180ms ease;
@@ -421,14 +441,8 @@
       opacity: 1;
     }
 
-    .chatPanel .panelHeader .headerModelOption > .modelRight > .check {
-      opacity: 0;
-      color: #0a7082;
-      font-weight: 700;
-    }
-    .chatPanel .panelHeader .headerModelOption.active > .modelRight > .check {
-      opacity: 1;
-    }
+    /* Model menu: keep it clean (no checkmarks). */
+    .chatPanel .panelHeader .headerModelOption > .modelRight > .check { display: none; }
     .chatPanel .panelHeader .grow {
       display: none;
     }
@@ -2060,6 +2074,7 @@
           <div id="headerModelPicker" class="headerModelPicker">
             <button id="headerModelTrigger" class="headerModelTrigger" type="button" aria-haspopup="listbox" aria-expanded="false">
               <span id="headerModelLabel" class="headerModelText">Codex</span>
+              <span id="headerReasoningEffort" class="headerReasoningEffort mono"></span>
               <span class="headerModelChevron" aria-hidden="true">
                 <svg viewBox="0 0 16 16" focusable="false">
                   <path d="M4.5 6.2l3.5 3.6 3.5-3.6"></path>
