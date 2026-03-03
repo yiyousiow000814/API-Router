@@ -905,15 +905,21 @@ async function main() {
       // With seedThreads(2), e2e_0 is wsl2 and e2e_1 is windows (matches default workspaceTarget).
       const threadId = 'e2e_1';
       const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4AWP4//8/AwAI/AL+Zf1zGQAAAABJRU5ErkJggg==';
-      const thread = {
-        id: threadId,
-        turns: [
-          { items: [{ type: 'userMessage', content: [{ type: 'input_text', text: '# AGENTS.md instructions for C:\\\\repo\\\\n<INSTRUCTIONS>\\nPR-first\\n</INSTRUCTIONS>' }] }] },
-          { items: [{ type: 'assistantMessage', text: 'OK.' }] },
-          { items: [{ type: 'userMessage', content: [
-            { type: 'input_text', text: '<image name=[Image #1]>\\n[image: inline-image]\\n</image>\\nHello' },
-            { type: 'input_image', image_url: dataUrl },
-            { type: 'input_text', text: '[Image #2]\\n[image: inline-image-2]\\nNext' },
+       const thread = {
+         id: threadId,
+         turns: [
+           { items: [{ type: 'userMessage', content: [{ type: 'input_text', text: '# AGENTS.md instructions for C:\\\\repo\\\\n<INSTRUCTIONS>\\nPR-first\\n</INSTRUCTIONS>' }] }] },
+           { items: [{ type: 'assistantMessage', text: 'OK.' }] },
+           // Regression: harness-only wrappers like <subagent_notification> and <turn_aborted> must never
+           // render as user/assistant chat bubbles (align clawdex-mobile behavior).
+           { items: [{ type: 'userMessage', content: [{ type: 'input_text', text: '<subagent_notification>{\"marker\":\"e2e-subagent\",\"kind\":\"thread_spawn\"}</subagent_notification>' }] }] },
+           { items: [{ type: 'assistantMessage', text: '<turn_aborted>{\"marker\":\"e2e-aborted\",\"reason\":\"user_cancel\"}</turn_aborted>' }] },
+           // Regression: compaction can inject the harness prompt later in the thread; it must still be hidden.
+           { items: [{ type: 'userMessage', content: [{ type: 'input_text', text: '# AGENTS.md instructions for C:\\\\repo\\\\n<INSTRUCTIONS>\\nPR-first\\n</INSTRUCTIONS>' }] }] },
+           { items: [{ type: 'userMessage', content: [
+             { type: 'input_text', text: '<image name=[Image #1]>\\n[image: inline-image]\\n</image>\\nHello' },
+             { type: 'input_image', image_url: dataUrl },
+             { type: 'input_text', text: '[Image #2]\\n[image: inline-image-2]\\nNext' },
             { type: 'input_image', image_url: dataUrl },
             { type: 'input_text', text: '[Image #3]\\n[image: inline-image-3]' },
             { type: 'input_image', image_url: dataUrl },
@@ -955,6 +961,26 @@ async function main() {
       const count = await driver.executeScript(`return document.querySelectorAll('#chatBox .msg').length;`)
       return Number(count || 0) >= 2
     }, 15000, 'chat to render')
+
+    // Regression: never show the Codex harness "AGENTS.md instructions" bootstrap prompt as a user message,
+    // even if it appears mid-thread (e.g. after compaction).
+    {
+      const t = await driver.executeScript(`return String(document.getElementById('chatBox')?.innerText || '');`)
+      if (t.includes('AGENTS.md instructions') || t.includes('<INSTRUCTIONS>')) {
+        throw new Error('expected bootstrap AGENTS prompt to be hidden from chat history')
+      }
+    }
+
+    // Regression: never render harness wrapper blocks as normal chat content.
+    {
+      const t = await driver.executeScript(`return String(document.getElementById('chatBox')?.innerText || '');`)
+      if (t.includes('e2e-subagent') || t.includes('subagent_notification')) {
+        throw new Error('expected subagent_notification harness wrapper to be hidden from chat history')
+      }
+      if (t.includes('e2e-aborted') || t.includes('turn_aborted')) {
+        throw new Error('expected turn_aborted harness wrapper to be hidden from chat history')
+      }
+    }
 
     // Opening a thread should land near the bottom (latest messages visible).
     await waitFor(async () => {

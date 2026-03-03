@@ -2280,7 +2280,7 @@ function compactAttachmentLabel(value, maxLen = 38) {
 }
 
 function stripCodexImageBlocks(text) {
-  const source = String(text || "");
+  const source = stripCodexHarnessWrappers(text);
   if (!source) return "";
   // Codex / this chat environment may serialize images as XML-ish blocks:
   // <image name=[Image #1]> ... </image>. We render them as a simple placeholder.
@@ -2301,6 +2301,30 @@ function stripCodexImageBlocks(text) {
     },
   );
   replaced = replaced.replace(/<\/image>/gi, "");
+  return replaced;
+}
+
+function stripCodexHarnessWrappers(text) {
+  const source = String(text || "");
+  if (!source) return "";
+  // Codex can persist certain harness-only "envelope" blocks into history, especially after compaction.
+  // Align with clawdex-mobile: these should never render as normal chat messages.
+  const trimmed = source.trim();
+  const wholeEnvelope = /^<\s*(turn_aborted|subagent_notification)\s*>[\s\S]*?<\s*\/\s*\1\s*>\s*$/i.test(trimmed);
+  if (wholeEnvelope) return "";
+
+  if (!/[<](?:\s*turn_aborted|\s*subagent_notification)\b/i.test(source)) return source;
+
+  // Remove full blocks when embedded inside other text (rare, but keep the rest).
+  let replaced = source.replace(
+    /<\s*(turn_aborted|subagent_notification)\s*>[\s\S]*?<\s*\/\s*\1\s*>/gi,
+    "",
+  );
+  // Clean up stray tags (defensive; avoids leaking raw harness tags).
+  replaced = replaced
+    .replace(/<\s*\/\s*(turn_aborted|subagent_notification)\s*>/gi, "")
+    .replace(/<\s*(turn_aborted|subagent_notification)\s*>/gi, "")
+    .replace(/<\s*(turn_aborted|subagent_notification)\s*\/\s*>/gi, "");
   return replaced;
 }
 
@@ -2595,9 +2619,9 @@ async function mapThreadReadMessages(thread) {
       if (type === "userMessage") {
         const parsed = parseUserMessageParts(item);
         const text = parsed.text;
-        // Only hide Codex bootstrap prompt when it appears as the initial seed
-        // before the first assistant output (so user pastes later are not hidden).
-        if (text && isBootstrapAgentsPrompt(text) && !seenAssistant && !seenNonBootstrapUser) {
+        // Hide Codex harness bootstrap prompt. This should never be rendered as a user message
+        // (align with clawdex-mobile behavior and avoid "evil prompt" showing up after compaction).
+        if (text && isBootstrapAgentsPrompt(text)) {
           continue;
         }
         if (text || parsed.images.length) {
