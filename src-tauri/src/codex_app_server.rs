@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -14,7 +16,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const NOTIFICATION_QUEUE_CAP: usize = 2048;
 
 static APP_SERVER: OnceLock<Mutex<Option<AppServer>>> = OnceLock::new();
-static NOTIFICATIONS: OnceLock<Mutex<VecDeque<Value>>> = OnceLock::new();
+static NEXT_NOTIFICATION_EVENT_ID: AtomicU64 = AtomicU64::new(1);
+static NOTIFICATIONS: OnceLock<Mutex<VecDeque<(u64, Value)>>> = OnceLock::new();
 
 #[cfg(test)]
 static TEST_REQUEST_HANDLER: OnceLock<
@@ -40,29 +43,57 @@ async fn maybe_handle_test_request(method: &str, params: &Value) -> Option<Resul
     Some(handler(method, params.clone()))
 }
 
-fn notifications_queue() -> &'static Mutex<VecDeque<Value>> {
+fn notifications_queue() -> &'static Mutex<VecDeque<(u64, Value)>> {
     NOTIFICATIONS.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
 async fn push_notification(value: Value) {
+    let event_id = NEXT_NOTIFICATION_EVENT_ID.fetch_add(1, Ordering::Relaxed);
     let q = notifications_queue();
     let mut guard = q.lock().await;
-    guard.push_back(value);
+    guard.push_back((event_id, value));
     while guard.len() > NOTIFICATION_QUEUE_CAP {
         guard.pop_front();
     }
 }
 
-pub async fn drain_notifications(max: usize) -> Vec<Value> {
+fn with_event_id(mut value: Value, event_id: u64) -> Value {
+    // Prefer preserving the original notification shape (method/params/etc) and attach eventId.
+    if let Value::Object(map) = &mut value {
+        map.insert("eventId".to_string(), Value::from(event_id));
+        return value;
+    }
+    serde_json::json!({ "eventId": event_id, "payload": value })
+}
+
+/// Replay notifications newer than `since_event_id` (exclusive).
+///
+/// This does NOT drain the global queue so multiple clients can replay independently.
+/// Returns: (items, first_event_id_in_buffer, last_event_id_in_buffer, gap)
+/// - `gap=true` means some events older than requested have been dropped due to buffer cap.
+pub async fn replay_notifications_since(
+    since_event_id: u64,
+    max: usize,
+) -> (Vec<Value>, Option<u64>, Option<u64>, bool) {
     let cap = max.clamp(1, NOTIFICATION_QUEUE_CAP);
     let q = notifications_queue();
-    let mut guard = q.lock().await;
+    let guard = q.lock().await;
+    let first = guard.front().map(|(id, _)| *id);
+    let last = guard.back().map(|(id, _)| *id);
+    let gap = first
+        .map(|first_id| since_event_id + 1 < first_id)
+        .unwrap_or(false);
     let mut out = Vec::new();
-    while out.len() < cap {
-        let Some(v) = guard.pop_front() else { break };
-        out.push(v);
+    for (event_id, value) in guard.iter() {
+        if *event_id <= since_event_id {
+            continue;
+        }
+        out.push(with_event_id(value.clone(), *event_id));
+        if out.len() >= cap {
+            break;
+        }
     }
-    out
+    (out, first, last, gap)
 }
 
 fn resolve_codex_cmd() -> Option<PathBuf> {
@@ -98,6 +129,7 @@ pub async fn _clear_notifications_for_test() {
     let q = notifications_queue();
     let mut guard = q.lock().await;
     guard.clear();
+    NEXT_NOTIFICATION_EVENT_ID.store(1, Ordering::Relaxed);
 }
 
 async fn write_json_line(
@@ -274,10 +306,22 @@ impl AppServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::OnceLock;
     use tokio::io::AsyncWriteExt;
 
-    #[tokio::test]
+    // codex_app_server uses global singletons (notification ring buffer + event id counter).
+    // These tests must run serially to avoid cross-test interference.
+    static TEST_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn stdout_router_captures_notifications_and_delivers_responses() {
+        let _guard = lock_tests();
         _clear_notifications_for_test().await;
 
         let (mut w, r) = tokio::io::duplex(8 * 1024);
@@ -324,14 +368,65 @@ mod tests {
             .expect("oneshot dropped");
         assert_eq!(got.get("id").and_then(|v| v.as_i64()), Some(99));
 
-        let drained = drain_notifications(8).await;
+        let (drained, _first, _last, _gap) = replay_notifications_since(0, 8).await;
         assert!(!drained.is_empty(), "expected at least one notification");
         assert_eq!(
             drained[0].get("method").and_then(|v| v.as_str()),
             Some("turn/status")
         );
+        assert_eq!(drained[0].get("eventId").and_then(|v| v.as_u64()), Some(1));
 
         let _ = read_task.await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_notifications_since_includes_event_ids_and_gaps() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        push_notification(serde_json::json!({"method":"a","params":{}})).await;
+        push_notification(serde_json::json!({"method":"b","params":{}})).await;
+
+        let (all, first, last, gap) = replay_notifications_since(0, 10).await;
+        assert_eq!(first, Some(1));
+        assert_eq!(last, Some(2));
+        assert!(!gap);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].get("eventId").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(all[1].get("eventId").and_then(|v| v.as_u64()), Some(2));
+
+        let (only_b, _f2, _l2, gap2) = replay_notifications_since(1, 10).await;
+        assert!(!gap2);
+        assert_eq!(only_b.len(), 1);
+        assert_eq!(only_b[0].get("method").and_then(|v| v.as_str()), Some("b"));
+        assert_eq!(only_b[0].get("eventId").and_then(|v| v.as_u64()), Some(2));
+
+        // If the buffer is empty, first/last are None.
+        _clear_notifications_for_test().await;
+        let (empty, f3, l3, gap3) = replay_notifications_since(0, 10).await;
+        assert!(empty.is_empty());
+        assert_eq!(f3, None);
+        assert_eq!(l3, None);
+        assert!(!gap3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_gap_flag_when_since_is_older_than_ring_buffer() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        // Fill beyond the cap so the oldest events are dropped.
+        for i in 0..(NOTIFICATION_QUEUE_CAP + 2) {
+            push_notification(serde_json::json!({"method":"m","params":{"i":i}})).await;
+        }
+        let (items, first, last, gap) = replay_notifications_since(0, 5).await;
+        assert!(
+            gap,
+            "expected gap=true when since is older than retained buffer"
+        );
+        assert!(first.is_some());
+        assert!(last.is_some());
+        assert!(!items.is_empty());
+        // The first retained event id should be > 1 due to dropping.
+        assert!(first.unwrap() > 1);
     }
 }
 

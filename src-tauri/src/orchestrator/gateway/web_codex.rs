@@ -459,6 +459,7 @@ async fn codex_ws_poll_pending_events(
     socket: &mut WebSocket,
     approvals_sig: &mut String,
     user_input_sig: &mut String,
+    notif_cursor: &mut u64,
 ) -> bool {
     let approvals = codex_try_request_with_fallback(
         &["bridge/approvals/list", "approvals/list"],
@@ -506,18 +507,36 @@ async fn codex_ws_poll_pending_events(
         }
     }
 
-    // Forward codex app-server JSON-RPC notifications (best-effort).
-    // These are used by UIs to render "thinking"/tool progress live.
-    let notifications = crate::codex_app_server::drain_notifications(64).await;
-    for notif in notifications {
-        if !send_ws_json(
+    // Forward codex app-server JSON-RPC notifications with a per-connection cursor.
+    // This aligns with clawdex-mobile: multiple clients can reconnect and replay independently,
+    // and we avoid draining a global queue (which would drop events for other clients).
+    let (mut items, first, last, gap) =
+        crate::codex_app_server::replay_notifications_since(*notif_cursor, 64).await;
+    if gap {
+        // Client requested an event id older than our ring buffer; tell it to reset.
+        let _ = send_ws_json(
             socket,
             &json!({
-                "type": "rpc.notification",
-                "payload": notif
+                "type": "events.reset",
+                "payload": {
+                    "requestedSince": *notif_cursor,
+                    "firstEventId": first,
+                    "lastEventId": last
+                }
             }),
         )
-        .await
+        .await;
+        *notif_cursor = 0;
+        let (replayed, _f2, _l2, _gap2) =
+            crate::codex_app_server::replay_notifications_since(0, 64).await;
+        items = replayed;
+    }
+    for notif in items {
+        if let Some(id) = notif.get("eventId").and_then(|v| v.as_u64()) {
+            *notif_cursor = (*notif_cursor).max(id);
+        }
+        if !send_ws_json(socket, &json!({ "type": "rpc.notification", "payload": notif }))
+            .await
         {
             return false;
         }
@@ -529,12 +548,13 @@ async fn codex_ws_loop(mut socket: WebSocket) {
     let mut subscribe_events = false;
     let mut approvals_sig = String::new();
     let mut user_input_sig = String::new();
+    let mut notif_cursor: u64 = 0;
     let mut poll_tick = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         tokio::select! {
             _ = poll_tick.tick() => {
                 if subscribe_events
-                    && !codex_ws_poll_pending_events(&mut socket, &mut approvals_sig, &mut user_input_sig).await
+                    && !codex_ws_poll_pending_events(&mut socket, &mut approvals_sig, &mut user_input_sig, &mut notif_cursor).await
                 {
                     break;
                 }
@@ -573,6 +593,20 @@ async fn codex_ws_loop(mut socket: WebSocket) {
                             }
                             "subscribe.events" => {
                                 subscribe_events = true;
+                                // Optional replay cursor from client (last seen event id).
+                                notif_cursor = v
+                                    .get("payload")
+                                    .and_then(|p| p.get("lastEventId"))
+                                    .and_then(|x| x.as_u64())
+                                    .unwrap_or(0);
+                                // Replay any missed notifications immediately.
+                                let _ = codex_ws_poll_pending_events(
+                                    &mut socket,
+                                    &mut approvals_sig,
+                                    &mut user_input_sig,
+                                    &mut notif_cursor,
+                                )
+                                .await;
                                 let _ = codex_ws_emit_event_snapshot(
                                     &mut socket,
                                     &req_id,

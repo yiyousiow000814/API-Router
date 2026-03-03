@@ -99,6 +99,7 @@ const WORKSPACE_TARGET_KEY = "web_codex_workspace_target_v1";
 const FAVORITE_THREADS_KEY = "web_codex_favorite_threads_v1";
 const SELECTED_MODEL_KEY = "web_codex_selected_model_v1";
 const REASONING_EFFORT_KEY = "web_codex_reasoning_effort_v1";
+const LAST_EVENT_ID_KEY = "web_codex_last_event_id_v1";
 // Marker keys: older builds wrote model/effort into localStorage automatically (not user intent).
 // Only honor persisted selections when the user explicitly picked them.
 const MODEL_USER_SELECTED_KEY = "web_codex_model_user_selected_v1";
@@ -260,6 +261,9 @@ function resetEventReplayState() {
   state.wsLastEventId = 0;
   state.wsRecentEventIds = new Set();
   state.wsRecentEventIdQueue = [];
+  try {
+    localStorage.removeItem(LAST_EVENT_ID_KEY);
+  } catch {}
 }
 
 function markEventIdSeen(eventId) {
@@ -2987,7 +2991,11 @@ function connectWs() {
   state.ws = ws;
   ws.onopen = () => {
     setStatus("Connected (HTTP + WS).");
-    wsSend({ type: "subscribe.events", reqId: nextReqId(), payload: { events: true } });
+    let lastEventId = 0;
+    try {
+      lastEventId = Number(localStorage.getItem(LAST_EVENT_ID_KEY) || 0) || 0;
+    } catch {}
+    wsSend({ type: "subscribe.events", reqId: nextReqId(), payload: { events: true, lastEventId } });
   };
   ws.onerror = () => setStatus("WS error; fallback to HTTP.", true);
   ws.onclose = () => setStatus("WS closed; fallback to HTTP.", true);
@@ -3034,11 +3042,18 @@ function handleWsPayload(payload) {
       if (state.wsRecentEventIds.has(eventId)) return;
       markEventIdSeen(eventId);
       state.wsLastEventId = Math.max(state.wsLastEventId, eventId);
+      try {
+        localStorage.setItem(LAST_EVENT_ID_KEY, String(state.wsLastEventId));
+      } catch {}
     }
     const threadId = extractNotificationThreadId(record);
     if (shouldRefreshThreadsFromNotification(method)) scheduleThreadRefresh();
     if (threadId && shouldRefreshActiveThreadFromNotification(method)) scheduleActiveThreadRefresh(threadId);
     renderLiveNotification(notification);
+    return;
+  }
+  if (payload.type === "events.reset") {
+    resetEventReplayState();
     return;
   }
   if (payload.type === "subscribed") setStatus("WS subscribed.");
