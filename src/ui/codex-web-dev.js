@@ -340,8 +340,6 @@ function updateHeaderUi(animateBadge = false) {
   const headerBadge = byId("headerWorkspaceBadge");
   const modelPicker = byId("headerModelPicker");
   const modelLabel = byId("headerModelLabel");
-  const effortPicker = byId("headerEffortPicker");
-  const effortLabel = byId("headerEffortLabel");
   const inSettings = state.activeMainTab === "settings";
   const showBadge = !inSettings && state.activeThreadStarted;
   // Always prefer the currently selected model (the one we'll use for new turns).
@@ -362,21 +360,6 @@ function updateHeaderUi(animateBadge = false) {
   if (modelPicker) modelPicker.style.display = inSettings ? "none" : "inline-flex";
   if (modelLabel) modelLabel.textContent = displayTitle;
   if (inSettings) setHeaderModelMenuOpen(false);
-
-  // Reasoning effort is per-model; hide the picker when unavailable or when in Settings.
-  {
-    const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
-    const active = options.find((x) => x && x.id === state.selectedModel) || options.find((x) => x && x.isDefault) || options[0] || null;
-    const supported = Array.isArray(active?.supportedReasoningEfforts) ? active.supportedReasoningEfforts : [];
-    const showEffort = !inSettings && supported.length > 0;
-    if (effortPicker) effortPicker.style.display = showEffort ? "inline-flex" : "none";
-    if (!showEffort) setHeaderEffortMenuOpen(false);
-    if (effortLabel) {
-      const fallback = String(active?.defaultReasoningEffort || supported[0]?.effort || "").trim();
-      const label = String(state.selectedReasoningEffort || localStorage.getItem(REASONING_EFFORT_KEY) || fallback || "").trim();
-      effortLabel.textContent = label || "";
-    }
-  }
 
   if (headerSwitch) {
     headerSwitch.style.display = !inSettings && !showBadge ? "inline-flex" : "none";
@@ -434,49 +417,6 @@ function setHeaderModelMenuOpen(open) {
   trigger.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
-function setHeaderEffortMenuOpen(open) {
-  const picker = byId("headerEffortPicker");
-  const trigger = byId("headerEffortBtn");
-  if (!picker || !trigger) return;
-  picker.classList.toggle("open", !!open);
-  trigger.setAttribute("aria-expanded", open ? "true" : "false");
-}
-
-function renderHeaderEffortMenu() {
-  const menu = byId("headerEffortMenu");
-  if (!menu) return;
-  const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
-  const active = options.find((x) => x && x.id === state.selectedModel) || options.find((x) => x && x.isDefault) || options[0] || null;
-  const supported = Array.isArray(active?.supportedReasoningEfforts) ? active.supportedReasoningEfforts : [];
-  menu.innerHTML = "";
-  if (!supported.length) {
-    setHeaderEffortMenuOpen(false);
-    return;
-  }
-  const fallback = String(active?.defaultReasoningEffort || supported[0]?.effort || "").trim();
-  const current = String(state.selectedReasoningEffort || localStorage.getItem(REASONING_EFFORT_KEY) || fallback || "").trim();
-  for (const item of supported) {
-    const effort = String(item?.effort || "").trim();
-    if (!effort) continue;
-    const optionBtn = document.createElement("button");
-    optionBtn.type = "button";
-    optionBtn.className = `headerEffortOption${effort === current ? " active" : ""}`;
-    optionBtn.setAttribute("role", "option");
-    optionBtn.setAttribute("aria-selected", effort === current ? "true" : "false");
-    optionBtn.textContent = effort;
-    const title = String(item?.description || "").trim();
-    if (title) optionBtn.title = title;
-    optionBtn.onclick = () => {
-      state.selectedReasoningEffort = effort;
-      localStorage.setItem(REASONING_EFFORT_KEY, effort);
-      renderHeaderEffortMenu();
-      updateHeaderUi();
-      setHeaderEffortMenuOpen(false);
-    };
-    menu.appendChild(optionBtn);
-  }
-}
-
 function renderHeaderModelMenu() {
   const menu = byId("headerModelMenu");
   if (!menu) return;
@@ -488,6 +428,37 @@ function renderHeaderModelMenu() {
     muted.textContent = "No models available";
     menu.appendChild(muted);
     return;
+  }
+
+  // Reasoning effort selector (dynamic, driven by /codex/models).
+  const activeModelId = state.selectedModel || options.find((item) => item.isDefault)?.id || options[0].id;
+  const activeModel = options.find((x) => x.id === activeModelId) || options[0];
+  const supported = Array.isArray(activeModel?.supportedReasoningEfforts) ? activeModel.supportedReasoningEfforts : [];
+  if (supported.length) {
+    const row = document.createElement("div");
+    row.className = "headerModelEffortRow";
+    const cur = String(state.selectedReasoningEffort || activeModel.defaultReasoningEffort || supported[0]?.effort || "").trim();
+    row.innerHTML =
+      `<div class="muted">Reasoning</div>` +
+      `<div class="effortBtns" role="group" aria-label="Reasoning effort"></div>`;
+    const btnBox = row.querySelector(".effortBtns");
+    for (const item of supported) {
+      const effort = String(item.effort || "").trim();
+      if (!effort) continue;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `effortBtn${effort === cur ? " active" : ""}`;
+      btn.textContent = effort;
+      btn.title = String(item.description || "").trim();
+      btn.onclick = () => {
+        state.selectedReasoningEffort = effort;
+        localStorage.setItem(REASONING_EFFORT_KEY, effort);
+        renderHeaderModelMenu();
+        updateHeaderUi();
+      };
+      btnBox.appendChild(btn);
+    }
+    menu.appendChild(row);
   }
 
   const current = state.selectedModel || options.find((item) => item.isDefault)?.id || options[0].id;
@@ -513,7 +484,6 @@ function renderHeaderModelMenu() {
         }
       }
       renderHeaderModelMenu();
-      renderHeaderEffortMenu();
       updateHeaderUi();
       setHeaderModelMenuOpen(false);
     };
@@ -529,7 +499,6 @@ function syncHeaderModelPicker() {
     state.selectedModel = "";
     state.selectedReasoningEffort = "";
     renderHeaderModelMenu();
-    renderHeaderEffortMenu();
     updateHeaderUi();
     return;
   }
@@ -551,7 +520,6 @@ function syncHeaderModelPicker() {
     state.selectedReasoningEffort = persisted;
   }
   renderHeaderModelMenu();
-  renderHeaderEffortMenu();
   updateHeaderUi();
 }
 
@@ -2191,70 +2159,9 @@ function mapThreadReadMessages(thread) {
   return messages;
 }
 
-async function mapThreadReadMessagesAsync(thread, options = {}) {
-  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
-  const messages = [];
-  let seenNonBootstrapUser = false;
-  let seenAssistant = false;
-  const token = Number(options.token || 0);
-  let itemsSeen = 0;
-
-  for (const turn of turns) {
-    const items = ensureArrayItems(turn?.items);
-    for (const item of items) {
-      // Allow cancellation mid-mapping (e.g. user switches chats).
-      if (token && token !== Number(state.chatRenderToken || 0)) return messages;
-      itemsSeen += 1;
-      if (itemsSeen % 120 === 0) {
-        // Yield so the UI stays interactive (header buttons remain clickable).
-        // eslint-disable-next-line no-await-in-loop
-        await nextFrame();
-      }
-
-      if (!item || typeof item !== "object") continue;
-      const type = String(item.type || "").trim();
-      if (!type) continue;
-      if (type === "userMessage") {
-        const parsed = parseUserMessageContent(item.content || item.input || item);
-        let text = stripInlineImageMarkers(parsed.text || "");
-        // Hide the Codex-injected agents prompt for conversation history (matches clawdex).
-        if (!seenNonBootstrapUser && !seenAssistant && text) {
-          const normalized = text.replace(/\r\n/g, "\n").trim();
-          if (looksLikeAgentsBootstrap(normalized)) {
-            // Don't record this as a real user message.
-            continue;
-          }
-        }
-        if (text || parsed.images.length) {
-          messages.push({ role: "user", text, kind: "", images: parsed.images });
-          if (text) seenNonBootstrapUser = true;
-        }
-        continue;
-      }
-      const text = normalizeThreadItemText(item);
-      if (text) {
-        if (type === "agentMessage" || type === "assistantMessage") {
-          messages.push({ role: "assistant", text, kind: "" });
-          seenAssistant = true;
-        }
-        continue;
-      }
-      const toolLike = toToolLikeMessage(item);
-      if (toolLike) messages.push({ role: "system", text: toolLike, kind: "tool" });
-    }
-  }
-  return messages;
-}
-
 async function applyThreadToChat(thread, options = {}) {
+  const messages = mapThreadReadMessages(thread);
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
-  // One token covers mapping + rendering so async stages can cancel coherently.
-  const renderToken = (Number(state.chatRenderToken || 0) + 1) | 0;
-  state.chatRenderToken = renderToken;
-  const messages =
-    (turns.length >= 120 || !!options.slowRender)
-      ? await mapThreadReadMessagesAsync(thread, { token: renderToken })
-      : mapThreadReadMessages(thread);
   const lastMsg = messages.length ? messages[messages.length - 1] : null;
   const renderSig = [
     String(thread?.id || state.activeThreadId || ""),
@@ -2345,7 +2252,7 @@ async function applyThreadToChat(thread, options = {}) {
     // This prevents the header (hamburger / model picker / workspace toggle) from feeling "locked".
     const shouldAsyncRender = messages.length >= 80 || !!options.slowRender;
     if (shouldAsyncRender) {
-      await renderChatFull(messages, { slowRender: !!options.slowRender, token: renderToken });
+      await renderChatFull(messages, { slowRender: !!options.slowRender });
     } else {
       clearChatMessages();
       for (const msg of messages) addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
@@ -2431,17 +2338,18 @@ async function renderChatFull(messages, options = {}) {
   const box = byId("chatBox");
   if (!box) return;
 
-  const token = Number(options.token || 0);
+  // Cancel any previous in-flight async render.
+  state.chatRenderToken = (Number(state.chatRenderToken || 0) + 1) | 0;
+  const token = state.chatRenderToken;
 
   clearChatMessages();
   // Keep render state in sync even if we yield.
   state.activeThreadMessages = [];
 
   const slowYield = !!options.slowRender;
-  // Smaller batches yield more often, keeping the header responsive while opening huge chats.
-  const batchSize = slowYield ? 6 : Math.max(8, Math.min(28, Number(options.batchSize || 14)));
+  const batchSize = Math.max(6, Math.min(28, Number(options.batchSize || 14)));
   for (let i = 0; i < messages.length; i += batchSize) {
-    if (token && token !== Number(state.chatRenderToken || 0)) return; // superseded
+    if (token !== state.chatRenderToken) return; // superseded
     const frag = document.createDocumentFragment();
     const end = Math.min(messages.length, i + batchSize);
     for (let j = i; j < end; j += 1) {
@@ -2466,6 +2374,10 @@ async function renderChatFull(messages, options = {}) {
     // (This is the root cause of "can't click header while opening".)
     // eslint-disable-next-line no-await-in-loop
     await nextFrame();
+    if (slowYield) {
+      // eslint-disable-next-line no-await-in-loop
+      await waitMs(12);
+    }
   }
 }
 
@@ -3549,14 +3461,12 @@ function wireActions() {
       event.preventDefault();
       event.stopPropagation();
       const isOpen = !!headerModelPicker?.classList.contains("open");
-      setHeaderEffortMenuOpen(false);
       setHeaderModelMenuOpen(!isOpen);
     };
     headerModelTrigger.onkeydown = (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         const isOpen = !!headerModelPicker?.classList.contains("open");
-        setHeaderEffortMenuOpen(false);
         setHeaderModelMenuOpen(!isOpen);
       } else if (event.key === "Escape") {
         setHeaderModelMenuOpen(false);
@@ -3567,35 +3477,6 @@ function wireActions() {
     const target = event.target;
     if (!headerModelPicker || !(target instanceof Node)) return;
     if (!headerModelPicker.contains(target)) setHeaderModelMenuOpen(false);
-  });
-
-  const headerEffortPicker = byId("headerEffortPicker");
-  const headerEffortBtn = byId("headerEffortBtn");
-  if (headerEffortBtn) {
-    headerEffortBtn.onclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      renderHeaderEffortMenu();
-      const isOpen = !!headerEffortPicker?.classList.contains("open");
-      setHeaderModelMenuOpen(false);
-      setHeaderEffortMenuOpen(!isOpen);
-    };
-    headerEffortBtn.onkeydown = (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        renderHeaderEffortMenu();
-        const isOpen = !!headerEffortPicker?.classList.contains("open");
-        setHeaderModelMenuOpen(false);
-        setHeaderEffortMenuOpen(!isOpen);
-      } else if (event.key === "Escape") {
-        setHeaderEffortMenuOpen(false);
-      }
-    };
-  }
-  document.addEventListener("click", (event) => {
-    const target = event.target;
-    if (!headerEffortPicker || !(target instanceof Node)) return;
-    if (!headerEffortPicker.contains(target)) setHeaderEffortMenuOpen(false);
   });
   bindClick("quickPrompt1", () => {
     const text = "Explain the current codebase structure";
@@ -3628,12 +3509,6 @@ function bootstrap() {
       const historyByThreadId = new Map();
       window.__webCodexE2E = {
         _activeThreadId: "",
-        setModels(items) {
-          // Keep this in the UI module to avoid requiring a running gateway for model-dependent UI tests.
-          state.modelOptions = ensureArrayItems(items).map(normalizeModelOption).filter(Boolean);
-          syncHeaderModelPicker();
-          return { ok: true, count: state.modelOptions.length };
-        },
         seedThreads(count = 260) {
           const items = [];
           for (let i = 0; i < count; i += 1) {

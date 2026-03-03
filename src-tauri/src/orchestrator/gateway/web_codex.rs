@@ -1690,34 +1690,15 @@ fn normalize_rollout_hint_path_for_fs(raw: &str) -> PathBuf {
     normalize_thread_path(trimmed)
 }
 
-fn is_imported_rollout_hint(raw: &str) -> bool {
-    let s = raw.trim();
-    if s.is_empty() {
-        return false;
-    }
-    // Imported rollouts are copied snapshots. They can lag behind the live session file,
-    // which is a common cause of "web view shows old messages, terminal has newer ones".
-    let lowered = s.replace('/', "\\").to_ascii_lowercase();
-    lowered.contains("\\sessions\\imported\\") || lowered.ends_with("\\sessions\\imported")
-}
-
 fn resolve_history_rollout_path(
     thread_id: &str,
     workspace_hint: Option<WorkspaceTarget>,
     rollout_path_hint: Option<&str>,
 ) -> Option<PathBuf> {
-    let mut imported_fallback: Option<PathBuf> = None;
     if let Some(hint) = rollout_path_hint.map(str::trim).filter(|v| !v.is_empty()) {
         let path = normalize_rollout_hint_path_for_fs(hint);
         if path.exists() && path.is_file() {
-            // Avoid accidentally pinning history to an imported (copied) file.
-            // But if we can't find a live session file, fall back to this so the UI
-            // doesn't render an empty/blank history.
-            if is_imported_rollout_hint(hint) {
-                imported_fallback = Some(path);
-            } else {
-                return Some(path);
-            }
+            return Some(path);
         }
     }
 
@@ -1728,21 +1709,14 @@ fn resolve_history_rollout_path(
     if let Some(path_hint) = indexed_hint {
         let path = normalize_rollout_hint_path_for_fs(&path_hint);
         if path.exists() && path.is_file() {
-            if is_imported_rollout_hint(&path_hint) {
-                if imported_fallback.is_none() {
-                    imported_fallback = Some(path);
-                }
-            } else {
-                return Some(path);
-            }
+            return Some(path);
         }
     }
 
-    let live = match workspace_hint {
+    match workspace_hint {
         Some(WorkspaceTarget::Windows) => {
-            default_windows_codex_dir()
-                .map(|p| p.join("sessions"))
-                .and_then(|dir| find_rollout_file_by_thread_id(&dir, thread_id))
+            let windows_sessions = default_windows_codex_dir().map(|p| p.join("sessions"))?;
+            find_rollout_file_by_thread_id(&windows_sessions, thread_id)
         }
         Some(WorkspaceTarget::Wsl2) => find_wsl_rollout_file_by_thread_id(thread_id),
         None => {
@@ -1751,9 +1725,7 @@ fn resolve_history_rollout_path(
                 .and_then(|dir| find_rollout_file_by_thread_id(&dir, thread_id));
             from_windows.or_else(|| find_wsl_rollout_file_by_thread_id(thread_id))
         }
-    };
-
-    live.or(imported_fallback)
+    }
 }
 
 fn text_from_message_content(content: &[Value]) -> String {
@@ -3210,14 +3182,9 @@ async fn codex_rpc_proxy(
 #[cfg(test)]
 mod web_codex_tests {
     use super::{
-        is_imported_rollout_hint, parse_slash_command, resolve_history_rollout_path,
-        resume_import_order,
-        should_try_known_wsl_rollout_path, split_stream_chunks, truncate_output, WorkspaceTarget,
-        MAX_TERMINAL_OUTPUT_BYTES,
+        parse_slash_command, resume_import_order, should_try_known_wsl_rollout_path,
+        split_stream_chunks, truncate_output, WorkspaceTarget, MAX_TERMINAL_OUTPUT_BYTES,
     };
-
-    #[cfg(target_os = "windows")]
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn parse_plan_variants() {
@@ -3244,13 +3211,6 @@ mod web_codex_tests {
         let chunks = split_stream_chunks(joined);
         assert!(!chunks.is_empty());
         assert_eq!(chunks.join(" "), joined);
-    }
-
-    #[test]
-    fn imported_rollout_hints_are_detected() {
-        assert!(is_imported_rollout_hint("C:\\x\\sessions\\imported\\abc.jsonl"));
-        assert!(is_imported_rollout_hint("/home/x/.codex/sessions/imported/abc.jsonl"));
-        assert!(!is_imported_rollout_hint("C:\\x\\sessions\\abc.jsonl"));
     }
 
     #[test]
@@ -3291,94 +3251,5 @@ mod web_codex_tests {
             Some("C:\\\\tmp\\\\a.jsonl")
         ));
         assert!(!should_try_known_wsl_rollout_path(None, Some("C:\\\\tmp\\\\a.jsonl")));
-    }
-
-    // Regression: some thread list items point at CODEX_HOME/sessions/imported/<id>.jsonl, which can be stale.
-    // If a live Windows ~/.codex/sessions file exists, history reads should prefer it.
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn resolve_history_rollout_path_ignores_imported_hint_when_live_exists() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let old_userprofile = std::env::var("USERPROFILE").ok();
-
-        let profile = tempfile::tempdir().expect("temp userprofile");
-        std::env::set_var("USERPROFILE", profile.path().to_string_lossy().to_string());
-        let live_sessions = profile.path().join(".codex").join("sessions");
-        std::fs::create_dir_all(&live_sessions).expect("create live sessions");
-
-        let thread_id = "thread_abc";
-        let live_file = live_sessions.join(format!("{thread_id}_live.jsonl"));
-        std::fs::write(&live_file, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread_abc\"}}\n")
-            .expect("write live file");
-
-        let imported_root = tempfile::tempdir().expect("temp imported");
-        let imported_file = imported_root
-            .path()
-            .join("sessions")
-            .join("imported")
-            .join(format!("{thread_id}.jsonl"));
-        std::fs::create_dir_all(imported_file.parent().expect("imported parent"))
-            .expect("create imported sessions");
-        std::fs::write(
-            &imported_file,
-            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread_abc\"}}\n",
-        )
-        .expect("write imported file");
-
-        let picked = resolve_history_rollout_path(
-            thread_id,
-            Some(WorkspaceTarget::Windows),
-            Some(imported_file.to_string_lossy().as_ref()),
-        )
-        .expect("picked path");
-        assert_eq!(picked, live_file);
-
-        match old_userprofile {
-            Some(v) => std::env::set_var("USERPROFILE", v),
-            None => std::env::remove_var("USERPROFILE"),
-        }
-    }
-
-    // If the only available history is an imported rollout, we should still show *something*
-    // rather than returning an empty/blank history view.
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn resolve_history_rollout_path_falls_back_to_imported_when_no_live_exists() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let old_userprofile = std::env::var("USERPROFILE").ok();
-
-        let profile = tempfile::tempdir().expect("temp userprofile");
-        std::env::set_var("USERPROFILE", profile.path().to_string_lossy().to_string());
-        let live_sessions = profile.path().join(".codex").join("sessions");
-        std::fs::create_dir_all(&live_sessions).expect("create live sessions");
-
-        let thread_id = "thread_imported_only";
-
-        let imported_root = tempfile::tempdir().expect("temp imported");
-        let imported_file = imported_root
-            .path()
-            .join("sessions")
-            .join("imported")
-            .join(format!("{thread_id}.jsonl"));
-        std::fs::create_dir_all(imported_file.parent().expect("imported parent"))
-            .expect("create imported sessions");
-        std::fs::write(
-            &imported_file,
-            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread_imported_only\"}}\n",
-        )
-        .expect("write imported file");
-
-        let picked = resolve_history_rollout_path(
-            thread_id,
-            Some(WorkspaceTarget::Windows),
-            Some(imported_file.to_string_lossy().as_ref()),
-        )
-        .expect("picked path");
-        assert_eq!(picked, imported_file);
-
-        match old_userprofile {
-            Some(v) => std::env::set_var("USERPROFILE", v),
-            None => std::env::remove_var("USERPROFILE"),
-        }
     }
 }
