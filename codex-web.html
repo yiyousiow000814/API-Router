@@ -325,36 +325,36 @@
       position: relative;
     }
 
-    .chatPanel .panelHeader .headerModelOption .effortInline {
-      position: relative;
-      display: inline-flex;
-      align-items: center;
-      flex: 0 0 auto;
-    }
-    .chatPanel .panelHeader .headerModelOption .effortInlineBtn {
-      border: 1px solid rgba(13, 18, 32, 0.14);
-      background: rgba(255, 255, 255, 0.92);
-      border-radius: 999px;
-      padding: 3px 7px;
+    .chatPanel .panelHeader .headerModelOption .effortSubLabel {
       font-size: 11px;
-      color: #1b2940;
+      color: rgba(13, 18, 32, 0.72);
       line-height: 1.1;
-      user-select: none;
-      cursor: pointer;
+      white-space: nowrap;
+    }
+    .chatPanel .panelHeader .headerModelOption .effortSubChevron {
+      width: 18px;
+      height: 18px;
       display: inline-flex;
       align-items: center;
-      gap: 4px;
-      white-space: nowrap;
-      min-height: 22px;
+      justify-content: center;
+      border-radius: 999px;
+      cursor: pointer;
+      user-select: none;
+      color: rgba(13, 18, 32, 0.6);
     }
-    .chatPanel .panelHeader .headerModelOption .effortInlineChev {
+    .chatPanel .panelHeader .headerModelOption .effortSubChevron:hover {
+      background: rgba(13, 18, 32, 0.06);
+      color: rgba(13, 18, 32, 0.8);
+    }
+    .chatPanel .panelHeader .headerModelOption .effortSubChevron svg {
       width: 12px;
       height: 12px;
       display: block;
-      transition: transform 160ms ease;
+      transform: rotate(-90deg); /* right-facing chevron */
     }
-    .chatPanel .panelHeader .headerModelOption .effortInline.open .effortInlineChev {
-      transform: rotate(180deg);
+    .chatPanel .panelHeader .headerModelOption .effortSubChevron:focus {
+      outline: 2px solid rgba(40, 199, 217, 0.55);
+      outline-offset: 1px;
     }
 
     /* Effort menu is rendered in a fixed overlay (portal) so it can overflow past the model menu scroll clip. */

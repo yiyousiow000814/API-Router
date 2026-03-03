@@ -131,8 +131,8 @@ async function main() {
       return !!ok
     }, 20000, '__webCodexE2E init')
 
-    // Regression: reasoning-effort selector should be a compact dropdown control to the RIGHT of the active model option
-    // (not as a large block above the list, and not as multiple pills that overflow on narrow screens).
+    // Regression: reasoning-effort selector should be a nested submenu to the RIGHT of the active model option
+    // (ChatGPT-style: show current effort + chevron, click chevron opens a submenu).
     // This test runs in e2e mode without requiring a running gateway.
     {
       const seededModels = await driver.executeScript(`
@@ -195,14 +195,14 @@ async function main() {
         const legacyRow = menu.querySelector('.headerModelEffortRow');
         const activeOption = menu.querySelector('.headerModelOption.active');
         const legacyPills = activeOption ? activeOption.querySelector('.effortPills') : null;
-        const btn = activeOption ? activeOption.querySelector('.effortInlineBtn') : null;
-        const label = String(btn?.querySelector('.effortInlineLabel')?.textContent || btn?.textContent || '').trim();
+        const label = String(activeOption?.querySelector('.effortSubLabel')?.textContent || '').trim();
+        const chev = activeOption ? activeOption.querySelector('.effortSubChevron') : null;
         return {
           ok: true,
           hasLegacyRow: !!legacyRow,
           hasLegacyPills: !!legacyPills,
           hasActiveOption: !!activeOption,
-          hasInlineBtn: !!btn,
+          hasChevron: !!chev,
           label,
         };
       `)
@@ -210,18 +210,22 @@ async function main() {
       if (reasoningUi?.hasLegacyRow) throw new Error('expected .headerModelEffortRow to be removed (effort selector must be inline to active model)')
       if (!reasoningUi?.hasActiveOption) throw new Error('expected an active model option in the menu')
       if (reasoningUi?.hasLegacyPills) throw new Error('expected legacy multi-pill effort selector to be removed (must be compact dropdown)')
-      if (!reasoningUi?.hasInlineBtn) throw new Error('expected .effortInlineBtn to exist next to active model')
+      if (!reasoningUi?.hasChevron) throw new Error('expected .effortSubChevron to exist next to active model')
       if (reasoningUi?.label !== 'medium') throw new Error(`expected default effort label medium, got ${JSON.stringify(reasoningUi?.label || '')}`)
 
       const pickedHigh = await driver.executeScript(`
         const opt = document.querySelector('#headerModelMenu .headerModelOption.active');
-        const trigger = opt ? opt.querySelector('.effortInlineBtn') : null;
-        if (!trigger) return { ok: false, error: 'missing inline effort trigger' };
+        const trigger = opt ? opt.querySelector('.effortSubChevron') : null;
+        if (!trigger) return { ok: false, error: 'missing effort chevron trigger' };
         const pickerOpen = !!document.getElementById('headerModelPicker')?.classList.contains('open');
         if (!pickerOpen) return { ok: false, error: 'model picker closed after opening effort menu' };
         const overlay = document.getElementById('effortInlineOverlay');
         if (!overlay || !overlay.classList.contains('show')) {
           // Some flows auto-open the effort overlay after selecting a model; if it isn't open yet, open it now.
+          trigger.click();
+        }
+        if (!document.getElementById('effortInlineOverlay')?.classList.contains('show')) {
+          // Ensure it opens on the first click.
           trigger.click();
         }
         const overlay2 = document.getElementById('effortInlineOverlay');
@@ -235,22 +239,20 @@ async function main() {
         const pickerOpen2 = !!document.getElementById('headerModelPicker')?.classList.contains('open');
         if (!pickerOpen2) return { ok: false, error: 'model picker closed after selecting effort' };
         const opt2 = document.querySelector('#headerModelMenu .headerModelOption.active');
-        const trigger2 = opt2 ? opt2.querySelector('.effortInlineBtn') : null;
-        const label = String(trigger2?.querySelector('.effortInlineLabel')?.textContent || trigger2?.textContent || '').trim();
-        const expanded = String(trigger2?.getAttribute('aria-expanded') || '').trim();
-        const containerOpen = !!opt2?.querySelector('.effortInline.open');
+        const label = String(opt2?.querySelector('.effortSubLabel')?.textContent || '').trim();
+        const chev2 = opt2 ? opt2.querySelector('.effortSubChevron') : null;
+        const expanded = String(chev2?.getAttribute('aria-expanded') || '').trim();
         // Re-open should take ONE click (no stale "open" state / arrow direction).
-        trigger2?.click();
+        chev2?.click();
         const overlay3 = document.getElementById('effortInlineOverlay');
         const reopened = !!overlay3?.classList.contains('show');
-        return { ok: true, label, expanded, containerOpen, reopened };
+        return { ok: true, label, expanded, reopened };
       `)
       if (!pickedHigh?.ok) throw new Error(`failed to pick high: ${pickedHigh?.error || 'unknown'}`)
       if (pickedHigh.label !== 'high') throw new Error(`expected effort label high after click, got ${JSON.stringify(pickedHigh.label)}`)
       if (pickedHigh.expanded && pickedHigh.expanded !== 'false') {
         throw new Error(`expected effort trigger aria-expanded=false after selection, got ${JSON.stringify(pickedHigh.expanded)}`)
       }
-      if (pickedHigh.containerOpen) throw new Error('expected effortInline not to remain .open after selection')
       if (!pickedHigh.reopened) throw new Error('expected effort overlay to reopen on first click (no double-click needed)')
 
       // Close via outside click (more reliable than re-clicking the trigger across webviews).

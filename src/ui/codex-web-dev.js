@@ -441,12 +441,10 @@ function closeInlineEffortOverlay() {
   if (!el) return;
   el.classList.remove("show");
   el.innerHTML = "";
-  // Keep the inline trigger state consistent (chevron direction / aria-expanded).
+  // Keep the trigger state consistent (aria-expanded).
   try {
     const menu = byId("headerModelMenu");
-    const container = menu?.querySelector?.(".effortInline.open") || null;
-    if (container) container.classList.remove("open");
-    const trigger = menu?.querySelector?.(".effortInlineBtn") || null;
+    const trigger = menu?.querySelector?.(".effortSubChevron[aria-expanded='true']") || null;
     if (trigger) trigger.setAttribute("aria-expanded", "false");
   } catch {}
 }
@@ -485,10 +483,8 @@ function openInlineEffortOverlay(anchorEl, model) {
   overlay.style.transformOrigin = "top right";
   overlay.classList.add("show");
 
-  // Sync inline trigger state to "open" (chevron direction).
+  // Sync trigger state to "open".
   try {
-    const container = anchorEl.closest?.(".effortInline") || null;
-    if (container) container.classList.add("open");
     anchorEl.setAttribute?.("aria-expanded", "true");
   } catch {}
 
@@ -564,13 +560,11 @@ function renderHeaderModelMenu() {
         const cur = String(localStorage.getItem(REASONING_EFFORT_KEY) || state.selectedReasoningEffort || fallback || "").trim();
         const inlineOpen = !!(state.inlineEffortMenuOpen && state.inlineEffortMenuForModel === model.id);
         effortHtml =
-          `<span class="effortInline${inlineOpen ? " open" : ""}" data-model-id="${escapeAttr(model.id)}">` +
-          `<span class="effortInlineBtn" role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="${inlineOpen ? "true" : "false"}">` +
-          `<span class="effortInlineLabel mono">${escapeHtml(cur)}</span>` +
-          `<svg class="effortInlineChev" viewBox="0 0 16 16" aria-hidden="true" focusable="false">` +
+          `<span class="effortSubLabel mono">${escapeHtml(cur)}</span>` +
+          `<span class="effortSubChevron" role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="${inlineOpen ? "true" : "false"}" data-model-id="${escapeAttr(model.id)}">` +
+          `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">` +
           `<path d="M4.5 6.2l3.5 3.6 3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>` +
           `</svg>` +
-          `</span>` +
           `</span>`;
       }
     }
@@ -587,7 +581,7 @@ function renderHeaderModelMenu() {
       // Some webviews still dispatch a click on the parent <button> even if the child stops propagation,
       // so we double-guard here.
       const target = event?.target;
-      if (target instanceof Node && target.closest?.(".effortInline")) return;
+      if (target instanceof Node && target.closest?.(".effortSubChevron")) return;
 
       state.selectedModel = model.id;
       if (state.activeThreadStarted) state.activeThreadModelLabel = model.id;
@@ -615,7 +609,7 @@ function renderHeaderModelMenu() {
       // Auto-open the effort overlay for the newly selected model (if it supports efforts).
       if (supported.length) {
         requestAnimationFrame(() => {
-          const active = menu.querySelector(".headerModelOption.active .effortInlineBtn");
+          const active = menu.querySelector(".headerModelOption.active .effortSubChevron");
           const options2 = Array.isArray(state.modelOptions) ? state.modelOptions : [];
           const activeModel = options2.find((x) => x && x.id === state.selectedModel) || null;
           if (active && activeModel) openInlineEffortOverlay(active, activeModel);
@@ -627,18 +621,15 @@ function renderHeaderModelMenu() {
     menu.appendChild(optionBtn);
   }
 
-  // Inline effort dropdown interactions (must not select/close the model option).
-  for (const trigger of Array.from(menu.querySelectorAll(".effortInlineBtn"))) {
-    trigger.addEventListener("click", (event) => {
+  // Effort submenu chevron interactions (must not select/close the model option).
+  for (const trigger of Array.from(menu.querySelectorAll(".effortSubChevron"))) {
+    const onToggle = (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const container = trigger.closest(".effortInline");
-      const modelId = String(container?.getAttribute("data-model-id") || current).trim();
-      const open = !!container?.classList.contains("open");
-      // Only one inline menu exists; keep state in sync so re-render preserves it.
+      const modelId = String(trigger.getAttribute("data-model-id") || current).trim();
+      const open = String(trigger.getAttribute("aria-expanded") || "") === "true";
       state.inlineEffortMenuOpen = !open;
       state.inlineEffortMenuForModel = state.inlineEffortMenuOpen ? modelId : "";
-      if (container) container.classList.toggle("open", !open);
       trigger.setAttribute("aria-expanded", open ? "false" : "true");
       if (!open) {
         const options2 = Array.isArray(state.modelOptions) ? state.modelOptions : [];
@@ -647,25 +638,11 @@ function renderHeaderModelMenu() {
       } else {
         closeInlineEffortOverlay();
       }
-    });
+    };
+    trigger.addEventListener("click", onToggle);
     trigger.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      event.stopPropagation();
-      const container = trigger.closest(".effortInline");
-      const modelId = String(container?.getAttribute("data-model-id") || current).trim();
-      const open = !!container?.classList.contains("open");
-      state.inlineEffortMenuOpen = !open;
-      state.inlineEffortMenuForModel = state.inlineEffortMenuOpen ? modelId : "";
-      if (container) container.classList.toggle("open", !open);
-      trigger.setAttribute("aria-expanded", open ? "false" : "true");
-      if (!open) {
-        const options2 = Array.isArray(state.modelOptions) ? state.modelOptions : [];
-        const activeModel = options2.find((x) => x && x.id === modelId) || null;
-        if (activeModel) openInlineEffortOverlay(trigger, activeModel);
-      } else {
-        closeInlineEffortOverlay();
-      }
+      onToggle(event);
     });
   }
 }
