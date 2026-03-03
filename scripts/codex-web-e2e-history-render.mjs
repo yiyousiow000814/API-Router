@@ -193,6 +193,8 @@ async function main() {
         const trigger = opt ? opt.querySelector('.effortInlineBtn') : null;
         if (!trigger) return { ok: false, error: 'missing inline effort trigger' };
         trigger.click();
+        const pickerOpen = !!document.getElementById('headerModelPicker')?.classList.contains('open');
+        if (!pickerOpen) return { ok: false, error: 'model picker closed after opening effort menu' };
         const menu = opt ? opt.querySelector('.effortInlineMenu') : null;
         if (!menu) return { ok: false, error: 'missing inline effort menu' };
         const high = Array.from(menu.querySelectorAll('.effortInlineOption')).find((b) => {
@@ -201,6 +203,8 @@ async function main() {
         });
         if (!high) return { ok: false, error: 'missing high option' };
         high.click();
+        const pickerOpen2 = !!document.getElementById('headerModelPicker')?.classList.contains('open');
+        if (!pickerOpen2) return { ok: false, error: 'model picker closed after selecting effort' };
         const trigger2 = opt ? opt.querySelector('.effortInlineBtn') : null;
         const label = String(trigger2?.querySelector('.effortInlineLabel')?.textContent || trigger2?.textContent || '').trim();
         return { ok: true, label };

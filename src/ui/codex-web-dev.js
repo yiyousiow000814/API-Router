@@ -488,7 +488,13 @@ function renderHeaderModelMenu() {
     optionBtn.innerHTML =
       `<span class="modelLabel">${escapeHtml(model.label || model.id)}</span>` +
       `<span class="modelRight">${effortHtml}<span class="check" aria-hidden="true">✓</span></span>`;
-    optionBtn.onclick = () => {
+    optionBtn.addEventListener("click", (event) => {
+      // If the user clicked the inline reasoning-effort control, do NOT select/close the model menu.
+      // Some webviews still dispatch a click on the parent <button> even if the child stops propagation,
+      // so we double-guard here.
+      const target = event?.target;
+      if (target instanceof Node && target.closest?.(".effortInline")) return;
+
       state.selectedModel = model.id;
       if (state.activeThreadStarted) state.activeThreadModelLabel = model.id;
       state.inlineEffortMenuOpen = false;
@@ -507,7 +513,7 @@ function renderHeaderModelMenu() {
       renderHeaderModelMenu();
       updateHeaderUi();
       setHeaderModelMenuOpen(false);
-    };
+    });
     menu.appendChild(optionBtn);
   }
 
