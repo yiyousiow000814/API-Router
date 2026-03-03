@@ -234,16 +234,16 @@
     }
     .chatPanel .panelHeader .headerReasoningEffort {
       display: none;
-      margin-left: 6px;
+      margin-left: 0;
       padding: 0;
       border: none;
       border-radius: 0;
       background: transparent;
-      font-size: 12px;
-      font-weight: 600;
-      color: rgba(13, 18, 32, 0.72);
-      line-height: 1;
-      transform: translateY(-0.5px);
+      font-size: inherit;
+      font-weight: inherit;
+      color: inherit;
+      line-height: inherit;
+      transform: none;
     }
     .chatPanel .panelHeader .headerModelText {
       min-width: 0;
@@ -279,7 +279,8 @@
       top: calc(100% + 8px);
       left: 0;
       z-index: 60;
-      min-width: 220px;
+      min-width: 0;
+      width: max-content;
       max-width: min(82vw, 340px);
       max-height: min(56vh, 320px);
       overflow: auto;
@@ -391,20 +392,19 @@
       box-shadow: none;
       padding: 6px;
       gap: 2px;
-      display: none;
+      /* Keep mounted so opacity/transform transitions can animate (display:none cannot transition). */
+      display: grid;
       opacity: 0;
-      transform: translate3d(-6px, 0, 0);
+      transform: translate3d(0, 0, 0);
       transform-origin: top left;
       pointer-events: none;
       visibility: hidden;
-      transition: opacity 150ms ease, transform 180ms ease;
-      will-change: opacity, transform;
+      transition: opacity 150ms ease;
+      will-change: opacity;
       scrollbar-width: thin;
     }
     .effortInlineOverlay.show {
-      display: grid;
       opacity: 1;
-      transform: translate3d(0, 0, 0);
       pointer-events: auto;
       visibility: visible;
     }
@@ -2074,7 +2074,7 @@
           <div id="headerModelPicker" class="headerModelPicker">
             <button id="headerModelTrigger" class="headerModelTrigger" type="button" aria-haspopup="listbox" aria-expanded="false">
               <span id="headerModelLabel" class="headerModelText">Codex</span>
-              <span id="headerReasoningEffort" class="headerReasoningEffort mono"></span>
+              <span id="headerReasoningEffort" class="headerReasoningEffort"></span>
               <span class="headerModelChevron" aria-hidden="true">
                 <svg viewBox="0 0 16 16" focusable="false">
                   <path d="M4.5 6.2l3.5 3.6 3.5-3.6"></path>

@@ -489,6 +489,10 @@ function openInlineEffortOverlay(anchorEl, model) {
   if (!supported.length) return;
 
   const overlay = ensureInlineEffortOverlay();
+  // Ensure the browser has a non-`display:none` baseline style so the fade/slide transition can run.
+  overlay.classList.remove("show");
+  // Force style flush (especially important on first mount / some mobile webviews).
+  void overlay.offsetWidth;
   const fallback = String(model.defaultReasoningEffort || supported[0]?.effort || "").trim();
   const cur = String(localStorage.getItem(REASONING_EFFORT_KEY) || state.selectedReasoningEffort || fallback || "").trim();
 

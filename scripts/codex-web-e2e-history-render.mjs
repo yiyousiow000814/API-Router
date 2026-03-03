@@ -88,6 +88,16 @@ async function main() {
   if (!/\.effortInlineOverlay\s*\{[\s\S]*box-shadow:\s*none/i.test(html)) {
     throw new Error('expected reasoning-effort submenu to disable box-shadow')
   }
+  {
+    const stripComments = (s) => String(s || '').replace(/\/\*[\s\S]*?\*\//g, '')
+    const overlayBlockRaw = /\.effortInlineOverlay\s*\{[\s\S]*?\}/m.exec(html)?.[0] || ''
+    const showBlockRaw = /\.effortInlineOverlay\.show\s*\{[\s\S]*?\}/m.exec(html)?.[0] || ''
+    const overlayBlock = stripComments(overlayBlockRaw)
+    const showBlock = stripComments(showBlockRaw)
+    if (!/\bdisplay\s*:\s*grid\b/i.test(overlayBlock)) throw new Error('expected .effortInlineOverlay to use display: grid (mounted for transitions)')
+    if (/\bdisplay\s*:\s*none\b/i.test(overlayBlock)) throw new Error('expected .effortInlineOverlay to not use display: none (prevents transitions)')
+    if (/\bdisplay\s*:/i.test(showBlock)) throw new Error('expected .effortInlineOverlay.show to not toggle display (transition-only)')
+  }
 
   const devProc = await ensureDevServerReady()
   let driver = null
@@ -209,6 +219,26 @@ async function main() {
         return !!open
       }, 8000, 'header model picker open')
 
+      // The model row chevron should not create excessive whitespace (keep the menu compact).
+      const rowGap = await driver.executeScript(`
+        const menu = document.getElementById('headerModelMenu');
+        if (!menu) return { ok: false, error: 'missing menu' };
+        const btns = Array.from(menu.querySelectorAll('.headerModelOption'));
+        const target = btns.find((b) => /5\\.3-codex/.test(String(b.textContent || '')));
+        if (!target) return { ok: false, error: 'missing 5.3-codex row' };
+        const label = target.querySelector('.modelLabel');
+        const chev = target.querySelector('.effortSubChevron');
+        if (!label || !chev) return { ok: false, error: 'missing label/chevron' };
+        const lr = label.getBoundingClientRect();
+        const cr = chev.getBoundingClientRect();
+        return { ok: true, gap: Math.round(Math.max(0, cr.left - lr.right)) };
+      `)
+      if (!rowGap?.ok) throw new Error(`row gap probe failed: ${rowGap?.error || 'unknown'}`)
+      // Old builds had a large empty strip here; keep it modest.
+      if (typeof rowGap.gap === 'number' && rowGap.gap > 32) {
+        throw new Error(`expected model row gap (label→chevron) <= 32px, got ${rowGap.gap}px`)
+      }
+
       // Selecting a model should keep the menu open so the user can immediately adjust reasoning effort.
       const selectedModelStaysOpen = await driver.executeScript(`
         const menu = document.getElementById('headerModelMenu');
@@ -297,6 +327,38 @@ async function main() {
       if (pickedHigh.headerEffort !== 'high') throw new Error(`expected headerReasoningEffort to show high, got ${JSON.stringify(pickedHigh.headerEffort)}`)
       if (!pickedHigh.rightOfMenu) throw new Error('expected effort overlay to appear to the right of model menu')
       if (typeof pickedHigh.gap === 'number' && pickedHigh.gap > 3) throw new Error(`expected effort submenu gap <= 3px, got ${pickedHigh.gap}px`)
+
+      // Header effort should match the model label typography (same font-size and font-weight).
+      const typo = await driver.executeScript(`
+        const model = document.getElementById('headerModelLabel');
+        const effort = document.getElementById('headerReasoningEffort');
+        if (!model || !effort) return { ok: false, error: 'missing header labels' };
+        const ms = getComputedStyle(model);
+        const es = getComputedStyle(effort);
+        return {
+          ok: true,
+          modelFontSize: ms.fontSize,
+          effortFontSize: es.fontSize,
+          modelFontWeight: ms.fontWeight,
+          effortFontWeight: es.fontWeight,
+          modelFontFamily: ms.fontFamily,
+          effortFontFamily: es.fontFamily,
+          effortMarginLeft: es.marginLeft,
+        };
+      `)
+      if (!typo?.ok) throw new Error(`typography probe failed: ${typo?.error || 'unknown'}`)
+      if (typo.modelFontSize !== typo.effortFontSize) {
+        throw new Error(`expected header effort to match model font-size, model=${typo.modelFontSize} effort=${typo.effortFontSize}`)
+      }
+      if (typo.modelFontWeight !== typo.effortFontWeight) {
+        throw new Error(`expected header effort to match model font-weight, model=${typo.modelFontWeight} effort=${typo.effortFontWeight}`)
+      }
+      if (typo.modelFontFamily !== typo.effortFontFamily) {
+        throw new Error(`expected header effort to match model font-family, model=${typo.modelFontFamily} effort=${typo.effortFontFamily}`)
+      }
+      if (typo.effortMarginLeft !== '0px') {
+        throw new Error(`expected header effort margin-left to be 0px, got ${JSON.stringify(typo.effortMarginLeft)}`)
+      }
 
       // Close via outside click (more reliable than re-clicking the trigger across webviews).
       await driver.executeScript(`document.body.click();`)
