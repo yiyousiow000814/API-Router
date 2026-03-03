@@ -81,6 +81,8 @@ const state = {
   modelOptions: [],
   selectedModel: "",
   selectedReasoningEffort: "",
+  inlineEffortMenuOpen: false,
+  inlineEffortMenuForModel: "",
   openingThreadReqId: 0,
   pendingThreadResumes: new Map(),
 };
@@ -415,6 +417,10 @@ function setHeaderModelMenuOpen(open) {
   if (!picker || !trigger) return;
   picker.classList.toggle("open", !!open);
   trigger.setAttribute("aria-expanded", open ? "true" : "false");
+  if (!open) {
+    state.inlineEffortMenuOpen = false;
+    state.inlineEffortMenuForModel = "";
+  }
 }
 
 function renderHeaderModelMenu() {
@@ -431,6 +437,10 @@ function renderHeaderModelMenu() {
   }
 
   const current = state.selectedModel || options.find((item) => item.isDefault)?.id || options[0].id;
+  if (state.inlineEffortMenuForModel && state.inlineEffortMenuForModel !== current) {
+    state.inlineEffortMenuOpen = false;
+    state.inlineEffortMenuForModel = "";
+  }
   for (const model of options) {
     const optionBtn = document.createElement("button");
     optionBtn.type = "button";
@@ -445,18 +455,33 @@ function renderHeaderModelMenu() {
       if (supported.length) {
         const fallback = String(model.defaultReasoningEffort || supported[0]?.effort || "").trim();
         const cur = String(localStorage.getItem(REASONING_EFFORT_KEY) || state.selectedReasoningEffort || fallback || "").trim();
-        const pills = supported
+        const inlineOpen = !!(state.inlineEffortMenuOpen && state.inlineEffortMenuForModel === model.id);
+        const optionHtml = supported
           .map((x) => {
             const effort = String(x?.effort || "").trim();
             if (!effort) return "";
             const title = String(x?.description || "").trim();
             const active = effort === cur ? " active" : "";
             const titleAttr = title ? ` title="${escapeAttr(title)}"` : "";
-            return `<span class="effortPill${active}" role="button" tabindex="0" data-effort="${escapeAttr(effort)}"${titleAttr}>${escapeHtml(effort)}</span>`;
+            return (
+              `<span class="effortInlineOption${active}" role="option" aria-selected="${effort === cur ? "true" : "false"}" data-effort="${escapeAttr(effort)}"${titleAttr}>` +
+              `<span class="label">${escapeHtml(effort)}</span>` +
+              `<span class="check" aria-hidden="true">✓</span>` +
+              `</span>`
+            );
           })
           .filter(Boolean)
           .join("");
-        if (pills) effortHtml = `<span class="effortPills" role="group" aria-label="Reasoning effort">${pills}</span>`;
+        effortHtml =
+          `<span class="effortInline${inlineOpen ? " open" : ""}" data-model-id="${escapeAttr(model.id)}">` +
+          `<span class="effortInlineBtn" role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="${inlineOpen ? "true" : "false"}">` +
+          `<span class="effortInlineLabel mono">${escapeHtml(cur)}</span>` +
+          `<svg class="effortInlineChev" viewBox="0 0 16 16" aria-hidden="true" focusable="false">` +
+          `<path d="M4.5 6.2l3.5 3.6 3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>` +
+          `</svg>` +
+          `</span>` +
+          `<span class="effortInlineMenu" role="listbox" aria-label="Reasoning effort">${optionHtml}</span>` +
+          `</span>`;
       }
     }
 
@@ -466,6 +491,8 @@ function renderHeaderModelMenu() {
     optionBtn.onclick = () => {
       state.selectedModel = model.id;
       if (state.activeThreadStarted) state.activeThreadModelLabel = model.id;
+      state.inlineEffortMenuOpen = false;
+      state.inlineEffortMenuForModel = "";
       // If the current effort isn't supported by the new model, fall back to the model default.
       const supported = Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : [];
       if (supported.length) {
@@ -484,27 +511,77 @@ function renderHeaderModelMenu() {
     menu.appendChild(optionBtn);
   }
 
-  // Effort pill interactions (must not select/close the model option).
-  for (const pill of Array.from(menu.querySelectorAll(".effortPill"))) {
-    pill.addEventListener("click", (event) => {
+  // Inline effort dropdown interactions (must not select/close the model option).
+  for (const trigger of Array.from(menu.querySelectorAll(".effortInlineBtn"))) {
+    trigger.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const effort = String(pill.getAttribute("data-effort") || "").trim();
-      if (!effort) return;
-      state.selectedReasoningEffort = effort;
-      localStorage.setItem(REASONING_EFFORT_KEY, effort);
-      renderHeaderModelMenu();
-      updateHeaderUi();
+      const container = trigger.closest(".effortInline");
+      const modelId = String(container?.getAttribute("data-model-id") || current).trim();
+      const open = !!container?.classList.contains("open");
+      // Only one inline menu exists; keep state in sync so re-render preserves it.
+      state.inlineEffortMenuOpen = !open;
+      state.inlineEffortMenuForModel = state.inlineEffortMenuOpen ? modelId : "";
+      if (container) container.classList.toggle("open", !open);
+      trigger.setAttribute("aria-expanded", open ? "false" : "true");
     });
-    pill.addEventListener("keydown", (event) => {
+    trigger.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       event.stopPropagation();
-      const effort = String(pill.getAttribute("data-effort") || "").trim();
+      const container = trigger.closest(".effortInline");
+      const modelId = String(container?.getAttribute("data-model-id") || current).trim();
+      const open = !!container?.classList.contains("open");
+      state.inlineEffortMenuOpen = !open;
+      state.inlineEffortMenuForModel = state.inlineEffortMenuOpen ? modelId : "";
+      if (container) container.classList.toggle("open", !open);
+      trigger.setAttribute("aria-expanded", open ? "false" : "true");
+    });
+  }
+  for (const opt of Array.from(menu.querySelectorAll(".effortInlineOption"))) {
+    opt.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const effort = String(opt.getAttribute("data-effort") || "").trim();
       if (!effort) return;
       state.selectedReasoningEffort = effort;
       localStorage.setItem(REASONING_EFFORT_KEY, effort);
-      renderHeaderModelMenu();
+      const container = opt.closest(".effortInline");
+      const trigger = container?.querySelector?.(".effortInlineBtn") || null;
+      const label = trigger?.querySelector?.(".effortInlineLabel") || null;
+      if (label) label.textContent = effort;
+      if (container) container.classList.remove("open");
+      if (trigger) trigger.setAttribute("aria-expanded", "false");
+      for (const btn of Array.from(container?.querySelectorAll?.(".effortInlineOption") || [])) {
+        const isActive = String(btn.getAttribute("data-effort") || "").trim() === effort;
+        btn.classList.toggle("active", isActive);
+        btn.setAttribute("aria-selected", isActive ? "true" : "false");
+      }
+      state.inlineEffortMenuOpen = false;
+      state.inlineEffortMenuForModel = "";
+      updateHeaderUi();
+    });
+    opt.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      event.stopPropagation();
+      const effort = String(opt.getAttribute("data-effort") || "").trim();
+      if (!effort) return;
+      state.selectedReasoningEffort = effort;
+      localStorage.setItem(REASONING_EFFORT_KEY, effort);
+      const container = opt.closest(".effortInline");
+      const trigger = container?.querySelector?.(".effortInlineBtn") || null;
+      const label = trigger?.querySelector?.(".effortInlineLabel") || null;
+      if (label) label.textContent = effort;
+      if (container) container.classList.remove("open");
+      if (trigger) trigger.setAttribute("aria-expanded", "false");
+      for (const btn of Array.from(container?.querySelectorAll?.(".effortInlineOption") || [])) {
+        const isActive = String(btn.getAttribute("data-effort") || "").trim() === effort;
+        btn.classList.toggle("active", isActive);
+        btn.setAttribute("aria-selected", isActive ? "true" : "false");
+      }
+      state.inlineEffortMenuOpen = false;
+      state.inlineEffortMenuForModel = "";
       updateHeaderUi();
     });
   }

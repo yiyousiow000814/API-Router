@@ -131,8 +131,9 @@ async function main() {
       return !!ok
     }, 20000, '__webCodexE2E init')
 
-    // Regression: reasoning-effort selector should be inline to the RIGHT of the active model option
-    // (not as a large separate block above the model list). This test runs in e2e mode without requiring a running gateway.
+    // Regression: reasoning-effort selector should be a compact dropdown control to the RIGHT of the active model option
+    // (not as a large block above the list, and not as multiple pills that overflow on narrow screens).
+    // This test runs in e2e mode without requiring a running gateway.
     {
       const seededModels = await driver.executeScript(`
         const h = window.__webCodexE2E;
@@ -168,37 +169,44 @@ async function main() {
         if (!menu) return { ok: false, error: 'missing headerModelMenu' };
         const legacyRow = menu.querySelector('.headerModelEffortRow');
         const activeOption = menu.querySelector('.headerModelOption.active');
-        const pills = activeOption ? Array.from(activeOption.querySelectorAll('.effortPill')).map((b) => String(b.textContent || '').trim()) : [];
-        const activePill = activeOption ? Array.from(activeOption.querySelectorAll('.effortPill')).find((b) => b.classList.contains('active')) : null;
+        const legacyPills = activeOption ? activeOption.querySelector('.effortPills') : null;
+        const btn = activeOption ? activeOption.querySelector('.effortInlineBtn') : null;
+        const label = String(btn?.querySelector('.effortInlineLabel')?.textContent || btn?.textContent || '').trim();
         return {
           ok: true,
           hasLegacyRow: !!legacyRow,
+          hasLegacyPills: !!legacyPills,
           hasActiveOption: !!activeOption,
-          pills,
-          active: String(activePill?.textContent || '').trim(),
+          hasInlineBtn: !!btn,
+          label,
         };
       `)
       if (!reasoningUi?.ok) throw new Error(`reasoning ui probe failed: ${reasoningUi?.error || 'unknown'}`)
       if (reasoningUi?.hasLegacyRow) throw new Error('expected .headerModelEffortRow to be removed (effort selector must be inline to active model)')
       if (!reasoningUi?.hasActiveOption) throw new Error('expected an active model option in the menu')
-      for (const effort of ['low', 'medium', 'high', 'xhigh']) {
-        if (!Array.isArray(reasoningUi.pills) || !reasoningUi.pills.includes(effort)) {
-          throw new Error(`expected reasoning option ${effort} next to active model, got ${JSON.stringify(reasoningUi.pills || [])}`)
-        }
-      }
-      if (reasoningUi.active !== 'medium') throw new Error(`expected default active effort medium, got ${JSON.stringify(reasoningUi.active)}`)
+      if (reasoningUi?.hasLegacyPills) throw new Error('expected legacy multi-pill effort selector to be removed (must be compact dropdown)')
+      if (!reasoningUi?.hasInlineBtn) throw new Error('expected .effortInlineBtn to exist next to active model')
+      if (reasoningUi?.label !== 'medium') throw new Error(`expected default effort label medium, got ${JSON.stringify(reasoningUi?.label || '')}`)
 
       const pickedHigh = await driver.executeScript(`
         const opt = document.querySelector('#headerModelMenu .headerModelOption.active');
-        const btn = opt ? Array.from(opt.querySelectorAll('.effortPill')).find((b) => String(b.textContent || '').trim() === 'high') : null;
-        if (!btn) return { ok: false, error: 'missing high pill' };
-        btn.click();
-        const opt2 = document.querySelector('#headerModelMenu .headerModelOption.active');
-        const active = opt2 ? Array.from(opt2.querySelectorAll('.effortPill')).find((b) => b.classList.contains('active')) : null;
-        return { ok: true, active: String(active?.textContent || '').trim() };
+        const trigger = opt ? opt.querySelector('.effortInlineBtn') : null;
+        if (!trigger) return { ok: false, error: 'missing inline effort trigger' };
+        trigger.click();
+        const menu = opt ? opt.querySelector('.effortInlineMenu') : null;
+        if (!menu) return { ok: false, error: 'missing inline effort menu' };
+        const high = Array.from(menu.querySelectorAll('.effortInlineOption')).find((b) => {
+          const label = b.querySelector('.label');
+          return String(label?.textContent || '').trim() === 'high';
+        });
+        if (!high) return { ok: false, error: 'missing high option' };
+        high.click();
+        const trigger2 = opt ? opt.querySelector('.effortInlineBtn') : null;
+        const label = String(trigger2?.querySelector('.effortInlineLabel')?.textContent || trigger2?.textContent || '').trim();
+        return { ok: true, label };
       `)
       if (!pickedHigh?.ok) throw new Error(`failed to pick high: ${pickedHigh?.error || 'unknown'}`)
-      if (pickedHigh.active !== 'high') throw new Error(`expected active effort high after click, got ${JSON.stringify(pickedHigh.active)}`)
+      if (pickedHigh.label !== 'high') throw new Error(`expected effort label high after click, got ${JSON.stringify(pickedHigh.label)}`)
 
       // Close via outside click (more reliable than re-clicking the trigger across webviews).
       await driver.executeScript(`document.body.click();`)

@@ -322,16 +322,16 @@
       justify-content: flex-end;
       gap: 8px;
       flex: 0 0 auto;
+      position: relative;
     }
-    .chatPanel .panelHeader .headerModelOption .effortPills {
+
+    .chatPanel .panelHeader .headerModelOption .effortInline {
+      position: relative;
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-      max-width: 52%;
+      flex: 0 0 auto;
     }
-    .chatPanel .panelHeader .headerModelOption .effortPill {
+    .chatPanel .panelHeader .headerModelOption .effortInlineBtn {
       border: 1px solid rgba(13, 18, 32, 0.14);
       background: rgba(255, 255, 255, 0.92);
       border-radius: 999px;
@@ -341,15 +341,84 @@
       line-height: 1.1;
       user-select: none;
       cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+      min-height: 22px;
     }
-    .chatPanel .panelHeader .headerModelOption .effortPill.active {
-      border-color: rgba(40, 199, 217, 0.5);
-      background: rgba(40, 199, 217, 0.14);
+    .chatPanel .panelHeader .headerModelOption .effortInlineChev {
+      width: 12px;
+      height: 12px;
+      display: block;
+      transition: transform 160ms ease;
+    }
+    .chatPanel .panelHeader .headerModelOption .effortInline.open .effortInlineChev {
+      transform: rotate(180deg);
+    }
+    .chatPanel .panelHeader .headerModelOption .effortInlineMenu {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      z-index: 80;
+      min-width: 120px;
+      max-width: min(70vw, 220px);
+      max-height: min(40vh, 240px);
+      overflow: auto;
+      border-radius: 12px;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      background: #ffffff;
+      box-shadow: 0 14px 32px rgba(13, 18, 32, 0.18);
+      padding: 6px;
+      display: none;
+      gap: 2px;
+      opacity: 0;
+      transform: translate3d(0, -6px, 0);
+      transform-origin: top right;
+      pointer-events: none;
+      visibility: hidden;
+      transition: opacity 150ms ease, transform 180ms ease;
+      will-change: opacity, transform;
+      scrollbar-width: thin;
+    }
+    .chatPanel .panelHeader .headerModelOption .effortInline.open .effortInlineMenu {
+      display: grid;
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+      pointer-events: auto;
+      visibility: visible;
+    }
+    .chatPanel .panelHeader .headerModelOption .effortInlineOption {
+      border: none;
+      background: transparent;
+      border-radius: 8px;
+      min-height: 30px;
+      padding: 6px 9px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: #1b2940;
+      font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+      user-select: none;
+    }
+    .chatPanel .panelHeader .headerModelOption .effortInlineOption:hover {
+      background: rgba(13, 18, 32, 0.06);
+    }
+    .chatPanel .panelHeader .headerModelOption .effortInlineOption.active {
+      background: rgba(40, 199, 217, 0.12);
+      color: #0d1220;
       font-weight: 600;
     }
-    .chatPanel .panelHeader .headerModelOption .effortPill:focus {
-      outline: 2px solid rgba(40, 199, 217, 0.55);
-      outline-offset: 1px;
+    .chatPanel .panelHeader .headerModelOption .effortInlineOption .check {
+      opacity: 0;
+      color: #0a7082;
+      font-weight: 700;
+    }
+    .chatPanel .panelHeader .headerModelOption .effortInlineOption.active .check {
+      opacity: 1;
     }
     .chatPanel .panelHeader .headerModelOption .check {
       opacity: 0;
