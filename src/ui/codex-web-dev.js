@@ -3740,8 +3740,13 @@ function wireActions() {
     };
     if (!headerModelTrigger.__wiredPointerToggle) {
       headerModelTrigger.__wiredPointerToggle = true;
-      headerModelTrigger.addEventListener("pointerdown", toggle, { passive: false });
-      headerModelTrigger.addEventListener("click", toggle);
+      // Use a single activation event to avoid double-toggling on mobile taps
+      // (pointerdown opens, then the synthesized click closes).
+      if (typeof window !== "undefined" && "PointerEvent" in window) {
+        headerModelTrigger.addEventListener("pointerdown", toggle, { passive: false });
+      } else {
+        headerModelTrigger.addEventListener("click", toggle);
+      }
     }
     headerModelTrigger.onkeydown = (event) => {
       if (event.key === "Enter" || event.key === " ") {

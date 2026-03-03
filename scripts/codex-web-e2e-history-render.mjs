@@ -269,15 +269,29 @@ async function main() {
       `)
       if (!seededModels?.ok) throw new Error(`seed models failed: ${seededModels?.error || 'unknown'}`)
 
-      // Use pointerdown to match mobile tap behavior (click can be delayed/dropped under load).
-      await driver.executeScript(`
-        const el = document.getElementById('headerModelTrigger');
-        el?.dispatchEvent?.(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }));
-      `)
-      await waitFor(async () => {
-        const open = await driver.executeScript(`return !!document.getElementById('headerModelPicker')?.classList.contains('open');`)
-        return !!open
-      }, 8000, 'header model picker open')
+      // Regression: tapping the model trigger should not "flicker" open then immediately close.
+      // This requires a real pointer tap (pointerdown+pointerup+click), not a synthetic dispatchEvent.
+      {
+        const trigger = await driver.findElement(By.id('headerModelTrigger'))
+        await driver.actions({ async: true }).move({ origin: trigger }).press().release().perform()
+        await waitFor(async () => {
+          const open = await driver.executeScript(
+            `return !!document.getElementById('headerModelPicker')?.classList.contains('open');`,
+          )
+          return !!open
+        }, 1200, 'header model picker open (tap)', 20)
+
+        // Stay open for a short stability window.
+        for (let i = 0; i < 12; i += 1) {
+          // eslint-disable-next-line no-await-in-loop
+          await sleep(25)
+          // eslint-disable-next-line no-await-in-loop
+          const open = await driver.executeScript(
+            `return !!document.getElementById('headerModelPicker')?.classList.contains('open');`,
+          )
+          if (!open) throw new Error('expected model menu to remain open after tapping the trigger (no flicker)')
+        }
+      }
 
       // The model row chevron should not create excessive whitespace (keep the menu compact).
       const rowGap = await driver.executeScript(`
