@@ -16,6 +16,30 @@ const NOTIFICATION_QUEUE_CAP: usize = 2048;
 static APP_SERVER: OnceLock<Mutex<Option<AppServer>>> = OnceLock::new();
 static NOTIFICATIONS: OnceLock<Mutex<VecDeque<Value>>> = OnceLock::new();
 
+#[cfg(test)]
+static TEST_REQUEST_HANDLER: OnceLock<
+    Mutex<Option<std::sync::Arc<dyn Fn(&str, Value) -> Result<Value, String> + Send + Sync>>>,
+> = OnceLock::new();
+
+#[cfg(test)]
+pub async fn _set_test_request_handler(
+    handler: Option<std::sync::Arc<dyn Fn(&str, Value) -> Result<Value, String> + Send + Sync>>,
+) {
+    let lock = TEST_REQUEST_HANDLER.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().await;
+    *guard = handler;
+}
+
+#[cfg(test)]
+async fn maybe_handle_test_request(method: &str, params: &Value) -> Option<Result<Value, String>> {
+    let lock = TEST_REQUEST_HANDLER.get_or_init(|| Mutex::new(None));
+    let guard = lock.lock().await;
+    let Some(handler) = guard.as_ref() else {
+        return None;
+    };
+    Some(handler(method, params.clone()))
+}
+
 fn notifications_queue() -> &'static Mutex<VecDeque<Value>> {
     NOTIFICATIONS.get_or_init(|| Mutex::new(VecDeque::new()))
 }
@@ -312,6 +336,11 @@ mod tests {
 }
 
 pub async fn request(method: &str, params: Value) -> Result<Value, String> {
+    #[cfg(test)]
+    if let Some(result) = maybe_handle_test_request(method, &params).await {
+        return result;
+    }
+
     let lock = APP_SERVER.get_or_init(|| Mutex::new(None));
     let mut guard = lock.lock().await;
     let needs_spawn = match guard.as_mut() {

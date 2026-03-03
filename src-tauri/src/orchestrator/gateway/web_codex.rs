@@ -13,10 +13,8 @@ const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TERMINAL_COMMAND_LEN: usize = 4000;
 const MAX_TERMINAL_OUTPUT_BYTES: usize = 512 * 1024;
 const TERMINAL_TIMEOUT_SECS: u64 = 20;
-const VERSION_TIMEOUT_SECS: u64 = 8;
 const VERSION_DETECT_TIMEOUT_SECS: u64 = 3;
 const VERSION_INFO_CACHE_SECS: i64 = 30;
-const THREADS_INDEX_STALE_SECS: i64 = 15;
 const THREADS_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
 
 #[derive(Serialize)]
@@ -920,28 +918,6 @@ enum WorkspaceTarget {
     Wsl2,
 }
 
-impl WorkspaceTarget {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Windows => "windows",
-            Self::Wsl2 => "wsl2",
-        }
-    }
-}
-
-#[derive(Default)]
-struct WorkspaceThreadsBucket {
-    items: Vec<Value>,
-    updated_at_unix_secs: i64,
-    refreshing: bool,
-}
-
-#[derive(Default)]
-struct ThreadsWorkspaceIndex {
-    windows: WorkspaceThreadsBucket,
-    wsl2: WorkspaceThreadsBucket,
-}
-
 fn parse_workspace_target(value: &str) -> Option<WorkspaceTarget> {
     if workspace_is_wsl2(value) {
         Some(WorkspaceTarget::Wsl2)
@@ -957,55 +933,6 @@ fn current_unix_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|v| v.as_secs() as i64)
         .unwrap_or(0)
-}
-
-fn threads_workspace_index() -> &'static std::sync::Mutex<ThreadsWorkspaceIndex> {
-    static INDEX: std::sync::OnceLock<std::sync::Mutex<ThreadsWorkspaceIndex>> = std::sync::OnceLock::new();
-    INDEX.get_or_init(|| std::sync::Mutex::new(ThreadsWorkspaceIndex::default()))
-}
-
-fn lock_threads_workspace_index() -> std::sync::MutexGuard<'static, ThreadsWorkspaceIndex> {
-    match threads_workspace_index().lock() {
-        Ok(v) => v,
-        Err(err) => err.into_inner(),
-    }
-}
-
-fn workspace_bucket_ref(
-    index: &ThreadsWorkspaceIndex,
-    target: WorkspaceTarget,
-) -> &WorkspaceThreadsBucket {
-    match target {
-        WorkspaceTarget::Windows => &index.windows,
-        WorkspaceTarget::Wsl2 => &index.wsl2,
-    }
-}
-
-fn workspace_bucket_mut(
-    index: &mut ThreadsWorkspaceIndex,
-    target: WorkspaceTarget,
-) -> &mut WorkspaceThreadsBucket {
-    match target {
-        WorkspaceTarget::Windows => &mut index.windows,
-        WorkspaceTarget::Wsl2 => &mut index.wsl2,
-    }
-}
-
-fn invalidate_workspace_threads_index(target: Option<WorkspaceTarget>) {
-    let mut index = lock_threads_workspace_index();
-    match target {
-        Some(target) => {
-            let bucket = workspace_bucket_mut(&mut index, target);
-            bucket.updated_at_unix_secs = 0;
-            bucket.refreshing = false;
-        }
-        None => {
-            index.windows.updated_at_unix_secs = 0;
-            index.windows.refreshing = false;
-            index.wsl2.updated_at_unix_secs = 0;
-            index.wsl2.refreshing = false;
-        }
-    }
 }
 
 fn thread_is_wsl2(thread: &Value) -> bool {
@@ -1265,83 +1192,10 @@ fn filter_old_threads(items: &mut Vec<Value>, now_unix_secs: i64) {
     });
 }
 
-fn normalize_preview_text(raw: &str) -> Option<String> {
-    let text = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let mut out = trimmed.to_string();
-    if out.chars().count() > 120 {
-        out = out.chars().take(119).collect::<String>() + "…";
-    }
-    Some(out)
-}
-
 fn is_auxiliary_preview(preview: &str) -> bool {
     let text = preview.trim().to_ascii_lowercase();
     text.starts_with("# agents.md instructions")
         || text.starts_with("review the code changes against the base branch")
-}
-
-fn is_auxiliary_instruction_text(raw: &str) -> bool {
-    let text = raw.trim().to_ascii_lowercase();
-    text.contains("# agents.md instructions")
-        || text.contains("review the code changes against the base branch")
-        || text.contains("another language model started to solve this problem")
-}
-
-fn session_file_has_auxiliary_marker(path: &Path) -> bool {
-    let file = match File::open(path) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let reader = BufReader::new(file);
-    let mut saw_aux_user_prompt = false;
-    let mut saw_non_aux_user_prompt = false;
-    for line in reader.lines().take(320).map_while(Result::ok) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
-            continue;
-        };
-        if v.get("type").and_then(|x| x.as_str()) != Some("response_item") {
-            continue;
-        }
-        let payload = match v.get("payload").and_then(|x| x.as_object()) {
-            Some(v) => v,
-            None => continue,
-        };
-        if payload.get("type").and_then(|x| x.as_str()) != Some("message") {
-            continue;
-        }
-        if payload.get("role").and_then(|x| x.as_str()) != Some("user") {
-            continue;
-        }
-        let Some(content) = payload.get("content").and_then(|x| x.as_array()) else {
-            continue;
-        };
-        for item in content {
-            if let Some(text) = item.get("text").and_then(|x| x.as_str()) {
-                let normalized = text.trim();
-                if normalized.is_empty() {
-                    continue;
-                }
-                if is_auxiliary_instruction_text(normalized) {
-                    saw_aux_user_prompt = true;
-                } else {
-                    saw_non_aux_user_prompt = true;
-                }
-                break;
-            }
-        }
-        if saw_non_aux_user_prompt {
-            return false;
-        }
-    }
-    saw_aux_user_prompt && !saw_non_aux_user_prompt
 }
 
 fn filter_auxiliary_threads(items: &mut Vec<Value>) {
@@ -1367,94 +1221,6 @@ fn filter_auxiliary_threads(items: &mut Vec<Value>) {
             .unwrap_or_default();
         !is_auxiliary_preview(preview)
     });
-}
-
-fn extract_user_preview_from_session_file(path: &Path) -> Option<String> {
-    let file = File::open(path).ok()?;
-    let reader = BufReader::new(file);
-    let mut fallback_event_preview: Option<String> = None;
-    let mut first_user_preview: Option<String> = None;
-    for line in reader.lines().take(320).map_while(Result::ok) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
-            continue;
-        };
-        if v.get("type").and_then(|x| x.as_str()) == Some("event_msg")
-            && fallback_event_preview.is_none()
-        {
-            if let Some(message) = v
-                .get("payload")
-                .and_then(|x| x.get("message"))
-                .and_then(|x| x.as_str())
-            {
-                fallback_event_preview = normalize_preview_text(message);
-            }
-        }
-        if v.get("type").and_then(|x| x.as_str()) != Some("response_item") {
-            continue;
-        }
-        let payload = match v.get("payload").and_then(|x| x.as_object()) {
-            Some(v) => v,
-            None => continue,
-        };
-        if payload.get("type").and_then(|x| x.as_str()) != Some("message") {
-            continue;
-        }
-        if payload.get("role").and_then(|x| x.as_str()) != Some("user") {
-            continue;
-        }
-        let Some(content) = payload.get("content").and_then(|x| x.as_array()) else {
-            continue;
-        };
-        for item in content {
-            if let Some(text) = item.get("text").and_then(|x| x.as_str()) {
-                if let Some(normalized) = normalize_preview_text(text) {
-                    if first_user_preview.is_none() {
-                        first_user_preview = Some(normalized);
-                    }
-                }
-            }
-        }
-    }
-    first_user_preview.or(fallback_event_preview)
-}
-
-fn normalize_thread_path(raw: &str) -> PathBuf {
-    let normalized = raw
-        .trim()
-        .replace("\\\\?\\UNC\\", "\\\\")
-        .replace("\\\\?\\", "");
-    PathBuf::from(normalized)
-}
-
-fn hydrate_missing_previews_from_session_files(items: &mut [Value]) {
-    for item in items {
-        let has_preview = item
-            .get("preview")
-            .and_then(|x| x.as_str())
-            .map(str::trim)
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-        if has_preview {
-            continue;
-        }
-        let Some(path_raw) = item.get("path").and_then(|x| x.as_str()) else {
-            continue;
-        };
-        let path = normalize_thread_path(path_raw);
-        if !path.exists() {
-            continue;
-        }
-        let Some(preview) = extract_user_preview_from_session_file(&path) else {
-            continue;
-        };
-        if let Some(obj) = item.as_object_mut() {
-            obj.insert("preview".to_string(), Value::String(preview));
-        }
-    }
 }
 
 fn thread_is_windows(thread: &Value) -> bool {
@@ -1654,340 +1420,6 @@ fn should_try_known_wsl_rollout_path(
         .unwrap_or(false)
 }
 
-fn indexed_thread_rollout_path(thread_id: &str, workspace_hint: WorkspaceTarget) -> Option<String> {
-    let index = lock_threads_workspace_index();
-    let bucket = workspace_bucket_ref(&index, workspace_hint);
-    for item in &bucket.items {
-        let id = item
-            .get("id")
-            .or_else(|| item.get("threadId"))
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .unwrap_or_default();
-        if id != thread_id {
-            continue;
-        }
-        let path = item.get("path").and_then(|v| v.as_str()).map(str::trim)?;
-        if !path.is_empty() {
-            return Some(path.to_string());
-        }
-    }
-    None
-}
-
-fn indexed_thread_rollout_path_any(thread_id: &str) -> Option<String> {
-    indexed_thread_rollout_path(thread_id, WorkspaceTarget::Windows)
-        .or_else(|| indexed_thread_rollout_path(thread_id, WorkspaceTarget::Wsl2))
-}
-
-fn normalize_rollout_hint_path_for_fs(raw: &str) -> PathBuf {
-    let trimmed = raw.trim();
-    if trimmed.starts_with('/') {
-        if let Some(converted) = linux_wsl_path_to_windows_path(trimmed) {
-            return converted;
-        }
-    }
-    normalize_thread_path(trimmed)
-}
-
-fn resolve_history_rollout_path(
-    thread_id: &str,
-    workspace_hint: Option<WorkspaceTarget>,
-    rollout_path_hint: Option<&str>,
-) -> Option<PathBuf> {
-    if let Some(hint) = rollout_path_hint.map(str::trim).filter(|v| !v.is_empty()) {
-        let path = normalize_rollout_hint_path_for_fs(hint);
-        if path.exists() && path.is_file() {
-            return Some(path);
-        }
-    }
-
-    let indexed_hint = match workspace_hint {
-        Some(target) => indexed_thread_rollout_path(thread_id, target),
-        None => indexed_thread_rollout_path_any(thread_id),
-    };
-    if let Some(path_hint) = indexed_hint {
-        let path = normalize_rollout_hint_path_for_fs(&path_hint);
-        if path.exists() && path.is_file() {
-            return Some(path);
-        }
-    }
-
-    match workspace_hint {
-        Some(WorkspaceTarget::Windows) => {
-            let windows_sessions = default_windows_codex_dir().map(|p| p.join("sessions"))?;
-            find_rollout_file_by_thread_id(&windows_sessions, thread_id)
-        }
-        Some(WorkspaceTarget::Wsl2) => find_wsl_rollout_file_by_thread_id(thread_id),
-        None => {
-            let from_windows = default_windows_codex_dir()
-                .map(|p| p.join("sessions"))
-                .and_then(|dir| find_rollout_file_by_thread_id(&dir, thread_id));
-            from_windows.or_else(|| find_wsl_rollout_file_by_thread_id(thread_id))
-        }
-    }
-}
-
-fn text_from_message_content(content: &[Value]) -> String {
-    let mut chunks = Vec::new();
-    for part in content {
-        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                chunks.push(trimmed.to_string());
-            }
-        }
-    }
-    chunks.join("\n")
-}
-
-fn parse_thread_from_rollout_file(path: &Path, fallback_thread_id: &str) -> Option<Value> {
-    let file = File::open(path).ok()?;
-    let reader = BufReader::new(file);
-    let mut thread_id = fallback_thread_id.trim().to_string();
-    let mut cwd = String::new();
-    let mut model = String::new();
-    let mut model_provider = String::new();
-    let mut created_at = 0_i64;
-    let mut turns = Vec::new();
-
-    for line in reader.lines().map_while(Result::ok) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
-            continue;
-        };
-
-        if v.get("type").and_then(|x| x.as_str()) == Some("session_meta") {
-            if let Some(payload) = v.get("payload").and_then(|x| x.as_object()) {
-                if let Some(id) = payload
-                    .get("id")
-                    .or_else(|| payload.get("session_id"))
-                    .and_then(|x| x.as_str())
-                    .map(str::trim)
-                    .filter(|x| !x.is_empty())
-                {
-                    thread_id = id.to_string();
-                }
-                if let Some(raw_cwd) = payload
-                    .get("cwd")
-                    .and_then(|x| x.as_str())
-                    .map(str::trim)
-                    .filter(|x| !x.is_empty())
-                {
-                    cwd = raw_cwd.to_string();
-                }
-                if let Some(raw_model) = payload
-                    .get("model")
-                    .or_else(|| payload.get("model_name"))
-                    .and_then(|x| x.as_str())
-                    .map(str::trim)
-                    .filter(|x| !x.is_empty())
-                {
-                    model = raw_model.to_string();
-                }
-                if let Some(raw_provider) = payload
-                    .get("model_provider")
-                    .and_then(|x| x.as_str())
-                    .map(str::trim)
-                    .filter(|x| !x.is_empty())
-                {
-                    model_provider = raw_provider.to_string();
-                }
-                created_at = payload
-                    .get("created_at")
-                    .or_else(|| payload.get("createdAt"))
-                    .and_then(parse_json_i64)
-                    .unwrap_or(created_at);
-            }
-            continue;
-        }
-
-        if v.get("type").and_then(|x| x.as_str()) != Some("response_item") {
-            continue;
-        }
-        let Some(payload) = v.get("payload").and_then(|x| x.as_object()) else {
-            continue;
-        };
-        if payload.get("type").and_then(|x| x.as_str()) != Some("message") {
-            continue;
-        }
-        let role = payload
-            .get("role")
-            .and_then(|x| x.as_str())
-            .map(str::trim)
-            .unwrap_or_default();
-        if role != "user" && role != "assistant" {
-            continue;
-        }
-        let content = payload
-            .get("content")
-            .and_then(|x| x.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let item = if role == "user" {
-            json!({
-                "type": "userMessage",
-                "content": content,
-            })
-        } else {
-            let text = text_from_message_content(&content);
-            if text.trim().is_empty() {
-                continue;
-            }
-            json!({
-                "type": "assistantMessage",
-                "text": text,
-            })
-        };
-        turns.push(json!({ "items": [item] }));
-    }
-
-    if thread_id.trim().is_empty() {
-        return None;
-    }
-    let updated_at = file_updated_unix_secs(path);
-    let created_at = if created_at > 0 { created_at } else { updated_at };
-    Some(json!({
-        "id": thread_id,
-        "cwd": cwd,
-        "model": model,
-        "modelProvider": model_provider,
-        "path": path.to_string_lossy().to_string(),
-        "createdAt": created_at,
-        "updatedAt": updated_at,
-        "turns": turns,
-    }))
-}
-
-fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let read = match std::fs::read_dir(dir) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    for entry in read.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_jsonl_files(&path, out);
-            continue;
-        }
-        let is_jsonl = path
-            .extension()
-            .and_then(|v| v.to_str())
-            .map(|v| v.eq_ignore_ascii_case("jsonl"))
-            .unwrap_or(false);
-        if is_jsonl {
-            out.push(path);
-        }
-    }
-}
-
-fn parse_history_preview_map(history_path: &Path) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    let file = match File::open(history_path) {
-        Ok(v) => v,
-        Err(_) => return map,
-    };
-    let reader = BufReader::new(file);
-    for line in reader.lines().map_while(Result::ok) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
-            continue;
-        };
-        let Some(id) = v
-            .get("session_id")
-            .and_then(|x| x.as_str())
-            .map(str::trim)
-            .filter(|x| !x.is_empty())
-        else {
-            continue;
-        };
-        let text = v
-            .get("text")
-            .and_then(|x| x.as_str())
-            .and_then(normalize_preview_text);
-        if let Some(text) = text {
-            if !map.contains_key(id)
-                && !is_auxiliary_preview(&text)
-                && !is_auxiliary_instruction_text(&text)
-            {
-                map.insert(id.to_string(), text);
-            }
-        }
-    }
-    map
-}
-
-fn parse_session_meta(path: &Path) -> Option<(String, String, i64, bool)> {
-    let file = File::open(path).ok()?;
-    let reader = BufReader::new(file);
-    for line in reader.lines().take(40).map_while(Result::ok) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(trimmed) else {
-            continue;
-        };
-        if v.get("type").and_then(|x| x.as_str()) != Some("session_meta") {
-            continue;
-        }
-        let payload = v.get("payload").and_then(|x| x.as_object())?;
-        let id = payload
-            .get("id")
-            .and_then(|x| x.as_str())
-            .or_else(|| payload.get("session_id").and_then(|x| x.as_str()))
-            .map(str::trim)
-            .unwrap_or_default()
-            .to_string();
-        if id.is_empty() {
-            continue;
-        }
-        let cwd = payload
-            .get("cwd")
-            .and_then(|x| x.as_str())
-            .map(str::trim)
-            .unwrap_or_default()
-            .to_string();
-        if cwd.is_empty() {
-            continue;
-        }
-        let created_at = payload
-            .get("created_at")
-            .and_then(|x| x.as_i64())
-            .or_else(|| payload.get("createdAt").and_then(|x| x.as_i64()))
-            .unwrap_or(0);
-        let has_subagent_source = payload
-            .get("source")
-            .and_then(|x| x.get("subagent"))
-            .is_some();
-        let has_agent_role = payload
-            .get("agent_role")
-            .and_then(|x| x.as_str())
-            .map(str::trim)
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-        let has_agent_nickname = payload
-            .get("agent_nickname")
-            .and_then(|x| x.as_str())
-            .map(str::trim)
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-        return Some((
-            id,
-            cwd,
-            created_at,
-            has_subagent_source || has_agent_role || has_agent_nickname,
-        ));
-    }
-    None
-}
-
 fn file_updated_unix_secs(path: &Path) -> i64 {
     let modified = match std::fs::metadata(path).and_then(|m| m.modified()) {
         Ok(v) => v,
@@ -1999,222 +1431,76 @@ fn file_updated_unix_secs(path: &Path) -> i64 {
     }
 }
 
-fn fetch_windows_threads_fallback() -> Vec<Value> {
-    let Some(codex_dir) = default_windows_codex_dir() else {
-        return Vec::new();
-    };
-    let sessions_dir = codex_dir.join("sessions");
-    if !sessions_dir.exists() {
-        return Vec::new();
-    }
-    let previews = parse_history_preview_map(&codex_dir.join("history.jsonl"));
-    let mut files = Vec::new();
-    collect_jsonl_files(&sessions_dir, &mut files);
+const THREAD_LIST_LIMIT: i64 = 200;
 
-    let mut by_id: HashMap<String, Value> = HashMap::new();
-    for file in files {
-        let Some((id, cwd, created_at, is_subagent)) = parse_session_meta(&file) else {
-            continue;
-        };
-        let updated_at = file_updated_unix_secs(&file);
-        let preview = previews
-            .get(&id)
-            .and_then(|v| normalize_preview_text(v))
-            .or_else(|| extract_user_preview_from_session_file(&file))
-            .unwrap_or_default();
-        let is_auxiliary = session_file_has_auxiliary_marker(&file);
-        let candidate = json!({
-            "id": id,
-            "cwd": cwd,
-            "workspace": "windows",
-            "preview": preview,
-            "path": file.to_string_lossy().to_string(),
-            "source": "windows-fallback",
-            "isAuxiliary": is_auxiliary,
-            "isSubagent": is_subagent,
-            "status": { "type": "notLoaded" },
-            "createdAt": if created_at > 0 { created_at } else { updated_at },
-            "updatedAt": updated_at,
-        });
-        let should_replace = by_id
-            .get(&id)
-            .and_then(|v| v.get("updatedAt").and_then(|x| x.as_i64()))
-            .unwrap_or(0)
-            < updated_at;
-        if should_replace || !by_id.contains_key(&id) {
-            by_id.insert(id, candidate);
-        }
-    }
-    let mut items: Vec<Value> = by_id.into_values().collect();
-    sort_threads_by_updated_desc(&mut items);
-    if items.len() > 600 {
-        items.truncate(600);
-    }
-    items
+fn thread_list_source_kinds() -> Vec<&'static str> {
+    // Align with clawdex-mobile: keep only the primary user-facing sources.
+    vec!["cli", "vscode", "exec", "appServer", "unknown"]
 }
 
-async fn fetch_wsl2_threads_fallback() -> Vec<Value> {
-    if !cfg!(target_os = "windows") {
-        return Vec::new();
-    }
-    let script = r#"python3 - <<'PY'
-import json
-import re
-from pathlib import Path
-import os
-
-codex_home = (os.environ.get("CODEX_HOME") or "").strip()
-root = Path(codex_home) if codex_home else (Path.home() / ".codex")
-sessions_dir = root / "sessions"
-history_path = root / "history.jsonl"
-distro = (os.environ.get("WSL_DISTRO_NAME") or "").strip()
-
-if not sessions_dir.exists():
-    print("[]")
-    raise SystemExit(0)
-
-preview_map = {}
-if history_path.exists():
-    try:
-        with history_path.open("r", encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except Exception:
-                    continue
-                sid = str(row.get("session_id") or "").strip()
-                text = str(row.get("text") or "").strip()
-                if sid and text and sid not in preview_map:
-                    preview_map[sid] = text
-    except Exception:
-        pass
-
-items_by_id = {}
-id_re = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", re.IGNORECASE)
-
-def to_windows_path(path_obj: Path) -> str:
-    text = str(path_obj)
-    if distro and text.startswith("/"):
-        return "\\\\wsl.localhost\\{}{}".format(distro, text.replace("/", "\\"))
-    return text
-
-for p in sessions_dir.rglob("*.jsonl"):
-    sid = ""
-    cwd = ""
-    created_at = 0
-    is_subagent = False
-    updated_at = int(p.stat().st_mtime)
-    try:
-        with p.open("r", encoding="utf-8", errors="ignore") as fh:
-            for _ in range(40):
-                line = fh.readline()
-                if not line:
-                    break
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except Exception:
-                    continue
-                if obj.get("type") == "session_meta":
-                    payload = obj.get("payload") or {}
-                    sid = str(payload.get("id") or payload.get("session_id") or sid).strip()
-                    cwd = str(payload.get("cwd") or cwd).strip()
-                    created_raw = payload.get("created_at") or payload.get("createdAt")
-                    source = payload.get("source")
-                    source_subagent = source.get("subagent") if isinstance(source, dict) else None
-                    agent_role = payload.get("agent_role")
-                    agent_nickname = payload.get("agent_nickname")
-                    has_agent_role = isinstance(agent_role, str) and bool(agent_role.strip())
-                    has_agent_nickname = isinstance(agent_nickname, str) and bool(agent_nickname.strip())
-                    is_subagent = bool(source_subagent) or has_agent_role or has_agent_nickname
-                    try:
-                        created_at = int(created_raw or 0)
-                    except Exception:
-                        created_at = 0
-                    break
-    except Exception:
-        continue
-
-    if not sid:
-        m = id_re.search(p.name)
-        if m:
-            sid = m.group(1)
-    if not sid:
-        continue
-    if not cwd:
-        continue
-
-    candidate = {
-        "id": sid,
-        "cwd": cwd,
-        "workspace": "wsl2",
-        "preview": preview_map.get(sid, ""),
-        "path": to_windows_path(p),
-        "source": "wsl-fallback",
-        "isSubagent": is_subagent,
-        "isAuxiliary": False,
-        "status": {"type": "notLoaded"},
-        "createdAt": created_at or updated_at,
-        "updatedAt": updated_at,
-    }
-    existing = items_by_id.get(sid)
-    if existing is None or int(existing.get("updatedAt", 0)) < updated_at:
-        items_by_id[sid] = candidate
-
-items = sorted(items_by_id.values(), key=lambda x: int(x.get("updatedAt", 0)), reverse=True)
-print(json.dumps(items[:300], ensure_ascii=False))
-PY"#;
-
-    let mut cmd = Command::new("wsl.exe");
-    cmd.arg("-e").arg("bash").arg("-lc").arg(script);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::null());
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-
-    let output = match tokio::time::timeout(
-        std::time::Duration::from_secs(VERSION_TIMEOUT_SECS),
-        cmd.output(),
-    )
-    .await
-    {
-        Ok(Ok(v)) if v.status.success() => v,
-        _ => return Vec::new(),
+fn thread_item_is_subagent(item: &Value) -> bool {
+    let Some(obj) = item.as_object() else {
+        return false;
     };
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() {
-        return Vec::new();
+    if let Some(source) = obj.get("source") {
+        if let Some(source_obj) = source.as_object() {
+            // Legacy & current shapes may include a nested subagent record.
+            if source_obj.get("subagent").is_some() || source_obj.get("subAgent").is_some() {
+                return true;
+            }
+            // Current app-server tagged union: { subAgent: ... } (clawdex).
+            if source_obj.contains_key("subAgent") {
+                return true;
+            }
+        }
     }
-    serde_json::from_str::<Vec<Value>>(&text).unwrap_or_default()
+    // Some session/meta shapes attach agent role/nickname at top-level.
+    let has_agent_role = obj
+        .get("agent_role")
+        .and_then(|v| v.as_str())
+        .is_some_and(|v| !v.trim().is_empty());
+    let has_agent_nickname = obj
+        .get("agent_nickname")
+        .and_then(|v| v.as_str())
+        .is_some_and(|v| !v.trim().is_empty());
+    has_agent_role || has_agent_nickname
+}
+
+fn annotate_thread_item_flags(item: &mut Value) {
+    let is_subagent = thread_item_is_subagent(item);
+    let Some(obj) = item.as_object_mut() else {
+        return;
+    };
+    if !obj.contains_key("isSubagent") {
+        obj.insert("isSubagent".to_string(), Value::Bool(is_subagent));
+    }
 }
 
 async fn rebuild_workspace_thread_items(target: WorkspaceTarget) -> Vec<Value> {
-    let params = json!({ "workspace": target.as_str() });
+    let params = json!({
+        "cursor": null,
+        "limit": THREAD_LIST_LIMIT,
+        "sortKey": null,
+        "modelProviders": null,
+        "sourceKinds": thread_list_source_kinds(),
+        "archived": false,
+        "cwd": null,
+    });
+
     let mut items = match codex_rpc_call("thread/list", params).await {
         Ok(v) => extract_items_array(&v),
         Err(_) => Vec::new(),
     };
 
     match target {
-        WorkspaceTarget::Windows => {
-            items.retain(thread_is_windows);
-            let fallback = fetch_windows_threads_fallback();
-            items = merge_items_without_duplicates(items, fallback);
-        }
-        WorkspaceTarget::Wsl2 => {
-            items.retain(thread_is_wsl2);
-            let fallback = fetch_wsl2_threads_fallback().await;
-            items = merge_items_without_duplicates(items, fallback);
-        }
+        WorkspaceTarget::Windows => items.retain(thread_is_windows),
+        WorkspaceTarget::Wsl2 => items.retain(thread_is_wsl2),
     }
 
     normalize_thread_items_shape(&mut items);
-    hydrate_missing_previews_from_session_files(&mut items);
+    for item in &mut items {
+        annotate_thread_item_flags(item);
+    }
     filter_auxiliary_threads(&mut items);
     filter_old_threads(&mut items, current_unix_secs());
     sort_threads_by_updated_desc(&mut items);
@@ -2222,78 +1508,6 @@ async fn rebuild_workspace_thread_items(target: WorkspaceTarget) -> Vec<Value> {
         items.truncate(600);
     }
     items
-}
-
-async fn refresh_workspace_thread_index(target: WorkspaceTarget) {
-    let items = rebuild_workspace_thread_items(target).await;
-    let mut index = lock_threads_workspace_index();
-    let bucket = workspace_bucket_mut(&mut index, target);
-    bucket.items = items;
-    bucket.updated_at_unix_secs = current_unix_secs();
-    bucket.refreshing = false;
-}
-
-async fn ensure_workspace_index_fresh(target: WorkspaceTarget) {
-    let now = current_unix_secs();
-    enum Action {
-        None,
-        SyncRefresh,
-        AsyncRefresh,
-    }
-    let action = {
-        let mut index = lock_threads_workspace_index();
-        let bucket = workspace_bucket_mut(&mut index, target);
-        let has_items = !bucket.items.is_empty();
-        let stale = now.saturating_sub(bucket.updated_at_unix_secs) >= THREADS_INDEX_STALE_SECS;
-        if !has_items && !bucket.refreshing {
-            bucket.refreshing = true;
-            Action::SyncRefresh
-        } else if stale && !bucket.refreshing {
-            bucket.refreshing = true;
-            Action::AsyncRefresh
-        } else {
-            Action::None
-        }
-    };
-
-    match action {
-        Action::None => {}
-        Action::SyncRefresh => {
-            refresh_workspace_thread_index(target).await;
-        }
-        Action::AsyncRefresh => {
-            tokio::spawn(async move {
-                refresh_workspace_thread_index(target).await;
-            });
-        }
-    }
-}
-
-async fn ensure_threads_index_for_request(workspace: Option<WorkspaceTarget>) {
-    match workspace {
-        Some(target) => ensure_workspace_index_fresh(target).await,
-        None => {
-            let ((), ()) = tokio::join!(
-                ensure_workspace_index_fresh(WorkspaceTarget::Windows),
-                ensure_workspace_index_fresh(WorkspaceTarget::Wsl2)
-            );
-        }
-    }
-}
-
-fn read_thread_items_from_index(workspace: Option<WorkspaceTarget>) -> Vec<Value> {
-    let index = lock_threads_workspace_index();
-    match workspace {
-        Some(target) => workspace_bucket_ref(&index, target).items.clone(),
-        None => {
-            let mut merged = merge_items_without_duplicates(
-                index.windows.items.clone(),
-                index.wsl2.items.clone(),
-            );
-            sort_threads_by_updated_desc(&mut merged);
-            merged
-        }
-    }
 }
 
 fn build_threads_response(items: Vec<Value>) -> Response {
@@ -2369,6 +1583,71 @@ mod split_stream_chunks_tests {
     }
 }
 
+#[cfg(test)]
+mod codex_thread_list_tests {
+    use super::*;
+    use crate::codex_app_server;
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn thread_list_uses_app_server_and_filters_subagent_sources() {
+        let calls: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
+        let calls2 = calls.clone();
+        codex_app_server::_set_test_request_handler(Some(Arc::new(move |method, params| {
+            calls2
+                .lock()
+                .expect("calls lock")
+                .push((method.to_string(), params.clone()));
+            if method == "thread/list" {
+                let now = current_unix_secs();
+                return Ok(json!({
+                    "items": {
+                        "data": [
+                            { "id": "t_cli", "cwd": "C:\\\\repo", "updatedAt": now, "source": "cli" },
+                            { "id": "t_sub", "cwd": "C:\\\\repo", "updatedAt": now + 1, "source": { "subAgent": "review" } }
+                        ]
+                    }
+                }));
+            }
+            Ok(json!({}))
+        })))
+        .await;
+
+        let items = rebuild_workspace_thread_items(WorkspaceTarget::Windows).await;
+        assert_eq!(items.len(), 1, "expected subagent thread to be filtered out");
+        assert_eq!(
+            items[0].get("id").and_then(|v| v.as_str()),
+            Some("t_cli")
+        );
+
+        let recorded = calls.lock().expect("calls lock").clone();
+        let call = recorded
+            .iter()
+            .find(|(m, _)| m == "thread/list")
+            .expect("expected thread/list call");
+        let source_kinds = call
+            .1
+            .get("sourceKinds")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let got: Vec<String> = source_kinds
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        assert_eq!(
+            got,
+            thread_list_source_kinds()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+
+        codex_app_server::_set_test_request_handler(None).await;
+    }
+}
+
 async fn codex_threads_list(
     State(st): State<GatewayState>,
     headers: HeaderMap,
@@ -2379,8 +1658,18 @@ async fn codex_threads_list(
     }
     let requested_workspace = query.workspace.unwrap_or_default();
     let target = parse_workspace_target(&requested_workspace);
-    ensure_threads_index_for_request(target).await;
-    let items = read_thread_items_from_index(target);
+    let items = match target {
+        Some(target) => rebuild_workspace_thread_items(target).await,
+        None => {
+            let (win, wsl2) = tokio::join!(
+                rebuild_workspace_thread_items(WorkspaceTarget::Windows),
+                rebuild_workspace_thread_items(WorkspaceTarget::Wsl2)
+            );
+            let mut merged = merge_items_without_duplicates(win, wsl2);
+            sort_threads_by_updated_desc(&mut merged);
+            merged
+        }
+    };
     build_threads_response(items)
 }
 
@@ -2403,11 +1692,6 @@ async fn codex_threads_create(
     let params = json!({ "workspace": req.workspace, "title": req.title });
     match codex_rpc_call("thread/new", params).await {
         Ok(v) => {
-            let target = req
-                .workspace
-                .as_deref()
-                .and_then(parse_workspace_target);
-            invalidate_workspace_threads_index(target);
             Json(v).into_response()
         }
         Err(resp) => resp,
@@ -2417,32 +1701,53 @@ async fn codex_threads_create(
 async fn codex_thread_history(
     State(st): State<GatewayState>,
     headers: HeaderMap,
-    Query(query): Query<ThreadResumeQuery>,
+    Query(_query): Query<ThreadResumeQuery>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
-    let workspace_hint = query.workspace.as_deref().and_then(parse_workspace_target);
-    let rollout_hint = query
-        .rollout_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| match workspace_hint {
-            Some(target) => indexed_thread_rollout_path(&id, target),
-            None => indexed_thread_rollout_path_any(&id),
-        });
-
-    let Some(path) = resolve_history_rollout_path(&id, workspace_hint, rollout_hint.as_deref())
-    else {
-        return api_error(StatusCode::NOT_FOUND, "thread history file not found");
-    };
-    let Some(thread) = parse_thread_from_rollout_file(&path, &id) else {
-        return api_error(StatusCode::NOT_FOUND, "thread history unavailable");
-    };
-    Json(json!({ "thread": thread })).into_response()
+    // clawdex-mobile uses thread/read (structured API). This avoids leaking bootstrap/system prompt
+    // text from local JSONL and keeps the UI aligned with Codex app-server behavior.
+    let params = json!({
+        "threadId": id,
+        "includeTurns": true,
+    });
+    match crate::codex_app_server::request("thread/read", params).await {
+        Ok(v) => {
+            let thread = v.get("thread").cloned().unwrap_or(v);
+            Json(json!({ "thread": thread })).into_response()
+        }
+        Err(first_error) => {
+            // Match clawdex: if includeTurns materialization isn't available, fall back to summary.
+            let lower = first_error.to_ascii_lowercase();
+            let is_materialization_gap =
+                lower.contains("includeturns") && (lower.contains("material") || lower.contains("materialis"));
+            if is_materialization_gap {
+                let fallback = json!({
+                    "threadId": id,
+                    "includeTurns": false,
+                });
+                match crate::codex_app_server::request("thread/read", fallback).await {
+                    Ok(v) => {
+                        let thread = v.get("thread").cloned().unwrap_or(v);
+                        Json(json!({ "thread": thread })).into_response()
+                    }
+                    Err(_) => api_error_detail(
+                        StatusCode::BAD_GATEWAY,
+                        "failed to read thread",
+                        first_error,
+                    ),
+                }
+            } else {
+                api_error_detail(
+                    StatusCode::BAD_GATEWAY,
+                    "failed to read thread",
+                    first_error,
+                )
+            }
+        }
+    }
 }
 
 async fn codex_thread_resume(
@@ -2462,7 +1767,6 @@ async fn codex_thread_resume(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
-            .or_else(|| indexed_thread_rollout_path(&id, WorkspaceTarget::Wsl2))
     } else {
         None
     };
@@ -2484,7 +1788,6 @@ async fn codex_thread_resume(
     let params = json!({ "threadId": id });
     match crate::codex_app_server::request("thread/resume", params.clone()).await {
         Ok(v) => {
-            invalidate_workspace_threads_index(None);
             Json(v).into_response()
         }
         Err(first_error) => {
@@ -2498,7 +1801,6 @@ async fn codex_thread_resume(
                             Ok(true) => {
                                 match crate::codex_app_server::request("thread/resume", params.clone()).await {
                                     Ok(v) => {
-                                        invalidate_workspace_threads_index(None);
                                         return Json(v).into_response();
                                     }
                                     Err(second_error) => {
@@ -2530,7 +1832,6 @@ async fn codex_thread_resume(
                     match import_result {
                         Ok(true) => match crate::codex_app_server::request("thread/resume", params.clone()).await {
                             Ok(v) => {
-                                invalidate_workspace_threads_index(None);
                                 return Json(v).into_response();
                             }
                             Err(second_error) => {
@@ -2609,7 +1910,6 @@ async fn codex_turn_start(
     });
     match codex_rpc_call("turn/start", params).await {
         Ok(v) => {
-            invalidate_workspace_threads_index(None);
             Json(v).into_response()
         }
         Err(resp) => resp,
@@ -2711,7 +2011,6 @@ async fn codex_turn_stream(
         yield Ok::<Bytes, std::convert::Infallible>(started);
         match call {
             Ok(result) => {
-                invalidate_workspace_threads_index(None);
                 let thread_id = result
                     .get("threadId")
                     .or_else(|| result.get("thread_id"))

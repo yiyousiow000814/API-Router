@@ -3123,7 +3123,25 @@ function renderThreads(items) {
         try { 
           const workspaceHint = detectThreadWorkspaceTarget(thread);
           const label = workspaceHint === "wsl2" ? "WSL2" : workspaceHint === "windows" ? "WIN" : "AUTO";
-          // 1) Show full history immediately from the local JSONL file (matches `codex resume` output).
+
+          // clawdex-mobile behavior: resume first, then read thread history via structured API.
+          const resumeQuery = [];
+          if (workspaceHint === "windows" || workspaceHint === "wsl2") {
+            resumeQuery.push(`workspace=${encodeURIComponent(workspaceHint)}`);
+          }
+          if (rolloutPath) resumeQuery.push(`rolloutPath=${encodeURIComponent(rolloutPath)}`);
+          const resumePath = resumeQuery.length
+            ? `/codex/threads/${encodeURIComponent(id)}/resume?${resumeQuery.join("&")}`
+            : `/codex/threads/${encodeURIComponent(id)}/resume`;
+          const resumeStartMs = performance.now();
+          const resumeTask = api(resumePath, { method: "POST", body: {}, signal: controller.signal })
+            .finally(() => {
+              if (state.openingThreadReqId === reqId) scheduleThreadRefresh();
+            });
+          registerPendingThreadResume(id, resumeTask);
+          await resumeTask;
+          const resumeLatencyMs = Math.round(performance.now() - resumeStartMs);
+
           const historyStartMs = performance.now();
           await loadThreadMessages(id, { 
             animateBadge: true,
@@ -3134,25 +3152,8 @@ function renderThreads(items) {
           }); 
           const historyLatencyMs = Math.round(performance.now() - historyStartMs);
           if (state.openingThreadReqId === reqId) { 
-            setStatus(`Loaded history ${label} ${truncateLabel(id, 12)} in ${historyLatencyMs}ms`); 
+            setStatus(`Opened ${label} ${truncateLabel(id, 12)} resume ${resumeLatencyMs}ms history ${historyLatencyMs}ms`); 
           } 
-
-          // 2) Resume in background so the thread is runnable for new turns.
-          const resumeQuery = [];
-          if (workspaceHint === "windows" || workspaceHint === "wsl2") {
-            resumeQuery.push(`workspace=${encodeURIComponent(workspaceHint)}`);
-          }
-          if (rolloutPath) resumeQuery.push(`rolloutPath=${encodeURIComponent(rolloutPath)}`);
-          const resumePath = resumeQuery.length
-            ? `/codex/threads/${encodeURIComponent(id)}/resume?${resumeQuery.join("&")}`
-            : `/codex/threads/${encodeURIComponent(id)}/resume`;
-          const resumeTask = api(resumePath, { method: "POST", body: {}, signal: controller.signal })
-            .then(() => null)
-            .catch(() => null)
-            .finally(() => {
-              if (state.openingThreadReqId === reqId) scheduleThreadRefresh();
-            });
-          registerPendingThreadResume(id, resumeTask);
 
           if (state.openingThreadReqId === reqId) {
             setChatOpening(false);
