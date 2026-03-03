@@ -27,6 +27,16 @@
       --scrollbar-size: 8px;
       --scrollbar-thumb: rgba(13, 18, 32, 0.32);
       --scrollbar-thumb-hover: rgba(13, 18, 32, 0.44);
+
+      /* z-index scale (sequential, no gaps). */
+      --z-chat-opening: 1;  /* "Opening chat..." overlay inside #chatBox only */
+      --z-chat-fab: 2;      /* floating scroll-to-bottom button */
+      --z-chat-menu: 3;     /* model menu dropdown */
+      --z-chat-submenu: 4;  /* reasoning-effort submenu (fixed overlay) */
+      --z-chat-header: 5;   /* chat panel header */
+      --z-drawer-backdrop: 6; /* mobile drawer backdrop (must cover header while open) */
+      --z-drawer-panel: 7;    /* mobile drawer panel */
+      --z-image-viewer: 8;    /* full-screen image viewer */
     }
 
     /* Keep scrollbar styling consistent across panels (Chromium/WebView2). */
@@ -223,7 +233,8 @@
       color: #0d1220;
       font-size: 16px;
       font-weight: 500;
-      line-height: 1;
+      /* Avoid descender clipping in some WebViews (e.g. "g" in "Loading"). */
+      line-height: 1.15;
       min-width: 0;
       transform: translateZ(0);
       backface-visibility: hidden;
@@ -251,7 +262,9 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      line-height: 1;
+      line-height: 1.15;
+      /* Some WebViews clip descenders ("g") on flex items with overflow hidden; keep 1px room. */
+      padding-bottom: 1px;
     }
     .chatPanel .panelHeader .headerModelChevron {
       width: 14px;
@@ -278,7 +291,7 @@
       position: absolute;
       top: calc(100% + 8px);
       left: 0;
-      z-index: 60;
+      z-index: var(--z-chat-menu);
       min-width: 0;
       width: max-content;
       max-width: min(82vw, 340px);
@@ -381,7 +394,7 @@
     /* Effort menu is rendered in a fixed overlay (portal) so it can overflow past the model menu scroll clip. */
     .effortInlineOverlay {
       position: fixed;
-      z-index: 120;
+      z-index: var(--z-chat-submenu);
       min-width: 120px;
       max-width: min(70vw, 220px);
       max-height: min(40vh, 240px);
@@ -635,6 +648,8 @@
       overflow-x: hidden;
       -webkit-overflow-scrolling: touch;
       touch-action: pan-y;
+      /* Avoid 1-2px jiggle when scrollbars appear/disappear as content loads/filters. */
+      scrollbar-gutter: stable;
       scrollbar-width: thin;
       scrollbar-color: rgba(13, 18, 32, 0.35) transparent;
     }
@@ -680,7 +695,7 @@
       transform: translate(-50%, 10px);
       pointer-events: none;
       transition: opacity 160ms ease, transform 180ms ease;
-      z-index: 20;
+      z-index: var(--z-chat-fab);
     }
     .scrollToBottomBtn.show {
       opacity: 1;
@@ -718,6 +733,10 @@
     }
     .chatPanel {
       position: relative;
+    }
+    .chatPanel .panelHeader {
+      position: relative;
+      z-index: var(--z-chat-header);
     }
     .settingsCard {
       border: none;
@@ -1026,7 +1045,7 @@
       opacity: 0;
       pointer-events: none;
       transition: opacity 160ms ease;
-      z-index: 90;
+      z-index: var(--z-image-viewer);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -1236,8 +1255,11 @@
     }
     .chatOpeningOverlay {
       position: absolute;
-      inset: 0;
-      z-index: 6;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: var(--z-chat-opening);
       display: none;
       align-items: center;
       justify-content: center;
@@ -1655,15 +1677,24 @@
       position: fixed;
       inset: 0;
       background: rgba(13, 18, 32, 0.24);
+      /* Desktop can afford blur; mobile WebViews often can't without input latency. */
       backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
       opacity: 0;
       pointer-events: none;
       transition: opacity 160ms ease;
-      z-index: 30;
+      z-index: var(--z-drawer-backdrop);
     }
     .drawerBackdrop.show {
       opacity: 1;
       pointer-events: auto;
+    }
+    @media (max-width: 600px) {
+      /* Keep the UX consistent (blur present) but reduce the blur radius for perf on small devices. */
+      .drawerBackdrop {
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+      }
     }
 
     /* When the left drawer (threads) is open on mobile, avoid duplicated workspace toggles:
@@ -1887,7 +1918,7 @@
         top: 10px;
         bottom: 10px;
         width: clamp(260px, 70vw, 320px);
-        z-index: 40;
+        z-index: var(--z-drawer-panel);
         box-shadow: none;
         transition: transform 180ms ease;
         border-color: #32405b;

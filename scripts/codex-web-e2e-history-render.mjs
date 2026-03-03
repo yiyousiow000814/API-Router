@@ -74,11 +74,47 @@ async function main() {
   // Regression: the image viewer must use explicit edges (top/left/right/bottom) because some mobile
   // webviews have spotty support for `inset: 0` on fixed elements.
   const html = fs.readFileSync(path.join(repoRoot, 'codex-web.html'), 'utf8')
+  // z-index must use a small sequential scale (avoid scattered large magic numbers).
+  {
+    const rootBlock = /:root\s*\{[\s\S]*?\}/m.exec(html)?.[0] || ''
+    const getVar = (name) => {
+      const escaped = String(name || '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')
+      const m = new RegExp(`${escaped}\\s*:\\s*(\\d+)`, 'i').exec(rootBlock)
+      return m ? Number(m[1]) : null
+    }
+    const vars = [
+      ['--z-chat-opening', 1],
+      ['--z-chat-fab', 2],
+      ['--z-chat-menu', 3],
+      ['--z-chat-submenu', 4],
+      ['--z-chat-header', 5],
+      ['--z-drawer-backdrop', 6],
+      ['--z-drawer-panel', 7],
+      ['--z-image-viewer', 8],
+    ]
+    for (const [name, expected] of vars) {
+      const got = getVar(name)
+      if (got !== expected) throw new Error(`expected ${name} to be ${expected}, got ${String(got)}`)
+    }
+    if (/\bz-index\s*:\s*[1-9]\d+\b/i.test(html)) {
+      throw new Error('expected no 2+ digit z-index magic numbers in codex-web.html (use --z-* scale)')
+    }
+  }
   const backdropBlock = /\.imageViewerBackdrop\s*\{[\s\S]*?\}/m.exec(html)?.[0] || ''
   if (!/top:\s*0/i.test(backdropBlock)) throw new Error('expected .imageViewerBackdrop to set top: 0 (mobile fixed overlay)')
   if (!/left:\s*0/i.test(backdropBlock)) throw new Error('expected .imageViewerBackdrop to set left: 0 (mobile fixed overlay)')
   if (!/right:\s*0/i.test(backdropBlock)) throw new Error('expected .imageViewerBackdrop to set right: 0 (mobile fixed overlay)')
   if (!/bottom:\s*0/i.test(backdropBlock)) throw new Error('expected .imageViewerBackdrop to set bottom: 0 (mobile fixed overlay)')
+  // Regression: opening-chat overlay should avoid inset shorthand (some WebViews are spotty with it).
+  {
+    const openingBlock = /\.chatOpeningOverlay\s*\{[\s\S]*?\}/m.exec(html)?.[0] || ''
+    if (!/\bposition\s*:\s*absolute\b/i.test(openingBlock)) throw new Error('expected .chatOpeningOverlay to be position: absolute')
+    if (!/\btop\s*:\s*0\b/i.test(openingBlock)) throw new Error('expected .chatOpeningOverlay to set top: 0')
+    if (!/\bleft\s*:\s*0\b/i.test(openingBlock)) throw new Error('expected .chatOpeningOverlay to set left: 0')
+    if (!/\bright\s*:\s*0\b/i.test(openingBlock)) throw new Error('expected .chatOpeningOverlay to set right: 0')
+    if (!/\bbottom\s*:\s*0\b/i.test(openingBlock)) throw new Error('expected .chatOpeningOverlay to set bottom: 0')
+    if (/\binset\s*:/i.test(openingBlock)) throw new Error('expected .chatOpeningOverlay to avoid inset shorthand')
+  }
   if (!/scrollbar-gutter:\s*stable/i.test(html)) throw new Error('expected .messages to set scrollbar-gutter: stable (no jiggle on image load)')
   if (!/animation:\s*msg-enter\s*360ms/i.test(html)) throw new Error('expected msg-enter animation to be slowed to 360ms')
   if (!/animation-duration:\s*288ms/i.test(html)) throw new Error('expected tool msg-enter animation to be slowed to 288ms')
@@ -170,6 +206,26 @@ async function main() {
       if (pre?.label !== 'Loading models...') throw new Error(`expected header model label to show Loading models..., got ${JSON.stringify(pre?.label || '')}`)
       if (pre?.ariaDisabled !== 'true') throw new Error(`expected header model trigger aria-disabled=true while loading, got ${JSON.stringify(pre?.ariaDisabled || '')}`)
 
+      // Avoid descender clipping ("g" tail in "Loading") by requiring a non-tight line-height.
+      const lh = await driver.executeScript(`
+        const label = document.getElementById('headerModelLabel');
+        if (!label) return { ok: false, error: 'missing headerModelLabel' };
+        const s = getComputedStyle(label);
+        const fontSize = parseFloat(String(s.fontSize || '0')) || 0;
+        const raw = String(s.lineHeight || '').trim();
+        const lineHeight = raw === 'normal' ? NaN : (parseFloat(raw) || 0);
+        const pbRaw = String(s.paddingBottom || '').trim();
+        const paddingBottom = parseFloat(pbRaw) || 0;
+        return { ok: true, fontSize, lineHeight, raw, paddingBottom, pbRaw };
+      `)
+      if (!lh?.ok) throw new Error(`line-height probe failed: ${lh?.error || 'unknown'}`)
+      if (Number.isFinite(lh.lineHeight) && lh.fontSize > 0 && lh.lineHeight < lh.fontSize * 1.1) {
+        throw new Error(`expected header model label line-height >= 1.1x font-size to avoid clipping; got fontSize=${lh.fontSize} lineHeight=${lh.lineHeight} raw=${JSON.stringify(lh.raw)}`)
+      }
+      if (!(Number(lh.paddingBottom || 0) >= 1)) {
+        throw new Error(`expected header model label padding-bottom >= 1px to avoid descender clipping; got pb=${lh.paddingBottom} raw=${JSON.stringify(lh.pbRaw)}`)
+      }
+
       await driver.executeScript(`document.getElementById('headerModelTrigger')?.click?.();`)
       await new Promise((r) => setTimeout(r, 250))
       const stillClosed = await driver.executeScript(`return !!document.getElementById('headerModelPicker')?.classList.contains('open');`)
@@ -213,7 +269,11 @@ async function main() {
       `)
       if (!seededModels?.ok) throw new Error(`seed models failed: ${seededModels?.error || 'unknown'}`)
 
-      await driver.findElement(By.id('headerModelTrigger')).click()
+      // Use pointerdown to match mobile tap behavior (click can be delayed/dropped under load).
+      await driver.executeScript(`
+        const el = document.getElementById('headerModelTrigger');
+        el?.dispatchEvent?.(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }));
+      `)
       await waitFor(async () => {
         const open = await driver.executeScript(`return !!document.getElementById('headerModelPicker')?.classList.contains('open');`)
         return !!open
@@ -245,7 +305,7 @@ async function main() {
         const btns = menu ? Array.from(menu.querySelectorAll('.headerModelOption')) : [];
         const target = btns.find((b) => /5\\.3-codex/.test(String(b.textContent || '')));
         if (!target) return { ok: false, error: 'missing model option 5.3-codex' };
-        target.click();
+        target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }));
         const open = !!document.getElementById('headerModelPicker')?.classList.contains('open');
         const active = document.querySelector('#headerModelMenu .headerModelOption.active .modelLabel');
         return { ok: true, open, active: String(active?.textContent || '').trim() };
@@ -285,32 +345,20 @@ async function main() {
       }
       if (reasoningUi?.label) throw new Error(`expected no inline effort label in the model row, got ${JSON.stringify(reasoningUi?.label || '')}`)
 
-      const pickedHigh = await driver.executeScript(`
-        const opt = document.querySelector('#headerModelMenu .headerModelOption.active');
-        const trigger = opt ? opt.querySelector('.effortSubChevron') : null;
-        if (!trigger) return { ok: false, error: 'missing effort chevron trigger' };
-        const pickerOpen = !!document.getElementById('headerModelPicker')?.classList.contains('open');
-        if (!pickerOpen) return { ok: false, error: 'model picker closed after opening effort menu' };
-        const overlay = document.getElementById('effortInlineOverlay');
-        if (!overlay || !overlay.classList.contains('show')) {
-          // Some flows auto-open the effort overlay after selecting a model; if it isn't open yet, open it now.
-          // In the new UX, selecting the model auto-opens; as a fallback, click the model row itself.
-          opt?.click?.();
-        }
-        if (!document.getElementById('effortInlineOverlay')?.classList.contains('show')) {
-          // Ensure it opens on the first click.
-          opt?.click?.();
-        }
-        const overlay2 = document.getElementById('effortInlineOverlay');
-        if (!overlay2 || !overlay2.classList.contains('show')) return { ok: false, error: 'missing inline effort overlay' };
+      // Selecting a model opens the effort overlay via requestAnimationFrame; wait for it.
+      await waitFor(async () => {
+        const ok = await driver.executeScript(`return !!document.getElementById('effortInlineOverlay')?.classList.contains('show');`)
+        return !!ok
+      }, 2000, 'effortInlineOverlay.show')
 
-        // Overlay should render to the RIGHT of the model menu (nested submenu), not below.
+      const pickedHigh = await driver.executeScript(`
+        const overlay = document.getElementById('effortInlineOverlay');
+        if (!overlay || !overlay.classList.contains('show')) return { ok: false, error: 'missing inline effort overlay' };
         const menuRect = document.getElementById('headerModelMenu')?.getBoundingClientRect();
-        const overlayRectOpen = overlay2.getBoundingClientRect();
+        const overlayRectOpen = overlay.getBoundingClientRect();
         const rightOfMenu = !!(menuRect && overlayRectOpen && overlayRectOpen.left >= menuRect.right - 2);
         const gap = !!(menuRect && overlayRectOpen) ? Math.round(Math.max(0, overlayRectOpen.left - menuRect.right)) : -1;
-
-        const high = Array.from(overlay2.querySelectorAll('.effortInlineOption')).find((b) => {
+        const high = Array.from(overlay.querySelectorAll('.effortInlineOption')).find((b) => {
           const label = b.querySelector('.label');
           return String(label?.textContent || '').trim() === 'high';
         });
@@ -406,11 +454,66 @@ async function main() {
         throw new Error(`expected mobile menu to be topmost (hit within mobileMenuBtn), got tag=${hitTest.hitTag} id=${hitTest.hitId} class=${hitTest.hitClass}`)
       }
 
+      const zProbe = await driver.executeScript(`
+        const header = document.querySelector('.chatPanel .panelHeader');
+        const overlay = document.getElementById('chatOpeningOverlay');
+        if (!header || !overlay) return { ok: false, error: 'missing header/overlay' };
+        const hs = getComputedStyle(header);
+        const os = getComputedStyle(overlay);
+        const hz = parseInt(String(hs.zIndex || ''), 10);
+        const oz = parseInt(String(os.zIndex || ''), 10);
+        return { ok: true, headerZ: hs.zIndex, overlayZ: os.zIndex, hz, oz, overlayPe: os.pointerEvents };
+      `)
+      if (!zProbe?.ok) throw new Error(`z-index probe failed: ${zProbe?.error || 'unknown'}`)
+      if (!(Number.isFinite(zProbe.hz) && Number.isFinite(zProbe.oz) && zProbe.hz > zProbe.oz)) {
+        throw new Error(`expected header z-index > opening overlay z-index, got ${JSON.stringify(zProbe)}`)
+      }
+      if (String(zProbe.overlayPe) !== 'none') {
+        throw new Error(`expected opening overlay pointer-events:none, got ${JSON.stringify(zProbe)}`)
+      }
+
       await driver.findElement(By.id('mobileMenuBtn')).click()
       await waitFor(async () => {
         const isOpen = await driver.executeScript(`return document.body.classList.contains('drawer-left-open');`)
         return !!isOpen
       }, 8000, 'drawer-left-open after menu click')
+
+      // Drawer backdrop should use blur (backdrop-filter) for the expected dim+blur effect.
+      const blurProbe = await driver.executeScript(`
+        const backdrop = document.getElementById('mobileDrawerBackdrop');
+        if (!backdrop) return { ok: false, error: 'missing mobileDrawerBackdrop' };
+        const s = getComputedStyle(backdrop);
+        return { ok: true, bf: String(s.backdropFilter || '').trim(), wbf: String(s.webkitBackdropFilter || '').trim() };
+      `)
+      if (!blurProbe?.ok) throw new Error(`backdrop blur probe failed: ${blurProbe?.error || 'unknown'}`)
+      const bfText = (blurProbe.bf || blurProbe.wbf || '').toLowerCase()
+      if (!bfText.includes('blur(')) {
+        throw new Error(`expected drawer backdrop to enable blur, got ${JSON.stringify(blurProbe)}`)
+      }
+
+      // While the drawer is open, the backdrop must be above the chat header so clicking the
+      // top-right badge area also closes the drawer (matches expected UX).
+      const overlayHit = await driver.executeScript(`
+        const badge = document.getElementById('headerWorkspaceBadge');
+        const backdrop = document.getElementById('mobileDrawerBackdrop');
+        if (!badge || !backdrop) return { ok: false, error: 'missing badge/backdrop' };
+        const r = badge.getBoundingClientRect();
+        const x = Math.floor(r.left + r.width / 2);
+        const y = Math.floor(r.top + r.height / 2);
+        const hit = document.elementFromPoint(x, y);
+        const withinBackdrop = !!(hit && (hit === backdrop || backdrop.contains(hit)));
+        return {
+          ok: true,
+          withinBackdrop,
+          hitTag: hit?.tagName || '',
+          hitId: hit?.id || '',
+          hitClass: typeof hit?.className === 'string' ? hit.className : String(hit?.className || ''),
+        };
+      `)
+      if (!overlayHit?.ok) throw new Error(`drawer backdrop hit-test failed: ${overlayHit?.error || 'unknown'}`)
+      if (!overlayHit?.withinBackdrop) {
+        throw new Error(`expected backdrop to cover header badge while drawer is open, got tag=${overlayHit.hitTag} id=${overlayHit.hitId} class=${overlayHit.hitClass}`)
+      }
 
       // When drawer is open, only one workspace switch should be visible (avoid duplicate WIN/WSL2).
       const wsUi = await driver.executeScript(`
@@ -422,6 +525,19 @@ async function main() {
       `)
       if (wsUi?.headerVisible) throw new Error('expected headerWorkspaceSwitch to be hidden while drawer is open (avoid duplicate workspace toggles)')
       if (!wsUi?.drawerVisible) throw new Error('expected drawerWorkspaceSwitch to remain visible while drawer is open')
+
+      // Clicking the backdrop (including over the header region) must close the drawer.
+      await driver.executeScript(`
+        const badge = document.getElementById('headerWorkspaceBadge');
+        const r = badge?.getBoundingClientRect?.();
+        const x = r ? Math.floor(r.left + r.width / 2) : 10;
+        const y = r ? Math.floor(r.top + r.height / 2) : 10;
+        document.elementFromPoint(x, y)?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }));
+      `)
+      await waitFor(async () => {
+        const isOpen = await driver.executeScript(`return document.body.classList.contains('drawer-left-open');`)
+        return !isOpen
+      }, 8000, 'drawer-left-open cleared by backdrop click')
 
       await driver.executeScript(`document.getElementById('chatOpeningOverlay')?.classList.remove('show');`)
       await driver.manage().window().setRect(originalRect)
@@ -447,29 +563,42 @@ async function main() {
     if (!seeded?.ok) throw new Error(`seed failed: ${seeded?.error || 'unknown'} debug=${JSON.stringify(seeded?.debug || {})}`)
 
     // Regression (mobile): opening a very large chat must not "freeze" header clicks.
-    // Historically, synchronous DOM insertion for long histories blocked the event loop,
+    // Historically, synchronous DOM work (especially clearing a huge prior chat) blocked the event loop,
     // making the hamburger/model picker feel unclickable until loading finished.
     {
       const bigSeed = await driver.executeScript(`
         const h = window.__webCodexE2E;
         if (!h) return { ok: false, error: 'missing e2e hook' };
-        const threadId = 'e2e_1';
-        const turns = [];
-        for (let i = 0; i < 520; i += 1) {
-          turns.push({ items: [{ type: 'assistantMessage', text: 'msg ' + i + '\\n' + Array.from({ length: 3 }).map(() => 'x'.repeat(180)).join('\\n') }] });
-        }
-        const thread = { id: threadId, cwd: 'API-Router', workspace: 'windows', turns };
-        h.setThreadHistory(threadId, thread);
-        return { ok: true, threadId };
+        const prevId = 'e2e_big_prev';
+        const nextId = 'e2e_big_next';
+        const a = h.seedHeavyThreadHistory
+          ? h.seedHeavyThreadHistory(prevId, { turns: 160, itemsPerTurn: 3, textSize: 360 })
+          : { ok: false, error: 'seedHeavyThreadHistory missing' };
+        const b = h.seedHeavyThreadHistory
+          ? h.seedHeavyThreadHistory(nextId, { turns: 220, itemsPerTurn: 3, textSize: 360 })
+          : { ok: false, error: 'seedHeavyThreadHistory missing' };
+        return { ok: !!(a && a.ok && b && b.ok), prevId, nextId, a, b };
       `)
-      if (!bigSeed?.ok) throw new Error(`big seed failed: ${bigSeed?.error || 'unknown'}`)
+      if (!bigSeed?.ok) throw new Error(`big seed failed: ${bigSeed?.error || 'unknown'} detail=${JSON.stringify(bigSeed)}`)
 
       const originalRect = await driver.manage().window().getRect()
       await driver.manage().window().setRect({ ...originalRect, width: 420, height: 900 })
 
+      // First open a huge chat so the DOM contains hundreds of nodes; then open another huge chat.
+      // Clearing the previous chat must not block header clicks.
+      const openedPrev = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.openThread !== 'function') return done({ ok: false, error: 'openThread missing' });
+        Promise.resolve(h.openThread('e2e_big_prev'))
+          .then((v) => done(v))
+          .catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!openedPrev?.ok) throw new Error(`openThread(prev) failed: ${openedPrev?.error || 'unknown'}`)
+
       const startedSlow = await driver.executeScript(`
         const h = window.__webCodexE2E;
-        return h?.startOpenThreadSlow?.('e2e_1') || { ok: false, error: 'startOpenThreadSlow missing' };
+        return h?.startOpenThreadSlow?.('e2e_big_next') || { ok: false, error: 'startOpenThreadSlow missing' };
       `)
       if (!startedSlow?.ok) throw new Error(`startOpenThreadSlow failed: ${startedSlow?.error || 'unknown'}`)
 
@@ -478,14 +607,46 @@ async function main() {
         return !!shown
       }, 8000, 'chatOpeningOverlay.show (slow open)')
 
-      const clickStart = Date.now()
-      await driver.findElement(By.id('mobileMenuBtn')).click()
-      await waitFor(async () => {
-        const isOpen = await driver.executeScript(`return document.body.classList.contains('drawer-left-open');`)
-        return !!isOpen
-      }, 2500, 'drawer-left-open during slow open')
-      const clickLatency = Date.now() - clickStart
-      if (clickLatency > 700) throw new Error(`expected header click to respond during slow open (<=700ms), got ${clickLatency}ms`)
+      // Real mobile taps are pointer events; some WebViews drop/delay `click` under load.
+      // The hamburger must respond to pointerdown immediately while opening.
+      const pointerResponsive = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const btn = document.getElementById('mobileMenuBtn');
+        if (!btn) return done({ ok: false, error: 'missing mobileMenuBtn' });
+        const started = performance.now();
+        setTimeout(() => {
+          const fired = performance.now();
+          btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }));
+          const opened = document.body.classList.contains('drawer-left-open');
+          done({ ok: true, delayMs: Math.round(fired - started), opened });
+        }, 0);
+      `)
+      if (!pointerResponsive?.ok) throw new Error(`pointer responsiveness probe failed: ${pointerResponsive?.error || 'unknown'}`)
+      if (!pointerResponsive?.opened) throw new Error(`expected drawer-left-open to toggle on pointerdown during slow open, got ${JSON.stringify(pointerResponsive)}`)
+      if (Number(pointerResponsive?.delayMs || 0) > 150) {
+        throw new Error(`expected header pointer interactions to stay responsive while opening (delay <= 150ms), got ${JSON.stringify(pointerResponsive)}`)
+      }
+
+      // Measure event loop responsiveness while the slow open is in progress. If the open path blocks the
+      // main thread synchronously, even a `setTimeout(..., 0)` click will be delayed.
+      const responsive = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const btn = document.getElementById('mobileMenuBtn');
+        if (!btn) return done({ ok: false, error: 'missing mobileMenuBtn' });
+        const started = performance.now();
+        setTimeout(() => {
+          const fired = performance.now();
+          btn.click();
+          const opened = document.body.classList.contains('drawer-left-open');
+          done({ ok: true, delayMs: Math.round(fired - started), opened });
+        }, 0);
+      `)
+      if (!responsive?.ok) throw new Error(`responsiveness probe failed: ${responsive?.error || 'unknown'}`)
+      if (!responsive?.opened) throw new Error(`expected drawer-left-open to toggle during slow open, got ${JSON.stringify(responsive)}`)
+      // Target: menu should respond quickly even while opening.
+      if (Number(responsive?.delayMs || 0) > 150) {
+        throw new Error(`expected header interactions to stay responsive while opening (delay <= 150ms), got ${JSON.stringify(responsive)}`)
+      }
 
       const done = await driver.executeAsyncScript(`
         const done = arguments[0];
@@ -577,6 +738,41 @@ async function main() {
       throw new Error('expected chat to land near bottom on open')
     }
 
+    // Regression: Immediately after opening (while stick-to-bottom timers may still be active),
+    // if the user scrolls UP even slightly to read history, we must NOT yank them back to bottom.
+    // This was happening due to auto-stick timers treating small scrolls as "still pinned".
+    {
+      const scrolled = await driver.executeScript(`
+        const box = document.getElementById('chatBox');
+        if (!box) return { ok: false, error: 'missing chatBox' };
+        // Simulate a real user gesture (touch) before scrolling.
+        box.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }));
+        const before = box.scrollTop;
+        box.scrollTop = Math.max(0, before - 60);
+        box.dispatchEvent(new Event('scroll'));
+        const after = box.scrollTop;
+        const dbg = window.__webCodexDbg || {};
+        return { ok: true, before, after, dbg };
+      `)
+      if (!scrolled?.ok) throw new Error(`immediate scroll-up probe failed: ${scrolled?.error || 'unknown'}`)
+      if (!(Number(scrolled.after || 0) <= Number(scrolled.before || 0))) {
+        throw new Error(`expected scrollTop to move up (after<=before), got ${JSON.stringify(scrolled)}`)
+      }
+      // Give any pending auto-stick timers time to fire; we should still be away from bottom.
+      await new Promise((r) => setTimeout(r, 650))
+      const stayedUp = await driver.executeScript(`
+        const box = document.getElementById('chatBox');
+        if (!box) return { ok: false, error: 'missing chatBox' };
+        const dist = box.scrollHeight - (box.scrollTop + box.clientHeight);
+        const dbg = window.__webCodexDbg || {};
+        return { ok: true, dist: Math.round(dist), scrollTop: Math.round(box.scrollTop), dbg };
+      `)
+      if (!stayedUp?.ok) throw new Error(`scroll-up verify failed: ${stayedUp?.error || 'unknown'}`)
+      if (Number(stayedUp.dist || 0) <= 40) {
+        throw new Error(`expected to remain scrolled away from bottom after immediate scroll-up, got ${JSON.stringify(stayedUp)}`)
+      }
+    }
+
     // Regression: opening a chat should remain pinned to bottom even if layout shifts shortly after
     // (e.g. late fonts/image sizing). Without repeated stick-to-bottom, the view can drift above bottom.
     await driver.executeScript(`
@@ -600,12 +796,13 @@ async function main() {
     // the view at bottom even when the new message is tall enough to push content far above bottom.
     // Bug: our live-follow loop auto-scrolls, but the scroll handler mis-classified that as user
     // scroll and stopped the follow, leaving the view "stuck" above bottom.
-    await driver.executeScript(`
+    const appended = await driver.executeAsyncScript(`
+      const done = arguments[0];
       const h = window.__webCodexE2E;
-      if (!h) return;
+      if (!h) return done({ ok: false, error: 'missing e2e hook' });
       const threadId = h._activeThreadId || 'e2e_1';
       const cur = h.getThreadHistory(threadId);
-      if (!cur) return;
+      if (!cur) return done({ ok: false, error: 'missing seeded history' });
       const cloned = JSON.parse(JSON.stringify(cur));
       const turns = Array.isArray(cloned.turns) ? cloned.turns : [];
       turns.push({
@@ -613,16 +810,20 @@ async function main() {
       });
       cloned.turns = turns;
       h.setThreadHistory(threadId, cloned);
-      // Simulate the active-thread poll applying new history.
-      if (typeof h.refreshActiveThread === 'function') h.refreshActiveThread();
+      if (typeof h.refreshActiveThread !== 'function') return done({ ok: false, error: 'refreshActiveThread missing' });
+      Promise.resolve(h.refreshActiveThread())
+        .then(() => done({ ok: true }))
+        .catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
     `)
-    await new Promise((r) => setTimeout(r, 1400))
-    const pinnedAfterIncoming = await driver.executeScript(`
-      const box = document.getElementById('chatBox');
-      if (!box) return false;
-      return box.scrollTop + box.clientHeight >= box.scrollHeight - 80;
-    `)
-    if (!pinnedAfterIncoming) throw new Error('expected pinned chat to auto-follow bottom after an incoming message')
+    if (!appended?.ok) throw new Error(`failed to append incoming message: ${appended?.error || 'unknown'}`)
+    await waitFor(async () => {
+      const pinned = await driver.executeScript(`
+        const box = document.getElementById('chatBox');
+        if (!box) return false;
+        return box.scrollTop + box.clientHeight >= box.scrollHeight - 80;
+      `)
+      return !!pinned
+    }, 8000, 'pinned chat to auto-follow bottom after an incoming message')
 
     // When scrolled up meaningfully, a floating "scroll to bottom" button should appear; clicking it scrolls to bottom.
     {
@@ -785,11 +986,15 @@ async function main() {
     const liveFollowProbe = await driver.executeAsyncScript(`
       const done = arguments[0];
       const box = document.getElementById('chatBox');
+      const h = window.__webCodexE2E;
       if (!box) return done({ ok: false, error: 'missing chatBox' });
 
       // Start at bottom so "new content appended" latches into live follow.
-      box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
-      box.dispatchEvent(new Event('scroll'));
+      if (h && typeof h.scrollChatToBottomNow === 'function') h.scrollChatToBottomNow();
+      else {
+        box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
+        box.dispatchEvent(new Event('scroll'));
+      }
 
       const msg = document.createElement('div');
       msg.className = 'msg assistant';
@@ -840,8 +1045,11 @@ async function main() {
       const box = document.getElementById('chatBox');
       const h = window.__webCodexE2E;
       if (!box || !h) return done({ ok: false, error: 'missing chatBox/e2e' });
-      box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
-      box.dispatchEvent(new Event('scroll'));
+      if (typeof h.scrollChatToBottomNow === 'function') h.scrollChatToBottomNow();
+      else {
+        box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
+        box.dispatchEvent(new Event('scroll'));
+      }
 
       if (typeof h.createStreamingMessage !== 'function' || typeof h.appendStreamingDelta !== 'function') {
         return done({ ok: false, error: 'streaming hooks missing' });

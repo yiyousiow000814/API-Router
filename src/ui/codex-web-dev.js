@@ -60,18 +60,19 @@ const state = {
   threadPullRefreshing: false,
   activeThreadStarted: false,
   chatRenderToken: 0,
-  chatAutoStickUntil: 0,
-  chatAutoStickToken: 0,
   chatSmoothScrollUntil: 0,
   chatSmoothScrollToken: 0,
   chatLiveFollowUntil: 0,
   chatLiveFollowToken: 0,
   chatLiveFollowRaf: 0,
   chatLiveFollowLastBtnMs: 0,
+  chatLastScrollTop: 0,
+  // Updated by pointer/wheel events; used to detect user intent even during programmatic scroll windows.
+  chatLastUserGestureAt: 0,
   chatUserScrolledAwayAt: 0,
-  // When true, treat the chat as "pinned" to bottom: new content should keep following bottom
-  // unless the user explicitly scrolls away.
-  chatPinnedToBottom: true,
+  // When true, treat the chat as "sticky" to bottom: new content/layout settles should keep following bottom
+  // unless the user explicitly scrolls away. (clawdex-style stickiness)
+  chatShouldStickToBottom: true,
   // Suppress scroll-intent updates for short windows when we update scrollTop programmatically
   // (live-follow / stick-to-bottom). This prevents the scroll handler from interpreting our
   // own auto-scroll as the user's "scroll away", which would stop following.
@@ -610,7 +611,7 @@ function renderHeaderModelMenu() {
     optionBtn.innerHTML =
       `<span class="modelLabel">${escapeHtml(compactModelLabel(model.label || model.id))}</span>` +
       `<span class="modelRight">${effortHtml}</span>`;
-    optionBtn.addEventListener("click", (event) => {
+    const onSelectModel = (event) => {
       event.preventDefault();
       // Prevent the document-level click handler from closing the menu after we re-render the list.
       // Without this, re-rendering detaches `event.target` from the picker, and `contains()` becomes false.
@@ -654,6 +655,20 @@ function renderHeaderModelMenu() {
       } else {
         closeInlineEffortOverlay();
       }
+    };
+    // Prefer pointerdown for responsiveness on mobile WebViews (click can be delayed/dropped under load).
+    // Keep click for keyboard activation + legacy fallback.
+    optionBtn.__skipNextClick = false;
+    optionBtn.addEventListener("pointerdown", (event) => {
+      optionBtn.__skipNextClick = true;
+      onSelectModel(event);
+    }, { passive: false });
+    optionBtn.addEventListener("click", (event) => {
+      if (optionBtn.__skipNextClick) {
+        optionBtn.__skipNextClick = false;
+        return;
+      }
+      onSelectModel(event);
     });
     menu.appendChild(optionBtn);
   }
@@ -1156,6 +1171,14 @@ function isChatNearBottom() {
   return box.scrollTop + box.clientHeight >= box.scrollHeight - 80;
 }
 
+function chatDistanceFromBottom(box) {
+  if (!box) return 0;
+  return Math.max(0, box.scrollHeight - (box.scrollTop + box.clientHeight));
+}
+
+// Small threshold: if the user scrolls even slightly up to read history, stop sticking.
+const CHAT_STICKY_BOTTOM_PX = 12;
+
 function isChatNearBottomForJumpBtn() {
   // Show when the user scrolls up a meaningful amount (ChatGPT-like),
   // not just by a couple of pixels.
@@ -1168,10 +1191,10 @@ function isChatNearBottomForJumpBtn() {
 function scrollChatToBottom({ force = false } = {}) {
   const box = byId("chatBox");
   if (!box) return;
-  if (!force && !isChatNearBottom()) return;
-  // Mark as pinned so future messages keep following bottom.
-  state.chatPinnedToBottom = true;
-  state.chatUserScrolledAwayAt = 0;
+  if (!force && !state.chatShouldStickToBottom) return;
+  // Mark as sticky so future messages/layout settles keep following bottom.
+  state.chatShouldStickToBottom = true;
+  if (force) state.chatUserScrolledAwayAt = 0;
   state.chatProgrammaticScrollUntil = Date.now() + 260;
   dbgSet({ lastScrollChatToBottomAt: Date.now(), lastScrollChatToBottomForce: !!force });
   // Use the actual max scrollTop to avoid a clamp-induced "micro jump" at the end.
@@ -1179,29 +1202,36 @@ function scrollChatToBottom({ force = false } = {}) {
   updateScrollToBottomBtn();
 }
 
-function stickChatToBottomFor(ms) {
-  state.chatAutoStickToken = (Number(state.chatAutoStickToken || 0) + 1) | 0;
-  const token = state.chatAutoStickToken;
-  state.chatAutoStickUntil = Date.now() + Math.max(0, Number(ms || 0));
-  state.chatPinnedToBottom = true;
-  state.chatUserScrolledAwayAt = 0;
-  scrollChatToBottom({ force: true });
-  // Images/layout can settle on the next frame(s); keep the box pinned briefly.
-  requestAnimationFrame(() => scrollChatToBottom({ force: token === state.chatAutoStickToken && Date.now() <= state.chatAutoStickUntil }));
-  requestAnimationFrame(() => scrollChatToBottom({ force: token === state.chatAutoStickToken && Date.now() <= state.chatAutoStickUntil }));
-  setTimeout(() => scrollChatToBottom({ force: token === state.chatAutoStickToken && Date.now() <= state.chatAutoStickUntil }), 220);
-  setTimeout(() => updateScrollToBottomBtn(), 260);
+function scrollToBottomReliable() {
+  // clawdex-style: limited retries to account for layout settling (images/fonts),
+  // but never a time-window "force to bottom" that fights user scrolling.
+  const token = (Number(state.chatReconcileToken || 0) + 1) | 0;
+  state.chatReconcileToken = token;
+  const attempt = (delay) => {
+    setTimeout(() => {
+      if (token !== state.chatReconcileToken) return;
+      if (!state.chatShouldStickToBottom) return;
+      scrollChatToBottom({ force: true });
+    }, delay);
+  };
+  attempt(0);
+  requestAnimationFrame(() => {
+    if (token !== state.chatReconcileToken) return;
+    if (!state.chatShouldStickToBottom) return;
+    scrollChatToBottom({ force: true });
+  });
+  attempt(120);
+  attempt(260);
 }
 
 function canStartChatLiveFollow() {
   const now = Date.now();
   if (now <= Number(state.chatSmoothScrollUntil || 0)) return false;
-  if (now <= Number(state.chatAutoStickUntil || 0)) return true;
-  if (state.chatPinnedToBottom) return true;
-  // If the user hasn't intentionally scrolled away, allow live-follow to recover from
-  // drift caused by late layout changes (fonts/images), even if we're a bit above bottom.
-  if (!Number(state.chatUserScrolledAwayAt || 0)) return true;
-  return isChatNearBottom();
+  if (state.chatShouldStickToBottom) return true;
+  // If the user hasn't intentionally scrolled away, allow live-follow to recover from small drift
+  // (fonts/images) only when we're still close to bottom.
+  if (!Number(state.chatUserScrolledAwayAt || 0)) return isChatNearBottom();
+  return false;
 }
 
 function stopChatLiveFollow() {
@@ -1290,10 +1320,7 @@ function smoothScrollChatToBottom(durationMs = undefined) {
   state.chatSmoothScrollToken = (Number(state.chatSmoothScrollToken || 0) + 1) | 0;
   const token = state.chatSmoothScrollToken;
   state.chatSmoothScrollUntil = Date.now() + Math.max(0, dur + 250);
-  // Cancel any pending stick-to-bottom timers from older interactions.
-  state.chatAutoStickToken = (Number(state.chatAutoStickToken || 0) + 1) | 0;
   stopChatLiveFollow();
-  state.chatAutoStickUntil = Date.now() + Math.max(900, dur + 500);
   dbgSet({
     lastSmoothScrollStartAt: Date.now(),
     lastSmoothScrollDurMs: dur,
@@ -1330,8 +1357,8 @@ function smoothScrollChatToBottom(durationMs = undefined) {
     }
     if (t < 1) requestAnimationFrame(step);
     else {
-      // Ensure we're truly pinned at the end (handles fractional pixels / late layout).
-      state.chatPinnedToBottom = true;
+      // Ensure we're truly at bottom at the end (handles fractional pixels / late layout).
+      state.chatShouldStickToBottom = true;
       state.chatUserScrolledAwayAt = 0;
       state.chatProgrammaticScrollUntil = Date.now() + 260;
       box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
@@ -1706,8 +1733,9 @@ function wireMessageAttachments(container) {
         updateScrollToBottomBtn();
         return;
       }
-      const force = now <= Number(state.chatAutoStickUntil || 0);
-      scrollChatToBottom({ force });
+      // Only follow bottom if the user is still "sticky" to bottom (clawdex-style).
+      if (state.chatShouldStickToBottom) scrollChatToBottom({ force: true });
+      else updateScrollToBottomBtn();
     };
     img.addEventListener("load", onSettled, { once: true });
     img.addEventListener("error", onSettled, { once: true });
@@ -1761,7 +1789,7 @@ function addChat(role, text, options = {}) {
   }
   box.appendChild(node);
   if (options.scroll !== false) {
-    state.chatPinnedToBottom = true;
+    state.chatShouldStickToBottom = true;
     state.chatUserScrolledAwayAt = 0;
     state.chatProgrammaticScrollUntil = Date.now() + 260;
     box.scrollTop = box.scrollHeight;
@@ -1870,8 +1898,14 @@ function showWelcomeCard() {
 function clearChatMessages() {
   const box = byId("chatBox");
   if (!box) return;
-  const nodes = box.querySelectorAll(".msg");
-  for (const node of nodes) node.remove();
+  // Remove a large prior chat in one operation to avoid blocking the main thread.
+  // Keep the persistent nodes (welcome + opening overlay) mounted.
+  const welcome = byId("welcomeCard");
+  const overlay = byId("chatOpeningOverlay");
+  const keep = [];
+  if (welcome && welcome.parentElement === box) keep.push(welcome);
+  if (overlay && overlay.parentElement === box) keep.push(overlay);
+  box.replaceChildren(...keep);
   box.scrollTop = 0;
   state.activeThreadRenderSig = "";
   state.activeThreadMessages = [];
@@ -2313,12 +2347,25 @@ function renderLiveNotification(notification) {
   }
 }
 
-function mapThreadReadMessages(thread) {
+async function mapThreadReadMessages(thread) {
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
   const messages = [];
   let seenAssistant = false;
   let seenNonBootstrapUser = false;
-  for (const turn of turns) {
+
+  // Time-slice parsing so header (hamburger/model) remains clickable while opening very large threads.
+  // This targets the real root cause: long synchronous work blocking the event loop.
+  let lastYieldMs = performance.now();
+  const yieldBudgetMs = 7.5;
+  if (turns.length >= 40) await nextFrame();
+
+  for (let ti = 0; ti < turns.length; ti += 1) {
+    if (turns.length >= 40 && performance.now() - lastYieldMs >= yieldBudgetMs) {
+      lastYieldMs = performance.now();
+      // eslint-disable-next-line no-await-in-loop
+      await nextFrame();
+    }
+    const turn = turns[ti];
     const items = Array.isArray(turn?.items) ? turn.items : [];
     for (const item of items) {
       const type = String(item?.type || "").trim();
@@ -2352,7 +2399,7 @@ function mapThreadReadMessages(thread) {
 }
 
 async function applyThreadToChat(thread, options = {}) {
-  const messages = mapThreadReadMessages(thread);
+  const messages = await mapThreadReadMessages(thread);
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
   const lastMsg = messages.length ? messages[messages.length - 1] : null;
   const renderSig = [
@@ -2435,9 +2482,9 @@ async function applyThreadToChat(thread, options = {}) {
     }
     state.activeThreadMessages = messages; 
     state.activeThreadRenderSig = renderSig; 
-    // If the user is pinned, jump to the new max scrollTop immediately (avoid "stuck above bottom"
+    // If the user is sticky to bottom, jump to the new max scrollTop immediately (avoid "stuck above bottom"
     // when the incoming message is tall), then keep following briefly as images settle.
-    if (state.chatPinnedToBottom) scrollChatToBottom({ force: true });
+    if (state.chatShouldStickToBottom) scrollChatToBottom({ force: true });
     if (canStartChatLiveFollow()) scheduleChatLiveFollow(1100); 
   } else {
     // For large histories, render in batches so the UI remains interactive while opening.
@@ -2451,12 +2498,15 @@ async function applyThreadToChat(thread, options = {}) {
     }
     state.activeThreadMessages = messages;
     state.activeThreadRenderSig = renderSig;
-    if (state.chatPinnedToBottom) scrollChatToBottom({ force: true });
+    if (state.chatShouldStickToBottom) scrollChatToBottom({ force: true });
     if (canStartChatLiveFollow()) scheduleChatLiveFollow(1100); 
     else if (box) box.scrollTop = box.scrollHeight; 
   } 
 
-  if (options.stickToBottom) stickChatToBottomFor(1200);
+  if (options.stickToBottom) {
+    state.chatShouldStickToBottom = true;
+    scrollToBottomReliable();
+  }
 
   if (state.activeThreadStarted) hideWelcomeCard();
   else showWelcomeCard();
@@ -2882,9 +2932,9 @@ function renderThreads(items) {
 
           if (state.openingThreadReqId === reqId) {
             setChatOpening(false);
-            // Some webviews occasionally ignore the first scrollTop set during heavy layout.
-            // Force a short "pin to bottom" after the overlay hides so we reliably land on latest.
-            stickChatToBottomFor(900);
+            // After opening, land at bottom reliably, but do not fight user scrolling.
+            state.chatShouldStickToBottom = true;
+            scrollToBottomReliable();
           }
         } catch (error) { 
           if (error && (error.name === "AbortError" || String(error.message || "").includes("aborted"))) {
@@ -3411,7 +3461,8 @@ async function sendTurn() {
   if (state.selectedModel) state.activeThreadModelLabel = state.selectedModel;
   updateHeaderUi(shouldAnimateWorkspaceBadge);
   addChat("user", prompt);
-  stickChatToBottomFor(1200);
+  state.chatShouldStickToBottom = true;
+  scrollToBottomReliable();
   setMainTab("chat");
   clearPromptValue();
   connectWs();
@@ -3622,8 +3673,39 @@ function wireActions() {
     localStorage.setItem(GUIDE_DISMISSED_KEY, "1");
     if (byId("guideList")) byId("guideList").style.display = "none";
   });
-  bindClick("mobileMenuBtn", () => setMobileTab("threads"));
-  bindClick("mobileDrawerBackdrop", () => setMobileTab("chat"));
+  // Prefer pointerdown for responsiveness on mobile WebViews.
+  {
+    const btn = byId("mobileMenuBtn");
+    if (btn && !btn.__wiredPointerOpenDrawer) {
+      btn.__wiredPointerOpenDrawer = true;
+      const open = (event) => {
+        try {
+          event?.preventDefault?.();
+          event?.stopPropagation?.();
+        } catch {}
+        setMobileTab("threads");
+      };
+      btn.addEventListener("pointerdown", open, { passive: false });
+      btn.addEventListener("click", open);
+    }
+  }
+  // Mobile WebViews can drop/delay "click" during heavy UI work (e.g. while opening a large chat).
+  // Close drawers on pointerdown to keep the app feeling responsive.
+  {
+    const backdrop = byId("mobileDrawerBackdrop");
+    if (backdrop && !backdrop.__wiredCloseDrawer) {
+      backdrop.__wiredCloseDrawer = true;
+      const close = (event) => {
+        try {
+          event?.preventDefault?.();
+          event?.stopPropagation?.();
+        } catch {}
+        setMobileTab("chat");
+      };
+      backdrop.addEventListener("pointerdown", close, { passive: false });
+      backdrop.addEventListener("click", close);
+    }
+  }
   bindClick("leftStartDirBtn", () => {
     setStatus(`Current start directory target: ${getWorkspaceTarget().toUpperCase()}.`);
     setMobileTab("threads");
@@ -3649,13 +3731,18 @@ function wireActions() {
   const headerModelPicker = byId("headerModelPicker");
   const headerModelTrigger = byId("headerModelTrigger");
   if (headerModelTrigger) {
-    headerModelTrigger.onclick = (event) => {
+    const toggle = (event) => {
       event.preventDefault();
       event.stopPropagation();
       if (state.modelOptionsLoading) return;
       const isOpen = !!headerModelPicker?.classList.contains("open");
       setHeaderModelMenuOpen(!isOpen);
     };
+    if (!headerModelTrigger.__wiredPointerToggle) {
+      headerModelTrigger.__wiredPointerToggle = true;
+      headerModelTrigger.addEventListener("pointerdown", toggle, { passive: false });
+      headerModelTrigger.addEventListener("click", toggle);
+    }
     headerModelTrigger.onkeydown = (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
@@ -3765,6 +3852,30 @@ function bootstrap() {
           historyByThreadId.set(String(threadId), thread);
           return { ok: true };
         },
+        seedHeavyThreadHistory(threadId, config = {}) {
+          const id = String(threadId || "").trim();
+          if (!id) return { ok: false, error: "missing threadId" };
+          const turnsN = Math.max(1, Math.min(1200, Number(config.turns || 240) | 0));
+          const itemsPerTurn = Math.max(2, Math.min(40, Number(config.itemsPerTurn || 6) | 0));
+          const textSize = Math.max(16, Math.min(12000, Number(config.textSize || 1600) | 0));
+          const base = "x".repeat(textSize);
+          const mk = (prefix, ti, ii) => `${prefix} ${ti}.${ii}\n${base}`;
+          const turns = [];
+          for (let ti = 0; ti < turnsN; ti += 1) {
+            const items = [];
+            items.push({
+              type: "userMessage",
+              content: [{ type: "text", text: mk("User", ti, 0) }],
+            });
+            for (let ii = 1; ii < itemsPerTurn; ii += 1) {
+              items.push({ type: "assistantMessage", text: mk("Assistant", ti, ii) });
+            }
+            turns.push({ id: `t_${ti}`, items });
+          }
+          const thread = { id, modelName: "gpt-5.3-codex", turns };
+          historyByThreadId.set(id, thread);
+          return { ok: true, turns: turnsN, itemsPerTurn, textSize };
+        },
         getThreadHistory(threadId) {
           return historyByThreadId.get(String(threadId || ""));
         },
@@ -3813,6 +3924,22 @@ function bootstrap() {
         emitWsPayload(payload) {
           try {
             handleWsPayload(payload);
+            return { ok: true };
+          } catch (e) {
+            return { ok: false, error: String(e && e.message ? e.message : e) };
+          }
+        },
+        setChatStickiness(sticky = true) {
+          state.chatShouldStickToBottom = !!sticky;
+          state.chatUserScrolledAwayAt = sticky ? 0 : Date.now();
+          return { ok: true, sticky: state.chatShouldStickToBottom };
+        },
+        scrollChatToBottomNow() {
+          try {
+            state.chatShouldStickToBottom = true;
+            state.chatUserScrolledAwayAt = 0;
+            scrollChatToBottom({ force: true });
+            scrollToBottomReliable();
             return { ok: true };
           } catch (e) {
             return { ok: false, error: String(e && e.message ? e.message : e) };
@@ -3892,28 +4019,43 @@ function bootstrap() {
     if (chatBox && !chatBox.__wiredScrollToBottom) {
       chatBox.__wiredScrollToBottom = true;
       ensureScrollToBottomBtn();
+      // Capture "user intent" signals so we can distinguish user scrolling from our own
+      // programmatic scrollTop updates (especially during the open-chat auto-stick window).
+      if (!chatBox.__wiredUserGesture) {
+        chatBox.__wiredUserGesture = true;
+        const markGesture = () => {
+          state.chatLastUserGestureAt = Date.now();
+        };
+        chatBox.addEventListener("pointerdown", markGesture, { passive: true });
+        chatBox.addEventListener("touchstart", markGesture, { passive: true });
+        chatBox.addEventListener("wheel", markGesture, { passive: true });
+      }
       chatBox.addEventListener(
         "scroll",
         () => {
           updateScrollToBottomBtn();
-          // If the user scrolls away from bottom, cancel any pending "auto-stick" so we don't
-          // snap them back down due to timers (e.g. chat opening / message settle).
+          // clawdex-style: update stickiness based on distance-to-bottom when we observe a user gesture.
           const now = Date.now();
           if (now <= Number(state.chatSmoothScrollUntil || 0)) return;
-          if (now <= Number(state.chatProgrammaticScrollUntil || 0)) return;
-          const dist = chatBox.scrollHeight - (chatBox.scrollTop + chatBox.clientHeight);
-          // Track explicit user intent: if they scroll away meaningfully, stop auto-follow.
-          if (dist > 180) {
+          // During our short "programmatic scroll" windows, still respect user gestures:
+          // if the user is touching/scrolling, treat this as real intent and allow cancellation.
+          const inProgrammatic = now <= Number(state.chatProgrammaticScrollUntil || 0);
+          const recentGesture = now - Number(state.chatLastUserGestureAt || 0) <= 900;
+          if (inProgrammatic && !recentGesture) return;
+          const dist = chatDistanceFromBottom(chatBox);
+          const nextSticky = dist <= CHAT_STICKY_BOTTOM_PX;
+          dbgSet({
+            lastChatScrollDist: Math.round(dist),
+            lastChatScrollSticky: !!nextSticky,
+            lastChatScrollInProgrammatic: !!inProgrammatic,
+            lastChatScrollRecentGesture: !!recentGesture,
+          });
+          state.chatShouldStickToBottom = nextSticky;
+          if (!nextSticky) {
             state.chatUserScrolledAwayAt = now;
-            state.chatPinnedToBottom = false;
-          } else if (dist <= 120) {
-            state.chatUserScrolledAwayAt = 0;
-            state.chatPinnedToBottom = true;
-          }
-          if (dist > 180) {
-            state.chatAutoStickUntil = 0;
-            state.chatAutoStickToken = (Number(state.chatAutoStickToken || 0) + 1) | 0;
             stopChatLiveFollow();
+          } else {
+            state.chatUserScrolledAwayAt = 0;
           }
         },
         { passive: true }
