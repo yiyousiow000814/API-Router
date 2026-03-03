@@ -151,7 +151,17 @@ async function main() {
               { effort: 'xhigh', description: 'deepest' },
             ],
           },
-          { id: 'gpt-5.3-codex', displayName: 'gpt-5.3-codex' },
+          {
+            id: 'gpt-5.3-codex',
+            displayName: 'gpt-5.3-codex',
+            defaultReasoningEffort: 'medium',
+            supportedReasoningEfforts: [
+              { effort: 'low', description: 'fast' },
+              { effort: 'medium', description: 'default' },
+              { effort: 'high', description: 'deep' },
+              { effort: 'xhigh', description: 'deepest' },
+            ],
+          },
           { id: 'gpt-5.2-codex', displayName: 'gpt-5.2-codex' },
         ]);
         return { ok: true };
@@ -163,6 +173,21 @@ async function main() {
         const open = await driver.executeScript(`return !!document.getElementById('headerModelPicker')?.classList.contains('open');`)
         return !!open
       }, 8000, 'header model picker open')
+
+      // Selecting a model should keep the menu open so the user can immediately adjust reasoning effort.
+      const selectedModelStaysOpen = await driver.executeScript(`
+        const menu = document.getElementById('headerModelMenu');
+        const btns = menu ? Array.from(menu.querySelectorAll('.headerModelOption')) : [];
+        const target = btns.find((b) => /gpt-5\\.3-codex/.test(String(b.textContent || '')));
+        if (!target) return { ok: false, error: 'missing model option gpt-5.3-codex' };
+        target.click();
+        const open = !!document.getElementById('headerModelPicker')?.classList.contains('open');
+        const active = document.querySelector('#headerModelMenu .headerModelOption.active .modelLabel');
+        return { ok: true, open, active: String(active?.textContent || '').trim() };
+      `)
+      if (!selectedModelStaysOpen?.ok) throw new Error(`model select probe failed: ${selectedModelStaysOpen?.error || 'unknown'}`)
+      if (!selectedModelStaysOpen?.open) throw new Error('expected model menu to stay open after selecting a model')
+      if (selectedModelStaysOpen.active !== 'gpt-5.3-codex') throw new Error(`expected active model to become gpt-5.3-codex, got ${JSON.stringify(selectedModelStaysOpen.active)}`)
 
       const reasoningUi = await driver.executeScript(`
         const menu = document.getElementById('headerModelMenu');
@@ -192,12 +217,16 @@ async function main() {
         const opt = document.querySelector('#headerModelMenu .headerModelOption.active');
         const trigger = opt ? opt.querySelector('.effortInlineBtn') : null;
         if (!trigger) return { ok: false, error: 'missing inline effort trigger' };
-        trigger.click();
         const pickerOpen = !!document.getElementById('headerModelPicker')?.classList.contains('open');
         if (!pickerOpen) return { ok: false, error: 'model picker closed after opening effort menu' };
-        const menu = opt ? opt.querySelector('.effortInlineMenu') : null;
-        if (!menu) return { ok: false, error: 'missing inline effort menu' };
-        const high = Array.from(menu.querySelectorAll('.effortInlineOption')).find((b) => {
+        const overlay = document.getElementById('effortInlineOverlay');
+        if (!overlay || !overlay.classList.contains('show')) {
+          // Some flows auto-open the effort overlay after selecting a model; if it isn't open yet, open it now.
+          trigger.click();
+        }
+        const overlay2 = document.getElementById('effortInlineOverlay');
+        if (!overlay2 || !overlay2.classList.contains('show')) return { ok: false, error: 'missing inline effort overlay' };
+        const high = Array.from(overlay2.querySelectorAll('.effortInlineOption')).find((b) => {
           const label = b.querySelector('.label');
           return String(label?.textContent || '').trim() === 'high';
         });
@@ -205,7 +234,8 @@ async function main() {
         high.click();
         const pickerOpen2 = !!document.getElementById('headerModelPicker')?.classList.contains('open');
         if (!pickerOpen2) return { ok: false, error: 'model picker closed after selecting effort' };
-        const trigger2 = opt ? opt.querySelector('.effortInlineBtn') : null;
+        const opt2 = document.querySelector('#headerModelMenu .headerModelOption.active');
+        const trigger2 = opt2 ? opt2.querySelector('.effortInlineBtn') : null;
         const label = String(trigger2?.querySelector('.effortInlineLabel')?.textContent || trigger2?.textContent || '').trim();
         return { ok: true, label };
       `)

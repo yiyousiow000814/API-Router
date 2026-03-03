@@ -420,6 +420,97 @@ function setHeaderModelMenuOpen(open) {
   if (!open) {
     state.inlineEffortMenuOpen = false;
     state.inlineEffortMenuForModel = "";
+    closeInlineEffortOverlay();
+  }
+}
+
+function ensureInlineEffortOverlay() {
+  let el = document.getElementById("effortInlineOverlay");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "effortInlineOverlay";
+  el.className = "effortInlineOverlay";
+  el.setAttribute("role", "listbox");
+  el.setAttribute("aria-label", "Reasoning effort");
+  document.body.appendChild(el);
+  return el;
+}
+
+function closeInlineEffortOverlay() {
+  const el = document.getElementById("effortInlineOverlay");
+  if (!el) return;
+  el.classList.remove("show");
+  el.innerHTML = "";
+}
+
+function openInlineEffortOverlay(anchorEl, model) {
+  if (!anchorEl || !model) return;
+  const supported = Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : [];
+  if (!supported.length) return;
+
+  const overlay = ensureInlineEffortOverlay();
+  const fallback = String(model.defaultReasoningEffort || supported[0]?.effort || "").trim();
+  const cur = String(localStorage.getItem(REASONING_EFFORT_KEY) || state.selectedReasoningEffort || fallback || "").trim();
+
+  overlay.innerHTML = supported
+    .map((x) => {
+      const effort = String(x?.effort || "").trim();
+      if (!effort) return "";
+      const title = String(x?.description || "").trim();
+      const active = effort === cur ? " active" : "";
+      const titleAttr = title ? ` title="${escapeAttr(title)}"` : "";
+      return (
+        `<div class="effortInlineOption${active}" role="option" aria-selected="${effort === cur ? "true" : "false"}" data-effort="${escapeAttr(effort)}"${titleAttr}>` +
+        `<span class="label">${escapeHtml(effort)}</span>` +
+        `<span class="effortCheck" aria-hidden="true">✓</span>` +
+        `</div>`
+      );
+    })
+    .filter(Boolean)
+    .join("");
+
+  // Position: prefer below-right; if it would overflow bottom, flip above.
+  const r = anchorEl.getBoundingClientRect();
+  const padding = 6;
+  overlay.style.left = `${Math.max(padding, Math.min(window.innerWidth - padding, r.right))}px`;
+  overlay.style.top = `${Math.max(padding, Math.min(window.innerHeight - padding, r.bottom + 6))}px`;
+  overlay.style.transformOrigin = "top right";
+  overlay.classList.add("show");
+
+  // After visible, adjust to keep within viewport.
+  requestAnimationFrame(() => {
+    try {
+      const or = overlay.getBoundingClientRect();
+      let left = or.left;
+      let top = or.top;
+      if (or.right > window.innerWidth - padding) left -= (or.right - (window.innerWidth - padding));
+      if (or.left < padding) left += (padding - or.left);
+      if (or.bottom > window.innerHeight - padding) {
+        // flip above anchor
+        top = Math.max(padding, r.top - 6 - or.height);
+        overlay.style.transformOrigin = "bottom right";
+      }
+      overlay.style.left = `${Math.round(left)}px`;
+      overlay.style.top = `${Math.round(top)}px`;
+    } catch {}
+  });
+
+  // Wire clicks.
+  for (const opt of Array.from(overlay.querySelectorAll(".effortInlineOption"))) {
+    opt.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const effort = String(opt.getAttribute("data-effort") || "").trim();
+      if (!effort) return;
+      state.selectedReasoningEffort = effort;
+      localStorage.setItem(REASONING_EFFORT_KEY, effort);
+      state.inlineEffortMenuOpen = false;
+      state.inlineEffortMenuForModel = "";
+      closeInlineEffortOverlay();
+      // Update the inline label (re-render is simplest and keeps active styling correct).
+      renderHeaderModelMenu();
+      updateHeaderUi();
+    });
   }
 }
 
@@ -440,6 +531,7 @@ function renderHeaderModelMenu() {
   if (state.inlineEffortMenuForModel && state.inlineEffortMenuForModel !== current) {
     state.inlineEffortMenuOpen = false;
     state.inlineEffortMenuForModel = "";
+    closeInlineEffortOverlay();
   }
   for (const model of options) {
     const optionBtn = document.createElement("button");
@@ -456,22 +548,6 @@ function renderHeaderModelMenu() {
         const fallback = String(model.defaultReasoningEffort || supported[0]?.effort || "").trim();
         const cur = String(localStorage.getItem(REASONING_EFFORT_KEY) || state.selectedReasoningEffort || fallback || "").trim();
         const inlineOpen = !!(state.inlineEffortMenuOpen && state.inlineEffortMenuForModel === model.id);
-        const optionHtml = supported
-          .map((x) => {
-            const effort = String(x?.effort || "").trim();
-            if (!effort) return "";
-            const title = String(x?.description || "").trim();
-            const active = effort === cur ? " active" : "";
-            const titleAttr = title ? ` title="${escapeAttr(title)}"` : "";
-            return (
-              `<span class="effortInlineOption${active}" role="option" aria-selected="${effort === cur ? "true" : "false"}" data-effort="${escapeAttr(effort)}"${titleAttr}>` +
-              `<span class="label">${escapeHtml(effort)}</span>` +
-              `<span class="check" aria-hidden="true">✓</span>` +
-              `</span>`
-            );
-          })
-          .filter(Boolean)
-          .join("");
         effortHtml =
           `<span class="effortInline${inlineOpen ? " open" : ""}" data-model-id="${escapeAttr(model.id)}">` +
           `<span class="effortInlineBtn" role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="${inlineOpen ? "true" : "false"}">` +
@@ -480,7 +556,6 @@ function renderHeaderModelMenu() {
           `<path d="M4.5 6.2l3.5 3.6 3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>` +
           `</svg>` +
           `</span>` +
-          `<span class="effortInlineMenu" role="listbox" aria-label="Reasoning effort">${optionHtml}</span>` +
           `</span>`;
       }
     }
@@ -489,6 +564,10 @@ function renderHeaderModelMenu() {
       `<span class="modelLabel">${escapeHtml(model.label || model.id)}</span>` +
       `<span class="modelRight">${effortHtml}<span class="check" aria-hidden="true">✓</span></span>`;
     optionBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      // Prevent the document-level click handler from closing the menu after we re-render the list.
+      // Without this, re-rendering detaches `event.target` from the picker, and `contains()` becomes false.
+      event.stopPropagation();
       // If the user clicked the inline reasoning-effort control, do NOT select/close the model menu.
       // Some webviews still dispatch a click on the parent <button> even if the child stops propagation,
       // so we double-guard here.
@@ -497,8 +576,8 @@ function renderHeaderModelMenu() {
 
       state.selectedModel = model.id;
       if (state.activeThreadStarted) state.activeThreadModelLabel = model.id;
-      state.inlineEffortMenuOpen = false;
-      state.inlineEffortMenuForModel = "";
+
+      // Keep the model menu open so the user can immediately pick reasoning effort without re-opening.
       // If the current effort isn't supported by the new model, fall back to the model default.
       const supported = Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : [];
       if (supported.length) {
@@ -509,10 +588,26 @@ function renderHeaderModelMenu() {
           state.selectedReasoningEffort = next;
           localStorage.setItem(REASONING_EFFORT_KEY, next);
         }
+        state.inlineEffortMenuOpen = true;
+        state.inlineEffortMenuForModel = model.id;
+      } else {
+        state.inlineEffortMenuOpen = false;
+        state.inlineEffortMenuForModel = "";
       }
       renderHeaderModelMenu();
       updateHeaderUi();
-      setHeaderModelMenuOpen(false);
+
+      // Auto-open the effort overlay for the newly selected model (if it supports efforts).
+      if (supported.length) {
+        requestAnimationFrame(() => {
+          const active = menu.querySelector(".headerModelOption.active .effortInlineBtn");
+          const options2 = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+          const activeModel = options2.find((x) => x && x.id === state.selectedModel) || null;
+          if (active && activeModel) openInlineEffortOverlay(active, activeModel);
+        });
+      } else {
+        closeInlineEffortOverlay();
+      }
     });
     menu.appendChild(optionBtn);
   }
@@ -530,6 +625,13 @@ function renderHeaderModelMenu() {
       state.inlineEffortMenuForModel = state.inlineEffortMenuOpen ? modelId : "";
       if (container) container.classList.toggle("open", !open);
       trigger.setAttribute("aria-expanded", open ? "false" : "true");
+      if (!open) {
+        const options2 = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+        const activeModel = options2.find((x) => x && x.id === modelId) || null;
+        if (activeModel) openInlineEffortOverlay(trigger, activeModel);
+      } else {
+        closeInlineEffortOverlay();
+      }
     });
     trigger.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
@@ -542,53 +644,13 @@ function renderHeaderModelMenu() {
       state.inlineEffortMenuForModel = state.inlineEffortMenuOpen ? modelId : "";
       if (container) container.classList.toggle("open", !open);
       trigger.setAttribute("aria-expanded", open ? "false" : "true");
-    });
-  }
-  for (const opt of Array.from(menu.querySelectorAll(".effortInlineOption"))) {
-    opt.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const effort = String(opt.getAttribute("data-effort") || "").trim();
-      if (!effort) return;
-      state.selectedReasoningEffort = effort;
-      localStorage.setItem(REASONING_EFFORT_KEY, effort);
-      const container = opt.closest(".effortInline");
-      const trigger = container?.querySelector?.(".effortInlineBtn") || null;
-      const label = trigger?.querySelector?.(".effortInlineLabel") || null;
-      if (label) label.textContent = effort;
-      if (container) container.classList.remove("open");
-      if (trigger) trigger.setAttribute("aria-expanded", "false");
-      for (const btn of Array.from(container?.querySelectorAll?.(".effortInlineOption") || [])) {
-        const isActive = String(btn.getAttribute("data-effort") || "").trim() === effort;
-        btn.classList.toggle("active", isActive);
-        btn.setAttribute("aria-selected", isActive ? "true" : "false");
+      if (!open) {
+        const options2 = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+        const activeModel = options2.find((x) => x && x.id === modelId) || null;
+        if (activeModel) openInlineEffortOverlay(trigger, activeModel);
+      } else {
+        closeInlineEffortOverlay();
       }
-      state.inlineEffortMenuOpen = false;
-      state.inlineEffortMenuForModel = "";
-      updateHeaderUi();
-    });
-    opt.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      event.stopPropagation();
-      const effort = String(opt.getAttribute("data-effort") || "").trim();
-      if (!effort) return;
-      state.selectedReasoningEffort = effort;
-      localStorage.setItem(REASONING_EFFORT_KEY, effort);
-      const container = opt.closest(".effortInline");
-      const trigger = container?.querySelector?.(".effortInlineBtn") || null;
-      const label = trigger?.querySelector?.(".effortInlineLabel") || null;
-      if (label) label.textContent = effort;
-      if (container) container.classList.remove("open");
-      if (trigger) trigger.setAttribute("aria-expanded", "false");
-      for (const btn of Array.from(container?.querySelectorAll?.(".effortInlineOption") || [])) {
-        const isActive = String(btn.getAttribute("data-effort") || "").trim() === effort;
-        btn.classList.toggle("active", isActive);
-        btn.setAttribute("aria-selected", isActive ? "true" : "false");
-      }
-      state.inlineEffortMenuOpen = false;
-      state.inlineEffortMenuForModel = "";
-      updateHeaderUi();
     });
   }
 }
@@ -805,6 +867,10 @@ function escapeHtml(input) {
 function escapeAttr(input) {
   // We only interpolate simple string attributes (e.g. title, data-*); use the same escaping as HTML.
   return escapeHtml(input);
+}
+
+function inModelMenu(node) {
+  return !!(node && node.closest && node.closest("#headerModelPicker"));
 }
 
 function isHttpUrl(value) {
@@ -3583,7 +3649,10 @@ function wireActions() {
   document.addEventListener("click", (event) => {
     const target = event.target;
     if (!headerModelPicker || !(target instanceof Node)) return;
-    if (!headerModelPicker.contains(target)) setHeaderModelMenuOpen(false);
+    if (!headerModelPicker.contains(target)) {
+      setHeaderModelMenuOpen(false);
+      closeInlineEffortOverlay();
+    }
   });
   bindClick("quickPrompt1", () => {
     const text = "Explain the current codebase structure";

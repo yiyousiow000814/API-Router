@@ -356,11 +356,11 @@
     .chatPanel .panelHeader .headerModelOption .effortInline.open .effortInlineChev {
       transform: rotate(180deg);
     }
-    .chatPanel .panelHeader .headerModelOption .effortInlineMenu {
-      position: absolute;
-      top: calc(100% + 6px);
-      right: 0;
-      z-index: 80;
+
+    /* Effort menu is rendered in a fixed overlay (portal) so it can overflow past the model menu scroll clip. */
+    .effortInlineOverlay {
+      position: fixed;
+      z-index: 120;
       min-width: 120px;
       max-width: min(70vw, 220px);
       max-height: min(40vh, 240px);
@@ -370,8 +370,8 @@
       background: #ffffff;
       box-shadow: 0 14px 32px rgba(13, 18, 32, 0.18);
       padding: 6px;
-      display: none;
       gap: 2px;
+      display: none;
       opacity: 0;
       transform: translate3d(0, -6px, 0);
       transform-origin: top right;
@@ -381,14 +381,14 @@
       will-change: opacity, transform;
       scrollbar-width: thin;
     }
-    .chatPanel .panelHeader .headerModelOption .effortInline.open .effortInlineMenu {
+    .effortInlineOverlay.show {
       display: grid;
       opacity: 1;
       transform: translate3d(0, 0, 0);
       pointer-events: auto;
       visibility: visible;
     }
-    .chatPanel .panelHeader .headerModelOption .effortInlineOption {
+    .effortInlineOverlay .effortInlineOption {
       border: none;
       background: transparent;
       border-radius: 8px;
@@ -404,28 +404,29 @@
       cursor: pointer;
       user-select: none;
     }
-    .chatPanel .panelHeader .headerModelOption .effortInlineOption:hover {
+    .effortInlineOverlay .effortInlineOption:hover {
       background: rgba(13, 18, 32, 0.06);
     }
-    .chatPanel .panelHeader .headerModelOption .effortInlineOption.active {
+    .effortInlineOverlay .effortInlineOption.active {
       background: rgba(40, 199, 217, 0.12);
       color: #0d1220;
       font-weight: 600;
     }
-    .chatPanel .panelHeader .headerModelOption .effortInlineOption .check {
+    .effortInlineOverlay .effortInlineOption .effortCheck {
       opacity: 0;
       color: #0a7082;
       font-weight: 700;
     }
-    .chatPanel .panelHeader .headerModelOption .effortInlineOption.active .check {
+    .effortInlineOverlay .effortInlineOption.active .effortCheck {
       opacity: 1;
     }
-    .chatPanel .panelHeader .headerModelOption .check {
+
+    .chatPanel .panelHeader .headerModelOption > .modelRight > .check {
       opacity: 0;
       color: #0a7082;
       font-weight: 700;
     }
-    .chatPanel .panelHeader .headerModelOption.active .check {
+    .chatPanel .panelHeader .headerModelOption.active > .modelRight > .check {
       opacity: 1;
     }
     .chatPanel .panelHeader .grow {
