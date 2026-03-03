@@ -265,14 +265,41 @@
       line-height: 1.15;
       /* Some WebViews clip descenders ("g") on flex items with overflow hidden; keep 1px room. */
       padding-bottom: 1px;
+      transition: opacity 160ms ease, transform 200ms ease;
+      will-change: opacity, transform;
+    }
+    .chatPanel .panelHeader .headerModelText.isSwapping {
+      opacity: 0;
+      transform: translate3d(0, -3px, 0);
+    }
+    .chatPanel .panelHeader .headerReasoningEffort {
+      transition: opacity 160ms ease, transform 200ms ease;
+      will-change: opacity, transform;
+    }
+    .chatPanel .panelHeader .headerReasoningEffort.isSwapping {
+      opacity: 0;
+      transform: translate3d(0, -3px, 0);
     }
     .chatPanel .panelHeader .headerModelChevron {
       width: 14px;
       height: 14px;
       color: #5a6475;
       display: inline-flex;
-      transition: transform 150ms ease;
-      transform-origin: center center;
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+      transition: opacity 160ms ease, transform 200ms ease;
+      will-change: opacity, transform;
+    }
+    .chatPanel .panelHeader .headerModelPicker.loading .headerModelChevron {
+      transition: none;
+      opacity: 0;
+      transform: translate3d(0, -3px, 0);
+      pointer-events: none;
+    }
+    .chatPanel .panelHeader .headerModelChevron.isSwapping {
+      opacity: 0;
+      transform: translate3d(0, -3px, 0);
+      pointer-events: none;
     }
     .chatPanel .panelHeader .headerModelChevron svg {
       width: 14px;
@@ -283,8 +310,10 @@
       stroke-linecap: round;
       stroke-linejoin: round;
       display: block;
+      transition: transform 150ms ease;
+      transform-origin: center center;
     }
-    .chatPanel .panelHeader .headerModelPicker.open .headerModelChevron {
+    .chatPanel .panelHeader .headerModelPicker.open .headerModelChevron svg {
       transform: rotate(180deg);
     }
     .chatPanel .panelHeader .headerModelMenu {

@@ -77,10 +77,14 @@ const state = {
   // (live-follow / stick-to-bottom). This prevents the scroll handler from interpreting our
   // own auto-scroll as the user's "scroll away", which would stop following.
   chatProgrammaticScrollUntil: 0,
-  activeThreadModelLabel: "",
   activeThreadWorkspace: "windows",
   modelOptions: [],
   modelOptionsLoading: true,
+  modelOptionsLoadingSeq: 0,
+  modelOptionsLoadingStartedAt: 0,
+  headerModelWasLoading: true,
+  headerModelSwapInProgress: false,
+  headerModelSwapTimer: 0,
   selectedModel: "",
   selectedReasoningEffort: "",
   inlineEffortMenuOpen: false,
@@ -93,7 +97,12 @@ const GUIDE_DISMISSED_KEY = "web_codex_guide_dismissed_v2";
 const TOKEN_STORAGE_KEY = "web_codex_token_v1";
 const WORKSPACE_TARGET_KEY = "web_codex_workspace_target_v1";
 const FAVORITE_THREADS_KEY = "web_codex_favorite_threads_v1";
+const SELECTED_MODEL_KEY = "web_codex_selected_model_v1";
 const REASONING_EFFORT_KEY = "web_codex_reasoning_effort_v1";
+// Marker keys: older builds wrote model/effort into localStorage automatically (not user intent).
+// Only honor persisted selections when the user explicitly picked them.
+const MODEL_USER_SELECTED_KEY = "web_codex_model_user_selected_v1";
+const EFFORT_USER_SELECTED_KEY = "web_codex_effort_user_selected_v1";
 const SANDBOX_MODE =
   window.__WEB_CODEX_SANDBOX__ === true ||
   window.location.pathname.startsWith("/sandbox/") ||
@@ -107,10 +116,11 @@ const THREAD_AUTO_REFRESH_CONNECTED_MS = 2000;
 const THREAD_AUTO_REFRESH_DISCONNECTED_MS = 3500;
 const ACTIVE_THREAD_REFRESH_DEBOUNCE_MS = 380;
 const ACTIVE_THREAD_LIVE_POLL_MS = 1500;
+const MODEL_LOADING_MIN_MS = 1000;
 const RECENT_EVENT_ID_CACHE_SIZE = 2048;
 const MOBILE_PROMPT_MIN_HEIGHT_PX = 40;
 const MOBILE_PROMPT_MAX_HEIGHT_PX = 420;
-const CHAT_LIVE_FOLLOW_MAX_STEP_PX = 42;
+const CHAT_LIVE_FOLLOW_MAX_STEP_PX = 64;
 const CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS = 66;
 
 function dbgSet(patch) {
@@ -142,6 +152,64 @@ function bindInput(id, eventName, handler) {
 
 function waitMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function swapText(el, nextText, opts = {}) {
+  if (!el) return;
+  const want = String(nextText || "");
+  const cls = String(opts.swapClass || "isSwapping");
+  const hideWhenEmpty = !!opts.hideWhenEmpty;
+  const displayWhenVisible = String(opts.displayWhenVisible || "");
+  const wantVisible = !(hideWhenEmpty && !want.trim());
+
+  // Cancel any in-flight swap.
+  try {
+    if (el.__swapTimer) clearTimeout(el.__swapTimer);
+  } catch {}
+  el.__swapTimer = 0;
+
+  const wasHidden = String(el.style.display || "").trim() === "none" || getComputedStyle(el).display === "none";
+  const prev = String(el.textContent || "");
+
+  if (wasHidden && wantVisible) {
+    // Fade-in from hidden.
+    if (displayWhenVisible) el.style.display = displayWhenVisible;
+    else el.style.removeProperty("display");
+    el.textContent = want;
+    el.classList.add(cls);
+    requestAnimationFrame(() => {
+      try {
+        void el.offsetWidth;
+        el.classList.remove(cls);
+      } catch {}
+    });
+    return;
+  }
+
+  if (!wantVisible) {
+    if (wasHidden) return;
+    // Fade-out, then hide.
+    el.classList.add(cls);
+    el.__swapTimer = setTimeout(() => {
+      try {
+        el.textContent = "";
+        el.style.display = "none";
+        el.classList.remove(cls);
+      } catch {}
+    }, 120);
+    return;
+  }
+
+  if (prev === want) return;
+  // Fade-out, swap text, fade-in.
+  el.classList.add(cls);
+  el.__swapTimer = setTimeout(() => {
+    try {
+      el.textContent = want;
+      void el.offsetWidth;
+      el.classList.remove(cls);
+    } catch {}
+  }, 120);
 }
 
 function mobilePromptMaxHeightPx() {
@@ -310,22 +378,6 @@ function getActiveWorkspaceBadgeLabel() {
   return state.activeThreadWorkspace === "wsl2" ? "WSL2" : "WIN";
 }
 
-function pickActiveThreadModelLabel(thread) {
-  const directModel = thread?.model;
-  if (typeof directModel === "string" && directModel.trim()) return directModel.trim();
-  if (directModel && typeof directModel === "object") {
-    const modelId = String(directModel.id || "").trim();
-    if (modelId) return modelId;
-  }
-  const topLevelModel = String(thread?.modelName || thread?.model_name || "").trim();
-  if (topLevelModel) return topLevelModel;
-  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
-  const lastTurn = turns.length ? turns[turns.length - 1] : null;
-  const turnModel = String(lastTurn?.model || "").trim();
-  if (turnModel) return turnModel;
-  return "";
-}
-
 function syncActiveThreadMetaFromList(threadId = state.activeThreadId) {
   if (!threadId) return;
   const thread = state.threadItemsAll.find((item) => (item?.id || item?.threadId || "") === threadId);
@@ -334,8 +386,6 @@ function syncActiveThreadMetaFromList(threadId = state.activeThreadId) {
   if (target !== "unknown") state.activeThreadWorkspace = target;
   const rolloutPath = String(thread?.path || "").trim();
   if (rolloutPath) state.activeThreadRolloutPath = rolloutPath;
-  const modelLabel = pickActiveThreadModelLabel(thread);
-  if (modelLabel) state.activeThreadModelLabel = modelLabel;
 }
 
 function updateHeaderUi(animateBadge = false) {
@@ -345,13 +395,13 @@ function updateHeaderUi(animateBadge = false) {
   const modelPicker = byId("headerModelPicker");
   const modelLabel = byId("headerModelLabel");
   const headerEffort = byId("headerReasoningEffort");
+  const headerChevron = modelPicker ? modelPicker.querySelector(".headerModelChevron") : null;
   const inSettings = state.activeMainTab === "settings";
   const showBadge = !inSettings && state.activeThreadStarted;
   // Always prefer the currently selected model (the one we'll use for new turns).
-  // Thread history metadata can drift due to Codex migrations (e.g. 5.2 -> 5.3).
-  const displayModel = state.modelOptionsLoading
+  const displayModel = state.modelOptionsLoading || !String(state.selectedModel || "").trim()
     ? "Loading models..."
-    : (compactModelLabel(state.selectedModel) || compactModelLabel(state.activeThreadModelLabel) || "Codex");
+    : (compactModelLabel(state.selectedModel) || "Codex");
   const displayTitle = displayModel;
 
   if (panelTitle) {
@@ -365,7 +415,118 @@ function updateHeaderUi(animateBadge = false) {
   }
 
   if (modelPicker) modelPicker.style.display = inSettings ? "none" : "inline-flex";
-  if (modelLabel) modelLabel.textContent = displayTitle;
+
+  const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+  const active = options.find((x) => x && x.id === state.selectedModel) || null;
+  const supported = Array.isArray(active?.supportedReasoningEfforts) ? active.supportedReasoningEfforts : [];
+  const showEffort = !inSettings && !state.modelOptionsLoading && supported.length > 0;
+  const effortText = (() => {
+    if (!showEffort) return "";
+    const fallback = String(active.defaultReasoningEffort || supported[0]?.effort || "").trim();
+    const allowPersisted = String(localStorage.getItem(EFFORT_USER_SELECTED_KEY) || "").trim() === "1";
+    const persisted = allowPersisted ? String(localStorage.getItem(REASONING_EFFORT_KEY) || "").trim() : "";
+    return String(persisted || state.selectedReasoningEffort || fallback || "").trim();
+  })();
+
+  // Keep model + effort + chevron swaps in sync: no intermediate "Loading models...  medium",
+  // and no chevron popping in early/late relative to the text.
+  if (modelLabel && headerEffort) {
+    const isLoading = !!state.modelOptionsLoading || inSettings;
+    const wasLoading = !!state.headerModelWasLoading;
+
+    const clearTimers = (el) => {
+      try {
+        if (el && el.__swapTimer) clearTimeout(el.__swapTimer);
+      } catch {}
+      if (el) el.__swapTimer = 0;
+    };
+    const clearHeaderSwapTimer = () => {
+      try {
+        if (state.headerModelSwapTimer) clearTimeout(state.headerModelSwapTimer);
+      } catch {}
+      state.headerModelSwapTimer = 0;
+    };
+
+    if (isLoading) {
+      state.headerModelWasLoading = true;
+      state.headerModelSwapInProgress = false;
+      clearHeaderSwapTimer();
+      if (modelPicker) modelPicker.classList.remove("swapIntro");
+      clearTimers(modelLabel);
+      modelLabel.classList.remove("isSwapping");
+      modelLabel.textContent = "Loading models...";
+
+      clearTimers(headerEffort);
+      headerEffort.classList.remove("isSwapping");
+      headerEffort.textContent = "";
+      headerEffort.style.display = "none";
+    } else if (wasLoading) {
+      // First paint after loading ends: reveal model + effort + chevron together.
+      state.headerModelWasLoading = false;
+      state.headerModelSwapInProgress = true;
+      clearHeaderSwapTimer();
+
+      clearTimers(modelLabel);
+      clearTimers(headerEffort);
+
+      // Fade out "Loading models..." then fade in model + effort + chevron in sync.
+      modelLabel.classList.add("isSwapping");
+      if (headerChevron) headerChevron.classList.add("isSwapping");
+      if (showEffort && effortText) {
+        headerEffort.style.display = "inline-flex";
+        headerEffort.textContent = "";
+        headerEffort.classList.add("isSwapping");
+      } else {
+        headerEffort.style.display = "none";
+        headerEffort.textContent = "";
+        headerEffort.classList.remove("isSwapping");
+      }
+
+      state.headerModelSwapTimer = setTimeout(() => {
+        try {
+          // Ensure chevron isn't still under "loading" (loading disables transitions on the chevron).
+          if (modelPicker) modelPicker.classList.remove("loading");
+
+          modelLabel.textContent = displayTitle;
+          modelLabel.classList.remove("isSwapping");
+
+          if (showEffort && effortText) {
+            headerEffort.style.display = "inline-flex";
+            headerEffort.textContent = effortText;
+            headerEffort.classList.remove("isSwapping");
+          } else {
+            headerEffort.style.display = "none";
+            headerEffort.textContent = "";
+            headerEffort.classList.remove("isSwapping");
+          }
+
+          if (headerChevron) headerChevron.classList.remove("isSwapping");
+
+          state.headerModelSwapInProgress = false;
+          updateHeaderUi(false);
+        } catch {}
+      }, 120);
+    } else {
+      // If an intro swap is in progress, don't interfere (don't cancel timers / don't desync).
+      if (!state.headerModelSwapInProgress) {
+        swapText(modelLabel, displayTitle, { hideWhenEmpty: false });
+        swapText(headerEffort, effortText, { hideWhenEmpty: true, displayWhenVisible: "inline-flex" });
+      }
+    }
+  } else if (modelLabel) {
+    // Fallback: label only.
+    if (displayTitle === "Loading models...") modelLabel.textContent = displayTitle;
+    else swapText(modelLabel, displayTitle, { hideWhenEmpty: false });
+  }
+
+  // Chevron visibility:
+  // - Hide while models are loading
+  // - Also hide during the first "loading -> model" intro swap, so chevron appears in sync
+  //   with model + effort.
+  if (modelPicker) {
+    const loadingUi = !!(!inSettings && (state.modelOptionsLoading || state.headerModelSwapInProgress));
+    modelPicker.classList.toggle("loading", loadingUi);
+  }
   if (inSettings) setHeaderModelMenuOpen(false);
 
   // Disable model picker interaction until models are loaded.
@@ -379,22 +540,7 @@ function updateHeaderUi(animateBadge = false) {
     }
   }
 
-  // Header reasoning effort label (only when supported by the selected model).
-  if (headerEffort) {
-    const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
-    const active = options.find((x) => x && x.id === state.selectedModel) || null;
-    const supported = Array.isArray(active?.supportedReasoningEfforts) ? active.supportedReasoningEfforts : [];
-    const showEffort = !inSettings && !state.modelOptionsLoading && supported.length > 0;
-    if (!showEffort) {
-      headerEffort.style.display = "none";
-      headerEffort.textContent = "";
-    } else {
-      const fallback = String(active.defaultReasoningEffort || supported[0]?.effort || "").trim();
-      const cur = String(localStorage.getItem(REASONING_EFFORT_KEY) || state.selectedReasoningEffort || fallback || "").trim();
-      headerEffort.style.display = "inline-flex";
-      headerEffort.textContent = cur;
-    }
-  }
+  // Note: headerEffort is handled together with modelLabel above to keep swaps in sync.
 
   if (headerSwitch) {
     headerSwitch.style.display = !inSettings && !showBadge ? "inline-flex" : "none";
@@ -495,7 +641,9 @@ function openInlineEffortOverlay(anchorEl, model) {
   // Force style flush (especially important on first mount / some mobile webviews).
   void overlay.offsetWidth;
   const fallback = String(model.defaultReasoningEffort || supported[0]?.effort || "").trim();
-  const cur = String(localStorage.getItem(REASONING_EFFORT_KEY) || state.selectedReasoningEffort || fallback || "").trim();
+  const allowPersisted = String(localStorage.getItem(EFFORT_USER_SELECTED_KEY) || "").trim() === "1";
+  const persisted = allowPersisted ? String(localStorage.getItem(REASONING_EFFORT_KEY) || "").trim() : "";
+  const cur = String(persisted || state.selectedReasoningEffort || fallback || "").trim();
 
   overlay.innerHTML = supported
     .map((x) => {
@@ -559,6 +707,7 @@ function openInlineEffortOverlay(anchorEl, model) {
       if (!effort) return;
       state.selectedReasoningEffort = effort;
       localStorage.setItem(REASONING_EFFORT_KEY, effort);
+      localStorage.setItem(EFFORT_USER_SELECTED_KEY, "1");
       state.inlineEffortMenuOpen = false;
       state.inlineEffortMenuForModel = "";
       closeInlineEffortOverlay();
@@ -621,9 +770,12 @@ function renderHeaderModelMenu() {
       // so we double-guard here.
       const target = event?.target;
       // Chevron is indicator-only; no special-case needed.
-
+ 
       state.selectedModel = model.id;
-      if (state.activeThreadStarted) state.activeThreadModelLabel = model.id;
+      try {
+        localStorage.setItem(SELECTED_MODEL_KEY, state.selectedModel);
+        localStorage.setItem(MODEL_USER_SELECTED_KEY, "1");
+      } catch {}
 
       // Keep the model menu open so the user can immediately pick reasoning effort without re-opening.
       // If the current effort isn't supported by the new model, fall back to the model default.
@@ -687,18 +839,29 @@ function syncHeaderModelPicker() {
     updateHeaderUi();
     return;
   }
-  const selected = state.selectedModel && options.some((item) => item.id === state.selectedModel)
-    ? state.selectedModel
-    : options.find((item) => item.isDefault)?.id || options[0].id;
+  const allowPersistedModel = String(localStorage.getItem(MODEL_USER_SELECTED_KEY) || "").trim() === "1";
+  const persistedModel = allowPersistedModel ? String(localStorage.getItem(SELECTED_MODEL_KEY) || "").trim() : "";
+  const preferred = persistedModel || state.selectedModel;
+  const latest = pickLatestModelId(options);
+  const selected = preferred && options.some((item) => item.id === preferred)
+    ? preferred
+    : latest || options.find((item) => item.isDefault)?.id || options[0].id;
   state.selectedModel = selected;
+  try {
+    localStorage.setItem(SELECTED_MODEL_KEY, selected);
+  } catch {}
 
   // Pick reasoning effort: prefer persisted value if supported by the selected model, otherwise use model default.
   const active = options.find((x) => x.id === selected) || options[0];
   const supported = Array.isArray(active?.supportedReasoningEfforts) ? active.supportedReasoningEfforts : [];
-  const persisted = String(localStorage.getItem(REASONING_EFFORT_KEY) || "").trim();
+  const allowPersistedEffort = String(localStorage.getItem(EFFORT_USER_SELECTED_KEY) || "").trim() === "1";
+  const persisted = allowPersistedEffort ? String(localStorage.getItem(REASONING_EFFORT_KEY) || "").trim() : "";
   if (supported.length) {
     const ok = persisted && supported.some((x) => x && x.effort === persisted);
-    const next = ok ? persisted : String(active.defaultReasoningEffort || supported[0]?.effort || "").trim();
+    const hasMedium = supported.some((x) => String(x?.effort || "").trim() === "medium");
+    const next = ok
+      ? persisted
+      : (hasMedium ? "medium" : String(active.defaultReasoningEffort || supported[0]?.effort || "").trim());
     state.selectedReasoningEffort = next;
     if (next) localStorage.setItem(REASONING_EFFORT_KEY, next);
   } else {
@@ -709,7 +872,10 @@ function syncHeaderModelPicker() {
 }
 
 async function refreshModels() {
+  state.modelOptionsLoadingSeq = Number(state.modelOptionsLoadingSeq || 0) + 1;
+  const seq = state.modelOptionsLoadingSeq;
   state.modelOptionsLoading = true;
+  state.modelOptionsLoadingStartedAt = performance.now();
   updateHeaderUi();
   try {
     const data = await api("/codex/models");
@@ -722,6 +888,13 @@ async function refreshModels() {
     state.modelOptions = mapped;
     syncHeaderModelPicker();
   } finally {
+    const elapsed = performance.now() - Number(state.modelOptionsLoadingStartedAt || 0);
+    const remaining = Math.max(0, MODEL_LOADING_MIN_MS - elapsed);
+    if (remaining > 0) await waitMs(remaining);
+
+    // If a newer refresh started, don't clear its loading flag.
+    if (state.modelOptionsLoadingSeq !== seq) return;
+
     state.modelOptionsLoading = false;
     updateHeaderUi();
   }
@@ -901,6 +1074,53 @@ function compactModelLabel(raw) {
   const text = String(raw || "").trim();
   if (!text) return "";
   return text.startsWith("gpt-") ? text.slice(4) : text;
+}
+
+function parseModelRankParts(modelId) {
+  const id = String(modelId || "").trim();
+  if (!id) return { major: 0, minor: 0, date: 0, isCodex: 0, text: "" };
+  const isCodex = /\bcodex\b/i.test(id) ? 1 : 0;
+  // Common shapes:
+  // - gpt-5.3-codex
+  // - gpt-5.2-2025-12-11
+  // - gpt-5.2
+  const ver = /\bgpt-(\d+)(?:\.(\d+))?/i.exec(id);
+  const major = ver ? Number(ver[1] || 0) : 0;
+  const minor = ver ? Number(ver[2] || 0) : 0;
+  const dm = /-(\d{4})-(\d{2})-(\d{2})(?:\b|_)/.exec(id);
+  const date = dm ? Number(`${dm[1]}${dm[2]}${dm[3]}`) : 0;
+  return { major: Number.isFinite(major) ? major : 0, minor: Number.isFinite(minor) ? minor : 0, date, isCodex, text: id };
+}
+
+function pickLatestModelId(options) {
+  const list = Array.isArray(options) ? options.filter(Boolean) : [];
+  if (!list.length) return "";
+  const codexOnly = list.filter((x) => /\bcodex\b/i.test(String(x?.id || "")));
+  const pool = codexOnly.length ? codexOnly : list;
+  let best = pool[0];
+  let bestKey = parseModelRankParts(best?.id);
+  for (const item of pool) {
+    const key = parseModelRankParts(item?.id);
+    // Prefer higher major/minor, then newer date stamp, then codex (within mixed pools), then stable text compare.
+    if (key.major !== bestKey.major) {
+      if (key.major > bestKey.major) { best = item; bestKey = key; }
+      continue;
+    }
+    if (key.minor !== bestKey.minor) {
+      if (key.minor > bestKey.minor) { best = item; bestKey = key; }
+      continue;
+    }
+    if (key.date !== bestKey.date) {
+      if (key.date > bestKey.date) { best = item; bestKey = key; }
+      continue;
+    }
+    if (key.isCodex !== bestKey.isCodex) {
+      if (key.isCodex > bestKey.isCodex) { best = item; bestKey = key; }
+      continue;
+    }
+    if (String(key.text) > String(bestKey.text)) { best = item; bestKey = key; }
+  }
+  return String(best?.id || "").trim();
 }
 
 function inModelMenu(node) {
@@ -1222,6 +1442,9 @@ function scrollToBottomReliable() {
   });
   attempt(120);
   attempt(260);
+  attempt(420);
+  attempt(520);
+  attempt(900);
 }
 
 function canStartChatLiveFollow() {
@@ -2410,9 +2633,7 @@ async function applyThreadToChat(thread, options = {}) {
     String(lastMsg?.text || ""),
   ].join("::");
   state.activeThreadStarted = messages.length > 0 || turns.length > 0;
-  const modelLabel = pickActiveThreadModelLabel(thread);
-  if (modelLabel) state.activeThreadModelLabel = modelLabel;
-  else state.activeThreadModelLabel = state.selectedModel || "";
+  // Model selection is global (header picker), not per-thread.
   const target = detectThreadWorkspaceTarget(thread);
   if (target !== "unknown") state.activeThreadWorkspace = target;
   if (!options.forceRender && state.activeThreadRenderSig === renderSig) {
@@ -2505,7 +2726,11 @@ async function applyThreadToChat(thread, options = {}) {
 
   if (options.stickToBottom) {
     state.chatShouldStickToBottom = true;
+    state.chatUserScrolledAwayAt = 0;
     scrollToBottomReliable();
+    // Even if the previous chat left us "non-sticky", opening a new chat should follow late layout
+    // settles (images/font load) briefly so we actually land at the bottom.
+    scheduleChatLiveFollow(1400);
   }
 
   if (state.activeThreadStarted) hideWelcomeCard();
@@ -2692,7 +2917,6 @@ function setActiveThread(id) {
   if (prev !== state.activeThreadId) state.activeThreadRenderSig = "";
   if (!state.activeThreadId) {
     state.activeThreadStarted = false;
-    state.activeThreadModelLabel = "";
     state.activeThreadWorkspace = getWorkspaceTarget();
   } else {
     syncActiveThreadMetaFromList(state.activeThreadId);
@@ -3379,26 +3603,6 @@ async function connect() {
   connectWs();
   setStatus("Connected.");
   await refreshModels().catch((e) => setStatus(e.message, true));
-  // Initialize from the user's actual Codex CLI config (Windows) so the header reflects
-  // what the terminal uses (e.g. gpt-5.2), not just the provider's "default" model.
-  try {
-    const cfg = await api("/codex/cli-config");
-    const win = cfg?.windows || null;
-    const winModel = String(win?.model || "").trim();
-    const winEffort = String(win?.reasoningEffort || win?.reasoning_effort || "").trim();
-    if (winModel) {
-      const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
-      if (options.some((x) => x && x.id === winModel)) {
-        state.selectedModel = winModel;
-        if (state.activeThreadStarted) state.activeThreadModelLabel = winModel;
-      }
-      if (winEffort) {
-        state.selectedReasoningEffort = winEffort;
-        localStorage.setItem(REASONING_EFFORT_KEY, winEffort);
-      }
-      syncHeaderModelPicker();
-    }
-  } catch {}
   await refreshCodexVersions().catch((e) => setStatus(e.message, true));
   await refreshAll();
   setMainTab("chat");
@@ -3422,7 +3626,6 @@ async function newThread() {
   // Immediately switch UI back to the fresh-chat state.
   setActiveThread("");
   state.activeThreadStarted = false;
-  state.activeThreadModelLabel = state.selectedModel || "";
   state.activeThreadWorkspace = getWorkspaceTarget();
   clearChatMessages();
   showWelcomeCard();
@@ -3433,7 +3636,6 @@ async function newThread() {
   if (id) {
     setActiveThread(id);
     state.activeThreadStarted = false;
-    state.activeThreadModelLabel = state.selectedModel || "";
     state.activeThreadWorkspace = getWorkspaceTarget();
     clearChatMessages();
     showWelcomeCard();
@@ -3458,7 +3660,6 @@ async function sendTurn() {
   const shouldAnimateWorkspaceBadge = !state.activeThreadStarted;
   state.activeThreadStarted = true;
   state.activeThreadWorkspace = getWorkspaceTarget();
-  if (state.selectedModel) state.activeThreadModelLabel = state.selectedModel;
   updateHeaderUi(shouldAnimateWorkspaceBadge);
   addChat("user", prompt);
   state.chatShouldStickToBottom = true;
@@ -3811,14 +4012,15 @@ function bootstrap() {
           state.modelOptionsLoading = false;
           // Populate state even if the picker hasn't rendered yet (avoid brittle DOM timing in tests).
           const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
-          state.selectedModel = options.find((x) => x && x.isDefault)?.id || options[0]?.id || "";
+          state.selectedModel = pickLatestModelId(options) || options.find((x) => x && x.isDefault)?.id || options[0]?.id || "";
           if (state.selectedModel) {
             const active = options.find((x) => x && x.id === state.selectedModel) || options[0] || null;
             const supported = Array.isArray(active?.supportedReasoningEfforts) ? active.supportedReasoningEfforts : [];
             const persisted = String(localStorage.getItem(REASONING_EFFORT_KEY) || "").trim();
             if (supported.length) {
               const ok = persisted && supported.some((x) => x && x.effort === persisted);
-              const next = ok ? persisted : String(active.defaultReasoningEffort || supported[0]?.effort || "").trim();
+              const hasMedium = supported.some((x) => String(x?.effort || "").trim() === "medium");
+              const next = ok ? persisted : (hasMedium ? "medium" : String(active.defaultReasoningEffort || supported[0]?.effort || "").trim());
               state.selectedReasoningEffort = next;
               if (next) localStorage.setItem(REASONING_EFFORT_KEY, next);
             } else {
@@ -3828,6 +4030,50 @@ function bootstrap() {
           renderHeaderModelMenu();
           updateHeaderUi();
           return { ok: true, count: state.modelOptions.length };
+        },
+        loadModelsWithMinLoadingMs(items, minLoadingMs = MODEL_LOADING_MIN_MS) {
+          // E2E helper: emulate "models load too fast" without a gateway, while enforcing minimum
+          // loading time to avoid label flash.
+          const minMs = Math.max(0, Number(minLoadingMs || 0));
+          const seq = Number(state.modelOptionsLoadingSeq || 0) + 1;
+          state.modelOptionsLoadingSeq = seq;
+          state.modelOptionsLoadingStartedAt = performance.now();
+          state.modelOptionsLoading = true;
+          state.modelOptions = [];
+          setHeaderModelMenuOpen(false);
+          updateHeaderUi();
+
+          state.modelOptions = ensureArrayItems(items).map(normalizeModelOption).filter(Boolean);
+          // Populate state even if the picker hasn't rendered yet (avoid brittle DOM timing in tests).
+          const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+          state.selectedModel = pickLatestModelId(options) || options.find((x) => x && x.isDefault)?.id || options[0]?.id || "";
+          if (state.selectedModel) {
+            const active = options.find((x) => x && x.id === state.selectedModel) || options[0] || null;
+            const supported = Array.isArray(active?.supportedReasoningEfforts) ? active.supportedReasoningEfforts : [];
+            const persisted = String(localStorage.getItem(REASONING_EFFORT_KEY) || "").trim();
+            if (supported.length) {
+              const ok = persisted && supported.some((x) => x && x.effort === persisted);
+              const hasMedium = supported.some((x) => String(x?.effort || "").trim() === "medium");
+              const next = ok ? persisted : (hasMedium ? "medium" : String(active.defaultReasoningEffort || supported[0]?.effort || "").trim());
+              state.selectedReasoningEffort = next;
+              if (next) localStorage.setItem(REASONING_EFFORT_KEY, next);
+            } else {
+              state.selectedReasoningEffort = persisted;
+            }
+          }
+          renderHeaderModelMenu();
+          updateHeaderUi();
+
+          const elapsed = performance.now() - Number(state.modelOptionsLoadingStartedAt || 0);
+          const remaining = Math.max(0, minMs - elapsed);
+          setTimeout(() => {
+            try {
+              if (state.modelOptionsLoadingSeq !== seq) return;
+              state.modelOptionsLoading = false;
+              updateHeaderUi();
+            } catch {}
+          }, remaining);
+          return { ok: true, remainingMs: Math.round(remaining) };
         },
         seedThreads(count = 260) {
           const items = [];
@@ -3983,6 +4229,7 @@ function bootstrap() {
   const savedToken = localStorage.getItem(TOKEN_STORAGE_KEY) || "";
   const savedWorkspaceTarget = localStorage.getItem(WORKSPACE_TARGET_KEY) || "windows";
   const savedFavoritesRaw = localStorage.getItem(FAVORITE_THREADS_KEY) || "[]";
+  const savedModel = String(localStorage.getItem(SELECTED_MODEL_KEY) || "").trim();
   try {
     const savedFavorites = JSON.parse(savedFavoritesRaw);
     if (Array.isArray(savedFavorites)) {
@@ -3998,6 +4245,7 @@ function bootstrap() {
   }
   state.workspaceTarget = normalizeWorkspaceTarget(savedWorkspaceTarget);
   state.activeThreadWorkspace = state.workspaceTarget;
+  if (savedModel) state.selectedModel = savedModel;
   updateWorkspaceAvailability(false, false);
   applyWorkspaceUi();
   syncHeaderModelPicker();

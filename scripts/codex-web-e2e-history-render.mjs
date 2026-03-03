@@ -183,6 +183,45 @@ async function main() {
       return !!ok
     }, 20000, '__webCodexE2E init')
 
+    // Regression: when there is no persisted selection, default should pick the latest model
+    // (not the first item / isDefault), and default effort should be "medium" when supported.
+    {
+      const seeded = await driver.executeScript(`
+        try {
+          localStorage.removeItem('web_codex_selected_model_v1');
+          localStorage.removeItem('web_codex_reasoning_effort_v1');
+          localStorage.removeItem('web_codex_model_user_selected_v1');
+          localStorage.removeItem('web_codex_effort_user_selected_v1');
+        } catch {}
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.setModels !== 'function') return { ok: false, error: 'setModels missing' };
+        return h.setModels([
+          { id: 'gpt-5.2-codex', supportedReasoningEfforts: [{ effort: 'medium' }, { effort: 'high' }], defaultReasoningEffort: 'high' },
+          { id: 'gpt-5.3-codex', supportedReasoningEfforts: [{ effort: 'medium' }, { effort: 'high' }], defaultReasoningEffort: 'high' },
+        ]);
+      `)
+      if (!seeded?.ok) throw new Error(`setModels failed: ${seeded?.error || 'unknown'}`)
+
+      await waitFor(async () => {
+        const cur = await driver.executeScript(`
+          return {
+            model: String(document.getElementById('headerModelLabel')?.textContent || '').trim(),
+            effort: String(document.getElementById('headerReasoningEffort')?.textContent || '').trim(),
+          };
+        `)
+        return cur?.model === '5.3-codex' && cur?.effort === 'medium'
+      }, 10000, 'latest model default selection')
+
+      const cur = await driver.executeScript(`
+        return {
+          model: String(document.getElementById('headerModelLabel')?.textContent || '').trim(),
+          effort: String(document.getElementById('headerReasoningEffort')?.textContent || '').trim(),
+        };
+      `)
+      if (cur?.model !== '5.3-codex') throw new Error(`expected latest model 5.3-codex, got ${JSON.stringify(cur)}`)
+      if (cur?.effort !== 'medium') throw new Error(`expected default effort medium, got ${JSON.stringify(cur)}`)
+    }
+
     // Regression: while models are still loading, the header should say "Loading models..." and
     // the model picker should not open a menu that says "No models available".
     {
@@ -197,14 +236,25 @@ async function main() {
         const label = document.getElementById('headerModelLabel');
         const trigger = document.getElementById('headerModelTrigger');
         const picker = document.getElementById('headerModelPicker');
+        const chev = picker ? picker.querySelector('.headerModelChevron') : null;
+        const cs = chev ? getComputedStyle(chev) : null;
         return {
           label: String(label?.textContent || '').trim(),
           ariaDisabled: String(trigger?.getAttribute('aria-disabled') || '').trim(),
           open: !!picker?.classList.contains('open'),
+          chevronDisplay: String(cs?.display || ''),
+          chevronOpacity: String(cs?.opacity || ''),
         };
       `)
       if (pre?.label !== 'Loading models...') throw new Error(`expected header model label to show Loading models..., got ${JSON.stringify(pre?.label || '')}`)
       if (pre?.ariaDisabled !== 'true') throw new Error(`expected header model trigger aria-disabled=true while loading, got ${JSON.stringify(pre?.ariaDisabled || '')}`)
+      {
+        const op = Number.parseFloat(String(pre?.chevronOpacity || ''))
+        const hidden = pre?.chevronDisplay === 'none' || (Number.isFinite(op) && op <= 0.01)
+        if (!hidden) {
+          throw new Error(`expected header chevron to be hidden while loading, got display=${JSON.stringify(pre?.chevronDisplay || '')} opacity=${JSON.stringify(pre?.chevronOpacity || '')}`)
+        }
+      }
 
       // Avoid descender clipping ("g" tail in "Loading") by requiring a non-tight line-height.
       const lh = await driver.executeScript(`
@@ -230,6 +280,126 @@ async function main() {
       await new Promise((r) => setTimeout(r, 250))
       const stillClosed = await driver.executeScript(`return !!document.getElementById('headerModelPicker')?.classList.contains('open');`)
       if (stillClosed) throw new Error('expected model picker to stay closed while models are loading')
+
+      // Loading label should not "flash": once shown, keep it visible for at least 1s, then
+      // transition to the selected model+effort with an animation (no hard swap).
+      const loadingSwap = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.loadModelsWithMinLoadingMs !== 'function') return { ok: false, error: 'loadModelsWithMinLoadingMs missing' };
+        const t0 = performance.now();
+        const r = h.loadModelsWithMinLoadingMs([
+          {
+            id: 'gpt-5.2',
+            displayName: 'gpt-5.2',
+            isDefault: true,
+            defaultReasoningEffort: 'medium',
+            supportedReasoningEfforts: [
+              { effort: 'low', description: 'fast' },
+              { effort: 'medium', description: 'default' },
+              { effort: 'high', description: 'deep' },
+            ],
+          },
+        ], 1000);
+        return { ok: true, t0, remainingMs: r && typeof r.remainingMs === 'number' ? r.remainingMs : -1 };
+      `)
+      if (!loadingSwap?.ok) throw new Error(`loadModelsWithMinLoadingMs failed: ${loadingSwap?.error || 'unknown'}`)
+
+      // Observe over time:
+      // - Loading models... must remain for at least 1s (no flash)
+      // - Effort must not appear while label still says Loading models...
+      // - Swap must be animated (we should see the `isSwapping` class at least once)
+      // - Final state should be 5.2 + medium
+      const tStart = Date.now()
+      let sawSwapClass = false
+      let sawLoaded = false
+      let visModelAt = -1
+      let visEffAt = -1
+      let visChevAt = -1
+      let last = { text: '', eff: '' }
+      while (Date.now() - tStart < 1400) {
+        // eslint-disable-next-line no-await-in-loop
+        const p = await driver.executeScript(`
+          const model = document.getElementById('headerModelLabel');
+          const effort = document.getElementById('headerReasoningEffort');
+          const picker = document.getElementById('headerModelPicker');
+          const chev = picker ? picker.querySelector('.headerModelChevron') : null;
+          const cs = chev ? getComputedStyle(chev) : null;
+          const text = String(model?.textContent || '').trim();
+          const eff = String(effort?.textContent || '').trim();
+          const swapping = !!(model?.classList?.contains?.('isSwapping') || effort?.classList?.contains?.('isSwapping'));
+          const ms = model ? getComputedStyle(model) : null;
+          const es = effort ? getComputedStyle(effort) : null;
+          return {
+            text,
+            eff,
+            swapping,
+            chevronDisplay: String(cs?.display || ''),
+            chevronOpacity: String(cs?.opacity || ''),
+            modelOpacity: String(ms?.opacity || ''),
+            effortOpacity: String(es?.opacity || ''),
+          };
+        `)
+        last = { text: String(p?.text || ''), eff: String(p?.eff || '') }
+        if (p?.swapping) sawSwapClass = true
+        if (String(p?.text || '').trim() === 'Loading models...') {
+          const op = Number.parseFloat(String(p?.chevronOpacity || ''))
+          const hidden = String(p?.chevronDisplay || '') === 'none' || (Number.isFinite(op) && op <= 0.01)
+          if (!hidden) {
+            throw new Error(`expected chevron hidden while label is Loading models..., got display=${JSON.stringify(p?.chevronDisplay || '')} opacity=${JSON.stringify(p?.chevronOpacity || '')}`)
+          }
+        }
+
+        const elapsed = Date.now() - tStart
+        if (elapsed < 600) {
+          if (last.text !== 'Loading models...') throw new Error(`expected Loading models... to remain visible for >=600ms, got ${JSON.stringify(last.text)}`)
+          if (last.eff) throw new Error(`expected no effort label while still loading, got ${JSON.stringify(last.eff)}`)
+        }
+        if (last.text === 'Loading models...' && last.eff) {
+          throw new Error('effort label appeared while model label still showed Loading models... (should swap in sync)')
+        }
+        if (last.text && last.text !== 'Loading models...') {
+          sawLoaded = true
+        }
+
+        // Capture first frame each element is "visible" (opacity high enough).
+        const mo = Number.parseFloat(String(p?.modelOpacity || ''))
+        const eo = Number.parseFloat(String(p?.effortOpacity || ''))
+        const co = Number.parseFloat(String(p?.chevronOpacity || ''))
+        if (visModelAt < 0 && last.text && last.text !== 'Loading models...' && Number.isFinite(mo) && mo >= 0.85) visModelAt = Date.now() - tStart
+        if (visEffAt < 0 && last.eff && Number.isFinite(eo) && eo >= 0.85) visEffAt = Date.now() - tStart
+        if (visChevAt < 0 && last.text && last.text !== 'Loading models...' && String(p?.chevronDisplay || '') !== 'none' && Number.isFinite(co) && co >= 0.85) visChevAt = Date.now() - tStart
+
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(20)
+      }
+      if (!sawSwapClass) throw new Error('expected an animated swap (isSwapping) when changing Loading models... -> model label/effort')
+      if (!sawLoaded) throw new Error(`expected to leave loading state within 1.4s, last=${JSON.stringify(last)}`)
+      if (last.text !== '5.2') throw new Error(`expected final model label 5.2, got ${JSON.stringify(last.text)}`)
+      if (last.eff !== 'medium') throw new Error(`expected final effort label medium, got ${JSON.stringify(last.eff)}`)
+
+      // Model, effort, and chevron should become visible at essentially the same time.
+      if (visModelAt < 0 || visEffAt < 0 || visChevAt < 0) {
+        throw new Error(`expected model+effort+chevron to become visible; got visModelAt=${visModelAt} visEffAt=${visEffAt} visChevAt=${visChevAt}`)
+      }
+      const maxVis = Math.max(visModelAt, visEffAt, visChevAt)
+      const minVis = Math.min(visModelAt, visEffAt, visChevAt)
+      if (maxVis - minVis > 45) {
+        throw new Error(`expected model+effort+chevron to appear within 45ms of each other; got model=${visModelAt}ms effort=${visEffAt}ms chev=${visChevAt}ms`)
+      }
+
+      // Chevron should become visible promptly once loading is gone.
+      await waitFor(async () => {
+        const p = await driver.executeScript(`
+          const picker = document.getElementById('headerModelPicker');
+          const chev = picker ? picker.querySelector('.headerModelChevron') : null;
+          const cs = chev ? getComputedStyle(chev) : null;
+          const label = String(document.getElementById('headerModelLabel')?.textContent || '').trim();
+          const op = Number.parseFloat(String(cs?.opacity || ''));
+          const visible = cs && cs.display !== 'none' && (!Number.isFinite(op) || op >= 0.85);
+          return { label, visible, display: String(cs?.display || ''), opacity: String(cs?.opacity || '') };
+        `)
+        return p?.label === '5.2' && !!p?.visible
+      }, 2000, 'header chevron visible after loading swap')
     }
 
     // Regression: reasoning-effort selector should be a nested submenu to the RIGHT of the active model option
@@ -380,15 +550,20 @@ async function main() {
         high.click();
         const pickerOpen2 = !!document.getElementById('headerModelPicker')?.classList.contains('open');
         const overlayGone = !document.getElementById('effortInlineOverlay')?.classList.contains('show');
-        const headerEffort = String(document.getElementById('headerReasoningEffort')?.textContent || '').trim();
-        return { ok: true, pickerOpen2, overlayGone, headerEffort, rightOfMenu, gap };
+        return { ok: true, pickerOpen2, overlayGone, rightOfMenu, gap };
       `)
       if (!pickedHigh?.ok) throw new Error(`failed to pick high: ${pickedHigh?.error || 'unknown'}`)
       if (pickedHigh.pickerOpen2) throw new Error('expected model menu to close after selecting reasoning effort')
       if (!pickedHigh.overlayGone) throw new Error('expected effort submenu overlay to close after selecting reasoning effort')
-      if (pickedHigh.headerEffort !== 'high') throw new Error(`expected headerReasoningEffort to show high, got ${JSON.stringify(pickedHigh.headerEffort)}`)
       if (!pickedHigh.rightOfMenu) throw new Error('expected effort overlay to appear to the right of model menu')
       if (typeof pickedHigh.gap === 'number' && pickedHigh.gap > 3) throw new Error(`expected effort submenu gap <= 3px, got ${pickedHigh.gap}px`)
+
+      await waitFor(async () => {
+        const headerEffort = await driver.executeScript(
+          `return String(document.getElementById('headerReasoningEffort')?.textContent || '').trim();`,
+        )
+        return headerEffort === 'high'
+      }, 4000, 'headerReasoningEffort becomes high')
 
       // Header effort should match the model label typography (same font-size and font-weight).
       const typo = await driver.executeScript(`
@@ -610,6 +785,41 @@ async function main() {
       `)
       if (!openedPrev?.ok) throw new Error(`openThread(prev) failed: ${openedPrev?.error || 'unknown'}`)
 
+      // Opening a chat should land at (or extremely near) the bottom.
+      const prevBottom = await driver.executeScript(`
+        const box = document.getElementById('chatBox');
+        if (!box) return { ok: false, error: 'missing chatBox' };
+        const dist = Math.max(0, box.scrollHeight - (box.scrollTop + box.clientHeight));
+        return { ok: true, dist: Math.round(dist) };
+      `)
+      if (!prevBottom?.ok) throw new Error(`bottom probe failed: ${prevBottom?.error || 'unknown'}`)
+      if (Number(prevBottom.dist || 0) > 3) {
+        throw new Error(`expected opened chat to be at bottom (dist<=3px), got ${JSON.stringify(prevBottom)}`)
+      }
+
+      // Regression: if the user previously scrolled away (non-sticky), opening a new chat with stickToBottom
+      // must still keep following late layout settles (e.g. images loading) for a short window.
+      const lateSettle = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const h = window.__webCodexE2E;
+        const box = document.getElementById('chatBox');
+        if (!h || !box) return done({ ok: false, error: 'missing e2e/chatBox' });
+        h.setChatStickiness(false);
+        // Simulate "image load" by changing padding on an existing element (attribute change; no DOM mutation).
+        const lastBody = box.querySelector('.msg:last-child .msgBody');
+        if (!lastBody) return done({ ok: false, error: 'missing last msgBody' });
+        lastBody.style.paddingBottom = '0px';
+        setTimeout(() => { lastBody.style.paddingBottom = '520px'; }, 220);
+        setTimeout(() => {
+          const dist = Math.max(0, box.scrollHeight - (box.scrollTop + box.clientHeight));
+          done({ ok: true, dist: Math.round(dist) });
+        }, 760);
+      `)
+      if (!lateSettle?.ok) throw new Error(`late settle probe failed: ${lateSettle?.error || 'unknown'}`)
+      if (Number(lateSettle.dist || 0) > 3) {
+        throw new Error(`expected open-chat stickiness to keep bottom during late layout settles (dist<=3px), got ${JSON.stringify(lateSettle)}`)
+      }
+
       const startedSlow = await driver.executeScript(`
         const h = window.__webCodexE2E;
         return h?.startOpenThreadSlow?.('e2e_big_next') || { ok: false, error: 'startOpenThreadSlow missing' };
@@ -669,6 +879,17 @@ async function main() {
         h.awaitSlowOpenDone().then(done).catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
       `)
       if (!done?.ok) throw new Error(`slow open did not complete: ${done?.error || 'unknown'}`)
+
+      const nextBottom = await driver.executeScript(`
+        const box = document.getElementById('chatBox');
+        if (!box) return { ok: false, error: 'missing chatBox' };
+        const dist = Math.max(0, box.scrollHeight - (box.scrollTop + box.clientHeight));
+        return { ok: true, dist: Math.round(dist) };
+      `)
+      if (!nextBottom?.ok) throw new Error(`bottom probe failed: ${nextBottom?.error || 'unknown'}`)
+      if (Number(nextBottom.dist || 0) > 3) {
+        throw new Error(`expected opened chat to be at bottom after slow open (dist<=3px), got ${JSON.stringify(nextBottom)}`)
+      }
 
       await driver.executeScript(`document.body.classList.remove('drawer-left-open'); document.getElementById('mobileDrawerBackdrop')?.classList.remove('show');`)
       await driver.manage().window().setRect(originalRect)
@@ -736,21 +957,24 @@ async function main() {
     }, 15000, 'chat to render')
 
     // Opening a thread should land near the bottom (latest messages visible).
-    const scrollChecks = await driver.executeScript(`
-      const box = document.getElementById('chatBox');
-      if (!box) return { ok: false, error: 'no chatBox' };
-      return {
-        ok: true,
-        scrollTop: box.scrollTop,
-        scrollHeight: box.scrollHeight,
-        clientHeight: box.clientHeight,
-      };
-    `)
-    if (!scrollChecks?.ok) throw new Error(`scroll checks failed: ${scrollChecks?.error || 'unknown'}`)
-    if (!(Number(scrollChecks.scrollTop || 0) > 0)) throw new Error('expected chat to be scrolled down on open (not at top)')
-    if (Number(scrollChecks.scrollTop || 0) + Number(scrollChecks.clientHeight || 0) < Number(scrollChecks.scrollHeight || 0) - 60) {
-      throw new Error('expected chat to land near bottom on open')
-    }
+    await waitFor(async () => {
+      const scrollChecks = await driver.executeScript(`
+        const box = document.getElementById('chatBox');
+        if (!box) return { ok: false, error: 'no chatBox' };
+        return {
+          ok: true,
+          scrollTop: box.scrollTop,
+          scrollHeight: box.scrollHeight,
+          clientHeight: box.clientHeight,
+        };
+      `)
+      if (!scrollChecks?.ok) return false
+      const top = Number(scrollChecks.scrollTop || 0)
+      const h = Number(scrollChecks.scrollHeight || 0)
+      const ch = Number(scrollChecks.clientHeight || 0)
+      if (!(top > 0)) return false
+      return top + ch >= h - 60
+    }, 2500, 'chat to land near bottom on open')
 
     // Regression: Immediately after opening (while stick-to-bottom timers may still be active),
     // if the user scrolls UP even slightly to read history, we must NOT yank them back to bottom.
