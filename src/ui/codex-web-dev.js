@@ -477,7 +477,7 @@ function updateHeaderUi(animateBadge = false) {
       modelLabel.classList.add("isSwapping");
       if (headerChevron) headerChevron.classList.add("isSwapping");
       if (showEffort && effortText) {
-        headerEffort.style.display = "inline-flex";
+        headerEffort.style.display = "inline-block";
         headerEffort.textContent = "";
         headerEffort.classList.add("isSwapping");
       } else {
@@ -495,7 +495,7 @@ function updateHeaderUi(animateBadge = false) {
           modelLabel.classList.remove("isSwapping");
 
           if (showEffort && effortText) {
-            headerEffort.style.display = "inline-flex";
+            headerEffort.style.display = "inline-block";
             headerEffort.textContent = effortText;
             headerEffort.classList.remove("isSwapping");
           } else {
@@ -514,7 +514,7 @@ function updateHeaderUi(animateBadge = false) {
       // If an intro swap is in progress, don't interfere (don't cancel timers / don't desync).
       if (!state.headerModelSwapInProgress) {
         swapText(modelLabel, displayTitle, { hideWhenEmpty: false });
-        swapText(headerEffort, effortText, { hideWhenEmpty: true, displayWhenVisible: "inline-flex" });
+        swapText(headerEffort, effortText, { hideWhenEmpty: true, displayWhenVisible: "inline-block" });
       }
     }
   } else if (modelLabel) {
