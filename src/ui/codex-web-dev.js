@@ -441,6 +441,14 @@ function closeInlineEffortOverlay() {
   if (!el) return;
   el.classList.remove("show");
   el.innerHTML = "";
+  // Keep the inline trigger state consistent (chevron direction / aria-expanded).
+  try {
+    const menu = byId("headerModelMenu");
+    const container = menu?.querySelector?.(".effortInline.open") || null;
+    if (container) container.classList.remove("open");
+    const trigger = menu?.querySelector?.(".effortInlineBtn") || null;
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
+  } catch {}
 }
 
 function openInlineEffortOverlay(anchorEl, model) {
@@ -476,6 +484,13 @@ function openInlineEffortOverlay(anchorEl, model) {
   overlay.style.top = `${Math.max(padding, Math.min(window.innerHeight - padding, r.bottom + 6))}px`;
   overlay.style.transformOrigin = "top right";
   overlay.classList.add("show");
+
+  // Sync inline trigger state to "open" (chevron direction).
+  try {
+    const container = anchorEl.closest?.(".effortInline") || null;
+    if (container) container.classList.add("open");
+    anchorEl.setAttribute?.("aria-expanded", "true");
+  } catch {}
 
   // After visible, adjust to keep within viewport.
   requestAnimationFrame(() => {

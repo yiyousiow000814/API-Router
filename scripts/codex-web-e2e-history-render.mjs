@@ -237,10 +237,21 @@ async function main() {
         const opt2 = document.querySelector('#headerModelMenu .headerModelOption.active');
         const trigger2 = opt2 ? opt2.querySelector('.effortInlineBtn') : null;
         const label = String(trigger2?.querySelector('.effortInlineLabel')?.textContent || trigger2?.textContent || '').trim();
-        return { ok: true, label };
+        const expanded = String(trigger2?.getAttribute('aria-expanded') || '').trim();
+        const containerOpen = !!opt2?.querySelector('.effortInline.open');
+        // Re-open should take ONE click (no stale "open" state / arrow direction).
+        trigger2?.click();
+        const overlay3 = document.getElementById('effortInlineOverlay');
+        const reopened = !!overlay3?.classList.contains('show');
+        return { ok: true, label, expanded, containerOpen, reopened };
       `)
       if (!pickedHigh?.ok) throw new Error(`failed to pick high: ${pickedHigh?.error || 'unknown'}`)
       if (pickedHigh.label !== 'high') throw new Error(`expected effort label high after click, got ${JSON.stringify(pickedHigh.label)}`)
+      if (pickedHigh.expanded && pickedHigh.expanded !== 'false') {
+        throw new Error(`expected effort trigger aria-expanded=false after selection, got ${JSON.stringify(pickedHigh.expanded)}`)
+      }
+      if (pickedHigh.containerOpen) throw new Error('expected effortInline not to remain .open after selection')
+      if (!pickedHigh.reopened) throw new Error('expected effort overlay to reopen on first click (no double-click needed)')
 
       // Close via outside click (more reliable than re-clicking the trigger across webviews).
       await driver.executeScript(`document.body.click();`)
