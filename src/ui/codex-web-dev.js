@@ -1983,6 +1983,11 @@ function setChatOpening(isOpening) {
   if (isOpening) {
     clearChatMessages();
     hideWelcomeCard();
+    // Opening a thread should start in "sticky to bottom" mode regardless of the prior thread's scroll state.
+    // This ensures late layout settles (images/fonts) keep the freshly opened thread pinned.
+    state.chatShouldStickToBottom = true;
+    state.chatUserScrolledAwayAt = 0;
+    state.chatProgrammaticScrollUntil = Date.now() + 260;
     if (box) box.scrollTop = 0;
   }
   overlay.classList.toggle("show", !!isOpening);
@@ -2646,6 +2651,13 @@ async function mapThreadReadMessages(thread) {
 }
 
 async function applyThreadToChat(thread, options = {}) {
+  // If the caller wants to land at bottom (thread open), reset stickiness *before* rendering so any
+  // image-load/layout-settle hooks observe a consistent "sticky" state.
+  if (options.stickToBottom) {
+    state.chatShouldStickToBottom = true;
+    state.chatUserScrolledAwayAt = 0;
+    state.chatProgrammaticScrollUntil = Date.now() + 260;
+  }
   const messages = await mapThreadReadMessages(thread);
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
   const lastMsg = messages.length ? messages[messages.length - 1] : null;
@@ -2749,8 +2761,6 @@ async function applyThreadToChat(thread, options = {}) {
   } 
 
   if (options.stickToBottom) {
-    state.chatShouldStickToBottom = true;
-    state.chatUserScrolledAwayAt = 0;
     scrollToBottomReliable();
     // Even if the previous chat left us "non-sticky", opening a new chat should follow late layout
     // settles (images/font load) briefly so we actually land at the bottom.

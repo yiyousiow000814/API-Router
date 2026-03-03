@@ -1002,6 +1002,28 @@ async function main() {
       return top + ch >= h - 60
     }, 2500, 'chat to land near bottom on open')
 
+    // Regression: after open, late layout settles (e.g. image thumbnails) must keep us pinned to the true bottom
+    // if the user has not scrolled away. Otherwise the "scroll to bottom" button flashes on open.
+    await sleep(1300)
+    {
+      const settled = await driver.executeScript(`
+        const box = document.getElementById('chatBox');
+        const btn = document.getElementById('scrollToBottomBtn');
+        if (!box || !btn) return { ok: false, error: 'missing box or btn' };
+        const dist = Math.max(0, box.scrollHeight - (box.scrollTop + box.clientHeight));
+        const show = btn.classList.contains('show');
+        const dbg = window.__webCodexDbg || {};
+        return { ok: true, dist: Math.round(dist), show, dbg };
+      `)
+      if (!settled?.ok) throw new Error(`settle probe failed: ${settled?.error || 'unknown'}`)
+      if (Number(settled.dist || 0) > 3) {
+        throw new Error(`expected opened chat to stay pinned to bottom after settles (dist<=3px), got ${JSON.stringify(settled)}`)
+      }
+      if (settled.show) {
+        throw new Error(`expected scroll-to-bottom button hidden after open settles, got ${JSON.stringify(settled)}`)
+      }
+    }
+
     // Regression: Immediately after opening (while stick-to-bottom timers may still be active),
     // if the user scrolls UP even slightly to read history, we must NOT yank them back to bottom.
     // This was happening due to auto-stick timers treating small scrolls as "still pinned".
