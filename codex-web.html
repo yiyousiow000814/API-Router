@@ -310,34 +310,46 @@
       color: #0d1220;
       font-weight: 600;
     }
-    .chatPanel .panelHeader .headerModelEffortRow {
-      display: grid;
-      grid-template-columns: auto 1fr;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 8px 8px;
-      border-bottom: 1px solid rgba(13, 18, 32, 0.08);
-      margin-bottom: 6px;
+    .chatPanel .panelHeader .headerModelOption .modelLabel {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    .chatPanel .panelHeader .headerModelEffortRow .effortBtns {
-      display: flex;
+    .chatPanel .panelHeader .headerModelOption .modelRight {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex: 0 0 auto;
+    }
+    .chatPanel .panelHeader .headerModelOption .effortPills {
+      display: inline-flex;
+      align-items: center;
       gap: 6px;
       flex-wrap: wrap;
       justify-content: flex-end;
+      max-width: 52%;
     }
-    .chatPanel .panelHeader .headerModelEffortRow .effortBtn {
+    .chatPanel .panelHeader .headerModelOption .effortPill {
       border: 1px solid rgba(13, 18, 32, 0.14);
       background: rgba(255, 255, 255, 0.92);
       border-radius: 999px;
-      padding: 4px 8px;
-      font-size: 12px;
+      padding: 3px 7px;
+      font-size: 11px;
       color: #1b2940;
       line-height: 1.1;
+      user-select: none;
+      cursor: pointer;
     }
-    .chatPanel .panelHeader .headerModelEffortRow .effortBtn.active {
+    .chatPanel .panelHeader .headerModelOption .effortPill.active {
       border-color: rgba(40, 199, 217, 0.5);
       background: rgba(40, 199, 217, 0.14);
       font-weight: 600;
+    }
+    .chatPanel .panelHeader .headerModelOption .effortPill:focus {
+      outline: 2px solid rgba(40, 199, 217, 0.55);
+      outline-offset: 1px;
     }
     .chatPanel .panelHeader .headerModelOption .check {
       opacity: 0;

@@ -430,37 +430,6 @@ function renderHeaderModelMenu() {
     return;
   }
 
-  // Reasoning effort selector (dynamic, driven by /codex/models).
-  const activeModelId = state.selectedModel || options.find((item) => item.isDefault)?.id || options[0].id;
-  const activeModel = options.find((x) => x.id === activeModelId) || options[0];
-  const supported = Array.isArray(activeModel?.supportedReasoningEfforts) ? activeModel.supportedReasoningEfforts : [];
-  if (supported.length) {
-    const row = document.createElement("div");
-    row.className = "headerModelEffortRow";
-    const cur = String(state.selectedReasoningEffort || activeModel.defaultReasoningEffort || supported[0]?.effort || "").trim();
-    row.innerHTML =
-      `<div class="muted">Reasoning</div>` +
-      `<div class="effortBtns" role="group" aria-label="Reasoning effort"></div>`;
-    const btnBox = row.querySelector(".effortBtns");
-    for (const item of supported) {
-      const effort = String(item.effort || "").trim();
-      if (!effort) continue;
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = `effortBtn${effort === cur ? " active" : ""}`;
-      btn.textContent = effort;
-      btn.title = String(item.description || "").trim();
-      btn.onclick = () => {
-        state.selectedReasoningEffort = effort;
-        localStorage.setItem(REASONING_EFFORT_KEY, effort);
-        renderHeaderModelMenu();
-        updateHeaderUi();
-      };
-      btnBox.appendChild(btn);
-    }
-    menu.appendChild(row);
-  }
-
   const current = state.selectedModel || options.find((item) => item.isDefault)?.id || options[0].id;
   for (const model of options) {
     const optionBtn = document.createElement("button");
@@ -468,7 +437,32 @@ function renderHeaderModelMenu() {
     optionBtn.className = `headerModelOption${model.id === current ? " active" : ""}`;
     optionBtn.setAttribute("role", "option");
     optionBtn.setAttribute("aria-selected", model.id === current ? "true" : "false");
-    optionBtn.innerHTML = `<span>${escapeHtml(model.label || model.id)}</span><span class="check" aria-hidden="true">✓</span>`;
+
+    // Inline effort selector lives to the RIGHT of the ACTIVE model option only.
+    let effortHtml = "";
+    if (model.id === current) {
+      const supported = Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts : [];
+      if (supported.length) {
+        const fallback = String(model.defaultReasoningEffort || supported[0]?.effort || "").trim();
+        const cur = String(localStorage.getItem(REASONING_EFFORT_KEY) || state.selectedReasoningEffort || fallback || "").trim();
+        const pills = supported
+          .map((x) => {
+            const effort = String(x?.effort || "").trim();
+            if (!effort) return "";
+            const title = String(x?.description || "").trim();
+            const active = effort === cur ? " active" : "";
+            const titleAttr = title ? ` title="${escapeAttr(title)}"` : "";
+            return `<span class="effortPill${active}" role="button" tabindex="0" data-effort="${escapeAttr(effort)}"${titleAttr}>${escapeHtml(effort)}</span>`;
+          })
+          .filter(Boolean)
+          .join("");
+        if (pills) effortHtml = `<span class="effortPills" role="group" aria-label="Reasoning effort">${pills}</span>`;
+      }
+    }
+
+    optionBtn.innerHTML =
+      `<span class="modelLabel">${escapeHtml(model.label || model.id)}</span>` +
+      `<span class="modelRight">${effortHtml}<span class="check" aria-hidden="true">✓</span></span>`;
     optionBtn.onclick = () => {
       state.selectedModel = model.id;
       if (state.activeThreadStarted) state.activeThreadModelLabel = model.id;
@@ -488,6 +482,31 @@ function renderHeaderModelMenu() {
       setHeaderModelMenuOpen(false);
     };
     menu.appendChild(optionBtn);
+  }
+
+  // Effort pill interactions (must not select/close the model option).
+  for (const pill of Array.from(menu.querySelectorAll(".effortPill"))) {
+    pill.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const effort = String(pill.getAttribute("data-effort") || "").trim();
+      if (!effort) return;
+      state.selectedReasoningEffort = effort;
+      localStorage.setItem(REASONING_EFFORT_KEY, effort);
+      renderHeaderModelMenu();
+      updateHeaderUi();
+    });
+    pill.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      event.stopPropagation();
+      const effort = String(pill.getAttribute("data-effort") || "").trim();
+      if (!effort) return;
+      state.selectedReasoningEffort = effort;
+      localStorage.setItem(REASONING_EFFORT_KEY, effort);
+      renderHeaderModelMenu();
+      updateHeaderUi();
+    });
   }
 }
 
@@ -698,6 +717,11 @@ function escapeHtml(input) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function escapeAttr(input) {
+  // We only interpolate simple string attributes (e.g. title, data-*); use the same escaping as HTML.
+  return escapeHtml(input);
 }
 
 function isHttpUrl(value) {
@@ -3509,6 +3533,29 @@ function bootstrap() {
       const historyByThreadId = new Map();
       window.__webCodexE2E = {
         _activeThreadId: "",
+        setModels(items) {
+          // E2E helper: seed deterministic models without requiring a running gateway.
+          state.modelOptions = ensureArrayItems(items).map(normalizeModelOption).filter(Boolean);
+          // Populate state even if the picker hasn't rendered yet (avoid brittle DOM timing in tests).
+          const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+          state.selectedModel = options.find((x) => x && x.isDefault)?.id || options[0]?.id || "";
+          if (state.selectedModel) {
+            const active = options.find((x) => x && x.id === state.selectedModel) || options[0] || null;
+            const supported = Array.isArray(active?.supportedReasoningEfforts) ? active.supportedReasoningEfforts : [];
+            const persisted = String(localStorage.getItem(REASONING_EFFORT_KEY) || "").trim();
+            if (supported.length) {
+              const ok = persisted && supported.some((x) => x && x.effort === persisted);
+              const next = ok ? persisted : String(active.defaultReasoningEffort || supported[0]?.effort || "").trim();
+              state.selectedReasoningEffort = next;
+              if (next) localStorage.setItem(REASONING_EFFORT_KEY, next);
+            } else {
+              state.selectedReasoningEffort = persisted;
+            }
+          }
+          renderHeaderModelMenu();
+          updateHeaderUi();
+          return { ok: true, count: state.modelOptions.length };
+        },
         seedThreads(count = 260) {
           const items = [];
           for (let i = 0; i < count; i += 1) {

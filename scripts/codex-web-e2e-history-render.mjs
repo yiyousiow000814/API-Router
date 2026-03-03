@@ -131,6 +131,83 @@ async function main() {
       return !!ok
     }, 20000, '__webCodexE2E init')
 
+    // Regression: reasoning-effort selector should be inline to the RIGHT of the active model option
+    // (not as a large separate block above the model list). This test runs in e2e mode without requiring a running gateway.
+    {
+      const seededModels = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.setModels !== 'function') return { ok: false, error: 'setModels missing' };
+        h.setModels([
+          {
+            id: 'gpt-5.2',
+            displayName: 'gpt-5.2',
+            isDefault: true,
+            defaultReasoningEffort: 'medium',
+            supportedReasoningEfforts: [
+              { effort: 'low', description: 'fast' },
+              { effort: 'medium', description: 'default' },
+              { effort: 'high', description: 'deep' },
+              { effort: 'xhigh', description: 'deepest' },
+            ],
+          },
+          { id: 'gpt-5.3-codex', displayName: 'gpt-5.3-codex' },
+          { id: 'gpt-5.2-codex', displayName: 'gpt-5.2-codex' },
+        ]);
+        return { ok: true };
+      `)
+      if (!seededModels?.ok) throw new Error(`seed models failed: ${seededModels?.error || 'unknown'}`)
+
+      await driver.findElement(By.id('headerModelTrigger')).click()
+      await waitFor(async () => {
+        const open = await driver.executeScript(`return !!document.getElementById('headerModelPicker')?.classList.contains('open');`)
+        return !!open
+      }, 8000, 'header model picker open')
+
+      const reasoningUi = await driver.executeScript(`
+        const menu = document.getElementById('headerModelMenu');
+        if (!menu) return { ok: false, error: 'missing headerModelMenu' };
+        const legacyRow = menu.querySelector('.headerModelEffortRow');
+        const activeOption = menu.querySelector('.headerModelOption.active');
+        const pills = activeOption ? Array.from(activeOption.querySelectorAll('.effortPill')).map((b) => String(b.textContent || '').trim()) : [];
+        const activePill = activeOption ? Array.from(activeOption.querySelectorAll('.effortPill')).find((b) => b.classList.contains('active')) : null;
+        return {
+          ok: true,
+          hasLegacyRow: !!legacyRow,
+          hasActiveOption: !!activeOption,
+          pills,
+          active: String(activePill?.textContent || '').trim(),
+        };
+      `)
+      if (!reasoningUi?.ok) throw new Error(`reasoning ui probe failed: ${reasoningUi?.error || 'unknown'}`)
+      if (reasoningUi?.hasLegacyRow) throw new Error('expected .headerModelEffortRow to be removed (effort selector must be inline to active model)')
+      if (!reasoningUi?.hasActiveOption) throw new Error('expected an active model option in the menu')
+      for (const effort of ['low', 'medium', 'high', 'xhigh']) {
+        if (!Array.isArray(reasoningUi.pills) || !reasoningUi.pills.includes(effort)) {
+          throw new Error(`expected reasoning option ${effort} next to active model, got ${JSON.stringify(reasoningUi.pills || [])}`)
+        }
+      }
+      if (reasoningUi.active !== 'medium') throw new Error(`expected default active effort medium, got ${JSON.stringify(reasoningUi.active)}`)
+
+      const pickedHigh = await driver.executeScript(`
+        const opt = document.querySelector('#headerModelMenu .headerModelOption.active');
+        const btn = opt ? Array.from(opt.querySelectorAll('.effortPill')).find((b) => String(b.textContent || '').trim() === 'high') : null;
+        if (!btn) return { ok: false, error: 'missing high pill' };
+        btn.click();
+        const opt2 = document.querySelector('#headerModelMenu .headerModelOption.active');
+        const active = opt2 ? Array.from(opt2.querySelectorAll('.effortPill')).find((b) => b.classList.contains('active')) : null;
+        return { ok: true, active: String(active?.textContent || '').trim() };
+      `)
+      if (!pickedHigh?.ok) throw new Error(`failed to pick high: ${pickedHigh?.error || 'unknown'}`)
+      if (pickedHigh.active !== 'high') throw new Error(`expected active effort high after click, got ${JSON.stringify(pickedHigh.active)}`)
+
+      // Close via outside click (more reliable than re-clicking the trigger across webviews).
+      await driver.executeScript(`document.body.click();`)
+      await waitFor(async () => {
+        const open = await driver.executeScript(`return !!document.getElementById('headerModelPicker')?.classList.contains('open');`)
+        return !open
+      }, 8000, 'header model picker closed')
+    }
+
     // Regression (mobile): while "Opening chat..." overlay is shown, the sidebar menu button should
     // remain clickable (overlay must not cover the header).
     {
