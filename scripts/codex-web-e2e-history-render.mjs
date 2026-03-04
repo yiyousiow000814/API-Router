@@ -1104,6 +1104,237 @@ async function main() {
       if (Number(windowProbe.dist || 0) > 8) {
         throw new Error(`expected huge open to land at bottom (dist<=8px), got ${JSON.stringify(windowProbe)}`)
       }
+
+      // Regression: after a new message arrives (active thread refresh without forceRender/stickToBottom),
+      // we must stay windowed and keep the Load older control (must not expand to full history).
+      const refreshedHuge = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.getThreadHistory !== 'function' || typeof h.setThreadHistory !== 'function' || typeof h.emitWsPayload !== 'function') {
+          return done({ ok: false, error: 'missing e2e hooks for huge refresh probe' });
+        }
+        const threadId = 'e2e_huge_windowed';
+        const cur = h.getThreadHistory(threadId);
+        if (!cur) return done({ ok: false, error: 'missing seeded huge history' });
+        const next = { ...cur, turns: Array.isArray(cur.turns) ? cur.turns.slice() : [] };
+        next.turns = next.turns.concat([{ items: [{ type: 'assistantMessage', text: 'NEW' }] }]);
+        h.setThreadHistory(threadId, next);
+        // This maps to the real path: WS notification -> scheduleActiveThreadRefresh -> loadThreadMessages (no forceRender).
+        h.emitWsPayload({ type: 'rpc.notification', payload: { method: 'turn/status', params: { turn: { threadId }, status: 'running' } } });
+        setTimeout(() => {
+          const box = document.getElementById('chatBox');
+          const msgs = box ? box.querySelectorAll('.msg') : [];
+          const loadOlder = document.getElementById('loadOlderBtn');
+          done({ ok: true, msgCount: msgs.length, hasLoadOlder: !!loadOlder });
+        }, 900);
+      `)
+      if (!refreshedHuge?.ok) throw new Error(`huge refresh probe failed: ${refreshedHuge?.error || 'unknown'}`)
+      if (!(Number(refreshedHuge.msgCount || 0) > 0 && Number(refreshedHuge.msgCount || 0) <= 180)) {
+        throw new Error(`expected huge refresh to stay windowed (<=180 msgs), got ${JSON.stringify(refreshedHuge)}`)
+      }
+      if (!refreshedHuge.hasLoadOlder) {
+        throw new Error(`expected huge refresh to keep load-older affordance, got ${JSON.stringify(refreshedHuge)}`)
+      }
+    }
+
+    // Regression (network): when WS is connected+subscribed, the UI should not keep polling thread history
+    // via HTTP, and history fetch URLs should not include rolloutPath.
+    {
+      const netProbe = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const h = window.__webCodexE2E;
+        if (!h) return done({ ok: false, error: 'missing e2e hook' });
+        if (typeof h.installFetchRecorder !== 'function' || typeof h.setWsConnectedForE2E !== 'function' || typeof h.triggerHistoryFetchForE2E !== 'function') {
+          return done({ ok: false, error: 'missing e2e net hooks' });
+        }
+        h.installFetchRecorder();
+        h.setWsConnectedForE2E(true);
+        // Trigger one explicit history fetch; then wait and ensure the live-poll loop doesn't spam.
+        h.triggerHistoryFetchForE2E({ threadId: 'e2e_net_thread', workspace: 'windows', rolloutPath: 'SHOULD_NOT_APPEAR' })
+          .then(() => {
+            setTimeout(() => {
+              const calls = h.getFetchCalls?.() || [];
+              done({ ok: true, calls });
+            }, 2600);
+          })
+          .catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!netProbe?.ok) throw new Error(`net probe failed: ${netProbe?.error || 'unknown'}`)
+      const calls = Array.isArray(netProbe.calls) ? netProbe.calls : []
+      const historyCalls = calls.filter((c) => String(c.url || '').includes('/codex/threads/') && String(c.url || '').includes('/history'))
+      if (historyCalls.length > 1) {
+        throw new Error(`expected WS-connected mode to avoid repeated history polling, got ${historyCalls.length} calls: ${JSON.stringify(historyCalls.slice(0, 5))}`)
+      }
+      for (const c of historyCalls) {
+        if (String(c.url || '').includes('rolloutPath=')) {
+          throw new Error(`expected history URL to not include rolloutPath, got ${JSON.stringify(c)}`)
+        }
+      }
+    }
+
+    // Regression (live): when WS is connected+subscribed, an incoming notification for the active thread
+    // must trigger a single history refresh (otherwise the UI will never show latest messages).
+    //
+    // Real Codex notifications often nest threadId under params.turn / params.item; ensure our extractor
+    // handles that shape.
+    {
+      const wsLiveProbe = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const h = window.__webCodexE2E;
+        if (!h) return done({ ok: false, error: 'missing e2e hook' });
+        if (typeof h.installFetchRecorder !== 'function'
+          || typeof h.setWsConnectedForE2E !== 'function'
+          || typeof h.triggerHistoryFetchForE2E !== 'function'
+          || typeof h.emitWsPayload !== 'function'
+          || typeof h.getFetchCalls !== 'function') {
+          return done({ ok: false, error: 'missing e2e ws-live hooks' });
+        }
+        h.installFetchRecorder();
+        h.setWsConnectedForE2E(true);
+        const threadId = 'e2e_ws_live_thread';
+        h.triggerHistoryFetchForE2E({ threadId, workspace: 'windows', rolloutPath: '' })
+          .then(() => {
+            const isHistory = (c) => String(c && c.url ? c.url : '').includes('/codex/threads/') && String(c.url || '').includes('/history');
+            const before = (h.getFetchCalls() || []).filter(isHistory).length;
+            // Simulate a typical Codex notification shape: threadId nested under params.turn.
+            h.emitWsPayload({
+              type: 'rpc.notification',
+              payload: {
+                method: 'turn/status',
+                params: { turn: { threadId }, status: 'running' },
+              },
+            });
+            setTimeout(() => {
+              const calls = h.getFetchCalls() || [];
+              const after = calls.filter(isHistory).length;
+              done({ ok: true, before, after, calls });
+            }, 900);
+          })
+          .catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!wsLiveProbe?.ok) throw new Error(`ws-live probe failed: ${wsLiveProbe?.error || 'unknown'}`)
+      if (!(Number(wsLiveProbe.after || 0) > Number(wsLiveProbe.before || 0))) {
+        throw new Error(`expected WS notification to trigger an active history refresh, got ${JSON.stringify(wsLiveProbe)}`)
+      }
+    }
+
+    // Regression (live): some upstream events are thread-scoped (method starts with thread/). When WS is
+    // subscribed and we disable HTTP polling, these must also trigger an active history refresh; otherwise
+    // external updates (from another client) won't appear until manual page refresh.
+    {
+      const wsThreadProbe = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const h = window.__webCodexE2E;
+        if (!h) return done({ ok: false, error: 'missing e2e hook' });
+        h.installFetchRecorder?.();
+        h.setWsConnectedForE2E?.(true);
+        const threadId = 'e2e_ws_thread_method';
+        Promise.resolve(h.triggerHistoryFetchForE2E?.({ threadId, workspace: 'windows', rolloutPath: '' }))
+          .then(() => {
+            const isHistory = (c) => String(c && c.url ? c.url : '').includes('/codex/threads/') && String(c.url || '').includes('/history');
+            const before = (h.getFetchCalls?.() || []).filter(isHistory).length;
+            h.emitWsPayload?.({
+              type: 'rpc.notification',
+              payload: {
+                method: 'thread/updated',
+                params: { threadId, reason: 'e2e' },
+              },
+            });
+            setTimeout(() => {
+              const after = (h.getFetchCalls?.() || []).filter(isHistory).length;
+              done({ ok: true, before, after, calls: h.getFetchCalls?.() || [] });
+            }, 900);
+          })
+          .catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!wsThreadProbe?.ok) throw new Error(`ws thread-method probe failed: ${wsThreadProbe?.error || 'unknown'}`)
+      if (!(Number(wsThreadProbe.after || 0) > Number(wsThreadProbe.before || 0))) {
+        throw new Error(`expected thread/* WS notification to trigger an active history refresh, got ${JSON.stringify(wsThreadProbe)}`)
+      }
+    }
+
+    // Regression (live fallback): even when WS is connected+subscribed, the UI must eventually pick up
+    // external thread changes without a manual page refresh. Some writers do not emit JSON-RPC notifications
+    // (e.g., file-based updates), so we keep a low-frequency HTTP safety poll for the active thread.
+    {
+      const wsFallbackProbe = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const h = window.__webCodexE2E;
+        if (!h) return done({ ok: false, error: 'missing e2e hook' });
+        if (typeof h.installFetchRecorder !== 'function'
+          || typeof h.getFetchCalls !== 'function'
+          || typeof h.setWsConnectedForE2E !== 'function'
+          || typeof h.triggerHistoryFetchForE2E !== 'function') {
+          return done({ ok: false, error: 'missing e2e ws fallback hooks' });
+        }
+        h.installFetchRecorder();
+        h.setWsConnectedForE2E(true);
+        const threadId = 'e2e_ws_fallback_poll';
+        Promise.resolve(h.triggerHistoryFetchForE2E({ threadId, workspace: 'windows', rolloutPath: '' }))
+          .then(() => {
+            const needle = '/codex/threads/' + encodeURIComponent(threadId) + '/history';
+            const isThisHistory = (c) => String(c && c.url ? c.url : '').includes(needle);
+            const before = (h.getFetchCalls() || []).filter(isThisHistory).length;
+            setTimeout(() => {
+              const after = (h.getFetchCalls() || []).filter(isThisHistory).length;
+              done({ ok: true, before, after, calls: h.getFetchCalls() || [] });
+            }, 5200);
+          })
+          .catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!wsFallbackProbe?.ok) throw new Error(`ws fallback probe failed: ${wsFallbackProbe?.error || 'unknown'}`)
+      if (!(Number(wsFallbackProbe.after || 0) > Number(wsFallbackProbe.before || 0))) {
+        throw new Error(`expected WS-subscribed mode to perform a low-frequency active-thread safety poll, got ${JSON.stringify(wsFallbackProbe)}`)
+      }
+    }
+
+    // Regression (UX): when a new message arrives and we re-render the active thread, the view must not
+    // "jump to top then back to bottom". This happens if we clear the chat (scrollTop clamps to 0)
+    // and then re-append. For small threads, we should do an atomic swap to avoid intermediate top state.
+    {
+      const jumpProbe = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          const h = window.__webCodexE2E;
+          if (!h || typeof h.setThreadHistory !== 'function' || typeof h.openThread !== 'function' || typeof h.refreshActiveThread !== 'function' || typeof h.scrollChatToBottomNow !== 'function') {
+            return done({ ok: false, error: 'missing e2e hooks for scroll-jump probe' });
+          }
+          const threadId = 'e2e_scroll_jump';
+          const mk = (role, i) => role === 'user' ? { type: 'userMessage', content: [{ type: 'input_text', text: 'u' + String(i) }] } : { type: 'assistantMessage', text: 'a' + String(i) };
+          const turns = [];
+          // Enough content to make chatBox scroll.
+          for (let i = 0; i < 60; i += 1) {
+            turns.push({ items: [mk('assistant', i)] });
+          }
+          h.setThreadHistory(threadId, { id: threadId, modelName: 'gpt-5.3-codex', turns });
+          await h.openThread(threadId);
+          h.scrollChatToBottomNow();
+          const box = document.getElementById('chatBox');
+          if (!box) return done({ ok: false, error: 'missing chatBox' });
+          const beforeTop = box.scrollTop;
+          let minTop = box.scrollTop;
+          // Sample scrollTop over time (scroll events may not fire during DOM replacement).
+          const sample = setInterval(() => { minTop = Math.min(minTop, box.scrollTop); }, 10);
+
+          // Force a full re-render by changing an earlier message + appending a new message.
+          const nextTurns = turns.slice();
+          nextTurns[0] = { items: [{ type: 'assistantMessage', text: 'a0!' }] };
+          nextTurns.push({ items: [{ type: 'assistantMessage', text: 'NEW' }] });
+          h.setThreadHistory(threadId, { id: threadId, modelName: 'gpt-5.3-codex', turns: nextTurns });
+          await h.refreshActiveThread();
+
+          setTimeout(() => {
+            clearInterval(sample);
+            const afterTop = box.scrollTop;
+            done({ ok: true, beforeTop: Math.round(beforeTop), minTop: Math.round(minTop), afterTop: Math.round(afterTop), dist: Math.round(box.scrollHeight - (box.scrollTop + box.clientHeight)) });
+          }, 600);
+        })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!jumpProbe?.ok) throw new Error(`scroll-jump probe failed: ${jumpProbe?.error || 'unknown'}`)
+      // If we ever hit near-top during the refresh, minTop will be ~0.
+      if (Number(jumpProbe.minTop || 0) <= 4) {
+        throw new Error(`expected refresh to avoid intermediate scroll-to-top jump, got ${JSON.stringify(jumpProbe)}`)
+      }
     }
 
     // Provide a history that includes:

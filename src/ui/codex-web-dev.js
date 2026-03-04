@@ -40,11 +40,13 @@ const state = {
   scheduledRefreshTimer: null,
   activeThreadRefreshTimer: null,
   activeThreadLivePolling: false,
+  activeThreadLiveLastPollMs: 0,
   activeThreadRenderSig: "",
   activeThreadMessages: [],
   wsLastEventId: 0,
   wsRecentEventIds: new Set(),
   wsRecentEventIdQueue: [],
+  wsSubscribedEvents: false,
   collapsedWorkspaceKeys: new Set(),
   sidebarCollapsed: false,
   threadSearchQuery: "",
@@ -144,10 +146,15 @@ const THREAD_PULL_REFRESH_MAX_PX = 84;
 const THREAD_PULL_REFRESH_MIN_MS = 520;
 const THREAD_PULL_HINT_CLEAR_DELAY_MS = 160;
 const THREAD_REFRESH_DEBOUNCE_MS = 260;
-const THREAD_AUTO_REFRESH_CONNECTED_MS = 2000;
+// When WS is connected, prefer event-driven updates. Keep only a low-frequency safety refresh.
+const THREAD_AUTO_REFRESH_CONNECTED_MS = 20000;
 const THREAD_AUTO_REFRESH_DISCONNECTED_MS = 3500;
 const ACTIVE_THREAD_REFRESH_DEBOUNCE_MS = 380;
 const ACTIVE_THREAD_LIVE_POLL_MS = 1500;
+// Even with WS subscribed, keep a low-frequency HTTP safety poll for the active thread.
+// Some thread updates may not emit JSON-RPC notifications (e.g., external/file-based writers),
+// and relying on WS alone can leave the UI stale until a manual refresh.
+const ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS = 3000;
 const MODEL_LOADING_MIN_MS = 1000;
 const RECENT_EVENT_ID_CACHE_SIZE = 2048;
 const MOBILE_PROMPT_MIN_HEIGHT_PX = 40;
@@ -322,8 +329,41 @@ function extractNotificationThreadId(notification) {
   const params = toRecord(record?.params);
   const msg = toRecord(params?.msg);
   const thread = toRecord(params?.thread) || toRecord(params?.threadState) || toRecord(params?.thread_state);
+  const turn = toRecord(params?.turn) || toRecord(params?.turnState) || toRecord(params?.turn_state);
+  const item = toRecord(params?.item) || toRecord(params?.itemState) || toRecord(params?.item_state);
   const source = toRecord(params?.source) || toRecord(msg?.source);
   const subagent = toRecord(toRecord(source?.subagent)?.thread_spawn);
+
+  const deepFindThreadId = (root, maxDepth = 6) => {
+    const keys = new Set(["thread_id", "threadId", "conversation_id", "conversationId"]);
+    const seen = new Set();
+    const walk = (value, depth) => {
+      if (!value || depth > maxDepth) return null;
+      if (typeof value !== "object") return null;
+      if (seen.has(value)) return null;
+      seen.add(value);
+      if (Array.isArray(value)) {
+        for (let i = 0; i < Math.min(value.length, 40); i += 1) {
+          const found = walk(value[i], depth + 1);
+          if (found) return found;
+        }
+        return null;
+      }
+      for (const k of Object.keys(value)) {
+        if (keys.has(k)) {
+          const found = readString(value[k]);
+          if (found) return found;
+        }
+      }
+      for (const k of Object.keys(value)) {
+        const found = walk(value[k], depth + 1);
+        if (found) return found;
+      }
+      return null;
+    };
+    return walk(root, 0);
+  };
+
   return (
     readString(msg?.thread_id) ||
     readString(msg?.threadId) ||
@@ -334,11 +374,16 @@ function extractNotificationThreadId(notification) {
     readString(thread?.id) ||
     readString(thread?.thread_id) ||
     readString(thread?.threadId) ||
+    readString(turn?.thread_id) ||
+    readString(turn?.threadId) ||
+    readString(item?.thread_id) ||
+    readString(item?.threadId) ||
     readString(source?.thread_id) ||
     readString(source?.threadId) ||
     readString(source?.parent_thread_id) ||
     readString(source?.parentThreadId) ||
     readString(subagent?.parent_thread_id) ||
+    deepFindThreadId(params) ||
     null
   );
 }
@@ -354,6 +399,7 @@ function shouldRefreshThreadsFromNotification(method) {
 
 function shouldRefreshActiveThreadFromNotification(method) {
   return (
+    method.startsWith("thread/") ||
     method.startsWith("turn/") ||
     method.startsWith("item/") ||
     method.startsWith("codex/event/") ||
@@ -2278,9 +2324,10 @@ function showWelcomeCard() {
   if (welcome) welcome.style.display = "";
 }
 
-function clearChatMessages() {
+function clearChatMessages(options = {}) {
   const box = byId("chatBox");
   if (!box) return;
+  const preserveScroll = options && options.preserveScroll === true;
   // Remove a large prior chat in one operation to avoid blocking the main thread.
   // Keep the persistent nodes (welcome + opening overlay) mounted.
   const welcome = byId("welcomeCard");
@@ -2289,7 +2336,9 @@ function clearChatMessages() {
   if (welcome && welcome.parentElement === box) keep.push(welcome);
   if (overlay && overlay.parentElement === box) keep.push(overlay);
   box.replaceChildren(...keep);
-  box.scrollTop = 0;
+  // Default behavior: reset scrollTop so we don't hold a huge scroll offset on large clears.
+  // For live refresh while sticky-to-bottom, preserve the scroll to avoid a visible jump.
+  if (!preserveScroll) box.scrollTop = 0;
   state.activeThreadRenderSig = "";
   state.activeThreadMessages = [];
   state.historyWindowEnabled = false;
@@ -3029,9 +3078,9 @@ async function applyThreadToChat(thread, options = {}) {
     // This prevents the header (hamburger / model picker / workspace toggle) from feeling "locked".
     const shouldAsyncRender = messages.length >= 80 || !!options.slowRender;
     if (shouldAsyncRender) {
-      await renderChatFull(messages, { slowRender: !!options.slowRender });
+      await renderChatFull(messages, { slowRender: !!options.slowRender, preserveScroll: !!state.chatShouldStickToBottom });
     } else {
-      clearChatMessages();
+      clearChatMessages({ preserveScroll: !!state.chatShouldStickToBottom });
       for (const msg of messages) addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
     }
     state.activeThreadMessages = messages;
@@ -3056,17 +3105,26 @@ async function applyThreadToChat(thread, options = {}) {
 
 async function loadThreadMessages(threadId, options = {}) {
   if (!threadId) return;
+  // Any explicit history fetch should satisfy the live-poll interval so the timer loop doesn't
+  // immediately re-fetch right after open/refresh actions.
+  state.activeThreadLiveLastPollMs = Date.now();
   try {
     const e2e = window.__webCodexE2E;
     if (e2e && typeof e2e.getThreadHistory === "function") {
       const seeded = e2e.getThreadHistory(threadId);
       if (seeded) {
+        try { window.__webCodexE2E_lastHistorySource = "seed"; } catch {}
         await applyThreadToChat(seeded, options);
         return;
       }
     }
-  } catch (_) {
-    // Ignore and continue with normal fetch paths.
+  } catch (e) {
+    // In e2e mode, capture seeding errors for debugging; then continue with normal fetch paths.
+    try {
+      if (window.__webCodexE2E) {
+        window.__webCodexE2E_seedHistoryError = String(e && e.message ? e.message : e);
+      }
+    } catch {}
   }
   try {
     const query = [];
@@ -3074,8 +3132,6 @@ async function loadThreadMessages(threadId, options = {}) {
     if (workspace === "windows" || workspace === "wsl2") {
       query.push(`workspace=${encodeURIComponent(workspace)}`);
     }
-    const rolloutPath = String(options.rolloutPath || state.activeThreadRolloutPath || "").trim();
-    if (rolloutPath) query.push(`rolloutPath=${encodeURIComponent(rolloutPath)}`);
     const path = query.length
       ? `/codex/threads/${encodeURIComponent(threadId)}/history?${query.join("&")}`
       : `/codex/threads/${encodeURIComponent(threadId)}/history`;
@@ -3083,6 +3139,7 @@ async function loadThreadMessages(threadId, options = {}) {
     if (state.activeThreadId && state.activeThreadId !== threadId) return;
     const thread = history?.thread || history?.result?.thread || null;
     if (thread) {
+      try { window.__webCodexE2E_lastHistorySource = "http"; } catch {}
       await applyThreadToChat(thread, options);
       return;
     }
@@ -3185,9 +3242,9 @@ function updateLoadOlderControl() {
 function shouldUseHistoryWindow(messages, options = {}) {
   if (!Array.isArray(messages)) return false;
   if (messages.length < HISTORY_WINDOW_THRESHOLD) return false;
-  // Only window when we are opening/force-rendering; small incremental updates stay on the fast path.
-  if (options.forceRender || options.stickToBottom) return true;
-  return false;
+  // For huge threads, keep windowing enabled across refreshes; otherwise a single new message can
+  // accidentally trigger a full-history render (loading everything) and "lose" the Load older affordance.
+  return true;
 }
 
 function loadOlderHistoryChunk() {
@@ -3234,7 +3291,7 @@ async function renderChatFull(messages, options = {}) {
   state.chatRenderToken = (Number(state.chatRenderToken || 0) + 1) | 0;
   const token = state.chatRenderToken;
 
-  clearChatMessages();
+  clearChatMessages({ preserveScroll: options && options.preserveScroll === true });
   // Keep render state in sync even if we yield.
   state.activeThreadMessages = [];
 
@@ -3371,6 +3428,7 @@ function connectWs() {
   const wsUrl = `${proto}://${window.location.host}/codex/ws?token=${encodeURIComponent(state.token || "")}`;
   const ws = new WebSocket(wsUrl);
   state.ws = ws;
+  state.wsSubscribedEvents = false;
   ws.onopen = () => {
     setStatus("Connected (HTTP + WS).");
     let lastEventId = 0;
@@ -3379,8 +3437,14 @@ function connectWs() {
     } catch {}
     wsSend({ type: "subscribe.events", reqId: nextReqId(), payload: { events: true, lastEventId } });
   };
-  ws.onerror = () => setStatus("WS error; fallback to HTTP.", true);
-  ws.onclose = () => setStatus("WS closed; fallback to HTTP.", true);
+  ws.onerror = () => {
+    state.wsSubscribedEvents = false;
+    setStatus("WS error; fallback to HTTP.", true);
+  };
+  ws.onclose = () => {
+    state.wsSubscribedEvents = false;
+    setStatus("WS closed; fallback to HTTP.", true);
+  };
   ws.onmessage = (event) => {
     let payload = {};
     try {
@@ -3438,7 +3502,10 @@ function handleWsPayload(payload) {
     resetEventReplayState();
     return;
   }
-  if (payload.type === "subscribed") setStatus("WS subscribed.");
+  if (payload.type === "subscribed") {
+    state.wsSubscribedEvents = true;
+    setStatus("WS subscribed.");
+  }
 }
 
 function renderThreads(items) {
@@ -3835,8 +3902,9 @@ function startThreadAutoRefreshLoop() {
   setInterval(() => {
     if (state.threadAutoRefreshInFlight) return;
     const target = getWorkspaceTarget();
-    const isConnected = !!(state.ws && state.ws.readyState === WebSocket.OPEN);
-    const minInterval = isConnected ? THREAD_AUTO_REFRESH_CONNECTED_MS : THREAD_AUTO_REFRESH_DISCONNECTED_MS;
+    const wsOpen = !!(state.ws && state.ws.readyState === WebSocket.OPEN);
+    const wsSubscribed = !!(wsOpen && state.wsSubscribedEvents);
+    const minInterval = wsSubscribed ? THREAD_AUTO_REFRESH_CONNECTED_MS : THREAD_AUTO_REFRESH_DISCONNECTED_MS;
     const now = Date.now();
     const lastMs = state.threadAutoRefreshLastMsByWorkspace?.[target] || 0;
     if (now - lastMs < minInterval) return;
@@ -3856,6 +3924,16 @@ function startActiveThreadLivePollLoop() {
     const threadId = state.activeThreadId || "";
     if (!threadId) return;
     if (state.activeMainTab !== "chat") return;
+    const wsOpen = !!(state.ws && state.ws.readyState === WebSocket.OPEN);
+    const wsSubscribed = !!(wsOpen && state.wsSubscribedEvents);
+    // When WS is subscribed, we *mostly* rely on notifications, but keep a low-frequency HTTP poll as
+    // a safety net (see constant doc above).
+    if (wsSubscribed) {
+      const now = Date.now();
+      const last = Number(state.activeThreadLiveLastPollMs || 0);
+      if (now - last < ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS) return;
+      state.activeThreadLiveLastPollMs = now;
+    }
     if (state.activeThreadLivePolling) return;
     state.activeThreadLivePolling = true;
     try {
@@ -4699,6 +4777,50 @@ function bootstrap() {
           } catch (e) {
             return { ok: false, error: String(e && e.message ? e.message : e) };
           }
+        },
+        installFetchRecorder() {
+          try {
+            if (window.__webCodexE2E_fetchRecorderInstalled) return { ok: true };
+            window.__webCodexE2E_fetchRecorderInstalled = true;
+            const calls = [];
+            window.__webCodexE2E_fetchCalls = calls;
+            const orig = window.fetch;
+            window.__webCodexE2E_fetchOrig = orig;
+            window.fetch = async (input, init) => {
+              const url = typeof input === "string" ? input : (input && input.url ? input.url : "");
+              calls.push({ url: String(url || ""), method: String(init?.method || "GET") });
+              if (typeof url === "string" && url.includes("/codex/threads/") && url.includes("/history")) {
+                const id = String(url.split("/codex/threads/")[1] || "").split("/")[0] || "e2e";
+                const thread = { id: decodeURIComponent(id), turns: [{ items: [{ type: "assistantMessage", text: "ok" }] }] };
+                return new Response(JSON.stringify({ thread }), { status: 200, headers: { "Content-Type": "application/json" } });
+              }
+              return orig(input, init);
+            };
+            return { ok: true };
+          } catch (e) {
+            return { ok: false, error: String(e && e.message ? e.message : e) };
+          }
+        },
+        getFetchCalls() {
+          try {
+            return Array.isArray(window.__webCodexE2E_fetchCalls) ? window.__webCodexE2E_fetchCalls.slice() : [];
+          } catch {
+            return [];
+          }
+        },
+        setWsConnectedForE2E(connected = true) {
+          state.wsSubscribedEvents = !!connected;
+          if (connected) state.ws = { readyState: 1 };
+          else state.ws = null;
+          return { ok: true };
+        },
+        async triggerHistoryFetchForE2E({ threadId, workspace = "windows", rolloutPath = "" } = {}) {
+          const id = String(threadId || "").trim() || "e2e_net_thread";
+          setActiveThread(id);
+          state.activeThreadWorkspace = workspace === "wsl2" ? "wsl2" : "windows";
+          state.activeThreadRolloutPath = String(rolloutPath || "").trim();
+          await loadThreadMessages(id, { animateBadge: false, forceRender: true, workspace: state.activeThreadWorkspace, rolloutPath: state.activeThreadRolloutPath });
+          return { ok: true };
         },
       };
       setStatus("E2E mode enabled.", true);
