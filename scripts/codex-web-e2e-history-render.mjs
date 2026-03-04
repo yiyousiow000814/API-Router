@@ -1057,6 +1057,55 @@ async function main() {
       await driver.manage().window().setRect(originalRect)
     }
 
+    // Regression (performance): opening a huge history should not create thousands of DOM nodes at once.
+    // Render only a recent window immediately, and provide a "load older" affordance (FlatList-like).
+    {
+      const hugeSeed = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        if (!h) return { ok: false, error: 'missing e2e hook' };
+        const id = 'e2e_huge_windowed';
+        const s = h.seedHeavyThreadHistory
+          ? h.seedHeavyThreadHistory(id, { turns: 520, itemsPerTurn: 3, textSize: 320 })
+          : { ok: false, error: 'seedHeavyThreadHistory missing' };
+        return { ok: !!(s && s.ok), id, s };
+      `)
+      if (!hugeSeed?.ok) throw new Error(`huge seed failed: ${hugeSeed?.error || 'unknown'} detail=${JSON.stringify(hugeSeed)}`)
+
+      const openedHuge = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.openThread !== 'function') return done({ ok: false, error: 'openThread missing' });
+        Promise.resolve(h.openThread('e2e_huge_windowed'))
+          .then((v) => done(v))
+          .catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!openedHuge?.ok) throw new Error(`openThread(huge) failed: ${openedHuge?.error || 'unknown'}`)
+
+      const windowProbe = await driver.executeScript(`
+        const box = document.getElementById('chatBox');
+        if (!box) return { ok: false, error: 'missing chatBox' };
+        const msgs = box.querySelectorAll('.msg');
+        const loadOlder = document.getElementById('loadOlderBtn');
+        const dist = Math.max(0, box.scrollHeight - (box.scrollTop + box.clientHeight));
+        return {
+          ok: true,
+          msgCount: msgs.length,
+          hasLoadOlder: !!loadOlder,
+          dist: Math.round(dist),
+        };
+      `)
+      if (!windowProbe?.ok) throw new Error(`window probe failed: ${windowProbe?.error || 'unknown'}`)
+      if (!(Number(windowProbe.msgCount || 0) > 0 && Number(windowProbe.msgCount || 0) <= 180)) {
+        throw new Error(`expected huge open to render <=180 msg nodes, got ${JSON.stringify(windowProbe)}`)
+      }
+      if (!windowProbe.hasLoadOlder) {
+        throw new Error(`expected a load-older affordance on huge open, got ${JSON.stringify(windowProbe)}`)
+      }
+      if (Number(windowProbe.dist || 0) > 8) {
+        throw new Error(`expected huge open to land at bottom (dist<=8px), got ${JSON.stringify(windowProbe)}`)
+      }
+    }
+
     // Provide a history that includes:
     // - a Codex-injected AGENTS prompt (should be hidden)
     // - image tags + inline image placeholders in text (should be stripped)

@@ -95,6 +95,15 @@ const state = {
   // may synthesize a subsequent click that retargets to the backdrop and immediately closes it.
   // Suppress click-close for a short window after open.
   suppressSyntheticClickUntil: 0,
+  // FlatList-like: for very large histories, render only the most recent window and allow loading older
+  // messages on-demand. This keeps the UI responsive while opening.
+  historyWindowEnabled: false,
+  historyWindowThreadId: "",
+  historyWindowStart: 0,
+  historyWindowSize: 160,
+  historyWindowChunk: 120,
+  historyWindowLoading: false,
+  historyAllMessages: [],
 };
 
 function armSyntheticClickSuppression(ms = 380) {
@@ -160,6 +169,8 @@ function getEmbeddedToken() {
 function byId(id) {
   return document.getElementById(id);
 }
+
+const HISTORY_WINDOW_THRESHOLD = 420;
 
 function bindClick(id, handler) {
   const el = byId(id);
@@ -1676,7 +1687,7 @@ function smoothScrollChatToBottom(durationMs = undefined) {
   // and large jumps don't take forever. Keep a slightly shorter profile for
   // reduced-motion setups, but still animated (user feedback prefers some motion).
   const computedDuration = prefersReduced
-    ? Math.round(Math.max(350, Math.min(520, 80 + Math.sqrt(distancePx) * 18)))
+    ? Math.round(Math.max(400, Math.min(520, 80 + Math.sqrt(distancePx) * 18)))
     : Math.round(Math.max(420, Math.min(1400, 100 + Math.sqrt(distancePx) * 24)));
   const dur =
     durationMs == null || !Number.isFinite(Number(durationMs))
@@ -2281,6 +2292,11 @@ function clearChatMessages() {
   box.scrollTop = 0;
   state.activeThreadRenderSig = "";
   state.activeThreadMessages = [];
+  state.historyWindowEnabled = false;
+  state.historyWindowThreadId = "";
+  state.historyWindowStart = 0;
+  state.historyWindowLoading = false;
+  state.historyAllMessages = [];
 }
 
 function updateMobileComposerState() {
@@ -2816,6 +2832,7 @@ async function applyThreadToChat(thread, options = {}) {
     String(lastMsg?.role || ""),
     String(lastMsg?.text || ""),
   ].join("::");
+  const threadId = String(thread?.id || state.activeThreadId || "");
   state.activeThreadStarted = messages.length > 0 || turns.length > 0;
   // Model selection is global (header picker), not per-thread.
   const target = detectThreadWorkspaceTarget(thread);
@@ -2824,12 +2841,128 @@ async function applyThreadToChat(thread, options = {}) {
     if (state.activeThreadStarted) hideWelcomeCard();
     else showWelcomeCard();
     updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+    if (state.historyWindowEnabled && state.historyWindowThreadId === threadId) updateLoadOlderControl();
     return;
   }
 
   const box = byId("chatBox");
 
   const prevMessages = Array.isArray(state.activeThreadMessages) ? state.activeThreadMessages : [];
+
+  // FlatList-like behavior for huge histories: render only the most recent window and allow loading older.
+  if (shouldUseHistoryWindow(messages, options)) {
+    const prevAll = Array.isArray(state.historyAllMessages) ? state.historyAllMessages : [];
+    const alreadyWindowed = state.historyWindowEnabled && state.historyWindowThreadId === threadId;
+
+    // Initial windowed render (or reset after a non-append mutation).
+    const doWindowedRender = () => {
+      const size = Math.max(40, Number(state.historyWindowSize || 160) | 0);
+      const start = Math.max(0, messages.length - size);
+      clearChatMessages();
+      state.historyWindowEnabled = true;
+      state.historyWindowThreadId = threadId;
+      state.historyWindowStart = start;
+      state.historyAllMessages = messages;
+      const slice = messages.slice(start);
+      const frag = document.createDocumentFragment();
+      for (const msg of slice) frag.appendChild(buildMsgNode(msg));
+      const box2 = byId("chatBox");
+      if (box2) {
+        if (start > 0) ensureLoadOlderControl(box2);
+        // Insert messages after any existing persistent nodes (welcome/overlay) and after the load-older control.
+        box2.appendChild(frag);
+      }
+      state.activeThreadMessages = slice;
+      state.activeThreadRenderSig = renderSig;
+      updateLoadOlderControl();
+
+      if (options.stickToBottom) {
+        scrollToBottomReliable();
+        scheduleChatLiveFollow(1400);
+      } else if (state.chatShouldStickToBottom) {
+        scrollChatToBottom({ force: true });
+      }
+
+      if (state.activeThreadStarted) hideWelcomeCard();
+      else showWelcomeCard();
+      updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+      updateScrollToBottomBtn();
+    };
+
+    // If we aren't windowed yet, or the history shrank/changed shape, re-render the window.
+    if (!alreadyWindowed || messages.length < prevAll.length) {
+      doWindowedRender();
+      return;
+    }
+
+    // Windowed incremental update: only handle last-message growth and append-only additions.
+    state.historyAllMessages = messages;
+    if (messages.length === prevAll.length) {
+      // Last message may grow (streaming).
+      const a = prevAll[prevAll.length - 1];
+      const b = messages[messages.length - 1];
+      if (a && b && a.role === b.role && a.kind === b.kind && a.text !== b.text) {
+        // Update the DOM last node directly.
+        const updated = (() => {
+          if (!box) return false;
+          const nodes = box.querySelectorAll(".msg");
+          const last = nodes.length ? nodes[nodes.length - 1] : null;
+          if (!last) return false;
+          if (!last.classList.contains(b.role)) return false;
+          const body = last.querySelector(".msgBody");
+          if (!body) return false;
+          body.innerHTML = renderMessageBody(b.role, b.text);
+          return true;
+        })();
+        if (updated) {
+          state.activeThreadMessages = messages.slice(Number(state.historyWindowStart || 0));
+          state.activeThreadRenderSig = renderSig;
+          updateLoadOlderControl();
+          if (canStartChatLiveFollow()) scheduleChatLiveFollow(900);
+          if (state.activeThreadStarted) hideWelcomeCard();
+          else showWelcomeCard();
+          updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+          return;
+        }
+      }
+      // No visible changes.
+      state.activeThreadRenderSig = renderSig;
+      updateLoadOlderControl();
+      return;
+    }
+
+    if (messages.length > prevAll.length) {
+      // Append new messages to DOM; keep window start as-is.
+      for (let i = prevAll.length; i < messages.length; i += 1) {
+        const msg = messages[i];
+        addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
+      }
+      state.activeThreadMessages = messages.slice(Number(state.historyWindowStart || 0));
+      state.activeThreadRenderSig = renderSig;
+      updateLoadOlderControl();
+      if (state.chatShouldStickToBottom) scrollChatToBottom({ force: true });
+      if (canStartChatLiveFollow()) scheduleChatLiveFollow(1100);
+      if (state.activeThreadStarted) hideWelcomeCard();
+      else showWelcomeCard();
+      updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+      updateScrollToBottomBtn();
+      return;
+    }
+
+    // Fallback: unexpected mutation; re-render window.
+    doWindowedRender();
+    return;
+  }
+
+  // If we were windowed but the history is now small, tear down the window controls.
+  if (state.historyWindowEnabled && state.historyWindowThreadId === threadId && messages.length < HISTORY_WINDOW_THRESHOLD) {
+    state.historyWindowEnabled = false;
+    state.historyWindowThreadId = "";
+    state.historyWindowStart = 0;
+    state.historyAllMessages = [];
+    const wrap = byId("loadOlderWrap");
+    if (wrap) wrap.remove();
+  }
   const isSamePrefix = (a, b) => {
     if (a.length > b.length) return false;
     for (let i = 0; i < a.length; i += 1) {
@@ -2983,6 +3116,116 @@ function nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(resolve));
 }
 
+function buildMsgNode(msg) {
+  const node = document.createElement("div");
+  const kind = typeof msg.kind === "string" && msg.kind.trim() ? msg.kind.trim() : "";
+  const hasAttachments = Array.isArray(msg.images) && msg.images.length > 0;
+  const hasText = !!String(msg.text || "").trim();
+  const attachmentClass = msg.role === "user" && hasAttachments && hasText ? " withAttachments" : "";
+  node.className = `msg ${msg.role}${kind ? ` kind-${kind}` : ""}${attachmentClass}`.trim();
+  const headLabel = kind && msg.role === "system" ? kind : msg.role;
+  const attachmentsHtml = renderMessageAttachments(msg.images || []);
+  const bodyHtml = renderMessageBody(msg.role, msg.text);
+  node.innerHTML = `<div class="msgHead">${escapeHtml(headLabel)}</div><div class="msgBody">${attachmentsHtml}${bodyHtml}</div>`;
+  wireMessageLinks(node);
+  wireMessageAttachments(node);
+  return node;
+}
+
+function ensureLoadOlderControl(box) {
+  if (!box) return null;
+  let wrap = byId("loadOlderWrap");
+  if (!wrap) {
+    wrap = document.createElement("div");
+    wrap.id = "loadOlderWrap";
+    wrap.className = "loadOlderWrap";
+    wrap.innerHTML = `<button id="loadOlderBtn" class="loadOlderBtn" type="button">Load older</button>`;
+    // Insert before the first message so it stays at the very top of the rendered window.
+    const firstMsg = box.querySelector(".msg");
+    if (firstMsg) box.insertBefore(wrap, firstMsg);
+    else box.appendChild(wrap);
+  }
+  const btn = wrap.querySelector("#loadOlderBtn");
+  if (btn && !btn.__wiredLoadOlder) {
+    btn.__wiredLoadOlder = true;
+    btn.addEventListener(
+      "click",
+      (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        loadOlderHistoryChunk();
+      },
+      { passive: false }
+    );
+  }
+  return wrap;
+}
+
+function updateLoadOlderControl() {
+  const box = byId("chatBox");
+  if (!box) return;
+  const wrap = byId("loadOlderWrap");
+  if (!state.historyWindowEnabled || !state.historyWindowThreadId) {
+    if (wrap) wrap.remove();
+    return;
+  }
+  const remaining = Math.max(0, Number(state.historyWindowStart || 0));
+  if (!remaining) {
+    if (wrap) wrap.remove();
+    return;
+  }
+  ensureLoadOlderControl(box);
+  const btn = byId("loadOlderBtn");
+  if (btn) {
+    btn.disabled = !!state.historyWindowLoading;
+    btn.textContent = state.historyWindowLoading ? "Loading..." : `Load older (${remaining})`;
+  }
+}
+
+function shouldUseHistoryWindow(messages, options = {}) {
+  if (!Array.isArray(messages)) return false;
+  if (messages.length < HISTORY_WINDOW_THRESHOLD) return false;
+  // Only window when we are opening/force-rendering; small incremental updates stay on the fast path.
+  if (options.forceRender || options.stickToBottom) return true;
+  return false;
+}
+
+function loadOlderHistoryChunk() {
+  if (!state.historyWindowEnabled) return;
+  if (state.historyWindowLoading) return;
+  const box = byId("chatBox");
+  if (!box) return;
+  const all = Array.isArray(state.historyAllMessages) ? state.historyAllMessages : [];
+  const start = Math.max(0, Number(state.historyWindowStart || 0));
+  if (!start) return;
+  state.historyWindowLoading = true;
+  updateLoadOlderControl();
+  const nextStart = Math.max(0, start - Math.max(1, Number(state.historyWindowChunk || 0)));
+  const slice = all.slice(nextStart, start);
+  if (!slice.length) {
+    state.historyWindowStart = nextStart;
+    state.historyWindowLoading = false;
+    updateLoadOlderControl();
+    return;
+  }
+
+  const prevScrollHeight = box.scrollHeight;
+  const frag = document.createDocumentFragment();
+  for (const msg of slice) frag.appendChild(buildMsgNode(msg));
+  const wrap = ensureLoadOlderControl(box);
+  // Insert right after the control, so it stays pinned at the top of the window.
+  const anchor = wrap ? wrap.nextSibling : box.firstChild;
+  box.insertBefore(frag, anchor || null);
+  // Preserve the user's viewport position while we prepend.
+  const deltaH = box.scrollHeight - prevScrollHeight;
+  box.scrollTop += deltaH;
+
+  state.historyWindowStart = nextStart;
+  state.historyWindowLoading = false;
+  state.activeThreadMessages = all.slice(nextStart);
+  updateLoadOlderControl();
+}
+
 async function renderChatFull(messages, options = {}) {
   const box = byId("chatBox");
   if (!box) return;
@@ -2999,26 +3242,14 @@ async function renderChatFull(messages, options = {}) {
   const batchSize = Math.max(6, Math.min(28, Number(options.batchSize || 14)));
   for (let i = 0; i < messages.length; i += batchSize) {
     if (token !== state.chatRenderToken) return; // superseded
-    const frag = document.createDocumentFragment();
-    const end = Math.min(messages.length, i + batchSize);
-    for (let j = i; j < end; j += 1) {
-      const msg = messages[j];
-      // Render without auto-scrolling per message; we'll handle stick-to-bottom after.
-      const node = document.createElement("div");
-      const kind = typeof msg.kind === "string" && msg.kind.trim() ? msg.kind.trim() : "";
-      const hasAttachments = Array.isArray(msg.images) && msg.images.length > 0;
-      const hasText = !!String(msg.text || "").trim();
-      const attachmentClass = msg.role === "user" && hasAttachments && hasText ? " withAttachments" : "";
-      node.className = `msg ${msg.role}${kind ? ` kind-${kind}` : ""}${attachmentClass}`.trim();
-      const headLabel = kind && msg.role === "system" ? kind : msg.role;
-      const attachmentsHtml = renderMessageAttachments(msg.images || []);
-      const bodyHtml = renderMessageBody(msg.role, msg.text);
-      node.innerHTML = `<div class="msgHead">${escapeHtml(headLabel)}</div><div class="msgBody">${attachmentsHtml}${bodyHtml}</div>`;
-      wireMessageLinks(node);
-      wireMessageAttachments(node);
-      frag.appendChild(node);
-    }
-    box.appendChild(frag);
+      const frag = document.createDocumentFragment();
+      const end = Math.min(messages.length, i + batchSize);
+      for (let j = i; j < end; j += 1) {
+        const msg = messages[j];
+        // Render without auto-scrolling per message; we'll handle stick-to-bottom after.
+        frag.appendChild(buildMsgNode(msg));
+      }
+      box.appendChild(frag);
     // While opening large chats, keep the view pinned to bottom if the user hasn't scrolled away.
     // This avoids ending up "far above bottom" while the remaining batches are still rendering.
     const now = Date.now();
