@@ -119,7 +119,24 @@ fn resolve_codex_home(user_data_dir: &Path, _is_ui_tauri: bool, _app_profile: &s
         }
     }
 
-    // Keep app auth/session isolated by default so login state is stable inside API Router.
+    // Default: if the user already has a Codex home (where the TUI stores sessions), reuse it so
+    // Web Codex can show real threads. Otherwise fall back to an isolated home under user-data.
+    //
+    // This keeps tests and non-default profiles free to use isolated homes.
+    if cfg!(target_os = "windows") {
+        if let Ok(up) = std::env::var("USERPROFILE") {
+            let p = PathBuf::from(up).join(".codex");
+            if p.exists() {
+                return p;
+            }
+        }
+    } else if let Ok(home) = std::env::var("HOME") {
+        let p = PathBuf::from(home).join(".codex");
+        if p.exists() {
+            return p;
+        }
+    }
+
     isolated
 }
 
@@ -549,8 +566,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        app_profile_name_from_inputs, profile_data_dir_name, should_reset_profile_data,
-        should_seed_mock_data, should_use_local_user_data_dir,
+        app_profile_name_from_inputs, profile_data_dir_name, resolve_codex_home,
+        should_reset_profile_data, should_seed_mock_data, should_use_local_user_data_dir,
     };
 
     #[test]
@@ -601,5 +618,52 @@ mod tests {
         std::env::set_var("API_ROUTER_USE_LOCAL_USER_DATA", "1");
         assert!(should_use_local_user_data_dir(&local2));
         std::env::remove_var("API_ROUTER_USE_LOCAL_USER_DATA");
+    }
+
+    #[test]
+    fn resolve_codex_home_prefers_existing_user_codex_dir() {
+        // Coordinate with other tests that may set env vars.
+        let _lock = crate::codex_home_env::lock_env();
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let user_data = tmp.path().join("user-data");
+        std::fs::create_dir_all(&user_data).unwrap();
+
+        // Ensure no explicit override.
+        let prev_override = std::env::var("API_ROUTER_CODEX_HOME").ok();
+        std::env::remove_var("API_ROUTER_CODEX_HOME");
+
+        // Create a fake user profile/home with an existing .codex directory.
+        let fake_home = tmp.path().join("fake-home");
+        let codex_dir = fake_home.join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+
+        let prev_userprofile = std::env::var("USERPROFILE").ok();
+        let prev_home = std::env::var("HOME").ok();
+        if cfg!(target_os = "windows") {
+            std::env::set_var("USERPROFILE", &fake_home);
+        } else {
+            std::env::set_var("HOME", &fake_home);
+        }
+
+        let got = resolve_codex_home(&user_data, false, "default");
+        assert_eq!(got, codex_dir);
+
+        // Restore env.
+        if let Some(v) = prev_override {
+            std::env::set_var("API_ROUTER_CODEX_HOME", v);
+        } else {
+            std::env::remove_var("API_ROUTER_CODEX_HOME");
+        }
+        if let Some(v) = prev_userprofile {
+            std::env::set_var("USERPROFILE", v);
+        } else {
+            std::env::remove_var("USERPROFILE");
+        }
+        if let Some(v) = prev_home {
+            std::env::set_var("HOME", v);
+        } else {
+            std::env::remove_var("HOME");
+        }
     }
 }
