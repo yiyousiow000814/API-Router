@@ -1916,13 +1916,18 @@
       }
       .mobileNavBtn {
         display: inline-flex;
-        min-height: 0;
+        align-items: center;
+        justify-content: center;
+        /* Large hit target helps remote-control tools (TeamViewer) and touch accuracy. */
+        min-width: 40px;
+        min-height: 40px;
         border: none;
         background: transparent;
-        padding: 0 2px;
+        padding: 0;
         width: auto;
         height: auto;
         color: #0d1220;
+        touch-action: manipulation;
       }
       .chatPanel .panelHeader select,
       .chatPanel .panelHeader input,

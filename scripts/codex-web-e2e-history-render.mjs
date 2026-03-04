@@ -754,12 +754,18 @@ async function main() {
         const btn = document.getElementById('mobileMenuBtn');
         if (!btn) return { ok: false, error: 'missing mobileMenuBtn' };
         const r = btn.getBoundingClientRect();
+        const w = Math.round(r.width || 0);
+        const h = Math.round(r.height || 0);
+        const minSizeOk = w >= 36 && h >= 36;
         const x = Math.floor(r.left + r.width / 2);
         const y = Math.floor(r.top + r.height / 2);
         const hit = document.elementFromPoint(x, y);
         const within = !!(hit && (hit === btn || btn.contains(hit)));
         return {
           ok: true,
+          w,
+          h,
+          minSizeOk,
           within,
           hitTag: hit?.tagName || '',
           hitId: hit?.id || '',
@@ -767,6 +773,9 @@ async function main() {
         };
       `)
       if (!hitTest?.ok) throw new Error(`mobile menu hit test failed: ${hitTest?.error || 'unknown'}`)
+      if (!hitTest?.minSizeOk) {
+        throw new Error(`expected mobileMenuBtn hitbox >=36px, got ${hitTest?.w}x${hitTest?.h}`)
+      }
       if (!hitTest?.within) {
         throw new Error(`expected mobile menu to be topmost (hit within mobileMenuBtn), got tag=${hitTest.hitTag} id=${hitTest.hitId} class=${hitTest.hitClass}`)
       }
@@ -794,6 +803,31 @@ async function main() {
         const isOpen = await driver.executeScript(`return document.body.classList.contains('drawer-left-open');`)
         return !!isOpen
       }, 8000, 'drawer-left-open after menu click')
+
+      // Regression (touch): opening on pointerdown must not immediately close due to a synthesized click
+      // retargeting to the backdrop (appears as "opened then instantly collapsed").
+      const touchProbe = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const btn = document.getElementById('mobileMenuBtn');
+        const backdrop = document.getElementById('mobileDrawerBackdrop');
+        if (!btn || !backdrop) return done({ ok: false, error: 'missing btn/backdrop' });
+
+        // Ensure closed first.
+        document.body.classList.remove('drawer-left-open', 'drawer-right-open');
+        backdrop.classList.remove('show');
+
+        btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }));
+        const openedAfterDown = document.body.classList.contains('drawer-left-open');
+
+        setTimeout(() => {
+          backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          const stillOpen = document.body.classList.contains('drawer-left-open');
+          done({ ok: true, openedAfterDown, stillOpen });
+        }, 20);
+      `)
+      if (!touchProbe?.ok) throw new Error(`touch probe failed: ${touchProbe?.error || 'unknown'}`)
+      if (!touchProbe?.openedAfterDown) throw new Error(`expected drawer to open on touch pointerdown, got ${JSON.stringify(touchProbe)}`)
+      if (!touchProbe?.stillOpen) throw new Error(`expected drawer to remain open after synthesized click, got ${JSON.stringify(touchProbe)}`)
 
       // Drawer backdrop should use blur (backdrop-filter) for the expected dim+blur effect.
       const blurProbe = await driver.executeScript(`
@@ -1435,13 +1469,36 @@ async function main() {
 
       function finish() {
         let maxDelta = 0;
+        let maxAt = 0;
+        let maxFrom = 0;
+        let maxTo = 0;
         let movingFrames = 0;
         for (let i = 1; i < tops.length; i += 1) {
           const d = Math.abs(tops[i] - tops[i - 1]);
-          if (d > maxDelta) maxDelta = d;
+          if (d > maxDelta) {
+            maxDelta = d;
+            maxAt = i;
+            maxFrom = tops[i - 1];
+            maxTo = tops[i];
+          }
           if (d > 0.5) movingFrames += 1;
         }
-        done({ ok: true, maxDelta, movingFrames, frames: tops.length });
+        const h = window.__webCodexE2E;
+        const dbg = window.__webCodexDbg || {};
+        done({
+          ok: true,
+          maxDelta,
+          maxAt,
+          maxFrom,
+          maxTo,
+          movingFrames,
+          frames: tops.length,
+          scrollTop: Number(box.scrollTop || 0),
+          scrollHeight: Number(box.scrollHeight || 0),
+          clientHeight: Number(box.clientHeight || 0),
+          dbg: dbg && typeof dbg === 'object' ? dbg : {},
+          hasE2EHooks: !!h,
+        });
       }
 
       // Simulate streaming text growing the last message (like deltas).

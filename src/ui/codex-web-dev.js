@@ -91,7 +91,29 @@ const state = {
   inlineEffortMenuForModel: "",
   openingThreadReqId: 0,
   pendingThreadResumes: new Map(),
+  // When we open the mobile drawer on pointerdown, some environments (touch WebViews / remote-control)
+  // may synthesize a subsequent click that retargets to the backdrop and immediately closes it.
+  // Suppress click-close for a short window after open.
+  suppressSyntheticClickUntil: 0,
 };
+
+function armSyntheticClickSuppression(ms = 380) {
+  state.suppressSyntheticClickUntil = Date.now() + Math.max(0, Number(ms) || 0);
+}
+
+function shouldSuppressSyntheticClick(event) {
+  if (!event || String(event.type || "") !== "click") return false;
+  const now = Date.now();
+  if (now <= Number(state.suppressSyntheticClickUntil || 0)) {
+    state.suppressSyntheticClickUntil = 0;
+    try {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+    } catch {}
+    return true;
+  }
+  return false;
+}
 
 const GUIDE_DISMISSED_KEY = "web_codex_guide_dismissed_v2";
 const TOKEN_STORAGE_KEY = "web_codex_token_v1";
@@ -1463,6 +1485,7 @@ function ensureImageViewer() {
 
   const close = () => backdrop.classList.remove("show");
   backdrop.addEventListener("click", (event) => {
+    if (shouldSuppressSyntheticClick(event)) return;
     if (event.target === backdrop) close();
   });
   const backBtn = byId("imageViewerBackBtn");
@@ -1501,10 +1524,17 @@ function scrollChatToBottom({ force = false } = {}) {
   const box = byId("chatBox");
   if (!box) return;
   if (!force && !state.chatShouldStickToBottom) return;
+  const wasSticky = !!state.chatShouldStickToBottom;
   // Mark as sticky so future messages/layout settles keep following bottom.
   state.chatShouldStickToBottom = true;
   if (force) state.chatUserScrolledAwayAt = 0;
   state.chatProgrammaticScrollUntil = Date.now() + 260;
+  if (force && !wasSticky) {
+    dbgSet({
+      lastForceScrollWhileNotStickyAt: Date.now(),
+      lastForceScrollWhileNotStickyGestureAgoMs: Date.now() - Number(state.chatLastUserGestureAt || 0),
+    });
+  }
   dbgSet({ lastScrollChatToBottomAt: Date.now(), lastScrollChatToBottomForce: !!force });
   // Use the actual max scrollTop to avoid a clamp-induced "micro jump" at the end.
   box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
@@ -1512,38 +1542,41 @@ function scrollChatToBottom({ force = false } = {}) {
 }
 
 function scrollToBottomReliable() {
-  // clawdex-style: limited retries to account for layout settling (images/fonts),
-  // but never a time-window "force to bottom" that fights user scrolling.
+  // Robust pin-to-bottom while layout is still settling (images/fonts) without fighting user intent.
+  // MutationObserver does not fire for pure layout changes; this loop keeps us pinned until
+  // scrollHeight/clientHeight stabilizes for several frames or a hard time budget is reached.
   const token = (Number(state.chatReconcileToken || 0) + 1) | 0;
   state.chatReconcileToken = token;
-  const reconcileStep = (delay, preferSnap) => {
-    setTimeout(() => {
-      if (token !== state.chatReconcileToken) return;
-      if (!state.chatShouldStickToBottom) return;
-      const box = byId("chatBox");
-      if (!box) return;
-      const dist = chatDistanceFromBottom(box);
-      // Avoid large single-frame jumps during live updates: if we're far from bottom,
-      // use the live-follow loop instead of snapping.
-      if (preferSnap || dist <= 120) scrollChatToBottom({ force: true });
-      else scheduleChatLiveFollow(900);
-    }, delay);
-  };
-  reconcileStep(0, true);
-  requestAnimationFrame(() => {
+  const startedAt = Date.now();
+  let lastKey = "";
+  let stableFrames = 0;
+
+  // Initial snap to bottom for the current layout.
+  scrollChatToBottom({ force: true });
+
+  const tick = () => {
     if (token !== state.chatReconcileToken) return;
     if (!state.chatShouldStickToBottom) return;
     const box = byId("chatBox");
     if (!box) return;
-    const dist = chatDistanceFromBottom(box);
-    if (dist <= 120) scrollChatToBottom({ force: true });
-    else scheduleChatLiveFollow(900);
-  });
-  reconcileStep(120, true);
-  reconcileStep(260, true);
-  reconcileStep(420, false);
-  reconcileStep(520, false);
-  reconcileStep(900, false);
+    const now = Date.now();
+    if (now - startedAt > 2200) return;
+    // If the user is actively interacting, stop immediately; don't fight them.
+    if (now - Number(state.chatLastUserGestureAt || 0) <= 120) return;
+
+    const targetTop = Math.max(0, box.scrollHeight - box.clientHeight);
+    const dist = targetTop - box.scrollTop;
+    if (dist > 0.5) scrollChatToBottom({ force: true });
+
+    const key = `${Math.round(box.scrollHeight)}:${Math.round(box.clientHeight)}:${Math.round(box.scrollTop)}`;
+    if (key === lastKey && dist <= 0.5) stableFrames += 1;
+    else stableFrames = 0;
+    lastKey = key;
+    if (stableFrames >= 8) return;
+
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 function canStartChatLiveFollow() {
@@ -1643,7 +1676,7 @@ function smoothScrollChatToBottom(durationMs = undefined) {
   // and large jumps don't take forever. Keep a slightly shorter profile for
   // reduced-motion setups, but still animated (user feedback prefers some motion).
   const computedDuration = prefersReduced
-    ? Math.round(Math.max(240, Math.min(520, 80 + Math.sqrt(distancePx) * 18)))
+    ? Math.round(Math.max(350, Math.min(520, 80 + Math.sqrt(distancePx) * 18)))
     : Math.round(Math.max(420, Math.min(1400, 100 + Math.sqrt(distancePx) * 24)));
   const dur =
     durationMs == null || !Number.isFinite(Number(durationMs))
@@ -2986,6 +3019,13 @@ async function renderChatFull(messages, options = {}) {
       frag.appendChild(node);
     }
     box.appendChild(frag);
+    // While opening large chats, keep the view pinned to bottom if the user hasn't scrolled away.
+    // This avoids ending up "far above bottom" while the remaining batches are still rendering.
+    const now = Date.now();
+    const recentGesture = now - Number(state.chatLastUserGestureAt || 0) <= 250;
+    if (state.chatShouldStickToBottom && !recentGesture) {
+      scrollChatToBottom({ force: true });
+    }
     // Yield so the UI remains responsive while opening large chats.
     // (This is the root cause of "can't click header while opening".)
     // eslint-disable-next-line no-await-in-loop
@@ -4048,6 +4088,9 @@ function wireActions() {
           event?.preventDefault?.();
           event?.stopPropagation?.();
         } catch {}
+        if (event && String(event.type || "") === "pointerdown") {
+          armSyntheticClickSuppression(450);
+        }
         setMobileTab("threads");
       };
       btn.addEventListener("pointerdown", open, { passive: false });
@@ -4061,6 +4104,7 @@ function wireActions() {
     if (backdrop && !backdrop.__wiredCloseDrawer) {
       backdrop.__wiredCloseDrawer = true;
       const close = (event) => {
+        if (shouldSuppressSyntheticClick(event)) return;
         try {
           event?.preventDefault?.();
           event?.stopPropagation?.();
@@ -4100,6 +4144,7 @@ function wireActions() {
       event.preventDefault();
       event.stopPropagation();
       if (state.modelOptionsLoading) return;
+      if (event && String(event.type || "") === "pointerdown") armSyntheticClickSuppression(380);
       const isOpen = !!headerModelPicker?.classList.contains("open");
       setHeaderModelMenuOpen(!isOpen);
     };
@@ -4125,6 +4170,7 @@ function wireActions() {
     };
   }
   document.addEventListener("click", (event) => {
+    if (shouldSuppressSyntheticClick(event)) return;
     const target = event.target;
     if (!headerModelPicker || !(target instanceof Node)) return;
     if (!headerModelPicker.contains(target)) {
@@ -4481,6 +4527,8 @@ function bootstrap() {
         chatBox.__wiredUserGesture = true;
         const markGesture = () => {
           state.chatLastUserGestureAt = Date.now();
+          // Any user gesture should immediately cancel live-follow so we never "yank" the user back down.
+          stopChatLiveFollow();
         };
         chatBox.addEventListener("pointerdown", markGesture, { passive: true });
         chatBox.addEventListener("touchstart", markGesture, { passive: true });
@@ -4553,6 +4601,22 @@ function bootstrap() {
         schedule();
       });
       obs.observe(chatBox, { childList: true, subtree: true, characterData: true });
+    }
+  } catch {}
+  // Late-settles: images (and other async media) can change layout without mutating DOM, so a MutationObserver
+  // won't fire. Use a capture-phase load/error listener to keep sticky-to-bottom chats pinned while media loads.
+  try {
+    const chatBox = byId("chatBox");
+    if (chatBox && !chatBox.__wiredMediaSettleFollow) {
+      chatBox.__wiredMediaSettleFollow = true;
+      const onSettle = () => {
+        // Ignore while an explicit smooth-scroll is running (user-initiated).
+        if (Date.now() <= Number(state.chatSmoothScrollUntil || 0)) return;
+        if (!canStartChatLiveFollow()) return;
+        scheduleChatLiveFollow(1200);
+      };
+      chatBox.addEventListener("load", onSettle, true);
+      chatBox.addEventListener("error", onSettle, true);
     }
   } catch {}
   startThreadAutoRefreshLoop();
