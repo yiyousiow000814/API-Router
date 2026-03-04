@@ -1373,7 +1373,11 @@ function renderMessageAttachments(attachments) {
   if (!imgs.length) return "";
   const nodes = [];
 
-  const canShowPreview = (src) => /^data:image\//i.test(src) || /^https?:\/\//i.test(src);
+  const canShowPreview = (src) =>
+    /^data:image\//i.test(src) ||
+    /^https?:\/\//i.test(src) ||
+    /^\/codex\/file\b/i.test(src) ||
+    /^blob:/i.test(src);
   const displayAttachmentLabel = (label) => {
     const s = String(label || "").trim();
     const m = /^Image\s*#(\d+)\s*$/i.exec(s);
@@ -2371,7 +2375,9 @@ function normalizeTextPayload(result) {
 function compactAttachmentLabel(value, maxLen = 38) {
   const text = String(value || "").trim();
   if (!text) return "";
-  if (/^data:/i.test(text)) return "inline-image";
+  // Data URLs are common for inline images; don't surface "inline-image" as a user-visible label.
+  // Let callers fall back to the canonical "Image #N" numbering instead.
+  if (/^data:/i.test(text)) return "";
   let candidate = text;
   if (/^https?:\/\//i.test(text)) {
     try {
@@ -2499,15 +2505,17 @@ function parseUserMessageParts(item) {
       const fileName = compactAttachmentLabel(part.path);
       const path = String(part.path || "").trim();
       if (path) {
-        const label = pendingImageLabels.shift() || fileName || `Image ${images.length + 1}`;
-        images.push({ src: path, label, kind: "path" });
+        const label = pendingImageLabels.shift() || `Image #${images.length + 1}`;
+        // Local file paths are not directly previewable in WebView; serve via gateway.
+        const src = `/codex/file?path=${encodeURIComponent(path)}`;
+        images.push({ src, label, kind: "path", rawPath: path, fileName });
       }
       continue;
     }
     if (partType === "image") {
       const url = String(part.url || "").trim();
       if (url) {
-        const label = pendingImageLabels.shift() || compactAttachmentLabel(url) || `Image ${images.length + 1}`;
+        const label = pendingImageLabels.shift() || compactAttachmentLabel(url) || `Image #${images.length + 1}`;
         images.push({ src: url, label, kind: "url" });
       }
       continue;
@@ -2515,7 +2523,7 @@ function parseUserMessageParts(item) {
     if (partType === "inputimage") {
       const url = String(part.image_url || "").trim();
       if (url) {
-        const label = pendingImageLabels.shift() || `Image ${images.length + 1}`;
+        const label = pendingImageLabels.shift() || `Image #${images.length + 1}`;
         images.push({ src: url, label, kind: "url" });
       }
       continue;
@@ -4285,6 +4293,23 @@ function bootstrap() {
         },
         getThreadHistory(threadId) {
           return historyByThreadId.get(String(threadId || ""));
+        },
+        parseUserContentParts(content) {
+          try {
+            const item = { content: Array.isArray(content) ? content : [] };
+            const parsed = parseUserMessageParts(item);
+            return { ok: true, text: parsed.text || "", images: parsed.images || [] };
+          } catch (e) {
+            return { ok: false, error: String(e && e.message ? e.message : e) };
+          }
+        },
+        renderAttachmentsHtml(images) {
+          try {
+            const html = renderMessageAttachments(Array.isArray(images) ? images : []);
+            return { ok: true, html: String(html || "") };
+          } catch (e) {
+            return { ok: false, error: String(e && e.message ? e.message : e) };
+          }
         },
         async openThread(threadId) {
           const id = String(threadId || "").trim();

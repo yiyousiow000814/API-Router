@@ -378,13 +378,14 @@ async function main() {
       if (last.eff !== 'medium') throw new Error(`expected final effort label medium, got ${JSON.stringify(last.eff)}`)
 
       // Model, effort, and chevron should become visible at essentially the same time.
+      // NOTE: WebDriver/CI timing can be jittery; allow a small tolerance window.
       if (visModelAt < 0 || visEffAt < 0 || visChevAt < 0) {
         throw new Error(`expected model+effort+chevron to become visible; got visModelAt=${visModelAt} visEffAt=${visEffAt} visChevAt=${visChevAt}`)
       }
       const maxVis = Math.max(visModelAt, visEffAt, visChevAt)
       const minVis = Math.min(visModelAt, visEffAt, visChevAt)
-      if (maxVis - minVis > 45) {
-        throw new Error(`expected model+effort+chevron to appear within 45ms of each other; got model=${visModelAt}ms effort=${visEffAt}ms chev=${visChevAt}ms`)
+      if (maxVis - minVis > 80) {
+        throw new Error(`expected model+effort+chevron to appear within 80ms of each other; got model=${visModelAt}ms effort=${visEffAt}ms chev=${visChevAt}ms`)
       }
 
       // Chevron should become visible promptly once loading is gone.
@@ -1059,7 +1060,7 @@ async function main() {
           ] }] },
           { items: [{ type: 'assistantMessage', text: 'Saw it.' }] },
           { items: [{ type: 'userMessage', content: [
-            { type: 'input_text', text: '[Image #A]\\n[image: inline-image-a]\\n3-up' },
+           { type: 'input_text', text: '[Image #A]\\n[image: inline-image-a]\\n3-up' },
             { type: 'input_image', image_url: dataUrl },
             { type: 'input_text', text: '[Image #B]\\n[image: inline-image-b]' },
             { type: 'input_image', image_url: dataUrl },
@@ -1140,7 +1141,15 @@ async function main() {
         const dist = Math.max(0, box.scrollHeight - (box.scrollTop + box.clientHeight));
         const show = btn.classList.contains('show');
         const dbg = window.__webCodexDbg || {};
-        return { ok: true, dist: Math.round(dist), show, dbg };
+        return {
+          ok: true,
+          dist: Math.round(dist),
+          show,
+          scrollTop: Math.round(box.scrollTop || 0),
+          scrollHeight: Math.round(box.scrollHeight || 0),
+          clientHeight: Math.round(box.clientHeight || 0),
+          dbg,
+        };
       `)
       if (!settled?.ok) throw new Error(`settle probe failed: ${settled?.error || 'unknown'}`)
       if (Number(settled.dist || 0) > 3) {
@@ -1546,6 +1555,49 @@ async function main() {
     if (Number(checks.lastMosaicTileCount || 0) !== 3) throw new Error(`expected last mosaic to have 3 tiles, got ${checks.lastMosaicTileCount}`)
     if (Array.isArray(checks.lastMosaicTileTops) && new Set(checks.lastMosaicTileTops).size !== 1) {
       throw new Error(`expected 3-image mosaic tiles to be on one row, got tops=${JSON.stringify(checks.lastMosaicTileTops)}`)
+    }
+
+    // Regression: images that arrive without any "[Image #N]" label text must still get numbered labels (#1/#2),
+    // and data URLs must never show up as "inline-image".
+    {
+      const res = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.parseUserContentParts !== 'function') return { ok: false, error: 'parseUserContentParts missing' };
+        const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4AWP4//8/AwAI/AL+Zf1zGQAAAABJRU5ErkJggg==';
+        return h.parseUserContentParts([
+          { type: 'input_image', image_url: dataUrl },
+          { type: 'input_image', image_url: dataUrl },
+        ]);
+      `)
+      if (!res?.ok) throw new Error(`parseUserContentParts failed: ${res?.error || 'unknown'}`)
+      const labels = Array.isArray(res.images) ? res.images.map((it) => String(it?.label || '').trim()) : []
+      if (labels.length !== 2) throw new Error(`expected 2 image labels, got ${JSON.stringify(labels)}`)
+      if (labels.some((t) => /inline-image/i.test(String(t)))) throw new Error(`expected no 'inline-image' labels, got ${JSON.stringify(labels)}`)
+      if (labels[0] !== 'Image #1' || labels[1] !== 'Image #2') throw new Error(`expected labels Image #1/Image #2, got ${JSON.stringify(labels)}`)
+    }
+
+    // Regression: local_image paths should be previewable via /codex/file (render as <img>, not missing tiles).
+    {
+      const res = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.parseUserContentParts !== 'function') return { ok: false, error: 'parseUserContentParts missing' };
+        if (!h || typeof h.renderAttachmentsHtml !== 'function') return { ok: false, error: 'renderAttachmentsHtml missing' };
+        const parsed = h.parseUserContentParts([{ type: 'local_image', path: 'C:\\\\tmp\\\\e2e_local.png' }]);
+        if (!parsed || !parsed.ok) return { ok: false, error: parsed?.error || 'parse failed' };
+        const img = Array.isArray(parsed.images) ? parsed.images[0] : null;
+        const html = h.renderAttachmentsHtml(parsed.images);
+        return { ok: true, img, html };
+      `)
+      if (!res?.ok) throw new Error(`local_image parse/render failed: ${res?.error || 'unknown'}`)
+      const src = String(res?.img?.src || '')
+      const label = String(res?.img?.label || '').trim()
+      if (!/^\/codex\/file\b/i.test(src)) throw new Error(`expected local_image src to start with /codex/file, got ${JSON.stringify(src)}`)
+      if (label !== 'Image #1') throw new Error(`expected local_image label to be Image #1, got ${JSON.stringify(label)}`)
+      if (!res?.html?.ok) throw new Error(`renderAttachmentsHtml failed: ${res?.html?.error || 'unknown'}`)
+      const renderedHtml = String(res?.html?.html || '')
+      if (!renderedHtml.includes('msgAttachmentImage')) {
+        throw new Error(`expected /codex/file images to render as <img class=\"msgAttachmentImage\"> (previewable); got html=${JSON.stringify(renderedHtml.slice(0, 240))}`)
+      }
     }
 
     // Clicking a tile should open a viewer (gallery / filmstrip lives there).

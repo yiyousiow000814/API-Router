@@ -319,6 +319,65 @@ async fn codex_web_logo_png() -> Response {
         .into_response()
 }
 
+#[derive(Deserialize)]
+struct CodexFileQuery {
+    path: String,
+}
+
+async fn codex_file(State(st): State<GatewayState>, headers: HeaderMap, Query(q): Query<CodexFileQuery>) -> Response {
+    if let Some(resp) = require_codex_auth(&st, &headers) {
+        return resp;
+    }
+    let raw = q.path.trim();
+    if raw.is_empty() || raw.len() > 4096 {
+        return api_error(StatusCode::BAD_REQUEST, "missing file path");
+    }
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() {
+        return api_error(StatusCode::BAD_REQUEST, "path must be absolute");
+    }
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let content_type = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml; charset=utf-8",
+        _ => return api_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported file type"),
+    };
+
+    let meta = match tokio::fs::metadata(&path).await {
+        Ok(m) => m,
+        Err(e) => {
+            return api_error_detail(StatusCode::NOT_FOUND, "file not found", e.to_string());
+        }
+    };
+    if meta.len() as usize > MAX_ATTACHMENT_BYTES {
+        return api_error(StatusCode::PAYLOAD_TOO_LARGE, "file too large");
+    }
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) => {
+            return api_error_detail(StatusCode::BAD_GATEWAY, "failed to read file", e.to_string());
+        }
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "private, max-age=600"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
 async fn codex_health(State(st): State<GatewayState>, headers: HeaderMap) -> Response {
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
