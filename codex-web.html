@@ -1205,23 +1205,19 @@
       margin-bottom: 0;
     }
     .msgBody ul {
-      margin: 4px 0 8px 18px;
-      padding: 0;
+      margin: 4px 0 8px;
+      padding-left: 20px;
     }
     .msgBody ol {
-      margin: 4px 0 8px 18px;
-      padding: 0;
+      margin: 4px 0 8px;
+      padding-left: 20px;
     }
     .msgBody li {
       margin: 2px 0;
       min-width: 0;
     }
-    .msgBody .msgListItem.depth-1 { margin-left: 14px; }
-    .msgBody .msgListItem.depth-2 { margin-left: 28px; }
-    .msgBody .msgListItem.depth-3 { margin-left: 42px; }
-    .msgBody .msgListItem.depth-4 { margin-left: 56px; }
-    .msgBody .msgListItem.depth-5 { margin-left: 70px; }
-    .msgBody .msgListItem.depth-6 { margin-left: 84px; }
+    /* Nested list indentation is handled by real nested <ul>/<ol> now (see renderMessageRichHtml). */
+    .msgBody .msgListItem { margin-left: 0; }
     .msgBody strong {
       font-weight: 700;
       color: #0d1220;
@@ -1229,13 +1225,17 @@
     .msgInlineCode {
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
       font-size: 12px;
+      /* NOTE: Unlike clawdex-mobile (which uses a "pill" chip), we match Codex's subtler style:
+         inline code is colored (blue) without a background box, so it doesn't look like a UI tag. */
       padding: 0;
-      border: none;
+      border: 0;
       background: transparent;
-      color: #18233a;
+      /* Codex-like accent for LIGHT background: blue text without a pill background. */
+      color: #0b5bd3;
       white-space: normal;
       overflow-wrap: anywhere;
       word-break: break-word;
+      border-radius: 0;
     }
     .msgCodeBlock {
       margin: 6px 0 10px;

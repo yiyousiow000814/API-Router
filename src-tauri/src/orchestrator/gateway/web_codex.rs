@@ -252,8 +252,24 @@ fn truncate_output(value: &[u8]) -> (String, bool) {
     (String::from_utf8_lossy(head).to_string(), true)
 }
 
+fn web_codex_rpc_home_override() -> Option<String> {
+    // Web Codex should use the user's real Codex home (where threads/history live), while the
+    // rest of API Router can keep its own isolated CODEX_HOME for auth/provider switchboard.
+    //
+    // Default to Windows ~/.codex when present; allow an explicit override for advanced setups.
+    let explicit = std::env::var("API_ROUTER_WEB_CODEX_CODEX_HOME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if explicit.is_some() {
+        return explicit;
+    }
+    default_windows_codex_dir().map(|p| p.to_string_lossy().to_string())
+}
+
 async fn codex_rpc_call(method: &str, params: Value) -> Result<Value, Response> {
-    crate::codex_app_server::request(method, params)
+    let home = web_codex_rpc_home_override();
+    crate::codex_app_server::request_in_home(home.as_deref(), method, params)
         .await
         .map_err(|e| api_error_detail(StatusCode::BAD_GATEWAY, "codex app-server request failed", e))
 }
@@ -371,7 +387,9 @@ async fn codex_ws_stream_turn(
     if !send_ws_json(socket, &started).await {
         return Err("ws closed".to_string());
     }
-    let result = crate::codex_app_server::request("turn/start", payload).await?;
+    let home = web_codex_rpc_home_override();
+    let result =
+        crate::codex_app_server::request_in_home(home.as_deref(), "turn/start", payload).await?;
     let thread_id = result
         .get("threadId")
         .or_else(|| result.get("thread_id"))
@@ -446,8 +464,11 @@ async fn codex_ws_emit_event_snapshot(
 
 async fn codex_try_request_with_fallback(methods: &[&str], params: Value) -> Result<Value, String> {
     let mut last_err = String::new();
+    let home = web_codex_rpc_home_override();
     for method in methods {
-        match crate::codex_app_server::request(method, params.clone()).await {
+        match crate::codex_app_server::request_in_home(home.as_deref(), method, params.clone())
+            .await
+        {
             Ok(v) => return Ok(v),
             Err(e) => last_err = e,
         }
@@ -510,8 +531,13 @@ async fn codex_ws_poll_pending_events(
     // Forward codex app-server JSON-RPC notifications with a per-connection cursor.
     // This aligns with clawdex-mobile: multiple clients can reconnect and replay independently,
     // and we avoid draining a global queue (which would drop events for other clients).
-    let (mut items, first, last, gap) =
-        crate::codex_app_server::replay_notifications_since(*notif_cursor, 64).await;
+    let home = web_codex_rpc_home_override();
+    let (mut items, first, last, gap) = crate::codex_app_server::replay_notifications_since_in_home(
+        home.as_deref(),
+        *notif_cursor,
+        64,
+    )
+    .await;
     if gap {
         // Client requested an event id older than our ring buffer; tell it to reset.
         let _ = send_ws_json(
@@ -527,8 +553,12 @@ async fn codex_ws_poll_pending_events(
         )
         .await;
         *notif_cursor = 0;
-        let (replayed, _f2, _l2, _gap2) =
-            crate::codex_app_server::replay_notifications_since(0, 64).await;
+        let (replayed, _f2, _l2, _gap2) = crate::codex_app_server::replay_notifications_since_in_home(
+            home.as_deref(),
+            0,
+            64,
+        )
+        .await;
         items = replayed;
     }
     for notif in items {
@@ -647,7 +677,9 @@ async fn codex_ws_loop(mut socket: WebSocket) {
                                     .and_then(|x| x.as_str())
                                     .unwrap_or_default()
                                     .to_string();
-                                let result = crate::codex_app_server::request(
+                                let home = web_codex_rpc_home_override();
+                                let result = crate::codex_app_server::request_in_home(
+                                    home.as_deref(),
                                     "turn/interrupt",
                                     json!({ "turnId": turn_id }),
                                 )
@@ -689,7 +721,9 @@ async fn codex_ws_loop(mut socket: WebSocket) {
                                     .await;
                                     continue;
                                 }
-                                let result = crate::codex_app_server::request(&method, params).await;
+                                let home = web_codex_rpc_home_override();
+                                let result =
+                                    crate::codex_app_server::request_in_home(home.as_deref(), &method, params).await;
                                 match result {
                                     Ok(ok) => {
                                         let _ = send_ws_json(
@@ -1628,7 +1662,7 @@ mod codex_thread_list_tests {
     async fn thread_list_uses_app_server_and_filters_subagent_sources() {
         let calls: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
         let calls2 = calls.clone();
-        codex_app_server::_set_test_request_handler(Some(Arc::new(move |method, params| {
+        codex_app_server::_set_test_request_handler(Some(Arc::new(move |_home, method, params| {
             calls2
                 .lock()
                 .expect("calls lock")
@@ -1747,7 +1781,8 @@ async fn codex_thread_history(
         "threadId": id,
         "includeTurns": true,
     });
-    match crate::codex_app_server::request("thread/read", params).await {
+    let home = web_codex_rpc_home_override();
+    match crate::codex_app_server::request_in_home(home.as_deref(), "thread/read", params).await {
         Ok(v) => {
             let thread = v.get("thread").cloned().unwrap_or(v);
             Json(json!({ "thread": thread })).into_response()
@@ -1762,7 +1797,7 @@ async fn codex_thread_history(
                     "threadId": id,
                     "includeTurns": false,
                 });
-                match crate::codex_app_server::request("thread/read", fallback).await {
+                match crate::codex_app_server::request_in_home(home.as_deref(), "thread/read", fallback).await {
                     Ok(v) => {
                         let thread = v.get("thread").cloned().unwrap_or(v);
                         Json(json!({ "thread": thread })).into_response()
@@ -1820,7 +1855,8 @@ async fn codex_thread_resume(
     }
 
     let params = json!({ "threadId": id });
-    match crate::codex_app_server::request("thread/resume", params.clone()).await {
+    let home = web_codex_rpc_home_override();
+    match crate::codex_app_server::request_in_home(home.as_deref(), "thread/resume", params.clone()).await {
         Ok(v) => {
             Json(v).into_response()
         }
@@ -1833,7 +1869,7 @@ async fn codex_thread_resume(
                     if let Some(rollout_path) = rollout_hint.as_deref() {
                         match import_wsl_rollout_from_known_path(&id, rollout_path) {
                             Ok(true) => {
-                                match crate::codex_app_server::request("thread/resume", params.clone()).await {
+                                match crate::codex_app_server::request_in_home(home.as_deref(), "thread/resume", params.clone()).await {
                                     Ok(v) => {
                                         return Json(v).into_response();
                                     }
@@ -1864,7 +1900,7 @@ async fn codex_thread_resume(
                         WorkspaceTarget::Wsl2 => import_wsl_rollout_into_codex_home(&id),
                     };
                     match import_result {
-                        Ok(true) => match crate::codex_app_server::request("thread/resume", params.clone()).await {
+                        Ok(true) => match crate::codex_app_server::request_in_home(home.as_deref(), "thread/resume", params.clone()).await {
                             Ok(v) => {
                                 return Json(v).into_response();
                             }
@@ -2040,7 +2076,8 @@ async fn codex_turn_stream(
         "collaborationMode": req.collaboration_mode.unwrap_or_else(|| "default".to_string()),
     });
     let started = sse_event("started", &json!({ "ok": true }));
-    let call = crate::codex_app_server::request("turn/start", params).await;
+    let home = web_codex_rpc_home_override();
+    let call = crate::codex_app_server::request_in_home(home.as_deref(), "turn/start", params).await;
     let stream = async_stream::stream! {
         yield Ok::<Bytes, std::convert::Infallible>(started);
         match call {

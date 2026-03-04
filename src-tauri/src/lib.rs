@@ -123,95 +123,6 @@ fn resolve_codex_home(user_data_dir: &Path, _is_ui_tauri: bool, _app_profile: &s
     isolated
 }
 
-fn default_user_codex_home() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        let up = std::env::var("USERPROFILE").ok()?;
-        let p = PathBuf::from(up).join(".codex");
-        Some(p)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let home = std::env::var("HOME").ok()?;
-        let p = PathBuf::from(home).join(".codex");
-        Some(p)
-    }
-}
-
-fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let src = entry.path();
-        let name = entry.file_name();
-        let dst = to.join(name);
-        let ty = entry.file_type()?;
-        if ty.is_dir() {
-            copy_dir_recursive(&src, &dst)?;
-        } else if ty.is_file() {
-            let _ = std::fs::copy(&src, &dst);
-        }
-    }
-    Ok(())
-}
-
-fn ensure_codex_sessions_overlay_impl(codex_home: &Path, force_copy: bool) -> Result<(), String> {
-    let Some(user_home) = default_user_codex_home() else {
-        return Ok(());
-    };
-    let user_sessions = user_home.join("sessions");
-    if !user_sessions.exists() {
-        return Ok(());
-    }
-    let dst_sessions = codex_home.join("sessions");
-
-    // If the destination already exists and has content, leave it alone.
-    if let Ok(mut rd) = std::fs::read_dir(&dst_sessions) {
-        if rd.next().is_some() {
-            return Ok(());
-        }
-    }
-    if dst_sessions.exists() {
-        let _ = std::fs::remove_dir_all(&dst_sessions);
-    }
-
-    // Prefer linking on Windows (junction doesn't require admin). Fallback to copy if it fails.
-    if force_copy {
-        copy_dir_recursive(&user_sessions, &dst_sessions)
-            .map_err(|e| format!("failed to copy sessions overlay: {e}"))?;
-        Ok(())
-    } else {
-        #[cfg(target_os = "windows")]
-        {
-            use std::process::Command;
-            let mut cmd = Command::new("cmd.exe");
-            cmd.arg("/c")
-                .arg("mklink")
-                .arg("/J")
-                .arg(&dst_sessions)
-                .arg(&user_sessions);
-            let out = cmd.output().map_err(|e| format!("mklink failed: {e}"))?;
-            if !out.status.success() {
-                // Fallback: copy
-                copy_dir_recursive(&user_sessions, &dst_sessions)
-                    .map_err(|e| format!("failed to copy sessions overlay: {e}"))?;
-            }
-            Ok(())
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            use std::os::unix::fs::symlink;
-            symlink(&user_sessions, &dst_sessions)
-                .map_err(|e| format!("failed to symlink sessions overlay: {e}"))?;
-            Ok(())
-        }
-    }
-}
-
-fn ensure_codex_sessions_overlay(codex_home: &Path) -> Result<(), String> {
-    ensure_codex_sessions_overlay_impl(codex_home, false)
-}
-
 fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
     {
         let mut cfg = state.gateway.cfg.write();
@@ -461,11 +372,6 @@ pub fn run() {
             // show real chats, while still allowing isolated homes for test/non-default profiles.
             let codex_home = resolve_codex_home(&user_data_dir, is_ui_tauri, &app_profile);
             let _ = std::fs::create_dir_all(&codex_home);
-            if !is_ui_tauri && app_profile == "default" {
-                if let Err(e) = ensure_codex_sessions_overlay(&codex_home) {
-                    eprintln!("failed to overlay codex sessions: {e}");
-                }
-            }
             // Coordinate with tests/commands that also set CODEX_HOME (process-global env).
             {
                 let _lock = crate::codex_home_env::lock_env();
@@ -705,27 +611,5 @@ mod tests {
         std::env::remove_var("API_ROUTER_CODEX_HOME");
         let got = resolve_codex_home(&user_data, false, "default");
         assert_eq!(got, user_data.join("codex-home"));
-    }
-
-    #[test]
-    fn sessions_overlay_copies_user_sessions_into_isolated_home() {
-        let _lock = crate::codex_home_env::lock_env();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let fake_home = tmp.path().join("fake-home");
-        let user_codex = fake_home.join(".codex");
-        let user_sessions = user_codex.join("sessions");
-        std::fs::create_dir_all(&user_sessions).unwrap();
-        std::fs::write(user_sessions.join("rollout-a.jsonl"), b"{}\n").unwrap();
-
-        if cfg!(target_os = "windows") {
-            std::env::set_var("USERPROFILE", &fake_home);
-        } else {
-            std::env::set_var("HOME", &fake_home);
-        }
-
-        let isolated = tmp.path().join("isolated-codex-home");
-        std::fs::create_dir_all(&isolated).unwrap();
-        super::ensure_codex_sessions_overlay_impl(&isolated, true).expect("overlay ok");
-        assert!(isolated.join("sessions").join("rollout-a.jsonl").exists());
     }
 }

@@ -1,10 +1,9 @@
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -15,18 +14,26 @@ use tokio::sync::Mutex;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const NOTIFICATION_QUEUE_CAP: usize = 2048;
 
-static APP_SERVER: OnceLock<Mutex<Option<AppServer>>> = OnceLock::new();
-static NEXT_NOTIFICATION_EVENT_ID: AtomicU64 = AtomicU64::new(1);
-static NOTIFICATIONS: OnceLock<Mutex<VecDeque<(u64, Value)>>> = OnceLock::new();
+// Keyed by CODEX_HOME override ("" means inherit parent env / default process CODEX_HOME).
+static APP_SERVERS: OnceLock<Mutex<HashMap<String, AppServer>>> = OnceLock::new();
+static NOTIFICATION_STATE: OnceLock<Mutex<HashMap<String, NotificationState>>> = OnceLock::new();
 
 #[cfg(test)]
 static TEST_REQUEST_HANDLER: OnceLock<
-    Mutex<Option<std::sync::Arc<dyn Fn(&str, Value) -> Result<Value, String> + Send + Sync>>>,
+    Mutex<
+        Option<
+            std::sync::Arc<
+                dyn Fn(Option<&str>, &str, Value) -> Result<Value, String> + Send + Sync,
+            >,
+        >,
+    >,
 > = OnceLock::new();
 
 #[cfg(test)]
 pub async fn _set_test_request_handler(
-    handler: Option<std::sync::Arc<dyn Fn(&str, Value) -> Result<Value, String> + Send + Sync>>,
+    handler: Option<
+        std::sync::Arc<dyn Fn(Option<&str>, &str, Value) -> Result<Value, String> + Send + Sync>,
+    >,
 ) {
     let lock = TEST_REQUEST_HANDLER.get_or_init(|| Mutex::new(None));
     let mut guard = lock.lock().await;
@@ -34,26 +41,56 @@ pub async fn _set_test_request_handler(
 }
 
 #[cfg(test)]
-async fn maybe_handle_test_request(method: &str, params: &Value) -> Option<Result<Value, String>> {
+async fn maybe_handle_test_request(
+    codex_home: Option<&str>,
+    method: &str,
+    params: &Value,
+) -> Option<Result<Value, String>> {
     let lock = TEST_REQUEST_HANDLER.get_or_init(|| Mutex::new(None));
     let guard = lock.lock().await;
     let Some(handler) = guard.as_ref() else {
         return None;
     };
-    Some(handler(method, params.clone()))
+    Some(handler(codex_home, method, params.clone()))
 }
 
-fn notifications_queue() -> &'static Mutex<VecDeque<(u64, Value)>> {
-    NOTIFICATIONS.get_or_init(|| Mutex::new(VecDeque::new()))
+#[derive(Default)]
+struct NotificationState {
+    next_event_id: u64,
+    items: VecDeque<(u64, Value)>,
 }
 
-async fn push_notification(value: Value) {
-    let event_id = NEXT_NOTIFICATION_EVENT_ID.fetch_add(1, Ordering::Relaxed);
-    let q = notifications_queue();
-    let mut guard = q.lock().await;
-    guard.push_back((event_id, value));
-    while guard.len() > NOTIFICATION_QUEUE_CAP {
-        guard.pop_front();
+fn normalize_home_key(codex_home: Option<&str>) -> Cow<'static, str> {
+    let Some(home) = codex_home else {
+        return Cow::Borrowed("");
+    };
+    let trimmed = home.trim();
+    if trimmed.is_empty() {
+        Cow::Borrowed("")
+    } else {
+        Cow::Owned(trimmed.to_string())
+    }
+}
+
+fn notification_state_map() -> &'static Mutex<HashMap<String, NotificationState>> {
+    NOTIFICATION_STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+async fn push_notification(codex_home: Option<&str>, value: Value) {
+    let key = normalize_home_key(codex_home);
+    let map = notification_state_map();
+    let mut guard = map.lock().await;
+    let st = guard
+        .entry(key.to_string())
+        .or_insert_with(|| NotificationState {
+            next_event_id: 1,
+            items: VecDeque::new(),
+        });
+    let event_id = st.next_event_id;
+    st.next_event_id = st.next_event_id.saturating_add(1);
+    st.items.push_back((event_id, value));
+    while st.items.len() > NOTIFICATION_QUEUE_CAP {
+        st.items.pop_front();
     }
 }
 
@@ -71,20 +108,25 @@ fn with_event_id(mut value: Value, event_id: u64) -> Value {
 /// This does NOT drain the global queue so multiple clients can replay independently.
 /// Returns: (items, first_event_id_in_buffer, last_event_id_in_buffer, gap)
 /// - `gap=true` means some events older than requested have been dropped due to buffer cap.
-pub async fn replay_notifications_since(
+pub async fn replay_notifications_since_in_home(
+    codex_home: Option<&str>,
     since_event_id: u64,
     max: usize,
 ) -> (Vec<Value>, Option<u64>, Option<u64>, bool) {
     let cap = max.clamp(1, NOTIFICATION_QUEUE_CAP);
-    let q = notifications_queue();
-    let guard = q.lock().await;
-    let first = guard.front().map(|(id, _)| *id);
-    let last = guard.back().map(|(id, _)| *id);
+    let key = normalize_home_key(codex_home);
+    let map = notification_state_map();
+    let guard = map.lock().await;
+    let Some(st) = guard.get(key.as_ref()) else {
+        return (Vec::new(), None, None, false);
+    };
+    let first = st.items.front().map(|(id, _)| *id);
+    let last = st.items.back().map(|(id, _)| *id);
     let gap = first
         .map(|first_id| since_event_id + 1 < first_id)
         .unwrap_or(false);
     let mut out = Vec::new();
-    for (event_id, value) in guard.iter() {
+    for (event_id, value) in st.items.iter() {
         if *event_id <= since_event_id {
             continue;
         }
@@ -126,10 +168,9 @@ fn build_codex_command() -> Command {
 
 #[cfg(test)]
 pub async fn _clear_notifications_for_test() {
-    let q = notifications_queue();
-    let mut guard = q.lock().await;
+    let map = notification_state_map();
+    let mut guard = map.lock().await;
     guard.clear();
-    NEXT_NOTIFICATION_EVENT_ID.store(1, Ordering::Relaxed);
 }
 
 async fn write_json_line(
@@ -175,6 +216,7 @@ impl PendingRouter {
 async fn route_stdout_lines(
     stdout: tokio::process::ChildStdout,
     router: std::sync::Arc<PendingRouter>,
+    codex_home: Option<String>,
 ) {
     let mut reader = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = reader.next_line().await {
@@ -189,7 +231,7 @@ async fn route_stdout_lines(
             continue;
         }
         if value.get("method").and_then(|v| v.as_str()).is_some() {
-            push_notification(value).await;
+            push_notification(codex_home.as_deref(), value).await;
         }
     }
 }
@@ -203,8 +245,16 @@ struct AppServer {
 }
 
 impl AppServer {
-    async fn spawn() -> Result<Self, String> {
-        let mut child = build_codex_command()
+    async fn spawn(codex_home: Option<&str>) -> Result<Self, String> {
+        let mut cmd = build_codex_command();
+        if let Some(home) = codex_home {
+            let trimmed = home.trim();
+            if !trimmed.is_empty() {
+                cmd.env("CODEX_HOME", trimmed);
+            }
+        }
+
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -222,8 +272,11 @@ impl AppServer {
 
         let router = std::sync::Arc::new(PendingRouter::default());
         let router_for_task = router.clone();
+        let home_for_task = codex_home
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let stdout_task = tokio::spawn(async move {
-            route_stdout_lines(stdout, router_for_task).await;
+            route_stdout_lines(stdout, router_for_task, home_for_task).await;
         });
 
         // Initialize via normal request path so notifications can be captured concurrently.
@@ -347,7 +400,7 @@ mod tests {
                     continue;
                 }
                 if value.get("method").and_then(|v| v.as_str()).is_some() {
-                    push_notification(value).await;
+                    push_notification(None, value).await;
                 }
             }
         });
@@ -368,7 +421,7 @@ mod tests {
             .expect("oneshot dropped");
         assert_eq!(got.get("id").and_then(|v| v.as_i64()), Some(99));
 
-        let (drained, _first, _last, _gap) = replay_notifications_since(0, 8).await;
+        let (drained, _first, _last, _gap) = replay_notifications_since_in_home(None, 0, 8).await;
         assert!(!drained.is_empty(), "expected at least one notification");
         assert_eq!(
             drained[0].get("method").and_then(|v| v.as_str()),
@@ -383,10 +436,10 @@ mod tests {
     async fn replay_notifications_since_includes_event_ids_and_gaps() {
         let _guard = lock_tests();
         _clear_notifications_for_test().await;
-        push_notification(serde_json::json!({"method":"a","params":{}})).await;
-        push_notification(serde_json::json!({"method":"b","params":{}})).await;
+        push_notification(None, serde_json::json!({"method":"a","params":{}})).await;
+        push_notification(None, serde_json::json!({"method":"b","params":{}})).await;
 
-        let (all, first, last, gap) = replay_notifications_since(0, 10).await;
+        let (all, first, last, gap) = replay_notifications_since_in_home(None, 0, 10).await;
         assert_eq!(first, Some(1));
         assert_eq!(last, Some(2));
         assert!(!gap);
@@ -394,7 +447,7 @@ mod tests {
         assert_eq!(all[0].get("eventId").and_then(|v| v.as_u64()), Some(1));
         assert_eq!(all[1].get("eventId").and_then(|v| v.as_u64()), Some(2));
 
-        let (only_b, _f2, _l2, gap2) = replay_notifications_since(1, 10).await;
+        let (only_b, _f2, _l2, gap2) = replay_notifications_since_in_home(None, 1, 10).await;
         assert!(!gap2);
         assert_eq!(only_b.len(), 1);
         assert_eq!(only_b[0].get("method").and_then(|v| v.as_str()), Some("b"));
@@ -402,7 +455,7 @@ mod tests {
 
         // If the buffer is empty, first/last are None.
         _clear_notifications_for_test().await;
-        let (empty, f3, l3, gap3) = replay_notifications_since(0, 10).await;
+        let (empty, f3, l3, gap3) = replay_notifications_since_in_home(None, 0, 10).await;
         assert!(empty.is_empty());
         assert_eq!(f3, None);
         assert_eq!(l3, None);
@@ -415,9 +468,9 @@ mod tests {
         _clear_notifications_for_test().await;
         // Fill beyond the cap so the oldest events are dropped.
         for i in 0..(NOTIFICATION_QUEUE_CAP + 2) {
-            push_notification(serde_json::json!({"method":"m","params":{"i":i}})).await;
+            push_notification(None, serde_json::json!({"method":"m","params":{"i":i}})).await;
         }
-        let (items, first, last, gap) = replay_notifications_since(0, 5).await;
+        let (items, first, last, gap) = replay_notifications_since_in_home(None, 0, 5).await;
         assert!(
             gap,
             "expected gap=true when since is older than retained buffer"
@@ -430,23 +483,34 @@ mod tests {
     }
 }
 
-pub async fn request(method: &str, params: Value) -> Result<Value, String> {
+pub async fn request_in_home(
+    codex_home: Option<&str>,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
     #[cfg(test)]
-    if let Some(result) = maybe_handle_test_request(method, &params).await {
+    if let Some(result) = maybe_handle_test_request(codex_home, method, &params).await {
         return result;
     }
 
-    let lock = APP_SERVER.get_or_init(|| Mutex::new(None));
+    let key = normalize_home_key(codex_home).to_string();
+    let lock = APP_SERVERS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = lock.lock().await;
-    let needs_spawn = match guard.as_mut() {
+    let needs_spawn = match guard.get_mut(&key) {
         Some(server) => server.is_dead().unwrap_or(true),
         None => true,
     };
     if needs_spawn {
-        *guard = Some(AppServer::spawn().await?);
+        let spawned = AppServer::spawn(if key.is_empty() {
+            None
+        } else {
+            Some(key.as_str())
+        })
+        .await?;
+        guard.insert(key.clone(), spawned);
     }
     let server = guard
-        .as_mut()
+        .get_mut(&key)
         .ok_or_else(|| "codex app-server not available".to_string())?;
     match server.request(method, params).await {
         Ok(result) => Ok(result),
@@ -458,11 +522,15 @@ pub async fn request(method: &str, params: Value) -> Result<Value, String> {
                 || lower.contains("failed to open codex stdin")
                 || lower.contains("failed to open codex stdout");
             if should_respawn {
-                *guard = None;
+                guard.remove(&key);
             }
             Err(e)
         }
     }
+}
+
+pub async fn request(method: &str, params: Value) -> Result<Value, String> {
+    request_in_home(None, method, params).await
 }
 
 pub fn open_external_url(url: &str) -> Result<(), String> {

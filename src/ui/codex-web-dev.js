@@ -1229,9 +1229,99 @@ function renderMessageRichHtml(text) {
     const match = String(line || "").match(/^(\s*)([-*•]|\d+\.)\s+(.+)$/);
     if (!match) return null;
     const indent = String(match[1] || "").replace(/\t/g, "  ").length;
-    return { indent, marker: match[2], text: match[3] };
+    const marker = String(match[2] || "").trim();
+    const type = /^\d+\.$/.test(marker) ? "ol" : "ul";
+    return { indent, marker, type, text: match[3] };
   };
   const isListLine = (line) => !!parseListLine(line);
+  const renderListBlock = (listLines) => {
+    const items = [];
+    for (const itemLine of listLines) {
+      const parsed = parseListLine(itemLine);
+      if (!parsed) continue;
+      const depth = Math.min(6, Math.floor(Number(parsed.indent || 0) / 2));
+      items.push({ depth, type: parsed.type, text: parsed.text });
+    }
+    if (!items.length) return "";
+
+    // Stream a properly nested list structure (ul/ol inside li), instead of a flattened list
+    // with fake indentation. Flattening causes "bullet + numbering pinned together" artifacts.
+    let out = "";
+    const openLists = []; // index == depth, value == 'ul'|'ol'
+    const openLi = []; // index == depth, boolean
+
+    const closeDepth = (targetDepthInclusive) => {
+      while (openLists.length - 1 > targetDepthInclusive) {
+        const d = openLists.length - 1;
+        if (openLi[d]) {
+          out += "</li>";
+          openLi[d] = false;
+        }
+        out += `</${openLists[d]}>`;
+        openLists.pop();
+        openLi.pop();
+      }
+    };
+
+    for (let idx = 0; idx < items.length; idx += 1) {
+      const item = items[idx];
+      const next = items[idx + 1] || null;
+
+      closeDepth(item.depth);
+
+      // Ensure we have lists open down to item.depth.
+      while (openLists.length - 1 < item.depth) {
+        const parentDepth = openLists.length - 1;
+        if (parentDepth >= 0 && !openLi[parentDepth]) {
+          // Robustness: if markdown indentation is weird, still create a parent li to hold the nested list.
+          out += `<li class="msgListItem depth-${Math.min(6, parentDepth)}">`;
+          openLi[parentDepth] = true;
+        }
+        out += `<${item.type}>`;
+        openLists.push(item.type);
+        openLi.push(false);
+      }
+
+      // If list type changes at this depth, start a new list.
+      if (openLists[item.depth] !== item.type) {
+        if (openLi[item.depth]) {
+          out += "</li>";
+          openLi[item.depth] = false;
+        }
+        out += `</${openLists[item.depth]}>`;
+        openLists[item.depth] = item.type;
+        out += `<${item.type}>`;
+      }
+
+      if (openLi[item.depth]) {
+        out += "</li>";
+        openLi[item.depth] = false;
+      }
+
+      out += `<li class="msgListItem depth-${Math.min(6, item.depth)}">${renderInlineMessageText(item.text)}`;
+      openLi[item.depth] = true;
+
+      // Keep the li open if the next item is deeper (nested list follows).
+      if (!next || next.depth <= item.depth) {
+        out += "</li>";
+        openLi[item.depth] = false;
+      }
+    }
+
+    closeDepth(-1);
+    // closeDepth(-1) closed all but depth -1, but we still may have the root list open.
+    while (openLists.length) {
+      const d = openLists.length - 1;
+      if (openLi[d]) {
+        out += "</li>";
+        openLi[d] = false;
+      }
+      out += `</${openLists[d]}>`;
+      openLists.pop();
+      openLi.pop();
+    }
+    return out;
+  };
   for (let i = 0; i < segments.length; i += 1) {
     const segment = segments[i];
     if (i % 2 === 1) {
@@ -1262,16 +1352,7 @@ function renderMessageRichHtml(text) {
           listLines.push(nextLine);
           lineIdx = nextIdx;
         }
-        const firstParsed = parseListLine(listLines[0]);
-        const ordered = !!(firstParsed && /^\d+\.$/.test(firstParsed.marker));
-        html += ordered ? "<ol>" : "<ul>";
-        for (const itemLine of listLines) {
-          const parsed = parseListLine(itemLine);
-          if (!parsed) continue;
-          const depth = Math.min(6, Math.floor(parsed.indent / 2));
-          html += `<li class="msgListItem depth-${depth}">${renderInlineMessageText(parsed.text)}</li>`;
-        }
-        html += ordered ? "</ol>" : "</ul>";
+        html += renderListBlock(listLines);
         continue;
       }
       paragraphLines.push(line);
@@ -1431,24 +1512,34 @@ function scrollToBottomReliable() {
   // but never a time-window "force to bottom" that fights user scrolling.
   const token = (Number(state.chatReconcileToken || 0) + 1) | 0;
   state.chatReconcileToken = token;
-  const attempt = (delay) => {
+  const reconcileStep = (delay, preferSnap) => {
     setTimeout(() => {
       if (token !== state.chatReconcileToken) return;
       if (!state.chatShouldStickToBottom) return;
-      scrollChatToBottom({ force: true });
+      const box = byId("chatBox");
+      if (!box) return;
+      const dist = chatDistanceFromBottom(box);
+      // Avoid large single-frame jumps during live updates: if we're far from bottom,
+      // use the live-follow loop instead of snapping.
+      if (preferSnap || dist <= 120) scrollChatToBottom({ force: true });
+      else scheduleChatLiveFollow(900);
     }, delay);
   };
-  attempt(0);
+  reconcileStep(0, true);
   requestAnimationFrame(() => {
     if (token !== state.chatReconcileToken) return;
     if (!state.chatShouldStickToBottom) return;
-    scrollChatToBottom({ force: true });
+    const box = byId("chatBox");
+    if (!box) return;
+    const dist = chatDistanceFromBottom(box);
+    if (dist <= 120) scrollChatToBottom({ force: true });
+    else scheduleChatLiveFollow(900);
   });
-  attempt(120);
-  attempt(260);
-  attempt(420);
-  attempt(520);
-  attempt(900);
+  reconcileStep(120, true);
+  reconcileStep(260, true);
+  reconcileStep(420, false);
+  reconcileStep(520, false);
+  reconcileStep(900, false);
 }
 
 function canStartChatLiveFollow() {
@@ -1458,6 +1549,10 @@ function canStartChatLiveFollow() {
   // If the user hasn't intentionally scrolled away, allow live-follow to recover from small drift
   // (fonts/images) only when we're still close to bottom.
   if (!Number(state.chatUserScrolledAwayAt || 0)) return isChatNearBottom();
+  // Recovery: if the user scrolled up only slightly (still near bottom) and enough time has passed
+  // since that gesture, re-enable live-follow. This matches clawdex/ChatGPT feel: tiny scrolls
+  // don't permanently disable follow.
+  if (isChatNearBottom() && now - Number(state.chatUserScrolledAwayAt || 0) >= 900) return true;
   return false;
 }
 
@@ -1477,7 +1572,15 @@ function scheduleChatLiveFollow(extraMs = 520) {
   if (!box) return;
   const now = Date.now();
   const alreadyFollowing = now <= Number(state.chatLiveFollowUntil || 0);
-  if (!alreadyFollowing && !canStartChatLiveFollow()) return;
+  if (!alreadyFollowing) {
+    // Recovery: if we are still near bottom long after the last "scroll away" intent,
+    // allow follow again and clear the "away" marker.
+    if (!state.chatShouldStickToBottom && Number(state.chatUserScrolledAwayAt || 0) && isChatNearBottom() && now - Number(state.chatUserScrolledAwayAt || 0) >= 900) {
+      state.chatShouldStickToBottom = true;
+      state.chatUserScrolledAwayAt = 0;
+    }
+    if (!canStartChatLiveFollow()) return;
+  }
   state.chatLiveFollowUntil = Math.max(Number(state.chatLiveFollowUntil || 0), now + Math.max(0, Number(extraMs || 0)));
   if (state.chatLiveFollowRaf) return;
 
@@ -3615,6 +3718,9 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = 
     if ((state.threadRefreshReqSeqByWorkspace[target] || 0) === reqSeq && getWorkspaceTarget() === target && !silent) {
       state.threadListLoading = false;
       state.threadListLoadingTarget = "";
+      // If the response is an empty list, we still need a final render pass after flipping the
+      // loading flag; otherwise the sidebar can get stuck showing "Loading chats...".
+      renderThreads(state.threadItems);
     }
   }
 }
@@ -4222,6 +4328,28 @@ function bootstrap() {
           await loadThreadMessages(id, { animateBadge: false, forceRender: true });
           return { ok: true };
         },
+        async refreshThreadsWithMock(target = "windows", items = []) {
+          const workspace = normalizeWorkspaceTarget(String(target || "windows"));
+          const origFetch = window.fetch;
+          window.fetch = async (input, init) => {
+            try {
+              const url = typeof input === "string" ? input : (input && input.url ? input.url : "");
+              if (typeof url === "string" && url.startsWith("/codex/threads")) {
+                const body = JSON.stringify({ items: { data: Array.isArray(items) ? items : [], nextCursor: null } });
+                return new Response(body, { status: 200, headers: { "Content-Type": "application/json" } });
+              }
+            } catch {}
+            return origFetch(input, init);
+          };
+          try {
+            await refreshThreads(workspace, { force: true });
+            return { ok: true };
+          } catch (e) {
+            return { ok: false, error: String(e && e.message ? e.message : e) };
+          } finally {
+            window.fetch = origFetch;
+          }
+        },
         emitWsPayload(payload) {
           try {
             handleWsPayload(payload);
@@ -4339,14 +4467,24 @@ function bootstrap() {
           updateScrollToBottomBtn();
           // clawdex-style: update stickiness based on distance-to-bottom when we observe a user gesture.
           const now = Date.now();
-          if (now <= Number(state.chatSmoothScrollUntil || 0)) return;
           // During our short "programmatic scroll" windows, still respect user gestures:
           // if the user is touching/scrolling, treat this as real intent and allow cancellation.
           const inProgrammatic = now <= Number(state.chatProgrammaticScrollUntil || 0);
           const recentGesture = now - Number(state.chatLastUserGestureAt || 0) <= 900;
+          // Smooth-scroll windows are for our own UI animations; they must NOT suppress a real user
+          // "scroll away" intent (otherwise we yank them back to bottom).
+          if (now <= Number(state.chatSmoothScrollUntil || 0) && !recentGesture) return;
           if (inProgrammatic && !recentGesture) return;
+          // No recent user intent: treat as layout-induced scroll (images/fonts/DOM changes),
+          // and do not flip stickiness off. Flipping it off breaks open-chat pinning and live-follow.
+          if (!recentGesture) return;
           const dist = chatDistanceFromBottom(chatBox);
           const nextSticky = dist <= CHAT_STICKY_BOTTOM_PX;
+          // Important: while we're in a programmatic scroll window (open-chat pinning, follow-bottom,
+          // etc.), do NOT let those programmatic scroll events re-enable stickiness. Otherwise a user
+          // who scrolls up "immediately after open" can get yanked back to bottom because the follow
+          // scroll runs after their gesture and flips sticky=true again.
+          if (inProgrammatic && nextSticky) return;
           dbgSet({
             lastChatScrollDist: Math.round(dist),
             lastChatScrollSticky: !!nextSticky,

@@ -31,6 +31,8 @@ use super::store::{extract_response_model_option, unix_ms, Store};
 use super::upstream::UpstreamClient;
 use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
 use crate::platform::windows_terminal;
+use parking_lot::Mutex;
+use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug)]
 struct PeerAddr(SocketAddr);
@@ -128,7 +130,12 @@ fn maybe_record_model_mismatch(
         return;
     };
     let resp = response_model.trim();
-    if resp.is_empty() || req.eq_ignore_ascii_case(resp) {
+    if resp.is_empty() {
+        return;
+    }
+    // Only emit a warning when the mismatch state changes (or after it was resolved).
+    // This keeps the Events feed and daily graphs usable while still surfacing real mismatches.
+    if !model_mismatch_should_log_transition(provider_name, session_key, req, resp) {
         return;
     }
     st.store.add_event(
@@ -143,6 +150,115 @@ fn maybe_record_model_mismatch(
             "stream": stream,
         }),
     );
+}
+
+#[derive(Clone, Debug)]
+struct ModelMismatchMemo {
+    // last observed upstream model for a given (provider, session, requested_model)
+    last_response_model_lc: String,
+}
+
+static MODEL_MISMATCH_MEMO: OnceLock<Mutex<HashMap<String, ModelMismatchMemo>>> = OnceLock::new();
+
+fn model_mismatch_memo() -> &'static Mutex<HashMap<String, ModelMismatchMemo>> {
+    MODEL_MISMATCH_MEMO.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn _clear_model_mismatch_memo_for_test() {
+    model_mismatch_memo().lock().clear();
+}
+
+fn model_mismatch_key(provider: &str, session: &str, requested_model: &str) -> String {
+    format!(
+        "{}|{}|{}",
+        provider.trim().to_ascii_lowercase(),
+        session.trim().to_ascii_lowercase(),
+        requested_model.trim().to_ascii_lowercase()
+    )
+}
+
+fn model_mismatch_should_log_transition(
+    provider: &str,
+    session: &str,
+    requested_model: &str,
+    response_model: &str,
+) -> bool {
+    let provider = provider.trim();
+    let session = session.trim();
+    let req = requested_model.trim();
+    let resp = response_model.trim();
+    if provider.is_empty() || session.is_empty() || req.is_empty() || resp.is_empty() {
+        return false;
+    }
+
+    // If mismatch is resolved, clear memo so a future mismatch can log again.
+    if req.eq_ignore_ascii_case(resp) {
+        let key = model_mismatch_key(provider, session, req);
+        model_mismatch_memo().lock().remove(&key);
+        return false;
+    }
+
+    let key = model_mismatch_key(provider, session, req);
+    let resp_lc = resp.to_ascii_lowercase();
+    let mut memo = model_mismatch_memo().lock();
+    match memo.get(&key) {
+        Some(prev) if prev.last_response_model_lc == resp_lc => false,
+        _ => {
+            memo.insert(
+                key,
+                ModelMismatchMemo {
+                    last_response_model_lc: resp_lc,
+                },
+            );
+            true
+        }
+    }
+}
+
+#[cfg(test)]
+mod model_mismatch_tests {
+    use super::{_clear_model_mismatch_memo_for_test, model_mismatch_should_log_transition};
+
+    #[test]
+    fn model_mismatch_logs_only_on_transition_and_after_resolution() {
+        _clear_model_mismatch_memo_for_test();
+        // First mismatch logs.
+        assert!(model_mismatch_should_log_transition(
+            "packycode",
+            "s1",
+            "gpt-5.2",
+            "gpt-5.2-2025-12-11"
+        ));
+        // Same mismatch again => no log spam.
+        assert!(!model_mismatch_should_log_transition(
+            "packycode",
+            "s1",
+            "gpt-5.2",
+            "gpt-5.2-2025-12-11"
+        ));
+        // Different upstream model => logs transition.
+        assert!(model_mismatch_should_log_transition(
+            "packycode",
+            "s1",
+            "gpt-5.2",
+            "gpt-5.3-codex"
+        ));
+        // Resolution clears memo (no log).
+        assert!(!model_mismatch_should_log_transition(
+            "packycode",
+            "s1",
+            "gpt-5.2",
+            "gpt-5.2"
+        ));
+        // Mismatch again after resolution => logs again.
+        assert!(model_mismatch_should_log_transition(
+            "packycode",
+            "s1",
+            "gpt-5.2",
+            "gpt-5.2-2025-12-11"
+        ));
+    }
 }
 
 #[derive(Clone, Debug)]

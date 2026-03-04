@@ -65,6 +65,9 @@ impl Store {
     const EVENTS_SQLITE_SCHEMA_VERSION: &'static str = "1";
     const EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str = "migrated_from_sled_v1";
     const EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY: &'static str = "merged_legacy_sqlite_v1";
+    // Day-count index rebuild marker. Bump this when the rules for event inclusion change.
+    const EVENT_DAY_COUNTS_INDEX_VERSION_KEY: &'static str = "event_day_counts_index_version";
+    const EVENT_DAY_COUNTS_INDEX_VERSION: &'static str = "3";
     const USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str =
         "usage_requests_migrated_from_sled_v1";
 
@@ -383,6 +386,7 @@ impl Store {
         self.migrate_legacy_events_from_sled_if_needed()?;
         self.migrate_usage_requests_from_sled_if_needed()?;
         self.backfill_usage_request_daily_index_if_needed()?;
+        self.rebuild_event_day_counts_index_if_needed()?;
         Ok(())
     }
 
@@ -548,6 +552,142 @@ impl Store {
                errors=errors + excluded.errors",
             params![day_key, day_start_unix_ms, level],
         )?;
+        Ok(())
+    }
+
+    fn rebuild_event_day_counts_index_if_needed(&self) -> anyhow::Result<()> {
+        let mut conn = self.events_db.lock();
+        let current: Option<String> = conn
+            .query_row(
+                "SELECT value FROM event_meta WHERE key=?1",
+                [Self::EVENT_DAY_COUNTS_INDEX_VERSION_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current.as_deref() == Some(Self::EVENT_DAY_COUNTS_INDEX_VERSION) {
+            return Ok(());
+        }
+
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM event_day_counts", [])?;
+
+        let mut raw_rows: Vec<(i64, String, String, String, String)> = Vec::new();
+        {
+            let mut stmt =
+                tx.prepare("SELECT unix_ms, provider, level, code, fields_json FROM events")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?;
+            for row in rows.flatten() {
+                raw_rows.push(row);
+            }
+        }
+
+        #[derive(Default, Clone, Copy)]
+        struct Counts {
+            day_start_unix_ms: i64,
+            total: i64,
+            infos: i64,
+            warnings: i64,
+            errors: i64,
+        }
+
+        let mut by_day: std::collections::HashMap<String, Counts> =
+            std::collections::HashMap::new();
+        let mut mismatch_seen_by_day: std::collections::HashMap<
+            String,
+            std::collections::HashSet<String>,
+        > = std::collections::HashMap::new();
+        for row in raw_rows {
+            let (unix_ms_i64, provider, level, code, fields_json) = row;
+            let Ok(unix_ms_u64) = u64::try_from(unix_ms_i64) else {
+                continue;
+            };
+            let Some(day_key) = Self::local_day_key_from_unix_ms(unix_ms_u64) else {
+                continue;
+            };
+            let fields = serde_json::from_str::<Value>(&fields_json).unwrap_or(Value::Null);
+            if code.trim() == "routing.model_mismatch" {
+                // Historical spam: upstream can keep returning the same "other" model for many requests.
+                // We keep the warning, but only count it once per (provider, session, req, resp) per day.
+                let obj = fields.as_object();
+                let req = obj
+                    .and_then(|o| o.get("requested_model"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                let resp = obj
+                    .and_then(|o| o.get("response_model"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                let session = obj
+                    .and_then(|o| o.get("session"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                let sig = format!(
+                    "{}|{}|{}|{}",
+                    provider.trim().to_ascii_lowercase(),
+                    session,
+                    req,
+                    resp
+                );
+                let set = mismatch_seen_by_day.entry(day_key.clone()).or_default();
+                if !set.insert(sig) {
+                    continue;
+                }
+            }
+            let Some(day_start_u64) = Self::day_start_unix_ms_from_day_key(&day_key) else {
+                continue;
+            };
+            let Ok(day_start_i64) = i64::try_from(day_start_u64) else {
+                continue;
+            };
+            let entry = by_day.entry(day_key).or_insert_with(|| Counts {
+                day_start_unix_ms: day_start_i64,
+                total: 0,
+                infos: 0,
+                warnings: 0,
+                errors: 0,
+            });
+            entry.day_start_unix_ms = day_start_i64;
+            entry.total = entry.total.saturating_add(1);
+            match level.as_str() {
+                "error" => entry.errors = entry.errors.saturating_add(1),
+                "warning" => entry.warnings = entry.warnings.saturating_add(1),
+                _ => entry.infos = entry.infos.saturating_add(1),
+            }
+        }
+
+        let mut days: Vec<(String, Counts)> = by_day.into_iter().collect();
+        days.sort_by(|a, b| a.0.cmp(&b.0));
+        for (day_key, c) in days {
+            tx.execute(
+                "INSERT INTO event_day_counts(day_key, day_start_unix_ms, total, infos, warnings, errors)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                params![day_key, c.day_start_unix_ms, c.total, c.infos, c.warnings, c.errors],
+            )?;
+        }
+
+        tx.execute(
+            "INSERT INTO event_meta(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [
+                Self::EVENT_DAY_COUNTS_INDEX_VERSION_KEY,
+                Self::EVENT_DAY_COUNTS_INDEX_VERSION,
+            ],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 

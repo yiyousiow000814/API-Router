@@ -402,6 +402,133 @@ async function main() {
       }, 2000, 'header chevron visible after loading swap')
     }
 
+    // Regression: empty thread list must not get stuck showing "Loading chats..." after the
+    // request finishes (threadListLoading flips false in finally).
+    {
+      const res = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          const h = window.__webCodexE2E;
+          if (!h || typeof h.refreshThreadsWithMock !== 'function') return done({ ok: false, error: 'refreshThreadsWithMock missing' });
+          const r = await h.refreshThreadsWithMock('windows', []);
+          done(r);
+        })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!res?.ok) throw new Error(`refreshThreadsWithMock failed: ${res?.error || 'unknown'}`)
+
+      await waitFor(async () => {
+        const t = await driver.executeScript(`return String(document.getElementById('threadList')?.innerText || '').trim();`)
+        return t.includes('No threads yet.') && !t.includes('Loading chats')
+      }, 8000, 'empty threads shows No threads yet (not Loading chats)')
+    }
+
+    // Regression: assistant markdown should render with visible structure in codex-web
+    // (lists, inline code, code blocks). Otherwise the web view looks like a flat wall of text.
+    {
+      const markdown = [
+        'We changed semantics: **mismatch** still logs `warning`.',
+        '',
+        '1. Gateway-side dedupe',
+        '2. Daily Events rebuild',
+        '',
+        '- Parent bullet',
+        '  1. Child ordered one',
+        '  2. Child ordered two',
+        '- Second bullet',
+        '',
+        '1. Parent ordered',
+        '  - Child bullet A',
+        '  - Child bullet B',
+        '2. Parent ordered two',
+        '',
+        '```js',
+        'console.log(\"hello\")',
+        '```',
+      ].join('\n')
+      const seeded = await driver.executeAsyncScript(`
+        const markdown = arguments[0];
+        const done = arguments[arguments.length - 1];
+        try {
+          const h = window.__webCodexE2E;
+          if (!h || typeof h.setThreadHistory !== 'function') return done({ ok: false, error: 'setThreadHistory missing' });
+          const threadId = 'e2e_markdown_1';
+          h.setThreadHistory(threadId, {
+            id: threadId,
+            modelName: 'gpt-5.3-codex',
+            turns: [
+              { items: [{ type: 'assistantMessage', text: String(markdown || '') }] },
+            ],
+          });
+          done({ ok: true, threadId });
+        } catch (e) {
+          done({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+      `, markdown)
+      if (!seeded?.ok) throw new Error(`seed markdown thread failed: ${seeded?.error || 'unknown'}`)
+
+      const opened = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          const h = window.__webCodexE2E;
+          const r = await h.openThread(${JSON.stringify('e2e_markdown_1')});
+          done(r);
+        })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!opened?.ok) throw new Error(`openThread failed: ${opened?.error || 'unknown'}`)
+
+      await waitFor(async () => {
+        const ok = await driver.executeScript(`
+          const box = document.getElementById('chatBox');
+          if (!box) return { ok: false };
+          const hasList = !!box.querySelector('ol, ul');
+          const hasInline = !!box.querySelector('code.msgInlineCode');
+          const hasBlock = !!box.querySelector('pre.msgCodeBlock');
+          return { ok: hasList && hasInline && hasBlock, hasList, hasInline, hasBlock };
+        `)
+        return !!ok?.ok
+      }, 8000, 'assistant markdown structure (list/inline code/code block)')
+
+      // Regression: nested lists must nest structurally (no "bullet + numbering pinned together").
+      // - UL should contain nested OL
+      // - OL should contain nested UL
+      const nesting = await driver.executeScript(`
+        const box = document.getElementById('chatBox');
+        if (!box) return null;
+        const ulHasOl = !!box.querySelector('ul li ol');
+        const olHasUl = !!box.querySelector('ol li ul');
+        return { ulHasOl, olHasUl };
+      `)
+      if (!nesting) throw new Error('missing nesting probe')
+      if (!nesting.ulHasOl) throw new Error(`expected ul->li->ol nesting, got ${JSON.stringify(nesting)}`)
+      if (!nesting.olHasUl) throw new Error(`expected ol->li->ul nesting, got ${JSON.stringify(nesting)}`)
+
+      // Inline code should not be visually invisible (must have non-transparent background or border).
+      const inlineStyle = await driver.executeScript(`
+        const node = document.querySelector('#chatBox code.msgInlineCode');
+        if (!node) return null;
+        const cs = getComputedStyle(node);
+        return { color: String(cs.color || ''), bg: String(cs.backgroundColor || ''), br: String(cs.borderTopColor || ''), pl: String(cs.paddingLeft || '') };
+      `)
+      if (!inlineStyle) throw new Error('missing inline code style probe')
+
+      // Codex-like: inline code should be colored (blue-ish) without a pill background.
+      // Accept a range: ensure it's not gray/black and is in the blue-ish direction (B >= R/G), and background is transparent.
+      {
+        const m = /rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(String(inlineStyle.color || ''))
+        if (!m) throw new Error(`expected inline code color to be rgb/rgba, got ${JSON.stringify(inlineStyle)}`)
+        const r = Number(m[1] || 0)
+        const g = Number(m[2] || 0)
+        const b = Number(m[3] || 0)
+        if (!(b >= g && b >= r && b >= 140)) {
+          throw new Error(`expected inline code to be blue-ish (dominant B), got ${JSON.stringify({ ...inlineStyle, r, g, b })}`)
+        }
+      }
+      if (!/0,\s*0,\s*0,\s*0\)?/.test(String(inlineStyle.bg || '')) && !/transparent/i.test(String(inlineStyle.bg || ''))) {
+        // Some browsers report transparent as rgba(0, 0, 0, 0); others as 'transparent'.
+        throw new Error(`expected inline code background to be transparent, got ${JSON.stringify(inlineStyle)}`)
+      }
+    }
+
     // Regression: reasoning-effort selector should be a nested submenu to the RIGHT of the active model option
     // (ChatGPT-style: show current effort + chevron, click chevron opens a submenu).
     // This test runs in e2e mode without requiring a running gateway.
