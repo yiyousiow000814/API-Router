@@ -4137,6 +4137,8 @@ function wireThreadPullToRefresh() {
   let startY = 0;
   let pullPx = 0;
   let tracking = false;
+  let nestedScrollSource = null;
+  let waitingNestedReachTop = false;
 
   const resetPull = () => {
     pullPx = 0;
@@ -4152,15 +4154,37 @@ function wireThreadPullToRefresh() {
   list.addEventListener("touchstart", (event) => {
     if (state.threadPullRefreshing) return;
     if (event.touches.length !== 1) return;
-    if (list.scrollTop > 0) return;
+    const target = event.target instanceof Element ? event.target : null;
+    const innerGroupBody = target?.closest?.(".groupBody");
     startY = event.touches[0].clientY;
     pullPx = 0;
+    nestedScrollSource = innerGroupBody && list.contains(innerGroupBody) ? innerGroupBody : null;
+    waitingNestedReachTop = !!nestedScrollSource;
+    if (nestedScrollSource) {
+      tracking = nestedScrollSource.scrollTop <= 0 && list.scrollTop <= 0;
+      return;
+    }
+    if (list.scrollTop > 0) return;
     tracking = true;
   }, { passive: true });
 
   list.addEventListener("touchmove", (event) => {
-    if (!tracking || state.threadPullRefreshing) return;
+    if (state.threadPullRefreshing) return;
     const y = event.touches[0]?.clientY ?? startY;
+    if (!tracking && waitingNestedReachTop && nestedScrollSource) {
+      // Human-friendly handoff: when inner list is already pulled to top and user keeps pulling down,
+      // switch to outer pull-to-refresh within the same gesture.
+      if (nestedScrollSource.scrollTop > 0) return;
+      if (list.scrollTop > 0) return;
+      const armRaw = y - startY;
+      if (armRaw <= 0) return;
+      tracking = true;
+      waitingNestedReachTop = false;
+      startY = y;
+      pullPx = 0;
+      return;
+    }
+    if (!tracking) return;
     const raw = y - startY;
     if (raw <= 0) {
       resetPull();
@@ -4182,8 +4206,14 @@ function wireThreadPullToRefresh() {
   }, { passive: false });
 
   const endPull = () => {
-    if (!tracking) return;
+    if (!tracking) {
+      nestedScrollSource = null;
+      waitingNestedReachTop = false;
+      return;
+    }
     tracking = false;
+    nestedScrollSource = null;
+    waitingNestedReachTop = false;
     if (pullPx >= THREAD_PULL_REFRESH_TRIGGER_PX && !state.threadPullRefreshing) {
       refreshThreadsFromPullGesture().catch(() => {});
       return;
