@@ -484,7 +484,7 @@ function updateHeaderUi(animateBadge = false) {
   // Always prefer the currently selected model (the one we'll use for new turns).
   const displayModel = state.modelOptionsLoading || !String(state.selectedModel || "").trim()
     ? "Loading models..."
-    : (compactModelLabel(state.selectedModel) || "Codex");
+    : (compactModelLabel(state.selectedModel) || "Loading models...");
   const displayTitle = displayModel;
 
   if (panelTitle) {
