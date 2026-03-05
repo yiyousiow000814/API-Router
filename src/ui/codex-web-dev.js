@@ -66,6 +66,20 @@ const state = {
     windowsInstalled: false,
     wsl2Installed: false,
   },
+  startCwdByWorkspace: {
+    windows: "",
+    wsl2: "",
+  },
+  folderPickerOpen: false,
+  folderPickerWorkspace: "windows",
+  folderPickerCurrentPath: "",
+  folderPickerParentPath: "",
+  folderPickerItems: [],
+  folderPickerLoading: false,
+  folderPickerError: "",
+  folderPickerReqSeq: 0,
+  folderPickerListRenderSig: "",
+  folderPickerKeepContentWhileLoading: true,
   favoriteThreadIds: new Set(),
   lastChevronToggleKey: "",
   lastChevronToggleCollapsed: false,
@@ -139,6 +153,7 @@ function shouldSuppressSyntheticClick(event) {
 const GUIDE_DISMISSED_KEY = "web_codex_guide_dismissed_v2";
 const TOKEN_STORAGE_KEY = "web_codex_token_v1";
 const WORKSPACE_TARGET_KEY = "web_codex_workspace_target_v1";
+const START_CWD_BY_WORKSPACE_KEY = "web_codex_start_cwd_by_workspace_v1";
 const FAVORITE_THREADS_KEY = "web_codex_favorite_threads_v1";
 const SELECTED_MODEL_KEY = "web_codex_selected_model_v1";
 const REASONING_EFFORT_KEY = "web_codex_reasoning_effort_v1";
@@ -463,8 +478,61 @@ function getWorkspaceTarget() {
   return normalizeWorkspaceTarget(state.workspaceTarget || "windows");
 }
 
+function normalizeStartCwd(value, target = "windows") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (target === "wsl2") {
+    if (!text.startsWith("/")) return "";
+    return text.replace(/[\\/]+$/, "") || "/";
+  }
+  const cleaned = text.replace(/^\\\\\?\\/, "").trim();
+  if (!cleaned) return "";
+  if (!/^[a-z]:[\\/]/i.test(cleaned) && !cleaned.startsWith("\\\\")) return "";
+  return cleaned.replace(/[\\/]+$/, "");
+}
+
+function getStartCwdForWorkspace(target = getWorkspaceTarget()) {
+  const workspace = normalizeWorkspaceTarget(target);
+  return normalizeStartCwd(state.startCwdByWorkspace?.[workspace] || "", workspace);
+}
+
+function persistStartCwdByWorkspace() {
+  try {
+    const payload = {
+      windows: normalizeStartCwd(state.startCwdByWorkspace?.windows || "", "windows"),
+      wsl2: normalizeStartCwd(state.startCwdByWorkspace?.wsl2 || "", "wsl2"),
+    };
+    localStorage.setItem(START_CWD_BY_WORKSPACE_KEY, JSON.stringify(payload));
+  } catch {}
+}
+
+function setStartCwdForWorkspace(target, value) {
+  const workspace = normalizeWorkspaceTarget(target);
+  state.startCwdByWorkspace[workspace] = normalizeStartCwd(value, workspace);
+  persistStartCwdByWorkspace();
+  applyWorkspaceUi();
+}
+
+function folderDisplayName(path, target = getWorkspaceTarget()) {
+  const text = String(path || "").trim();
+  if (!text) return "";
+  if (target === "wsl2") {
+    const normalized = text.replace(/[\\/]+$/, "") || "/";
+    if (normalized === "/") return "/";
+    const parts = normalized.split("/").filter(Boolean);
+    return parts[parts.length - 1] || normalized;
+  }
+  const normalized = text.replace(/[\\/]+$/, "");
+  if (/^[a-z]:$/i.test(normalized)) return `${normalized}\\`;
+  const parts = normalized.split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] || normalized;
+}
+
 function getWorkspaceLabel() {
-  return getWorkspaceTarget() === "wsl2" ? "Bridge WSL2 workspace" : "Bridge Windows workspace";
+  const target = getWorkspaceTarget();
+  const cwd = getStartCwdForWorkspace(target);
+  if (!cwd) return "Select folder";
+  return folderDisplayName(cwd, target) || cwd;
 }
 
 function getActiveWorkspaceBadgeLabel() {
@@ -1028,7 +1096,203 @@ function applyWorkspaceUi() {
   const welcome = byId("welcomeWorkspaceText");
   if (drawer) drawer.textContent = label;
   if (welcome) welcome.textContent = label;
+  if (state.folderPickerOpen) renderFolderPicker();
   updateHeaderUi();
+}
+
+function renderFolderPicker() {
+  const backdrop = byId("folderPickerBackdrop");
+  if (!backdrop) return;
+  backdrop.classList.toggle("show", !!state.folderPickerOpen);
+  backdrop.setAttribute("aria-hidden", state.folderPickerOpen ? "false" : "true");
+
+  const target = normalizeWorkspaceTarget(state.folderPickerWorkspace || getWorkspaceTarget());
+  const currentPath = String(state.folderPickerCurrentPath || "").trim();
+  const parentPath = String(state.folderPickerParentPath || "").trim();
+  const error = String(state.folderPickerError || "").trim();
+  const loading = !!state.folderPickerLoading;
+
+  const winBtn = byId("folderPickerWorkspaceWindowsBtn");
+  const wslBtn = byId("folderPickerWorkspaceWslBtn");
+  if (winBtn) {
+    winBtn.classList.toggle("active", target === "windows");
+    winBtn.disabled = !isWorkspaceAvailable("windows");
+  }
+  if (wslBtn) {
+    wslBtn.classList.toggle("active", target === "wsl2");
+    wslBtn.disabled = !isWorkspaceAvailable("wsl2");
+  }
+
+  const pathEl = byId("folderPickerCurrentPath");
+  if (pathEl) {
+    pathEl.textContent = currentPath || (target === "windows" ? "Computer" : "WSL2");
+    pathEl.title = currentPath || "";
+  }
+  const errEl = byId("folderPickerError");
+  if (errEl) errEl.textContent = error;
+
+  const upBtn = byId("folderPickerUpBtn");
+  if (upBtn) upBtn.disabled = loading || !parentPath;
+  const useCurrentBtn = byId("folderPickerUseCurrentBtn");
+  if (useCurrentBtn) useCurrentBtn.disabled = loading || !currentPath;
+  const useDefaultBtn = byId("folderPickerUseDefaultBtn");
+  if (useDefaultBtn) useDefaultBtn.disabled = loading;
+
+  const list = byId("folderPickerList");
+  if (!list) return;
+  if (loading) {
+    const hasContent = list.getAttribute("data-has-content") === "1";
+    const preserve = !!state.folderPickerKeepContentWhileLoading;
+    const dimExistingList = hasContent && preserve;
+    list.classList.toggle("is-loading", dimExistingList);
+    if (!dimExistingList) {
+      list.innerHTML =
+        `<div class="folderPickerLoading">` +
+        `<span class="folderPickerLoadingSpinner" aria-hidden="true"></span>` +
+        `<span>Loading folders...</span>` +
+        `</div>`;
+      list.setAttribute("data-has-content", "0");
+      state.folderPickerListRenderSig = `loading|${target}|${currentPath}|${parentPath}`;
+    }
+    return;
+  }
+  list.classList.remove("is-loading");
+  const items = ensureArrayItems(state.folderPickerItems);
+  if (!items.length) {
+    const emptySig = `${target}|${currentPath}|${parentPath}|empty|${error}`;
+    if (state.folderPickerListRenderSig !== emptySig) {
+      list.innerHTML = `<div class="folderPickerEmpty">No folders found.</div>`;
+      list.setAttribute("data-has-content", "0");
+      state.folderPickerListRenderSig = emptySig;
+    }
+    return;
+  }
+  const itemsSig = items
+    .map((item) => `${String(item?.name || "").trim()}\u0001${String(item?.path || "").trim()}`)
+    .join("\u0002");
+  const renderSig = `${target}|${currentPath}|${parentPath}|${itemsSig}`;
+  if (state.folderPickerListRenderSig === renderSig) {
+    return;
+  }
+  list.innerHTML = items
+    .map((item) => {
+      const name = String(item?.name || "").trim();
+      const path = String(item?.path || "").trim();
+      if (!name || !path) return "";
+      const encodedPath = encodeURIComponent(path);
+      return (
+        `<button class="folderPickerItem" data-path="${encodedPath}">` +
+        `<span class="folderPickerItemName">${escapeHtml(name)}</span>` +
+        `<span class="folderPickerItemPath">${escapeHtml(path)}</span>` +
+        `</button>`
+      );
+    })
+    .join("");
+  list.setAttribute("data-has-content", "1");
+  state.folderPickerListRenderSig = renderSig;
+  for (const button of Array.from(list.querySelectorAll(".folderPickerItem"))) {
+    const idx = Number(button?.parentElement ? Array.from(button.parentElement.children).indexOf(button) : 0);
+    button.style.setProperty("--folder-enter-delay", `${Math.min(Math.max(idx, 0), 9) * 18}ms`);
+    button.classList.add("is-enter");
+    button.onclick = () => {
+      const encodedPath = String(button.getAttribute("data-path") || "");
+      const nextPath = encodedPath ? decodeURIComponent(encodedPath) : "";
+      if (!nextPath || state.folderPickerLoading) return;
+      refreshFolderPicker(nextPath).catch((e) => {
+        state.folderPickerError = e?.message || "Failed to browse folders.";
+        renderFolderPicker();
+      });
+    };
+  }
+}
+
+async function refreshFolderPicker(path = "", options = {}) {
+  const target = normalizeWorkspaceTarget(state.folderPickerWorkspace || getWorkspaceTarget());
+  const seq = Number(state.folderPickerReqSeq || 0) + 1;
+  state.folderPickerReqSeq = seq;
+  state.folderPickerKeepContentWhileLoading = options.keepContentWhileLoading !== false;
+  state.folderPickerLoading = true;
+  state.folderPickerError = "";
+  renderFolderPicker();
+
+  const query = new URLSearchParams();
+  query.set("workspace", target);
+  const pathText = String(path || "").trim();
+  if (pathText) query.set("path", pathText);
+
+  try {
+    const data = await api(`/codex/folders?${query.toString()}`);
+    if (state.folderPickerReqSeq !== seq) return;
+    const dataWorkspace = normalizeWorkspaceTarget(String(data?.workspace || target));
+    if (dataWorkspace !== target) return;
+    const items = ensureArrayItems(data?.items).map((item) => ({
+      name: String(item?.name || "").trim(),
+      path: String(item?.path || "").trim(),
+    })).filter((item) => item.name && item.path);
+    state.folderPickerCurrentPath = String(data?.currentPath || "").trim();
+    state.folderPickerParentPath = String(data?.parentPath || "").trim();
+    state.folderPickerItems = items;
+  } catch (error) {
+    if (state.folderPickerReqSeq !== seq) return;
+    state.folderPickerError = String(error?.message || "Failed to list folders.");
+    state.folderPickerItems = [];
+  } finally {
+    if (state.folderPickerReqSeq !== seq) return;
+    state.folderPickerLoading = false;
+    renderFolderPicker();
+  }
+}
+
+function closeFolderPicker() {
+  state.folderPickerOpen = false;
+  state.folderPickerLoading = false;
+  state.folderPickerError = "";
+  state.folderPickerReqSeq = Number(state.folderPickerReqSeq || 0) + 1;
+  state.folderPickerListRenderSig = "";
+  renderFolderPicker();
+}
+
+async function openFolderPicker() {
+  state.folderPickerOpen = true;
+  state.folderPickerWorkspace = getWorkspaceTarget();
+  state.folderPickerCurrentPath = "";
+  state.folderPickerParentPath = "";
+  state.folderPickerItems = [];
+  state.folderPickerError = "";
+  state.folderPickerListRenderSig = "";
+  state.folderPickerKeepContentWhileLoading = false;
+  renderFolderPicker();
+  const selected = getStartCwdForWorkspace(state.folderPickerWorkspace);
+  await refreshFolderPicker(selected, { keepContentWhileLoading: false });
+}
+
+async function switchFolderPickerWorkspace(target) {
+  if (state.folderPickerLoading) return;
+  const next = normalizeWorkspaceTarget(target);
+  if (!isWorkspaceAvailable(next)) return;
+  state.folderPickerWorkspace = next;
+  renderFolderPicker();
+  if (getWorkspaceTarget() !== next) {
+    await setWorkspaceTarget(next);
+  }
+  const selected = getStartCwdForWorkspace(next);
+  await refreshFolderPicker(selected, { keepContentWhileLoading: false });
+}
+
+function confirmFolderPickerCurrentPath() {
+  const target = normalizeWorkspaceTarget(state.folderPickerWorkspace || getWorkspaceTarget());
+  const currentPath = String(state.folderPickerCurrentPath || "").trim();
+  if (!currentPath) return;
+  setStartCwdForWorkspace(target, currentPath);
+  setStatus(`Start directory: ${currentPath}`);
+  closeFolderPicker();
+}
+
+function resetFolderPickerPath() {
+  const target = normalizeWorkspaceTarget(state.folderPickerWorkspace || getWorkspaceTarget());
+  setStartCwdForWorkspace(target, "");
+  setStatus(`Start directory reset for ${target.toUpperCase()}.`);
+  closeFolderPicker();
 }
 
 function detectThreadWorkspaceTarget(thread) {
@@ -3488,14 +3752,14 @@ function workspaceKeyOfThread(thread) {
     thread.path ||
     "";
   const text = String(raw || "").trim();
-  if (!text) return "Bridge default workspace";
+  if (!text) return "Default folder";
   const normalized = text
     .replace(/^\\\\\?\\/, "")
     .replace(/^\\\\\?\\UNC\\/, "\\\\")
     .replace(/[\\/]+$/, "");
   const parts = normalized.split(/[\\/]+/).filter(Boolean);
   const last = parts[parts.length - 1];
-  return last || "Bridge default workspace";
+  return last || "Default folder";
 }
 
 function connectWs() {
@@ -4542,21 +4806,29 @@ async function addHost() {
 
 async function newThread() {
   if (blockInSandbox("new thread")) return;
+  const workspace = getWorkspaceTarget();
+  const startCwd = getStartCwdForWorkspace(workspace);
   setChatOpening(false);
   // Immediately switch UI back to the fresh-chat state.
   setActiveThread("");
   state.activeThreadStarted = false;
-  state.activeThreadWorkspace = getWorkspaceTarget();
+  state.activeThreadWorkspace = workspace;
   clearChatMessages();
   showWelcomeCard();
   updateHeaderUi();
 
-  const data = await api("/codex/threads", { method: "POST", body: { workspace: getWorkspaceTarget() } });
+  const data = await api("/codex/threads", {
+    method: "POST",
+    body: {
+      workspace,
+      cwd: startCwd || undefined,
+    },
+  });
   const id = data.id || data.threadId || data?.thread?.id || "";
   if (id) {
     setActiveThread(id);
     state.activeThreadStarted = false;
-    state.activeThreadWorkspace = getWorkspaceTarget();
+    state.activeThreadWorkspace = workspace;
     clearChatMessages();
     showWelcomeCard();
     updateHeaderUi();
@@ -4569,17 +4841,21 @@ async function sendTurn() {
   if (blockInSandbox("send turn")) return;
   const prompt = getPromptValue();
   if (!prompt) return;
+  const workspace = getWorkspaceTarget();
+  const startCwd = getStartCwdForWorkspace(workspace);
+  const shouldSendStartCwd = !String(state.activeThreadId || "").trim();
   await waitPendingThreadResume(state.activeThreadId);
   const payload = {
     threadId: state.activeThreadId || null,
     prompt,
+    cwd: shouldSendStartCwd ? (startCwd || undefined) : undefined,
     model: state.selectedModel || undefined,
     reasoningEffort: state.selectedReasoningEffort || undefined,
     collaborationMode: "default",
   };
   const shouldAnimateWorkspaceBadge = !state.activeThreadStarted;
   state.activeThreadStarted = true;
-  state.activeThreadWorkspace = getWorkspaceTarget();
+  state.activeThreadWorkspace = workspace;
   updateHeaderUi(shouldAnimateWorkspaceBadge);
   addChat("user", prompt);
   state.chatShouldStickToBottom = true;
@@ -4851,9 +5127,59 @@ function wireActions() {
       backdrop.addEventListener("click", close);
     }
   }
+  {
+    const folderBackdrop = byId("folderPickerBackdrop");
+    const modalCard = folderBackdrop?.querySelector?.(".folderPickerModal") || null;
+    if (folderBackdrop && !folderBackdrop.__wiredFolderPickerClose) {
+      folderBackdrop.__wiredFolderPickerClose = true;
+      folderBackdrop.addEventListener("pointerdown", (event) => {
+        if (event.target === folderBackdrop) {
+          event.preventDefault();
+          closeFolderPicker();
+        }
+      });
+      folderBackdrop.addEventListener("click", (event) => {
+        if (event.target === folderBackdrop) {
+          event.preventDefault();
+          closeFolderPicker();
+        }
+      });
+    }
+    if (modalCard && !modalCard.__wiredStopPropagation) {
+      modalCard.__wiredStopPropagation = true;
+      modalCard.addEventListener("pointerdown", (event) => event.stopPropagation());
+      modalCard.addEventListener("click", (event) => event.stopPropagation());
+    }
+  }
+  bindClick("folderPickerCloseBtn", () => closeFolderPicker());
+  bindClick("folderPickerUpBtn", () => {
+    if (state.folderPickerLoading) return;
+    const parentPath = String(state.folderPickerParentPath || "").trim();
+    if (!parentPath) return;
+    refreshFolderPicker(parentPath).catch((e) => {
+      state.folderPickerError = e?.message || "Failed to browse folders.";
+      renderFolderPicker();
+    });
+  });
+  bindClick("folderPickerUseCurrentBtn", () => confirmFolderPickerCurrentPath());
+  bindClick("folderPickerUseDefaultBtn", () => resetFolderPickerPath());
+  bindClick("folderPickerWorkspaceWindowsBtn", () =>
+    switchFolderPickerWorkspace("windows").catch((e) => {
+      state.folderPickerError = String(e?.message || e || "Failed to switch workspace.");
+      renderFolderPicker();
+    })
+  );
+  bindClick("folderPickerWorkspaceWslBtn", () =>
+    switchFolderPickerWorkspace("wsl2").catch((e) => {
+      state.folderPickerError = String(e?.message || e || "Failed to switch workspace.");
+      renderFolderPicker();
+    })
+  );
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.folderPickerOpen) closeFolderPicker();
+  });
   bindClick("leftStartDirBtn", () => {
-    setStatus(`Current start directory target: ${getWorkspaceTarget().toUpperCase()}.`);
-    setMobileTab("threads");
+    openFolderPicker().catch((e) => setStatus(e.message, true));
   });
   bindClick("leftNewChatBtn", () => {
     newThread().catch((e) => setStatus(e.message, true));
@@ -4866,8 +5192,7 @@ function wireActions() {
     setMobileTab("chat");
   });
   bindClick("welcomeWorkspaceBtn", () => {
-    setStatus(`Current start directory target: ${getWorkspaceTarget().toUpperCase()}.`);
-    setMobileTab("threads");
+    openFolderPicker().catch((e) => setStatus(e.message, true));
   });
   bindClick("workspaceWindowsBtn", () => setWorkspaceTarget("windows").catch((e) => setStatus(e.message, true)));
   bindClick("workspaceWslBtn", () => setWorkspaceTarget("wsl2").catch((e) => setStatus(e.message, true)));
@@ -5264,8 +5589,25 @@ function bootstrap() {
   const embeddedToken = getEmbeddedToken();
   const savedToken = localStorage.getItem(TOKEN_STORAGE_KEY) || "";
   const savedWorkspaceTarget = localStorage.getItem(WORKSPACE_TARGET_KEY) || "windows";
+  const savedStartCwdRaw = localStorage.getItem(START_CWD_BY_WORKSPACE_KEY) || "";
   const savedFavoritesRaw = localStorage.getItem(FAVORITE_THREADS_KEY) || "[]";
   const savedModel = String(localStorage.getItem(SELECTED_MODEL_KEY) || "").trim();
+  try {
+    if (savedStartCwdRaw) {
+      const parsed = JSON.parse(savedStartCwdRaw);
+      const windowsCwd = normalizeStartCwd(parsed?.windows || "", "windows");
+      const wsl2Cwd = normalizeStartCwd(parsed?.wsl2 || "", "wsl2");
+      state.startCwdByWorkspace = {
+        windows: windowsCwd,
+        wsl2: wsl2Cwd,
+      };
+    }
+  } catch {
+    state.startCwdByWorkspace = {
+      windows: "",
+      wsl2: "",
+    };
+  }
   try {
     const savedFavorites = JSON.parse(savedFavoritesRaw);
     if (Array.isArray(savedFavorites)) {
@@ -5296,6 +5638,7 @@ function bootstrap() {
   updateNotificationState();
   applyManagedTokenUi();
   renderPendingLists();
+  renderFolderPicker();
   renderAttachmentPills([]);
   updateMobileComposerState();
   syncSettingsControlsFromMain();

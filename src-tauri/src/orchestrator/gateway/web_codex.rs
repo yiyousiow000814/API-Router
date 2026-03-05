@@ -15,6 +15,8 @@ const MAX_TERMINAL_OUTPUT_BYTES: usize = 512 * 1024;
 const TERMINAL_TIMEOUT_SECS: u64 = 20;
 const VERSION_DETECT_TIMEOUT_SECS: u64 = 3;
 const VERSION_INFO_CACHE_SECS: i64 = 30;
+const MAX_FOLDER_LIST_ITEMS: usize = 1200;
+const WSL_IDENTITY_CACHE_SECS: i64 = 600;
 
 #[derive(Serialize)]
 struct ApiErrorBody<'a> {
@@ -1066,6 +1068,318 @@ fn parse_workspace_target(value: &str) -> Option<WorkspaceTarget> {
     }
 }
 
+#[derive(Deserialize)]
+struct CodexFoldersQuery {
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderListItem {
+    name: String,
+    path: String,
+}
+
+fn sort_folder_items(items: &mut [FolderListItem]) {
+    items.sort_by(|a, b| {
+        let a_lc = a.name.to_ascii_lowercase();
+        let b_lc = b.name.to_ascii_lowercase();
+        a_lc.cmp(&b_lc).then_with(|| a.name.cmp(&b.name))
+    });
+}
+
+fn windows_root_folders() -> Vec<FolderListItem> {
+    let mut items = Vec::new();
+    if !cfg!(target_os = "windows") {
+        return items;
+    }
+    for drive in b'A'..=b'Z' {
+        let letter = char::from(drive);
+        let path = format!("{letter}:\\");
+        let p = Path::new(&path);
+        if p.is_dir() {
+            items.push(FolderListItem {
+                name: path.clone(),
+                path,
+            });
+        }
+    }
+    sort_folder_items(&mut items);
+    items
+}
+
+fn list_local_subdirectories(path: &Path) -> Result<Vec<FolderListItem>, String> {
+    let mut items = Vec::new();
+    let read = std::fs::read_dir(path).map_err(|e| e.to_string())?;
+    for entry in read.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let child_path = entry.path();
+        items.push(FolderListItem {
+            name,
+            path: child_path.to_string_lossy().to_string(),
+        });
+        if items.len() >= MAX_FOLDER_LIST_ITEMS {
+            break;
+        }
+    }
+    sort_folder_items(&mut items);
+    Ok(items)
+}
+
+#[derive(Clone)]
+struct WslIdentityCache {
+    distro: String,
+    home: String,
+    updated_at_unix_secs: i64,
+}
+
+fn wsl_identity_cache() -> &'static std::sync::Mutex<Option<WslIdentityCache>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<WslIdentityCache>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn lock_wsl_identity_cache() -> std::sync::MutexGuard<'static, Option<WslIdentityCache>> {
+    match wsl_identity_cache().lock() {
+        Ok(v) => v,
+        Err(err) => err.into_inner(),
+    }
+}
+
+fn normalize_wsl_linux_path(value: &str) -> Option<String> {
+    let raw = value.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let mut normalized = raw.replace('\\', "/");
+    if !normalized.starts_with('/') {
+        return None;
+    }
+    while normalized.contains("//") {
+        normalized = normalized.replace("//", "/");
+    }
+    if normalized.len() > 1 {
+        normalized = normalized.trim_end_matches('/').to_string();
+    }
+    if normalized.is_empty() {
+        Some("/".to_string())
+    } else {
+        Some(normalized)
+    }
+}
+
+fn linux_path_parent(path: &str) -> Option<String> {
+    let normalized = normalize_wsl_linux_path(path)?;
+    if normalized == "/" {
+        return None;
+    }
+    let mut parts = normalized
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return Some("/".to_string());
+    }
+    parts.pop();
+    if parts.is_empty() {
+        Some("/".to_string())
+    } else {
+        Some(format!("/{}", parts.join("/")))
+    }
+}
+
+fn linux_path_join(base: &str, name: &str) -> String {
+    let cleaned_name = name.trim().trim_matches('/');
+    if cleaned_name.is_empty() {
+        return normalize_wsl_linux_path(base).unwrap_or_else(|| "/".to_string());
+    }
+    let base_norm = normalize_wsl_linux_path(base).unwrap_or_else(|| "/".to_string());
+    if base_norm == "/" {
+        format!("/{cleaned_name}")
+    } else {
+        format!("{base_norm}/{cleaned_name}")
+    }
+}
+
+fn linux_path_to_unc(path: &str, distro: &str) -> PathBuf {
+    let normalized = normalize_wsl_linux_path(path).unwrap_or_else(|| "/".to_string());
+    let rel = normalized.trim_start_matches('/');
+    if rel.is_empty() {
+        PathBuf::from(format!(r"\\wsl.localhost\{distro}\"))
+    } else {
+        PathBuf::from(format!(
+            r"\\wsl.localhost\{distro}\{}",
+            rel.replace('/', "\\")
+        ))
+    }
+}
+
+fn detect_wsl_identity_uncached() -> Result<(String, String), String> {
+    let mut cmd = std::process::Command::new("wsl.exe");
+    cmd.arg("-e")
+        .arg("bash")
+        .arg("-lc")
+        .arg(r#"printf '%s\n%s\n' "${WSL_DISTRO_NAME:-}" "${HOME:-/}""#);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            return Err("failed to detect WSL identity".to_string());
+        }
+        return Err(stderr);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines().map(str::trim);
+    let distro = lines.next().unwrap_or_default().to_string();
+    let home_raw = lines.next().unwrap_or("/").to_string();
+    if distro.trim().is_empty() {
+        return Err("failed to detect default WSL distro".to_string());
+    }
+    let home = normalize_wsl_linux_path(&home_raw).unwrap_or_else(|| "/".to_string());
+    Ok((distro, home))
+}
+
+fn resolve_wsl_identity() -> Result<(String, String), String> {
+    let now = current_unix_secs();
+    if let Some(cached) = lock_wsl_identity_cache().clone() {
+        if now.saturating_sub(cached.updated_at_unix_secs) < WSL_IDENTITY_CACHE_SECS {
+            return Ok((cached.distro, cached.home));
+        }
+    }
+    let (distro, home) = detect_wsl_identity_uncached()?;
+    {
+        let mut cache = lock_wsl_identity_cache();
+        *cache = Some(WslIdentityCache {
+            distro: distro.clone(),
+            home: home.clone(),
+            updated_at_unix_secs: now,
+        });
+    }
+    Ok((distro, home))
+}
+
+fn list_wsl_subdirectories(path: Option<&str>) -> Result<(String, Option<String>, Vec<FolderListItem>), String> {
+    if !cfg!(target_os = "windows") {
+        return Err("wsl2 workspace browsing is only available on Windows host".to_string());
+    }
+    let (distro, home) = resolve_wsl_identity()?;
+    let current_path = path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(normalize_wsl_linux_path)
+        .unwrap_or(home);
+    let unc_path = linux_path_to_unc(&current_path, &distro);
+    if !unc_path.is_dir() {
+        return Err("path is not a directory".to_string());
+    }
+    let mut items = Vec::new();
+    let read = std::fs::read_dir(&unc_path).map_err(|e| e.to_string())?;
+    for entry in read.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let child_linux_path = linux_path_join(&current_path, &name);
+        items.push(FolderListItem {
+            name,
+            path: child_linux_path,
+        });
+        if items.len() >= MAX_FOLDER_LIST_ITEMS {
+            break;
+        }
+    }
+    sort_folder_items(&mut items);
+    Ok((current_path.clone(), linux_path_parent(&current_path), items))
+}
+
+async fn codex_folders_list(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+    Query(query): Query<CodexFoldersQuery>,
+) -> Response {
+    if let Some(resp) = require_codex_auth(&st, &headers) {
+        return resp;
+    }
+    let requested_workspace = query.workspace.unwrap_or_else(|| "windows".to_string());
+    let Some(target) = parse_workspace_target(&requested_workspace) else {
+        return api_error(StatusCode::BAD_REQUEST, "workspace must be windows or wsl2");
+    };
+
+    match target {
+        WorkspaceTarget::Windows => {
+            let requested_path = query
+                .path
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            if requested_path.is_none() {
+                let items = windows_root_folders();
+                return Json(json!({
+                    "workspace": "windows",
+                    "currentPath": Value::Null,
+                    "parentPath": Value::Null,
+                    "items": items,
+                }))
+                .into_response();
+            }
+            let path_raw = requested_path.unwrap_or_default();
+            let path = PathBuf::from(path_raw);
+            if !path.is_absolute() {
+                return api_error(StatusCode::BAD_REQUEST, "path must be an absolute folder path");
+            }
+            if !path.is_dir() {
+                return api_error(StatusCode::BAD_REQUEST, "path is not a directory");
+            }
+            let current_path = path.to_string_lossy().to_string();
+            let parent_path = path.parent().map(|p| p.to_string_lossy().to_string());
+            match list_local_subdirectories(&path) {
+                Ok(items) => Json(json!({
+                    "workspace": "windows",
+                    "currentPath": current_path,
+                    "parentPath": parent_path,
+                    "items": items,
+                }))
+                .into_response(),
+                Err(e) => api_error_detail(StatusCode::BAD_GATEWAY, "failed to list folders", e),
+            }
+        }
+        WorkspaceTarget::Wsl2 => match list_wsl_subdirectories(query.path.as_deref()) {
+            Ok((current_path, parent_path, items)) => Json(json!({
+                "workspace": "wsl2",
+                "currentPath": current_path,
+                "parentPath": parent_path,
+                "items": items,
+            }))
+            .into_response(),
+            Err(e) => api_error_detail(StatusCode::BAD_GATEWAY, "failed to list folders", e),
+        },
+    }
+}
+
 fn current_unix_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1835,6 +2149,8 @@ struct ThreadCreateRequest {
     workspace: Option<String>,
     #[serde(default)]
     title: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 async fn codex_threads_create(
@@ -1845,7 +2161,7 @@ async fn codex_threads_create(
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
-    let params = json!({ "workspace": req.workspace, "title": req.title });
+    let params = json!({ "workspace": req.workspace, "title": req.title, "cwd": req.cwd });
     match codex_rpc_call("thread/new", params).await {
         Ok(v) => {
             Json(v).into_response()
@@ -2041,6 +2357,8 @@ struct TurnStartRequest {
     thread_id: Option<String>,
     prompt: String,
     #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     reasoning_effort: Option<String>,
@@ -2062,6 +2380,7 @@ async fn codex_turn_start(
     let params = json!({
         "threadId": req.thread_id,
         "prompt": req.prompt,
+        "cwd": req.cwd,
         "model": req.model,
         "reasoningEffort": req.reasoning_effort,
         "collaborationMode": req.collaboration_mode.unwrap_or_else(|| "default".to_string()),
@@ -2159,6 +2478,7 @@ async fn codex_turn_stream(
     let params = json!({
         "threadId": req.thread_id,
         "prompt": req.prompt,
+        "cwd": req.cwd,
         "model": req.model,
         "reasoningEffort": req.reasoning_effort,
         "collaborationMode": req.collaboration_mode.unwrap_or_else(|| "default".to_string()),
@@ -2640,6 +2960,7 @@ async fn codex_rpc_proxy(
 #[cfg(test)]
 mod web_codex_tests {
     use super::{
+        linux_path_join, linux_path_parent, normalize_wsl_linux_path,
         parse_slash_command, resume_import_order, should_try_known_wsl_rollout_path,
         split_stream_chunks, truncate_output, WorkspaceTarget, MAX_TERMINAL_OUTPUT_BYTES,
     };
@@ -2709,5 +3030,22 @@ mod web_codex_tests {
             Some("C:\\\\tmp\\\\a.jsonl")
         ));
         assert!(!should_try_known_wsl_rollout_path(None, Some("C:\\\\tmp\\\\a.jsonl")));
+    }
+
+    #[test]
+    fn wsl_path_helpers_normalize_and_join() {
+        assert_eq!(
+            normalize_wsl_linux_path(r"\home\user\repo").as_deref(),
+            Some("/home/user/repo")
+        );
+        assert_eq!(
+            normalize_wsl_linux_path("/home/user/repo///").as_deref(),
+            Some("/home/user/repo")
+        );
+        assert_eq!(linux_path_parent("/home/user/repo").as_deref(), Some("/home/user"));
+        assert_eq!(linux_path_parent("/home").as_deref(), Some("/"));
+        assert_eq!(linux_path_parent("/").as_deref(), None);
+        assert_eq!(linux_path_join("/home/user", "repo"), "/home/user/repo");
+        assert_eq!(linux_path_join("/", "tmp"), "/tmp");
     }
 }
