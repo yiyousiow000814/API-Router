@@ -31,6 +31,7 @@ const state = {
   threadListAnimateNextRender: false,
   threadListAnimateThreadIds: new Set(),
   threadListExpandAnimateGroupKeys: new Set(),
+  threadListPendingSidebarOpenAnimation: false,
   threadListSkipScrollRestoreOnce: false,
   threadListPreferLoadingPlaceholder: false,
   threadRefreshAbortByWorkspace: {
@@ -3718,16 +3719,45 @@ function renderThreads(items) {
   let groupEnterIndex = 0;
   const nextThreadEnterDelayMs = () => Math.min(420, threadEnterIndex++ * 28);
   const nextGroupEnterDelayMs = () => Math.min(640, groupEnterIndex++ * 120);
+  const animateStateTextSwap = (node, nextLabel) => {
+    if (!node) return;
+    const text = String(nextLabel || "");
+    if (node.textContent === text) return;
+    node.textContent = text;
+    node.classList.remove("is-text-swap");
+    void node.offsetWidth;
+    node.classList.add("is-text-swap");
+  };
   const renderThreadListState = (label, mode = "plain") => {
+    const text = String(label || "");
     if (mode === "spinner") {
-      list.innerHTML =
-        `<div class="threadListState">` +
-          `<span class="threadListStateSpinner" aria-hidden="true"></span>` +
-          `<span>${escapeHtml(label)}</span>` +
-        `</div>`;
+      const current = list.firstElementChild;
+      if (current && current.classList?.contains("threadListState") && current.getAttribute("data-state-mode") === "spinner") {
+        const textNode = current.querySelector(".threadListStateText");
+        animateStateTextSwap(textNode, text);
+        return;
+      }
+      const wrap = document.createElement("div");
+      wrap.className = "threadListState";
+      wrap.setAttribute("data-state-mode", "spinner");
+      wrap.innerHTML =
+        `<span class="threadListStateSpinner" aria-hidden="true"></span>` +
+        `<span class="threadListStateText is-text-swap">${escapeHtml(text)}</span>`;
+      list.innerHTML = "";
+      list.appendChild(wrap);
       return;
     }
-    list.innerHTML = `<div class="muted">${escapeHtml(label)}</div>`;
+    const current = list.firstElementChild;
+    if (current && current.classList?.contains("threadListPlainState") && current.getAttribute("data-state-mode") === "plain") {
+      animateStateTextSwap(current, text);
+      return;
+    }
+    const plain = document.createElement("div");
+    plain.className = "muted threadListPlainState is-text-swap";
+    plain.setAttribute("data-state-mode", "plain");
+    plain.textContent = text;
+    list.innerHTML = "";
+    list.appendChild(plain);
   };
   const skipScrollRestore = !!state.threadListSkipScrollRestoreOnce;
   state.threadListSkipScrollRestoreOnce = false;
@@ -3747,7 +3777,6 @@ function renderThreads(items) {
       }
     } catch {}
   }
-  list.innerHTML = "";
   const query = state.threadSearchQuery.trim().toLowerCase();
   const groups = new Map();
   const groupLabels = new Map();
@@ -3787,6 +3816,7 @@ function renderThreads(items) {
     state.threadListExpandAnimateGroupKeys = new Set();
     return;
   }
+  list.innerHTML = "";
   const validKeys = new Set(entries.map(([, ,k]) => k));
   if (state.collapsedWorkspaceKeys.size) {
     state.collapsedWorkspaceKeys = new Set(
@@ -4436,6 +4466,18 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = 
       state.threadListLoading = false;
       state.threadListLoadingTarget = "";
       state.threadListPreferLoadingPlaceholder = false;
+      const sidebarOpen = document.body.classList.contains("drawer-left-open");
+      if (state.threadListPendingSidebarOpenAnimation) {
+        state.threadListPendingSidebarOpenAnimation = false;
+        if (sidebarOpen && Array.isArray(state.threadItems) && state.threadItems.length) {
+          state.threadListAnimateNextRender = true;
+          state.threadListAnimateThreadIds = new Set();
+          state.threadListExpandAnimateGroupKeys = new Set();
+          state.threadListSkipScrollRestoreOnce = true;
+          renderThreads(state.threadItems);
+          return;
+        }
+      }
       // Only do a final render pass when we need to clear loading/empty placeholders.
       // For non-empty lists we skip this extra render so enter animations are not overwritten.
       if (needsFinalRender) renderThreads(state.threadItems);
@@ -4720,9 +4762,18 @@ function setMobileTab(tab) {
   if (tab === "threads") document.body.classList.add("drawer-left-open");
   if (tab === "tools") document.body.classList.add("drawer-right-open");
   byId("mobileDrawerBackdrop").classList.toggle("show", tab === "threads" || tab === "tools");
+  if (tab !== "threads") state.threadListPendingSidebarOpenAnimation = false;
+  if (tab === "threads" && !wasThreadsOpen) {
+    if (state.threadListLoading) {
+      state.threadListPendingSidebarOpenAnimation = true;
+      return;
+    }
+  }
   if (tab === "threads" && !wasThreadsOpen && Array.isArray(state.threadItems) && state.threadItems.length) {
     state.threadListAnimateNextRender = true;
     state.threadListAnimateThreadIds = new Set();
+    state.threadListExpandAnimateGroupKeys = new Set();
+    state.threadListSkipScrollRestoreOnce = true;
     renderThreads(state.threadItems);
   }
 }

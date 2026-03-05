@@ -619,6 +619,18 @@
       color: #637188;
       padding: 8px 4px;
     }
+    .threadListStateText,
+    .threadListPlainState {
+      display: inline-block;
+    }
+    .threadListStateText.is-text-swap,
+    .threadListPlainState.is-text-swap {
+      animation: thread-list-state-text-swap 180ms ease both;
+    }
+    @keyframes thread-list-state-text-swap {
+      from { opacity: 0.42; transform: translate3d(0, 2px, 0); }
+      to { opacity: 1; transform: translate3d(0, 0, 0); }
+    }
     .threadListStateSpinner {
       width: 12px;
       height: 12px;
