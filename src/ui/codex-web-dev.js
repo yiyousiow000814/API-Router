@@ -4520,6 +4520,11 @@ function wireActions() {
           event?.preventDefault?.();
           event?.stopPropagation?.();
         } catch {}
+        if (event && String(event.type || "") === "pointerdown") {
+          // Guard against click-through: after closing the drawer on pointerdown,
+          // some WebViews still dispatch a synthesized click to the element behind the backdrop.
+          armSyntheticClickSuppression(420);
+        }
         setMobileTab("chat");
       };
       backdrop.addEventListener("pointerdown", close, { passive: false });
@@ -4579,6 +4584,13 @@ function wireActions() {
         setHeaderModelMenuOpen(false);
       }
     };
+  }
+  if (!document.__wiredSyntheticClickCapture) {
+    document.__wiredSyntheticClickCapture = true;
+    // Capture-phase guard so suppressed synthetic clicks never reach underlying buttons.
+    document.addEventListener("click", (event) => {
+      shouldSuppressSyntheticClick(event);
+    }, true);
   }
   document.addEventListener("click", (event) => {
     if (shouldSuppressSyntheticClick(event)) return;
