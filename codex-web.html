@@ -974,11 +974,19 @@
       max-width: min(320px, 100%);
       margin: 0 auto 8px;
     }
+    .msg.user.withAttachments .msgAttachments.mosaic {
+      display: grid;
+      width: 100%;
+      max-width: 100%;
+      margin: 0 0 8px;
+    }
     .msgAttachments.mosaic.cols-3 {
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
     .msgAttachments.mosaic.single {
       grid-template-columns: 1fr;
+      width: 100%;
+      max-width: 100%;
     }
     .msgAttachmentCard {
       border: 1px solid rgba(13, 18, 32, 0.12);
