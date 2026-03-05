@@ -18,12 +18,19 @@ const state = {
     windows: [],
     wsl2: [],
   },
+  threadWorkspaceHydratedByWorkspace: {
+    windows: false,
+    wsl2: false,
+  },
   threadListRenderSigByWorkspace: {
     windows: "",
     wsl2: "",
   },
   threadListLoading: false,
   threadListLoadingTarget: "",
+  threadListAnimateNextRender: false,
+  threadListAnimateThreadIds: new Set(),
+  threadListPreferLoadingPlaceholder: false,
   threadRefreshAbortByWorkspace: {
     windows: null,
     wsl2: null,
@@ -1022,13 +1029,13 @@ function applyWorkspaceUi() {
 }
 
 function detectThreadWorkspaceTarget(thread) {
-  const raw = String(
-    thread?.workspace || thread?.cwd || thread?.project || thread?.directory || thread?.path || ""
+  const pathLikeRaw = String(
+    thread?.cwd || thread?.project || thread?.directory || thread?.path || ""
   ).trim();
+  const workspaceRaw = String(thread?.workspace || "").trim();
+  const raw = pathLikeRaw || workspaceRaw;
   if (!raw) return "unknown";
   const text = raw.toLowerCase();
-  if (text === "wsl2" || text === "wsl") return "wsl2";
-  if (text === "windows" || text === "win") return "windows";
   if (
     text.startsWith("/") ||
     text.startsWith("\\\\wsl$\\") ||
@@ -1043,6 +1050,14 @@ function detectThreadWorkspaceTarget(thread) {
   }
   if (/^[a-z]:[\\/]/i.test(raw) || raw.includes(":\\") || raw.includes("\\\\")) {
     return "windows";
+  }
+  const queryWorkspaceRaw = String(thread?.__workspaceQueryTarget || "").trim().toLowerCase();
+  if (queryWorkspaceRaw === "wsl2" || queryWorkspaceRaw === "wsl") return "wsl2";
+  if (queryWorkspaceRaw === "windows" || queryWorkspaceRaw === "win") return "windows";
+  if (workspaceRaw) {
+    const workspaceText = workspaceRaw.toLowerCase();
+    if (workspaceText === "wsl2" || workspaceText === "wsl") return "wsl2";
+    if (workspaceText === "windows" || workspaceText === "win") return "windows";
   }
   return "unknown";
 }
@@ -1069,10 +1084,10 @@ function updateWorkspaceAvailabilityFromThreads(items) {
     if (target === "wsl2") hasWsl2 = true;
     if (hasWindows && hasWsl2) break;
   }
-  updateWorkspaceAvailability(hasWindows, hasWsl2);
+  updateWorkspaceAvailability(hasWindows, hasWsl2, { applyFilter: false });
 }
 
-function updateWorkspaceAvailability(windowsInstalled, wsl2Installed) {
+function updateWorkspaceAvailability(windowsInstalled, wsl2Installed, options = {}) {
   state.workspaceAvailability = {
     windowsInstalled: !!windowsInstalled,
     wsl2Installed: !!wsl2Installed,
@@ -1080,7 +1095,7 @@ function updateWorkspaceAvailability(windowsInstalled, wsl2Installed) {
   // Never auto-switch workspace target here.
   // Policy: default is windows; after user selection, keep that choice until user changes it.
   applyWorkspaceUi();
-  if (state.threadItemsAll.length) applyThreadFilter();
+  if (state.threadItemsAll.length && options.applyFilter !== false) applyThreadFilter();
 }
 
 async function setWorkspaceTarget(nextTarget) {
@@ -1095,22 +1110,33 @@ async function setWorkspaceTarget(nextTarget) {
   const cached = Array.isArray(state.threadItemsByWorkspace[target])
     ? state.threadItemsByWorkspace[target]
     : [];
-  if (cached.length) {
+  const hasHydrated = !!state.threadWorkspaceHydratedByWorkspace[target];
+  if (hasHydrated) {
     state.threadItemsAll = cached;
     syncActiveThreadMetaFromList();
+    state.threadListLoading = false;
+    state.threadListLoadingTarget = "";
+    state.threadListPreferLoadingPlaceholder = false;
+    // Workspace switch should feel explicit: animate cached rows once on entry.
+    state.threadListAnimateNextRender = cached.length > 0;
+    state.threadListAnimateThreadIds = new Set();
     applyThreadFilter();
     updateHeaderUi();
+    setStatus(`Refreshing ${target.toUpperCase()} chats...`);
   } else {
-    // Avoid showing stale chats from the previous workspace while the new list is loading.
+    // First-time workspace: show explicit loading placeholder.
     state.threadItemsAll = [];
-    syncActiveThreadMetaFromList();
+    state.threadItems = [];
     state.threadListLoading = true;
     state.threadListLoadingTarget = target;
-    applyThreadFilter();
+    state.threadListPreferLoadingPlaceholder = true;
+    state.threadListAnimateNextRender = false;
+    state.threadListAnimateThreadIds = new Set();
+    renderThreads([]);
     updateHeaderUi();
     setStatus(`Loading ${target.toUpperCase()} chats...`);
   }
-  refreshThreads(target, { force: true }).catch((e) => setStatus(e.message, true));
+  refreshThreads(target, { force: true, silent: hasHydrated }).catch((e) => setStatus(e.message, true));
 }
 
 function blockInSandbox(actionLabel) {
@@ -3610,6 +3636,26 @@ function handleWsPayload(payload) {
 
 function renderThreads(items) {
   const list = byId("threadList");
+  if (!list) return;
+  const sourceItems = Array.isArray(items) ? items : [];
+  const animateEnter = !!state.threadListAnimateNextRender;
+  const animateThreadIds =
+    state.threadListAnimateThreadIds instanceof Set ? state.threadListAnimateThreadIds : new Set();
+  let threadEnterIndex = 0;
+  let groupEnterIndex = 0;
+  const nextThreadEnterDelayMs = () => Math.min(420, threadEnterIndex++ * 28);
+  const nextGroupEnterDelayMs = () => Math.min(640, groupEnterIndex++ * 120);
+  const renderThreadListState = (label, mode = "plain") => {
+    if (mode === "spinner") {
+      list.innerHTML =
+        `<div class="threadListState">` +
+          `<span class="threadListStateSpinner" aria-hidden="true"></span>` +
+          `<span>${escapeHtml(label)}</span>` +
+        `</div>`;
+      return;
+    }
+    list.innerHTML = `<div class="muted">${escapeHtml(label)}</div>`;
+  };
   const prevListScrollTop = list?.scrollTop ?? 0;
   const shouldRestoreListScroll = prevListScrollTop > 0;
   const prevGroupScroll = new Map();
@@ -3628,7 +3674,7 @@ function renderThreads(items) {
   const query = state.threadSearchQuery.trim().toLowerCase();
   const groups = new Map();
   const groupLabels = new Map();
-  for (const thread of items) {
+  for (const thread of sourceItems) {
     const keyLabel = workspaceKeyOfThread(thread);
     const key = keyLabel.toLowerCase();
     if (!groups.has(key)) groups.set(key, []);
@@ -3637,15 +3683,28 @@ function renderThreads(items) {
   }
   const entries = Array.from(groups.entries()).map(([k, v]) => [groupLabels.get(k) || k, v, k]);
   if (!entries.length) {
-    if (state.threadListLoading && state.threadListLoadingTarget === getWorkspaceTarget()) {
-      list.innerHTML = `<div class="muted">Loading chats...</div>`;
+    if (state.threadListLoading && (!state.threadListLoadingTarget || state.threadListLoadingTarget === getWorkspaceTarget())) {
+      renderThreadListState("Loading chats...", "spinner");
+      state.threadListAnimateNextRender = false;
+      state.threadListAnimateThreadIds = new Set();
+      return;
+    }
+    const waitingWorkspaceDetection =
+      !state.workspaceAvailability.windowsInstalled &&
+      !state.workspaceAvailability.wsl2Installed;
+    if (waitingWorkspaceDetection) {
+      renderThreadListState("Waiting for WIN/WSL2...", "spinner");
+      state.threadListAnimateNextRender = false;
+      state.threadListAnimateThreadIds = new Set();
       return;
     }
     if (state.threadItemsAll.length && hasDualWorkspaceTargets()) {
-      list.innerHTML = `<div class="muted">No ${escapeHtml(getWorkspaceTarget().toUpperCase())} chats yet.</div>`;
+      renderThreadListState(`No ${getWorkspaceTarget().toUpperCase()} chats yet.`);
     } else {
-      list.innerHTML = `<div class="muted">No threads yet.</div>`;
+      renderThreadListState("No threads yet.");
     }
+    state.threadListAnimateNextRender = false;
+    state.threadListAnimateThreadIds = new Set();
     return;
   }
   const validKeys = new Set(entries.map(([, ,k]) => k));
@@ -3661,7 +3720,7 @@ function renderThreads(items) {
 
   let renderedThreads = 0;
   const favoriteSet = state.favoriteThreadIds;
-  const favoriteItems = items.filter((thread) => {
+  const favoriteItems = sourceItems.filter((thread) => {
     const id = thread.id || thread.threadId || "";
     return id && favoriteSet.has(id);
   });
@@ -3679,6 +3738,10 @@ function renderThreads(items) {
       const isFavorite = !!(id && favoriteSet.has(id));
       const card = document.createElement("div");
       card.className = `itemCard${id && id === state.activeThreadId ? " active" : ""}`;
+      if (animateEnter || (id && animateThreadIds.has(id))) {
+        card.classList.add("threadEnter");
+        card.style.setProperty("--thread-enter-delay", `${nextThreadEnterDelayMs()}ms`);
+      }
       card.setAttribute("role", "button");
       card.tabIndex = 0;
       card.innerHTML =
@@ -3785,10 +3848,14 @@ function renderThreads(items) {
     if (!sectionItems.length) return;
     const group = document.createElement("section");
     group.className = "groupCard";
+    if (animateEnter) {
+      group.classList.add("groupEnter");
+      group.style.setProperty("--thread-group-enter-delay", `${nextGroupEnterDelayMs()}ms`);
+    }
     group.setAttribute("data-group-key", String(sectionKey));
     const header = document.createElement("button");
     const collapsed = state.collapsedWorkspaceKeys.has(sectionKey);
-    header.className = `groupHeader${collapsed ? " is-collapsed" : ""}`;
+    header.className = `groupHeader${collapsed ? " is-collapsed" : ""}${animateEnter ? " threadHeaderEnter" : ""}`;
     const animClass =
       state.lastChevronToggleKey === sectionKey
         ? (state.lastChevronToggleCollapsed ? " anim-close" : " anim-open")
@@ -3840,10 +3907,14 @@ function renderThreads(items) {
     renderedThreads += filtered.length;
     const group = document.createElement("section");
     group.className = "groupCard";
+    if (animateEnter) {
+      group.classList.add("groupEnter");
+      group.style.setProperty("--thread-group-enter-delay", `${nextGroupEnterDelayMs()}ms`);
+    }
     group.setAttribute("data-group-key", String(workspaceKey));
     const header = document.createElement("button");
     const collapsed = state.collapsedWorkspaceKeys.has(workspaceKey);
-    header.className = `groupHeader${collapsed ? " is-collapsed" : ""}`;
+    header.className = `groupHeader${collapsed ? " is-collapsed" : ""}${animateEnter ? " threadHeaderEnter" : ""}`;
     const animClass =
       state.lastChevronToggleKey === workspaceKey
         ? (state.lastChevronToggleCollapsed ? " anim-close" : " anim-open")
@@ -3879,9 +3950,15 @@ function renderThreads(items) {
     }
     list.appendChild(group);
   }
-  if (!renderedThreads) list.innerHTML = `<div class="muted">No threads match search.</div>`;
+  if (!renderedThreads) renderThreadListState("No threads match search.");
   state.lastChevronToggleKey = "";
   state.lastChevronToggleCollapsed = false;
+  if (!list.childElementCount && !String(list.textContent || "").trim()) {
+    if (state.threadListLoading) renderThreadListState("Loading chats...", "spinner");
+    else renderThreadListState("Waiting for chats...", "spinner");
+  }
+  state.threadListAnimateNextRender = false;
+  state.threadListAnimateThreadIds = new Set();
   if (shouldRestoreListScroll || pendingScrollRestores.length) {
     requestAnimationFrame(() => {
       for (const item of pendingScrollRestores) {
@@ -4138,17 +4215,27 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = 
   if (activeBefore && !silent) {
     state.threadListLoading = true;
     state.threadListLoadingTarget = target;
-    renderThreads(state.threadItems);
+    if (!state.threadListPreferLoadingPlaceholder) {
+      renderThreads(state.threadItems);
+    }
   }
 
   try {
+    const previousItems = Array.isArray(state.threadItemsByWorkspace[target])
+      ? state.threadItemsByWorkspace[target]
+      : [];
+    const previousIdSet = new Set(
+      previousItems
+        .map((item) => item?.id || item?.threadId || "")
+        .filter(Boolean)
+    );
     const data = await api(`/codex/threads?${query}`, { signal: controller.signal });
     if ((state.threadRefreshReqSeqByWorkspace[target] || 0) !== reqSeq) return;
     const items = ensureArrayItems(data.items).map((item) => {
       if (!item || typeof item !== "object") return item;
       return {
         ...item,
-        workspace: String(item.workspace || "").trim() || target,
+        __workspaceQueryTarget: target,
       };
     });
     const nextSig = items
@@ -4160,12 +4247,30 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = 
         return `${id}:${ts}:${status}:${preview}`;
       })
       .join("|");
+    const nextNewThreadIdSet = new Set();
+    for (const item of items) {
+      const id = item?.id || item?.threadId || "";
+      if (!id) continue;
+      if (!previousIdSet.has(id)) nextNewThreadIdSet.add(id);
+    }
+    const shouldAnimateFullList = previousItems.length === 0 && items.length > 0;
     state.threadItemsByWorkspace[target] = items;
+    state.threadWorkspaceHydratedByWorkspace[target] = true;
     if (getWorkspaceTarget() !== target) return;
     // If nothing changed, avoid re-rendering (keeps scroll position stable and reduces work on mobile).
-    if (!force && state.threadListRenderSigByWorkspace[target] === nextSig) return;
+    if (!force && state.threadListRenderSigByWorkspace[target] === nextSig) {
+      state.threadListAnimateThreadIds = new Set();
+      return;
+    }
     state.threadListRenderSigByWorkspace[target] = nextSig;
     state.threadItemsAll = items;
+    if (shouldAnimateFullList) {
+      state.threadListAnimateNextRender = true;
+      state.threadListAnimateThreadIds = new Set();
+    } else {
+      state.threadListAnimateNextRender = false;
+      state.threadListAnimateThreadIds = nextNewThreadIdSet;
+    }
     updateWorkspaceAvailabilityFromThreads(items);
     syncActiveThreadMetaFromList();
     applyThreadFilter();
@@ -4175,11 +4280,15 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = 
       state.threadRefreshAbortByWorkspace[target] = null;
     }
     if ((state.threadRefreshReqSeqByWorkspace[target] || 0) === reqSeq && getWorkspaceTarget() === target && !silent) {
+      const list = byId("threadList");
+      const hadLoadingPlaceholder = !!list?.querySelector?.(".threadListState");
+      const needsFinalRender = hadLoadingPlaceholder || !Array.isArray(state.threadItems) || state.threadItems.length === 0;
       state.threadListLoading = false;
       state.threadListLoadingTarget = "";
-      // If the response is an empty list, we still need a final render pass after flipping the
-      // loading flag; otherwise the sidebar can get stuck showing "Loading chats...".
-      renderThreads(state.threadItems);
+      state.threadListPreferLoadingPlaceholder = false;
+      // Only do a final render pass when we need to clear loading/empty placeholders.
+      // For non-empty lists we skip this extra render so enter animations are not overwritten.
+      if (needsFinalRender) renderThreads(state.threadItems);
     }
   }
 }
@@ -4205,6 +4314,10 @@ async function refreshPending() {
 
 async function refreshAll() {
   await Promise.all([refreshThreads(), refreshHosts()]);
+  const otherTarget = getWorkspaceTarget() === "wsl2" ? "windows" : "wsl2";
+  if (isWorkspaceAvailable(otherTarget)) {
+    refreshThreads(otherTarget, { force: false, silent: true }).catch(() => null);
+  }
   await refreshPending();
 }
 
@@ -4452,10 +4565,16 @@ async function resolveUserInput() {
 }
 
 function setMobileTab(tab) {
+  const wasThreadsOpen = document.body.classList.contains("drawer-left-open");
   document.body.classList.remove("drawer-left-open", "drawer-right-open");
   if (tab === "threads") document.body.classList.add("drawer-left-open");
   if (tab === "tools") document.body.classList.add("drawer-right-open");
   byId("mobileDrawerBackdrop").classList.toggle("show", tab === "threads" || tab === "tools");
+  if (tab === "threads" && !wasThreadsOpen && Array.isArray(state.threadItems) && state.threadItems.length) {
+    state.threadListAnimateNextRender = true;
+    state.threadListAnimateThreadIds = new Set();
+    renderThreads(state.threadItems);
+  }
 }
 
 function wireActions() {

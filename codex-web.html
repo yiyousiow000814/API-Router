@@ -579,6 +579,59 @@
       cursor: pointer;
       width: 100%;
     }
+    .groupCard.groupEnter {
+      opacity: 0;
+      animation: thread-group-enter 240ms cubic-bezier(.22, .61, .36, 1) both;
+      animation-delay: var(--thread-group-enter-delay, 0ms);
+      will-change: opacity;
+    }
+    @keyframes thread-group-enter {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    .itemCard.threadEnter {
+      opacity: 0;
+      transform: translate3d(0, 18px, 0);
+      animation: thread-card-enter 360ms cubic-bezier(.22, .61, .36, 1) both;
+      animation-delay: var(--thread-enter-delay, 0ms);
+      will-change: opacity, transform;
+    }
+    .groupHeader.threadHeaderEnter {
+      opacity: 0;
+      transform: translate3d(0, 18px, 0);
+      animation: thread-header-enter 360ms cubic-bezier(.22, .61, .36, 1) both;
+      animation-delay: var(--thread-group-enter-delay, 0ms);
+      will-change: opacity, transform;
+    }
+    @keyframes thread-card-enter {
+      from { opacity: 0; transform: translate3d(0, 18px, 0); }
+      to { opacity: 1; transform: translate3d(0, 0, 0); }
+    }
+    @keyframes thread-header-enter {
+      from { opacity: 0; transform: translate3d(0, 18px, 0); }
+      to { opacity: 1; transform: translate3d(0, 0, 0); }
+    }
+    .threadListState {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #637188;
+      padding: 8px 4px;
+    }
+    .threadListStateSpinner {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      border: 2px solid rgba(99, 113, 136, 0.25);
+      border-top-color: #637188;
+      animation: thread-list-spin 0.8s linear infinite;
+      flex: 0 0 auto;
+    }
+    @keyframes thread-list-spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
     .itemCard:hover { border-color: #434a58; }
     .itemCard.active {
       border-color: rgba(40, 199, 217, 0.55);
@@ -2141,7 +2194,12 @@
               <span id="threadPullHintText" class="threadPullText"></span>
             </span>
           </div>
-          <div id="threadList" class="itemList"></div>
+          <div id="threadList" class="itemList">
+            <div class="threadListState">
+              <span class="threadListStateSpinner" aria-hidden="true"></span>
+              <span>Waiting for chats...</span>
+            </div>
+          </div>
         </div>
         <div class="panelFooter">
           <button id="leftSettingsBtn" class="drawerSettingsBtn">
