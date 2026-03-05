@@ -402,6 +402,7 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route("/codex-web", get(codex_web_index))
         .route("/codex-web/app.js", get(codex_web_app_js))
         .route("/codex-web/codex-icon.svg", get(codex_web_icon_svg))
+        .route("/favicon.ico", get(codex_web_favicon))
         .route("/ao-icon.png", get(codex_web_logo_png))
         .route("/codex/health", get(codex_health))
         .route("/codex/ws", get(codex_ws))

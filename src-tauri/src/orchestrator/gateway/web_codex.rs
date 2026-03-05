@@ -15,7 +15,6 @@ const MAX_TERMINAL_OUTPUT_BYTES: usize = 512 * 1024;
 const TERMINAL_TIMEOUT_SECS: u64 = 20;
 const VERSION_DETECT_TIMEOUT_SECS: u64 = 3;
 const VERSION_INFO_CACHE_SECS: i64 = 30;
-const THREADS_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
 
 #[derive(Serialize)]
 struct ApiErrorBody<'a> {
@@ -305,6 +304,18 @@ async fn codex_web_icon_svg() -> Response {
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+        WEB_CODEX_ICON_SVG,
+    )
+        .into_response()
+}
+
+async fn codex_web_favicon() -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "image/svg+xml; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
         WEB_CODEX_ICON_SVG,
     )
         .into_response()
@@ -1292,7 +1303,9 @@ fn sort_threads_by_updated_desc(items: &mut [Value]) {
     items.reverse();
 }
 
-fn item_updated_unix_secs(item: &Value) -> i64 {
+const THREADS_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
+
+fn thread_updated_unix_secs(item: &Value) -> i64 {
     let raw = item
         .get("updatedAt")
         .and_then(|v| v.as_i64())
@@ -1301,7 +1314,6 @@ fn item_updated_unix_secs(item: &Value) -> i64 {
     if raw <= 0 {
         return 0;
     }
-    // Some sources may encode updatedAt as unix millis (e.g., UUIDv7 millis). Normalize to secs.
     if raw > 1_000_000_000_000 {
         raw / 1000
     } else {
@@ -1309,20 +1321,15 @@ fn item_updated_unix_secs(item: &Value) -> i64 {
     }
 }
 
-fn filter_old_threads(items: &mut Vec<Value>, now_unix_secs: i64) {
+fn filter_threads_within_last_month(items: &mut Vec<Value>) {
+    let now_unix_secs = current_unix_secs();
     items.retain(|item| {
-        let updated = item_updated_unix_secs(item);
+        let updated = thread_updated_unix_secs(item);
         if updated <= 0 {
             return true;
         }
         now_unix_secs.saturating_sub(updated) <= THREADS_MAX_AGE_SECS
     });
-}
-
-fn is_auxiliary_preview(preview: &str) -> bool {
-    let text = preview.trim().to_ascii_lowercase();
-    text.starts_with("# agents.md instructions")
-        || text.starts_with("review the code changes against the base branch")
 }
 
 fn filter_auxiliary_threads(items: &mut Vec<Value>) {
@@ -1341,12 +1348,7 @@ fn filter_auxiliary_threads(items: &mut Vec<Value>) {
         if is_auxiliary {
             return false;
         }
-        let preview = item
-            .get("preview")
-            .and_then(|x| x.as_str())
-            .map(str::trim)
-            .unwrap_or_default();
-        !is_auxiliary_preview(preview)
+        true
     });
 }
 
@@ -1559,10 +1561,27 @@ fn file_updated_unix_secs(path: &Path) -> i64 {
 }
 
 const THREAD_LIST_LIMIT: i64 = 200;
+const THREAD_LIST_MAX_PAGES: usize = 20;
 
-fn thread_list_source_kinds() -> Vec<&'static str> {
-    // Align with clawdex-mobile: keep only the primary user-facing sources.
-    vec!["cli", "vscode", "exec", "appServer", "unknown"]
+fn extract_next_cursor(value: &Value) -> Option<Value> {
+    let candidates = [
+        value.get("items").and_then(|v| v.get("nextCursor")),
+        value.get("items").and_then(|v| v.get("next_cursor")),
+        value.get("nextCursor"),
+        value.get("next_cursor"),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.is_null() {
+            continue;
+        }
+        if let Some(text) = candidate.as_str() {
+            if text.trim().is_empty() {
+                continue;
+            }
+        }
+        return Some(candidate.clone());
+    }
+    None
 }
 
 fn thread_item_is_subagent(item: &Value) -> bool {
@@ -1604,20 +1623,35 @@ fn annotate_thread_item_flags(item: &mut Value) {
 }
 
 async fn rebuild_workspace_thread_items(target: WorkspaceTarget) -> Vec<Value> {
-    let params = json!({
-        "cursor": null,
-        "limit": THREAD_LIST_LIMIT,
-        "sortKey": null,
-        "modelProviders": null,
-        "sourceKinds": thread_list_source_kinds(),
-        "archived": false,
-        "cwd": null,
-    });
-
-    let mut items = match codex_rpc_call("thread/list", params).await {
-        Ok(v) => extract_items_array(&v),
-        Err(_) => Vec::new(),
-    };
+    let mut items: Vec<Value> = Vec::new();
+    let mut cursor = Value::Null;
+    for _ in 0..THREAD_LIST_MAX_PAGES {
+        let params = json!({
+            "cursor": cursor.clone(),
+            "limit": THREAD_LIST_LIMIT,
+            "sortKey": null,
+            // IMPORTANT: pass [] (not null). In our app-server runtime, null can behave like
+            // provider-scoped filtering and hide `api_router` threads from the sidebar list.
+            // [] means "no provider filter" and keeps the canonical `thread/list` result complete.
+            "modelProviders": [],
+            "sourceKinds": Value::Null,
+            "archived": false,
+            "cwd": null,
+        });
+        let page = match codex_rpc_call("thread/list", params).await {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+        let page_items = extract_items_array(&page);
+        if page_items.is_empty() {
+            break;
+        }
+        items = merge_items_without_duplicates(items, page_items);
+        let Some(next_cursor) = extract_next_cursor(&page) else {
+            break;
+        };
+        cursor = next_cursor;
+    }
 
     match target {
         WorkspaceTarget::Windows => items.retain(thread_is_windows),
@@ -1629,7 +1663,7 @@ async fn rebuild_workspace_thread_items(target: WorkspaceTarget) -> Vec<Value> {
         annotate_thread_item_flags(item);
     }
     filter_auxiliary_threads(&mut items);
-    filter_old_threads(&mut items, current_unix_secs());
+    filter_threads_within_last_month(&mut items);
     sort_threads_by_updated_desc(&mut items);
     if items.len() > 600 {
         items.truncate(600);
@@ -1755,20 +1789,15 @@ mod codex_thread_list_tests {
             .expect("expected thread/list call");
         let source_kinds = call
             .1
-            .get("sourceKinds")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let got: Vec<String> = source_kinds
-            .iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect();
-        assert_eq!(
-            got,
-            thread_list_source_kinds()
-                .into_iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
+            .get("sourceKinds");
+        assert!(
+            source_kinds.is_some_and(|v| v.is_null()),
+            "expected sourceKinds=null, got: {source_kinds:?}"
+        );
+        let model_providers = call.1.get("modelProviders");
+        assert!(
+            model_providers.is_some_and(|v| v.as_array().is_some_and(|arr| arr.is_empty())),
+            "expected modelProviders=[], got: {model_providers:?}"
         );
 
         codex_app_server::_set_test_request_handler(None).await;

@@ -1055,7 +1055,7 @@ function shouldRenderThreadForCurrentTarget(thread) {
 }
 
 function applyThreadFilter() {
-  state.threadItems = state.threadItemsAll.filter(shouldRenderThreadForCurrentTarget);
+  state.threadItems = sortThreadsByNewest(state.threadItemsAll.filter(shouldRenderThreadForCurrentTarget));
   renderThreads(state.threadItems);
 }
 
@@ -2034,7 +2034,7 @@ function wireViewerGestures() {
     const delta = -Math.sign(event.deltaY || 0) * 0.15;
     const nextScale = clamp((imageViewerState.scale || 1) + delta, 1, 5);
     setViewerTransform({ scale: nextScale, tx: imageViewerState.tx || 0, ty: imageViewerState.ty || 0 });
-    event.preventDefault();
+    if (event.cancelable) event.preventDefault();
   }, { passive: false });
 }
 
@@ -2446,7 +2446,35 @@ function relativeTimeLabel(input) {
 }
 
 function pickThreadTimestamp(thread) {
-  return thread?.updatedAt || "";
+  return thread?.updatedAt ?? thread?.createdAt ?? thread?.statusUpdatedAt ?? "";
+}
+
+function threadSortTimestampMs(thread) {
+  const raw = pickThreadTimestamp(thread);
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw > 1e12 ? raw : raw * 1000;
+  if (typeof raw === "string") {
+    const text = raw.trim();
+    if (!text) return 0;
+    if (/^\d+(?:\.\d+)?$/.test(text)) {
+      const num = Number.parseFloat(text);
+      if (!Number.isFinite(num)) return 0;
+      return num > 1e12 ? num : num * 1000;
+    }
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  const parsed = Date.parse(String(raw || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sortThreadsByNewest(items) {
+  return [...items].sort((a, b) => {
+    const diff = threadSortTimestampMs(b) - threadSortTimestampMs(a);
+    if (diff !== 0) return diff;
+    const aId = String(a?.id || a?.threadId || "");
+    const bId = String(b?.id || b?.threadId || "");
+    return bId.localeCompare(aId);
+  });
 }
 
 function renderAttachmentPills(files) {
@@ -3476,6 +3504,59 @@ function handleWsPayload(payload) {
     applyPendingPayloads(payload?.payload?.approvals || [], payload?.payload?.userInputs || []);
     return;
   }
+  if (payload.type === "ui.event") {
+    const record = toRecord(payload.payload) || {};
+    const eventId = readNumber(record?.eventId);
+    if (eventId !== null) {
+      if (eventId === 1 && state.wsLastEventId > 1) resetEventReplayState();
+      if (eventId <= state.wsLastEventId) return;
+      if (state.wsRecentEventIds.has(eventId)) return;
+      markEventIdSeen(eventId);
+      state.wsLastEventId = Math.max(state.wsLastEventId, eventId);
+      try {
+        localStorage.setItem(LAST_EVENT_ID_KEY, String(state.wsLastEventId));
+      } catch {}
+    }
+    const conversationId = readString(record?.conversationId) || readString(record?.threadId) || "";
+    if (conversationId) {
+      scheduleThreadRefresh(120);
+      scheduleActiveThreadRefresh(conversationId, 90);
+    }
+    const kind = readString(record?.kind) || "";
+    if (kind === "activity") {
+      renderLiveNotification({
+        method: "thread/status",
+        params: {
+          status: readString(record?.status) || "",
+          message: readString(record?.message) || "",
+          code: readString(record?.code) || "",
+          thread: {
+            status: readString(record?.status) || "",
+            message: readString(record?.message) || "",
+          },
+        },
+      });
+      return;
+    }
+    if (kind === "assistant_delta") {
+      renderLiveNotification({
+        method: "turn/assistant/delta",
+        params: { delta: readString(record?.delta) || "" },
+      });
+      return;
+    }
+    if (kind === "tool") {
+      renderLiveNotification({
+        method: "item/updated",
+        params: {
+          itemId: readString(record?.itemId) || "",
+          item: toRecord(record?.item) || {},
+        },
+      });
+      return;
+    }
+    return;
+  }
   if (payload.type === "rpc.notification") {
     const notification = payload.payload || {};
     const record = toRecord(notification);
@@ -4055,7 +4136,9 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = 
       .map((item) => {
         const id = item?.id || item?.threadId || "";
         const ts = item?.updatedAt ?? item?.createdAt ?? "";
-        return `${id}:${ts}`;
+        const status = String(item?.status?.type || item?.status || item?.state || "").trim();
+        const preview = String(item?.preview || item?.title || item?.name || "").trim();
+        return `${id}:${ts}:${status}:${preview}`;
       })
       .join("|");
     state.threadItemsByWorkspace[target] = items;
