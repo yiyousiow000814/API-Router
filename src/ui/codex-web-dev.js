@@ -30,6 +30,8 @@ const state = {
   threadListLoadingTarget: "",
   threadListAnimateNextRender: false,
   threadListAnimateThreadIds: new Set(),
+  threadListExpandAnimateGroupKeys: new Set(),
+  threadListSkipScrollRestoreOnce: false,
   threadListPreferLoadingPlaceholder: false,
   threadRefreshAbortByWorkspace: {
     windows: null,
@@ -3641,6 +3643,77 @@ function renderThreads(items) {
   const animateEnter = !!state.threadListAnimateNextRender;
   const animateThreadIds =
     state.threadListAnimateThreadIds instanceof Set ? state.threadListAnimateThreadIds : new Set();
+  const expandAnimateGroupKeys =
+    state.threadListExpandAnimateGroupKeys instanceof Set ? state.threadListExpandAnimateGroupKeys : new Set();
+  const animateExpandBody = (body) => {
+    if (!body) return;
+    const computed = window.getComputedStyle(body);
+    const targetPaddingTop = computed.paddingTop || "0px";
+    const targetPaddingBottom = computed.paddingBottom || "0px";
+    const expandedHeight = Math.max(0, body.getBoundingClientRect().height);
+    if (expandedHeight <= 0) return;
+    body.classList.add("is-expanding");
+    body.style.height = "0px";
+    body.style.opacity = "0";
+    body.style.paddingTop = "0px";
+    body.style.paddingBottom = "0px";
+    body.style.overflow = "hidden";
+    requestAnimationFrame(() => {
+      body.style.height = `${expandedHeight}px`;
+      body.style.opacity = "1";
+      body.style.paddingTop = targetPaddingTop;
+      body.style.paddingBottom = targetPaddingBottom;
+    });
+    let done = false;
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      body.classList.remove("is-expanding");
+      body.style.height = "";
+      body.style.opacity = "";
+      body.style.paddingTop = "";
+      body.style.paddingBottom = "";
+      body.style.overflow = "";
+    };
+    body.addEventListener("transitionend", (event) => {
+      if (event?.propertyName !== "height") return;
+      cleanup();
+    }, { once: true });
+    setTimeout(cleanup, 260);
+  };
+  const animateCollapseBody = (body, onDone) => {
+    if (!body) {
+      onDone?.();
+      return;
+    }
+    if (body.classList.contains("is-collapsing")) return;
+    const startHeight = Math.max(0, body.getBoundingClientRect().height);
+    if (startHeight <= 0) {
+      onDone?.();
+      return;
+    }
+    body.classList.add("is-collapsing");
+    body.style.height = `${startHeight}px`;
+    body.style.opacity = "1";
+    body.style.overflow = "hidden";
+    requestAnimationFrame(() => {
+      body.style.height = "0px";
+      body.style.opacity = "0";
+      body.style.paddingTop = "0px";
+      body.style.paddingBottom = "0px";
+    });
+    let done = false;
+    const finalize = () => {
+      if (done) return;
+      done = true;
+      onDone?.();
+    };
+    body.addEventListener("transitionend", (event) => {
+      if (event?.propertyName !== "height") return;
+      finalize();
+    }, { once: true });
+    setTimeout(finalize, 260);
+  };
   let threadEnterIndex = 0;
   let groupEnterIndex = 0;
   const nextThreadEnterDelayMs = () => Math.min(420, threadEnterIndex++ * 28);
@@ -3656,20 +3729,24 @@ function renderThreads(items) {
     }
     list.innerHTML = `<div class="muted">${escapeHtml(label)}</div>`;
   };
+  const skipScrollRestore = !!state.threadListSkipScrollRestoreOnce;
+  state.threadListSkipScrollRestoreOnce = false;
   const prevListScrollTop = list?.scrollTop ?? 0;
-  const shouldRestoreListScroll = prevListScrollTop > 0;
+  const shouldRestoreListScroll = !skipScrollRestore && prevListScrollTop > 0;
   const prevGroupScroll = new Map();
   const pendingScrollRestores = [];
-  try {
-    const groups = Array.from(list?.querySelectorAll?.(".groupCard[data-group-key]") || []);
-    for (const group of groups) {
-      const key = String(group.getAttribute("data-group-key") || "").trim();
-      if (!key) continue;
-      const body = group.querySelector(".groupBody");
-      if (!body) continue;
-      if (body.scrollTop > 0) prevGroupScroll.set(key, body.scrollTop);
-    }
-  } catch {}
+  if (!skipScrollRestore) {
+    try {
+      const groups = Array.from(list?.querySelectorAll?.(".groupCard[data-group-key]") || []);
+      for (const group of groups) {
+        const key = String(group.getAttribute("data-group-key") || "").trim();
+        if (!key) continue;
+        const body = group.querySelector(".groupBody");
+        if (!body) continue;
+        if (body.scrollTop > 0) prevGroupScroll.set(key, body.scrollTop);
+      }
+    } catch {}
+  }
   list.innerHTML = "";
   const query = state.threadSearchQuery.trim().toLowerCase();
   const groups = new Map();
@@ -3687,6 +3764,7 @@ function renderThreads(items) {
       renderThreadListState("Loading chats...", "spinner");
       state.threadListAnimateNextRender = false;
       state.threadListAnimateThreadIds = new Set();
+      state.threadListExpandAnimateGroupKeys = new Set();
       return;
     }
     const waitingWorkspaceDetection =
@@ -3696,6 +3774,7 @@ function renderThreads(items) {
       renderThreadListState("Waiting for WIN/WSL2...", "spinner");
       state.threadListAnimateNextRender = false;
       state.threadListAnimateThreadIds = new Set();
+      state.threadListExpandAnimateGroupKeys = new Set();
       return;
     }
     if (state.threadItemsAll.length && hasDualWorkspaceTargets()) {
@@ -3705,6 +3784,7 @@ function renderThreads(items) {
     }
     state.threadListAnimateNextRender = false;
     state.threadListAnimateThreadIds = new Set();
+    state.threadListExpandAnimateGroupKeys = new Set();
     return;
   }
   const validKeys = new Set(entries.map(([, ,k]) => k));
@@ -3866,24 +3946,45 @@ function renderThreads(items) {
       `<svg class="groupChevronIcon" viewBox="0 0 16 16" focusable="false"><path d="M6 4l4 4-4 4"></path></svg>` +
       `</span>`;
     header.onclick = () => {
-      if (state.collapsedWorkspaceKeys.has(sectionKey)) state.collapsedWorkspaceKeys.delete(sectionKey);
-      else state.collapsedWorkspaceKeys.add(sectionKey);
+      const currentlyCollapsed = state.collapsedWorkspaceKeys.has(sectionKey);
+      if (currentlyCollapsed) {
+        state.collapsedWorkspaceKeys.delete(sectionKey);
+        state.lastChevronToggleKey = sectionKey;
+        state.lastChevronToggleCollapsed = false;
+        state.threadListAnimateNextRender = false;
+        state.threadListAnimateThreadIds = new Set();
+        state.threadListExpandAnimateGroupKeys = new Set([String(sectionKey)]);
+        state.threadListSkipScrollRestoreOnce = true;
+        renderThreads(state.threadItems);
+        return;
+      }
+      const bodyNode = group.querySelector(".groupBody");
       state.lastChevronToggleKey = sectionKey;
-      state.lastChevronToggleCollapsed = state.collapsedWorkspaceKeys.has(sectionKey);
-      renderThreads(state.threadItems);
+      state.lastChevronToggleCollapsed = true;
+      animateCollapseBody(bodyNode, () => {
+        state.collapsedWorkspaceKeys.add(sectionKey);
+        state.threadListAnimateNextRender = false;
+        state.threadListAnimateThreadIds = new Set();
+        state.threadListExpandAnimateGroupKeys = new Set();
+        state.threadListSkipScrollRestoreOnce = true;
+        renderThreads(state.threadItems);
+      });
     };
     group.appendChild(header);
+    let bodyForExpandAnim = null;
     if (!collapsed) {
       const body = document.createElement("div");
       body.className = "groupBody";
       for (const thread of sectionItems) body.appendChild(renderThreadCard(thread));
       group.appendChild(body);
+      if (expandAnimateGroupKeys.has(String(sectionKey))) bodyForExpandAnim = body;
       const prevTop = prevGroupScroll.get(String(sectionKey));
       if (typeof prevTop === "number" && Number.isFinite(prevTop) && prevTop > 0) {
         pendingScrollRestores.push({ node: body, top: prevTop });
       }
     }
     list.appendChild(group);
+    if (bodyForExpandAnim) animateExpandBody(bodyForExpandAnim);
     renderedThreads += sectionItems.length;
   };
 
@@ -3925,30 +4026,48 @@ function renderThreads(items) {
       `<svg class="groupChevronIcon" viewBox="0 0 16 16" focusable="false"><path d="M6 4l4 4-4 4"></path></svg>` +
       `</span>`;
     header.onclick = () => {
-      if (state.collapsedWorkspaceKeys.has(workspaceKey)) {
+      const currentlyCollapsed = state.collapsedWorkspaceKeys.has(workspaceKey);
+      if (currentlyCollapsed) {
         // Open this group and keep others collapsed (single-expanded behavior).
         for (const [, , key] of entries) state.collapsedWorkspaceKeys.add(key);
         state.collapsedWorkspaceKeys.delete(workspaceKey);
-      } else {
+        state.lastChevronToggleKey = workspaceKey;
+        state.lastChevronToggleCollapsed = false;
+        state.threadListAnimateNextRender = false;
+        state.threadListAnimateThreadIds = new Set();
+        state.threadListExpandAnimateGroupKeys = new Set([String(workspaceKey)]);
+        state.threadListSkipScrollRestoreOnce = true;
+        renderThreads(state.threadItems);
+        return;
+      }
+      const bodyNode = group.querySelector(".groupBody");
+      state.lastChevronToggleKey = workspaceKey;
+      state.lastChevronToggleCollapsed = true;
+      animateCollapseBody(bodyNode, () => {
         // Collapse this group when tapping it again.
         state.collapsedWorkspaceKeys.add(workspaceKey);
-      }
-      state.lastChevronToggleKey = workspaceKey;
-      state.lastChevronToggleCollapsed = state.collapsedWorkspaceKeys.has(workspaceKey);
-      renderThreads(state.threadItems);
+        state.threadListAnimateNextRender = false;
+        state.threadListAnimateThreadIds = new Set();
+        state.threadListExpandAnimateGroupKeys = new Set();
+        state.threadListSkipScrollRestoreOnce = true;
+        renderThreads(state.threadItems);
+      });
     };
     group.appendChild(header);
+    let bodyForExpandAnim = null;
     if (!collapsed) {
       const body = document.createElement("div");
       body.className = "groupBody";
       for (const thread of filtered) body.appendChild(renderThreadCard(thread));
       group.appendChild(body);
+      if (expandAnimateGroupKeys.has(String(workspaceKey))) bodyForExpandAnim = body;
       const prevTop = prevGroupScroll.get(String(workspaceKey));
       if (typeof prevTop === "number" && Number.isFinite(prevTop) && prevTop > 0) {
         pendingScrollRestores.push({ node: body, top: prevTop });
       }
     }
     list.appendChild(group);
+    if (bodyForExpandAnim) animateExpandBody(bodyForExpandAnim);
   }
   if (!renderedThreads) renderThreadListState("No threads match search.");
   state.lastChevronToggleKey = "";
@@ -3959,6 +4078,7 @@ function renderThreads(items) {
   }
   state.threadListAnimateNextRender = false;
   state.threadListAnimateThreadIds = new Set();
+  state.threadListExpandAnimateGroupKeys = new Set();
   if (shouldRestoreListScroll || pendingScrollRestores.length) {
     requestAnimationFrame(() => {
       for (const item of pendingScrollRestores) {

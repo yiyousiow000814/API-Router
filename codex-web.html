@@ -737,6 +737,17 @@
       scrollbar-width: thin;
       scrollbar-color: rgba(13, 18, 32, 0.35) transparent;
     }
+    .groupBody.is-expanding,
+    .groupBody.is-collapsing {
+      pointer-events: none;
+      overflow: hidden;
+      transition:
+        height 0.2s ease,
+        opacity 0.2s ease,
+        padding-top 0.2s ease,
+        padding-bottom 0.2s ease;
+      will-change: height, opacity, padding-top, padding-bottom;
+    }
     .itemCard .row { min-width: 0; width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 4px; align-items: center; }
     .itemCard .row .itemTitle { min-width: 0; max-width: 100%; display: block; }
     .itemSub.mono { margin-top: 0; white-space: nowrap; flex: 0 0 auto; }
@@ -1858,7 +1869,7 @@
     .leftPanel .groupBody {
       gap: 0;
       padding: 0 8px 0 0;
-      scrollbar-gutter: auto;
+      scrollbar-gutter: stable;
     }
     .leftPanel .groupBody .itemCard:last-child {
       border-bottom: none;
