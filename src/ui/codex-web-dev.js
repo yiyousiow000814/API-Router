@@ -1077,11 +1077,8 @@ function updateWorkspaceAvailability(windowsInstalled, wsl2Installed) {
     windowsInstalled: !!windowsInstalled,
     wsl2Installed: !!wsl2Installed,
   };
-  if (!hasDualWorkspaceTargets()) {
-    const nextTarget = state.workspaceAvailability.wsl2Installed ? "wsl2" : "windows";
-    state.workspaceTarget = normalizeWorkspaceTarget(nextTarget);
-    localStorage.setItem(WORKSPACE_TARGET_KEY, state.workspaceTarget);
-  }
+  // Never auto-switch workspace target here.
+  // Policy: default is windows; after user selection, keep that choice until user changes it.
   applyWorkspaceUi();
   if (state.threadItemsAll.length) applyThreadFilter();
 }
