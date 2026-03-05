@@ -1211,16 +1211,36 @@ function isHttpUrl(value) {
   return /^https?:\/\//i.test(String(value || "").trim());
 }
 
-function looksLikeFileRef(value) {
+function isDottedIdentifierPath(value) {
   const text = String(value || "").trim();
+  if (!text || text.includes("/") || text.includes("\\") || text.includes(":")) return false;
+  return /^[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z_$][A-Za-z0-9_$]*)+$/.test(text);
+}
+
+function looksLikeFileRef(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  const quoted = raw.match(/^(['"])([\s\S]*)\1$/);
+  const text = quoted ? String(quoted[2] || "").trim() : raw;
   if (!text) return false;
+  if (isDottedIdentifierPath(text)) return false;
+  if (/^[\\/]+$/.test(text)) return false;
+  if (/^%[A-Za-z0-9_]+%(?:[\\/]+)?$/.test(text)) return false;
+  if (/^[a-z]:(?:[\\/]+)?$/i.test(text)) return false;
+  const hasPathSeparator = text.includes("/") || text.includes("\\");
+  const hasAbsolutePrefix =
+    /^%[A-Za-z0-9_]+%[\\/]/.test(text) ||
+    /^[a-z]:[\\/]/i.test(text) ||
+    text.startsWith("/") ||
+    text.startsWith("\\\\");
+  if (!hasPathSeparator && !hasAbsolutePrefix) return false;
   return (
     /^%[A-Za-z0-9_]+%[\\/]/.test(text) ||
     /^[a-z]:[\\/]/i.test(text) ||
     text.startsWith("/") ||
     text.startsWith("\\\\") ||
-    text.includes("\\") ||
-    /(?:^|\/)[^/\s]+\.[a-z0-9]{1,8}(?::\d+(?::\d+)?)?(?:#L\d+(?:C\d+)?)?$/i.test(text)
+    /[^\\/\s][\\/][^\\/\s]/.test(text) ||
+    /(?:^|[\\/])[^\\/\s]+\.[a-z0-9]{1,8}(?::\d+(?::\d+)?)?(?:#L\d+(?:C\d+)?)?$/i.test(text)
   );
 }
 
@@ -1286,7 +1306,9 @@ function renderInlineMessageText(text) {
     } else if (match[5]) {
       html += buildMessageLink(match[5], match[5], false);
     } else if (match[6]) {
-      html += buildMessageLink(match[6], match[6], true);
+      const candidate = String(match[6] || "").trim();
+      if (looksLikeFileRef(candidate)) html += buildMessageLink(candidate, candidate, true);
+      else html += escapeHtml(candidate);
     } else {
       html += escapeHtml(full);
     }
