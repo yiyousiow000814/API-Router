@@ -15,8 +15,6 @@ const MAX_TERMINAL_OUTPUT_BYTES: usize = 512 * 1024;
 const TERMINAL_TIMEOUT_SECS: u64 = 20;
 const VERSION_DETECT_TIMEOUT_SECS: u64 = 3;
 const VERSION_INFO_CACHE_SECS: i64 = 30;
-const MAX_FOLDER_LIST_ITEMS: usize = 1200;
-const WSL_IDENTITY_CACHE_SECS: i64 = 600;
 
 #[derive(Serialize)]
 struct ApiErrorBody<'a> {
@@ -134,7 +132,7 @@ async fn codex_cli_config(State(st): State<GatewayState>, headers: HeaderMap) ->
     }
 
     // Best-effort: read the user's actual Windows Codex config.toml (what `codex` CLI uses).
-    let windows_cfg = default_windows_codex_dir()
+    let windows_cfg = crate::orchestrator::gateway::web_codex_home::default_windows_codex_dir()
         .map(|p| p.join("config.toml"))
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|txt| extract_model_and_effort_from_toml(&txt))
@@ -253,56 +251,8 @@ fn truncate_output(value: &[u8]) -> (String, bool) {
     (String::from_utf8_lossy(head).to_string(), true)
 }
 
-fn web_codex_rpc_home_override() -> Option<String> {
-    // Web Codex should use the user's real Codex home (where threads/history live), while the
-    // rest of API Router can keep its own isolated CODEX_HOME for auth/provider switchboard.
-    //
-    // Default to Windows ~/.codex when present; allow an explicit override for advanced setups.
-    let explicit = std::env::var("API_ROUTER_WEB_CODEX_CODEX_HOME")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    if explicit.is_some() {
-        return explicit;
-    }
-    default_windows_codex_dir().map(|p| p.to_string_lossy().to_string())
-}
-
-fn web_codex_rpc_home_override_for_workspace(target: WorkspaceTarget) -> Option<String> {
-    match target {
-        WorkspaceTarget::Windows => web_codex_rpc_home_override(),
-        WorkspaceTarget::Wsl2 => {
-            let explicit = std::env::var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME")
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-            if explicit.is_some() {
-                return explicit;
-            }
-            if !cfg!(target_os = "windows") {
-                return None;
-            }
-            let (distro, home) = resolve_wsl_identity().ok()?;
-            let codex_home_linux = linux_path_join(&home, ".codex");
-            let unc = linux_path_to_unc(&codex_home_linux, &distro);
-            Some(unc.to_string_lossy().to_string())
-        }
-    }
-}
-
 async fn codex_rpc_call(method: &str, params: Value) -> Result<Value, Response> {
-    let home = web_codex_rpc_home_override();
-    crate::codex_app_server::request_in_home(home.as_deref(), method, params)
-        .await
-        .map_err(|e| api_error_detail(StatusCode::BAD_GATEWAY, "codex app-server request failed", e))
-}
-
-async fn codex_rpc_call_for_workspace(
-    target: WorkspaceTarget,
-    method: &str,
-    params: Value,
-) -> Result<Value, Response> {
-    let home = web_codex_rpc_home_override_for_workspace(target);
+    let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
     crate::codex_app_server::request_in_home(home.as_deref(), method, params)
         .await
         .map_err(|e| api_error_detail(StatusCode::BAD_GATEWAY, "codex app-server request failed", e))
@@ -492,7 +442,7 @@ async fn codex_ws_stream_turn(
     if !send_ws_json(socket, &started).await {
         return Err("ws closed".to_string());
     }
-    let home = web_codex_rpc_home_override();
+    let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
     let result =
         crate::codex_app_server::request_in_home(home.as_deref(), "turn/start", payload).await?;
     let thread_id = result
@@ -569,7 +519,7 @@ async fn codex_ws_emit_event_snapshot(
 
 async fn codex_try_request_with_fallback(methods: &[&str], params: Value) -> Result<Value, String> {
     let mut last_err = String::new();
-    let home = web_codex_rpc_home_override();
+    let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
     for method in methods {
         match crate::codex_app_server::request_in_home(home.as_deref(), method, params.clone())
             .await
@@ -636,7 +586,7 @@ async fn codex_ws_poll_pending_events(
     // Forward codex app-server JSON-RPC notifications with a per-connection cursor.
     // This aligns with clawdex-mobile: multiple clients can reconnect and replay independently,
     // and we avoid draining a global queue (which would drop events for other clients).
-    let home = web_codex_rpc_home_override();
+    let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
     let (mut items, first, last, gap) = crate::codex_app_server::replay_notifications_since_in_home(
         home.as_deref(),
         *notif_cursor,
@@ -782,7 +732,7 @@ async fn codex_ws_loop(mut socket: WebSocket) {
                                     .and_then(|x| x.as_str())
                                     .unwrap_or_default()
                                     .to_string();
-                                let home = web_codex_rpc_home_override();
+                                let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
                                 let result = crate::codex_app_server::request_in_home(
                                     home.as_deref(),
                                     "turn/interrupt",
@@ -826,7 +776,7 @@ async fn codex_ws_loop(mut socket: WebSocket) {
                                     .await;
                                     continue;
                                 }
-                                let home = web_codex_rpc_home_override();
+                                let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
                                 let result =
                                     crate::codex_app_server::request_in_home(home.as_deref(), &method, params).await;
                                 match result {
@@ -1079,28 +1029,10 @@ struct ThreadsQuery {
     force: Option<bool>,
 }
 
-fn workspace_is_wsl2(value: &str) -> bool {
-    value.trim().eq_ignore_ascii_case("wsl2")
-}
-
-fn workspace_is_windows(value: &str) -> bool {
-    value.trim().eq_ignore_ascii_case("windows")
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WorkspaceTarget {
-    Windows,
-    Wsl2,
-}
+type WorkspaceTarget = crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
 
 fn parse_workspace_target(value: &str) -> Option<WorkspaceTarget> {
-    if workspace_is_wsl2(value) {
-        Some(WorkspaceTarget::Wsl2)
-    } else if workspace_is_windows(value) {
-        Some(WorkspaceTarget::Windows)
-    } else {
-        None
-    }
+    crate::orchestrator::gateway::web_codex_home::parse_workspace_target(value)
 }
 
 #[derive(Deserialize)]
@@ -1109,246 +1041,6 @@ struct CodexFoldersQuery {
     workspace: Option<String>,
     #[serde(default)]
     path: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FolderListItem {
-    name: String,
-    path: String,
-}
-
-fn sort_folder_items(items: &mut [FolderListItem]) {
-    items.sort_by(|a, b| {
-        let a_lc = a.name.to_ascii_lowercase();
-        let b_lc = b.name.to_ascii_lowercase();
-        a_lc.cmp(&b_lc).then_with(|| a.name.cmp(&b.name))
-    });
-}
-
-fn windows_root_folders() -> Vec<FolderListItem> {
-    let mut items = Vec::new();
-    if !cfg!(target_os = "windows") {
-        return items;
-    }
-    for drive in b'A'..=b'Z' {
-        let letter = char::from(drive);
-        let path = format!("{letter}:\\");
-        let p = Path::new(&path);
-        if p.is_dir() {
-            items.push(FolderListItem {
-                name: path.clone(),
-                path,
-            });
-        }
-    }
-    sort_folder_items(&mut items);
-    items
-}
-
-fn list_local_subdirectories(path: &Path) -> Result<Vec<FolderListItem>, String> {
-    let mut items = Vec::new();
-    let read = std::fs::read_dir(path).map_err(|e| e.to_string())?;
-    for entry in read.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().trim().to_string();
-        if name.is_empty() {
-            continue;
-        }
-        let child_path = entry.path();
-        items.push(FolderListItem {
-            name,
-            path: child_path.to_string_lossy().to_string(),
-        });
-        if items.len() >= MAX_FOLDER_LIST_ITEMS {
-            break;
-        }
-    }
-    sort_folder_items(&mut items);
-    Ok(items)
-}
-
-#[derive(Clone)]
-struct WslIdentityCache {
-    distro: String,
-    home: String,
-    updated_at_unix_secs: i64,
-}
-
-fn wsl_identity_cache() -> &'static std::sync::Mutex<Option<WslIdentityCache>> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<WslIdentityCache>>> =
-        std::sync::OnceLock::new();
-    CACHE.get_or_init(|| std::sync::Mutex::new(None))
-}
-
-fn lock_wsl_identity_cache() -> std::sync::MutexGuard<'static, Option<WslIdentityCache>> {
-    match wsl_identity_cache().lock() {
-        Ok(v) => v,
-        Err(err) => err.into_inner(),
-    }
-}
-
-fn normalize_wsl_linux_path(value: &str) -> Option<String> {
-    let raw = value.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    let mut normalized = raw.replace('\\', "/");
-    if !normalized.starts_with('/') {
-        return None;
-    }
-    while normalized.contains("//") {
-        normalized = normalized.replace("//", "/");
-    }
-    if normalized.len() > 1 {
-        normalized = normalized.trim_end_matches('/').to_string();
-    }
-    if normalized.is_empty() {
-        Some("/".to_string())
-    } else {
-        Some(normalized)
-    }
-}
-
-fn linux_path_parent(path: &str) -> Option<String> {
-    let normalized = normalize_wsl_linux_path(path)?;
-    if normalized == "/" {
-        return None;
-    }
-    let mut parts = normalized
-        .trim_start_matches('/')
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    if parts.is_empty() {
-        return Some("/".to_string());
-    }
-    parts.pop();
-    if parts.is_empty() {
-        Some("/".to_string())
-    } else {
-        Some(format!("/{}", parts.join("/")))
-    }
-}
-
-fn linux_path_join(base: &str, name: &str) -> String {
-    let cleaned_name = name.trim().trim_matches('/');
-    if cleaned_name.is_empty() {
-        return normalize_wsl_linux_path(base).unwrap_or_else(|| "/".to_string());
-    }
-    let base_norm = normalize_wsl_linux_path(base).unwrap_or_else(|| "/".to_string());
-    if base_norm == "/" {
-        format!("/{cleaned_name}")
-    } else {
-        format!("{base_norm}/{cleaned_name}")
-    }
-}
-
-fn linux_path_to_unc(path: &str, distro: &str) -> PathBuf {
-    let normalized = normalize_wsl_linux_path(path).unwrap_or_else(|| "/".to_string());
-    let rel = normalized.trim_start_matches('/');
-    if rel.is_empty() {
-        PathBuf::from(format!(r"\\wsl.localhost\{distro}\"))
-    } else {
-        PathBuf::from(format!(
-            r"\\wsl.localhost\{distro}\{}",
-            rel.replace('/', "\\")
-        ))
-    }
-}
-
-fn detect_wsl_identity_uncached() -> Result<(String, String), String> {
-    let mut cmd = std::process::Command::new("wsl.exe");
-    cmd.arg("-e")
-        .arg("bash")
-        .arg("-lc")
-        .arg(r#"printf '%s\n%s\n' "${WSL_DISTRO_NAME:-}" "${HOME:-/}""#);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-    let output = cmd.output().map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if stderr.is_empty() {
-            return Err("failed to detect WSL identity".to_string());
-        }
-        return Err(stderr);
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut lines = stdout.lines().map(str::trim);
-    let distro = lines.next().unwrap_or_default().to_string();
-    let home_raw = lines.next().unwrap_or("/").to_string();
-    if distro.trim().is_empty() {
-        return Err("failed to detect default WSL distro".to_string());
-    }
-    let home = normalize_wsl_linux_path(&home_raw).unwrap_or_else(|| "/".to_string());
-    Ok((distro, home))
-}
-
-fn resolve_wsl_identity() -> Result<(String, String), String> {
-    let now = current_unix_secs();
-    if let Some(cached) = lock_wsl_identity_cache().clone() {
-        if now.saturating_sub(cached.updated_at_unix_secs) < WSL_IDENTITY_CACHE_SECS {
-            return Ok((cached.distro, cached.home));
-        }
-    }
-    let (distro, home) = detect_wsl_identity_uncached()?;
-    {
-        let mut cache = lock_wsl_identity_cache();
-        *cache = Some(WslIdentityCache {
-            distro: distro.clone(),
-            home: home.clone(),
-            updated_at_unix_secs: now,
-        });
-    }
-    Ok((distro, home))
-}
-
-fn list_wsl_subdirectories(path: Option<&str>) -> Result<(String, Option<String>, Vec<FolderListItem>), String> {
-    if !cfg!(target_os = "windows") {
-        return Err("wsl2 workspace browsing is only available on Windows host".to_string());
-    }
-    let (distro, home) = resolve_wsl_identity()?;
-    let current_path = path
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .and_then(normalize_wsl_linux_path)
-        .unwrap_or(home);
-    let unc_path = linux_path_to_unc(&current_path, &distro);
-    if !unc_path.is_dir() {
-        return Err("path is not a directory".to_string());
-    }
-    let mut items = Vec::new();
-    let read = std::fs::read_dir(&unc_path).map_err(|e| e.to_string())?;
-    for entry in read.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().trim().to_string();
-        if name.is_empty() {
-            continue;
-        }
-        let child_linux_path = linux_path_join(&current_path, &name);
-        items.push(FolderListItem {
-            name,
-            path: child_linux_path,
-        });
-        if items.len() >= MAX_FOLDER_LIST_ITEMS {
-            break;
-        }
-    }
-    sort_folder_items(&mut items);
-    Ok((current_path.clone(), linux_path_parent(&current_path), items))
 }
 
 async fn codex_folders_list(
@@ -1360,7 +1052,9 @@ async fn codex_folders_list(
         return resp;
     }
     let requested_workspace = query.workspace.unwrap_or_else(|| "windows".to_string());
-    let Some(target) = parse_workspace_target(&requested_workspace) else {
+    let Some(target) =
+        crate::orchestrator::gateway::web_codex_home::parse_workspace_target(&requested_workspace)
+    else {
         return api_error(StatusCode::BAD_REQUEST, "workspace must be windows or wsl2");
     };
 
@@ -1372,7 +1066,8 @@ async fn codex_folders_list(
                 .map(str::trim)
                 .filter(|value| !value.is_empty());
             if requested_path.is_none() {
-                let items = windows_root_folders();
+                let items =
+                    crate::orchestrator::gateway::web_codex_home::windows_root_folders();
                 return Json(json!({
                     "workspace": "windows",
                     "currentPath": Value::Null,
@@ -1391,7 +1086,7 @@ async fn codex_folders_list(
             }
             let current_path = path.to_string_lossy().to_string();
             let parent_path = path.parent().map(|p| p.to_string_lossy().to_string());
-            match list_local_subdirectories(&path) {
+            match crate::orchestrator::gateway::web_codex_home::list_local_subdirectories(&path) {
                 Ok(items) => Json(json!({
                     "workspace": "windows",
                     "currentPath": current_path,
@@ -1402,7 +1097,7 @@ async fn codex_folders_list(
                 Err(e) => api_error_detail(StatusCode::BAD_GATEWAY, "failed to list folders", e),
             }
         }
-        WorkspaceTarget::Wsl2 => match list_wsl_subdirectories(query.path.as_deref()) {
+        WorkspaceTarget::Wsl2 => match crate::orchestrator::gateway::web_codex_home::list_wsl_subdirectories(query.path.as_deref()) {
             Ok((current_path, parent_path, items)) => Json(json!({
                 "workspace": "wsl2",
                 "currentPath": current_path,
@@ -1420,309 +1115,6 @@ fn current_unix_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|v| v.as_secs() as i64)
         .unwrap_or(0)
-}
-
-fn thread_is_wsl2(thread: &Value) -> bool {
-    let source = thread.get("source").and_then(|v| v.as_object());
-    let workspace = thread
-        .get("workspace")
-        .and_then(|v| v.as_str())
-        .or_else(|| source.and_then(|obj| obj.get("workspace")).and_then(|v| v.as_str()))
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if workspace == "wsl2" || workspace == "wsl" {
-        return true;
-    }
-    if workspace == "windows" || workspace == "win" {
-        return false;
-    }
-
-    let path_like = ["cwd", "project", "directory", "path"]
-        .iter()
-        .find_map(|key| thread.get(*key).and_then(|v| v.as_str()))
-        .or_else(|| {
-            ["cwd", "project", "directory", "path"]
-                .iter()
-                .find_map(|key| source.and_then(|obj| obj.get(*key)).and_then(|v| v.as_str()))
-        })
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    !path_like.is_empty()
-        && (path_like.starts_with('/')
-            || path_like.starts_with("\\\\wsl$\\")
-            || path_like.starts_with("\\\\wsl.localhost\\")
-            || path_like.contains("\\\\wsl$\\")
-            || path_like.contains("\\\\wsl.localhost\\")
-            || path_like.contains("/mnt/"))
-}
-
-fn extract_items_array(value: &Value) -> Vec<Value> {
-    if let Some(arr) = value.as_array() {
-        return arr.clone();
-    }
-    if let Some(arr) = value
-        .get("items")
-        .and_then(|v| v.get("data"))
-        .and_then(|v| v.as_array())
-    {
-        return arr.clone();
-    }
-    if let Some(arr) = value.get("items").and_then(|v| v.as_array()) {
-        return arr.clone();
-    }
-    if let Some(arr) = value.get("data").and_then(|v| v.as_array()) {
-        return arr.clone();
-    }
-    Vec::new()
-}
-
-fn parse_json_i64(value: &Value) -> Option<i64> {
-    if let Some(v) = value.as_i64() {
-        return Some(v);
-    }
-    if let Some(v) = value.as_u64().and_then(|n| i64::try_from(n).ok()) {
-        return Some(v);
-    }
-    value
-        .as_str()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .and_then(|s| s.parse::<i64>().ok())
-}
-
-fn first_i64_field(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<i64> {
-    for key in keys {
-        if let Some(v) = obj.get(*key).and_then(parse_json_i64) {
-            return Some(v);
-        }
-    }
-    None
-}
-
-fn parse_uuid_v7_millis(id: &str) -> Option<i64> {
-    let trimmed = id.trim();
-    let bytes = trimmed.as_bytes();
-    if bytes.len() < 18 || bytes[8] != b'-' || bytes[13] != b'-' {
-        return None;
-    }
-    let version = bytes[14].to_ascii_lowercase();
-    if version != b'7' {
-        return None;
-    }
-    let high = &trimmed[0..8];
-    let mid = &trimmed[9..13];
-    let millis_hex = format!("{high}{mid}");
-    u64::from_str_radix(&millis_hex, 16)
-        .ok()
-        .and_then(|v| i64::try_from(v).ok())
-}
-
-fn normalize_thread_item_shape(item: &mut Value) {
-    let Some(obj) = item.as_object_mut() else {
-        return;
-    };
-
-    if !obj.contains_key("id") {
-        if let Some(id) = obj
-            .get("thread_id")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
-            obj.insert("id".to_string(), Value::String(id.to_string()));
-        }
-    }
-
-    let mut created_at = first_i64_field(obj, &["createdAt", "created_at"]).unwrap_or(0);
-    if created_at <= 0 {
-        if let Some(path) = obj.get("path").and_then(|v| v.as_str()) {
-            let fs_created = file_updated_unix_secs(Path::new(path));
-            if fs_created > 0 {
-                created_at = fs_created;
-            }
-        }
-    }
-    if created_at > 0 {
-        obj.insert("createdAt".to_string(), Value::from(created_at));
-    }
-
-    let mut updated_at = first_i64_field(obj, &["updatedAt", "updated_at"]).unwrap_or(0);
-    if updated_at <= 0 {
-        if let Some(path) = obj.get("path").and_then(|v| v.as_str()) {
-            let fs_updated = file_updated_unix_secs(Path::new(path));
-            if fs_updated > 0 {
-                updated_at = fs_updated;
-            }
-        }
-    }
-    if updated_at <= 0 {
-        if let Some(id) = obj.get("id").and_then(|v| v.as_str()) {
-            if let Some(from_id_millis) = parse_uuid_v7_millis(id) {
-                updated_at = from_id_millis;
-            }
-        }
-    }
-    if updated_at <= 0 {
-        updated_at = created_at;
-    }
-    if updated_at > 0 {
-        obj.insert("updatedAt".to_string(), Value::from(updated_at));
-    }
-}
-
-fn normalize_thread_items_shape(items: &mut [Value]) {
-    for item in items {
-        normalize_thread_item_shape(item);
-    }
-}
-
-fn merge_items_without_duplicates(mut base: Vec<Value>, extra: Vec<Value>) -> Vec<Value> {
-    fn merge_thread_item(base_item: &mut Value, extra_item: &Value) {
-        let (Some(base_obj), Some(extra_obj)) = (base_item.as_object_mut(), extra_item.as_object()) else {
-            return;
-        };
-
-        let base_preview_empty = base_obj
-            .get("preview")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .map(|v| v.is_empty())
-            .unwrap_or(true);
-        if base_preview_empty {
-            if let Some(preview) = extra_obj.get("preview").and_then(|v| v.as_str()) {
-                if !preview.trim().is_empty() {
-                    base_obj.insert("preview".to_string(), Value::String(preview.to_string()));
-                }
-            }
-        }
-
-        for key in ["path", "source", "workspace", "cwd"] {
-            if !base_obj.contains_key(key) {
-                if let Some(v) = extra_obj.get(key) {
-                    base_obj.insert(key.to_string(), v.clone());
-                }
-            }
-        }
-
-        for key in ["isSubagent", "isAuxiliary"] {
-            let base_true = base_obj.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
-            let extra_true = extra_obj.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
-            if !base_true && extra_true {
-                base_obj.insert(key.to_string(), Value::Bool(true));
-            }
-        }
-
-        let base_updated = base_obj.get("updatedAt").and_then(|v| v.as_i64()).unwrap_or(0);
-        let extra_updated = extra_obj.get("updatedAt").and_then(|v| v.as_i64()).unwrap_or(0);
-        if extra_updated > base_updated {
-            base_obj.insert("updatedAt".to_string(), Value::from(extra_updated));
-        }
-
-        let base_created = base_obj.get("createdAt").and_then(|v| v.as_i64()).unwrap_or(0);
-        let extra_created = extra_obj.get("createdAt").and_then(|v| v.as_i64()).unwrap_or(0);
-        if base_created == 0 && extra_created > 0 {
-            base_obj.insert("createdAt".to_string(), Value::from(extra_created));
-        }
-    }
-
-    let mut seen = std::collections::HashSet::new();
-    let mut index_by_id = std::collections::HashMap::<String, usize>::new();
-    for item in &base {
-        if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-            seen.insert(id.to_string());
-        }
-    }
-    for (idx, item) in base.iter().enumerate() {
-        if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-            index_by_id.insert(id.to_string(), idx);
-        }
-    }
-    for item in extra {
-        let Some(id) = item
-            .get("id")
-            .and_then(|v| v.as_str())
-            .map(|v| v.to_string())
-        else {
-            continue;
-        };
-        if seen.insert(id.clone()) {
-            index_by_id.insert(id, base.len());
-            base.push(item);
-            continue;
-        }
-        if let Some(existing_idx) = index_by_id.get(&id).copied() {
-            if let Some(existing) = base.get_mut(existing_idx) {
-                merge_thread_item(existing, &item);
-            }
-        }
-    }
-    base
-}
-
-fn sort_threads_by_updated_desc(items: &mut [Value]) {
-    fn score(item: &Value) -> i64 {
-        item.get("updatedAt")
-            .and_then(|v| v.as_i64())
-            .or_else(|| item.get("createdAt").and_then(|v| v.as_i64()))
-            .unwrap_or(0)
-    }
-    items.sort_by_key(score);
-    items.reverse();
-}
-
-const THREADS_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
-
-fn thread_updated_unix_secs(item: &Value) -> i64 {
-    let raw = item
-        .get("updatedAt")
-        .and_then(|v| v.as_i64())
-        .or_else(|| item.get("createdAt").and_then(|v| v.as_i64()))
-        .unwrap_or(0);
-    if raw <= 0 {
-        return 0;
-    }
-    if raw > 1_000_000_000_000 {
-        raw / 1000
-    } else {
-        raw
-    }
-}
-
-fn filter_threads_within_last_month(items: &mut Vec<Value>) {
-    let now_unix_secs = current_unix_secs();
-    items.retain(|item| {
-        let updated = thread_updated_unix_secs(item);
-        if updated <= 0 {
-            return true;
-        }
-        now_unix_secs.saturating_sub(updated) <= THREADS_MAX_AGE_SECS
-    });
-}
-
-fn filter_auxiliary_threads(items: &mut Vec<Value>) {
-    items.retain(|item| {
-        let is_subagent = item
-            .get("isSubagent")
-            .and_then(|x| x.as_bool())
-            .unwrap_or(false);
-        if is_subagent {
-            return false;
-        }
-        let is_auxiliary = item
-            .get("isAuxiliary")
-            .and_then(|x| x.as_bool())
-            .unwrap_or(false);
-        if is_auxiliary {
-            return false;
-        }
-        true
-    });
-}
-
-fn thread_is_windows(thread: &Value) -> bool {
-    !thread_is_wsl2(thread)
 }
 
 fn default_windows_codex_dir() -> Option<PathBuf> {
@@ -1918,228 +1310,6 @@ fn should_try_known_wsl_rollout_path(
         .unwrap_or(false)
 }
 
-fn file_updated_unix_secs(path: &Path) -> i64 {
-    let modified = match std::fs::metadata(path).and_then(|m| m.modified()) {
-        Ok(v) => v,
-        Err(_) => return 0,
-    };
-    match modified.duration_since(std::time::UNIX_EPOCH) {
-        Ok(v) => v.as_secs() as i64,
-        Err(_) => 0,
-    }
-}
-
-const THREAD_LIST_LIMIT: i64 = 400;
-const THREAD_LIST_MAX_PAGES: usize = 10;
-const THREAD_LIST_CACHE_WINDOWS_SECS: i64 = 8;
-const THREAD_LIST_CACHE_WSL2_SECS: i64 = 30;
-const THREAD_LIST_MAX_ITEMS: usize = 600;
-
-#[derive(Clone)]
-struct ThreadListCacheEntry {
-    items: Vec<Value>,
-    updated_at_unix_secs: i64,
-}
-
-fn thread_list_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, ThreadListCacheEntry>> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, ThreadListCacheEntry>>> =
-        std::sync::OnceLock::new();
-    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-}
-
-fn lock_thread_list_cache(
-) -> std::sync::MutexGuard<'static, std::collections::HashMap<String, ThreadListCacheEntry>> {
-    match thread_list_cache().lock() {
-        Ok(v) => v,
-        Err(err) => err.into_inner(),
-    }
-}
-
-fn thread_list_cache_key(workspace: Option<&str>) -> String {
-    let raw = workspace
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .unwrap_or("__all__")
-        .to_ascii_lowercase();
-    if raw.is_empty() { "__all__".to_string() } else { raw }
-}
-
-fn thread_list_cache_ttl_secs(cache_key: &str) -> i64 {
-    if cache_key == "wsl2" {
-        THREAD_LIST_CACHE_WSL2_SECS
-    } else {
-        THREAD_LIST_CACHE_WINDOWS_SECS
-    }
-}
-
-fn read_thread_list_cache(cache_key: &str, force: bool) -> Option<Vec<Value>> {
-    if force {
-        return None;
-    }
-    let now = current_unix_secs();
-    let cache = lock_thread_list_cache();
-    let entry = cache.get(cache_key)?;
-    if now.saturating_sub(entry.updated_at_unix_secs) > thread_list_cache_ttl_secs(cache_key) {
-        return None;
-    }
-    Some(entry.items.clone())
-}
-
-fn write_thread_list_cache(cache_key: &str, items: &[Value]) {
-    let mut cache = lock_thread_list_cache();
-    cache.insert(
-        cache_key.to_string(),
-        ThreadListCacheEntry {
-            items: items.to_vec(),
-            updated_at_unix_secs: current_unix_secs(),
-        },
-    );
-}
-
-fn invalidate_thread_list_cache_all() {
-    let mut cache = lock_thread_list_cache();
-    cache.clear();
-}
-
-fn extract_next_cursor(value: &Value) -> Option<Value> {
-    let candidates = [
-        value.get("items").and_then(|v| v.get("nextCursor")),
-        value.get("items").and_then(|v| v.get("next_cursor")),
-        value.get("nextCursor"),
-        value.get("next_cursor"),
-    ];
-    for candidate in candidates.into_iter().flatten() {
-        if candidate.is_null() {
-            continue;
-        }
-        if let Some(text) = candidate.as_str() {
-            if text.trim().is_empty() {
-                continue;
-            }
-        }
-        return Some(candidate.clone());
-    }
-    None
-}
-
-fn thread_item_is_subagent(item: &Value) -> bool {
-    let Some(obj) = item.as_object() else {
-        return false;
-    };
-    if let Some(source) = obj.get("source") {
-        if let Some(source_obj) = source.as_object() {
-            // Legacy & current shapes may include a nested subagent record.
-            if source_obj.get("subagent").is_some() || source_obj.get("subAgent").is_some() {
-                return true;
-            }
-            // Current app-server tagged union: { subAgent: ... } (clawdex).
-            if source_obj.contains_key("subAgent") {
-                return true;
-            }
-        }
-    }
-    // Some session/meta shapes attach agent role/nickname at top-level.
-    let has_agent_role = obj
-        .get("agent_role")
-        .and_then(|v| v.as_str())
-        .is_some_and(|v| !v.trim().is_empty());
-    let has_agent_nickname = obj
-        .get("agent_nickname")
-        .and_then(|v| v.as_str())
-        .is_some_and(|v| !v.trim().is_empty());
-    has_agent_role || has_agent_nickname
-}
-
-fn annotate_thread_item_flags(item: &mut Value) {
-    let is_subagent = thread_item_is_subagent(item);
-    let Some(obj) = item.as_object_mut() else {
-        return;
-    };
-    if !obj.contains_key("isSubagent") {
-        obj.insert("isSubagent".to_string(), Value::Bool(is_subagent));
-    }
-}
-
-#[cfg(test)]
-async fn rebuild_workspace_thread_items(target: WorkspaceTarget) -> Vec<Value> {
-    rebuild_workspace_thread_items_with_stats(target).await.items
-}
-
-struct ThreadListBuildResult {
-    items: Vec<Value>,
-    pages_scanned: usize,
-    rebuild_ms: i64,
-}
-
-async fn rebuild_workspace_thread_items_with_stats(target: WorkspaceTarget) -> ThreadListBuildResult {
-    let started = std::time::Instant::now();
-    let mut pages_scanned = 0usize;
-    let mut items: Vec<Value> = Vec::new();
-    let mut cursor = Value::Null;
-    let cutoff_unix_secs = current_unix_secs().saturating_sub(THREADS_MAX_AGE_SECS);
-    for _ in 0..THREAD_LIST_MAX_PAGES {
-        pages_scanned = pages_scanned.saturating_add(1);
-        let params = json!({
-            "cursor": cursor.clone(),
-            "limit": THREAD_LIST_LIMIT,
-            "sortKey": null,
-            // IMPORTANT: pass [] (not null). In our app-server runtime, null can behave like
-            // provider-scoped filtering and hide `api_router` threads from the sidebar list.
-            // [] means "no provider filter" and keeps the canonical `thread/list` result complete.
-            "modelProviders": [],
-            "sourceKinds": Value::Null,
-            "archived": false,
-            "cwd": null,
-        });
-        let page = match codex_rpc_call_for_workspace(target, "thread/list", params).await {
-            Ok(v) => v,
-            Err(_) => break,
-        };
-        let mut page_items = extract_items_array(&page);
-        if page_items.is_empty() {
-            break;
-        }
-        normalize_thread_items_shape(&mut page_items);
-        let page_has_recent = page_items.iter().any(|item| {
-            let ts = thread_updated_unix_secs(item);
-            ts <= 0 || ts >= cutoff_unix_secs
-        });
-        items = merge_items_without_duplicates(items, page_items);
-        if items.len() >= THREAD_LIST_MAX_ITEMS {
-            break;
-        }
-        if !page_has_recent {
-            break;
-        }
-        let Some(next_cursor) = extract_next_cursor(&page) else {
-            break;
-        };
-        cursor = next_cursor;
-    }
-
-    match target {
-        WorkspaceTarget::Windows => items.retain(thread_is_windows),
-        WorkspaceTarget::Wsl2 => items.retain(thread_is_wsl2),
-    }
-
-    normalize_thread_items_shape(&mut items);
-    for item in &mut items {
-        annotate_thread_item_flags(item);
-    }
-    filter_auxiliary_threads(&mut items);
-    filter_threads_within_last_month(&mut items);
-    sort_threads_by_updated_desc(&mut items);
-    if items.len() > THREAD_LIST_MAX_ITEMS {
-        items.truncate(THREAD_LIST_MAX_ITEMS);
-    }
-    let rebuild_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-    ThreadListBuildResult {
-        items,
-        pages_scanned,
-        rebuild_ms,
-    }
-}
-
 fn build_threads_response_with_meta(items: Vec<Value>, meta: Value) -> Response {
     Json(json!({
         "items": {
@@ -2214,186 +1384,6 @@ mod split_stream_chunks_tests {
     }
 }
 
-#[cfg(test)]
-mod codex_thread_list_tests {
-    use super::*;
-    use crate::codex_app_server;
-    use serde_json::json;
-    use std::sync::{Arc, Mutex, OnceLock};
-
-    static TEST_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
-    fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .expect("lock tests")
-    }
-
-    #[tokio::test]
-    async fn thread_list_uses_app_server_and_filters_subagent_sources() {
-        let _guard = lock_tests();
-        invalidate_thread_list_cache_all();
-        let calls: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
-        let calls2 = calls.clone();
-        codex_app_server::_set_test_request_handler(Some(Arc::new(move |_home, method, params| {
-            calls2
-                .lock()
-                .expect("calls lock")
-                .push((method.to_string(), params.clone()));
-            if method == "thread/list" {
-                let now = current_unix_secs();
-                return Ok(json!({
-                    "items": {
-                        "data": [
-                            { "id": "t_cli", "cwd": "C:\\\\repo", "updatedAt": now, "source": "cli" },
-                            { "id": "t_sub", "cwd": "C:\\\\repo", "updatedAt": now + 1, "source": { "subAgent": "review" } }
-                        ]
-                    }
-                }));
-            }
-            Ok(json!({}))
-        })))
-        .await;
-
-        let items = rebuild_workspace_thread_items(WorkspaceTarget::Windows).await;
-        assert_eq!(items.len(), 1, "expected subagent thread to be filtered out");
-        assert_eq!(
-            items[0].get("id").and_then(|v| v.as_str()),
-            Some("t_cli")
-        );
-
-        let recorded = calls.lock().expect("calls lock").clone();
-        let call = recorded
-            .iter()
-            .find(|(m, _)| m == "thread/list")
-            .expect("expected thread/list call");
-        let source_kinds = call
-            .1
-            .get("sourceKinds");
-        assert!(
-            source_kinds.is_some_and(|v| v.is_null()),
-            "expected sourceKinds=null, got: {source_kinds:?}"
-        );
-        let model_providers = call.1.get("modelProviders");
-        assert!(
-            model_providers.is_some_and(|v| v.as_array().is_some_and(|arr| arr.is_empty())),
-            "expected modelProviders=[], got: {model_providers:?}"
-        );
-
-        codex_app_server::_set_test_request_handler(None).await;
-        invalidate_thread_list_cache_all();
-    }
-
-    #[tokio::test]
-    async fn thread_list_wsl2_includes_source_workspace_items() {
-        let _guard = lock_tests();
-        invalidate_thread_list_cache_all();
-        codex_app_server::_set_test_request_handler(Some(Arc::new(move |_home, method, _params| {
-            if method == "thread/list" {
-                let now = current_unix_secs();
-                return Ok(json!({
-                    "items": {
-                        "data": [
-                            {
-                                "id": "t_wsl_source_workspace",
-                                "updatedAt": now,
-                                "source": { "workspace": "wsl2" }
-                            },
-                            {
-                                "id": "t_wsl_source_cwd",
-                                "updatedAt": now + 1,
-                                "source": { "cwd": "/home/yiyou/repo" }
-                            },
-                            {
-                                "id": "t_windows",
-                                "updatedAt": now + 2,
-                                "cwd": "C:\\\\repo"
-                            }
-                        ]
-                    }
-                }));
-            }
-            Ok(json!({}))
-        })))
-        .await;
-
-        let items = rebuild_workspace_thread_items(WorkspaceTarget::Wsl2).await;
-        let ids: std::collections::HashSet<String> = items
-            .iter()
-            .filter_map(|item| item.get("id").and_then(|v| v.as_str()).map(|v| v.to_string()))
-            .collect();
-
-        assert!(ids.contains("t_wsl_source_workspace"));
-        assert!(ids.contains("t_wsl_source_cwd"));
-        assert!(!ids.contains("t_windows"));
-
-        codex_app_server::_set_test_request_handler(None).await;
-        invalidate_thread_list_cache_all();
-    }
-
-    #[tokio::test]
-    async fn thread_list_uses_workspace_specific_codex_home() {
-        let _guard = lock_tests();
-        invalidate_thread_list_cache_all();
-        if cfg!(target_os = "windows") {
-            let mut cache = lock_wsl_identity_cache();
-            *cache = Some(WslIdentityCache {
-                distro: "Ubuntu".to_string(),
-                home: "/home/test".to_string(),
-                updated_at_unix_secs: current_unix_secs(),
-            });
-        }
-
-        let homes: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
-        let homes2 = homes.clone();
-        codex_app_server::_set_test_request_handler(Some(Arc::new(move |home, method, _params| {
-            if method == "thread/list" {
-                homes2
-                    .lock()
-                    .expect("homes lock")
-                    .push(home.map(|v| v.to_string()));
-                let now = current_unix_secs();
-                return Ok(json!({
-                    "items": {
-                        "data": [
-                            { "id": "t", "updatedAt": now, "cwd": "C:\\\\repo" }
-                        ]
-                    }
-                }));
-            }
-            Ok(json!({}))
-        })))
-        .await;
-
-        let _ = rebuild_workspace_thread_items(WorkspaceTarget::Windows).await;
-        let _ = rebuild_workspace_thread_items(WorkspaceTarget::Wsl2).await;
-
-        let recorded = homes.lock().expect("homes lock").clone();
-        assert!(
-            recorded.len() >= 2,
-            "expected thread/list calls for both workspaces, got {}",
-            recorded.len()
-        );
-        if cfg!(target_os = "windows") {
-            let windows_home = recorded.first().and_then(|x| x.as_deref()).unwrap_or_default();
-            let wsl_home = recorded.get(1).and_then(|x| x.as_deref()).unwrap_or_default();
-            assert!(
-                windows_home.to_ascii_lowercase().contains(".codex"),
-                "expected windows home to point at .codex, got {windows_home}"
-            );
-            assert!(
-                wsl_home
-                    .to_ascii_lowercase()
-                    .contains(r"\\wsl.localhost\ubuntu\home\test\.codex"),
-                "expected wsl home UNC path, got {wsl_home}"
-            );
-        }
-
-        codex_app_server::_set_test_request_handler(None).await;
-        invalidate_thread_list_cache_all();
-    }
-}
-
 async fn codex_threads_list(
     State(st): State<GatewayState>,
     headers: HeaderMap,
@@ -2409,50 +1399,19 @@ async fn codex_threads_list(
     } else {
         requested_workspace.trim().to_ascii_lowercase()
     };
-    let cache_key = thread_list_cache_key(Some(&requested_workspace));
     let force = query.force.unwrap_or(false);
-    if let Some(items) = read_thread_list_cache(&cache_key, force) {
-        let total_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-        return build_threads_response_with_meta(
-            items,
-            json!({
-                "workspace": workspace_meta,
-                "cacheHit": true,
-                "pagesScanned": 0,
-                "rebuildMs": 0,
-                "totalMs": total_ms
-            }),
-        );
-    }
     let target = parse_workspace_target(&requested_workspace);
-    let (items, pages_scanned, rebuild_ms) = match target {
-        Some(target) => {
-            let built = rebuild_workspace_thread_items_with_stats(target).await;
-            (built.items, built.pages_scanned, built.rebuild_ms)
-        }
-        None => {
-            let (win, wsl2) = tokio::join!(
-                rebuild_workspace_thread_items_with_stats(WorkspaceTarget::Windows),
-                rebuild_workspace_thread_items_with_stats(WorkspaceTarget::Wsl2)
-            );
-            let mut merged = merge_items_without_duplicates(win.items, wsl2.items);
-            sort_threads_by_updated_desc(&mut merged);
-            (
-                merged,
-                win.pages_scanned.saturating_add(wsl2.pages_scanned),
-                win.rebuild_ms.max(wsl2.rebuild_ms),
-            )
-        }
-    };
-    write_thread_list_cache(&cache_key, &items);
+    let snapshot =
+        crate::orchestrator::gateway::web_codex_threads::list_threads_snapshot(target, force)
+            .await;
     let total_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
     build_threads_response_with_meta(
-        items,
+        snapshot.items,
         json!({
             "workspace": workspace_meta,
-            "cacheHit": false,
-            "pagesScanned": pages_scanned,
-            "rebuildMs": rebuild_ms,
+            "cacheHit": snapshot.cache_hit,
+            "source": "session-index",
+            "rebuildMs": snapshot.rebuild_ms,
             "totalMs": total_ms
         }),
     )
@@ -2479,7 +1438,7 @@ async fn codex_threads_create(
     let params = json!({ "workspace": req.workspace, "title": req.title, "cwd": req.cwd });
     match codex_rpc_call("thread/new", params).await {
         Ok(v) => {
-            invalidate_thread_list_cache_all();
+            crate::orchestrator::gateway::web_codex_threads::invalidate_thread_list_cache_all();
             Json(v).into_response()
         }
         Err(resp) => resp,
@@ -2501,7 +1460,7 @@ async fn codex_thread_history(
         "threadId": id,
         "includeTurns": true,
     });
-    let home = web_codex_rpc_home_override();
+    let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
     match crate::codex_app_server::request_in_home(home.as_deref(), "thread/read", params).await {
         Ok(v) => {
             let thread = v.get("thread").cloned().unwrap_or(v);
@@ -2575,7 +1534,7 @@ async fn codex_thread_resume(
     }
 
     let params = json!({ "threadId": id });
-    let home = web_codex_rpc_home_override();
+    let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
     match crate::codex_app_server::request_in_home(home.as_deref(), "thread/resume", params.clone()).await {
         Ok(v) => {
             Json(v).into_response()
@@ -2800,7 +1759,7 @@ async fn codex_turn_stream(
         "collaborationMode": req.collaboration_mode.unwrap_or_else(|| "default".to_string()),
     });
     let started = sse_event("started", &json!({ "ok": true }));
-    let home = web_codex_rpc_home_override();
+    let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
     let call = crate::codex_app_server::request_in_home(home.as_deref(), "turn/start", params).await;
     let stream = async_stream::stream! {
         yield Ok::<Bytes, std::convert::Infallible>(started);
@@ -3349,12 +2308,9 @@ async fn codex_rpc_proxy(
 #[cfg(test)]
 mod web_codex_tests {
     use super::{
-        linux_path_join, linux_path_parent, normalize_wsl_linux_path,
         parse_slash_command, resume_import_order, should_try_known_wsl_rollout_path,
-        split_stream_chunks, thread_is_wsl2, truncate_output, WorkspaceTarget,
-        MAX_TERMINAL_OUTPUT_BYTES,
+        split_stream_chunks, truncate_output, WorkspaceTarget, MAX_TERMINAL_OUTPUT_BYTES,
     };
-    use serde_json::json;
 
     #[test]
     fn parse_plan_variants() {
@@ -3423,72 +2379,4 @@ mod web_codex_tests {
         assert!(!should_try_known_wsl_rollout_path(None, Some("C:\\\\tmp\\\\a.jsonl")));
     }
 
-    #[test]
-    fn wsl_path_helpers_normalize_and_join() {
-        assert_eq!(
-            normalize_wsl_linux_path(r"\home\user\repo").as_deref(),
-            Some("/home/user/repo")
-        );
-        assert_eq!(
-            normalize_wsl_linux_path("/home/user/repo///").as_deref(),
-            Some("/home/user/repo")
-        );
-        assert_eq!(linux_path_parent("/home/user/repo").as_deref(), Some("/home/user"));
-        assert_eq!(linux_path_parent("/home").as_deref(), Some("/"));
-        assert_eq!(linux_path_parent("/").as_deref(), None);
-        assert_eq!(linux_path_join("/home/user", "repo"), "/home/user/repo");
-        assert_eq!(linux_path_join("/", "tmp"), "/tmp");
-    }
-
-    #[test]
-    fn thread_is_wsl2_accepts_workspace_only_items() {
-        let only_workspace = json!({
-            "id": "t1",
-            "workspace": "wsl2"
-        });
-        assert!(
-            thread_is_wsl2(&only_workspace),
-            "workspace=wsl2 should be classified as WSL2 even when cwd is missing"
-        );
-    }
-
-    #[test]
-    fn thread_is_wsl2_rejects_explicit_windows_workspace() {
-        let windows_workspace = json!({
-            "id": "t2",
-            "workspace": "windows"
-        });
-        assert!(
-            !thread_is_wsl2(&windows_workspace),
-            "workspace=windows should stay in Windows list"
-        );
-    }
-
-    #[test]
-    fn thread_is_wsl2_accepts_source_workspace() {
-        let source_workspace = json!({
-            "id": "t3",
-            "source": {
-                "workspace": "wsl2"
-            }
-        });
-        assert!(
-            thread_is_wsl2(&source_workspace),
-            "source.workspace=wsl2 should be classified as WSL2"
-        );
-    }
-
-    #[test]
-    fn thread_is_wsl2_accepts_source_cwd() {
-        let source_cwd = json!({
-            "id": "t4",
-            "source": {
-                "cwd": "/home/yiyou/repo"
-            }
-        });
-        assert!(
-            thread_is_wsl2(&source_cwd),
-            "source.cwd with linux path should be classified as WSL2"
-        );
-    }
 }

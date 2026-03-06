@@ -20,6 +20,8 @@
     "ui:check": "node scripts/run-ui-tauri-if-windows.mjs",
     "ui:e2e:codex-threadlist-scroll": "node scripts/codex-web-e2e-threadlist-scroll.mjs",
     "ui:e2e:codex-threadlist-enter": "node scripts/codex-web-e2e-threadlist-enter.mjs",
+    "ui:e2e:codex-threadlist-enter-race": "node scripts/codex-web-e2e-threadlist-enter-race.mjs",
+    "ui:e2e:codex-threadlist-open-guard": "node scripts/codex-web-e2e-threadlist-open-guard.mjs",
     "ui:e2e:codex-history-render": "node scripts/codex-web-e2e-history-render.mjs",
     "e2e:build-root-exe-restart": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-root-exe.e2e.ps1",
     "backend:check": "node scripts/run-with-win-sdk.mjs cargo test --manifest-path src-tauri/Cargo.toml --locked",

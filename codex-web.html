@@ -605,6 +605,11 @@
       animation-delay: var(--thread-group-enter-delay, 0ms);
       will-change: opacity, transform;
     }
+    body.drawer-left-opening .groupCard.groupEnter,
+    body.drawer-left-opening .groupHeader.threadHeaderEnter,
+    body.drawer-left-opening .itemCard.threadEnter {
+      animation-play-state: paused;
+    }
     @keyframes thread-card-enter {
       from { opacity: 0; transform: translate3d(0, 18px, 0); }
       to { opacity: 1; transform: translate3d(0, 0, 0); }

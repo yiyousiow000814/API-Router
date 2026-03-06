@@ -32,6 +32,20 @@ const state = {
   threadListAnimateThreadIds: new Set(),
   threadListExpandAnimateGroupKeys: new Set(),
   threadListPendingSidebarOpenAnimation: false,
+  threadListPendingVisibleAnimationByWorkspace: {
+    windows: false,
+    wsl2: false,
+  },
+  threadListVisibleOpenAnimationUntil: 0,
+  threadListVisibleAnimationTimer: 0,
+  threadListAnimationHoldUntilByWorkspace: {
+    windows: 0,
+    wsl2: 0,
+  },
+  threadListDeferredRenderTimerByWorkspace: {
+    windows: 0,
+    wsl2: 0,
+  },
   threadListSkipScrollRestoreOnce: false,
   threadListPreferLoadingPlaceholder: false,
   drawerOpenPhaseTimer: 0,
@@ -146,6 +160,33 @@ const state = {
   historyAllMessages: [],
 };
 
+const threadAnimDebug = {
+  enabled: false,
+  events: [],
+  seq: 0,
+};
+
+function isThreadAnimDebugEnabled() {
+  return !!threadAnimDebug.enabled;
+}
+
+function pushThreadAnimDebug(type, detail = {}) {
+  if (!threadAnimDebug.enabled) return;
+  const entry = {
+    seq: ++threadAnimDebug.seq,
+    ts: Math.round(performance.now()),
+    type: String(type || ""),
+    workspace: normalizeWorkspaceTarget(state.workspaceTarget || "windows"),
+    drawerOpen: document.body.classList.contains("drawer-left-open"),
+    drawerOpening: document.body.classList.contains("drawer-left-opening"),
+    threadListLoading: !!state.threadListLoading,
+    threadItemsCount: Array.isArray(state.threadItems) ? state.threadItems.length : 0,
+    ...detail,
+  };
+  threadAnimDebug.events.push(entry);
+  if (threadAnimDebug.events.length > 400) threadAnimDebug.events.splice(0, threadAnimDebug.events.length - 400);
+}
+
 function armSyntheticClickSuppression(ms = 380) {
   state.suppressSyntheticClickUntil = Date.now() + Math.max(0, Number(ms) || 0);
 }
@@ -204,6 +245,8 @@ const WORKSPACE_TARGET_KEY = "web_codex_workspace_target_v1";
 const START_CWD_BY_WORKSPACE_KEY = "web_codex_start_cwd_by_workspace_v1";
 const FAVORITE_THREADS_KEY = "web_codex_favorite_threads_v1";
 const SELECTED_MODEL_KEY = "web_codex_selected_model_v1";
+const MODELS_CACHE_KEY = "web_codex_models_cache_v1";
+const THREADS_CACHE_KEY = "web_codex_threads_cache_v1";
 const REASONING_EFFORT_KEY = "web_codex_reasoning_effort_v1";
 const LAST_EVENT_ID_KEY = "web_codex_last_event_id_v1";
 // Marker keys: older builds wrote model/effort into localStorage automatically (not user intent).
@@ -257,6 +300,37 @@ function bindClick(id, handler) {
   const el = byId(id);
   if (!el) return;
   el.onclick = handler;
+}
+
+function bindResponsiveClick(id, handler, options = {}) {
+  const el = byId(id);
+  if (!el) return;
+  const suppressMs = Math.max(0, Number(options.suppressMs || 320));
+  const run = (event) => {
+    try {
+      handler(event);
+    } catch (error) {
+      setStatus(error?.message || String(error || "Action failed"), true);
+    }
+  };
+  el.addEventListener("pointerdown", (event) => {
+    try {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+    } catch {}
+    el.__responsiveClickSuppressUntil = Date.now() + suppressMs;
+    run(event);
+  }, { passive: false });
+  el.addEventListener("click", (event) => {
+    if (Date.now() <= Number(el.__responsiveClickSuppressUntil || 0)) {
+      try {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+      } catch {}
+      return;
+    }
+    run(event);
+  });
 }
 
 function bindInput(id, eventName, handler) {
@@ -1096,6 +1170,7 @@ async function refreshModels() {
       if (normalized) mapped.push(normalized);
     }
     state.modelOptions = mapped;
+    persistModelsCache();
     syncHeaderModelPicker();
   } finally {
     const elapsed = performance.now() - Number(state.modelOptionsLoadingStartedAt || 0);
@@ -1385,6 +1460,69 @@ function shouldRenderThreadForCurrentTarget(thread) {
   return target === getWorkspaceTarget();
 }
 
+function isThreadListActuallyVisible() {
+  const list = byId("threadList");
+  if (!list) return false;
+  if (!list.isConnected) return false;
+  const isActuallyOnscreen = (node) => {
+    if (!node) return false;
+    const styles = window.getComputedStyle(node);
+    if (styles.display === "none" || styles.visibility === "hidden") return false;
+    const rect = node.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    const viewportWidth = Math.max(window.innerWidth || 0, document.documentElement?.clientWidth || 0);
+    const viewportHeight = Math.max(window.innerHeight || 0, document.documentElement?.clientHeight || 0);
+    return rect.right > 0 && rect.bottom > 0 && rect.left < viewportWidth && rect.top < viewportHeight;
+  };
+  if (!isActuallyOnscreen(list)) return false;
+  const panel = list.closest(".leftPanel");
+  if (panel && !isActuallyOnscreen(panel)) return false;
+  return true;
+}
+
+function scheduleThreadListVisibleAnimationRender(delayMs = 0) {
+  if (state.threadListVisibleAnimationTimer) {
+    clearTimeout(state.threadListVisibleAnimationTimer);
+    state.threadListVisibleAnimationTimer = 0;
+  }
+  const waitMs = Math.max(0, Number(delayMs || 0));
+  state.threadListVisibleAnimationTimer = setTimeout(() => {
+    state.threadListVisibleAnimationTimer = 0;
+    if (!Array.isArray(state.threadItems) || !state.threadItems.length) return;
+    if (!isThreadListActuallyVisible()) return;
+    state.threadListAnimateNextRender = true;
+    state.threadListAnimateThreadIds = new Set();
+    state.threadListExpandAnimateGroupKeys = new Set();
+    state.threadListSkipScrollRestoreOnce = true;
+    renderThreads(state.threadItems);
+  }, waitMs);
+}
+
+function scheduleThreadListDeferredRender(workspaceTarget, delayMs = 0) {
+  const target = normalizeWorkspaceTarget(workspaceTarget);
+  const existingTimer = Number(state.threadListDeferredRenderTimerByWorkspace?.[target] || 0);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    state.threadListDeferredRenderTimerByWorkspace[target] = 0;
+  }
+  const waitMs = Math.max(0, Number(delayMs || 0));
+  state.threadListDeferredRenderTimerByWorkspace[target] = setTimeout(() => {
+    state.threadListDeferredRenderTimerByWorkspace[target] = 0;
+    if (getWorkspaceTarget() !== target) return;
+    const latest = Array.isArray(state.threadItemsByWorkspace[target]) ? state.threadItemsByWorkspace[target] : [];
+    state.threadItemsAll = latest;
+    syncActiveThreadMetaFromList();
+    state.threadListAnimateNextRender = false;
+    state.threadListAnimateThreadIds = new Set();
+    applyThreadFilter();
+    updateHeaderUi();
+    pushThreadAnimDebug("threadListDeferredRender:flush", {
+      target,
+      count: latest.length,
+    });
+  }, waitMs);
+}
+
 function applyThreadFilter() {
   state.threadItems = sortThreadsByNewest(state.threadItemsAll.filter(shouldRenderThreadForCurrentTarget));
   renderThreads(state.threadItems);
@@ -1432,14 +1570,25 @@ async function setWorkspaceTarget(nextTarget) {
     ? state.threadItemsByWorkspace[target]
     : [];
   const hasHydrated = !!state.threadWorkspaceHydratedByWorkspace[target];
+  pushThreadAnimDebug("setWorkspaceTarget", {
+    target,
+    previousTarget,
+    hasHydrated,
+    cachedCount: cached.length,
+    listActuallyVisible: isThreadListActuallyVisible(),
+  });
   if (hasHydrated) {
     state.threadItemsAll = cached;
+    state.threadListRenderSigByWorkspace[target] = buildThreadRenderSig(cached);
     syncActiveThreadMetaFromList();
     state.threadListLoading = false;
     state.threadListLoadingTarget = "";
     state.threadListPreferLoadingPlaceholder = false;
-    // Workspace switch should feel explicit: animate cached rows once on entry.
-    state.threadListAnimateNextRender = cached.length > 0;
+    // Workspace switch should feel explicit, but only consume the enter animation once the
+    // thread list is actually visible. Otherwise F5 + immediate switch/open can render offscreen
+    // and lose the animation before the user sees it.
+    state.threadListPendingVisibleAnimationByWorkspace[target] = cached.length > 0;
+    state.threadListAnimateNextRender = cached.length > 0 && isThreadListActuallyVisible();
     state.threadListAnimateThreadIds = new Set();
     applyThreadFilter();
     updateHeaderUi();
@@ -2747,6 +2896,86 @@ function updateWelcomeSelections() {
   // No-op: welcome settings chips were intentionally reduced.
 }
 
+function persistModelsCache() {
+  try {
+    const items = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+    localStorage.setItem(
+      MODELS_CACHE_KEY,
+      JSON.stringify({
+        items,
+        updatedAt: Date.now(),
+      })
+    );
+  } catch {}
+}
+
+function restoreModelsCache() {
+  try {
+    const raw = String(localStorage.getItem(MODELS_CACHE_KEY) || "").trim();
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    const items = ensureArrayItems(parsed?.items).map(normalizeModelOption).filter(Boolean);
+    if (!items.length) return false;
+    state.modelOptions = items;
+    if (!String(state.selectedModel || "").trim()) {
+      state.selectedModel =
+        pickLatestModelId(items) ||
+        items.find((x) => x && x.isDefault)?.id ||
+        items[0]?.id ||
+        "";
+    }
+    const active = items.find((x) => x && x.id === state.selectedModel) || items[0] || null;
+    const supported = Array.isArray(active?.supportedReasoningEfforts) ? active.supportedReasoningEfforts : [];
+    const persisted = String(localStorage.getItem(REASONING_EFFORT_KEY) || "").trim();
+    if (supported.length) {
+      const ok = persisted && supported.some((x) => x && x.effort === persisted);
+      const hasMedium = supported.some((x) => String(x?.effort || "").trim() === "medium");
+      state.selectedReasoningEffort = ok
+        ? persisted
+        : (hasMedium ? "medium" : String(active?.defaultReasoningEffort || supported[0]?.effort || "").trim());
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function persistThreadsCache() {
+  try {
+    localStorage.setItem(
+      THREADS_CACHE_KEY,
+      JSON.stringify({
+        windows: ensureArrayItems(state.threadItemsByWorkspace.windows),
+        wsl2: ensureArrayItems(state.threadItemsByWorkspace.wsl2),
+        updatedAt: Date.now(),
+      })
+    );
+  } catch {}
+}
+
+function restoreThreadsCache(target) {
+  try {
+    const raw = String(localStorage.getItem(THREADS_CACHE_KEY) || "").trim();
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    const windows = ensureArrayItems(parsed?.windows);
+    const wsl2 = ensureArrayItems(parsed?.wsl2);
+    state.threadItemsByWorkspace.windows = windows;
+    state.threadItemsByWorkspace.wsl2 = wsl2;
+    state.threadListRenderSigByWorkspace.windows = buildThreadRenderSig(windows);
+    state.threadListRenderSigByWorkspace.wsl2 = buildThreadRenderSig(wsl2);
+    state.threadWorkspaceHydratedByWorkspace.windows = windows.length > 0;
+    state.threadWorkspaceHydratedByWorkspace.wsl2 = wsl2.length > 0;
+    const next = target === "wsl2" ? wsl2 : windows;
+    if (!next.length) return false;
+    state.threadItemsAll = next.slice();
+    state.threadItems = sortThreadsByNewest(next.slice());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function refreshCodexVersions() {
   const winNode = byId("windowsCodexVersion");
   const wslNode = byId("wslCodexVersion");
@@ -3571,6 +3800,18 @@ function ensureArrayItems(value) {
   return value ? [value] : [];
 }
 
+function buildThreadRenderSig(items) {
+  return sortThreadsByNewest(ensureArrayItems(items).slice())
+    .map((item) => {
+      const id = item?.id || item?.threadId || "";
+      const ts = item?.updatedAt ?? item?.createdAt ?? "";
+      const status = String(item?.status?.type || item?.status || item?.state || "").trim();
+      const preview = String(item?.preview || item?.title || item?.name || "").trim();
+      return `${id}:${ts}:${status}:${preview}`;
+    })
+    .join("|");
+}
+
 function nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(resolve));
 }
@@ -3967,7 +4208,35 @@ function renderThreads(items) {
   const list = byId("threadList");
   if (!list) return;
   const sourceItems = Array.isArray(items) ? items : [];
-  const animateEnter = !!state.threadListAnimateNextRender;
+  const currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());
+  const pendingVisibleAnimation =
+    !!state.threadListPendingVisibleAnimationByWorkspace?.[currentWorkspaceKey];
+  const listActuallyVisible = isThreadListActuallyVisible();
+  const openWindowActive =
+    document.body.classList.contains("drawer-left-open") &&
+    sourceItems.length > 0 &&
+    Date.now() < Math.max(0, Number(state.threadListVisibleOpenAnimationUntil || 0));
+  const animateEnter =
+    !!state.threadListAnimateNextRender ||
+    openWindowActive ||
+    (pendingVisibleAnimation && listActuallyVisible && sourceItems.length > 0);
+  if (openWindowActive && animateEnter) {
+    // The sidebar-open enter animation is a one-shot transition. Once a non-empty render consumes it,
+    // subsequent refresh renders during the same 520ms window must not replay it.
+    state.threadListVisibleOpenAnimationUntil = 0;
+  }
+  if (animateEnter && sourceItems.length > 0 && document.body.classList.contains("drawer-left-open")) {
+    state.threadListAnimationHoldUntilByWorkspace[currentWorkspaceKey] = Date.now() + 420;
+  }
+  pushThreadAnimDebug("renderThreads", {
+    sourceCount: sourceItems.length,
+    pendingVisibleAnimation,
+    listActuallyVisible,
+    animateEnter,
+    animateNextRender: !!state.threadListAnimateNextRender,
+    holdUntilMs: Math.max(0, Number(state.threadListAnimationHoldUntilByWorkspace[currentWorkspaceKey] || 0)) - Date.now(),
+    visibleOpenUntilMs: Math.max(0, Number(state.threadListVisibleOpenAnimationUntil || 0)) - Date.now(),
+  });
   const animateThreadIds =
     state.threadListAnimateThreadIds instanceof Set ? state.threadListAnimateThreadIds : new Set();
   const expandAnimateGroupKeys =
@@ -4043,9 +4312,8 @@ function renderThreads(items) {
   };
   let threadEnterIndex = 0;
   let groupEnterIndex = 0;
-  const openPhaseEnterDelayMs = document.body.classList.contains("drawer-left-opening") ? 110 : 0;
-  const nextThreadEnterDelayMs = () => openPhaseEnterDelayMs + Math.min(420, threadEnterIndex++ * 28);
-  const nextGroupEnterDelayMs = () => openPhaseEnterDelayMs + Math.min(640, groupEnterIndex++ * 120);
+  const nextThreadEnterDelayMs = () => Math.min(420, threadEnterIndex++ * 28);
+  const nextGroupEnterDelayMs = () => Math.min(640, groupEnterIndex++ * 120);
   const animateStateTextSwap = (node, nextLabel) => {
     if (!node) return;
     const text = String(nextLabel || "");
@@ -4440,6 +4708,12 @@ function renderThreads(items) {
   state.threadListAnimateNextRender = false;
   state.threadListAnimateThreadIds = new Set();
   state.threadListExpandAnimateGroupKeys = new Set();
+  if (animateEnter && sourceItems.length > 0 && document.body.classList.contains("drawer-left-open")) {
+    // Consume the "open sidebar with enter animation" intent on the first non-empty onscreen render.
+    // Without this, a later refresh/finalizer render can replay the same group-enter animation a second
+    // time, which shows up as a brief flash/restart after F5 + immediate open/switch.
+    state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = false;
+  }
   if (shouldRestoreListScroll || pendingScrollRestores.length) {
     requestAnimationFrame(() => {
       for (const item of pendingScrollRestores) {
@@ -4728,6 +5002,12 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = 
   const workspace = encodeURIComponent(target);
   const query = force ? `workspace=${workspace}&force=true` : `workspace=${workspace}`;
   const activeBefore = getWorkspaceTarget() === target;
+  pushThreadAnimDebug("refreshThreads:start", {
+    target,
+    force,
+    silent,
+    activeBefore,
+  });
 
   if (activeBefore && !silent) {
     state.threadListLoading = true;
@@ -4774,15 +5054,7 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = 
         __workspaceQueryTarget: target,
       };
     });
-    const nextSig = items
-      .map((item) => {
-        const id = item?.id || item?.threadId || "";
-        const ts = item?.updatedAt ?? item?.createdAt ?? "";
-        const status = String(item?.status?.type || item?.status || item?.state || "").trim();
-        const preview = String(item?.preview || item?.title || item?.name || "").trim();
-        return `${id}:${ts}:${status}:${preview}`;
-      })
-      .join("|");
+    const nextSig = buildThreadRenderSig(items);
     const nextNewThreadIdSet = new Set();
     for (const item of items) {
       const id = item?.id || item?.threadId || "";
@@ -4790,18 +5062,67 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = 
       if (!previousIdSet.has(id)) nextNewThreadIdSet.add(id);
     }
     const shouldAnimateFullList = previousItems.length === 0 && items.length > 0;
+    const canAnimatePendingVisibleNow =
+      !!state.threadListPendingVisibleAnimationByWorkspace?.[target] && isThreadListActuallyVisible() && items.length > 0;
     state.threadItemsByWorkspace[target] = items;
     state.threadWorkspaceHydratedByWorkspace[target] = true;
+    persistThreadsCache();
     if (getWorkspaceTarget() !== target) return;
     const shouldAnimateVisibleListFromPlaceholder = domWasPlaceholder && items.length > 0;
+    const animationHoldRemainingMs = Math.max(
+      0,
+      Number(state.threadListAnimationHoldUntilByWorkspace?.[target] || 0) - Date.now()
+    );
+    const shouldDeferVisibleRerender =
+      !force &&
+      getWorkspaceTarget() === target &&
+      document.body.classList.contains("drawer-left-open") &&
+      animationHoldRemainingMs > 0 &&
+      !shouldAnimateFullList &&
+      !shouldAnimateVisibleListFromPlaceholder &&
+      !canAnimatePendingVisibleNow;
+    pushThreadAnimDebug("refreshThreads:data", {
+      target,
+      force,
+      silent,
+      domWasPlaceholder,
+      previousCount: previousItems.length,
+      nextCount: items.length,
+      sigSame: state.threadListRenderSigByWorkspace[target] === nextSig,
+      prevSig: String(state.threadListRenderSigByWorkspace[target] || "").slice(0, 180),
+      nextSig: String(nextSig || "").slice(0, 180),
+      shouldAnimateFullList,
+      shouldAnimateVisibleListFromPlaceholder,
+      canAnimatePendingVisibleNow,
+      animationHoldRemainingMs,
+      shouldDeferVisibleRerender,
+      pendingVisibleAnimation: !!state.threadListPendingVisibleAnimationByWorkspace?.[target],
+      listActuallyVisible: isThreadListActuallyVisible(),
+    });
     // If nothing changed, avoid re-rendering (keeps scroll position stable and reduces work on mobile).
-    if (!force && state.threadListRenderSigByWorkspace[target] === nextSig && !shouldAnimateVisibleListFromPlaceholder) {
+    if (
+      !force &&
+      state.threadListRenderSigByWorkspace[target] === nextSig &&
+      !shouldAnimateVisibleListFromPlaceholder &&
+      !canAnimatePendingVisibleNow
+    ) {
       state.threadListAnimateThreadIds = new Set();
       return;
     }
     state.threadListRenderSigByWorkspace[target] = nextSig;
+    if (shouldDeferVisibleRerender) {
+      pushThreadAnimDebug("refreshThreads:deferVisibleRerender", {
+        target,
+        remainingMs: animationHoldRemainingMs,
+      });
+      scheduleThreadListDeferredRender(target, animationHoldRemainingMs + 16);
+      return;
+    }
     state.threadItemsAll = items;
-    if (shouldAnimateFullList || shouldAnimateVisibleListFromPlaceholder) {
+    if (items.length > 0 && !isThreadListActuallyVisible()) {
+      state.threadListPendingVisibleAnimationByWorkspace[target] = true;
+    }
+    if (shouldAnimateFullList || shouldAnimateVisibleListFromPlaceholder || canAnimatePendingVisibleNow) {
       state.threadListAnimateNextRender = true;
       state.threadListAnimateThreadIds = new Set();
     } else {
@@ -4824,14 +5145,18 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = 
       state.threadListLoadingTarget = "";
       state.threadListPreferLoadingPlaceholder = false;
       const sidebarOpen = document.body.classList.contains("drawer-left-open");
+      pushThreadAnimDebug("refreshThreads:finally", {
+        target,
+        silent,
+        hadLoadingPlaceholder,
+        needsFinalRender,
+        sidebarOpen,
+        pendingSidebarOpenAnimation: !!state.threadListPendingSidebarOpenAnimation,
+      });
       if (state.threadListPendingSidebarOpenAnimation) {
         state.threadListPendingSidebarOpenAnimation = false;
         if (sidebarOpen && Array.isArray(state.threadItems) && state.threadItems.length) {
-          state.threadListAnimateNextRender = true;
-          state.threadListAnimateThreadIds = new Set();
-          state.threadListExpandAnimateGroupKeys = new Set();
-          state.threadListSkipScrollRestoreOnce = true;
-          renderThreads(state.threadItems);
+          scheduleThreadListVisibleAnimationRender(230);
           return;
         }
       }
@@ -5129,6 +5454,10 @@ async function resolveUserInput() {
 
 function setMobileTab(tab) {
   const wasThreadsOpen = document.body.classList.contains("drawer-left-open");
+  pushThreadAnimDebug("setMobileTab:start", {
+    tab,
+    wasThreadsOpen,
+  });
   document.body.classList.remove("drawer-left-open", "drawer-right-open");
   document.body.classList.remove("drawer-left-opening", "drawer-right-opening");
   if (state.drawerOpenPhaseTimer) {
@@ -5138,6 +5467,7 @@ function setMobileTab(tab) {
   if (tab === "threads") document.body.classList.add("drawer-left-open");
   if (tab === "tools") document.body.classList.add("drawer-right-open");
   if (tab === "threads" && !wasThreadsOpen) {
+    state.threadListVisibleOpenAnimationUntil = Date.now() + 520;
     document.body.classList.add("drawer-left-opening");
     state.drawerOpenPhaseTimer = setTimeout(() => {
       document.body.classList.remove("drawer-left-opening");
@@ -5152,19 +5482,48 @@ function setMobileTab(tab) {
     }, 220);
   }
   byId("mobileDrawerBackdrop").classList.toggle("show", tab === "threads" || tab === "tools");
-  if (tab !== "threads") state.threadListPendingSidebarOpenAnimation = false;
-  if (tab === "threads" && !wasThreadsOpen) {
-    if (state.threadListLoading) {
-      state.threadListPendingSidebarOpenAnimation = true;
-      return;
+  if (tab !== "threads") {
+    state.threadListPendingSidebarOpenAnimation = false;
+    state.threadListVisibleOpenAnimationUntil = 0;
+    if (state.threadListVisibleAnimationTimer) {
+      clearTimeout(state.threadListVisibleAnimationTimer);
+      state.threadListVisibleAnimationTimer = 0;
     }
   }
-  if (tab === "threads" && !wasThreadsOpen && Array.isArray(state.threadItems) && state.threadItems.length) {
-    state.threadListAnimateNextRender = true;
-    state.threadListAnimateThreadIds = new Set();
-    state.threadListExpandAnimateGroupKeys = new Set();
-    state.threadListSkipScrollRestoreOnce = true;
-    renderThreads(state.threadItems);
+  if (tab === "threads" && !wasThreadsOpen) {
+    const currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());
+    const hasThreadItems = Array.isArray(state.threadItems) && state.threadItems.length > 0;
+    const animateVisibleThreadListNow = () => {
+      pushThreadAnimDebug("setMobileTab:animateVisibleNow", {
+        currentWorkspaceKey,
+        hasThreadItems,
+      });
+      state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = true;
+      state.threadListAnimateNextRender = true;
+      state.threadListAnimateThreadIds = new Set();
+      state.threadListExpandAnimateGroupKeys = new Set();
+      state.threadListSkipScrollRestoreOnce = true;
+      renderThreads(state.threadItems);
+    };
+    if (state.threadListLoading) {
+      if (hasThreadItems) {
+        // If cached groups already exist, re-render them immediately after the drawer starts opening so the
+        // same DOM does not simply slide onscreen without enter animation. The CSS opening phase pauses the
+        // animation until the drawer has finished sliding in.
+        state.threadListPendingSidebarOpenAnimation = false;
+        animateVisibleThreadListNow();
+      } else {
+        pushThreadAnimDebug("setMobileTab:pendingSidebarAnimation", {
+          currentWorkspaceKey,
+        });
+        state.threadListPendingSidebarOpenAnimation = true;
+      }
+      return;
+    }
+    if (hasThreadItems) {
+      animateVisibleThreadListNow();
+      return;
+    }
   }
 }
 
@@ -5271,10 +5630,10 @@ function wireActions() {
   bindClick("welcomeWorkspaceBtn", () => {
     openFolderPicker().catch((e) => setStatus(e.message, true));
   });
-  bindClick("workspaceWindowsBtn", () => setWorkspaceTarget("windows").catch((e) => setStatus(e.message, true)));
-  bindClick("workspaceWslBtn", () => setWorkspaceTarget("wsl2").catch((e) => setStatus(e.message, true)));
-  bindClick("drawerWorkspaceWindowsBtn", () => setWorkspaceTarget("windows").catch((e) => setStatus(e.message, true)));
-  bindClick("drawerWorkspaceWslBtn", () => setWorkspaceTarget("wsl2").catch((e) => setStatus(e.message, true)));
+  bindResponsiveClick("workspaceWindowsBtn", () => setWorkspaceTarget("windows").catch((e) => setStatus(e.message, true)));
+  bindResponsiveClick("workspaceWslBtn", () => setWorkspaceTarget("wsl2").catch((e) => setStatus(e.message, true)));
+  bindResponsiveClick("drawerWorkspaceWindowsBtn", () => setWorkspaceTarget("windows").catch((e) => setStatus(e.message, true)));
+  bindResponsiveClick("drawerWorkspaceWslBtn", () => setWorkspaceTarget("wsl2").catch((e) => setStatus(e.message, true)));
   const headerModelPicker = byId("headerModelPicker");
   const headerModelTrigger = byId("headerModelTrigger");
   if (headerModelTrigger) {
@@ -5345,11 +5704,47 @@ function wireActions() {
   });
 }
 
+function installThreadAnimDebug() {
+  if (!threadAnimDebug.enabled) return;
+  const list = byId("threadList");
+  if (!list || list.__threadAnimDebugInstalled) return;
+  list.__threadAnimDebugInstalled = true;
+  const recordAnimationEvent = (eventType) => (event) => {
+    const target = event?.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (!target.classList.contains("groupCard")) return;
+    pushThreadAnimDebug(`animation:${eventType}`, {
+      groupKey: target.getAttribute("data-group-key") || "",
+      className: target.className,
+      animationName: String(event?.animationName || ""),
+      elapsedTime: Number(event?.elapsedTime || 0),
+    });
+  };
+  list.addEventListener("animationstart", recordAnimationEvent("start"));
+  list.addEventListener("animationcancel", recordAnimationEvent("cancel"));
+  list.addEventListener("animationend", recordAnimationEvent("end"));
+}
+
 function bootstrap() {
   // E2E-only hooks (guarded). This avoids relying on a running gateway just to validate
   // UI behaviors like scroll anchoring, scrollbar hiding, and history rendering.
   try {
     const params = new URLSearchParams(window.location.search);
+    if (params.get("animdebug") === "1") {
+      threadAnimDebug.enabled = true;
+      installThreadAnimDebug();
+      pushThreadAnimDebug("debug:enabled");
+      window.__webCodexAnimDebug = {
+        getEvents() {
+          return threadAnimDebug.events.slice();
+        },
+        clear() {
+          threadAnimDebug.events = [];
+          threadAnimDebug.seq = 0;
+          return { ok: true };
+        },
+      };
+    }
     if (params.get("e2e") === "1" && !window.__webCodexE2E) {
       const historyByThreadId = new Map();
       window.__webCodexE2E = {
@@ -5566,6 +5961,46 @@ function bootstrap() {
             window.fetch = origFetch;
           }
         },
+        async refreshThreadsWithMockDelay(target = "windows", items = [], delayMs = 0) {
+          const workspace = normalizeWorkspaceTarget(String(target || "windows"));
+          const waitMs = Math.max(0, Number(delayMs || 0));
+          const origFetch = window.fetch;
+          window.fetch = async (input, init) => {
+            try {
+              const url = typeof input === "string" ? input : (input && input.url ? input.url : "");
+              if (typeof url === "string" && url.startsWith("/codex/threads")) {
+                if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+                const body = JSON.stringify({ items: { data: Array.isArray(items) ? items : [], nextCursor: null } });
+                return new Response(body, { status: 200, headers: { "Content-Type": "application/json" } });
+              }
+            } catch {}
+            return origFetch(input, init);
+          };
+          try {
+            await refreshThreads(workspace, { force: true });
+            return { ok: true };
+          } catch (e) {
+            return { ok: false, error: String(e && e.message ? e.message : e) };
+          } finally {
+            window.fetch = origFetch;
+          }
+        },
+        async setWorkspaceTarget(target = "windows") {
+          try {
+            await setWorkspaceTarget(target);
+            return { ok: true, target: normalizeWorkspaceTarget(target) };
+          } catch (e) {
+            return { ok: false, error: String(e && e.message ? e.message : e) };
+          }
+        },
+        setMobileTabForE2E(tab = "chat") {
+          try {
+            setMobileTab(String(tab || "chat"));
+            return { ok: true, tab: String(tab || "chat") };
+          } catch (e) {
+            return { ok: false, error: String(e && e.message ? e.message : e) };
+          }
+        },
         emitWsPayload(payload) {
           try {
             handleWsPayload(payload);
@@ -5644,6 +6079,20 @@ function bootstrap() {
             return [];
           }
         },
+        getThreadAnimDebugEvents() {
+          try {
+            return window.__webCodexAnimDebug?.getEvents?.() || [];
+          } catch {
+            return [];
+          }
+        },
+        clearThreadAnimDebugEvents() {
+          try {
+            return window.__webCodexAnimDebug?.clear?.() || { ok: false };
+          } catch {
+            return { ok: false };
+          }
+        },
         setWsConnectedForE2E(connected = true) {
           state.wsSubscribedEvents = !!connected;
           if (connected) state.ws = { readyState: 1 };
@@ -5705,9 +6154,19 @@ function bootstrap() {
       : new Set();
   state.activeThreadWorkspace = state.workspaceTarget;
   if (savedModel) state.selectedModel = savedModel;
+  restoreModelsCache();
+  restoreThreadsCache(state.workspaceTarget);
   updateWorkspaceAvailability(false, false);
+  if (state.threadItemsByWorkspace.windows.length || state.threadItemsByWorkspace.wsl2.length) {
+    updateWorkspaceAvailability(
+      state.threadItemsByWorkspace.windows.length > 0,
+      state.threadItemsByWorkspace.wsl2.length > 0,
+      { applyFilter: false }
+    );
+  }
   applyWorkspaceUi();
   syncHeaderModelPicker();
+  if (Array.isArray(state.threadItems) && state.threadItems.length) renderThreads(state.threadItems);
   if (SANDBOX_MODE) {
     const sandboxBadge = byId("sandboxBadge");
     if (sandboxBadge) sandboxBadge.style.display = "inline-flex";

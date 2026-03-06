@@ -480,6 +480,8 @@ fn write_gateway_startup_diag(stage: &str, addr: Option<SocketAddr>, detail: Opt
 }
 
 include!("gateway/request_helpers.rs");
+mod web_codex_home;
+mod web_codex_threads;
 include!("gateway/web_codex.rs");
 const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
 
@@ -497,6 +499,7 @@ pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {
         }
     };
     write_gateway_startup_diag("listening", Some(addr), None);
+    web_codex_threads::spawn_thread_index_prewarm();
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
