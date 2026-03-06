@@ -15,7 +15,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const NOTIFICATION_QUEUE_CAP: usize = 2048;
 
 // Keyed by CODEX_HOME override ("" means inherit parent env / default process CODEX_HOME).
-static APP_SERVERS: OnceLock<Mutex<HashMap<String, AppServer>>> = OnceLock::new();
+// Value is per-home server mutex so different homes can run concurrently without global lock blocking.
+static APP_SERVERS: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<AppServer>>>>> =
+    OnceLock::new();
 static NOTIFICATION_STATE: OnceLock<Mutex<HashMap<String, NotificationState>>> = OnceLock::new();
 
 #[cfg(test)]
@@ -151,19 +153,113 @@ fn resolve_codex_cmd() -> Option<PathBuf> {
     None
 }
 
-fn build_codex_command() -> Command {
-    if let Some(path) = resolve_codex_cmd() {
-        let mut cmd = Command::new("cmd.exe");
-        cmd.arg("/c").arg(path).arg("app-server");
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        return cmd;
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LaunchSpec {
+    Native {
+        codex_home: Option<String>,
+    },
+    Wsl {
+        distro: Option<String>,
+        codex_home_linux: Option<String>,
+    },
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn parse_wsl_unc_codex_home(value: &str) -> Option<(String, String)> {
+    let mut text = value.trim().replace('/', "\\");
+    if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
+        text = format!(r"\\{stripped}");
     }
-    let mut cmd = Command::new("codex");
-    cmd.arg("app-server");
+    let stripped = text
+        .strip_prefix(r"\\wsl.localhost\")
+        .or_else(|| text.strip_prefix(r"\\wsl$\\"))?;
+    let mut parts = stripped.split('\\').filter(|part| !part.is_empty());
+    let distro = parts.next()?.trim().to_string();
+    if distro.is_empty() {
+        return None;
+    }
+    let rest = parts.collect::<Vec<_>>();
+    let linux_path = if rest.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", rest.join("/"))
+    };
+    Some((distro, linux_path))
+}
+
+fn resolve_launch_spec(codex_home: Option<&str>) -> LaunchSpec {
+    let home = codex_home
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
     #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    cmd
+    {
+        if let Some(ref value) = home {
+            if let Some((distro, linux_path)) = parse_wsl_unc_codex_home(value) {
+                return LaunchSpec::Wsl {
+                    distro: Some(distro),
+                    codex_home_linux: Some(linux_path),
+                };
+            }
+            if value.starts_with('/') {
+                return LaunchSpec::Wsl {
+                    distro: None,
+                    codex_home_linux: Some(value.clone()),
+                };
+            }
+        }
+    }
+    LaunchSpec::Native { codex_home: home }
+}
+
+fn build_codex_command(codex_home: Option<&str>) -> Command {
+    match resolve_launch_spec(codex_home) {
+        LaunchSpec::Native { codex_home } => {
+            if let Some(path) = resolve_codex_cmd() {
+                let mut cmd = Command::new("cmd.exe");
+                cmd.arg("/c").arg(path).arg("app-server");
+                if let Some(home) = codex_home.as_deref() {
+                    cmd.env("CODEX_HOME", home);
+                }
+                #[cfg(target_os = "windows")]
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                return cmd;
+            }
+            let mut cmd = Command::new("codex");
+            cmd.arg("app-server");
+            if let Some(home) = codex_home.as_deref() {
+                cmd.env("CODEX_HOME", home);
+            }
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            cmd
+        }
+        LaunchSpec::Wsl {
+            distro,
+            codex_home_linux,
+        } => {
+            let mut cmd = Command::new("wsl.exe");
+            if let Some(distro) = distro.as_deref() {
+                cmd.arg("-d").arg(distro);
+            }
+            cmd.arg("-e").arg("sh").arg("-lc");
+            let script = if let Some(home) = codex_home_linux.as_deref() {
+                format!(
+                    "export CODEX_HOME={}; exec codex app-server",
+                    shell_single_quote(home)
+                )
+            } else {
+                "exec codex app-server".to_string()
+            };
+            cmd.arg(script);
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            cmd
+        }
+    }
 }
 
 #[cfg(test)]
@@ -246,13 +342,7 @@ struct AppServer {
 
 impl AppServer {
     async fn spawn(codex_home: Option<&str>) -> Result<Self, String> {
-        let mut cmd = build_codex_command();
-        if let Some(home) = codex_home {
-            let trimmed = home.trim();
-            if !trimmed.is_empty() {
-                cmd.env("CODEX_HOME", trimmed);
-            }
-        }
+        let mut cmd = build_codex_command(codex_home);
 
         let mut child = cmd
             .stdin(Stdio::piped())
@@ -481,6 +571,49 @@ mod tests {
         // The first retained event id should be > 1 due to dropping.
         assert!(first.unwrap() > 1);
     }
+
+    #[test]
+    fn resolves_native_launcher_for_windows_home() {
+        let spec = resolve_launch_spec(Some(r"C:\Users\yiyou\.codex"));
+        assert_eq!(
+            spec,
+            LaunchSpec::Native {
+                codex_home: Some(r"C:\Users\yiyou\.codex".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_wsl_launcher_for_unc_home() {
+        let spec = resolve_launch_spec(Some(r"\\?\UNC\wsl.localhost\Ubuntu\home\yiyou\.codex"));
+        assert_eq!(
+            spec,
+            LaunchSpec::Wsl {
+                distro: Some("Ubuntu".to_string()),
+                codex_home_linux: Some("/home/yiyou/.codex".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_wsl_launcher_for_linux_home() {
+        let spec = resolve_launch_spec(Some("/home/yiyou/.codex"));
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            spec,
+            LaunchSpec::Wsl {
+                distro: None,
+                codex_home_linux: Some("/home/yiyou/.codex".to_string())
+            }
+        );
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(
+            spec,
+            LaunchSpec::Native {
+                codex_home: Some("/home/yiyou/.codex".to_string())
+            }
+        );
+    }
 }
 
 pub async fn request_in_home(
@@ -495,23 +628,47 @@ pub async fn request_in_home(
 
     let key = normalize_home_key(codex_home).to_string();
     let lock = APP_SERVERS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = lock.lock().await;
-    let needs_spawn = match guard.get_mut(&key) {
-        Some(server) => server.is_dead().unwrap_or(true),
-        None => true,
-    };
-    if needs_spawn {
+
+    let server_arc = loop {
+        let existing = {
+            let guard = lock.lock().await;
+            guard.get(&key).cloned()
+        };
+
+        if let Some(server) = existing {
+            let dead = {
+                let mut srv = server.lock().await;
+                srv.is_dead().unwrap_or(true)
+            };
+            if !dead {
+                break server;
+            }
+            let mut guard = lock.lock().await;
+            if guard
+                .get(&key)
+                .is_some_and(|current| std::sync::Arc::ptr_eq(current, &server))
+            {
+                guard.remove(&key);
+            }
+            continue;
+        }
+
         let spawned = AppServer::spawn(if key.is_empty() {
             None
         } else {
             Some(key.as_str())
         })
         .await?;
-        guard.insert(key.clone(), spawned);
-    }
-    let server = guard
-        .get_mut(&key)
-        .ok_or_else(|| "codex app-server not available".to_string())?;
+        let spawned_arc = std::sync::Arc::new(Mutex::new(spawned));
+        let mut guard = lock.lock().await;
+        let entry = guard
+            .entry(key.clone())
+            .or_insert_with(|| spawned_arc.clone())
+            .clone();
+        break entry;
+    };
+
+    let mut server = server_arc.lock().await;
     match server.request(method, params).await {
         Ok(result) => Ok(result),
         Err(e) => {
@@ -522,7 +679,13 @@ pub async fn request_in_home(
                 || lower.contains("failed to open codex stdin")
                 || lower.contains("failed to open codex stdout");
             if should_respawn {
-                guard.remove(&key);
+                let mut guard = lock.lock().await;
+                if guard
+                    .get(&key)
+                    .is_some_and(|current| std::sync::Arc::ptr_eq(current, &server_arc))
+                {
+                    guard.remove(&key);
+                }
             }
             Err(e)
         }

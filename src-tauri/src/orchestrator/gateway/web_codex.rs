@@ -268,8 +268,41 @@ fn web_codex_rpc_home_override() -> Option<String> {
     default_windows_codex_dir().map(|p| p.to_string_lossy().to_string())
 }
 
+fn web_codex_rpc_home_override_for_workspace(target: WorkspaceTarget) -> Option<String> {
+    match target {
+        WorkspaceTarget::Windows => web_codex_rpc_home_override(),
+        WorkspaceTarget::Wsl2 => {
+            let explicit = std::env::var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if explicit.is_some() {
+                return explicit;
+            }
+            if !cfg!(target_os = "windows") {
+                return None;
+            }
+            let (distro, home) = resolve_wsl_identity().ok()?;
+            let codex_home_linux = linux_path_join(&home, ".codex");
+            let unc = linux_path_to_unc(&codex_home_linux, &distro);
+            Some(unc.to_string_lossy().to_string())
+        }
+    }
+}
+
 async fn codex_rpc_call(method: &str, params: Value) -> Result<Value, Response> {
     let home = web_codex_rpc_home_override();
+    crate::codex_app_server::request_in_home(home.as_deref(), method, params)
+        .await
+        .map_err(|e| api_error_detail(StatusCode::BAD_GATEWAY, "codex app-server request failed", e))
+}
+
+async fn codex_rpc_call_for_workspace(
+    target: WorkspaceTarget,
+    method: &str,
+    params: Value,
+) -> Result<Value, Response> {
+    let home = web_codex_rpc_home_override_for_workspace(target);
     crate::codex_app_server::request_in_home(home.as_deref(), method, params)
         .await
         .map_err(|e| api_error_detail(StatusCode::BAD_GATEWAY, "codex app-server request failed", e))
@@ -1042,6 +1075,8 @@ async fn codex_hosts_delete(
 struct ThreadsQuery {
     #[serde(default)]
     workspace: Option<String>,
+    #[serde(default)]
+    force: Option<bool>,
 }
 
 fn workspace_is_wsl2(value: &str) -> bool {
@@ -1388,19 +1423,39 @@ fn current_unix_secs() -> i64 {
 }
 
 fn thread_is_wsl2(thread: &Value) -> bool {
-    let cwd = thread
-        .get("cwd")
+    let source = thread.get("source").and_then(|v| v.as_object());
+    let workspace = thread
+        .get("workspace")
         .and_then(|v| v.as_str())
+        .or_else(|| source.and_then(|obj| obj.get("workspace")).and_then(|v| v.as_str()))
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
-    !cwd.is_empty()
-        && (cwd.starts_with('/')
-            || cwd.starts_with("\\\\wsl$\\")
-            || cwd.starts_with("\\\\wsl.localhost\\")
-            || cwd.contains("\\\\wsl$\\")
-            || cwd.contains("\\\\wsl.localhost\\")
-            || cwd.contains("/mnt/"))
+    if workspace == "wsl2" || workspace == "wsl" {
+        return true;
+    }
+    if workspace == "windows" || workspace == "win" {
+        return false;
+    }
+
+    let path_like = ["cwd", "project", "directory", "path"]
+        .iter()
+        .find_map(|key| thread.get(*key).and_then(|v| v.as_str()))
+        .or_else(|| {
+            ["cwd", "project", "directory", "path"]
+                .iter()
+                .find_map(|key| source.and_then(|obj| obj.get(*key)).and_then(|v| v.as_str()))
+        })
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    !path_like.is_empty()
+        && (path_like.starts_with('/')
+            || path_like.starts_with("\\\\wsl$\\")
+            || path_like.starts_with("\\\\wsl.localhost\\")
+            || path_like.contains("\\\\wsl$\\")
+            || path_like.contains("\\\\wsl.localhost\\")
+            || path_like.contains("/mnt/"))
 }
 
 fn extract_items_array(value: &Value) -> Vec<Value> {
@@ -1874,8 +1929,77 @@ fn file_updated_unix_secs(path: &Path) -> i64 {
     }
 }
 
-const THREAD_LIST_LIMIT: i64 = 200;
-const THREAD_LIST_MAX_PAGES: usize = 20;
+const THREAD_LIST_LIMIT: i64 = 400;
+const THREAD_LIST_MAX_PAGES: usize = 10;
+const THREAD_LIST_CACHE_WINDOWS_SECS: i64 = 8;
+const THREAD_LIST_CACHE_WSL2_SECS: i64 = 30;
+const THREAD_LIST_MAX_ITEMS: usize = 600;
+
+#[derive(Clone)]
+struct ThreadListCacheEntry {
+    items: Vec<Value>,
+    updated_at_unix_secs: i64,
+}
+
+fn thread_list_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, ThreadListCacheEntry>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, ThreadListCacheEntry>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn lock_thread_list_cache(
+) -> std::sync::MutexGuard<'static, std::collections::HashMap<String, ThreadListCacheEntry>> {
+    match thread_list_cache().lock() {
+        Ok(v) => v,
+        Err(err) => err.into_inner(),
+    }
+}
+
+fn thread_list_cache_key(workspace: Option<&str>) -> String {
+    let raw = workspace
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("__all__")
+        .to_ascii_lowercase();
+    if raw.is_empty() { "__all__".to_string() } else { raw }
+}
+
+fn thread_list_cache_ttl_secs(cache_key: &str) -> i64 {
+    if cache_key == "wsl2" {
+        THREAD_LIST_CACHE_WSL2_SECS
+    } else {
+        THREAD_LIST_CACHE_WINDOWS_SECS
+    }
+}
+
+fn read_thread_list_cache(cache_key: &str, force: bool) -> Option<Vec<Value>> {
+    if force {
+        return None;
+    }
+    let now = current_unix_secs();
+    let cache = lock_thread_list_cache();
+    let entry = cache.get(cache_key)?;
+    if now.saturating_sub(entry.updated_at_unix_secs) > thread_list_cache_ttl_secs(cache_key) {
+        return None;
+    }
+    Some(entry.items.clone())
+}
+
+fn write_thread_list_cache(cache_key: &str, items: &[Value]) {
+    let mut cache = lock_thread_list_cache();
+    cache.insert(
+        cache_key.to_string(),
+        ThreadListCacheEntry {
+            items: items.to_vec(),
+            updated_at_unix_secs: current_unix_secs(),
+        },
+    );
+}
+
+fn invalidate_thread_list_cache_all() {
+    let mut cache = lock_thread_list_cache();
+    cache.clear();
+}
 
 fn extract_next_cursor(value: &Value) -> Option<Value> {
     let candidates = [
@@ -1936,10 +2060,25 @@ fn annotate_thread_item_flags(item: &mut Value) {
     }
 }
 
+#[cfg(test)]
 async fn rebuild_workspace_thread_items(target: WorkspaceTarget) -> Vec<Value> {
+    rebuild_workspace_thread_items_with_stats(target).await.items
+}
+
+struct ThreadListBuildResult {
+    items: Vec<Value>,
+    pages_scanned: usize,
+    rebuild_ms: i64,
+}
+
+async fn rebuild_workspace_thread_items_with_stats(target: WorkspaceTarget) -> ThreadListBuildResult {
+    let started = std::time::Instant::now();
+    let mut pages_scanned = 0usize;
     let mut items: Vec<Value> = Vec::new();
     let mut cursor = Value::Null;
+    let cutoff_unix_secs = current_unix_secs().saturating_sub(THREADS_MAX_AGE_SECS);
     for _ in 0..THREAD_LIST_MAX_PAGES {
+        pages_scanned = pages_scanned.saturating_add(1);
         let params = json!({
             "cursor": cursor.clone(),
             "limit": THREAD_LIST_LIMIT,
@@ -1952,15 +2091,26 @@ async fn rebuild_workspace_thread_items(target: WorkspaceTarget) -> Vec<Value> {
             "archived": false,
             "cwd": null,
         });
-        let page = match codex_rpc_call("thread/list", params).await {
+        let page = match codex_rpc_call_for_workspace(target, "thread/list", params).await {
             Ok(v) => v,
             Err(_) => break,
         };
-        let page_items = extract_items_array(&page);
+        let mut page_items = extract_items_array(&page);
         if page_items.is_empty() {
             break;
         }
+        normalize_thread_items_shape(&mut page_items);
+        let page_has_recent = page_items.iter().any(|item| {
+            let ts = thread_updated_unix_secs(item);
+            ts <= 0 || ts >= cutoff_unix_secs
+        });
         items = merge_items_without_duplicates(items, page_items);
+        if items.len() >= THREAD_LIST_MAX_ITEMS {
+            break;
+        }
+        if !page_has_recent {
+            break;
+        }
         let Some(next_cursor) = extract_next_cursor(&page) else {
             break;
         };
@@ -1979,18 +2129,24 @@ async fn rebuild_workspace_thread_items(target: WorkspaceTarget) -> Vec<Value> {
     filter_auxiliary_threads(&mut items);
     filter_threads_within_last_month(&mut items);
     sort_threads_by_updated_desc(&mut items);
-    if items.len() > 600 {
-        items.truncate(600);
+    if items.len() > THREAD_LIST_MAX_ITEMS {
+        items.truncate(THREAD_LIST_MAX_ITEMS);
     }
-    items
+    let rebuild_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    ThreadListBuildResult {
+        items,
+        pages_scanned,
+        rebuild_ms,
+    }
 }
 
-fn build_threads_response(items: Vec<Value>) -> Response {
+fn build_threads_response_with_meta(items: Vec<Value>, meta: Value) -> Response {
     Json(json!({
         "items": {
             "data": items,
             "nextCursor": Value::Null
-        }
+        },
+        "meta": meta,
     }))
     .into_response()
 }
@@ -2063,10 +2219,20 @@ mod codex_thread_list_tests {
     use super::*;
     use crate::codex_app_server;
     use serde_json::json;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    static TEST_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .expect("lock tests")
+    }
 
     #[tokio::test]
     async fn thread_list_uses_app_server_and_filters_subagent_sources() {
+        let _guard = lock_tests();
+        invalidate_thread_list_cache_all();
         let calls: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
         let calls2 = calls.clone();
         codex_app_server::_set_test_request_handler(Some(Arc::new(move |_home, method, params| {
@@ -2115,6 +2281,116 @@ mod codex_thread_list_tests {
         );
 
         codex_app_server::_set_test_request_handler(None).await;
+        invalidate_thread_list_cache_all();
+    }
+
+    #[tokio::test]
+    async fn thread_list_wsl2_includes_source_workspace_items() {
+        let _guard = lock_tests();
+        invalidate_thread_list_cache_all();
+        codex_app_server::_set_test_request_handler(Some(Arc::new(move |_home, method, _params| {
+            if method == "thread/list" {
+                let now = current_unix_secs();
+                return Ok(json!({
+                    "items": {
+                        "data": [
+                            {
+                                "id": "t_wsl_source_workspace",
+                                "updatedAt": now,
+                                "source": { "workspace": "wsl2" }
+                            },
+                            {
+                                "id": "t_wsl_source_cwd",
+                                "updatedAt": now + 1,
+                                "source": { "cwd": "/home/yiyou/repo" }
+                            },
+                            {
+                                "id": "t_windows",
+                                "updatedAt": now + 2,
+                                "cwd": "C:\\\\repo"
+                            }
+                        ]
+                    }
+                }));
+            }
+            Ok(json!({}))
+        })))
+        .await;
+
+        let items = rebuild_workspace_thread_items(WorkspaceTarget::Wsl2).await;
+        let ids: std::collections::HashSet<String> = items
+            .iter()
+            .filter_map(|item| item.get("id").and_then(|v| v.as_str()).map(|v| v.to_string()))
+            .collect();
+
+        assert!(ids.contains("t_wsl_source_workspace"));
+        assert!(ids.contains("t_wsl_source_cwd"));
+        assert!(!ids.contains("t_windows"));
+
+        codex_app_server::_set_test_request_handler(None).await;
+        invalidate_thread_list_cache_all();
+    }
+
+    #[tokio::test]
+    async fn thread_list_uses_workspace_specific_codex_home() {
+        let _guard = lock_tests();
+        invalidate_thread_list_cache_all();
+        if cfg!(target_os = "windows") {
+            let mut cache = lock_wsl_identity_cache();
+            *cache = Some(WslIdentityCache {
+                distro: "Ubuntu".to_string(),
+                home: "/home/test".to_string(),
+                updated_at_unix_secs: current_unix_secs(),
+            });
+        }
+
+        let homes: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+        let homes2 = homes.clone();
+        codex_app_server::_set_test_request_handler(Some(Arc::new(move |home, method, _params| {
+            if method == "thread/list" {
+                homes2
+                    .lock()
+                    .expect("homes lock")
+                    .push(home.map(|v| v.to_string()));
+                let now = current_unix_secs();
+                return Ok(json!({
+                    "items": {
+                        "data": [
+                            { "id": "t", "updatedAt": now, "cwd": "C:\\\\repo" }
+                        ]
+                    }
+                }));
+            }
+            Ok(json!({}))
+        })))
+        .await;
+
+        let _ = rebuild_workspace_thread_items(WorkspaceTarget::Windows).await;
+        let _ = rebuild_workspace_thread_items(WorkspaceTarget::Wsl2).await;
+
+        let recorded = homes.lock().expect("homes lock").clone();
+        assert!(
+            recorded.len() >= 2,
+            "expected thread/list calls for both workspaces, got {}",
+            recorded.len()
+        );
+        if cfg!(target_os = "windows") {
+            let windows_home = recorded.first().and_then(|x| x.as_deref()).unwrap_or_default();
+            let wsl_home = recorded.get(1).and_then(|x| x.as_deref()).unwrap_or_default();
+            assert!(
+                windows_home.to_ascii_lowercase().contains(".codex"),
+                "expected windows home to point at .codex, got {windows_home}"
+            );
+            assert!(
+                wsl_home
+                    .to_ascii_lowercase()
+                    .contains(r"\\wsl.localhost\ubuntu\home\test\.codex"),
+                "expected wsl home UNC path, got {wsl_home}"
+            );
+        }
+
+        codex_app_server::_set_test_request_handler(None).await;
+        invalidate_thread_list_cache_all();
     }
 }
 
@@ -2126,21 +2402,60 @@ async fn codex_threads_list(
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
+    let started = std::time::Instant::now();
     let requested_workspace = query.workspace.unwrap_or_default();
+    let workspace_meta = if requested_workspace.trim().is_empty() {
+        "all".to_string()
+    } else {
+        requested_workspace.trim().to_ascii_lowercase()
+    };
+    let cache_key = thread_list_cache_key(Some(&requested_workspace));
+    let force = query.force.unwrap_or(false);
+    if let Some(items) = read_thread_list_cache(&cache_key, force) {
+        let total_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+        return build_threads_response_with_meta(
+            items,
+            json!({
+                "workspace": workspace_meta,
+                "cacheHit": true,
+                "pagesScanned": 0,
+                "rebuildMs": 0,
+                "totalMs": total_ms
+            }),
+        );
+    }
     let target = parse_workspace_target(&requested_workspace);
-    let items = match target {
-        Some(target) => rebuild_workspace_thread_items(target).await,
+    let (items, pages_scanned, rebuild_ms) = match target {
+        Some(target) => {
+            let built = rebuild_workspace_thread_items_with_stats(target).await;
+            (built.items, built.pages_scanned, built.rebuild_ms)
+        }
         None => {
             let (win, wsl2) = tokio::join!(
-                rebuild_workspace_thread_items(WorkspaceTarget::Windows),
-                rebuild_workspace_thread_items(WorkspaceTarget::Wsl2)
+                rebuild_workspace_thread_items_with_stats(WorkspaceTarget::Windows),
+                rebuild_workspace_thread_items_with_stats(WorkspaceTarget::Wsl2)
             );
-            let mut merged = merge_items_without_duplicates(win, wsl2);
+            let mut merged = merge_items_without_duplicates(win.items, wsl2.items);
             sort_threads_by_updated_desc(&mut merged);
-            merged
+            (
+                merged,
+                win.pages_scanned.saturating_add(wsl2.pages_scanned),
+                win.rebuild_ms.max(wsl2.rebuild_ms),
+            )
         }
     };
-    build_threads_response(items)
+    write_thread_list_cache(&cache_key, &items);
+    let total_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    build_threads_response_with_meta(
+        items,
+        json!({
+            "workspace": workspace_meta,
+            "cacheHit": false,
+            "pagesScanned": pages_scanned,
+            "rebuildMs": rebuild_ms,
+            "totalMs": total_ms
+        }),
+    )
 }
 
 #[derive(Deserialize)]
@@ -2164,6 +2479,7 @@ async fn codex_threads_create(
     let params = json!({ "workspace": req.workspace, "title": req.title, "cwd": req.cwd });
     match codex_rpc_call("thread/new", params).await {
         Ok(v) => {
+            invalidate_thread_list_cache_all();
             Json(v).into_response()
         }
         Err(resp) => resp,
@@ -2758,6 +3074,18 @@ struct CodexVersionInfo {
     windows_installed: bool,
     #[serde(rename = "wsl2Installed")]
     wsl2_installed: bool,
+    #[serde(rename = "appVersion")]
+    app_version: String,
+    #[serde(rename = "buildGitSha")]
+    build_git_sha: String,
+    #[serde(rename = "buildGitShortSha")]
+    build_git_short_sha: String,
+    #[serde(rename = "repoGitSha")]
+    repo_git_sha: Option<String>,
+    #[serde(rename = "repoGitShortSha")]
+    repo_git_short_sha: Option<String>,
+    #[serde(rename = "buildStale")]
+    build_stale: bool,
 }
 
 #[derive(Clone)]
@@ -2832,6 +3160,44 @@ async fn detect_wsl_codex_version() -> String {
     "Not installed".to_string()
 }
 
+fn resolve_repo_root_for_git() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.to_path_buf();
+            if candidate.join(".git").exists() {
+                return Some(candidate);
+            }
+        }
+    }
+    let cwd = std::env::current_dir().ok()?;
+    if cwd.join(".git").exists() {
+        Some(cwd)
+    } else {
+        None
+    }
+}
+
+fn detect_repo_git_sha() -> Option<String> {
+    let repo_root = resolve_repo_root_for_git()?;
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("-C").arg(repo_root).arg("rev-parse").arg("HEAD");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if sha.is_empty() {
+        None
+    } else {
+        Some(sha)
+    }
+}
+
 async fn codex_version_info(
     State(st): State<GatewayState>,
     headers: HeaderMap,
@@ -2847,11 +3213,34 @@ async fn codex_version_info(
     }
 
     let (windows, wsl2) = tokio::join!(detect_windows_codex_version(), detect_wsl_codex_version());
+    let build_git_sha = option_env!("API_ROUTER_BUILD_GIT_SHA")
+        .unwrap_or("unknown")
+        .to_string();
+    let build_git_short_sha = option_env!("API_ROUTER_BUILD_GIT_SHORT_SHA")
+        .unwrap_or("unknown")
+        .to_string();
+    let repo_git_sha = detect_repo_git_sha();
+    let repo_git_short_sha = repo_git_sha.as_deref().map(|sha| {
+        if sha.len() > 8 {
+            sha[..8].to_string()
+        } else {
+            sha.to_string()
+        }
+    });
+    let build_stale = repo_git_sha
+        .as_deref()
+        .is_some_and(|repo| !build_git_sha.eq_ignore_ascii_case(repo));
     let payload = CodexVersionInfo {
         windows_installed: windows != "Not installed",
         wsl2_installed: wsl2 != "Not installed",
         windows,
         wsl2,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        build_git_sha,
+        build_git_short_sha,
+        repo_git_sha,
+        repo_git_short_sha,
+        build_stale,
     };
     {
         let mut cache = lock_codex_version_info_cache();
@@ -2962,8 +3351,10 @@ mod web_codex_tests {
     use super::{
         linux_path_join, linux_path_parent, normalize_wsl_linux_path,
         parse_slash_command, resume_import_order, should_try_known_wsl_rollout_path,
-        split_stream_chunks, truncate_output, WorkspaceTarget, MAX_TERMINAL_OUTPUT_BYTES,
+        split_stream_chunks, thread_is_wsl2, truncate_output, WorkspaceTarget,
+        MAX_TERMINAL_OUTPUT_BYTES,
     };
+    use serde_json::json;
 
     #[test]
     fn parse_plan_variants() {
@@ -3047,5 +3438,57 @@ mod web_codex_tests {
         assert_eq!(linux_path_parent("/").as_deref(), None);
         assert_eq!(linux_path_join("/home/user", "repo"), "/home/user/repo");
         assert_eq!(linux_path_join("/", "tmp"), "/tmp");
+    }
+
+    #[test]
+    fn thread_is_wsl2_accepts_workspace_only_items() {
+        let only_workspace = json!({
+            "id": "t1",
+            "workspace": "wsl2"
+        });
+        assert!(
+            thread_is_wsl2(&only_workspace),
+            "workspace=wsl2 should be classified as WSL2 even when cwd is missing"
+        );
+    }
+
+    #[test]
+    fn thread_is_wsl2_rejects_explicit_windows_workspace() {
+        let windows_workspace = json!({
+            "id": "t2",
+            "workspace": "windows"
+        });
+        assert!(
+            !thread_is_wsl2(&windows_workspace),
+            "workspace=windows should stay in Windows list"
+        );
+    }
+
+    #[test]
+    fn thread_is_wsl2_accepts_source_workspace() {
+        let source_workspace = json!({
+            "id": "t3",
+            "source": {
+                "workspace": "wsl2"
+            }
+        });
+        assert!(
+            thread_is_wsl2(&source_workspace),
+            "source.workspace=wsl2 should be classified as WSL2"
+        );
+    }
+
+    #[test]
+    fn thread_is_wsl2_accepts_source_cwd() {
+        let source_cwd = json!({
+            "id": "t4",
+            "source": {
+                "cwd": "/home/yiyou/repo"
+            }
+        });
+        assert!(
+            thread_is_wsl2(&source_cwd),
+            "source.cwd with linux path should be classified as WSL2"
+        );
     }
 }

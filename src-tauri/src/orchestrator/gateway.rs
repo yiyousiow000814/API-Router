@@ -451,6 +451,34 @@ pub fn build_router(state: GatewayState) -> Router {
     build_router_with_body_limit(state, MAX_BODY_BYTES)
 }
 
+fn gateway_startup_diag_path() -> Option<PathBuf> {
+    let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
+    let trimmed = user_data_dir.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(trimmed).join("gateway-startup.json"))
+}
+
+fn write_gateway_startup_diag(stage: &str, addr: Option<SocketAddr>, detail: Option<&str>) {
+    let Some(path) = gateway_startup_diag_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let payload = json!({
+        "stage": stage,
+        "addr": addr.map(|v| v.to_string()),
+        "detail": detail,
+        "updatedAtUnixMs": unix_ms(),
+    });
+    let _ = std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
+}
+
 include!("gateway/request_helpers.rs");
 include!("gateway/web_codex.rs");
 const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
@@ -458,14 +486,26 @@ const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
 pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {
     let cfg = state.cfg.read().clone();
     let addr: SocketAddr = format!("{}:{}", cfg.listen.host, cfg.listen.port).parse()?;
+    write_gateway_startup_diag("binding", Some(addr), None);
 
     let app = build_router(state);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            write_gateway_startup_diag("bind_failed", Some(addr), Some(&err.to_string()));
+            return Err(err.into());
+        }
+    };
+    write_gateway_startup_diag("listening", Some(addr), None);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await?;
+    .await
+    .map_err(|err| {
+        write_gateway_startup_diag("serve_failed", Some(addr), Some(&err.to_string()));
+        anyhow::Error::from(err)
+    })?;
     Ok(())
 }
 

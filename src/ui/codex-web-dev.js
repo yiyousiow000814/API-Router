@@ -34,6 +34,7 @@ const state = {
   threadListPendingSidebarOpenAnimation: false,
   threadListSkipScrollRestoreOnce: false,
   threadListPreferLoadingPlaceholder: false,
+  drawerOpenPhaseTimer: 0,
   threadRefreshAbortByWorkspace: {
     windows: null,
     wsl2: null,
@@ -43,6 +44,10 @@ const state = {
     wsl2: 0,
   },
   threadAutoRefreshLastMsByWorkspace: {
+    windows: 0,
+    wsl2: 0,
+  },
+  threadForceRefreshLastMsByWorkspace: {
     windows: 0,
     wsl2: 0,
   },
@@ -58,6 +63,14 @@ const state = {
   wsRecentEventIdQueue: [],
   wsSubscribedEvents: false,
   collapsedWorkspaceKeys: new Set(),
+  collapsedWorkspaceKeysByWorkspace: {
+    windows: new Set(),
+    wsl2: new Set(),
+  },
+  threadGroupCollapseInitializedByWorkspace: {
+    windows: false,
+    wsl2: false,
+  },
   sidebarCollapsed: false,
   threadSearchQuery: "",
   activeMainTab: "chat",
@@ -66,6 +79,7 @@ const state = {
     windowsInstalled: false,
     wsl2Installed: false,
   },
+  gatewayBuildStaleWarned: false,
   startCwdByWorkspace: {
     windows: "",
     wsl2: "",
@@ -150,6 +164,40 @@ function shouldSuppressSyntheticClick(event) {
   return false;
 }
 
+function wireBlurBackdropShield(backdrop, options = {}) {
+  if (!backdrop || backdrop.__wiredBlurBackdropShield) return;
+  backdrop.__wiredBlurBackdropShield = true;
+  const modalSelector = typeof options.modalSelector === "string" ? options.modalSelector : "";
+  const suppressMs = Math.max(0, Number(options.suppressMs) || 420);
+  const onClose = typeof options.onClose === "function" ? options.onClose : null;
+
+  const closeFromBackdrop = (event) => {
+    if (shouldSuppressSyntheticClick(event)) return;
+    if (event?.target !== backdrop) return;
+    try {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+    } catch {}
+    if (String(event?.type || "") === "pointerdown") {
+      // Unified click-through guard for all blurred backdrops.
+      armSyntheticClickSuppression(suppressMs);
+    }
+    onClose?.();
+  };
+
+  backdrop.addEventListener("pointerdown", closeFromBackdrop, { passive: false });
+  backdrop.addEventListener("click", closeFromBackdrop);
+
+  if (modalSelector) {
+    const modal = backdrop.querySelector(modalSelector);
+    if (modal && !modal.__wiredBackdropStopPropagation) {
+      modal.__wiredBackdropStopPropagation = true;
+      modal.addEventListener("pointerdown", (event) => event.stopPropagation());
+      modal.addEventListener("click", (event) => event.stopPropagation());
+    }
+  }
+}
+
 const GUIDE_DISMISSED_KEY = "web_codex_guide_dismissed_v2";
 const TOKEN_STORAGE_KEY = "web_codex_token_v1";
 const WORKSPACE_TARGET_KEY = "web_codex_workspace_target_v1";
@@ -171,6 +219,7 @@ const THREAD_PULL_REFRESH_MAX_PX = 84;
 const THREAD_PULL_REFRESH_MIN_MS = 520;
 const THREAD_PULL_HINT_CLEAR_DELAY_MS = 160;
 const THREAD_REFRESH_DEBOUNCE_MS = 260;
+const THREAD_FORCE_REFRESH_MIN_INTERVAL_MS = 1800;
 // When WS is connected, prefer event-driven updates. Keep only a low-frequency safety refresh.
 const THREAD_AUTO_REFRESH_CONNECTED_MS = 20000;
 const THREAD_AUTO_REFRESH_DISCONNECTED_MS = 3500;
@@ -1369,8 +1418,13 @@ async function setWorkspaceTarget(nextTarget) {
   const target = normalizeWorkspaceTarget(nextTarget);
   if (!isWorkspaceAvailable(target)) return;
   if (state.workspaceTarget === target) return;
+  const previousTarget = normalizeWorkspaceTarget(state.workspaceTarget);
+  state.collapsedWorkspaceKeysByWorkspace[previousTarget] = state.collapsedWorkspaceKeys;
   state.workspaceTarget = target;
-  state.collapsedWorkspaceKeys.clear();
+  state.collapsedWorkspaceKeys =
+    state.collapsedWorkspaceKeysByWorkspace[target] instanceof Set
+      ? state.collapsedWorkspaceKeysByWorkspace[target]
+      : new Set();
   localStorage.setItem(WORKSPACE_TARGET_KEY, target);
   applyWorkspaceUi();
   setStatus(`Workspace target: ${target.toUpperCase()}`);
@@ -1403,7 +1457,9 @@ async function setWorkspaceTarget(nextTarget) {
     updateHeaderUi();
     setStatus(`Loading ${target.toUpperCase()} chats...`);
   }
-  refreshThreads(target, { force: true, silent: hasHydrated }).catch((e) => setStatus(e.message, true));
+  // Workspace switch should prefer cached/incremental refresh for responsiveness.
+  // Hard force is reserved for explicit pull-to-refresh.
+  refreshThreads(target, { force: false, silent: hasHydrated }).catch((e) => setStatus(e.message, true));
 }
 
 function blockInSandbox(actionLabel) {
@@ -1853,10 +1909,7 @@ function ensureImageViewer() {
   document.body.appendChild(backdrop);
 
   const close = () => backdrop.classList.remove("show");
-  backdrop.addEventListener("click", (event) => {
-    if (shouldSuppressSyntheticClick(event)) return;
-    if (event.target === backdrop) close();
-  });
+  wireBlurBackdropShield(backdrop, { onClose: close, modalSelector: ".imageViewer", suppressMs: 420 });
   const backBtn = byId("imageViewerBackBtn");
   if (backBtn) backBtn.onclick = close;
   document.addEventListener("keydown", (event) => {
@@ -2705,6 +2758,15 @@ async function refreshCodexVersions() {
     if (winNode) winNode.textContent = String(data?.windows || "Not detected");
     if (wslNode) wslNode.textContent = String(data?.wsl2 || "Not detected");
     updateWorkspaceAvailability(data?.windowsInstalled, data?.wsl2Installed);
+    const buildStale = !!data?.buildStale;
+    if (buildStale && !state.gatewayBuildStaleWarned) {
+      const buildShort = String(data?.buildGitShortSha || "").trim() || "unknown";
+      const repoShort = String(data?.repoGitShortSha || "").trim() || "latest";
+      setStatus(`Gateway EXE outdated (${buildShort} -> ${repoShort}). Please build exe.`, true);
+      state.gatewayBuildStaleWarned = true;
+    } else if (!buildStale) {
+      state.gatewayBuildStaleWarned = false;
+    }
   } catch (error) {
     const msg = String(error?.message || "").toLowerCase();
     const label =
@@ -3981,8 +4043,9 @@ function renderThreads(items) {
   };
   let threadEnterIndex = 0;
   let groupEnterIndex = 0;
-  const nextThreadEnterDelayMs = () => Math.min(420, threadEnterIndex++ * 28);
-  const nextGroupEnterDelayMs = () => Math.min(640, groupEnterIndex++ * 120);
+  const openPhaseEnterDelayMs = document.body.classList.contains("drawer-left-opening") ? 110 : 0;
+  const nextThreadEnterDelayMs = () => openPhaseEnterDelayMs + Math.min(420, threadEnterIndex++ * 28);
+  const nextGroupEnterDelayMs = () => openPhaseEnterDelayMs + Math.min(640, groupEnterIndex++ * 120);
   const animateStateTextSwap = (node, nextLabel) => {
     if (!node) return;
     const text = String(nextLabel || "");
@@ -4051,7 +4114,9 @@ function renderThreads(items) {
     if (!groupLabels.has(key)) groupLabels.set(key, keyLabel);
     groups.get(key).push(thread);
   }
-  const entries = Array.from(groups.entries()).map(([k, v]) => [groupLabels.get(k) || k, v, k]);
+  const entries = Array.from(groups.entries())
+    .map(([k, v]) => [groupLabels.get(k) || k, v, k])
+    .sort((a, b) => String(a[0] || "").localeCompare(String(b[0] || ""), undefined, { sensitivity: "base", numeric: true }));
   if (!entries.length) {
     if (state.threadListLoading && (!state.threadListLoadingTarget || state.threadListLoadingTarget === getWorkspaceTarget())) {
       renderThreadListState("Loading chats...", "spinner");
@@ -4087,9 +4152,11 @@ function renderThreads(items) {
       Array.from(state.collapsedWorkspaceKeys).filter((k) => validKeys.has(k) || String(k).startsWith("__section_"))
     );
   }
-  const hasKnownCollapseState = entries.some(([, , k]) => state.collapsedWorkspaceKeys.has(k));
-  if (!hasKnownCollapseState) {
+  const collapseInitKey = normalizeWorkspaceTarget(getWorkspaceTarget());
+  const collapseInitialized = !!state.threadGroupCollapseInitializedByWorkspace?.[collapseInitKey];
+  if (!collapseInitialized) {
     for (let i = 0; i < entries.length; i += 1) state.collapsedWorkspaceKeys.add(entries[i][2]);
+    state.threadGroupCollapseInitializedByWorkspace[collapseInitKey] = true;
   }
 
   let renderedThreads = 0;
@@ -4523,6 +4590,7 @@ function startThreadAutoRefreshLoop() {
   setInterval(() => {
     if (state.threadAutoRefreshInFlight) return;
     const target = getWorkspaceTarget();
+    if (state.threadRefreshAbortByWorkspace?.[target]) return;
     const wsOpen = !!(state.ws && state.ws.readyState === WebSocket.OPEN);
     const wsSubscribed = !!(wsOpen && state.wsSubscribedEvents);
     const minInterval = wsSubscribed ? THREAD_AUTO_REFRESH_CONNECTED_MS : THREAD_AUTO_REFRESH_DISCONNECTED_MS;
@@ -4530,9 +4598,8 @@ function startThreadAutoRefreshLoop() {
     const lastMs = state.threadAutoRefreshLastMsByWorkspace?.[target] || 0;
     if (now - lastMs < minInterval) return;
     state.threadAutoRefreshLastMsByWorkspace[target] = now;
-    const force = now - lastMs > 10000;
     state.threadAutoRefreshInFlight = true;
-    refreshThreads(target, { force, silent: true })
+    refreshThreads(target, { force: false, silent: true })
       .catch(() => null)
       .finally(() => {
         state.threadAutoRefreshInFlight = false;
@@ -4639,6 +4706,13 @@ function applyPendingPayloads(approvals, userInputs) {
 
 async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = {}) {
   const target = normalizeWorkspaceTarget(workspaceTarget);
+  const force = options.force === true;
+  if (force) {
+    const now = Date.now();
+    const last = Number(state.threadForceRefreshLastMsByWorkspace[target] || 0);
+    if (now - last < THREAD_FORCE_REFRESH_MIN_INTERVAL_MS) return;
+    state.threadForceRefreshLastMsByWorkspace[target] = now;
+  }
   const reqSeq = (state.threadRefreshReqSeqByWorkspace[target] || 0) + 1;
   state.threadRefreshReqSeqByWorkspace[target] = reqSeq;
 
@@ -4650,7 +4724,6 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = 
   const controller = new AbortController();
   state.threadRefreshAbortByWorkspace[target] = controller;
 
-  const force = options.force === true;
   const silent = options.silent === true;
   const workspace = encodeURIComponent(target);
   const query = force ? `workspace=${workspace}&force=true` : `workspace=${workspace}`;
@@ -4668,12 +4741,31 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = 
     const previousItems = Array.isArray(state.threadItemsByWorkspace[target])
       ? state.threadItemsByWorkspace[target]
       : [];
+    const threadListNode = byId("threadList");
+    const domWasPlaceholder =
+      !!threadListNode?.querySelector?.(".threadListState, .threadListPlainState") ||
+      !threadListNode?.querySelector?.(".groupCard, .itemCard");
     const previousIdSet = new Set(
       previousItems
         .map((item) => item?.id || item?.threadId || "")
         .filter(Boolean)
     );
     const data = await api(`/codex/threads?${query}`, { signal: controller.signal });
+    const meta = data && typeof data === "object" ? data.meta || null : null;
+    if (meta && typeof meta === "object") {
+      const totalMs = Number(meta.totalMs || 0);
+      const rebuildMs = Number(meta.rebuildMs || 0);
+      const pagesScanned = Number(meta.pagesScanned || 0);
+      const cacheHit = !!meta.cacheHit;
+      if (totalMs >= 1500) {
+        const cacheLabel = cacheHit ? "cache" : "rebuild";
+        setStatus(
+          `${target.toUpperCase()} chats ${cacheLabel} total ${Math.round(totalMs)}ms` +
+            (rebuildMs > 0 ? ` rebuild ${Math.round(rebuildMs)}ms` : "") +
+            (pagesScanned > 0 ? ` pages ${pagesScanned}` : "")
+        );
+      }
+    }
     if ((state.threadRefreshReqSeqByWorkspace[target] || 0) !== reqSeq) return;
     const items = ensureArrayItems(data.items).map((item) => {
       if (!item || typeof item !== "object") return item;
@@ -4701,14 +4793,15 @@ async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = 
     state.threadItemsByWorkspace[target] = items;
     state.threadWorkspaceHydratedByWorkspace[target] = true;
     if (getWorkspaceTarget() !== target) return;
+    const shouldAnimateVisibleListFromPlaceholder = domWasPlaceholder && items.length > 0;
     // If nothing changed, avoid re-rendering (keeps scroll position stable and reduces work on mobile).
-    if (!force && state.threadListRenderSigByWorkspace[target] === nextSig) {
+    if (!force && state.threadListRenderSigByWorkspace[target] === nextSig && !shouldAnimateVisibleListFromPlaceholder) {
       state.threadListAnimateThreadIds = new Set();
       return;
     }
     state.threadListRenderSigByWorkspace[target] = nextSig;
     state.threadItemsAll = items;
-    if (shouldAnimateFullList) {
+    if (shouldAnimateFullList || shouldAnimateVisibleListFromPlaceholder) {
       state.threadListAnimateNextRender = true;
       state.threadListAnimateThreadIds = new Set();
     } else {
@@ -4769,11 +4862,13 @@ async function refreshPending() {
 }
 
 async function refreshAll() {
-  await Promise.all([refreshThreads(), refreshHosts()]);
-  const otherTarget = getWorkspaceTarget() === "wsl2" ? "windows" : "wsl2";
+  const currentTarget = getWorkspaceTarget();
+  const otherTarget = currentTarget === "wsl2" ? "windows" : "wsl2";
+  const tasks = [refreshThreads(currentTarget, { force: false, silent: false }), refreshHosts()];
   if (isWorkspaceAvailable(otherTarget)) {
-    refreshThreads(otherTarget, { force: false, silent: true }).catch(() => null);
+    tasks.push(refreshThreads(otherTarget, { force: false, silent: true }).catch(() => null));
   }
+  await Promise.all(tasks);
   await refreshPending();
 }
 
@@ -5035,8 +5130,27 @@ async function resolveUserInput() {
 function setMobileTab(tab) {
   const wasThreadsOpen = document.body.classList.contains("drawer-left-open");
   document.body.classList.remove("drawer-left-open", "drawer-right-open");
+  document.body.classList.remove("drawer-left-opening", "drawer-right-opening");
+  if (state.drawerOpenPhaseTimer) {
+    clearTimeout(state.drawerOpenPhaseTimer);
+    state.drawerOpenPhaseTimer = 0;
+  }
   if (tab === "threads") document.body.classList.add("drawer-left-open");
   if (tab === "tools") document.body.classList.add("drawer-right-open");
+  if (tab === "threads" && !wasThreadsOpen) {
+    document.body.classList.add("drawer-left-opening");
+    state.drawerOpenPhaseTimer = setTimeout(() => {
+      document.body.classList.remove("drawer-left-opening");
+      state.drawerOpenPhaseTimer = 0;
+    }, 220);
+  }
+  if (tab === "tools") {
+    document.body.classList.add("drawer-right-opening");
+    state.drawerOpenPhaseTimer = setTimeout(() => {
+      document.body.classList.remove("drawer-right-opening");
+      state.drawerOpenPhaseTimer = 0;
+    }, 220);
+  }
   byId("mobileDrawerBackdrop").classList.toggle("show", tab === "threads" || tab === "tools");
   if (tab !== "threads") state.threadListPendingSidebarOpenAnimation = false;
   if (tab === "threads" && !wasThreadsOpen) {
@@ -5108,48 +5222,11 @@ function wireActions() {
   // Close drawers on pointerdown to keep the app feeling responsive.
   {
     const backdrop = byId("mobileDrawerBackdrop");
-    if (backdrop && !backdrop.__wiredCloseDrawer) {
-      backdrop.__wiredCloseDrawer = true;
-      const close = (event) => {
-        if (shouldSuppressSyntheticClick(event)) return;
-        try {
-          event?.preventDefault?.();
-          event?.stopPropagation?.();
-        } catch {}
-        if (event && String(event.type || "") === "pointerdown") {
-          // Guard against click-through: after closing the drawer on pointerdown,
-          // some WebViews still dispatch a synthesized click to the element behind the backdrop.
-          armSyntheticClickSuppression(420);
-        }
-        setMobileTab("chat");
-      };
-      backdrop.addEventListener("pointerdown", close, { passive: false });
-      backdrop.addEventListener("click", close);
-    }
+    wireBlurBackdropShield(backdrop, { onClose: () => setMobileTab("chat"), suppressMs: 420 });
   }
   {
     const folderBackdrop = byId("folderPickerBackdrop");
-    const modalCard = folderBackdrop?.querySelector?.(".folderPickerModal") || null;
-    if (folderBackdrop && !folderBackdrop.__wiredFolderPickerClose) {
-      folderBackdrop.__wiredFolderPickerClose = true;
-      folderBackdrop.addEventListener("pointerdown", (event) => {
-        if (event.target === folderBackdrop) {
-          event.preventDefault();
-          closeFolderPicker();
-        }
-      });
-      folderBackdrop.addEventListener("click", (event) => {
-        if (event.target === folderBackdrop) {
-          event.preventDefault();
-          closeFolderPicker();
-        }
-      });
-    }
-    if (modalCard && !modalCard.__wiredStopPropagation) {
-      modalCard.__wiredStopPropagation = true;
-      modalCard.addEventListener("pointerdown", (event) => event.stopPropagation());
-      modalCard.addEventListener("click", (event) => event.stopPropagation());
-    }
+    wireBlurBackdropShield(folderBackdrop, { onClose: closeFolderPicker, modalSelector: ".folderPickerModal", suppressMs: 420 });
   }
   bindClick("folderPickerCloseBtn", () => closeFolderPicker());
   bindClick("folderPickerUpBtn", () => {
@@ -5622,6 +5699,10 @@ function bootstrap() {
     if (!embeddedToken) byId("tokenInput").value = initialToken;
   }
   state.workspaceTarget = normalizeWorkspaceTarget(savedWorkspaceTarget);
+  state.collapsedWorkspaceKeys =
+    state.collapsedWorkspaceKeysByWorkspace[state.workspaceTarget] instanceof Set
+      ? state.collapsedWorkspaceKeysByWorkspace[state.workspaceTarget]
+      : new Set();
   state.activeThreadWorkspace = state.workspaceTarget;
   if (savedModel) state.selectedModel = savedModel;
   updateWorkspaceAvailability(false, false);
