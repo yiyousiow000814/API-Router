@@ -10,7 +10,10 @@ pub(crate) struct PreparedGatewayListeners {
 
 fn gateway_listen_addrs(listen_host: &str, listen_port: u16) -> anyhow::Result<Vec<SocketAddr>> {
     let primary: SocketAddr = format!("{listen_host}:{listen_port}").parse()?;
+    #[cfg(windows)]
     let mut addrs = vec![primary];
+    #[cfg(not(windows))]
+    let addrs = vec![primary];
     #[cfg(windows)]
     {
         let primary_ip = primary.ip().to_string();

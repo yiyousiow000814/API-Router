@@ -11,12 +11,18 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 const BRIDGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(35);
+#[cfg(target_os = "windows")]
 const BRIDGE_START_TIMEOUT: Duration = Duration::from_secs(8);
+#[cfg(target_os = "windows")]
 const BRIDGE_START_POLL_INTERVAL: Duration = Duration::from_millis(150);
+#[cfg(any(test, target_os = "windows"))]
 const BRIDGE_PORT_BASE: u16 = 42180;
+#[cfg(any(test, target_os = "windows"))]
 const BRIDGE_PORT_SPREAD: u16 = 211;
+#[cfg(any(test, target_os = "windows"))]
 const BRIDGE_PORT_CANDIDATES: usize = 4;
 const BRIDGE_HEALTH_MARKER: &str = "api-router-wsl-codex-bridge";
+#[cfg(any(test, target_os = "windows"))]
 const BRIDGE_LOG_PATH: &str = "/tmp/api-router-wsl-codex-bridge.log";
 
 static BRIDGES: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<BridgeRuntime>>>>> =
@@ -80,10 +86,12 @@ fn bridge_map() -> &'static Mutex<HashMap<String, std::sync::Arc<Mutex<BridgeRun
     BRIDGES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+#[cfg(target_os = "windows")]
 fn parse_unc_home(value: &str) -> Option<(String, String)> {
     let mut text = value.trim().replace('/', "\\");
     if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
@@ -141,6 +149,7 @@ fn default_bridge_key(target: &BridgeTarget) -> Cow<'_, str> {
     }
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn stable_bridge_port(key: &str, slot: usize) -> u16 {
     let mut hash = 2166136261u32;
     for byte in key.as_bytes() {
@@ -151,6 +160,7 @@ fn stable_bridge_port(key: &str, slot: usize) -> u16 {
     base + u16::try_from(slot).unwrap_or(0)
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn bridge_ports_for_target(target: &BridgeTarget) -> Vec<u16> {
     let key = default_bridge_key(target);
     (0..BRIDGE_PORT_CANDIDATES)
@@ -158,6 +168,7 @@ fn bridge_ports_for_target(target: &BridgeTarget) -> Vec<u16> {
         .collect()
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn python_bridge_script() -> &'static str {
     r#"
 import collections
@@ -403,6 +414,7 @@ if __name__ == "__main__":
 "#
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn build_launch_script(target: &BridgeTarget, port: u16) -> String {
     let encoded = {
         use base64::engine::general_purpose::STANDARD;
@@ -521,23 +533,28 @@ async fn healthcheck(base_url: &str, client: &Client) -> Result<bool, String> {
 }
 
 async fn start_bridge(target: &BridgeTarget) -> Result<BridgeRuntime, String> {
-    let client = Client::builder()
-        .timeout(BRIDGE_REQUEST_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut errors: Vec<String> = Vec::new();
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = target;
+        return Err("WSL bridge is only supported on Windows host".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let client = Client::builder()
+            .timeout(BRIDGE_REQUEST_TIMEOUT)
+            .build()
+            .map_err(|e| e.to_string())?;
+        let mut errors: Vec<String> = Vec::new();
 
-    for port in bridge_ports_for_target(target) {
-        let base_url = format!("http://127.0.0.1:{port}");
-        if healthcheck(&base_url, &client).await.unwrap_or(false) {
-            return Ok(BridgeRuntime {
-                endpoint: BridgeEndpoint { base_url, client },
-                child: None,
-            });
-        }
+        for port in bridge_ports_for_target(target) {
+            let base_url = format!("http://127.0.0.1:{port}");
+            if healthcheck(&base_url, &client).await.unwrap_or(false) {
+                return Ok(BridgeRuntime {
+                    endpoint: BridgeEndpoint { base_url, client },
+                    child: None,
+                });
+            }
 
-        #[cfg(target_os = "windows")]
-        {
             let mut child = build_launch_command(target, port)
                 .spawn()
                 .map_err(|e| format!("failed to launch WSL bridge: {e}"))?;
@@ -574,20 +591,14 @@ async fn start_bridge(target: &BridgeTarget) -> Result<BridgeRuntime, String> {
             } else {
                 errors.push(format!("WSL bridge did not become healthy on port {port}"));
             }
-            continue;
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = port;
-            return Err("WSL bridge is only supported on Windows host".to_string());
-        }
-    }
 
-    Err(if errors.is_empty() {
-        "failed to start WSL bridge".to_string()
-    } else {
-        errors.join("; ")
-    })
+        Err(if errors.is_empty() {
+            "failed to start WSL bridge".to_string()
+        } else {
+            errors.join("; ")
+        })
+    }
 }
 
 async fn ensure_bridge(target: &BridgeTarget) -> Result<BridgeEndpoint, String> {

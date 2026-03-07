@@ -167,16 +167,19 @@ enum LaunchSpec {
     Native {
         codex_home: Option<String>,
     },
+    #[cfg(any(test, target_os = "windows"))]
     Wsl {
         distro: Option<String>,
         codex_home_linux: Option<String>,
     },
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn parse_wsl_unc_codex_home(value: &str) -> Option<(String, String)> {
     let mut text = value.trim().replace('/', "\\");
     if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
@@ -204,7 +207,7 @@ fn resolve_launch_spec(codex_home: Option<&str>) -> LaunchSpec {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string());
-    #[cfg(target_os = "windows")]
+    #[cfg(any(test, target_os = "windows"))]
     {
         if let Some(ref value) = home {
             if let Some((distro, linux_path)) = parse_wsl_unc_codex_home(value) {
@@ -246,6 +249,7 @@ fn build_codex_command(codex_home: Option<&str>) -> Command {
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
             cmd
         }
+        #[cfg(any(test, target_os = "windows"))]
         LaunchSpec::Wsl {
             distro,
             codex_home_linux,
