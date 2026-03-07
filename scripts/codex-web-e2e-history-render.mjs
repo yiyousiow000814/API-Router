@@ -1181,6 +1181,124 @@ async function main() {
       }
     }
 
+    // Regression (race): opening a thread must not hide the opening overlay before the first visible
+    // messages render, even if a live notification schedules an overlapping active-thread refresh.
+    {
+      const raceProbe = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const h = window.__webCodexE2E;
+        if (!h) return done({ ok: false, error: 'missing e2e hook' });
+        if (typeof h.seedThreads !== 'function' || typeof h.setWorkspaceTarget !== 'function' || typeof h.emitWsPayload !== 'function') {
+          return done({ ok: false, error: 'missing e2e race hooks' });
+        }
+        const finish = (value) => {
+          try { window.fetch = origFetch; } catch {}
+          try { overlayObs.disconnect(); } catch {}
+          try { boxObs.disconnect(); } catch {}
+          done(value);
+        };
+        const log = (type, detail = {}) => {
+          events.push({ t: Math.round(performance.now()), type, ...detail });
+        };
+        const events = [];
+        const origFetch = window.fetch.bind(window);
+        const overlay = document.getElementById('chatOpeningOverlay');
+        const box = document.getElementById('chatBox');
+        if (!overlay || !box) return done({ ok: false, error: 'missing chat DOM' });
+        const overlayObs = new MutationObserver(() => {
+          log('overlay', {
+            show: overlay.classList.contains('show'),
+            msgCount: box.querySelectorAll('.msg').length,
+          });
+        });
+        const boxObs = new MutationObserver(() => {
+          log('chat', {
+            show: overlay.classList.contains('show'),
+            msgCount: box.querySelectorAll('.msg').length,
+          });
+        });
+        overlayObs.observe(overlay, { attributes: true, attributeFilter: ['class'] });
+        boxObs.observe(box, { childList: true, subtree: true });
+
+        let historySeq = 0;
+        window.fetch = async (input, init) => {
+          const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+          if (typeof url === 'string' && url.includes('/codex/threads/e2e_0/history')) {
+            historySeq += 1;
+            const seq = historySeq;
+            const delayMs = seq === 1 ? 300 : 900;
+            log('fetch:start', { seq, delayMs });
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            log('fetch:end', { seq, delayMs });
+            return new Response(JSON.stringify({
+              thread: {
+                id: 'e2e_0',
+                workspace: 'wsl2',
+                turns: [{
+                  id: 'turn-1',
+                  items: [
+                    { type: 'userMessage', content: [{ type: 'input_text', text: 'hello' }] },
+                    { type: 'agentMessage', text: 'world' },
+                  ],
+                }],
+              },
+              page: { hasMore: false, beforeCursor: null, totalTurns: 1, limit: 160 },
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
+          return origFetch(input, init);
+        };
+
+        Promise.resolve()
+          .then(() => h.seedThreads(6))
+          .then(() => h.setWorkspaceTarget('wsl2'))
+          .then(() => {
+            const group = document.querySelector('#threadList .groupHeader');
+            if (!group) throw new Error('missing seeded thread group');
+            group.click();
+            const item = document.querySelector('#threadList .itemCard');
+            if (!item) throw new Error('missing seeded thread item');
+            item.click();
+            setTimeout(() => {
+              log('emit:ui.event');
+              h.emitWsPayload({
+                type: 'ui.event',
+                payload: { conversationId: 'e2e_0', eventId: 1, kind: 'activity', status: 'running' },
+              });
+            }, 80);
+            setTimeout(() => {
+              finish({
+                ok: true,
+                finalMsgCount: box.querySelectorAll('.msg').length,
+                overlayVisible: overlay.classList.contains('show'),
+                events,
+              });
+            }, 1500);
+          })
+          .catch((e) => finish({ ok: false, error: String(e && e.message ? e.message : e), events }));
+      `)
+      if (!raceProbe?.ok) throw new Error(`open-race probe failed: ${raceProbe?.error || 'unknown'} ${JSON.stringify(raceProbe?.events || [])}`)
+      if (!(Number(raceProbe.finalMsgCount || 0) > 0)) {
+        throw new Error(`expected race probe to render messages, got ${JSON.stringify(raceProbe)}`)
+      }
+      const events = Array.isArray(raceProbe.events) ? raceProbe.events : []
+      let firstVisibleMsgAt = Number.POSITIVE_INFINITY
+      for (const event of events) {
+        if (event && event.type === 'chat' && Number(event.msgCount || 0) > 0) {
+          firstVisibleMsgAt = Math.min(firstVisibleMsgAt, Number(event.t || 0))
+        }
+      }
+      const hidOverlayBeforeMessages = events.some((event) =>
+        event &&
+        event.type === 'overlay' &&
+        event.show === false &&
+        Number(event.msgCount || 0) === 0 &&
+        Number(event.t || 0) < firstVisibleMsgAt
+      )
+      if (hidOverlayBeforeMessages) {
+        throw new Error(`expected opening overlay to stay visible until messages render, got ${JSON.stringify(raceProbe)}`)
+      }
+    }
+
     // Regression (network): when WS is connected+subscribed, the UI should not keep polling thread history
     // via HTTP, and history fetch URLs should not include rolloutPath.
     {

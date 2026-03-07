@@ -163,6 +163,9 @@ const state = {
   activeThreadHistoryBeforeCursor: "",
   activeThreadHistoryTotalTurns: 0,
   activeThreadHistoryReqSeq: 0,
+  activeThreadHistoryInFlightPromise: null,
+  activeThreadHistoryInFlightThreadId: "",
+  activeThreadHistoryPendingRefresh: null,
 };
 
 const threadAnimDebug = {
@@ -2856,6 +2859,9 @@ function clearChatMessages(options = {}) {
   state.activeThreadHistoryBeforeCursor = "";
   state.activeThreadHistoryTotalTurns = 0;
   state.activeThreadHistoryReqSeq = 0;
+  state.activeThreadHistoryInFlightPromise = null;
+  state.activeThreadHistoryInFlightThreadId = "";
+  state.activeThreadHistoryPendingRefresh = null;
 }
 
 function updateMobileComposerState() {
@@ -3809,66 +3815,112 @@ function mergeHistoryTurns(existingTurns, incomingTurns) {
   return merged;
 }
 
+function queuePendingActiveThreadHistoryRefresh(threadId, options = {}) {
+  if (!threadId) return;
+  const previous = state.activeThreadHistoryPendingRefresh;
+  const next = {
+    threadId,
+    animateBadge: !!(previous?.animateBadge || options.animateBadge),
+    forceRender: !!(previous?.forceRender || options.forceRender),
+    forceHistoryWindow: !!(previous?.forceHistoryWindow || options.forceHistoryWindow),
+    workspace: String(options.workspace || previous?.workspace || state.activeThreadWorkspace || "").trim(),
+    rolloutPath: String(options.rolloutPath || previous?.rolloutPath || state.activeThreadRolloutPath || "").trim(),
+  };
+  const limit = Number(options.limit || previous?.limit || 0) || 0;
+  if (limit > 0) next.limit = limit;
+  state.activeThreadHistoryPendingRefresh = next;
+}
+
 async function loadThreadMessages(threadId, options = {}) {
   if (!threadId) return;
+  // Keep one canonical in-flight history load per active thread. Follow-up refresh requests for the
+  // same thread are merged into a single pending refresh so the opening render cannot be invalidated
+  // mid-flight and leave an empty chat surface behind.
+  if (
+    state.activeThreadHistoryInFlightPromise &&
+    state.activeThreadHistoryInFlightThreadId === threadId
+  ) {
+    queuePendingActiveThreadHistoryRefresh(threadId, options);
+    return state.activeThreadHistoryInFlightPromise;
+  }
   const reqSeq = (Number(state.activeThreadHistoryReqSeq || 0) + 1) | 0;
   state.activeThreadHistoryReqSeq = reqSeq;
   // Any explicit history fetch should satisfy the live-poll interval so the timer loop doesn't
   // immediately re-fetch right after open/refresh actions.
   state.activeThreadLiveLastPollMs = Date.now();
-  try {
-    const e2e = window.__webCodexE2E;
-    if (e2e && typeof e2e.getThreadHistory === "function") {
-      const seeded = e2e.getThreadHistory(threadId);
-      if (seeded) {
-        try { window.__webCodexE2E_lastHistorySource = "seed"; } catch {}
-        await applyThreadToChat(seeded, options);
+  const loadPromise = (async () => {
+    try {
+      const e2e = window.__webCodexE2E;
+      if (e2e && typeof e2e.getThreadHistory === "function") {
+        const seeded = e2e.getThreadHistory(threadId);
+        if (seeded) {
+          try { window.__webCodexE2E_lastHistorySource = "seed"; } catch {}
+          await applyThreadToChat(seeded, options);
+          return;
+        }
+      }
+    } catch (e) {
+      // In e2e mode, capture seeding errors for debugging; then continue with normal fetch paths.
+      try {
+        if (window.__webCodexE2E) {
+          window.__webCodexE2E_seedHistoryError = String(e && e.message ? e.message : e);
+        }
+      } catch {}
+    }
+    try {
+      const limit = Number(options.limit || state.historyWindowSize || 160) || 160;
+      const history = await api(buildThreadHistoryUrl(threadId, {
+        workspace: options.workspace,
+        rolloutPath: options.rolloutPath,
+        limit,
+      }), {
+        signal: options.signal,
+      });
+      if (reqSeq !== state.activeThreadHistoryReqSeq) return;
+      if (state.activeThreadId && state.activeThreadId !== threadId) return;
+      const page = history?.page || {};
+      const incomingThread = history?.thread || null;
+      const incomingTurns = Array.isArray(incomingThread?.turns) ? incomingThread.turns : [];
+      const mergedTurns = mergeHistoryTurns(
+        state.activeThreadHistoryThreadId === threadId ? state.activeThreadHistoryTurns : [],
+        incomingTurns
+      );
+      state.activeThreadHistoryTurns = mergedTurns;
+      state.activeThreadHistoryThreadId = threadId;
+      state.activeThreadHistoryHasMore = !!page?.hasMore;
+      state.activeThreadHistoryBeforeCursor = String(page?.beforeCursor || "").trim();
+      state.activeThreadHistoryTotalTurns = Number(page?.totalTurns || incomingTurns.length || 0) || incomingTurns.length || 0;
+      const thread = incomingThread ? {
+        ...incomingThread,
+        turns: mergedTurns,
+        page,
+      } : null;
+      if (thread) {
+        try { window.__webCodexE2E_lastHistorySource = "history"; } catch {}
+        await applyThreadToChat(thread, { ...options, forceHistoryWindow: !!page?.hasMore });
         return;
       }
+    } catch (error) {
+      throw error;
     }
-  } catch (e) {
-    // In e2e mode, capture seeding errors for debugging; then continue with normal fetch paths.
-    try {
-      if (window.__webCodexE2E) {
-        window.__webCodexE2E_seedHistoryError = String(e && e.message ? e.message : e);
-      }
-    } catch {}
-  }
+  })();
+  state.activeThreadHistoryInFlightPromise = loadPromise;
+  state.activeThreadHistoryInFlightThreadId = threadId;
   try {
-    const limit = Number(options.limit || state.historyWindowSize || 160) || 160;
-    const history = await api(buildThreadHistoryUrl(threadId, {
-      workspace: options.workspace,
-      rolloutPath: options.rolloutPath,
-      limit,
-    }), {
-      signal: options.signal,
-    });
-    if (reqSeq !== state.activeThreadHistoryReqSeq) return;
-    if (state.activeThreadId && state.activeThreadId !== threadId) return;
-    const page = history?.page || {};
-    const incomingThread = history?.thread || null;
-    const incomingTurns = Array.isArray(incomingThread?.turns) ? incomingThread.turns : [];
-    const mergedTurns = mergeHistoryTurns(
-      state.activeThreadHistoryThreadId === threadId ? state.activeThreadHistoryTurns : [],
-      incomingTurns
-    );
-    state.activeThreadHistoryTurns = mergedTurns;
-    state.activeThreadHistoryThreadId = threadId;
-    state.activeThreadHistoryHasMore = !!page?.hasMore;
-    state.activeThreadHistoryBeforeCursor = String(page?.beforeCursor || "").trim();
-    state.activeThreadHistoryTotalTurns = Number(page?.totalTurns || incomingTurns.length || 0) || incomingTurns.length || 0;
-    const thread = incomingThread ? {
-      ...incomingThread,
-      turns: mergedTurns,
-      page,
-    } : null;
-    if (thread) {
-      try { window.__webCodexE2E_lastHistorySource = "history"; } catch {}
-      await applyThreadToChat(thread, { ...options, forceHistoryWindow: !!page?.hasMore });
-      return;
+    return await loadPromise;
+  } finally {
+    if (state.activeThreadHistoryInFlightPromise === loadPromise) {
+      state.activeThreadHistoryInFlightPromise = null;
+      state.activeThreadHistoryInFlightThreadId = "";
+      const pending = state.activeThreadHistoryPendingRefresh;
+      if (pending && pending.threadId === threadId) {
+        state.activeThreadHistoryPendingRefresh = null;
+        setTimeout(() => {
+          if (state.activeThreadId !== threadId) return;
+          loadThreadMessages(threadId, pending).catch(() => {});
+        }, 0);
+      }
     }
-  } catch (error) {
-    throw error;
   }
 }
 
