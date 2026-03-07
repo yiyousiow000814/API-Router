@@ -45,6 +45,113 @@ async fn health_and_status_work_without_upstream() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+#[tokio::test]
+async fn auth_verify_returns_while_history_read_is_blocked() {
+    use std::sync::{mpsc, Arc, Condvar, Mutex as StdMutex};
+    use std::time::Duration;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let cfg = AppConfig::default_config();
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
+    let release = Arc::new((StdMutex::new(false), Condvar::new()));
+    let release_for_loader = release.clone();
+    crate::orchestrator::gateway::_set_test_web_codex_history_loader(Some(Arc::new(
+        move || {
+            let _ = entered_tx.send(());
+            let (lock, cvar) = &*release_for_loader;
+            let mut released = lock.lock().expect("release lock");
+            while !*released {
+                let (guard, _) = cvar
+                    .wait_timeout(released, Duration::from_secs(5))
+                    .expect("wait timeout");
+                released = guard;
+            }
+            Ok((json!({
+                    "id": "t-blocked",
+                    "turns": [],
+                }), json!({
+                    "hasMore": false,
+                    "beforeCursor": null,
+                    "limit": 1,
+                    "totalTurns": 0,
+                })))
+        },
+    )));
+
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let base = format!("http://{}:{}", addr.ip(), addr.port());
+    let client = reqwest::Client::new();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let health = client
+        .get(format!("{base}/health"))
+        .send()
+        .await
+        .expect("health response");
+    assert_eq!(health.status(), StatusCode::OK);
+    let history_task = tokio::spawn({
+        let client = client.clone();
+        let url = format!("{base}/__test/block-history");
+        async move { client.get(url).send().await.expect("history response") }
+    });
+
+    tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(4)))
+        .await
+        .expect("entered join")
+        .expect("history handler entered");
+
+    let verify_resp = tokio::time::timeout(
+        Duration::from_millis(500),
+        client
+            .post(format!("{base}/codex/auth/verify"))
+            .header("content-type", "application/json")
+            .body("{}")
+            .send(),
+    )
+    .await
+    .expect("verify should not block behind history")
+    .expect("verify response");
+
+    assert_eq!(verify_resp.status(), StatusCode::OK);
+    let payload: serde_json::Value = verify_resp
+        .json()
+        .await
+        .expect("verify json");
+    assert_eq!(payload.get("ok").and_then(|v| v.as_bool()), Some(true));
+
+    {
+        let (lock, cvar) = &*release;
+        let mut released = lock.lock().expect("release lock");
+        *released = true;
+        cvar.notify_all();
+    }
+    let _ = history_task.await.expect("history join");
+    crate::orchestrator::gateway::_set_test_web_codex_history_loader(None);
+}
+
 #[test]
 fn routing_info_event_only_logs_when_route_state_changes() {
     let last = LastUsedRoute {

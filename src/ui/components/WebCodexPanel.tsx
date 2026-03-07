@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useMemo, useState } from 'react'
+import { normalizeGatewayPort } from '../utils/gatewayUrl'
 
 type TailscaleStatus = {
   installed: boolean
@@ -9,10 +10,14 @@ type TailscaleStatus = {
   downloadUrl: string
 }
 
-export function WebCodexPanel() {
+type Props = {
+  listenPort?: number | null
+}
+
+export function WebCodexPanel({ listenPort }: Props) {
   const [tailscale, setTailscale] = useState<TailscaleStatus | null>(null)
   const [tailscaleLoading, setTailscaleLoading] = useState<boolean>(true)
-  const gatewayPort = '4000'
+  const gatewayPort = String(normalizeGatewayPort(listenPort))
   const appWebCodexUrl = useMemo(() => `http://127.0.0.1:${gatewayPort}/codex-web`, [gatewayPort])
   const appWsUrl = useMemo(() => `ws://127.0.0.1:${gatewayPort}/codex/ws?token=YOUR_GATEWAY_TOKEN`, [gatewayPort])
   const sandboxWebCodexUrl = useMemo(() => 'http://127.0.0.1:5173/sandbox/codex-web', [])
@@ -112,7 +117,7 @@ export function WebCodexPanel() {
             <div className="aoCardTitle">Ports</div>
           </div>
           <ul className="aoHint" style={{ margin: 0, paddingLeft: 18 }}>
-            <li><code>4000</code> (App): real gateway + real Web Codex. Desktop open: <code>{appWebCodexUrl}</code>.</li>
+            <li><code>{gatewayPort}</code> (App): real gateway + real Web Codex. Desktop open: <code>{appWebCodexUrl}</code>.</li>
             <li><code>5173</code> (Dev): sandbox preview (read-only). Desktop open: <code>{sandboxWebCodexUrl}</code>.</li>
             <li>Quick sandbox alias: <code>{sandboxQuickUrl}</code>.</li>
           </ul>
@@ -157,7 +162,7 @@ export function WebCodexPanel() {
             <div className="aoCardTitle">How To Connect (Phone)</div>
           </div>
           <ol className="aoHint" style={{ margin: 0, paddingLeft: 18 }}>
-            <li>Start API Router (gateway on port <code>4000</code>) and keep this machine online.</li>
+            <li>Start API Router (gateway on port <code>{gatewayPort}</code>) and keep this machine online.</li>
             <li>Ensure phone + computer are logged into the same Tailscale account/tailnet.</li>
             <li>Open <code>{tailscaleWebUrl}</code> on phone browser (or use <code>{tailscaleWebUrlByIp}</code>).</li>
             <li>Paste Gateway Token, click Connect.</li>

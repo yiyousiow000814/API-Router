@@ -902,11 +902,6 @@ fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<Vec<St
         .unwrap_or_default();
     let homes = resolve_cli_homes(homes)?;
 
-    let gateway_token = state.secrets.ensure_gateway_token()?;
-    if gateway_token.trim().is_empty() {
-        return Err("gateway token is empty".to_string());
-    }
-    let next_auth = auth_with_openai_key(gateway_token.trim());
     let mut failed_targets: Vec<String> = Vec::new();
 
     for h in &homes {
@@ -920,20 +915,9 @@ fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<Vec<St
         if mode != "gateway" {
             continue;
         }
-        let auth_path = cli_auth_path(h);
-        let current_gateway_token = read_json(&auth_path).ok().and_then(|v| {
-            v.get("OPENAI_API_KEY")
-                .and_then(|x| x.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-        });
-        if current_gateway_token.as_deref() == Some(gateway_token.trim()) {
-            continue;
-        }
-        if let Err(e) = write_json(&auth_path, &next_auth) {
+        if let Err(e) = switch_to_gateway_home_impl(state, h) {
             failed_targets.push(format!(
-                "{} (write auth.json failed: {e})",
+                "{} (rewrite gateway target failed: {e})",
                 h.to_string_lossy()
             ));
         }

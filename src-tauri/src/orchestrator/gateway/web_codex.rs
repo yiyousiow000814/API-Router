@@ -13,6 +13,7 @@ const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TERMINAL_COMMAND_LEN: usize = 4000;
 const MAX_TERMINAL_OUTPUT_BYTES: usize = 512 * 1024;
 const TERMINAL_TIMEOUT_SECS: u64 = 20;
+const HISTORY_READ_TIMEOUT_SECS: u64 = 12;
 const VERSION_DETECT_TIMEOUT_SECS: u64 = 3;
 const VERSION_INFO_CACHE_SECS: i64 = 30;
 
@@ -251,8 +252,18 @@ fn truncate_output(value: &[u8]) -> (String, bool) {
     (String::from_utf8_lossy(head).to_string(), true)
 }
 
+fn workspace_target_from_params(params: &Value) -> Option<WorkspaceTarget> {
+    params
+        .get("workspace")
+        .and_then(|v| v.as_str())
+        .and_then(parse_workspace_target)
+}
+
 async fn codex_rpc_call(method: &str, params: Value) -> Result<Value, Response> {
-    let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
+    let home =
+        crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(
+            workspace_target_from_params(&params),
+        );
     crate::codex_app_server::request_in_home(home.as_deref(), method, params)
         .await
         .map_err(|e| api_error_detail(StatusCode::BAD_GATEWAY, "codex app-server request failed", e))
@@ -1135,6 +1146,23 @@ fn codex_home_dir_result() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home))
 }
 
+fn codex_home_dir_for_override(codex_home: Option<&str>) -> Result<PathBuf, String> {
+    let Some(home) = codex_home
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return codex_home_dir_result();
+    };
+    #[cfg(target_os = "windows")]
+    if home.starts_with('/') {
+        let (distro, _) = crate::orchestrator::gateway::web_codex_home::resolve_wsl_identity()?;
+        return Ok(crate::orchestrator::gateway::web_codex_home::linux_path_to_unc(
+            home, &distro,
+        ));
+    }
+    Ok(PathBuf::from(home))
+}
+
 fn find_rollout_file_by_thread_id(dir: &Path, thread_id: &str) -> Option<PathBuf> {
     let read = std::fs::read_dir(dir).ok()?;
     for entry in read.flatten() {
@@ -1158,7 +1186,10 @@ fn find_rollout_file_by_thread_id(dir: &Path, thread_id: &str) -> Option<PathBuf
     None
 }
 
-fn import_windows_rollout_into_codex_home(thread_id: &str) -> Result<bool, String> {
+fn import_windows_rollout_into_codex_home(
+    codex_home: Option<&str>,
+    thread_id: &str,
+) -> Result<bool, String> {
     let Some(src_root) = default_windows_codex_dir().map(|p| p.join("sessions")) else {
         return Ok(false);
     };
@@ -1168,7 +1199,7 @@ fn import_windows_rollout_into_codex_home(thread_id: &str) -> Result<bool, Strin
     let Some(src_file) = find_rollout_file_by_thread_id(&src_root, thread_id) else {
         return Ok(false);
     };
-    import_rollout_file_into_codex_home(thread_id, src_file.as_path())
+    import_rollout_file_into_codex_home(codex_home, thread_id, src_file.as_path())
 }
 
 fn is_safe_thread_id(thread_id: &str) -> bool {
@@ -1206,14 +1237,21 @@ fn find_wsl_rollout_file_by_thread_id(thread_id: &str) -> Option<PathBuf> {
     }
 }
 
-fn import_wsl_rollout_into_codex_home(thread_id: &str) -> Result<bool, String> {
+fn import_wsl_rollout_into_codex_home(
+    codex_home: Option<&str>,
+    thread_id: &str,
+) -> Result<bool, String> {
     let Some(src_file) = find_wsl_rollout_file_by_thread_id(thread_id) else {
         return Ok(false);
     };
-    import_rollout_file_into_codex_home(thread_id, src_file.as_path())
+    import_rollout_file_into_codex_home(codex_home, thread_id, src_file.as_path())
 }
 
-fn import_rollout_file_into_codex_home(thread_id: &str, src_file: &Path) -> Result<bool, String> {
+fn import_rollout_file_into_codex_home(
+    codex_home: Option<&str>,
+    thread_id: &str,
+    src_file: &Path,
+) -> Result<bool, String> {
     if !src_file.exists() || !src_file.is_file() {
         return Ok(false);
     }
@@ -1229,7 +1267,9 @@ fn import_rollout_file_into_codex_home(thread_id: &str, src_file: &Path) -> Resu
     if !is_jsonl || !file_name.contains(thread_id) {
         return Ok(false);
     }
-    let dst_dir = codex_home_dir_result()?.join("sessions").join("imported");
+    let dst_dir = codex_home_dir_for_override(codex_home)?
+        .join("sessions")
+        .join("imported");
     std::fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
     let dst_file = dst_dir.join(format!("{thread_id}.jsonl"));
     if dst_file.exists() {
@@ -1287,7 +1327,23 @@ fn import_wsl_rollout_from_known_path(thread_id: &str, rollout_path: &str) -> Re
     }
     let src_path = linux_wsl_path_to_windows_path(trimmed)
         .unwrap_or_else(|| PathBuf::from(trimmed));
-    import_rollout_file_into_codex_home(thread_id, src_path.as_path())
+    let codex_home =
+        crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(
+            Some(WorkspaceTarget::Wsl2),
+        );
+    import_rollout_file_into_codex_home(codex_home.as_deref(), thread_id, src_path.as_path())
+}
+
+fn import_rollout_from_known_path(
+    codex_home: Option<&str>,
+    thread_id: &str,
+    workspace_hint: Option<WorkspaceTarget>,
+    rollout_path: &str,
+) -> Result<bool, String> {
+    match workspace_hint {
+        Some(WorkspaceTarget::Wsl2) => import_wsl_rollout_from_known_path(thread_id, rollout_path),
+        _ => import_rollout_file_into_codex_home(codex_home, thread_id, Path::new(rollout_path)),
+    }
 }
 
 fn resume_import_order(workspace_hint: Option<WorkspaceTarget>) -> Vec<WorkspaceTarget> {
@@ -1297,6 +1353,7 @@ fn resume_import_order(workspace_hint: Option<WorkspaceTarget>) -> Vec<Workspace
     }
 }
 
+#[cfg(test)]
 fn should_try_known_wsl_rollout_path(
     workspace_hint: Option<WorkspaceTarget>,
     rollout_path: Option<&str>,
@@ -1448,53 +1505,98 @@ async fn codex_threads_create(
 async fn codex_thread_history(
     State(st): State<GatewayState>,
     headers: HeaderMap,
-    Query(_query): Query<ThreadResumeQuery>,
+    Query(query): Query<ThreadResumeQuery>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
-    // clawdex-mobile uses thread/read (structured API). This avoids leaking bootstrap/system prompt
-    // text from local JSONL and keeps the UI aligned with Codex app-server behavior.
-    let params = json!({
-        "threadId": id,
-        "includeTurns": true,
-    });
-    let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
-    match crate::codex_app_server::request_in_home(home.as_deref(), "thread/read", params).await {
-        Ok(v) => {
-            let thread = v.get("thread").cloned().unwrap_or(v);
-            Json(json!({ "thread": thread })).into_response()
-        }
-        Err(first_error) => {
-            // Match clawdex: if includeTurns materialization isn't available, fall back to summary.
-            let lower = first_error.to_ascii_lowercase();
-            let is_materialization_gap =
-                lower.contains("includeturns") && (lower.contains("material") || lower.contains("materialis"));
-            if is_materialization_gap {
-                let fallback = json!({
-                    "threadId": id,
-                    "includeTurns": false,
-                });
-                match crate::codex_app_server::request_in_home(home.as_deref(), "thread/read", fallback).await {
-                    Ok(v) => {
-                        let thread = v.get("thread").cloned().unwrap_or(v);
-                        Json(json!({ "thread": thread })).into_response()
-                    }
-                    Err(_) => api_error_detail(
-                        StatusCode::BAD_GATEWAY,
-                        "failed to read thread",
-                        first_error,
-                    ),
-                }
-            } else {
-                api_error_detail(
-                    StatusCode::BAD_GATEWAY,
-                    "failed to read thread",
-                    first_error,
+    let workspace_hint = query.workspace.as_deref().and_then(parse_workspace_target);
+    let rollout_path = if let Some(path) = query
+        .rollout_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+    {
+        Some(path)
+    } else {
+        match workspace_hint {
+            Some(target) => {
+                crate::orchestrator::gateway::web_codex_threads::known_rollout_path_for_thread(
+                    target, &id,
                 )
+                .await
             }
+            None => None,
         }
+    };
+    let limit = query
+        .limit
+        .unwrap_or_else(crate::orchestrator::gateway::web_codex_history::default_history_page_limit);
+    let id_for_read = id.clone();
+    let before = query.before.clone();
+    let history_read = tokio::task::spawn_blocking(move || {
+        crate::orchestrator::gateway::web_codex_history::load_thread_history_page(
+            &id_for_read,
+            workspace_hint,
+            rollout_path.as_deref(),
+            before.as_deref(),
+            limit,
+        )
+    });
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(HISTORY_READ_TIMEOUT_SECS),
+        history_read,
+    )
+    .await
+    {
+        Ok(Ok(Ok(page))) => Json(json!({ "thread": page.thread, "page": page.page })).into_response(),
+        Ok(Ok(Err(detail))) => {
+            api_error_detail(StatusCode::BAD_GATEWAY, "failed to read thread", detail)
+        }
+        Ok(Err(join_error)) => api_error_detail(
+            StatusCode::BAD_GATEWAY,
+            "failed to read thread",
+            join_error.to_string(),
+        ),
+        Err(_) => api_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "thread history read timed out",
+        ),
+    }
+}
+
+#[cfg(test)]
+async fn codex_test_block_history() -> Response {
+    let history_read = tokio::task::spawn_blocking(move || {
+        crate::orchestrator::gateway::web_codex_history::load_thread_history_page(
+            "test-thread",
+            None,
+            Some("C:\\temp\\test.jsonl"),
+            None,
+            1,
+        )
+    });
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(HISTORY_READ_TIMEOUT_SECS),
+        history_read,
+    )
+    .await
+    {
+        Ok(Ok(Ok(page))) => Json(json!({ "thread": page.thread, "page": page.page })).into_response(),
+        Ok(Ok(Err(detail))) => {
+            api_error_detail(StatusCode::BAD_GATEWAY, "failed to read thread", detail)
+        }
+        Ok(Err(join_error)) => api_error_detail(
+            StatusCode::BAD_GATEWAY,
+            "failed to read thread",
+            join_error.to_string(),
+        ),
+        Err(_) => api_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "thread history read timed out",
+        ),
     }
 }
 
@@ -1518,23 +1620,34 @@ async fn codex_thread_resume(
     } else {
         None
     };
-    if should_try_known_wsl_rollout_path(workspace_hint, rollout_hint.as_deref()) {
-        if let Some(rollout_path) = rollout_hint.as_deref() {
-            match import_wsl_rollout_from_known_path(&id, rollout_path) {
-                Ok(_) => {}
-                Err(import_error) => {
-                    return api_error_detail(
-                        StatusCode::BAD_GATEWAY,
-                        "failed to resume thread",
-                        format!("import failed: {import_error}"),
-                    );
-                }
+    let known_rollout_path = if rollout_hint.is_some() {
+        rollout_hint.clone()
+    } else {
+        match workspace_hint {
+            Some(target) => {
+                crate::orchestrator::gateway::web_codex_threads::known_rollout_path_for_thread(target, &id).await
+            }
+            None => None,
+        }
+    };
+    let home =
+        crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(
+            workspace_hint,
+        );
+    if let Some(rollout_path) = known_rollout_path.as_deref() {
+        match import_rollout_from_known_path(home.as_deref(), &id, workspace_hint, rollout_path) {
+            Ok(_) => {}
+            Err(import_error) => {
+                return api_error_detail(
+                    StatusCode::BAD_GATEWAY,
+                    "failed to resume thread",
+                    format!("import failed: {import_error}"),
+                );
             }
         }
     }
 
     let params = json!({ "threadId": id });
-    let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
     match crate::codex_app_server::request_in_home(home.as_deref(), "thread/resume", params.clone()).await {
         Ok(v) => {
             Json(v).into_response()
@@ -1544,9 +1657,13 @@ async fn codex_thread_resume(
             let missing_rollout =
                 lower.contains("no rollout found") || lower.contains("thread id");
             if missing_rollout {
-                if should_try_known_wsl_rollout_path(workspace_hint, rollout_hint.as_deref()) {
-                    if let Some(rollout_path) = rollout_hint.as_deref() {
-                        match import_wsl_rollout_from_known_path(&id, rollout_path) {
+                if let Some(rollout_path) = known_rollout_path.as_deref() {
+                        match import_rollout_from_known_path(
+                            home.as_deref(),
+                            &id,
+                            workspace_hint,
+                            rollout_path,
+                        ) {
                             Ok(true) => {
                                 match crate::codex_app_server::request_in_home(home.as_deref(), "thread/resume", params.clone()).await {
                                     Ok(v) => {
@@ -1570,16 +1687,32 @@ async fn codex_thread_resume(
                                 );
                             }
                         }
-                    }
                 }
                 let import_order = resume_import_order(workspace_hint);
                 for target in import_order {
                     let import_result = match target {
-                        WorkspaceTarget::Windows => import_windows_rollout_into_codex_home(&id),
-                        WorkspaceTarget::Wsl2 => import_wsl_rollout_into_codex_home(&id),
+                        WorkspaceTarget::Windows => {
+                            let target_home =
+                                crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows));
+                            import_windows_rollout_into_codex_home(target_home.as_deref(), &id)
+                        }
+                        WorkspaceTarget::Wsl2 => {
+                            let target_home =
+                                crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Wsl2));
+                            import_wsl_rollout_into_codex_home(target_home.as_deref(), &id)
+                        }
                     };
                     match import_result {
-                        Ok(true) => match crate::codex_app_server::request_in_home(home.as_deref(), "thread/resume", params.clone()).await {
+                        Ok(true) => {
+                            let retry_home =
+                                crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(Some(target));
+                            match crate::codex_app_server::request_in_home(
+                                retry_home.as_deref(),
+                                "thread/resume",
+                                params.clone(),
+                            )
+                            .await
+                            {
                             Ok(v) => {
                                 return Json(v).into_response();
                             }
@@ -1590,7 +1723,8 @@ async fn codex_thread_resume(
                                     second_error,
                                 );
                             }
-                        },
+                        }
+                        }
                         Ok(false) => continue,
                         Err(import_error) => {
                             return api_error_detail(
@@ -1623,6 +1757,10 @@ struct ThreadResumeQuery {
     workspace: Option<String>,
     #[serde(default, rename = "rolloutPath")]
     rollout_path: Option<String>,
+    #[serde(default)]
+    before: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -2308,9 +2446,11 @@ async fn codex_rpc_proxy(
 #[cfg(test)]
 mod web_codex_tests {
     use super::{
-        parse_slash_command, resume_import_order, should_try_known_wsl_rollout_path,
-        split_stream_chunks, truncate_output, WorkspaceTarget, MAX_TERMINAL_OUTPUT_BYTES,
+        codex_home_dir_for_override, import_rollout_file_into_codex_home, parse_slash_command,
+        resume_import_order, should_try_known_wsl_rollout_path, split_stream_chunks,
+        truncate_output, WorkspaceTarget, MAX_TERMINAL_OUTPUT_BYTES,
     };
+    use std::path::Path;
 
     #[test]
     fn parse_plan_variants() {
@@ -2379,4 +2519,38 @@ mod web_codex_tests {
         assert!(!should_try_known_wsl_rollout_path(None, Some("C:\\\\tmp\\\\a.jsonl")));
     }
 
+    #[test]
+    fn explicit_rpc_home_override_controls_import_destination() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target_home = temp.path().join("target-home");
+        let source_file = temp.path().join("019c7766-db34-7c43-a808-b2e8f356c907.jsonl");
+        std::fs::write(&source_file, "{\"thread_id\":\"t\"}\n").expect("write rollout");
+
+        let imported = import_rollout_file_into_codex_home(
+            Some(target_home.to_string_lossy().as_ref()),
+            "019c7766-db34-7c43-a808-b2e8f356c907",
+            Path::new(&source_file),
+        )
+        .expect("import");
+        assert!(imported);
+        assert!(
+            target_home
+                .join("sessions")
+                .join("imported")
+                .join("019c7766-db34-7c43-a808-b2e8f356c907.jsonl")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn linux_home_override_resolves_to_unc_path_on_windows() {
+        #[cfg(target_os = "windows")]
+        {
+            let resolved =
+                codex_home_dir_for_override(Some("/home/test/.codex")).expect("resolve wsl home");
+            let resolved_str = resolved.to_string_lossy();
+            assert!(resolved_str.contains("wsl.localhost") || resolved_str.contains("wsl$"));
+            assert!(resolved_str.contains(".codex"));
+        }
+    }
 }

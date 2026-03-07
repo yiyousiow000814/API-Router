@@ -103,42 +103,21 @@ export function applyProviderSwitchStatusResult(
   }
 }
 
-type GatewayAccessStatus = { ok: boolean; authorized?: boolean; legacy_conflict?: boolean }
-
 export async function runGatewaySwitchPreflight(
   target: 'gateway' | 'official' | 'provider',
   homes: string[],
-  listenPort: number,
+  _listenPort: number,
   isWslHomePath: (home: string) => boolean,
-  invokeFn: typeof invoke,
-  confirmFn: (msg: string) => boolean,
+  _invokeFn: typeof invoke,
+  _confirmFn: (msg: string) => boolean,
   flashToast: (msg: string, kind?: 'info' | 'error') => void,
 ): Promise<boolean> {
   if (target !== 'gateway') {
     return true
   }
-  let access = await invokeFn<GatewayAccessStatus>('wsl_gateway_access_quick_status')
-  if (access.legacy_conflict) {
-    const shouldCleanup = confirmFn(
-      `A legacy WSL2 portproxy rule is using port ${listenPort} (this can also break Windows access to the gateway).\n\nClick OK to clean it now (requires admin), or Cancel to abort switching.`,
-    )
-    if (!shouldCleanup) return false
-    await invokeFn('wsl_gateway_revoke_access')
-    flashToast('Removed legacy WSL2 portproxy conflict')
-    access = await invokeFn<GatewayAccessStatus>('wsl_gateway_access_quick_status')
-  }
   const hasWslTarget = homes.some((home) => isWslHomePath(home))
-  if (hasWslTarget && access.authorized === false) {
-    const shouldAuthorize = confirmFn(
-      'WSL2 access to the local gateway requires Windows network authorization first.\n\nClick OK to authorize now (Admin), or Cancel to skip switching for now.',
-    )
-    if (!shouldAuthorize) return false
-    const authRes = await invokeFn<GatewayAccessStatus>('wsl_gateway_authorize_access')
-    if (authRes.authorized !== true) {
-      flashToast('WSL2 gateway authorization failed. Please retry as Administrator.', 'error')
-      return false
-    }
-    flashToast('WSL2 gateway access authorized')
+  if (hasWslTarget) {
+    flashToast('WSL2 gateway access is now native; no Windows authorization is required.', 'info')
   }
   return true
 }

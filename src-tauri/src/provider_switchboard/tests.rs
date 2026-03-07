@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_gateway_target_for_rotated_token_does_not_rewrite_matching_auth_json() {
+    fn sync_gateway_target_for_rotated_token_rewrites_gateway_target_even_when_auth_matches() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");
         let data_dir = tmp.path().join("data");
@@ -511,7 +511,13 @@ mod tests {
         let auth: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(cli_auth_path(&cli_home)).unwrap())
                 .unwrap();
-        assert_eq!(auth.get("extra").and_then(|v| v.as_str()), Some("keep"));
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
+            Some("ao_same_gateway_token")
+        );
+        let cfg = std::fs::read_to_string(cli_cfg_path(&cli_home)).expect("read cli cfg");
+        assert!(cfg.contains("model_provider = \"api_router\""));
+        assert!(cfg.contains("base_url = \"http://127.0.0.1:4000/v1\""));
     }
 
     #[test]

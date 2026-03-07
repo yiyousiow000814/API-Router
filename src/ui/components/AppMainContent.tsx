@@ -108,7 +108,7 @@ export function AppMainContent(props: Props) {
   }
 
   if (activePage === 'web_codex') {
-    return <WebCodexPanel />
+    return <WebCodexPanel listenPort={status?.listen?.port} />
   }
 
   if (!status) {

@@ -235,7 +235,8 @@ fn should_prune_placeholder_provider(cfg: &AppConfig, secrets: &SecretStore, nam
 
 #[cfg(test)]
 mod tests {
-    use super::{build_state, run_startup_gateway_token_sync};
+    use super::{build_state, load_or_init_config, run_startup_gateway_token_sync};
+    use crate::orchestrator::config::AppConfig;
     use serde_json::json;
 
     #[test]
@@ -296,5 +297,106 @@ mod tests {
             auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
             Some("ao_new_gateway_token")
         );
+    }
+
+    #[tokio::test]
+    async fn prepare_gateway_listeners_reassigns_port_and_persists_config_when_occupied() {
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("occupy port");
+        let occupied_port = occupied.local_addr().expect("occupied addr").port();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+        let mut cfg = AppConfig::default_config();
+        cfg.listen.port = occupied_port;
+        std::fs::write(
+            &config_path,
+            toml::to_string_pretty(&cfg).expect("cfg toml"),
+        )
+        .expect("write cfg");
+
+        let state = build_state(config_path.clone(), data_dir).expect("build state");
+        let prepared = crate::orchestrator::gateway_bootstrap::prepare_gateway_listeners(&state)
+            .expect("prepare");
+        let active_port = state.gateway.cfg.read().listen.port;
+        let persisted = load_or_init_config(&config_path).expect("load config");
+
+        assert_ne!(active_port, occupied_port);
+        assert_eq!(prepared.listen_port, active_port);
+        assert_eq!(persisted.listen.port, active_port);
+
+        drop(prepared);
+        drop(occupied);
+    }
+
+    #[tokio::test]
+    async fn startup_gateway_token_sync_uses_reassigned_gateway_port() {
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("occupy port");
+        let occupied_port = occupied.local_addr().expect("occupied addr").port();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+        let mut cfg = AppConfig::default_config();
+        cfg.listen.port = occupied_port;
+        std::fs::write(
+            &config_path,
+            toml::to_string_pretty(&cfg).expect("cfg toml"),
+        )
+        .expect("write cfg");
+
+        let secrets_path = config_path
+            .parent()
+            .expect("config parent")
+            .join("secrets.json");
+        let secrets = crate::orchestrator::secrets::SecretStore::new(secrets_path);
+        secrets
+            .set_gateway_token("ao_new_gateway_token")
+            .expect("set gateway token");
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).expect("mkdir cli home");
+        std::fs::write(
+            cli_home.join("auth.json"),
+            r#"{"OPENAI_API_KEY":"ao_old_gateway_token"}"#,
+        )
+        .expect("write stale auth");
+        std::fs::write(
+            cli_home.join("config.toml"),
+            "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+        )
+        .expect("write gateway config");
+
+        let switchboard_state = config_path
+            .parent()
+            .expect("config parent")
+            .join("codex-home")
+            .join("provider-switchboard-state.json");
+        std::fs::create_dir_all(switchboard_state.parent().expect("state parent"))
+            .expect("mkdir state parent");
+        std::fs::write(
+            &switchboard_state,
+            serde_json::to_string_pretty(&json!({
+              "target": "gateway",
+              "provider": serde_json::Value::Null,
+              "cli_homes": [cli_home.to_string_lossy().to_string()]
+            }))
+            .expect("state json"),
+        )
+        .expect("write switchboard state");
+
+        let state = build_state(config_path.clone(), data_dir).expect("build state");
+        let prepared = crate::orchestrator::gateway_bootstrap::prepare_gateway_listeners(&state)
+            .expect("prepare");
+        let active_port = state.gateway.cfg.read().listen.port;
+        assert_ne!(active_port, occupied_port);
+
+        run_startup_gateway_token_sync(&state);
+
+        let cli_cfg = std::fs::read_to_string(cli_home.join("config.toml")).expect("read cli cfg");
+        assert!(cli_cfg.contains(&format!("base_url = \"http://127.0.0.1:{active_port}/v1\"")));
+
+        drop(prepared);
+        drop(occupied);
     }
 }

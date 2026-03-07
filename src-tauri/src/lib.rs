@@ -2,6 +2,7 @@ mod app_state;
 mod codex_app_server;
 mod codex_cli_swap;
 mod codex_home_env;
+mod codex_wsl_bridge;
 mod commands;
 mod constants;
 mod orchestrator;
@@ -12,6 +13,7 @@ use tauri::Manager;
 
 use crate::app_state::build_state;
 use crate::orchestrator::gateway::serve_in_background;
+use crate::orchestrator::gateway_bootstrap::prepare_gateway_listeners;
 use crate::orchestrator::store::unix_ms;
 use chrono::{Duration as ChronoDuration, Local};
 use serde_json::json;
@@ -388,6 +390,11 @@ pub fn run() {
                     eprintln!("failed to seed test profile mock data: {e}");
                 }
             }
+            let prepared_gateway = if !is_ui_tauri {
+                Some(prepare_gateway_listeners(&state)?)
+            } else {
+                None
+            };
             app.manage(state);
             if !is_ui_tauri {
                 let app_handle = app.handle().clone();
@@ -401,8 +408,9 @@ pub fn run() {
                 // Spawn the local OpenAI-compatible gateway.
                 let st = app.state::<app_state::AppState>();
                 let gateway = st.gateway.clone();
+                let prepared_gateway = prepared_gateway.expect("gateway listeners prepared");
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = serve_in_background(gateway).await {
+                    if let Err(e) = serve_in_background(gateway, prepared_gateway).await {
                         log::error!("gateway exited: {e:?}");
                     }
                 });
@@ -527,10 +535,6 @@ pub fn run() {
             commands::set_codex_cli_config_toml,
             commands::provider_switchboard_status,
             commands::provider_switchboard_set_target,
-            commands::wsl_gateway_access_status,
-            commands::wsl_gateway_access_quick_status,
-            commands::wsl_gateway_authorize_access,
-            commands::wsl_gateway_revoke_access,
             commands::tailscale_status,
             commands::codex_account_login,
             commands::codex_account_logout,

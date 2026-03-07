@@ -393,7 +393,7 @@ async fn refresh_usage_once_after_first_failure(
 }
 
 pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: usize) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health))
         .route("/status", get(status))
         .route("/v1/models", get(models))
@@ -441,7 +441,10 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route("/codex/version-info", get(codex_version_info))
         .route("/codex/rpc", post(codex_rpc_proxy))
         .layer(DefaultBodyLimit::max(max_body_bytes))
-        .with_state(state)
+        .with_state(state);
+    #[cfg(test)]
+    let router = router.route("/__test/block-history", get(codex_test_block_history));
+    router
 }
 
 pub fn build_router(state: GatewayState) -> Router {
@@ -480,35 +483,75 @@ fn write_gateway_startup_diag(stage: &str, addr: Option<SocketAddr>, detail: Opt
 }
 
 include!("gateway/request_helpers.rs");
+mod web_codex_history;
 mod web_codex_home;
 mod web_codex_threads;
 include!("gateway/web_codex.rs");
 const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
 
-pub async fn serve_in_background(state: GatewayState) -> anyhow::Result<()> {
-    let cfg = state.cfg.read().clone();
-    let addr: SocketAddr = format!("{}:{}", cfg.listen.host, cfg.listen.port).parse()?;
-    write_gateway_startup_diag("binding", Some(addr), None);
+#[cfg(test)]
+pub(crate) fn _set_test_web_codex_history_loader(
+    loader: Option<
+        std::sync::Arc<
+            dyn Fn() -> Result<(serde_json::Value, serde_json::Value), String> + Send + Sync,
+        >,
+    >,
+) {
+    web_codex_history::_set_test_history_loader(loader.map(|loader| {
+        std::sync::Arc::new(
+            move |_thread_id, _workspace, _rollout_path, _before, _limit| {
+                loader().map(|(thread, page)| web_codex_history::ThreadHistoryPage { thread, page })
+            },
+        ) as _
+    }));
+}
+
+pub async fn serve_in_background(
+    state: GatewayState,
+    prepared: crate::orchestrator::gateway_bootstrap::PreparedGatewayListeners,
+) -> anyhow::Result<()> {
+    let diag_addr = prepared.listeners.first().map(|(addr, _)| *addr);
+    let diag_binding = prepared
+        .listeners
+        .iter()
+        .map(|(addr, _)| addr.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    {
+        state.cfg.write().listen.port = prepared.listen_port;
+    }
+    write_gateway_startup_diag("binding", diag_addr, Some(&diag_binding));
 
     let app = build_router(state);
-    let listener = match tokio::net::TcpListener::bind(addr).await {
-        Ok(listener) => listener,
-        Err(err) => {
-            write_gateway_startup_diag("bind_failed", Some(addr), Some(&err.to_string()));
-            return Err(err.into());
-        }
-    };
-    write_gateway_startup_diag("listening", Some(addr), None);
+    write_gateway_startup_diag("listening", diag_addr, Some(&diag_binding));
     web_codex_threads::spawn_thread_index_prewarm();
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
-    .map_err(|err| {
-        write_gateway_startup_diag("serve_failed", Some(addr), Some(&err.to_string()));
-        anyhow::Error::from(err)
-    })?;
+    let mut servers = tokio::task::JoinSet::new();
+    for (addr, listener) in prepared.listeners {
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        let app_for_addr = app.clone();
+        servers.spawn(async move {
+            axum::serve(
+                listener,
+                app_for_addr.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .map_err(|err| (addr, err))
+        });
+    }
+    while let Some(result) = servers.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err((addr, err))) => {
+                write_gateway_startup_diag("serve_failed", Some(addr), Some(&err.to_string()));
+                return Err(anyhow::Error::from(err));
+            }
+            Err(err) => {
+                let detail = err.to_string();
+                write_gateway_startup_diag("serve_failed", diag_addr, Some(&detail));
+                return Err(anyhow::Error::msg(detail));
+            }
+        }
+    }
     Ok(())
 }
 

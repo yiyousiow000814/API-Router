@@ -189,7 +189,7 @@ pub(super) fn linux_path_to_unc(path: &str, distro: &str) -> PathBuf {
     }
 }
 
-fn parse_wsl_unc_to_linux_path(value: &str) -> Option<String> {
+pub(super) fn parse_wsl_unc_to_linux_path(value: &str) -> Option<String> {
     let mut text = value.trim().replace('/', "\\");
     if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
         text = format!(r"\\{stripped}");
@@ -325,6 +325,15 @@ pub(super) fn web_codex_rpc_home_override() -> Option<String> {
     default_windows_codex_dir().map(|p| p.to_string_lossy().to_string())
 }
 
+pub(super) fn web_codex_rpc_home_override_for_target(
+    target: Option<WorkspaceTarget>,
+) -> Option<String> {
+    match target {
+        Some(WorkspaceTarget::Wsl2) => web_codex_wsl_linux_home_override(),
+        _ => web_codex_rpc_home_override(),
+    }
+}
+
 pub(super) fn web_codex_wsl_linux_home_override() -> Option<String> {
     let explicit = std::env::var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME")
         .ok()
@@ -347,7 +356,7 @@ pub(super) fn web_codex_wsl_linux_home_override() -> Option<String> {
 mod tests {
     use super::{
         linux_path_join, linux_path_parent, normalize_wsl_linux_path, parse_workspace_target,
-        WorkspaceTarget,
+        web_codex_rpc_home_override_for_target, WorkspaceTarget,
     };
 
     #[test]
@@ -378,5 +387,25 @@ mod tests {
         assert_eq!(linux_path_parent("/").as_deref(), None);
         assert_eq!(linux_path_join("/home/user", "repo"), "/home/user/repo");
         assert_eq!(linux_path_join("/", "tmp"), "/tmp");
+    }
+
+    #[test]
+    fn rpc_home_override_uses_workspace_specific_home() {
+        unsafe {
+            std::env::set_var("API_ROUTER_WEB_CODEX_CODEX_HOME", r"C:\tmp\win-codex");
+            std::env::set_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
+        }
+        assert_eq!(
+            web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows)).as_deref(),
+            Some(r"C:\tmp\win-codex")
+        );
+        assert_eq!(
+            web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Wsl2)).as_deref(),
+            Some("/home/test/.codex")
+        );
+        unsafe {
+            std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+            std::env::remove_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME");
+        }
     }
 }

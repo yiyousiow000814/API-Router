@@ -1063,7 +1063,7 @@ async function main() {
       const hugeSeed = await driver.executeScript(`
         const h = window.__webCodexE2E;
         if (!h) return { ok: false, error: 'missing e2e hook' };
-        const id = 'e2e_huge_windowed';
+        const id = '019c8000-0000-7000-8000-000000000001';
         const s = h.seedHeavyThreadHistory
           ? h.seedHeavyThreadHistory(id, { turns: 520, itemsPerTurn: 3, textSize: 320 })
           : { ok: false, error: 'seedHeavyThreadHistory missing' };
@@ -1075,7 +1075,7 @@ async function main() {
         const done = arguments[0];
         const h = window.__webCodexE2E;
         if (!h || typeof h.openThread !== 'function') return done({ ok: false, error: 'openThread missing' });
-        Promise.resolve(h.openThread('e2e_huge_windowed'))
+        Promise.resolve(h.openThread('019c8000-0000-7000-8000-000000000001'))
           .then((v) => done(v))
           .catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
       `)
@@ -1113,7 +1113,7 @@ async function main() {
         if (!h || typeof h.getThreadHistory !== 'function' || typeof h.setThreadHistory !== 'function' || typeof h.emitWsPayload !== 'function') {
           return done({ ok: false, error: 'missing e2e hooks for huge refresh probe' });
         }
-        const threadId = 'e2e_huge_windowed';
+        const threadId = '019c8000-0000-7000-8000-000000000001';
         const cur = h.getThreadHistory(threadId);
         if (!cur) return done({ ok: false, error: 'missing seeded huge history' });
         const next = { ...cur, turns: Array.isArray(cur.turns) ? cur.turns.slice() : [] };
@@ -1137,6 +1137,50 @@ async function main() {
       }
     }
 
+    // Regression: medium-large histories should also stay windowed instead of forcing a full render.
+    // This keeps WSL2 thread open responsive even when the history is not "huge" by old thresholds.
+    {
+      const mediumSeed = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        if (!h) return { ok: false, error: 'missing e2e hook' };
+        const id = '019c8000-0000-7000-8000-000000000002';
+        const s = h.seedHeavyThreadHistory
+          ? h.seedHeavyThreadHistory(id, { turns: 240, itemsPerTurn: 1, textSize: 220 })
+          : { ok: false, error: 'seedHeavyThreadHistory missing' };
+        return { ok: !!(s && s.ok), id, s };
+      `)
+      if (!mediumSeed?.ok) throw new Error(`medium seed failed: ${mediumSeed?.error || 'unknown'} detail=${JSON.stringify(mediumSeed)}`)
+
+      const openedMedium = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.openThread !== 'function') return done({ ok: false, error: 'openThread missing' });
+        Promise.resolve(h.openThread('019c8000-0000-7000-8000-000000000002'))
+          .then((v) => done(v))
+          .catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!openedMedium?.ok) throw new Error(`openThread(medium) failed: ${openedMedium?.error || 'unknown'}`)
+
+      const mediumProbe = await driver.executeScript(`
+        const box = document.getElementById('chatBox');
+        if (!box) return { ok: false, error: 'missing chatBox' };
+        const msgs = box.querySelectorAll('.msg');
+        const loadOlder = document.getElementById('loadOlderBtn');
+        return {
+          ok: true,
+          msgCount: msgs.length,
+          hasLoadOlder: !!loadOlder,
+        };
+      `)
+      if (!mediumProbe?.ok) throw new Error(`medium probe failed: ${mediumProbe?.error || 'unknown'}`)
+      if (!(Number(mediumProbe.msgCount || 0) > 0 && Number(mediumProbe.msgCount || 0) <= 180)) {
+        throw new Error(`expected medium open to stay windowed (<=180 msgs), got ${JSON.stringify(mediumProbe)}`)
+      }
+      if (!mediumProbe.hasLoadOlder) {
+        throw new Error(`expected a load-older affordance on medium history open, got ${JSON.stringify(mediumProbe)}`)
+      }
+    }
+
     // Regression (network): when WS is connected+subscribed, the UI should not keep polling thread history
     // via HTTP, and history fetch URLs should not include rolloutPath.
     {
@@ -1147,10 +1191,14 @@ async function main() {
         if (typeof h.installFetchRecorder !== 'function' || typeof h.setWsConnectedForE2E !== 'function' || typeof h.triggerHistoryFetchForE2E !== 'function') {
           return done({ ok: false, error: 'missing e2e net hooks' });
         }
+        h.setThreadHistory('019c8000-0000-7000-8000-000000000003', {
+          id: '019c8000-0000-7000-8000-000000000003',
+          turns: [{ items: [{ type: 'assistantMessage', text: 'ok' }] }],
+        });
         h.installFetchRecorder();
         h.setWsConnectedForE2E(true);
         // Trigger one explicit history fetch; then wait and ensure the live-poll loop doesn't spam.
-        h.triggerHistoryFetchForE2E({ threadId: 'e2e_net_thread', workspace: 'windows', rolloutPath: 'SHOULD_NOT_APPEAR' })
+        h.triggerHistoryFetchForE2E({ threadId: '019c8000-0000-7000-8000-000000000003', workspace: 'windows', rolloutPath: 'SHOULD_NOT_APPEAR' })
           .then(() => {
             setTimeout(() => {
               const calls = h.getFetchCalls?.() || [];
@@ -1421,6 +1469,94 @@ async function main() {
       }
       if (t.includes('e2e-aborted') || t.includes('turn_aborted')) {
         throw new Error('expected turn_aborted harness wrapper to be hidden from chat history')
+      }
+    }
+
+    // Regression: persisted history should render only user/assistant chat, not internal tool logs
+    // or handoff/system payloads that happen to be stored in rollout files.
+    {
+      const seededToolHistory = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.setThreadHistory !== 'function') return { ok: false, error: 'setThreadHistory missing' };
+        const threadId = 'e2e_hidden_persisted_tool_items';
+        h.setThreadHistory(threadId, {
+          id: threadId,
+          modelName: 'gpt-5.3-codex',
+          historyItems: [
+            {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_text', text: 'show only real chat' }],
+            },
+            {
+              type: 'function_call_output',
+              call_id: 'call_1',
+              output: 'Warning: apply_patch was requested via exec_command.',
+            },
+            {
+              type: 'custom_tool_call_output',
+              call_id: 'call_2',
+              output: 'Another language model started to solve this problem. Handoff Summary',
+            },
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'real assistant reply' }],
+            },
+          ],
+        });
+        return { ok: true, threadId };
+      `)
+      if (!seededToolHistory?.ok) {
+        throw new Error(`seed hidden persisted tool history failed: ${seededToolHistory?.error || 'unknown'}`)
+      }
+
+      const openedToolHistory = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.openThread !== 'function') return done({ ok: false, error: 'openThread missing' });
+        Promise.resolve(h.openThread('e2e_hidden_persisted_tool_items'))
+          .then((v) => done(v))
+          .catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!openedToolHistory?.ok) {
+        throw new Error(`open hidden persisted tool history failed: ${openedToolHistory?.error || 'unknown'}`)
+      }
+
+      await waitFor(async () => {
+        const t = await driver.executeScript(`return String(document.getElementById('chatBox')?.innerText || '')`)
+        return t.includes('show only real chat') && t.includes('real assistant reply')
+      }, 8000, 'persisted chat-only history to render')
+
+      const hiddenPersistedToolItems = await driver.executeScript(`
+        const text = String(document.getElementById('chatBox')?.innerText || '');
+        return {
+          hasToolBubble: document.querySelectorAll('#chatBox .msg.system.kind-tool').length > 0,
+          hasApplyPatchWarning: text.includes('apply_patch was requested via exec_command'),
+          hasHandoffSummary: text.includes('Another language model started to solve this problem') || text.includes('Handoff Summary'),
+          hasAssistantReply: text.includes('real assistant reply'),
+        };
+      `)
+      if (hiddenPersistedToolItems?.hasToolBubble) {
+        throw new Error(`expected persisted tool items to stay hidden, got ${JSON.stringify(hiddenPersistedToolItems)}`)
+      }
+      if (hiddenPersistedToolItems?.hasApplyPatchWarning || hiddenPersistedToolItems?.hasHandoffSummary) {
+        throw new Error(`expected persisted warning/handoff text to stay hidden, got ${JSON.stringify(hiddenPersistedToolItems)}`)
+      }
+      if (!hiddenPersistedToolItems?.hasAssistantReply) {
+        throw new Error(`expected assistant reply to remain visible, got ${JSON.stringify(hiddenPersistedToolItems)}`)
+      }
+
+      const reopenedMainThread = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.openThread !== 'function') return done({ ok: false, error: 'openThread missing' });
+        Promise.resolve(h.openThread('e2e_1'))
+          .then((v) => done(v))
+          .catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!reopenedMainThread?.ok) {
+        throw new Error(`reopen main thread after persisted tool history failed: ${reopenedMainThread?.error || 'unknown'}`)
       }
     }
 

@@ -123,6 +123,14 @@ pub(super) async fn list_threads_snapshot(
     }
 }
 
+pub(super) async fn known_rollout_path_for_thread(
+    workspace: WorkspaceTarget,
+    thread_id: &str,
+) -> Option<String> {
+    let snapshot = list_workspace_snapshot(workspace, false).await;
+    find_rollout_path_in_items(&snapshot.items, thread_id)
+}
+
 async fn list_workspace_snapshot(target: WorkspaceTarget, force: bool) -> ThreadListSnapshot {
     ensure_workspace_index_fresh(target, force).await;
     let index = lock_threads_workspace_index();
@@ -817,6 +825,29 @@ fn merge_items_without_duplicates(mut base: Vec<Value>, extra: Vec<Value>) -> Ve
     base
 }
 
+fn find_rollout_path_in_items(items: &[Value], thread_id: &str) -> Option<String> {
+    let needle = thread_id.trim();
+    if needle.is_empty() {
+        return None;
+    }
+    items.iter().find_map(|item| {
+        let id = item
+            .get("id")
+            .or_else(|| item.get("threadId"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or_default();
+        if id != needle {
+            return None;
+        }
+        item.get("path")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    })
+}
+
 fn sort_threads_by_updated_desc(items: &mut [Value]) {
     fn score(item: &Value) -> i64 {
         item.get("updatedAt")
@@ -882,7 +913,9 @@ fn filter_auxiliary_threads(items: &mut Vec<Value>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{invalidate_thread_list_cache_all, list_threads_snapshot};
+    use super::{
+        find_rollout_path_in_items, invalidate_thread_list_cache_all, list_threads_snapshot,
+    };
     use crate::codex_app_server;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
     use serde_json::Value;
@@ -970,5 +1003,24 @@ mod tests {
             item.get("workspace").and_then(|v| v.as_str()),
             Some("windows")
         );
+    }
+
+    #[test]
+    fn known_rollout_path_lookup_matches_thread_id() {
+        let items = vec![
+            serde_json::json!({
+                "id": "t1",
+                "path": "C:\\\\Users\\\\me\\\\.codex\\\\sessions\\\\a.jsonl"
+            }),
+            serde_json::json!({
+                "id": "t2",
+                "path": "\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\me\\\\.codex\\\\sessions\\\\b.jsonl"
+            }),
+        ];
+        assert_eq!(
+            find_rollout_path_in_items(&items, "t2").as_deref(),
+            Some("\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\me\\\\.codex\\\\sessions\\\\b.jsonl")
+        );
+        assert!(find_rollout_path_in_items(&items, "missing").is_none());
     }
 }

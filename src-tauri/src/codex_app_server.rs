@@ -115,6 +115,15 @@ pub async fn replay_notifications_since_in_home(
     since_event_id: u64,
     max: usize,
 ) -> (Vec<Value>, Option<u64>, Option<u64>, bool) {
+    if let Some(result) = crate::codex_wsl_bridge::try_replay_notifications_since_in_home(
+        codex_home,
+        since_event_id,
+        max,
+    )
+    .await
+    {
+        return result;
+    }
     let cap = max.clamp(1, NOTIFICATION_QUEUE_CAP);
     let key = normalize_home_key(codex_home);
     let map = notification_state_map();
@@ -572,6 +581,72 @@ mod tests {
         assert!(first.unwrap() > 1);
     }
 
+    #[cfg(target_os = "windows")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn wsl_homes_route_requests_through_bridge_transport() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        crate::codex_wsl_bridge::_set_test_rpc_handler(Some(std::sync::Arc::new(
+            |codex_home, method, params| {
+                assert_eq!(codex_home, Some("/home/me/.codex"));
+                assert_eq!(method, "thread/read");
+                assert_eq!(params.get("id").and_then(|v| v.as_str()), Some("thread-1"));
+                Ok(serde_json::json!({ "via": "bridge" }))
+            },
+        )))
+        .await;
+
+        let result = request_in_home(
+            Some(r"\\wsl.localhost\Ubuntu\home\me\.codex"),
+            "thread/read",
+            serde_json::json!({ "id": "thread-1" }),
+        )
+        .await
+        .expect("bridge result");
+
+        crate::codex_wsl_bridge::_set_test_rpc_handler(None).await;
+        assert_eq!(result.get("via").and_then(|v| v.as_str()), Some("bridge"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn wsl_homes_route_notification_replay_through_bridge_transport() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        crate::codex_wsl_bridge::_set_test_replay_handler(Some(std::sync::Arc::new(
+            |codex_home, since_event_id, max| {
+                assert_eq!(codex_home, Some("/home/me/.codex"));
+                assert_eq!(since_event_id, 4);
+                assert_eq!(max, 2);
+                (
+                    vec![serde_json::json!({
+                        "eventId": 5,
+                        "method": "turn/status",
+                        "params": { "status": "running" }
+                    })],
+                    Some(5),
+                    Some(5),
+                    false,
+                )
+            },
+        )))
+        .await;
+
+        let (items, first, last, gap) = replay_notifications_since_in_home(
+            Some(r"\\wsl.localhost\Ubuntu\home\me\.codex"),
+            4,
+            2,
+        )
+        .await;
+
+        crate::codex_wsl_bridge::_set_test_replay_handler(None).await;
+        assert_eq!(first, Some(5));
+        assert_eq!(last, Some(5));
+        assert!(!gap);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].get("eventId").and_then(|v| v.as_u64()), Some(5));
+    }
+
     #[test]
     fn resolves_native_launcher_for_windows_home() {
         let spec = resolve_launch_spec(Some(r"C:\Users\yiyou\.codex"));
@@ -623,6 +698,12 @@ pub async fn request_in_home(
 ) -> Result<Value, String> {
     #[cfg(test)]
     if let Some(result) = maybe_handle_test_request(codex_home, method, &params).await {
+        return result;
+    }
+
+    if let Some(result) =
+        crate::codex_wsl_bridge::try_request_in_home(codex_home, method, params.clone()).await
+    {
         return result;
     }
 

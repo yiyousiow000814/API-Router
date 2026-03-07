@@ -7,6 +7,7 @@ function parseArgs(argv) {
     workspaces: ["windows", "wsl2"],
     threadLimit: 3,
     samples: 3,
+    maxVisibleMs: 0,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -36,6 +37,12 @@ function parseArgs(argv) {
     if (arg === "--samples" && next) {
       const v = Number.parseInt(next, 10);
       if (Number.isFinite(v) && v > 0) out.samples = v;
+      i += 1;
+      continue;
+    }
+    if (arg === "--max-visible-ms" && next) {
+      const v = Number.parseInt(next, 10);
+      if (Number.isFinite(v) && v > 0) out.maxVisibleMs = v;
       i += 1;
     }
   }
@@ -107,16 +114,6 @@ async function resolveAuth(baseUrl, token) {
   return { token: "", cookie };
 }
 
-function buildResumePath(thread, workspace) {
-  const id = encodeURIComponent(String(thread.id || thread.threadId || "").trim());
-  const query = [`workspace=${encodeURIComponent(workspace)}`];
-  if (workspace === "wsl2") {
-    const rolloutPath = String(thread.path || "").trim();
-    if (rolloutPath) query.push(`rolloutPath=${encodeURIComponent(rolloutPath)}`);
-  }
-  return `/codex/threads/${id}/resume?${query.join("&")}`;
-}
-
 function buildHistoryPath(thread, workspace) {
   const id = encodeURIComponent(String(thread.id || thread.threadId || "").trim());
   const query = [`workspace=${encodeURIComponent(workspace)}`];
@@ -128,58 +125,20 @@ function buildHistoryPath(thread, workspace) {
 }
 
 async function measureThreadOpen(baseUrl, auth, workspace, thread) {
-  let historyMs = 0;
-  let historyOk = false;
-  if (workspace !== "wsl2") {
-    const historyPath = buildHistoryPath(thread, workspace);
-    const historyStart = performance.now();
-    try {
-      const historyPayload = await requestJson(baseUrl, auth, historyPath);
-      const historyThread = historyPayload?.thread || historyPayload?.result?.thread || null;
-      historyOk = Array.isArray(historyThread?.turns);
-    } catch (_) {
-      historyOk = false;
-    } finally {
-      historyMs = performance.now() - historyStart;
-    }
-  }
-
-  const resumePath = buildResumePath(thread, workspace);
-  const resumeStart = performance.now();
-  const resumePayload = await requestJson(baseUrl, auth, resumePath, { method: "POST", body: {} });
-  const resumeMs = performance.now() - resumeStart;
-  const resumeThread = resumePayload?.thread || resumePayload?.result?.thread || null;
-  const hasTurnsOnResume = Array.isArray(resumeThread?.turns);
-  if (hasTurnsOnResume) {
-    return {
-      resumeMs,
-      readMs: 0,
-      totalMs: resumeMs,
-      visibleMs: historyOk ? historyMs : resumeMs,
-      historyMs,
-      historyOk,
-      usedReadFallback: false,
-    };
-  }
-
-  const threadId = String(thread.id || thread.threadId || "").trim();
-  const readStart = performance.now();
-  await requestJson(baseUrl, auth, "/codex/rpc", {
-    method: "POST",
-    body: {
-      method: "thread/read",
-      params: { threadId, includeTurns: true },
-    },
-  });
-  const readMs = performance.now() - readStart;
+  const historyPath = buildHistoryPath(thread, workspace);
+  const historyStart = performance.now();
+  const historyPayload = await requestJson(baseUrl, auth, historyPath);
+  const historyThread = historyPayload?.thread || historyPayload?.result?.thread || null;
+  const historyItems = Array.isArray(historyThread?.historyItems) ? historyThread.historyItems : [];
+  const historyMs = performance.now() - historyStart;
   return {
-    resumeMs,
-    readMs,
-    totalMs: resumeMs + readMs,
-    visibleMs: historyOk ? historyMs : resumeMs + readMs,
+    resumeMs: 0,
+    readMs: 0,
+    totalMs: historyMs,
+    visibleMs: historyMs,
     historyMs,
-    historyOk,
-    usedReadFallback: true,
+    historyOk: historyItems.length > 0,
+    usedReadFallback: false,
   };
 }
 
@@ -283,6 +242,24 @@ async function main() {
       console.log(`  failures=${result.failures}`);
     }
     console.log("");
+  }
+
+  if (config.maxVisibleMs > 0) {
+    const violations = results.filter(
+      (result) => result.failures > 0 || result.visible.max > config.maxVisibleMs
+    );
+    if (violations.length) {
+      for (const result of violations) {
+        const detail =
+          result.failures > 0
+            ? `failures=${result.failures}`
+            : `visible.max=${result.visible.max}ms limit=${config.maxVisibleMs}ms`;
+        console.error(
+          `[benchmark-thread-open-latency] ${result.workspace} exceeded threshold: ${detail}`
+        );
+      }
+      process.exitCode = 1;
+    }
   }
 }
 
