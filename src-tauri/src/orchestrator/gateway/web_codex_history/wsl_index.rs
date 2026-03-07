@@ -1,0 +1,413 @@
+use super::ThreadHistoryPage;
+use crate::orchestrator::gateway::web_codex_home::{
+    linux_path_join, parse_wsl_unc_to_linux_path, web_codex_wsl_linux_home_override,
+};
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+
+const WSL_HISTORY_INDEX_SCRIPT: &str = include_str!("wsl_history_index.py");
+const WSL_HISTORY_PREWARM_ITEMS: usize = 3;
+
+#[cfg(test)]
+type TestWslHistoryLoader = std::sync::Arc<
+    dyn Fn(
+            String,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+            usize,
+        ) -> Result<ThreadHistoryPage, String>
+        + Send
+        + Sync,
+>;
+
+#[cfg(test)]
+fn test_wsl_history_loader() -> &'static std::sync::Mutex<Option<TestWslHistoryLoader>> {
+    static LOADER: std::sync::OnceLock<std::sync::Mutex<Option<TestWslHistoryLoader>>> =
+        std::sync::OnceLock::new();
+    LOADER.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+pub(super) fn _set_test_wsl_history_loader(loader: Option<TestWslHistoryLoader>) {
+    match test_wsl_history_loader().lock() {
+        Ok(mut guard) => *guard = loader,
+        Err(err) => *err.into_inner() = loader,
+    }
+}
+
+pub(super) fn load_wsl_history_page(
+    thread_id: &str,
+    workspace_value: Option<&str>,
+    raw_rollout_path: &str,
+    _rollout_local_path: &Path,
+    linux_rollout_path: &str,
+    before: Option<&str>,
+    normalized_limit: usize,
+) -> Result<ThreadHistoryPage, String> {
+    #[cfg(test)]
+    if let Some(loader) = match test_wsl_history_loader().lock() {
+        Ok(guard) => guard.clone(),
+        Err(err) => err.into_inner().clone(),
+    } {
+        return loader(
+            thread_id.to_string(),
+            workspace_value.map(str::to_string),
+            raw_rollout_path.to_string(),
+            linux_rollout_path.to_string(),
+            before.map(str::to_string),
+            normalized_limit,
+        );
+    }
+
+    let build_running = wsl_history_build_job(linux_rollout_path).is_some();
+    if should_wait_for_wsl_history_build(before, build_running) {
+        wait_for_wsl_history_build(linux_rollout_path);
+    }
+
+    let cache_root = wsl_history_cache_root()?;
+    let value = run_wsl_history_page_script(
+        thread_id,
+        workspace_value,
+        raw_rollout_path,
+        linux_rollout_path,
+        before,
+        normalized_limit,
+        &cache_root,
+    )?;
+    let source = value
+        .get("meta")
+        .and_then(|meta| meta.get("source"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    if source == "wsl-tail-fast" {
+        spawn_wsl_history_build(linux_rollout_path.to_string());
+    }
+    log_wsl_history_meta(value.get("meta"), raw_rollout_path);
+    Ok(ThreadHistoryPage {
+        thread: value.get("thread").cloned().unwrap_or(Value::Null),
+        page: value.get("page").cloned().unwrap_or(Value::Null),
+    })
+}
+
+pub(super) fn spawn_wsl_history_prewarm(items: &[Value]) {
+    for linux_rollout_path in wsl_history_prewarm_paths(items) {
+        spawn_wsl_history_build(linux_rollout_path);
+    }
+}
+
+fn should_wait_for_wsl_history_build(before: Option<&str>, build_running: bool) -> bool {
+    build_running && before.map(str::trim).is_some_and(|value| !value.is_empty())
+}
+
+fn wsl_history_cache_root() -> Result<String, String> {
+    let codex_home =
+        web_codex_wsl_linux_home_override().ok_or_else(|| "missing WSL Codex home".to_string())?;
+    Ok(linux_path_join(&codex_home, "api-router-history-cache-v1"))
+}
+
+fn run_wsl_history_page_script(
+    thread_id: &str,
+    workspace_value: Option<&str>,
+    raw_rollout_path: &str,
+    linux_rollout_path: &str,
+    before: Option<&str>,
+    normalized_limit: usize,
+    cache_root: &str,
+) -> Result<Value, String> {
+    let mut cmd = std::process::Command::new("wsl.exe");
+    cmd.arg("-e")
+        .arg("python3")
+        .arg("-c")
+        .arg(WSL_HISTORY_INDEX_SCRIPT)
+        .arg("page")
+        .arg(thread_id)
+        .arg(linux_rollout_path)
+        .arg(before.unwrap_or_default())
+        .arg(normalized_limit.to_string())
+        .arg(workspace_value.unwrap_or_default())
+        .arg(raw_rollout_path)
+        .arg(cache_root);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| format!("failed to launch WSL history reader: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "WSL history reader failed".to_string()
+        } else {
+            stderr
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    serde_json::from_str::<Value>(&stdout).map_err(|e| format!("invalid WSL history JSON: {e}"))
+}
+
+fn run_wsl_history_build_script(linux_rollout_path: &str, cache_root: &str) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("wsl.exe");
+    cmd.arg("-e")
+        .arg("python3")
+        .arg("-c")
+        .arg(WSL_HISTORY_INDEX_SCRIPT)
+        .arg("build-index")
+        .arg(linux_rollout_path)
+        .arg(cache_root);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| format!("failed to launch WSL history index builder: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "WSL history index builder failed".to_string()
+        } else {
+            stderr
+        });
+    }
+    Ok(())
+}
+
+fn spawn_wsl_history_build(linux_rollout_path: String) {
+    let cache_root = match wsl_history_cache_root() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let Some(_guard) = try_start_wsl_history_build(&linux_rollout_path) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let _guard = _guard;
+        let _ = run_wsl_history_build_script(&linux_rollout_path, &cache_root);
+    });
+}
+
+fn wsl_history_prewarm_paths(items: &[Value]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut rollout_paths = Vec::new();
+    for item in items {
+        if rollout_paths.len() >= WSL_HISTORY_PREWARM_ITEMS {
+            break;
+        }
+        let workspace = item
+            .get("workspace")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !workspace.eq_ignore_ascii_case("wsl2") {
+            continue;
+        }
+        let Some(raw_path) = item
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let Some(linux_path) = parse_wsl_unc_to_linux_path(raw_path) else {
+            continue;
+        };
+        if seen.insert(linux_path.clone()) {
+            rollout_paths.push(linux_path);
+        }
+    }
+    rollout_paths
+}
+
+struct WslHistoryBuildJobState {
+    completed: bool,
+}
+
+struct WslHistoryBuildJobSlot {
+    state: Mutex<WslHistoryBuildJobState>,
+    ready: Condvar,
+}
+
+fn wsl_history_build_jobs() -> &'static Mutex<HashMap<String, Arc<WslHistoryBuildJobSlot>>> {
+    static JOBS: OnceLock<Mutex<HashMap<String, Arc<WslHistoryBuildJobSlot>>>> = OnceLock::new();
+    JOBS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn wsl_history_build_job(key: &str) -> Option<Arc<WslHistoryBuildJobSlot>> {
+    let jobs = match wsl_history_build_jobs().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    jobs.get(key).cloned()
+}
+
+fn try_start_wsl_history_build(key: &str) -> Option<WslHistoryBuildGuard> {
+    let mut jobs = match wsl_history_build_jobs().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    if jobs.contains_key(key) {
+        return None;
+    }
+    jobs.insert(
+        key.to_string(),
+        Arc::new(WslHistoryBuildJobSlot {
+            state: Mutex::new(WslHistoryBuildJobState { completed: false }),
+            ready: Condvar::new(),
+        }),
+    );
+    Some(WslHistoryBuildGuard {
+        key: key.to_string(),
+    })
+}
+
+fn wait_for_wsl_history_build(key: &str) {
+    let Some(slot) = wsl_history_build_job(key) else {
+        return;
+    };
+    let mut state = match slot.state.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    while !state.completed {
+        state = match slot.ready.wait(state) {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+    }
+}
+
+struct WslHistoryBuildGuard {
+    key: String,
+}
+
+impl Drop for WslHistoryBuildGuard {
+    fn drop(&mut self) {
+        let slot = {
+            let mut jobs = match wsl_history_build_jobs().lock() {
+                Ok(guard) => guard,
+                Err(err) => err.into_inner(),
+            };
+            jobs.remove(&self.key)
+        };
+        let Some(slot) = slot else {
+            return;
+        };
+        let mut state = match slot.state.lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        state.completed = true;
+        slot.ready.notify_all();
+    }
+}
+
+fn log_wsl_history_meta(meta: Option<&Value>, raw_rollout_path: &str) {
+    let Some(meta) = meta else {
+        return;
+    };
+    let source = meta
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let build_ms = meta.get("buildMs").and_then(Value::as_u64).unwrap_or(0);
+    let page_ms = meta.get("pageMs").and_then(Value::as_u64).unwrap_or(0);
+    let total_ms = meta.get("totalMs").and_then(Value::as_u64).unwrap_or(0);
+    if source != "wsl-index-hit" || build_ms > 0 || total_ms > 500 {
+        log::warn!(
+            "wsl history read source={source} build_ms={build_ms} page_ms={page_ms} total_ms={total_ms} rollout={raw_rollout_path}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        should_wait_for_wsl_history_build, wsl_history_cache_root, wsl_history_prewarm_paths,
+    };
+    use serde_json::json;
+
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(prev) = self.prev.as_deref() {
+                std::env::set_var(self.key, prev);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    fn wsl_history_cache_root_stays_under_codex_home() {
+        let _home = EnvGuard::set("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
+        assert_eq!(
+            wsl_history_cache_root().expect("cache root"),
+            "/home/test/.codex/api-router-history-cache-v1"
+        );
+    }
+
+    #[test]
+    fn wsl_history_prewarm_paths_take_recent_unique_wsl_rollouts() {
+        let items = vec![
+            json!({
+                "workspace": "wsl2",
+                "path": r"\\wsl.localhost\Ubuntu\home\test\.codex\sessions\a.jsonl",
+            }),
+            json!({
+                "workspace": "windows",
+                "path": r"C:\Users\test\.codex\sessions\b.jsonl",
+            }),
+            json!({
+                "workspace": "wsl2",
+                "path": r"\\wsl.localhost\Ubuntu\home\test\.codex\sessions\a.jsonl",
+            }),
+            json!({
+                "workspace": "wsl2",
+                "path": r"\\wsl.localhost\Ubuntu\home\test\.codex\sessions\c.jsonl",
+            }),
+            json!({
+                "workspace": "wsl2",
+                "path": r"\\wsl.localhost\Ubuntu\home\test\.codex\sessions\d.jsonl",
+            }),
+            json!({
+                "workspace": "wsl2",
+                "path": r"\\wsl.localhost\Ubuntu\home\test\.codex\sessions\e.jsonl",
+            }),
+        ];
+        assert_eq!(
+            wsl_history_prewarm_paths(&items),
+            vec![
+                "/home/test/.codex/sessions/a.jsonl".to_string(),
+                "/home/test/.codex/sessions/c.jsonl".to_string(),
+                "/home/test/.codex/sessions/d.jsonl".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn initial_latest_page_does_not_wait_for_background_build() {
+        assert!(!should_wait_for_wsl_history_build(None, true));
+        assert!(!should_wait_for_wsl_history_build(Some(""), true));
+        assert!(should_wait_for_wsl_history_build(Some("cursor-1"), true));
+        assert!(!should_wait_for_wsl_history_build(Some("cursor-1"), false));
+    }
+}

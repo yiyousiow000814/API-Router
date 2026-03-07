@@ -1,17 +1,22 @@
 use super::web_codex_home::{
     linux_path_to_unc, parse_wsl_unc_to_linux_path, resolve_wsl_identity, WorkspaceTarget,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_HISTORY_PAGE_LIMIT: usize = 120;
+mod cache;
+mod wsl_index;
+
+use self::cache::load_cached_rollout_turns;
+use self::wsl_index::load_wsl_history_page;
+
+const DEFAULT_HISTORY_PAGE_LIMIT: usize = 60;
 const MAX_HISTORY_PAGE_LIMIT: usize = 240;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct HistoryTurn {
     id: String,
     items: Vec<Value>,
@@ -26,6 +31,7 @@ pub(super) struct ThreadHistoryPage {
 
 struct ResolvedRolloutPath {
     local_path: PathBuf,
+    #[cfg_attr(not(test), allow(dead_code))]
     linux_path: Option<String>,
 }
 
@@ -59,6 +65,10 @@ pub(super) fn _set_test_history_loader(loader: Option<TestHistoryLoader>) {
 
 pub(super) fn default_history_page_limit() -> usize {
     DEFAULT_HISTORY_PAGE_LIMIT
+}
+
+pub(super) fn spawn_wsl_history_prewarm(items: &[Value]) {
+    self::wsl_index::spawn_wsl_history_prewarm(items);
 }
 
 pub(super) fn load_thread_history_page(
@@ -102,36 +112,28 @@ fn load_thread_history_page_impl(
         Some(WorkspaceTarget::Wsl2) => Some("wsl2"),
         None => None,
     };
-    let page = if matches!(workspace, Some(WorkspaceTarget::Wsl2)) {
-        if let Some(linux_path) = resolved.linux_path.as_deref() {
-            load_thread_history_page_via_wsl(
-                thread_id,
-                linux_path,
-                before,
-                normalized_limit,
-                workspace_value,
-                raw_rollout_path,
-            )?
-        } else {
-            build_thread_history_page(
+    if matches!(workspace, Some(WorkspaceTarget::Wsl2)) {
+        if let Some(linux_rollout_path) = resolved.linux_path.as_deref() {
+            return load_wsl_history_page(
                 thread_id,
                 workspace_value,
                 raw_rollout_path,
-                parse_rollout_turns(&resolved.local_path)?,
+                &resolved.local_path,
+                linux_rollout_path,
                 before,
                 normalized_limit,
-            )?
+            );
         }
-    } else {
-        build_thread_history_page(
-            thread_id,
-            workspace_value,
-            raw_rollout_path,
-            parse_rollout_turns(&resolved.local_path)?,
-            before,
-            normalized_limit,
-        )?
-    };
+    }
+    let turns = load_cached_rollout_turns(&resolved.local_path)?;
+    let page = build_thread_history_page(
+        thread_id,
+        workspace_value,
+        raw_rollout_path,
+        turns.as_slice(),
+        before,
+        normalized_limit,
+    )?;
     Ok(page)
 }
 
@@ -139,7 +141,7 @@ fn build_thread_history_page(
     thread_id: &str,
     workspace_value: Option<&str>,
     rollout_path: &str,
-    turns: Vec<HistoryTurn>,
+    turns: &[HistoryTurn],
     before: Option<&str>,
     normalized_limit: usize,
 ) -> Result<ThreadHistoryPage, String> {
@@ -215,219 +217,16 @@ fn resolve_rollout_path(
     }
 }
 
-#[cfg(target_os = "windows")]
-fn wsl_history_python_script() -> &'static str {
-    r#"
-import json, sys
-
-thread_id, rollout_path, before, limit, workspace, rollout_path_raw = sys.argv[1:7]
-before = before.strip()
-limit = max(1, min(int(limit), 240))
-
-class Builder:
-    def __init__(self):
-        self.turns = []
-        self.current = None
-        self.next_turn_index = 0
-        self.next_item_index = 0
-
-    def next_turn_id(self):
-        self.next_turn_index += 1
-        return f"history-turn-{self.next_turn_index}"
-
-    def next_item_id(self):
-        self.next_item_index += 1
-        return f"history-item-{self.next_item_index}"
-
-    def new_turn(self, turn_id=None, opened_explicitly=False):
-        return {
-            "id": (turn_id or "").strip() or self.next_turn_id(),
-            "items": [],
-            "opened_explicitly": opened_explicitly,
-            "saw_compaction": False,
-        }
-
-    def ensure_turn(self):
-        if self.current is None:
-            self.current = self.new_turn()
-        return self.current
-
-    def finish_current_turn(self):
-        if self.current is None:
-            return
-        if self.current["items"]:
-            self.turns.append(self.current)
-        self.current = None
-
-    def build_user_content(self, payload):
-        out = []
-        msg = (payload.get("message") or "").strip()
-        if msg:
-            out.append({"type": "input_text", "text": msg})
-        for text in payload.get("text_elements") or []:
-            text = str(text).strip()
-            if text:
-                out.append({"type": "input_text", "text": text})
-        return out
-
-    def handle_event(self, payload):
-        event_type = payload.get("type") or ""
-        if event_type == "turn_started":
-            self.finish_current_turn()
-            turn_id = payload.get("turn_id")
-            self.current = self.new_turn(turn_id, True)
-        elif event_type in ("turn_complete", "turn_aborted"):
-            self.finish_current_turn()
-        elif event_type == "user_message":
-            should_finish = self.current is not None and not (
-                self.current["opened_explicitly"] or (
-                    self.current["saw_compaction"] and not self.current["items"]
-                )
-            )
-            if should_finish:
-                self.finish_current_turn()
-            content = self.build_user_content(payload)
-            if not content:
-                return
-            self.ensure_turn()["items"].append({
-                "type": "userMessage",
-                "id": self.next_item_id(),
-                "content": content,
-            })
-        elif event_type == "agent_message":
-            message = (payload.get("message") or "").strip()
-            if not message:
-                return
-            self.ensure_turn()["items"].append({
-                "type": "agentMessage",
-                "id": self.next_item_id(),
-                "text": message,
-            })
-        elif event_type == "context_compacted":
-            turn = self.ensure_turn()
-            turn["saw_compaction"] = True
-        elif event_type == "thread_rolled_back":
-            self.finish_current_turn()
-            num_turns = payload.get("num_turns")
-            try:
-                num_turns = int(num_turns)
-            except Exception:
-                return
-            if num_turns <= 0:
-                return
-            keep = max(0, len(self.turns) - num_turns)
-            del self.turns[keep:]
-
-    def finish(self):
-        self.finish_current_turn()
-        return self.turns
-
-b = Builder()
-with open(rollout_path, "r", encoding="utf-8") as f:
-    for line in f:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            value = json.loads(line)
-        except Exception:
-            continue
-        if value.get("type") != "event_msg":
-            continue
-        payload = value.get("payload") or {}
-        if isinstance(payload, dict):
-            b.handle_event(payload)
-
-turns = b.finish()
-page_end = len(turns)
-if before:
-    needle = before
-    for idx, turn in enumerate(turns):
-        turn_id = str(turn.get("id") or "").strip()
-        if turn_id == needle or turn_id == f"history-turn-{needle}":
-            page_end = idx
-            break
-start = max(0, page_end - limit)
-page_turns = [{"id": turn["id"], "items": turn["items"]} for turn in turns[start:page_end]]
-before_cursor = turns[start]["id"] if start > 0 else None
-print(json.dumps({
-    "thread": {
-        "id": thread_id,
-        "workspace": workspace or None,
-        "rolloutPath": rollout_path_raw,
-        "turns": page_turns,
-    },
-    "page": {
-        "hasMore": start > 0,
-        "beforeCursor": before_cursor,
-        "limit": limit,
-        "totalTurns": len(turns),
-    },
-}, ensure_ascii=False))
-"#
-}
-
-#[cfg(target_os = "windows")]
-fn load_thread_history_page_via_wsl(
-    thread_id: &str,
-    linux_rollout_path: &str,
-    before: Option<&str>,
-    limit: usize,
-    workspace_value: Option<&str>,
-    raw_rollout_path: &str,
-) -> Result<ThreadHistoryPage, String> {
-    let mut cmd = std::process::Command::new("wsl.exe");
-    cmd.creation_flags(0x08000000);
-    cmd.arg("-e")
-        .arg("python3")
-        .arg("-c")
-        .arg(wsl_history_python_script())
-        .arg(thread_id)
-        .arg(linux_rollout_path)
-        .arg(before.unwrap_or_default())
-        .arg(limit.to_string())
-        .arg(workspace_value.unwrap_or_default())
-        .arg(raw_rollout_path);
-    let output = cmd
-        .output()
-        .map_err(|e| format!("failed to launch WSL history reader: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            "WSL history reader failed".to_string()
-        } else {
-            stderr
-        });
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let value = serde_json::from_str::<Value>(&stdout)
-        .map_err(|e| format!("invalid WSL history JSON: {e}"))?;
-    Ok(ThreadHistoryPage {
-        thread: value.get("thread").cloned().unwrap_or(Value::Null),
-        page: value.get("page").cloned().unwrap_or(Value::Null),
-    })
-}
-
-#[cfg(not(target_os = "windows"))]
-fn load_thread_history_page_via_wsl(
-    thread_id: &str,
-    _linux_rollout_path: &str,
-    before: Option<&str>,
-    limit: usize,
-    workspace_value: Option<&str>,
-    raw_rollout_path: &str,
-) -> Result<ThreadHistoryPage, String> {
-    build_thread_history_page(
-        thread_id,
-        workspace_value,
-        raw_rollout_path,
-        parse_rollout_turns(Path::new(raw_rollout_path))?,
-        before,
-        limit,
-    )
-}
-
 fn parse_rollout_turns(path: &Path) -> Result<Vec<HistoryTurn>, String> {
+    #[cfg(test)]
+    {
+        let path_key = path.to_string_lossy().to_string();
+        let mut counts = match history_parse_counts_by_path().lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        *counts.entry(path_key).or_insert(0) += 1;
+    }
     let file = File::open(path).map_err(|e| e.to_string())?;
     let reader = BufReader::new(file);
     let mut builder = HistoryTurnBuilder::default();
@@ -452,6 +251,31 @@ fn parse_rollout_turns(path: &Path) -> Result<Vec<HistoryTurn>, String> {
     Ok(builder.finish())
 }
 
+#[cfg(test)]
+fn history_parse_counts_by_path(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, usize>> {
+    static COUNTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
+        std::sync::OnceLock::new();
+    COUNTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+fn reset_history_parse_counter() {
+    match history_parse_counts_by_path().lock() {
+        Ok(mut guard) => guard.clear(),
+        Err(err) => err.into_inner().clear(),
+    }
+}
+
+#[cfg(test)]
+fn history_parse_count_for_path(path: &Path) -> usize {
+    let path_key = path.to_string_lossy().to_string();
+    match history_parse_counts_by_path().lock() {
+        Ok(guard) => guard.get(&path_key).copied().unwrap_or(0),
+        Err(err) => err.into_inner().get(&path_key).copied().unwrap_or(0),
+    }
+}
+
 fn history_turn_to_value(turn: &HistoryTurn) -> Value {
     json!({
         "id": turn.id,
@@ -459,7 +283,7 @@ fn history_turn_to_value(turn: &HistoryTurn) -> Value {
     })
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, Serialize, Deserialize, Debug)]
 struct HistoryTurnBuilder {
     turns: Vec<HistoryTurn>,
     current_turn: Option<HistoryTurn>,
@@ -646,8 +470,12 @@ fn build_user_content(payload: &Value) -> Vec<Value> {
 
 #[cfg(test)]
 mod tests {
+    use super::cache::_clear_history_turns_cache_for_test;
+    use super::history_parse_count_for_path;
     use super::load_thread_history_page;
+    use super::reset_history_parse_counter;
     use super::resolve_rollout_path;
+    use super::wsl_index::_set_test_wsl_history_loader;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
     use std::io::Write;
 
@@ -770,6 +598,54 @@ mod tests {
     }
 
     #[test]
+    fn history_page_cache_reuses_parsed_turns_across_pages() {
+        _clear_history_turns_cache_for_test();
+        reset_history_parse_counter();
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-cache"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"one","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"reply one"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"two","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"reply two"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"three","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"reply three"}}"#,
+        ]);
+        let first = load_thread_history_page(
+            "thread-cache",
+            Some(WorkspaceTarget::Windows),
+            Some(&rollout.path().to_string_lossy()),
+            None,
+            1,
+        )
+        .expect("first page");
+        assert_eq!(
+            history_parse_count_for_path(rollout.path()),
+            1,
+            "first page should parse rollout once"
+        );
+        let before = first.page["beforeCursor"].as_str().expect("before cursor");
+        let older = load_thread_history_page(
+            "thread-cache",
+            Some(WorkspaceTarget::Windows),
+            Some(&rollout.path().to_string_lossy()),
+            Some(before),
+            1,
+        )
+        .expect("older page");
+        assert_eq!(
+            history_parse_count_for_path(rollout.path()),
+            1,
+            "older page should reuse cached parsed turns instead of reparsing"
+        );
+        let older_turns = older.thread["turns"].as_array().expect("older turns");
+        assert_eq!(older_turns.len(), 1);
+        assert_eq!(
+            older_turns[0]["items"][0]["content"][0]["text"].as_str(),
+            Some("two")
+        );
+    }
+
+    #[test]
     fn wsl_rollout_path_resolves_to_unc() {
         let _home = EnvGuard::set("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
         let path = resolve_rollout_path(
@@ -805,5 +681,57 @@ mod tests {
             path.linux_path.as_deref(),
             Some("/home/test/.codex/sessions/2026/03/07/rollout.jsonl")
         );
+    }
+
+    #[test]
+    fn wsl_history_uses_linux_loader_instead_of_unc_file_reads() {
+        let _home = EnvGuard::set("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let seen_clone = seen.clone();
+        _set_test_wsl_history_loader(Some(std::sync::Arc::new(
+            move |_thread_id,
+                  _workspace,
+                  _raw_rollout_path,
+                  linux_rollout_path,
+                  _before,
+                  _limit| {
+                match seen_clone.lock() {
+                    Ok(mut guard) => *guard = Some(linux_rollout_path),
+                    Err(err) => *err.into_inner() = Some(String::new()),
+                }
+                Ok(super::ThreadHistoryPage {
+                    thread: serde_json::json!({
+                        "id": "thread-wsl",
+                        "workspace": "wsl2",
+                        "rolloutPath": "/home/test/.codex/sessions/2026/03/07/rollout.jsonl",
+                        "turns": [],
+                    }),
+                    page: serde_json::json!({
+                        "hasMore": false,
+                        "beforeCursor": serde_json::Value::Null,
+                        "limit": 1,
+                        "totalTurns": 0,
+                    }),
+                })
+            },
+        )));
+        let result = load_thread_history_page(
+            "thread-wsl",
+            Some(WorkspaceTarget::Wsl2),
+            Some("/home/test/.codex/sessions/2026/03/07/rollout.jsonl"),
+            None,
+            1,
+        )
+        .expect("wsl history page");
+        _set_test_wsl_history_loader(None);
+        let linux_rollout_path = match seen.lock() {
+            Ok(guard) => guard.clone(),
+            Err(err) => err.into_inner().clone(),
+        };
+        assert_eq!(
+            linux_rollout_path.as_deref(),
+            Some("/home/test/.codex/sessions/2026/03/07/rollout.jsonl")
+        );
+        assert_eq!(result.thread["workspace"].as_str(), Some("wsl2"));
     }
 }

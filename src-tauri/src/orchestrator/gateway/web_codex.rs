@@ -13,7 +13,7 @@ const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TERMINAL_COMMAND_LEN: usize = 4000;
 const MAX_TERMINAL_OUTPUT_BYTES: usize = 512 * 1024;
 const TERMINAL_TIMEOUT_SECS: u64 = 20;
-const HISTORY_READ_TIMEOUT_SECS: u64 = 12;
+const HISTORY_READ_TIMEOUT_SECS: u64 = 20;
 const VERSION_DETECT_TIMEOUT_SECS: u64 = 3;
 const VERSION_INFO_CACHE_SECS: i64 = 30;
 
@@ -1461,6 +1461,11 @@ async fn codex_threads_list(
     let snapshot =
         crate::orchestrator::gateway::web_codex_threads::list_threads_snapshot(target, force)
             .await;
+    if matches!(target, Some(WorkspaceTarget::Wsl2) | None) {
+        crate::orchestrator::gateway::web_codex_history::spawn_wsl_history_prewarm(
+            &snapshot.items,
+        );
+    }
     let total_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
     build_threads_response_with_meta(
         snapshot.items,

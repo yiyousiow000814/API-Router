@@ -153,13 +153,14 @@ const state = {
   historyWindowEnabled: false,
   historyWindowThreadId: "",
   historyWindowStart: 0,
-  historyWindowSize: 160,
-  historyWindowChunk: 120,
+  historyWindowSize: 60,
+  historyWindowChunk: 60,
   historyWindowLoading: false,
   historyAllMessages: [],
   activeThreadHistoryTurns: [],
   activeThreadHistoryThreadId: "",
   activeThreadHistoryHasMore: false,
+  activeThreadHistoryIncomplete: false,
   activeThreadHistoryBeforeCursor: "",
   activeThreadHistoryTotalTurns: 0,
   activeThreadHistoryReqSeq: 0,
@@ -2856,6 +2857,7 @@ function clearChatMessages(options = {}) {
   state.activeThreadHistoryTurns = [];
   state.activeThreadHistoryThreadId = "";
   state.activeThreadHistoryHasMore = false;
+  state.activeThreadHistoryIncomplete = false;
   state.activeThreadHistoryBeforeCursor = "";
   state.activeThreadHistoryTotalTurns = 0;
   state.activeThreadHistoryReqSeq = 0;
@@ -3881,13 +3883,17 @@ async function loadThreadMessages(threadId, options = {}) {
       const page = history?.page || {};
       const incomingThread = history?.thread || null;
       const incomingTurns = Array.isArray(incomingThread?.turns) ? incomingThread.turns : [];
-      const mergedTurns = mergeHistoryTurns(
-        state.activeThreadHistoryThreadId === threadId ? state.activeThreadHistoryTurns : [],
-        incomingTurns
-      );
+      const shouldReplaceTurns = !!page?.incomplete || !!state.activeThreadHistoryIncomplete;
+      const mergedTurns = shouldReplaceTurns
+        ? incomingTurns
+        : mergeHistoryTurns(
+            state.activeThreadHistoryThreadId === threadId ? state.activeThreadHistoryTurns : [],
+            incomingTurns
+          );
       state.activeThreadHistoryTurns = mergedTurns;
       state.activeThreadHistoryThreadId = threadId;
       state.activeThreadHistoryHasMore = !!page?.hasMore;
+      state.activeThreadHistoryIncomplete = !!page?.incomplete;
       state.activeThreadHistoryBeforeCursor = String(page?.beforeCursor || "").trim();
       state.activeThreadHistoryTotalTurns = Number(page?.totalTurns || incomingTurns.length || 0) || incomingTurns.length || 0;
       const thread = incomingThread ? {
@@ -4048,11 +4054,12 @@ async function loadOlderHistoryChunk() {
         }));
         const pageMeta = page?.page || {};
         const olderTurns = Array.isArray(page?.thread?.turns) ? page.thread.turns : [];
-        const mergedTurns = mergeHistoryTurns(olderTurns, state.activeThreadHistoryTurns);
-        state.activeThreadHistoryTurns = mergedTurns;
-        state.activeThreadHistoryThreadId = state.activeThreadId;
-        state.activeThreadHistoryHasMore = !!pageMeta?.hasMore;
-        state.activeThreadHistoryBeforeCursor = String(pageMeta?.beforeCursor || "").trim();
+          const mergedTurns = mergeHistoryTurns(olderTurns, state.activeThreadHistoryTurns);
+          state.activeThreadHistoryTurns = mergedTurns;
+          state.activeThreadHistoryThreadId = state.activeThreadId;
+          state.activeThreadHistoryHasMore = !!pageMeta?.hasMore;
+          state.activeThreadHistoryIncomplete = !!pageMeta?.incomplete;
+          state.activeThreadHistoryBeforeCursor = String(pageMeta?.beforeCursor || "").trim();
         state.activeThreadHistoryTotalTurns = Number(pageMeta?.totalTurns || mergedTurns.length || 0) || mergedTurns.length || 0;
         await applyThreadToChat({
           ...(page?.thread || {}),
