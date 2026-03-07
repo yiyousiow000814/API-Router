@@ -2652,6 +2652,22 @@ function wireMessageAttachments(container) {
     });
   }
 
+  const removeBrokenAttachment = (img) => {
+    const card = img?.closest(".msgAttachmentCard");
+    if (!card) return;
+    const wrap = card.closest(".msgAttachments");
+    const msg = card.closest(".msg");
+    card.remove();
+    if (wrap && !wrap.querySelector(".msgAttachmentCard")) {
+      wrap.remove();
+      if (msg) {
+        msg.classList.remove("withAttachments");
+        const body = msg.querySelector(".msgBody");
+        if (body && !String(body.textContent || "").trim()) msg.remove();
+      }
+    }
+  };
+
   // If images load after we already scrolled, keep the chat pinned to bottom while opening (or if user is near bottom).
   const imgs = container.querySelectorAll("img.msgAttachmentImage");
   for (const img of imgs) {
@@ -2670,7 +2686,14 @@ function wireMessageAttachments(container) {
       else updateScrollToBottomBtn();
     };
     img.addEventListener("load", onSettled, { once: true });
-    img.addEventListener("error", onSettled, { once: true });
+    img.addEventListener("error", () => {
+      removeBrokenAttachment(img);
+      onSettled();
+    }, { once: true });
+    if (img.complete && !(img.naturalWidth > 0)) {
+      removeBrokenAttachment(img);
+      onSettled();
+    }
   }
   updateScrollToBottomBtn();
 }
