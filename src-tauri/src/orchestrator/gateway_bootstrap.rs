@@ -1,5 +1,5 @@
 use std::io::ErrorKind;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 
 use serde_json::json;
 
@@ -16,7 +16,7 @@ fn gateway_listen_addrs(listen_host: &str, listen_port: u16) -> anyhow::Result<V
         let primary_ip = primary.ip().to_string();
         if primary_ip == crate::constants::GATEWAY_WINDOWS_HOST {
             let wsl_host = crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(None);
-            let parsed_wsl_ip: IpAddr = wsl_host.parse()?;
+            let parsed_wsl_ip: std::net::IpAddr = wsl_host.parse()?;
             if parsed_wsl_ip != primary.ip() {
                 addrs.push(SocketAddr::new(parsed_wsl_ip, listen_port));
             }

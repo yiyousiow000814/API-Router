@@ -2,9 +2,11 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::collections::HashMap;
+#[cfg(target_os = "windows")]
 use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::Duration;
+#[cfg(target_os = "windows")]
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
@@ -523,7 +525,7 @@ async fn start_bridge(target: &BridgeTarget) -> Result<BridgeRuntime, String> {
         .timeout(BRIDGE_REQUEST_TIMEOUT)
         .build()
         .map_err(|e| e.to_string())?;
-    let mut errors = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
 
     for port in bridge_ports_for_target(target) {
         let base_url = format!("http://127.0.0.1:{port}");
