@@ -4888,6 +4888,9 @@ function renderThreads(items) {
     if (state.threadListLoading) renderThreadListState("Loading chats...", "spinner");
     else renderThreadListState("Waiting for chats...", "spinner");
   }
+  if (pendingVisibleAnimation && listActuallyVisible && sourceItems.length > 0) {
+    state.threadListPendingVisibleAnimationByWorkspace[currentWorkspaceKey] = false;
+  }
   state.threadListAnimateNextRender = false;
   state.threadListAnimateThreadIds = new Set();
   state.threadListExpandAnimateGroupKeys = new Set();
