@@ -5,6 +5,7 @@ use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use std::process::Stdio;
 use std::sync::OnceLock;
+#[cfg(target_os = "windows")]
 use std::time::Duration;
 #[cfg(target_os = "windows")]
 use tokio::process::Command;
