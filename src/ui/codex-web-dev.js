@@ -2,6 +2,8 @@ try {
   window.__webCodexScriptLoaded = true;
 } catch {}
 
+const WEB_CODEX_DEV_DEBUG_VERSION = "2026-03-08-debug-5";
+
 const state = {
   token: "",
   activeHostId: "",
@@ -1715,25 +1717,72 @@ function looksLikeFileRef(value) {
   const quoted = raw.match(/^(['"])([\s\S]*)\1$/);
   const text = quoted ? String(quoted[2] || "").trim() : raw;
   if (!text) return false;
+  if (isHttpUrl(text)) return false;
   if (isDottedIdentifierPath(text)) return false;
   if (/^[\\/]+$/.test(text)) return false;
+  if (/^\/[^\/\s.?#]+$/.test(text)) return false;
   if (/^%[A-Za-z0-9_]+%(?:[\\/]+)?$/.test(text)) return false;
   if (/^[a-z]:(?:[\\/]+)?$/i.test(text)) return false;
   const hasPathSeparator = text.includes("/") || text.includes("\\");
+  const hasUncPrefix = /^\\\\[A-Za-z0-9_.-]+[\\/]/.test(text);
   const hasAbsolutePrefix =
     /^%[A-Za-z0-9_]+%[\\/]/.test(text) ||
     /^[a-z]:[\\/]/i.test(text) ||
     text.startsWith("/") ||
-    text.startsWith("\\\\");
+    hasUncPrefix;
+  const hasExplicitRelativePrefix = /^(?:\.{1,2}|~)[\\/]/.test(text);
+  const hasFileLikeSuffix = /(?:^|[\\/])[^\\/\s]+\.[a-z0-9]{1,8}(?::\d+(?::\d+)?)?(?:#L\d+(?:C\d+)?)?$/i.test(text);
   if (!hasPathSeparator && !hasAbsolutePrefix) return false;
-  return (
-    /^%[A-Za-z0-9_]+%[\\/]/.test(text) ||
-    /^[a-z]:[\\/]/i.test(text) ||
-    text.startsWith("/") ||
-    text.startsWith("\\\\") ||
-    /[^\\/\s][\\/][^\\/\s]/.test(text) ||
-    /(?:^|[\\/])[^\\/\s]+\.[a-z0-9]{1,8}(?::\d+(?::\d+)?)?(?:#L\d+(?:C\d+)?)?$/i.test(text)
-  );
+  if (!hasAbsolutePrefix && !hasExplicitRelativePrefix && !hasFileLikeSuffix) return false;
+  return hasAbsolutePrefix || hasExplicitRelativePrefix || hasFileLikeSuffix;
+}
+
+function normalizeCodeSpanContent(value) {
+  const raw = String(value || "").replace(/\r?\n/g, " ");
+  if (raw.length >= 2 && raw.startsWith(" ") && raw.endsWith(" ") && /[^\s]/.test(raw)) {
+    return raw.slice(1, -1);
+  }
+  return raw;
+}
+
+function isMarkdownEscapedAt(source, index) {
+  const text = String(source || "");
+  let slashCount = 0;
+  for (let i = Number(index || 0) - 1; i >= 0 && text[i] === "\\"; i -= 1) {
+    slashCount += 1;
+  }
+  return slashCount % 2 === 1;
+}
+
+function findNextInlineCodeSpan(source, fromIndex = 0) {
+  const text = String(source || "");
+  for (let start = Math.max(0, Number(fromIndex) || 0); start < text.length; start += 1) {
+    if (text[start] !== "`") continue;
+    if (isMarkdownEscapedAt(text, start)) continue;
+    let fenceLen = 1;
+    while (text[start + fenceLen] === "`") fenceLen += 1;
+    for (let cursor = start + fenceLen; cursor < text.length; cursor += 1) {
+      if (text[cursor] !== "`") continue;
+      if (isMarkdownEscapedAt(text, cursor)) continue;
+      let closeLen = 1;
+      while (text[cursor + closeLen] === "`") closeLen += 1;
+      if (closeLen === fenceLen) {
+        return {
+          start,
+          end: cursor + closeLen,
+          fenceLen,
+          content: text.slice(start + fenceLen, cursor),
+        };
+      }
+      cursor += closeLen - 1;
+    }
+    start += fenceLen - 1;
+  }
+  return null;
+}
+
+function unescapeMarkdownText(value) {
+  return String(value || "").replace(/\\([\\!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g, "$1");
 }
 
 function fileRefDisplayLabel(value) {
@@ -1774,46 +1823,73 @@ function buildMessageLink(label, href, preferFileLabel = false) {
   return `<a class="msgLink" href="${safeHref}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`;
 }
 
-function renderInlineMessageText(text) {
+function renderInlineCodeSpan(content, fenceLen = 1) {
+  const normalized = normalizeCodeSpanContent(content);
+  if (Number(fenceLen || 0) === 1 && looksLikeFileRef(normalized)) {
+    return buildMessageLink(normalized, normalized, true);
+  }
+  return `<code class="msgInlineCode">${escapeHtml(normalized)}</code>`;
+}
+
+const INLINE_MESSAGE_PLAIN_TOKEN_PATTERN = /\[([^\]\n]+)\]\(([^)\n]+)\)|\*\*([^*\n]+)\*\*|(https?:\/\/[^\s<>()]+)|((?:(?:(?:%[A-Za-z0-9_]+%|[A-Za-z]:|\\\\[^\\\s]+|\/)?[\\/])?(?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})(?::\d+(?::\d+)?)?(?:#L\d+(?:C\d+)?)?)/g;
+
+function renderPlainInlineToken(match) {
+  if (match[1] && match[2]) {
+    const href = String(match[2] || "").trim();
+    return buildMessageLink(match[1], href, looksLikeFileRef(href) || looksLikeFileRef(match[1]));
+  }
+  if (match[3]) {
+    return `<strong>${escapeHtml(match[3])}</strong>`;
+  }
+  if (match[4]) {
+    return buildMessageLink(match[4], match[4], false);
+  }
+  if (match[5]) {
+    const candidate = String(match[5] || "").trim();
+    return looksLikeFileRef(candidate)
+      ? buildMessageLink(candidate, candidate, true)
+      : escapeHtml(candidate);
+  }
+  return escapeHtml(String(match[0] || ""));
+}
+
+function renderPlainTextSegment(text) {
   const source = String(text || "");
-  const tokenPattern = /\[([^\]\n]+)\]\(([^)\n]+)\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|(https?:\/\/[^\s<>()]+)|((?:(?:%[A-Za-z0-9_]+%[\\/]|[A-Za-z]:[\\/]|\\\\[^\\\s]+[\\/]|(?:[A-Za-z0-9_.-]+[\\/]))?[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})(?::\d+(?::\d+)?)?(?:#L\d+(?:C\d+)?)?)/g;
   let cursor = 0;
   let html = "";
-  for (const match of source.matchAll(tokenPattern)) {
-    const full = match[0];
+  for (const match of source.matchAll(INLINE_MESSAGE_PLAIN_TOKEN_PATTERN)) {
+    const full = String(match[0] || "");
     const index = match.index || 0;
-    if (index > cursor) html += escapeHtml(source.slice(cursor, index));
-    if (match[1] && match[2]) {
-      const href = match[2].trim();
-      html += buildMessageLink(match[1], href, looksLikeFileRef(href) || looksLikeFileRef(match[1]));
-    } else if (match[3]) {
-      const inlineCode = String(match[3] || "").trim();
-      if (looksLikeFileRef(inlineCode)) {
-        html += `<span class="msgPseudoLink">${escapeHtml(fileRefDisplayLabel(inlineCode))}</span>`;
-      } else {
-        html += `<code class="msgInlineCode">${escapeHtml(match[3])}</code>`;
-      }
-    } else if (match[4]) {
-      html += `<strong>${escapeHtml(match[4])}</strong>`;
-    } else if (match[5]) {
-      html += buildMessageLink(match[5], match[5], false);
-    } else if (match[6]) {
-      const candidate = String(match[6] || "").trim();
-      if (looksLikeFileRef(candidate)) html += buildMessageLink(candidate, candidate, true);
-      else html += escapeHtml(candidate);
-    } else {
-      html += escapeHtml(full);
-    }
+    if (index > cursor) html += escapeHtml(unescapeMarkdownText(source.slice(cursor, index)));
+    html += renderPlainInlineToken(match);
     cursor = index + full.length;
   }
-  if (cursor < source.length) html += escapeHtml(source.slice(cursor));
+  if (cursor < source.length) html += escapeHtml(unescapeMarkdownText(source.slice(cursor)));
+  return html;
+}
+
+function renderInlineMessageText(text) {
+  const source = String(text || "");
+  let cursor = 0;
+  let html = "";
+  while (cursor < source.length) {
+    const span = findNextInlineCodeSpan(source, cursor);
+    if (!span) {
+      html += renderPlainTextSegment(source.slice(cursor));
+      break;
+    }
+    if (span.start > cursor) {
+      html += renderPlainTextSegment(source.slice(cursor, span.start));
+    }
+    html += renderInlineCodeSpan(span.content, span.fenceLen);
+    cursor = span.end;
+  }
   return html;
 }
 
 function renderMessageRichHtml(text) {
   const source = String(text || "").replace(/\r\n/g, "\n");
   if (!source.trim()) return "";
-  const segments = source.split("```");
   let html = "";
   const parseListLine = (line) => {
     const match = String(line || "").match(/^(\s*)([-*•]|\d+\.)\s+(.+)$/);
@@ -1912,43 +1988,61 @@ function renderMessageRichHtml(text) {
     }
     return out;
   };
-  for (let i = 0; i < segments.length; i += 1) {
-    const segment = segments[i];
-    if (i % 2 === 1) {
-      const code = segment.replace(/^\w+\n/, "").replace(/\n$/, "");
-      html += `<pre class="msgCodeBlock"><code>${escapeHtml(code)}</code></pre>`;
+  const lines = source.split("\n");
+  let paragraphLines = [];
+  let listLines = [];
+  let codeLines = [];
+  let inCodeBlock = false;
+  const flushParagraph = () => {
+    if (!paragraphLines.length) return;
+    html += `<p>${paragraphLines.map((line) => renderInlineMessageText(line)).join("<br>")}</p>`;
+    paragraphLines = [];
+  };
+  const flushList = () => {
+    if (!listLines.length) return;
+    html += renderListBlock(listLines);
+    listLines = [];
+  };
+  const flushCode = () => {
+    const code = codeLines.join("\n").replace(/\n$/, "");
+    html += `<pre class="msgCodeBlock"><code>${escapeHtml(code)}</code></pre>`;
+    codeLines = [];
+  };
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx += 1) {
+    const line = lines[lineIdx];
+    const trimmedStart = String(line || "").trimStart();
+    const isFenceLine = trimmedStart.startsWith("```");
+    if (inCodeBlock) {
+      if (isFenceLine) {
+        flushCode();
+        inCodeBlock = false;
+      } else {
+        codeLines.push(line);
+      }
       continue;
     }
-    const lines = segment.split("\n");
-    let paragraphLines = [];
-    const flushParagraph = () => {
-      if (!paragraphLines.length) return;
-      html += `<p>${paragraphLines.map((line) => renderInlineMessageText(line)).join("<br>")}</p>`;
-      paragraphLines = [];
-    };
-    for (let lineIdx = 0; lineIdx < lines.length; lineIdx += 1) {
-      const line = lines[lineIdx];
-      if (!line.trim()) {
-        flushParagraph();
-        continue;
-      }
-      if (isListLine(line)) {
-        flushParagraph();
-        const listLines = [line];
-        for (let nextIdx = lineIdx + 1; nextIdx < lines.length; nextIdx += 1) {
-          const nextLine = lines[nextIdx];
-          if (!nextLine.trim()) break;
-          if (!isListLine(nextLine)) break;
-          listLines.push(nextLine);
-          lineIdx = nextIdx;
-        }
-        html += renderListBlock(listLines);
-        continue;
-      }
-      paragraphLines.push(line);
+    if (isFenceLine) {
+      flushParagraph();
+      flushList();
+      inCodeBlock = true;
+      continue;
     }
-    flushParagraph();
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    if (isListLine(line)) {
+      flushParagraph();
+      listLines.push(line);
+      continue;
+    }
+    flushList();
+    paragraphLines.push(line);
   }
+  if (inCodeBlock) flushCode();
+  flushParagraph();
+  flushList();
   return html || `<p>${escapeHtml(source)}</p>`;
 }
 
@@ -2725,6 +2819,17 @@ function setChatOpening(isOpening) {
   overlay.classList.toggle("show", !!isOpening);
 }
 
+function attachMessageDebugMeta(node, payload = {}) {
+  if (!node) return node;
+  try {
+    node.__webCodexRole = String(payload.role || "").trim();
+    node.__webCodexKind = String(payload.kind || "").trim();
+    node.__webCodexRawText = typeof payload.text === "string" ? payload.text : String(payload.text || "");
+    node.__webCodexSource = String(payload.source || "").trim();
+  } catch {}
+  return node;
+}
+
 function addChat(role, text, options = {}) {
   const box = byId("chatBox");
   const welcome = byId("welcomeCard");
@@ -2740,6 +2845,7 @@ function addChat(role, text, options = {}) {
   const attachmentsHtml = renderMessageAttachments(options.attachments);
   const bodyHtml = renderMessageBody(role, text);
   node.innerHTML = `<div class="msgHead">${escapeHtml(headLabel)}</div><div class="msgBody">${attachmentsHtml}${bodyHtml}</div>`;
+  attachMessageDebugMeta(node, { role, kind, text, source: "addChat" });
   wireMessageLinks(node);
   wireMessageAttachments(node);
   if (options.animate !== false) {
@@ -2764,6 +2870,7 @@ function createAssistantStreamingMessage() {
   msg.className = "msg assistant";
   msg.innerHTML = `<div class="msgHead">assistant</div><div class="msgBody"></div>`;
   animateMessageNode(msg, 50);
+  attachMessageDebugMeta(msg, { role: "assistant", kind: "", text: "", source: "streaming" });
   const body = msg.querySelector(".msgBody");
   return { msg, body };
 }
@@ -2832,6 +2939,7 @@ function finalizeAssistantMessage(msgNode, bodyNode, text) {
     bodyNode.__streaming = null;
   } catch {}
   bodyNode.innerHTML = renderMessageBody("assistant", finalText);
+  attachMessageDebugMeta(msgNode, { role: "assistant", kind: "", text: finalText, source: "finalizeAssistantMessage" });
   wireMessageLinks(msgNode);
 }
 
@@ -3987,6 +4095,7 @@ function buildMsgNode(msg) {
   const attachmentsHtml = renderMessageAttachments(msg.images || []);
   const bodyHtml = renderMessageBody(msg.role, msg.text);
   node.innerHTML = `<div class="msgHead">${escapeHtml(headLabel)}</div><div class="msgBody">${attachmentsHtml}${bodyHtml}</div>`;
+  attachMessageDebugMeta(node, { role: msg.role, kind, text: msg.text, source: "buildMsgNode" });
   wireMessageLinks(node);
   wireMessageAttachments(node);
   return node;
@@ -5894,6 +6003,92 @@ function wireActions() {
   });
 }
 
+function readDebugMessageNode(node, index) {
+  const body = node?.querySelector?.(".msgBody") || null;
+  const inline = body ? Array.from(body.querySelectorAll("code.msgInlineCode")).map((n) => String(n.textContent || "").trim()) : [];
+  const pseudo = body ? Array.from(body.querySelectorAll(".msgPseudoLink")).map((n) => String(n.textContent || "").trim()) : [];
+  const links = body ? Array.from(body.querySelectorAll("a.msgLink")).map((n) => ({
+    text: String(n.textContent || "").trim(),
+    href: String(n.getAttribute("href") || "").trim(),
+  })) : [];
+  return {
+    index,
+    className: String(node?.className || ""),
+    role: String(node?.__webCodexRole || ""),
+    kind: String(node?.__webCodexKind || ""),
+    source: String(node?.__webCodexSource || ""),
+    rawText: typeof node?.__webCodexRawText === "string" ? node.__webCodexRawText : "",
+    headText: String(node?.querySelector?.(".msgHead")?.textContent || "").trim(),
+    bodyText: String(body?.textContent || ""),
+    bodyHtml: String(body?.innerHTML || ""),
+    inline,
+    pseudo,
+    links,
+  };
+}
+
+function installWebCodexDebug() {
+  try {
+    const previous = window.__webCodexDebug || {};
+    window.__webCodexDebug = {
+      ...previous,
+      version: WEB_CODEX_DEV_DEBUG_VERSION,
+      scriptUrl: typeof import.meta !== "undefined" ? String(import.meta.url || "") : "",
+      loadedAt: new Date().toISOString(),
+      getScriptInfo() {
+        return {
+          version: WEB_CODEX_DEV_DEBUG_VERSION,
+          scriptUrl: typeof import.meta !== "undefined" ? String(import.meta.url || "") : "",
+          loadedAt: String(window.__webCodexDebug?.loadedAt || ""),
+          activeThreadId: String(state.activeThreadId || ""),
+          activeThreadWorkspace: String(state.activeThreadWorkspace || ""),
+          activeThreadRenderSig: String(state.activeThreadRenderSig || ""),
+          messageCount: document.querySelectorAll("#chatBox .msg").length,
+        };
+      },
+      dumpMessages(limit = 8) {
+        const max = Math.max(1, Number(limit || 8) | 0);
+        const nodes = Array.from(document.querySelectorAll("#chatBox .msg"));
+        return nodes.slice(Math.max(0, nodes.length - max)).map((node, index) => readDebugMessageNode(node, nodes.length - Math.min(max, nodes.length) + index));
+      },
+      findMessage(needle) {
+        const query = String(needle || "");
+        const nodes = Array.from(document.querySelectorAll("#chatBox .msg"));
+        for (let i = 0; i < nodes.length; i += 1) {
+          const info = readDebugMessageNode(nodes[i], i);
+          if (!query || info.rawText.includes(query) || info.bodyText.includes(query) || info.bodyHtml.includes(query)) return info;
+        }
+        return null;
+      },
+      getChatHtml() {
+        return String(document.getElementById("chatBox")?.innerHTML || "");
+      },
+      renderInlineText(text) {
+        return renderInlineMessageText(String(text || ""));
+      },
+      scanInlineText(text) {
+        const source = String(text || "");
+        const spans = [];
+        let cursor = 0;
+        while (cursor < source.length) {
+          const span = findNextInlineCodeSpan(source, cursor);
+          if (!span) break;
+          spans.push({
+            kind: "code",
+            start: span.start,
+            end: span.end,
+            fenceLen: span.fenceLen || 0,
+            content: typeof span.content === "string" ? span.content : "",
+            raw: source.slice(span.start, span.end),
+          });
+          cursor = span.end;
+        }
+        return spans;
+      },
+    };
+  } catch {}
+}
+
 function installThreadAnimDebug() {
   if (!threadAnimDebug.enabled) return;
   const list = byId("threadList");
@@ -5919,7 +6114,8 @@ function bootstrap() {
   // E2E-only hooks (guarded). This avoids relying on a running gateway just to validate
   // UI behaviors like scroll anchoring, scrollbar hiding, and history rendering.
   try {
-    const params = new URLSearchParams(window.location.search);
+    installWebCodexDebug();
+  const params = new URLSearchParams(window.location.search);
     if (params.get("animdebug") === "1") {
       threadAnimDebug.enabled = true;
       installThreadAnimDebug();

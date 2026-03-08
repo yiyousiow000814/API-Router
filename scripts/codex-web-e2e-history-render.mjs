@@ -8,6 +8,11 @@ import { ensureMsEdgeDriver, repoRoot } from './ui-check/runtime-utils.mjs'
 
 const BASE_URL = String(process.env.CODEX_WEB_URL || 'http://127.0.0.1:5174/codex-web?e2e=1').trim()
 const KEEP_VISIBLE = String(process.env.UI_TAURI_VISIBLE || '').trim() === '1'
+const ARTIFACTS_DIR = path.join(repoRoot, 'artifacts', 'ui-check', 'codex-history-render')
+
+let activeDriver = null
+let lastHistoryRenderCase = 'startup'
+let lastHistoryRenderNeedle = ''
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -68,6 +73,86 @@ async function ensureDevServerReady() {
   )
   await waitFor(() => canReach(BASE_URL), 45000, `dev server ${BASE_URL}`)
   return devProc
+}
+
+function ensureArtifactsDir() {
+  fs.mkdirSync(ARTIFACTS_DIR, { recursive: true })
+  return ARTIFACTS_DIR
+}
+
+function sanitizeArtifactName(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-')
+  return normalized || 'artifact'
+}
+
+function setHistoryRenderCase(name, needle = '') {
+  lastHistoryRenderCase = sanitizeArtifactName(name)
+  lastHistoryRenderNeedle = String(needle || '')
+}
+
+async function collectHistoryRenderDebugState(driver) {
+  if (!driver) return null
+  try {
+    return await driver.executeScript(`
+      const body = document.querySelector('#chatBox .msgBody');
+      const debug = window.__webCodexDebug || null;
+      return {
+        url: String(window.location.href || ''),
+        bodyText: String(body?.textContent || '').trim(),
+        bodyHtml: String(body?.innerHTML || ''),
+        inline: body ? Array.from(body.querySelectorAll('code.msgInlineCode')).map((n) => String(n.textContent || '')) : [],
+        pseudo: body ? Array.from(body.querySelectorAll('.msgPseudoLink')).map((n) => String(n.textContent || '')) : [],
+        scriptInfo: debug?.getScriptInfo?.() || null,
+        messages: debug?.dumpMessages?.(8) || [],
+        needleHit: debug?.findMessage?.(${JSON.stringify(lastHistoryRenderNeedle)}) || null,
+      };
+    `)
+  } catch (error) {
+    return {
+      debugCollectionError: String(error && error.message ? error.message : error),
+    }
+  }
+}
+
+async function writeHistoryRenderArtifacts(driver, name, payload = {}) {
+  const dir = ensureArtifactsDir()
+  const fileBase = path.join(dir, sanitizeArtifactName(name))
+  const screenshotPath = `${fileBase}.png`
+  const jsonPath = `${fileBase}.json`
+  const debugState = await collectHistoryRenderDebugState(driver)
+  if (driver) {
+    const b64 = await driver.takeScreenshot()
+    fs.writeFileSync(screenshotPath, Buffer.from(b64, 'base64'))
+  }
+  fs.writeFileSync(
+    jsonPath,
+    JSON.stringify(
+      {
+        capturedAt: new Date().toISOString(),
+        case: String(name || ''),
+        ...payload,
+        debugState,
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  )
+  return { screenshotPath, jsonPath }
+}
+
+async function captureFailureArtifacts(error) {
+  if (!activeDriver) return null
+  try {
+    return await writeHistoryRenderArtifacts(activeDriver, `fail-${lastHistoryRenderCase}`, {
+      error: String(error?.stack || error),
+      needle: lastHistoryRenderNeedle,
+    })
+  } catch (artifactError) {
+    return {
+      artifactError: String(artifactError?.stack || artifactError),
+    }
+  }
 }
 
 async function main() {
@@ -152,6 +237,7 @@ async function main() {
       .setEdgeOptions(options)
       .setEdgeService(new edge.ServiceBuilder(msedgedriverPath))
       .build()
+    activeDriver = driver
 
     await driver.get(BASE_URL)
     await waitFor(async () => {
@@ -446,6 +532,7 @@ async function main() {
         'console.log(\"hello\")',
         '```',
       ].join('\n')
+      setHistoryRenderCase('bare-path-only', markdown)
       const seeded = await driver.executeAsyncScript(`
         const markdown = arguments[0];
         const done = arguments[arguments.length - 1];
@@ -528,6 +615,256 @@ async function main() {
         // Some browsers report transparent as rgba(0, 0, 0, 0); others as 'transparent'.
         throw new Error(`expected inline code background to be transparent, got ${JSON.stringify(inlineStyle)}`)
       }
+    }
+
+    // Regression: app routes like /codex-web are not file refs and must stay inline code.
+    {
+      const markdown = [
+        '最新代码已经修到真实 `/codex-web` 路径。',
+        '打开 `http://127.0.0.1:5173/codex-web`。',
+      ].join('\n')
+      const seeded = await driver.executeAsyncScript(`
+        const markdown = arguments[0];
+        const done = arguments[arguments.length - 1];
+        try {
+          const h = window.__webCodexE2E;
+          if (!h || typeof h.setThreadHistory !== 'function') return done({ ok: false, error: 'setThreadHistory missing' });
+          const threadId = 'e2e_markdown_route_not_file_ref';
+          h.setThreadHistory(threadId, {
+            id: threadId,
+            modelName: 'gpt-5.3-codex',
+            turns: [
+              { items: [{ type: 'assistantMessage', text: String(markdown || '') }] },
+            ],
+          });
+          done({ ok: true, threadId });
+        } catch (e) {
+          done({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+      `, markdown)
+      if (!seeded?.ok) throw new Error(`seed route-not-file-ref thread failed: ${seeded?.error || 'unknown'}`)
+      const opened = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          const h = window.__webCodexE2E;
+          const r = await h.openThread(${JSON.stringify('e2e_markdown_route_not_file_ref')});
+          done(r);
+        })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!opened?.ok) throw new Error(`openThread failed: ${opened?.error || 'unknown'}`)
+      const probe = await driver.executeScript(`
+        const body = document.querySelector('#chatBox .msgBody');
+        if (!body) return null;
+        return {
+          inline: Array.from(body.querySelectorAll('code.msgInlineCode')).map((n) => String(n.textContent || '').trim()),
+          pseudo: Array.from(body.querySelectorAll('.msgPseudoLink')).map((n) => String(n.textContent || '').trim()),
+        };
+      `)
+      if (!probe) throw new Error('missing route-not-file-ref probe')
+      if (!probe.inline.includes('/codex-web')) {
+        throw new Error(`expected /codex-web route to stay inline code, got ${JSON.stringify(probe)}`)
+      }
+      if (probe.pseudo.includes('codex-web')) {
+        throw new Error(`expected /codex-web route to avoid pseudo-link file rendering, got ${JSON.stringify(probe)}`)
+      }
+    }
+
+
+    // Regression: bare file refs and single-backtick pure file refs should both shrink to the short blue file-ref label.
+    {
+      const markdown = [
+        '裸 path 会收成 basename: src/ui/codex-web-dev.js:1776。',
+        'inline code 里的 `src/ui/codex-web-dev.js:1776` 保持原样。',
+      ].join('\n')
+      const seeded = await driver.executeAsyncScript(`
+        const markdown = arguments[0];
+        const done = arguments[arguments.length - 1];
+        try {
+          const h = window.__webCodexE2E;
+          if (!h || typeof h.setThreadHistory !== 'function') return done({ ok: false, error: 'setThreadHistory missing' });
+          const threadId = 'e2e_markdown_bare_path_only';
+          h.setThreadHistory(threadId, {
+            id: threadId,
+            modelName: 'gpt-5.3-codex',
+            turns: [
+              { items: [{ type: 'assistantMessage', text: String(markdown || '') }] },
+            ],
+          });
+          done({ ok: true, threadId });
+        } catch (e) {
+          done({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+      `, markdown)
+      if (!seeded?.ok) throw new Error(`seed bare-path-only thread failed: ${seeded?.error || 'unknown'}`)
+      const opened = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          const h = window.__webCodexE2E;
+          const r = await h.openThread(${JSON.stringify('e2e_markdown_bare_path_only')});
+          done(r);
+        })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!opened?.ok) throw new Error(`openThread failed: ${opened?.error || 'unknown'}`)
+      const probe = await driver.executeScript(`
+        const body = document.querySelector('#chatBox .msgBody');
+        if (!body) return null;
+        const pseudoNode = body.querySelector('.msgPseudoLink');
+        const pseudoStyle = pseudoNode ? getComputedStyle(pseudoNode) : null;
+        return {
+          bodyText: String(body.textContent || '').trim(),
+          bodyHtml: String(body.innerHTML || ''),
+          inline: Array.from(body.querySelectorAll('code.msgInlineCode')).map((n) => String(n.textContent || '').trim()),
+          pseudo: Array.from(body.querySelectorAll('.msgPseudoLink')).map((n) => String(n.textContent || '').trim()),
+          pseudoStyle: pseudoStyle ? {
+            color: String(pseudoStyle.color || ''),
+            textDecorationColor: String(pseudoStyle.textDecorationColor || ''),
+          } : null,
+        };
+      `)
+      if (!probe) throw new Error('missing bare-path-only probe')
+      if (probe.inline.length !== 0) {
+        throw new Error(`expected pure file-ref inline code to collapse into pseudo-links, got ${JSON.stringify(probe)}`)
+      }
+      const pseudoMatches = probe.pseudo.filter((value) => value === 'codex-web-dev.js:1776')
+      if (pseudoMatches.length !== 2) {
+        throw new Error(`expected both bare path and single-backtick file ref to shrink to the same basename label, got ${JSON.stringify(probe)}`)
+      }
+      if (/src\/ui\/codex-web-dev\.js:1776/.test(String(probe.bodyHtml || ''))) {
+        throw new Error(`expected rendered html to avoid the long file path for pure file-ref cases, got ${JSON.stringify(probe)}`)
+      }
+      const pseudoColor = String(probe.pseudoStyle?.color || '')
+      const colorMatch = pseudoColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i)
+      if (!colorMatch) {
+        throw new Error(`expected pseudo-link to expose a computed color, got ${JSON.stringify(probe)}`)
+      }
+      {
+        const r = Number(colorMatch[1] || 0)
+        const g = Number(colorMatch[2] || 0)
+        const b = Number(colorMatch[3] || 0)
+        if (!(b > g && b > r && b >= 140)) {
+          throw new Error(`expected pseudo-link to use a blue accent like Codex/clawdex file refs, got ${JSON.stringify(probe)}`)
+        }
+      }
+      const artifacts = await writeHistoryRenderArtifacts(driver, 'bare-path-only-visual', { probe, markdown })
+      console.log(`[ui:e2e:codex-history-render] visual artifact bare-path-only: ${artifacts.screenshotPath}`)
+    }
+
+    // Regression: slash-separated debug labels are not file refs and must stay plain text.
+    {
+      const markdown = '优先看 `messages/rawText`、`inline/pseudo`、`bodyHtml`。'
+      setHistoryRenderCase('slash-identifiers-not-file-ref', markdown)
+      const seeded = await driver.executeAsyncScript(`
+        const markdown = arguments[0];
+        const done = arguments[arguments.length - 1];
+        try {
+          const h = window.__webCodexE2E;
+          if (!h || typeof h.setThreadHistory !== 'function') return done({ ok: false, error: 'setThreadHistory missing' });
+          const threadId = 'e2e_slash_identifiers_not_file_ref';
+          h.setThreadHistory(threadId, {
+            id: threadId,
+            modelName: 'gpt-5.3-codex',
+            turns: [
+              { items: [{ type: 'assistantMessage', text: String(markdown || '') }] },
+            ],
+          });
+          done({ ok: true, threadId });
+        } catch (e) {
+          done({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+      `, markdown)
+      if (!seeded?.ok) throw new Error(`seed slash-identifiers-not-file-ref thread failed: ${seeded?.error || 'unknown'}`)
+      const opened = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          const h = window.__webCodexE2E;
+          const r = await h.openThread(${JSON.stringify('e2e_slash_identifiers_not_file_ref')});
+          done(r);
+        })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!opened?.ok) throw new Error(`openThread failed: ${opened?.error || 'unknown'}`)
+      const probe = await driver.executeScript(`
+        const body = document.querySelector('#chatBox .msgBody');
+        if (!body) return null;
+        return {
+          bodyText: String(body.textContent || '').trim(),
+          bodyHtml: String(body.innerHTML || ''),
+          inline: Array.from(body.querySelectorAll('code.msgInlineCode')).map((n) => String(n.textContent || '').trim()),
+          pseudo: Array.from(body.querySelectorAll('.msgPseudoLink')).map((n) => String(n.textContent || '').trim()),
+        };
+      `)
+      if (!probe) throw new Error('missing slash-identifiers-not-file-ref probe')
+      if (!probe.bodyText.includes('messages/rawText') || !probe.bodyText.includes('inline/pseudo')) {
+        throw new Error(`expected slash labels to stay visible in plain text, got ${JSON.stringify(probe)}`)
+      }
+      if (probe.pseudo.length !== 0) {
+        throw new Error(`expected slash-separated debug labels to avoid pseudo-link rendering, got ${JSON.stringify(probe)}`)
+      }
+      const inlineMatches = probe.inline.filter((value) => value === 'messages/rawText' || value === 'inline/pseudo')
+      if (inlineMatches.length !== 2) {
+        throw new Error(`expected slash-separated debug labels to stay inline code, got ${JSON.stringify(probe)}`)
+      }
+      if ((String(probe.bodyHtml || '').match(/msgInlineCode/g) || []).length < 2) {
+        throw new Error(`expected slash-separated debug labels html to keep code spans, got ${JSON.stringify(probe)}`)
+      }
+    }
+
+    // Regression: multi-backtick inline code must render as one code span so examples like
+    // `` `src/ui/...:1714` `` display the inner single backticks literally instead of being split apart.
+    {
+      const markdown = '上面那个例如 `` `src/ui/codex-web-dev.js:1714` ``。'
+      setHistoryRenderCase('multi-backtick-inline-code', markdown)
+      const seeded = await driver.executeAsyncScript(`
+        const markdown = arguments[0];
+        const done = arguments[arguments.length - 1];
+        try {
+          const h = window.__webCodexE2E;
+          if (!h || typeof h.setThreadHistory !== 'function') return done({ ok: false, error: 'setThreadHistory missing' });
+          const threadId = 'e2e_markdown_multi_backtick_inline_code';
+          h.setThreadHistory(threadId, {
+            id: threadId,
+            modelName: 'gpt-5.3-codex',
+            turns: [
+              { items: [{ type: 'assistantMessage', text: String(markdown || '') }] },
+            ],
+          });
+          done({ ok: true, threadId });
+        } catch (e) {
+          done({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+      `, markdown)
+      if (!seeded?.ok) throw new Error(`seed multi-backtick-inline-code thread failed: ${seeded?.error || 'unknown'}`)
+      const opened = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          const h = window.__webCodexE2E;
+          const r = await h.openThread(${JSON.stringify('e2e_markdown_multi_backtick_inline_code')});
+          done(r);
+        })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!opened?.ok) throw new Error(`openThread failed: ${opened?.error || 'unknown'}`)
+      const probe = await driver.executeScript(`
+        const body = document.querySelector('#chatBox .msgBody');
+        if (!body) return null;
+        return {
+          bodyText: String(body.textContent || '').trim(),
+          inline: Array.from(body.querySelectorAll('code.msgInlineCode')).map((n) => String(n.textContent || '')),
+          pseudo: Array.from(body.querySelectorAll('.msgPseudoLink')).map((n) => String(n.textContent || '')),
+          html: String(body.innerHTML || ''),
+        };
+      `)
+      if (!probe) throw new Error('missing multi-backtick-inline-code probe')
+      const expectedInline = '`src/ui/codex-web-dev.js:1714`'
+      if (!probe.inline.includes(expectedInline)) {
+        throw new Error(`expected multi-backtick example to render one inline code span with visible inner backticks, got ${JSON.stringify(probe)}`)
+      }
+      if (!probe.bodyText.includes(`上面那个例如 ${expectedInline}。`)) {
+        throw new Error(`expected multi-backtick example body text to preserve visible inner backticks, got ${JSON.stringify(probe)}`)
+      }
+      if (probe.pseudo.length !== 0) {
+        throw new Error(`expected multi-backtick example to avoid pseudo-link shrinking, got ${JSON.stringify(probe)}`)
+      }
+      const artifacts = await writeHistoryRenderArtifacts(driver, 'multi-backtick-inline-code-visual', { probe, markdown })
+      console.log(`[ui:e2e:codex-history-render] visual artifact multi-backtick-inline-code: ${artifacts.screenshotPath}`)
     }
 
     // Regression: reasoning-effort selector should be a nested submenu to the RIGHT of the active model option
@@ -2304,11 +2641,22 @@ async function main() {
     try {
       if (driver) await driver.quit()
     } catch {}
+    activeDriver = null
     killProcessTree(devProc)
   }
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
+  const artifacts = await captureFailureArtifacts(error)
+  if (artifacts?.screenshotPath) {
+    console.error(`[ui:e2e:codex-history-render] Failure screenshot: ${artifacts.screenshotPath}`)
+  }
+  if (artifacts?.jsonPath) {
+    console.error(`[ui:e2e:codex-history-render] Failure debug JSON: ${artifacts.jsonPath}`)
+  }
+  if (artifacts?.artifactError) {
+    console.error(`[ui:e2e:codex-history-render] Failure artifact capture error: ${artifacts.artifactError}`)
+  }
   console.error(`[ui:e2e:codex-history-render] FAIL: ${error?.stack || error}`)
   process.exitCode = 1
 })
