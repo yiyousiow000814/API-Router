@@ -2,7 +2,12 @@ try {
   window.__webCodexScriptLoaded = true;
 } catch {}
 
-const WEB_CODEX_DEV_DEBUG_VERSION = "2026-03-08-debug-5";
+const WEB_CODEX_DEV_DEBUG_VERSION = "2026-03-09-debug-7";
+const CONTEXT_LEFT_BASELINE_TOKENS = 12000;
+const CONTEXT_LEFT_DIGIT_ANIMATION_MS = 640;
+const CONTEXT_LEFT_DIGIT_STAGGER_MS = 112;
+const CONTEXT_LEFT_DIGIT_EASING = "cubic-bezier(0.16, 1, 0.3, 1)";
+const CONTEXT_LEFT_DIGIT_TRAVEL_PERCENT = 104;
 
 const state = {
   token: "",
@@ -170,6 +175,7 @@ const state = {
   activeThreadHistoryInFlightPromise: null,
   activeThreadHistoryInFlightThreadId: "",
   activeThreadHistoryPendingRefresh: null,
+  activeThreadTokenUsage: null,
 };
 
 const threadAnimDebug = {
@@ -2964,6 +2970,257 @@ function showWelcomeCard() {
   if (welcome) welcome.style.display = "";
 }
 
+function compactTokenUsageCount(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n < 1000) return String(Math.round(n));
+  const units = [
+    [1e9, "B"],
+    [1e6, "M"],
+    [1e3, "K"],
+  ];
+  for (const [size, suffix] of units) {
+    if (n >= size) {
+      const scaled = n / size;
+      const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 1;
+      const rounded = Number(scaled.toFixed(digits));
+      return `${rounded % 1 === 0 ? String(Math.trunc(rounded)) : rounded.toFixed(1)}${suffix}`;
+    }
+  }
+  return String(Math.round(n));
+}
+
+function normalizeThreadTokenUsage(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const readStats = (value) => {
+    if (!value || typeof value !== "object") return null;
+    const totalTokens = readNumber(value.totalTokens ?? value.total_tokens);
+    const inputTokens = readNumber(value.inputTokens ?? value.input_tokens);
+    const cachedInputTokens = readNumber(value.cachedInputTokens ?? value.cached_input_tokens);
+    const outputTokens = readNumber(value.outputTokens ?? value.output_tokens);
+    const reasoningOutputTokens = readNumber(value.reasoningOutputTokens ?? value.reasoning_output_tokens);
+    if (
+      totalTokens === null &&
+      inputTokens === null &&
+      cachedInputTokens === null &&
+      outputTokens === null &&
+      reasoningOutputTokens === null
+    ) {
+      return null;
+    }
+    return {
+      totalTokens,
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+      reasoningOutputTokens,
+    };
+  };
+  const total = readStats(usage.total ?? usage.total_token_usage);
+  const last = readStats(usage.last ?? usage.last_token_usage);
+  const modelContextWindow = readNumber(usage.modelContextWindow ?? usage.model_context_window);
+  if (!total && !last && modelContextWindow === null) return null;
+  return { total, last, modelContextWindow };
+}
+
+function formatContextLeftDisplay(tokenUsage) {
+  const usage = normalizeThreadTokenUsage(tokenUsage);
+  const totalTokens = readNumber(usage?.total?.totalTokens);
+  const lastTokens = readNumber(usage?.last?.totalTokens);
+  const modelContextWindow = readNumber(usage?.modelContextWindow);
+  if (modelContextWindow !== null && modelContextWindow > CONTEXT_LEFT_BASELINE_TOKENS && lastTokens !== null) {
+    const effectiveWindow = modelContextWindow - CONTEXT_LEFT_BASELINE_TOKENS;
+    const used = Math.max(0, lastTokens - CONTEXT_LEFT_BASELINE_TOKENS);
+    const remaining = Math.max(0, effectiveWindow - used);
+    const percentLeft = clamp(Math.round((remaining / effectiveWindow) * 100), 0, 100);
+    return {
+      kind: "percent",
+      value: percentLeft,
+      suffix: "% context left",
+      text: `${percentLeft}% context left`,
+    };
+  }
+  if (totalTokens !== null && totalTokens >= 0) {
+    return {
+      kind: "text",
+      value: null,
+      suffix: "",
+      text: `${compactTokenUsageCount(totalTokens)} used`,
+    };
+  }
+  return {
+    kind: "percent",
+    value: 100,
+    suffix: "% context left",
+    text: "100% context left",
+  };
+}
+
+function contextLeftPercentDigits(value) {
+  const text = String(Math.max(0, Math.min(100, Number(value || 0) | 0))).padStart(3, " ");
+  return text.split("").map((ch) => (ch === " " ? " " : ch));
+}
+
+function createContextLeftDigitSlot(char, className = "mobileContextLeftDigitCurrent") {
+  const slot = document.createElement("span");
+  slot.className = "mobileContextLeftDigitSlot";
+  const inner = document.createElement("span");
+  inner.className = className;
+  inner.textContent = char;
+  slot.appendChild(inner);
+  return slot;
+}
+
+function createStaticContextLeftPercentMarkup(value, suffix) {
+  const viewport = document.createElement("span");
+  viewport.className = "mobileContextLeftNumberViewport";
+  for (const char of contextLeftPercentDigits(value)) {
+    viewport.appendChild(createContextLeftDigitSlot(char));
+  }
+  const suffixNode = document.createElement("span");
+  suffixNode.className = "mobileContextLeftSuffix";
+  suffixNode.textContent = suffix;
+  const frag = document.createDocumentFragment();
+  frag.appendChild(viewport);
+  frag.appendChild(suffixNode);
+  return frag;
+}
+
+function renderStaticComposerContextLeft(node, display) {
+  node.__contextLeftRenderSeq = (Number(node.__contextLeftRenderSeq || 0) + 1) | 0;
+  if (display.kind === "percent") {
+    node.replaceChildren(createStaticContextLeftPercentMarkup(display.value, display.suffix));
+  } else {
+    node.textContent = display.text;
+  }
+  node.setAttribute("aria-label", display.text);
+  node.dataset.contextKind = display.kind;
+  node.dataset.contextText = display.text;
+  node.dataset.contextValue = display.value === null ? "" : String(display.value);
+}
+
+function renderAnimatedComposerContextLeftPercent(node, nextDisplay, prevValue) {
+  const viewport = node.querySelector(".mobileContextLeftNumberViewport");
+  if (!viewport) {
+    renderStaticComposerContextLeft(node, nextDisplay);
+    return;
+  }
+  const renderSeq = (Number(node.__contextLeftRenderSeq || 0) + 1) | 0;
+  node.__contextLeftRenderSeq = renderSeq;
+  node.setAttribute("aria-label", nextDisplay.text);
+  node.dataset.contextKind = "percent";
+  node.dataset.contextText = nextDisplay.text;
+  node.dataset.contextValue = String(nextDisplay.value);
+  const prevDigits = contextLeftPercentDigits(prevValue);
+  const nextDigits = contextLeftPercentDigits(nextDisplay.value);
+  if (typeof viewport.animate !== "function") {
+    viewport.replaceChildren(...nextDigits.map((char) => createContextLeftDigitSlot(char)));
+    return;
+  }
+  try {
+    const animations = [];
+    if (typeof viewport.getAnimations === "function") animations.push(...viewport.getAnimations());
+    const activeDigits = viewport.querySelectorAll(".mobileContextLeftDigit");
+    for (const digit of activeDigits) {
+      if (typeof digit.getAnimations === "function") animations.push(...digit.getAnimations());
+    }
+    for (const animation of animations) animation.cancel();
+  } catch {}
+  const direction = nextDisplay.value >= prevValue ? 1 : -1;
+  const travel = `${CONTEXT_LEFT_DIGIT_TRAVEL_PERCENT}%`;
+  const incomingFrom = direction > 0 ? travel : `-${travel}`;
+  const outgoingTo = direction > 0 ? `-${travel}` : travel;
+  const slotNodes = [];
+  const animationPromises = [];
+  for (let i = 0; i < nextDigits.length; i += 1) {
+    const prevChar = prevDigits[i];
+    const nextChar = nextDigits[i];
+    const slot = document.createElement("span");
+    slot.className = "mobileContextLeftDigitSlot";
+    const delay = (nextDigits.length - 1 - i) * CONTEXT_LEFT_DIGIT_STAGGER_MS;
+    if (prevChar === nextChar) {
+      const current = document.createElement("span");
+      current.className = "mobileContextLeftDigitCurrent";
+      current.textContent = nextChar;
+      slot.appendChild(current);
+      slotNodes.push(slot);
+      continue;
+    }
+    const outgoing = document.createElement("span");
+    outgoing.className = "mobileContextLeftDigit";
+    outgoing.textContent = prevChar;
+    outgoing.style.transform = "translateY(0%)";
+    outgoing.style.opacity = "1";
+    const incoming = document.createElement("span");
+    incoming.className = "mobileContextLeftDigit";
+    incoming.textContent = nextChar;
+    incoming.style.transform = `translateY(${incomingFrom})`;
+    incoming.style.opacity = "0.24";
+    slot.append(outgoing, incoming);
+    slotNodes.push(slot);
+    outgoing.animate(
+      [
+        { transform: "translateY(0%)", opacity: 1 },
+        { transform: `translateY(${outgoingTo})`, opacity: 0.24 },
+      ],
+      {
+        duration: CONTEXT_LEFT_DIGIT_ANIMATION_MS,
+        delay,
+        easing: CONTEXT_LEFT_DIGIT_EASING,
+        fill: "both",
+      }
+    );
+    const incomingAnimation = incoming.animate(
+      [
+        { transform: `translateY(${incomingFrom})`, opacity: 0.24 },
+        { transform: "translateY(0%)", opacity: 1 },
+      ],
+      {
+        duration: CONTEXT_LEFT_DIGIT_ANIMATION_MS,
+        delay,
+        easing: CONTEXT_LEFT_DIGIT_EASING,
+        fill: "both",
+      }
+    );
+    if (incomingAnimation && typeof incomingAnimation.finished?.then === "function") {
+      animationPromises.push(incomingAnimation.finished.catch(() => null));
+    }
+  }
+  viewport.replaceChildren(...slotNodes);
+  const finalize = () => {
+    if (!viewport.isConnected) return;
+    if (Number(node.__contextLeftRenderSeq || 0) != renderSeq) return;
+    viewport.replaceChildren(...nextDigits.map((char) => createContextLeftDigitSlot(char)));
+  };
+  if (animationPromises.length) {
+    Promise.allSettled(animationPromises).then(finalize);
+  } else {
+    finalize();
+  }
+}
+
+function renderComposerContextLeft() {
+  const node = byId("mobileContextLeft");
+  if (!node) return;
+  const display = formatContextLeftDisplay(state.activeThreadTokenUsage);
+  const prevKind = String(node.dataset.contextKind || "");
+  const prevText = String(node.dataset.contextText || node.textContent || "").trim();
+  const prevValue = readNumber(node.dataset.contextValue);
+  if (prevText === display.text && prevKind === display.kind) {
+    if (!prevText) renderStaticComposerContextLeft(node, display);
+    return;
+  }
+  if (display.kind !== "percent") {
+    renderStaticComposerContextLeft(node, display);
+    return;
+  }
+  if (prevKind !== "percent" || prevValue === null) {
+    renderStaticComposerContextLeft(node, display);
+    return;
+  }
+  renderAnimatedComposerContextLeftPercent(node, display, prevValue);
+}
+
 function clearChatMessages(options = {}) {
   const box = byId("chatBox");
   if (!box) return;
@@ -3688,6 +3945,8 @@ async function applyThreadToChat(thread, options = {}) {
     ? await mapSessionHistoryMessages(historyItems)
     : await mapThreadReadMessages(thread);
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  state.activeThreadTokenUsage = normalizeThreadTokenUsage(thread?.tokenUsage);
+  renderComposerContextLeft();
   const lastMsg = messages.length ? messages[messages.length - 1] : null;
   const renderSig = [
     String(thread?.id || state.activeThreadId || ""),
@@ -5575,6 +5834,8 @@ async function newThread() {
   setActiveThread("");
   state.activeThreadStarted = false;
   state.activeThreadWorkspace = workspace;
+  state.activeThreadTokenUsage = null;
+  renderComposerContextLeft();
   clearChatMessages();
   showWelcomeCard();
   updateHeaderUi();
@@ -5591,6 +5852,8 @@ async function newThread() {
     setActiveThread(id);
     state.activeThreadStarted = false;
     state.activeThreadWorkspace = workspace;
+    state.activeThreadTokenUsage = null;
+    renderComposerContextLeft();
     clearChatMessages();
     showWelcomeCard();
     updateHeaderUi();
@@ -6309,6 +6572,39 @@ function bootstrap() {
         getThreadHistory(threadId) {
           return historyByThreadId.get(String(threadId || ""));
         },
+        getComposerContextLeft() {
+          const node = document.getElementById("mobileContextLeft");
+          if (!node) return { text: "", top: 0, left: 0, width: 0, height: 0 };
+          const rect = node.getBoundingClientRect();
+          return {
+            text: String(node.getAttribute("aria-label") || node.textContent || "").trim(),
+            top: rect.top,
+            left: rect.left,
+            width: rect.width,
+            height: rect.height,
+          };
+        },
+        setComposerTokenUsage(tokenUsage) {
+          state.activeThreadTokenUsage = normalizeThreadTokenUsage(tokenUsage);
+          renderComposerContextLeft();
+          return this.getComposerContextLeft();
+        },
+        setChatOpeningState(opening) {
+          setChatOpening(!!opening);
+          return this.getComposerContextLeft();
+        },
+        resetComposerToNewChat() {
+          setChatOpening(false);
+          setActiveThread("");
+          state.activeThreadStarted = false;
+          state.activeThreadWorkspace = getWorkspaceTarget();
+          state.activeThreadTokenUsage = null;
+          renderComposerContextLeft();
+          clearChatMessages();
+          showWelcomeCard();
+          updateHeaderUi();
+          return this.getComposerContextLeft();
+        },
         parseUserContentParts(content) {
           try {
             const item = { content: Array.isArray(content) ? content : [] };
@@ -6626,6 +6922,7 @@ function bootstrap() {
   renderPendingLists();
   renderFolderPicker();
   renderAttachmentPills([]);
+  renderComposerContextLeft();
   updateMobileComposerState();
   syncSettingsControlsFromMain();
   updateWelcomeSelections();

@@ -1409,6 +1409,69 @@
       to { transform: rotate(360deg); }
     }
     .mobileComposerRow { display: flex; align-items: flex-end; gap: 8px; }
+    .mobileComposerMetaRow {
+      min-height: 14px;
+      height: 14px;
+      display: flex;
+      align-items: center;
+      padding-left: 2px;
+      color: #637188;
+      font-size: 11px;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .mobileContextLeft {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      max-width: 100%;
+      min-width: 12ch;
+      min-height: 14px;
+      line-height: 1.25;
+      font-variant-numeric: tabular-nums;
+    }
+    .mobileContextLeftNumberViewport {
+      display: inline-flex;
+      align-items: flex-start;
+      flex: 0 0 3ch;
+      width: 3ch;
+      height: 1.25em;
+      line-height: 1.25em;
+      overflow: hidden;
+      vertical-align: top;
+    }
+    .mobileContextLeftDigitSlot {
+      position: relative;
+      display: block;
+      flex: 0 0 1ch;
+      width: 1ch;
+      height: 1.25em;
+      line-height: 1.25em;
+      overflow: hidden;
+      vertical-align: top;
+    }
+    .mobileContextLeftDigit {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      line-height: 1.25em;
+      text-align: right;
+      white-space: pre;
+    }
+    .mobileContextLeftDigitCurrent {
+      position: relative;
+      display: block;
+      width: 100%;
+      line-height: 1.25em;
+      text-align: right;
+      white-space: pre;
+    }
+    .mobileContextLeftSuffix {
+      white-space: nowrap;
+    }
     .mobilePromptWrap {
       flex: 1;
       min-width: 0;
@@ -2562,6 +2625,9 @@
                 </svg>
               </button>
             </div>
+          </div>
+          <div class="mobileComposerMetaRow">
+            <div id="mobileContextLeft" class="mobileContextLeft" data-qa="mobile-context-left" aria-live="polite">100% context left</div>
           </div>
         </div>
       </section>

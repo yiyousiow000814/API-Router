@@ -1,9 +1,9 @@
-use super::HistoryTurn;
+use super::ParsedRolloutHistory;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
-const MAX_HISTORY_TURNS_CACHE_ENTRIES: usize = 8;
+const MAX_HISTORY_ROLLOUT_CACHE_ENTRIES: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RolloutFileKey {
@@ -12,21 +12,21 @@ struct RolloutFileKey {
 }
 
 #[derive(Clone)]
-struct HistoryTurnsCacheEntry {
+struct HistoryRolloutCacheEntry {
     file_key: RolloutFileKey,
-    turns: Arc<Vec<HistoryTurn>>,
+    parsed: Arc<ParsedRolloutHistory>,
     access_seq: u64,
 }
 
 #[derive(Default)]
-struct HistoryTurnsCacheState {
+struct HistoryRolloutCacheState {
     access_seq: u64,
-    by_path: HashMap<String, HistoryTurnsCacheEntry>,
+    by_path: HashMap<String, HistoryRolloutCacheEntry>,
 }
 
-fn history_turns_cache() -> &'static Mutex<HistoryTurnsCacheState> {
-    static CACHE: OnceLock<Mutex<HistoryTurnsCacheState>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HistoryTurnsCacheState::default()))
+fn history_rollout_cache() -> &'static Mutex<HistoryRolloutCacheState> {
+    static CACHE: OnceLock<Mutex<HistoryRolloutCacheState>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HistoryRolloutCacheState::default()))
 }
 
 fn rollout_file_key(path: &Path) -> Result<RolloutFileKey, String> {
@@ -46,8 +46,8 @@ fn cache_path_key(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 
-fn prune_history_turns_cache(state: &mut HistoryTurnsCacheState) {
-    while state.by_path.len() > MAX_HISTORY_TURNS_CACHE_ENTRIES {
+fn prune_history_rollout_cache(state: &mut HistoryRolloutCacheState) {
+    while state.by_path.len() > MAX_HISTORY_ROLLOUT_CACHE_ENTRIES {
         let Some((oldest_key, _)) = state
             .by_path
             .iter()
@@ -60,14 +60,14 @@ fn prune_history_turns_cache(state: &mut HistoryTurnsCacheState) {
     }
 }
 
-fn load_cached_turns(
+fn load_cached_rollout(
     path: &Path,
-    parser: fn(&Path) -> Result<Vec<HistoryTurn>, String>,
-) -> Result<Arc<Vec<HistoryTurn>>, String> {
+    parser: fn(&Path) -> Result<ParsedRolloutHistory, String>,
+) -> Result<Arc<ParsedRolloutHistory>, String> {
     let path_key = cache_path_key(path);
     let file_key = rollout_file_key(path)?;
     {
-        let mut state = match history_turns_cache().lock() {
+        let mut state = match history_rollout_cache().lock() {
             Ok(guard) => guard,
             Err(err) => err.into_inner(),
         };
@@ -76,13 +76,13 @@ fn load_cached_turns(
         if let Some(entry) = state.by_path.get_mut(&path_key) {
             if entry.file_key == file_key {
                 entry.access_seq = access_seq;
-                return Ok(entry.turns.clone());
+                return Ok(entry.parsed.clone());
             }
         }
     }
 
     let parsed = Arc::new(parser(path)?);
-    let mut state = match history_turns_cache().lock() {
+    let mut state = match history_rollout_cache().lock() {
         Ok(guard) => guard,
         Err(err) => err.into_inner(),
     };
@@ -90,23 +90,25 @@ fn load_cached_turns(
     let access_seq = state.access_seq;
     state.by_path.insert(
         path_key,
-        HistoryTurnsCacheEntry {
+        HistoryRolloutCacheEntry {
             file_key,
-            turns: parsed.clone(),
+            parsed: parsed.clone(),
             access_seq,
         },
     );
-    prune_history_turns_cache(&mut state);
+    prune_history_rollout_cache(&mut state);
     Ok(parsed)
 }
 
-pub(super) fn load_cached_rollout_turns(path: &Path) -> Result<Arc<Vec<HistoryTurn>>, String> {
-    load_cached_turns(path, super::parse_rollout_turns)
+pub(super) fn load_cached_rollout_history(
+    path: &Path,
+) -> Result<Arc<ParsedRolloutHistory>, String> {
+    load_cached_rollout(path, super::parse_rollout_history)
 }
 
 #[cfg(test)]
 pub(super) fn _clear_history_turns_cache_for_test() {
-    match history_turns_cache().lock() {
+    match history_rollout_cache().lock() {
         Ok(mut guard) => guard.by_path.clear(),
         Err(err) => err.into_inner().by_path.clear(),
     }

@@ -2636,6 +2636,517 @@ async function main() {
       if (!/Image\s*#2/i.test(String(last))) throw new Error(`expected viewer title to become Image #2, got: ${JSON.stringify(String(last))}`)
     }
 
+    // Regression: composer context-left should render below the input row and refresh even when only token usage changes.
+    {
+      const tokenThreadId = 'e2e_context_left_1'
+      const seeded = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.setThreadHistory !== 'function') return { ok: false, error: 'setThreadHistory missing' };
+        h.setThreadHistory(${JSON.stringify('e2e_context_left_1')}, {
+          id: ${JSON.stringify('e2e_context_left_1')},
+          modelName: 'gpt-5.3-codex',
+          tokenUsage: {
+            total: { totalTokens: 120000 },
+            last: { totalTokens: 24000 },
+            modelContextWindow: 50000,
+          },
+          turns: [
+            {
+              id: 'ctx-turn-1',
+              items: [
+                { type: 'assistantMessage', text: 'token usage seeded once' },
+              ],
+            },
+          ],
+        });
+        return { ok: true };
+      `)
+      if (!seeded?.ok) throw new Error(`seed context-left thread failed: ${seeded?.error || 'unknown'}`)
+
+      const opened = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          const h = window.__webCodexE2E;
+          if (!h || typeof h.openThread !== 'function') return done({ ok: false, error: 'openThread missing' });
+          done(await h.openThread(${JSON.stringify('e2e_context_left_1')}));
+        })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!opened?.ok) throw new Error(`openThread context-left failed: ${opened?.error || 'unknown'}`)
+
+      await waitFor(async () => {
+        const probe = await driver.executeScript(`
+          const h = window.__webCodexE2E;
+          const row = document.querySelector('.mobileComposerRow');
+          const node = document.getElementById('mobileContextLeft');
+          if (!h || !row || !node) return { ok: false };
+          const rowRect = row.getBoundingClientRect();
+          const rect = node.getBoundingClientRect();
+          return {
+            ok: String(node.getAttribute('aria-label') || node.textContent || '').trim() === '68% context left' && rect.top >= rowRect.bottom - 2,
+            text: String(node.getAttribute('aria-label') || node.textContent || '').trim(),
+            rowBottom: rowRect.bottom,
+            top: rect.top,
+            left: rect.left,
+            rowLeft: rowRect.left,
+          };
+        `)
+        return !!probe?.ok
+      }, 8000, 'composer context-left initial placement')
+
+      const initialContext = await driver.executeScript(`
+        const row = document.querySelector('.mobileComposerRow');
+        const node = document.getElementById('mobileContextLeft');
+        if (!row || !node) return null;
+        const rowRect = row.getBoundingClientRect();
+        const rect = node.getBoundingClientRect();
+        return {
+          text: String(node.getAttribute('aria-label') || node.textContent || '').trim(),
+          top: rect.top,
+          left: rect.left,
+          rowBottom: rowRect.bottom,
+          rowLeft: rowRect.left,
+        };
+      `)
+      if (!initialContext) throw new Error('missing initial composer context probe')
+      if (initialContext.text !== '68% context left') {
+        throw new Error(`expected initial context-left label to be 68% context left, got ${JSON.stringify(initialContext)}`)
+      }
+      if (Number(initialContext.top || 0) < Number(initialContext.rowBottom || 0) - 2) {
+        throw new Error(`expected context-left below composer row, got ${JSON.stringify(initialContext)}`)
+      }
+      if (Math.abs(Number(initialContext.left || 0) - Number(initialContext.rowLeft || 0)) > 12) {
+        throw new Error(`expected context-left to stay left-aligned under composer row, got ${JSON.stringify(initialContext)}`)
+      }
+
+      const refreshed = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          const h = window.__webCodexE2E;
+          if (!h || typeof h.getThreadHistory !== 'function' || typeof h.setThreadHistory !== 'function' || typeof h.refreshActiveThread !== 'function') {
+            return done({ ok: false, error: 'context-left refresh helpers missing' });
+          }
+          const threadId = ${JSON.stringify('e2e_context_left_1')};
+          const current = h.getThreadHistory(threadId);
+          h.setThreadHistory(threadId, {
+            ...current,
+            tokenUsage: {
+              total: { totalTokens: 150000 },
+              last: { totalTokens: 30000 },
+              modelContextWindow: 50000,
+            },
+          });
+          done(await h.refreshActiveThread());
+        })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+      `)
+      if (!refreshed?.ok) throw new Error(`refreshActiveThread context-left failed: ${refreshed?.error || 'unknown'}`)
+
+      await waitFor(async () => {
+        const textValue = await driver.executeScript(`const node = document.getElementById('mobileContextLeft'); return String(node?.getAttribute('aria-label') || node?.textContent || '').trim();`)
+        return textValue === '53% context left'
+      }, 8000, 'composer context-left refresh')
+    }
+
+
+    // Regression: entering the opening state for a chat switch must preserve the previous
+    // context-left value instead of flashing back to 100%, and the next value should update directly.
+    {
+      const preserved = await driver.executeScript(`
+        const h = window.__webCodexE2E;
+        if (!h || typeof h.setComposerTokenUsage !== 'function' || typeof h.setChatOpeningState !== 'function') {
+          return { ok: false, error: 'context-left opening helpers missing' };
+        }
+        h.setComposerTokenUsage({
+          total: { totalTokens: 120000 },
+          last: { totalTokens: 24000 },
+          modelContextWindow: 50000,
+        });
+        const before = h.getComposerContextLeft();
+        const during = h.setChatOpeningState(true);
+        h.setComposerTokenUsage({
+          total: { totalTokens: 150000 },
+          last: { totalTokens: 30000 },
+          modelContextWindow: 50000,
+        });
+        const after = h.getComposerContextLeft();
+        h.setChatOpeningState(false);
+        return { ok: true, before, during, after };
+      `)
+      if (!preserved?.ok) throw new Error(`context-left opening preserve failed: ${preserved?.error || 'unknown'}`)
+      if (preserved.before?.text !== '68% context left') {
+        throw new Error(`expected pre-opening context-left to be 68% context left, got ${JSON.stringify(preserved)}`)
+      }
+      if (preserved.during?.text !== '68% context left') {
+        throw new Error(`expected opening state to preserve previous context-left, got ${JSON.stringify(preserved)}`)
+      }
+      if (preserved.after?.text !== '53% context left') {
+        throw new Error(`expected post-opening context-left to update directly to next value, got ${JSON.stringify(preserved)}`)
+      }
+    }
+
+
+    // Regression: the startup screen also shows a real 100% context-left state. That initial
+    // DOM must be hydrated into the same percent metadata so the very first open animates.
+    {
+      await driver.navigate().refresh()
+      await waitFor(async () => {
+        try {
+          const el = await driver.findElement(By.id('threadList'))
+          return !!el
+        } catch {
+          return false
+        }
+      }, 20000, 'threadList after refresh')
+      await waitFor(async () => {
+        const ok = await driver.executeScript(`return !!window.__webCodexScriptLoaded && !!window.__webCodexE2E;`)
+        return !!ok
+      }, 20000, 'web codex e2e after refresh')
+      const startupOpenAnimation = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          try {
+            const h = window.__webCodexE2E;
+            const node = document.getElementById('mobileContextLeft');
+            if (!h || typeof h.setThreadHistory !== 'function' || typeof h.openThread !== 'function' || !node) {
+              return done({ ok: false, error: 'startup animation helpers missing' });
+            }
+            const initial = {
+              text: String(node.getAttribute('aria-label') || node.textContent || '').trim(),
+              kind: String(node.dataset.contextKind || ''),
+              value: String(node.dataset.contextValue || ''),
+            };
+            const origAnimate = Element.prototype.animate;
+            const calls = [];
+            Element.prototype.animate = function(keyframes, options) {
+              try {
+                if (this && this.classList && this.classList.contains('mobileContextLeftDigit')) {
+                  calls.push({
+                    text: String(this.textContent || ''),
+                    delay: Number(options?.delay || 0),
+                    duration: Number(options?.duration || 0),
+                  });
+                }
+              } catch {}
+              return origAnimate.call(this, keyframes, options);
+            };
+            try {
+              h.setThreadHistory('e2e_startup_open_anim', {
+                id: 'e2e_startup_open_anim',
+                modelName: 'gpt-5.3-codex',
+                tokenUsage: {
+                  total: { totalTokens: 120000 },
+                  last: { totalTokens: 24000 },
+                  modelContextWindow: 50000,
+                },
+                turns: [{ id: 'ctx-startup-open', items: [{ type: 'assistantMessage', text: 'open from startup new chat' }] }],
+              });
+              const before = h.getComposerContextLeft();
+              const opened = await h.openThread('e2e_startup_open_anim');
+              const after = h.getComposerContextLeft();
+              done({ ok: true, initial, before, opened, after, calls });
+            } finally {
+              Element.prototype.animate = origAnimate;
+            }
+          } catch (e) {
+            done({ ok: false, error: String(e && e.message ? e.message : e) });
+          }
+        })();
+      `)
+      if (!startupOpenAnimation?.ok) throw new Error(`startup open animation probe failed: ${startupOpenAnimation?.error || 'unknown'}`)
+      if (startupOpenAnimation.initial?.text !== '100% context left') {
+        throw new Error(`expected startup context-left label to begin at 100% context left, got ${JSON.stringify(startupOpenAnimation)}`)
+      }
+      if (startupOpenAnimation.initial?.kind !== 'percent' || startupOpenAnimation.initial?.value !== '100') {
+        throw new Error(`expected startup context-left to be hydrated as percent metadata, got ${JSON.stringify(startupOpenAnimation)}`)
+      }
+      if (startupOpenAnimation.after?.text !== '68% context left') {
+        throw new Error(`expected startup open to end at 68% context left, got ${JSON.stringify(startupOpenAnimation)}`)
+      }
+      const startupDigitCalls = Array.isArray(startupOpenAnimation.calls) ? startupOpenAnimation.calls : []
+      if (startupDigitCalls.length < 2) {
+        throw new Error(`expected digit animations when opening from startup new chat, got ${JSON.stringify(startupOpenAnimation)}`)
+      }
+    }
+
+
+    // Regression: delayed digits must stay in their off-screen start pose until their own roll
+    // begins; otherwise the next value flashes in before the animation starts.
+    {
+      const delayedDigitPose = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          try {
+            const h = window.__webCodexE2E;
+            if (!h || typeof h.resetComposerToNewChat !== 'function' || typeof h.setComposerTokenUsage !== 'function') {
+              return done({ ok: false, error: 'delayed digit helpers missing' });
+            }
+            h.resetComposerToNewChat();
+            h.setComposerTokenUsage({
+              total: { totalTokens: 120000 },
+              last: { totalTokens: 24000 },
+              modelContextWindow: 50000,
+            });
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const slots = Array.from(document.querySelectorAll('#mobileContextLeft .mobileContextLeftDigitSlot'));
+            const middleIncoming = slots[1]?.children?.[1] || null;
+            const middleOutgoing = slots[1]?.children?.[0] || null;
+            if (!middleIncoming || !middleOutgoing) {
+              return done({ ok: false, error: 'missing delayed middle digit nodes' });
+            }
+            const incomingStyle = getComputedStyle(middleIncoming);
+            const outgoingStyle = getComputedStyle(middleOutgoing);
+            done({
+              ok: true,
+              incomingText: String(middleIncoming.textContent || ''),
+              incomingTransform: String(incomingStyle.transform || ''),
+              incomingOpacity: Number(incomingStyle.opacity || 0),
+              outgoingText: String(middleOutgoing.textContent || ''),
+              outgoingTransform: String(outgoingStyle.transform || ''),
+              outgoingOpacity: Number(outgoingStyle.opacity || 0),
+            });
+          } catch (e) {
+            done({ ok: false, error: String(e && e.message ? e.message : e) });
+          }
+        })();
+      `)
+      if (!delayedDigitPose?.ok) throw new Error(`delayed digit pose probe failed: ${delayedDigitPose?.error || 'unknown'}`)
+      if (delayedDigitPose.incomingText !== '6') {
+        throw new Error(`expected delayed incoming middle digit to be 6, got ${JSON.stringify(delayedDigitPose)}`)
+      }
+      if (delayedDigitPose.incomingTransform === 'none' || Number(delayedDigitPose.incomingOpacity || 0) > 0.5) {
+        throw new Error(`expected delayed incoming digit to stay off-screen and dim before its roll starts, got ${JSON.stringify(delayedDigitPose)}`)
+      }
+      if (delayedDigitPose.outgoingTransform === 'none' || Number(delayedDigitPose.outgoingOpacity || 0) < 0.95) {
+        throw new Error(`expected delayed outgoing digit to remain in its resting pose before its roll starts, got ${JSON.stringify(delayedDigitPose)}`)
+      }
+    }
+
+
+    // Regression: when values change again before a previous roll settles, an older finalize must
+    // not replace the latest animation with stale static digits.
+    {
+      const noStaleFinalize = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          try {
+            const h = window.__webCodexE2E;
+            const node = document.getElementById('mobileContextLeft');
+            if (!h || typeof h.resetComposerToNewChat !== 'function' || typeof h.setComposerTokenUsage !== 'function' || !node) {
+              return done({ ok: false, error: 'stale finalize helpers missing' });
+            }
+            const setPercent = (value) => {
+              const effectiveWindow = 50000 - 12000;
+              const used = Math.round((1 - Number(value || 0) / 100) * effectiveWindow);
+              h.setComposerTokenUsage({
+                total: { totalTokens: 120000 },
+                last: { totalTokens: 12000 + used },
+                modelContextWindow: 50000,
+              });
+            };
+            h.resetComposerToNewChat();
+            setPercent(68);
+            await new Promise((resolve) => setTimeout(resolve, 220));
+            setPercent(53);
+            await new Promise((resolve) => setTimeout(resolve, 220));
+            setPercent(61);
+            await new Promise((resolve) => setTimeout(resolve, 220));
+            setPercent(44);
+            await new Promise((resolve) => setTimeout(resolve, 340));
+            const animatedDigitCount = node.querySelectorAll('.mobileContextLeftDigit').length;
+            const currentDigits = Array.from(node.querySelectorAll('.mobileContextLeftDigitCurrent')).map((el) => String(el.textContent || '')).join('');
+            const mid = {
+              text: String(node.getAttribute('aria-label') || node.textContent || '').trim(),
+              animatedDigitCount,
+              currentDigits,
+              html: node.innerHTML,
+            };
+            await new Promise((resolve) => setTimeout(resolve, 900));
+            const end = {
+              text: String(node.getAttribute('aria-label') || node.textContent || '').trim(),
+              currentDigits: Array.from(node.querySelectorAll('.mobileContextLeftDigitCurrent')).map((el) => String(el.textContent || '')).join(''),
+              html: node.innerHTML,
+            };
+            done({ ok: true, mid, end });
+          } catch (e) {
+            done({ ok: false, error: String(e && e.message ? e.message : e) });
+          }
+        })();
+      `)
+      if (!noStaleFinalize?.ok) throw new Error(`stale finalize probe failed: ${noStaleFinalize?.error || 'unknown'}`)
+      if (noStaleFinalize.mid?.text !== '44% context left') {
+        throw new Error(`expected rapid-update mid state to target 44% context left, got ${JSON.stringify(noStaleFinalize)}`)
+      }
+      if (Number(noStaleFinalize.mid?.animatedDigitCount || 0) < 2) {
+        throw new Error(`expected latest rapid-update state to still be animating instead of snapping to stale static digits, got ${JSON.stringify(noStaleFinalize)}`)
+      }
+      if (noStaleFinalize.end?.text !== '44% context left') {
+        throw new Error(`expected rapid-update final state to settle at 44% context left, got ${JSON.stringify(noStaleFinalize)}`)
+      }
+    }
+
+
+    // Regression: animating 100% -> a two-digit percent must not grow the meta row or push the
+    // composer controls upward during the number roll.
+    {
+      const layoutStableDuringRoll = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          try {
+            const h = window.__webCodexE2E;
+            const row = document.querySelector('.mobileComposerRow');
+            const attach = document.getElementById('mobileAttachBtn');
+            const meta = document.querySelector('.mobileComposerMetaRow');
+            const ctx = document.getElementById('mobileContextLeft');
+            if (!h || typeof h.setComposerTokenUsage !== 'function' || !row || !attach || !meta || !ctx) {
+              return done({ ok: false, error: 'layout stability helpers missing' });
+            }
+            h.resetComposerToNewChat();
+            const initial = h.getComposerContextLeft();
+            const samples = [];
+            const capture = () => {
+              const rowRect = row.getBoundingClientRect();
+              const attachRect = attach.getBoundingClientRect();
+              const metaRect = meta.getBoundingClientRect();
+              const ctxRect = ctx.getBoundingClientRect();
+              samples.push({
+                rowTop: rowRect.top,
+                attachTop: attachRect.top,
+                metaTop: metaRect.top,
+                metaBottom: metaRect.bottom,
+                metaHeight: metaRect.height,
+                ctxTop: ctxRect.top,
+                ctxHeight: ctxRect.height,
+                text: String(ctx.getAttribute('aria-label') || ctx.textContent || '').trim(),
+              });
+            };
+            capture();
+            let raf = 0;
+            const tick = () => {
+              capture();
+              raf = requestAnimationFrame(tick);
+            };
+            raf = requestAnimationFrame(tick);
+            h.setComposerTokenUsage({
+              total: { totalTokens: 120000 },
+              last: { totalTokens: 24000 },
+              modelContextWindow: 50000,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            cancelAnimationFrame(raf);
+            capture();
+            const baseline = samples[0] || { rowTop: 0, attachTop: 0, metaHeight: 0, metaTop: 0, metaBottom: 0 };
+            const extremes = samples.reduce((acc, sample) => {
+              acc.minRowTop = Math.min(acc.minRowTop, sample.rowTop);
+              acc.maxRowTop = Math.max(acc.maxRowTop, sample.rowTop);
+              acc.minAttachTop = Math.min(acc.minAttachTop, sample.attachTop);
+              acc.maxAttachTop = Math.max(acc.maxAttachTop, sample.attachTop);
+              acc.minMetaHeight = Math.min(acc.minMetaHeight, sample.metaHeight);
+              acc.maxMetaHeight = Math.max(acc.maxMetaHeight, sample.metaHeight);
+              acc.minMetaTop = Math.min(acc.minMetaTop, sample.metaTop);
+              acc.maxMetaBottom = Math.max(acc.maxMetaBottom, sample.metaBottom);
+              return acc;
+            }, {
+              minRowTop: Infinity,
+              maxRowTop: -Infinity,
+              minAttachTop: Infinity,
+              maxAttachTop: -Infinity,
+              minMetaHeight: Infinity,
+              maxMetaHeight: -Infinity,
+              minMetaTop: Infinity,
+              maxMetaBottom: -Infinity,
+            });
+            done({ ok: true, initial, final: h.getComposerContextLeft(), baseline, extremes, samples: samples.slice(0, 10) });
+          } catch (e) {
+            done({ ok: false, error: String(e && e.message ? e.message : e) });
+          }
+        })();
+      `)
+      if (!layoutStableDuringRoll?.ok) throw new Error(`context-left layout stability probe failed: ${layoutStableDuringRoll?.error || 'unknown'}`)
+      if (layoutStableDuringRoll.initial?.text !== '100% context left') {
+        throw new Error(`expected layout stability probe to begin at 100% context left, got ${JSON.stringify(layoutStableDuringRoll)}`)
+      }
+      if (layoutStableDuringRoll.final?.text !== '68% context left') {
+        throw new Error(`expected layout stability probe to end at 68% context left, got ${JSON.stringify(layoutStableDuringRoll)}`)
+      }
+      const extremes = layoutStableDuringRoll.extremes || {}
+      const baseline = layoutStableDuringRoll.baseline || {}
+      if (Math.abs(Number(extremes.minRowTop) - Number(baseline.rowTop || 0)) > 0.6 || Math.abs(Number(extremes.maxRowTop) - Number(baseline.rowTop || 0)) > 0.6) {
+        throw new Error(`expected composer row top to stay stable during context-left roll, got ${JSON.stringify(layoutStableDuringRoll)}`)
+      }
+      if (Math.abs(Number(extremes.minAttachTop) - Number(baseline.attachTop || 0)) > 0.6 || Math.abs(Number(extremes.maxAttachTop) - Number(baseline.attachTop || 0)) > 0.6) {
+        throw new Error(`expected attach button top to stay stable during context-left roll, got ${JSON.stringify(layoutStableDuringRoll)}`)
+      }
+      if (Number(extremes.maxMetaHeight || 0) - Number(baseline.metaHeight || 0) > 0.6) {
+        throw new Error(`expected meta row height to stay stable during context-left roll, got ${JSON.stringify(layoutStableDuringRoll)}`)
+      }
+    }
+
+
+    // Regression: from a real new-chat visual state, opening an existing chat should animate
+    // the context-left digits instead of replacing 100% with the next value instantly.
+    {
+      const animatedFromNewChat = await driver.executeAsyncScript(`
+        const done = arguments[0];
+        (async () => {
+          try {
+            const h = window.__webCodexE2E;
+            if (!h || typeof h.resetComposerToNewChat !== 'function' || typeof h.setThreadHistory !== 'function' || typeof h.openThread !== 'function') {
+              return done({ ok: false, error: 'new-chat animation helpers missing' });
+            }
+            const origAnimate = Element.prototype.animate;
+            const calls = [];
+            Element.prototype.animate = function(keyframes, options) {
+              try {
+                if (this && this.classList && this.classList.contains('mobileContextLeftDigit')) {
+                  calls.push({
+                    text: String(this.textContent || ''),
+                    delay: Number(options?.delay || 0),
+                    duration: Number(options?.duration || 0),
+                  });
+                }
+              } catch {}
+              return origAnimate.call(this, keyframes, options);
+            };
+            try {
+              h.setThreadHistory('e2e_new_chat_open_anim', {
+                id: 'e2e_new_chat_open_anim',
+                modelName: 'gpt-5.3-codex',
+                tokenUsage: {
+                  total: { totalTokens: 120000 },
+                  last: { totalTokens: 24000 },
+                  modelContextWindow: 50000,
+                },
+                turns: [{ id: 'ctx-open', items: [{ type: 'assistantMessage', text: 'open from new chat' }] }],
+              });
+              const before = h.resetComposerToNewChat();
+              const opened = await h.openThread('e2e_new_chat_open_anim');
+              const after = h.getComposerContextLeft();
+              done({ ok: true, before, opened, after, calls });
+            } finally {
+              Element.prototype.animate = origAnimate;
+            }
+          } catch (e) {
+            done({ ok: false, error: String(e && e.message ? e.message : e) });
+          }
+        })();
+      `)
+      if (!animatedFromNewChat?.ok) throw new Error(`new-chat open animation probe failed: ${animatedFromNewChat?.error || 'unknown'}`)
+      if (animatedFromNewChat.before?.text !== '100% context left') {
+        throw new Error(`expected new-chat state to start at 100% context left, got ${JSON.stringify(animatedFromNewChat)}`)
+      }
+      if (animatedFromNewChat.after?.text !== '68% context left') {
+        throw new Error(`expected opened chat to end at 68% context left, got ${JSON.stringify(animatedFromNewChat)}`)
+      }
+      const digitCalls = Array.isArray(animatedFromNewChat.calls) ? animatedFromNewChat.calls : []
+      if (digitCalls.length < 2) {
+        throw new Error(`expected digit animations when opening from new chat, got ${JSON.stringify(animatedFromNewChat)}`)
+      }
+      const delays = digitCalls.map((entry) => Number(entry.delay || 0)).sort((a, b) => a - b)
+      if (!(delays[0] === 0 && delays[delays.length - 1] >= 70)) {
+        throw new Error(`expected right-to-left staggered digit animation from new chat open, got ${JSON.stringify(animatedFromNewChat)}`)
+      }
+    }
+
+
     console.log('[ui:e2e:codex-history-render] PASS')
   } finally {
     try {

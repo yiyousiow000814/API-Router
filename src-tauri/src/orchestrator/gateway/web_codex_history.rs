@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 mod cache;
 mod wsl_index;
 
-use self::cache::load_cached_rollout_turns;
+use self::cache::load_cached_rollout_history;
 use self::wsl_index::load_wsl_history_page;
 
 const DEFAULT_HISTORY_PAGE_LIMIT: usize = 60;
@@ -22,6 +22,12 @@ struct HistoryTurn {
     items: Vec<Value>,
     opened_explicitly: bool,
     saw_compaction: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct ParsedRolloutHistory {
+    turns: Vec<HistoryTurn>,
+    token_usage: Option<Value>,
 }
 
 pub(super) struct ThreadHistoryPage {
@@ -125,12 +131,13 @@ fn load_thread_history_page_impl(
             );
         }
     }
-    let turns = load_cached_rollout_turns(&resolved.local_path)?;
+    let parsed = load_cached_rollout_history(&resolved.local_path)?;
     let page = build_thread_history_page(
         thread_id,
         workspace_value,
         raw_rollout_path,
-        turns.as_slice(),
+        parsed.turns.as_slice(),
+        parsed.token_usage.as_ref(),
         before,
         normalized_limit,
     )?;
@@ -142,6 +149,7 @@ fn build_thread_history_page(
     workspace_value: Option<&str>,
     rollout_path: &str,
     turns: &[HistoryTurn],
+    token_usage: Option<&Value>,
     before: Option<&str>,
     normalized_limit: usize,
 ) -> Result<ThreadHistoryPage, String> {
@@ -177,6 +185,7 @@ fn build_thread_history_page(
             "workspace": workspace_value,
             "rolloutPath": rollout_path,
             "turns": page_turns,
+            "tokenUsage": token_usage.cloned().unwrap_or(Value::Null),
         }),
         page: json!({
             "hasMore": start > 0,
@@ -217,7 +226,7 @@ fn resolve_rollout_path(
     }
 }
 
-fn parse_rollout_turns(path: &Path) -> Result<Vec<HistoryTurn>, String> {
+fn parse_rollout_history(path: &Path) -> Result<ParsedRolloutHistory, String> {
     #[cfg(test)]
     {
         let path_key = path.to_string_lossy().to_string();
@@ -249,6 +258,47 @@ fn parse_rollout_turns(path: &Path) -> Result<Vec<HistoryTurn>, String> {
         }
     }
     Ok(builder.finish())
+}
+
+fn normalize_token_usage_stats(value: &Value) -> Option<Value> {
+    let total_tokens = value.get("total_tokens").and_then(Value::as_u64);
+    let input_tokens = value.get("input_tokens").and_then(Value::as_u64);
+    let cached_input_tokens = value.get("cached_input_tokens").and_then(Value::as_u64);
+    let output_tokens = value.get("output_tokens").and_then(Value::as_u64);
+    let reasoning_output_tokens = value.get("reasoning_output_tokens").and_then(Value::as_u64);
+    if total_tokens.is_none()
+        && input_tokens.is_none()
+        && cached_input_tokens.is_none()
+        && output_tokens.is_none()
+        && reasoning_output_tokens.is_none()
+    {
+        return None;
+    }
+    Some(json!({
+        "totalTokens": total_tokens,
+        "inputTokens": input_tokens,
+        "cachedInputTokens": cached_input_tokens,
+        "outputTokens": output_tokens,
+        "reasoningOutputTokens": reasoning_output_tokens,
+    }))
+}
+
+fn normalize_token_usage_info(info: &Value) -> Option<Value> {
+    let total = info
+        .get("total_token_usage")
+        .and_then(normalize_token_usage_stats);
+    let last = info
+        .get("last_token_usage")
+        .and_then(normalize_token_usage_stats);
+    let model_context_window = info.get("model_context_window").and_then(Value::as_u64);
+    if total.is_none() && last.is_none() && model_context_window.is_none() {
+        return None;
+    }
+    Some(json!({
+        "total": total,
+        "last": last,
+        "modelContextWindow": model_context_window,
+    }))
 }
 
 #[cfg(test)]
@@ -289,12 +339,16 @@ struct HistoryTurnBuilder {
     current_turn: Option<HistoryTurn>,
     next_turn_index: usize,
     next_item_index: usize,
+    token_usage: Option<Value>,
 }
 
 impl HistoryTurnBuilder {
-    fn finish(mut self) -> Vec<HistoryTurn> {
+    fn finish(mut self) -> ParsedRolloutHistory {
         self.finish_current_turn();
-        self.turns
+        ParsedRolloutHistory {
+            turns: self.turns,
+            token_usage: self.token_usage,
+        }
     }
 
     fn handle_event(&mut self, payload: &Value) {
@@ -308,6 +362,7 @@ impl HistoryTurnBuilder {
             "turn_aborted" => self.handle_turn_aborted(),
             "user_message" => self.handle_user_message(payload),
             "agent_message" => self.handle_agent_message(payload),
+            "token_count" => self.handle_token_count(payload),
             "context_compacted" => self.handle_context_compacted(),
             "thread_rolled_back" => self.handle_thread_rollback(payload),
             _ => {}
@@ -331,6 +386,15 @@ impl HistoryTurnBuilder {
 
     fn handle_turn_aborted(&mut self) {
         self.finish_current_turn();
+    }
+
+    fn handle_token_count(&mut self, payload: &Value) {
+        let Some(info) = payload.get("info") else {
+            return;
+        };
+        if let Some(token_usage) = normalize_token_usage_info(info) {
+            self.token_usage = Some(token_usage);
+        }
     }
 
     fn handle_user_message(&mut self, payload: &Value) {
@@ -598,6 +662,38 @@ mod tests {
     }
 
     #[test]
+    fn history_page_includes_latest_token_usage_snapshot() {
+        _clear_history_turns_cache_for_test();
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-token-usage"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":null}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hello","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"world"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":2048,"cached_input_tokens":512,"output_tokens":128,"reasoning_output_tokens":64,"total_tokens":2176},"last_token_usage":{"input_tokens":48,"cached_input_tokens":0,"output_tokens":16,"reasoning_output_tokens":8,"total_tokens":64},"model_context_window":32768}}}"#,
+        ]);
+        let result = load_thread_history_page(
+            "thread-token-usage",
+            Some(WorkspaceTarget::Windows),
+            Some(&rollout.path().to_string_lossy()),
+            None,
+            10,
+        )
+        .expect("history page");
+        assert_eq!(
+            result.thread["tokenUsage"]["total"]["totalTokens"].as_u64(),
+            Some(2176)
+        );
+        assert_eq!(
+            result.thread["tokenUsage"]["last"]["totalTokens"].as_u64(),
+            Some(64)
+        );
+        assert_eq!(
+            result.thread["tokenUsage"]["modelContextWindow"].as_u64(),
+            Some(32768)
+        );
+    }
+
+    #[test]
     fn history_page_cache_reuses_parsed_turns_across_pages() {
         _clear_history_turns_cache_for_test();
         reset_history_parse_counter();
@@ -607,6 +703,7 @@ mod tests {
             r#"{"type":"event_msg","payload":{"type":"agent_message","message":"reply one"}}"#,
             r#"{"type":"event_msg","payload":{"type":"user_message","message":"two","images":[],"local_images":[],"text_elements":[]}}"#,
             r#"{"type":"event_msg","payload":{"type":"agent_message","message":"reply two"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1024,"cached_input_tokens":0,"output_tokens":32,"reasoning_output_tokens":16,"total_tokens":1056},"last_token_usage":{"input_tokens":32,"cached_input_tokens":0,"output_tokens":8,"reasoning_output_tokens":4,"total_tokens":40},"model_context_window":8192}}}"#,
             r#"{"type":"event_msg","payload":{"type":"user_message","message":"three","images":[],"local_images":[],"text_elements":[]}}"#,
             r#"{"type":"event_msg","payload":{"type":"agent_message","message":"reply three"}}"#,
         ]);
@@ -623,6 +720,10 @@ mod tests {
             1,
             "first page should parse rollout once"
         );
+        assert_eq!(
+            first.thread["tokenUsage"]["total"]["totalTokens"].as_u64(),
+            Some(1056)
+        );
         let before = first.page["beforeCursor"].as_str().expect("before cursor");
         let older = load_thread_history_page(
             "thread-cache",
@@ -636,6 +737,10 @@ mod tests {
             history_parse_count_for_path(rollout.path()),
             1,
             "older page should reuse cached parsed turns instead of reparsing"
+        );
+        assert_eq!(
+            older.thread["tokenUsage"]["modelContextWindow"].as_u64(),
+            Some(8192)
         );
         let older_turns = older.thread["turns"].as_array().expect("older turns");
         assert_eq!(older_turns.len(), 1);

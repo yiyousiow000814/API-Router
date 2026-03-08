@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 CHUNK_SIZE = 60
 FAST_TAIL_CHUNK_BYTES = 2 * 1024 * 1024
 
@@ -15,6 +15,7 @@ TURN_COMPLETE_BYTES = b'"payload":{"type":"turn_complete"'
 TURN_ABORTED_BYTES = b'"payload":{"type":"turn_aborted"'
 USER_MESSAGE_BYTES = b'"payload":{"type":"user_message"'
 AGENT_MESSAGE_BYTES = b'"payload":{"type":"agent_message"'
+TOKEN_COUNT_BYTES = b'"payload":{"type":"token_count"'
 CONTEXT_COMPACTED_BYTES = b'"payload":{"type":"context_compacted"'
 THREAD_ROLLED_BACK_BYTES = b'"payload":{"type":"thread_rolled_back"'
 COMPACTED_BYTES = b'"type":"compacted"'
@@ -25,6 +26,7 @@ FAST_TAIL_RELEVANT_MARKERS = (
     TURN_ABORTED_BYTES,
     USER_MESSAGE_BYTES,
     AGENT_MESSAGE_BYTES,
+    TOKEN_COUNT_BYTES,
     CONTEXT_COMPACTED_BYTES,
     THREAD_ROLLED_BACK_BYTES,
     COMPACTED_BYTES,
@@ -36,12 +38,53 @@ FAST_TAIL_BOUNDARY_MARKERS = (
 )
 
 
+def normalize_token_usage_stats(value):
+    if not isinstance(value, dict):
+        return None
+    total_tokens = value.get("total_tokens")
+    input_tokens = value.get("input_tokens")
+    cached_input_tokens = value.get("cached_input_tokens")
+    output_tokens = value.get("output_tokens")
+    reasoning_output_tokens = value.get("reasoning_output_tokens")
+    if (
+        total_tokens is None
+        and input_tokens is None
+        and cached_input_tokens is None
+        and output_tokens is None
+        and reasoning_output_tokens is None
+    ):
+        return None
+    return {
+        "totalTokens": total_tokens,
+        "inputTokens": input_tokens,
+        "cachedInputTokens": cached_input_tokens,
+        "outputTokens": output_tokens,
+        "reasoningOutputTokens": reasoning_output_tokens,
+    }
+
+
+def normalize_token_usage_info(info):
+    if not isinstance(info, dict):
+        return None
+    total = normalize_token_usage_stats(info.get("total_token_usage"))
+    last = normalize_token_usage_stats(info.get("last_token_usage"))
+    model_context_window = info.get("model_context_window")
+    if total is None and last is None and model_context_window is None:
+        return None
+    return {
+        "total": total,
+        "last": last,
+        "modelContextWindow": model_context_window,
+    }
+
+
 class Builder:
     def __init__(self):
         self.turns = []
         self.current_turn = None
         self.next_turn_index = 0
         self.next_item_index = 0
+        self.token_usage = None
 
     def next_turn_id(self):
         self.next_turn_index += 1
@@ -98,6 +141,11 @@ class Builder:
 
     def handle_turn_aborted(self):
         self.finish_current_turn()
+
+    def handle_token_count(self, payload):
+        token_usage = normalize_token_usage_info(payload.get("info"))
+        if token_usage is not None:
+            self.token_usage = token_usage
 
     def handle_user_message(self, payload):
         should_finish = self.current_turn is not None and not (
@@ -168,6 +216,8 @@ class Builder:
                 self.handle_user_message(payload)
             elif event_type == "agent_message":
                 self.handle_agent_message(payload)
+            elif event_type == "token_count":
+                self.handle_token_count(payload)
             elif event_type == "context_compacted":
                 self.handle_context_compacted()
             elif event_type == "thread_rolled_back":
@@ -177,7 +227,7 @@ class Builder:
 
     def finish(self):
         self.finish_current_turn()
-        return self.turns
+        return {"turns": self.turns, "tokenUsage": self.token_usage}
 
 
 def parse_page_args():
@@ -260,11 +310,12 @@ def parse_rollout_turns(rollout_path):
     return builder.finish()
 
 
-def write_index(cache_dir, source, turns):
+def write_index(cache_dir, source, parsed):
     os.makedirs(os.path.dirname(cache_dir), exist_ok=True)
     tmp_dir = tempfile.mkdtemp(prefix="history-index-", dir=os.path.dirname(cache_dir))
     try:
         chunk_count = 0
+        turns = parsed["turns"]
         for start in range(0, len(turns), CHUNK_SIZE):
             chunk_turns = [
                 {"id": turn["id"], "items": turn["items"]}
@@ -282,6 +333,7 @@ def write_index(cache_dir, source, turns):
             "chunkCount": chunk_count,
             "totalTurns": len(turns),
             "turnIds": [str(turn.get("id") or "").strip() for turn in turns],
+            "tokenUsage": parsed.get("tokenUsage"),
         }
         with open(manifest_path(tmp_dir), "w", encoding="utf-8") as fh:
             json.dump(manifest, fh, ensure_ascii=False, separators=(",", ":"))
@@ -335,8 +387,8 @@ def build_index(cache_root, rollout_path):
     if manifest is not None:
         return manifest, 0, "wsl-index-hit"
     build_started = time.perf_counter()
-    turns = parse_rollout_turns(rollout_path)
-    manifest = write_index(cache_dir, source, turns)
+    parsed = parse_rollout_turns(rollout_path)
+    manifest = write_index(cache_dir, source, parsed)
     build_ms = int((time.perf_counter() - build_started) * 1000)
     return manifest, build_ms, "wsl-index-built"
 
@@ -375,6 +427,7 @@ def collect_recent_relevant_lines(rollout_path, target_boundaries):
                     is_boundary = True
                 elif (
                     AGENT_MESSAGE_BYTES in line
+                    or TOKEN_COUNT_BYTES in line
                     or TURN_COMPLETE_BYTES in line
                     or TURN_ABORTED_BYTES in line
                     or CONTEXT_COMPACTED_BYTES in line
@@ -393,7 +446,7 @@ def collect_recent_relevant_lines(rollout_path, target_boundaries):
     return collected, has_older
 
 
-def parse_turns_from_relevant_lines(lines):
+def parse_history_from_relevant_lines(lines):
     builder = Builder()
     for raw_line in reversed(lines):
         try:
@@ -406,18 +459,20 @@ def parse_turns_from_relevant_lines(lines):
 
 
 def load_latest_page_fast(rollout_path, limit):
-    turns = []
+    parsed = {"turns": [], "tokenUsage": None}
     has_older = False
     targets = [max(limit, 1), max(limit + 8, int(limit * 1.25))]
     for target in targets:
         relevant_lines, has_older = collect_recent_relevant_lines(rollout_path, target)
-        turns = parse_turns_from_relevant_lines(relevant_lines)
-        if len(turns) >= limit or not has_older:
+        parsed = parse_history_from_relevant_lines(relevant_lines)
+        if len(parsed["turns"]) >= limit or not has_older:
             break
+    turns = parsed["turns"]
     page_turns = [{"id": turn["id"], "items": turn["items"]} for turn in turns[-limit:]]
     approx_total = len(page_turns) + (limit if has_older else 0)
     return {
         "turns": page_turns,
+        "tokenUsage": parsed.get("tokenUsage"),
         "hasMore": False,
         "beforeCursor": None,
         "totalTurns": approx_total,
@@ -486,6 +541,7 @@ def handle_page_mode():
             "workspace": args["workspace"] or None,
             "rolloutPath": args["rollout_path_raw"],
             "turns": page_turns,
+            "tokenUsage": manifest.get("tokenUsage") if manifest else fast_page.get("tokenUsage"),
         },
         "page": page,
         "meta": {
