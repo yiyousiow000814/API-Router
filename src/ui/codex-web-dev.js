@@ -111,8 +111,9 @@ const state = {
   folderPickerListRenderSig: "",
   folderPickerKeepContentWhileLoading: true,
   favoriteThreadIds: new Set(),
-  lastChevronToggleKey: "",
-  lastChevronToggleCollapsed: false,
+  threadListChevronOpenAnimateKeys: new Set(),
+  threadListChevronCloseAnimateKeys: new Set(),
+  threadListCollapseAnimateGroupKeys: new Set(),
   threadPullRefreshing: false,
   activeThreadStarted: false,
   chatRenderToken: 0,
@@ -4550,6 +4551,12 @@ function renderThreads(items) {
     state.threadListAnimateThreadIds instanceof Set ? state.threadListAnimateThreadIds : new Set();
   const expandAnimateGroupKeys =
     state.threadListExpandAnimateGroupKeys instanceof Set ? state.threadListExpandAnimateGroupKeys : new Set();
+  const collapseAnimateGroupKeys =
+    state.threadListCollapseAnimateGroupKeys instanceof Set ? state.threadListCollapseAnimateGroupKeys : new Set();
+  const chevronOpenAnimateKeys =
+    state.threadListChevronOpenAnimateKeys instanceof Set ? state.threadListChevronOpenAnimateKeys : new Set();
+  const chevronCloseAnimateKeys =
+    state.threadListChevronCloseAnimateKeys instanceof Set ? state.threadListChevronCloseAnimateKeys : new Set();
   const animateExpandBody = (body) => {
     if (!body) return;
     const computed = window.getComputedStyle(body);
@@ -4618,6 +4625,23 @@ function renderThreads(items) {
       finalize();
     }, { once: true });
     setTimeout(finalize, 260);
+  };
+
+  const startExclusiveGroupSwitch = (nextGroupKey, currentGroupKey, allGroupKeys) => {
+    const nextKey = String(nextGroupKey || "");
+    const currentKey = String(currentGroupKey || "");
+    for (const key of allGroupKeys) state.collapsedWorkspaceKeys.add(key);
+    if (nextKey) state.collapsedWorkspaceKeys.delete(nextKey);
+    state.threadListAnimateNextRender = false;
+    state.threadListAnimateThreadIds = new Set();
+    state.threadListExpandAnimateGroupKeys = nextKey ? new Set([nextKey]) : new Set();
+    state.threadListCollapseAnimateGroupKeys =
+      currentKey && currentKey !== nextKey ? new Set([currentKey]) : new Set();
+    state.threadListChevronOpenAnimateKeys = nextKey ? new Set([nextKey]) : new Set();
+    state.threadListChevronCloseAnimateKeys =
+      currentKey && currentKey !== nextKey ? new Set([currentKey]) : new Set();
+    state.threadListSkipScrollRestoreOnce = true;
+    renderThreads(state.threadItems);
   };
   let threadEnterIndex = 0;
   let groupEnterIndex = 0;
@@ -4720,6 +4744,9 @@ function renderThreads(items) {
     state.threadListAnimateNextRender = false;
     state.threadListAnimateThreadIds = new Set();
     state.threadListExpandAnimateGroupKeys = new Set();
+    state.threadListChevronOpenAnimateKeys = new Set();
+    state.threadListChevronCloseAnimateKeys = new Set();
+    state.threadListCollapseAnimateGroupKeys = new Set();
     return;
   }
   list.innerHTML = "";
@@ -4857,10 +4884,9 @@ function renderThreads(items) {
     const header = document.createElement("button");
     const collapsed = state.collapsedWorkspaceKeys.has(sectionKey);
     header.className = `groupHeader${collapsed ? " is-collapsed" : ""}${animateEnter ? " threadHeaderEnter" : ""}`;
-    const animClass =
-      state.lastChevronToggleKey === sectionKey
-        ? (state.lastChevronToggleCollapsed ? " anim-close" : " anim-open")
-        : "";
+    const animClass = chevronCloseAnimateKeys.has(String(sectionKey))
+      ? " anim-close"
+      : (chevronOpenAnimateKeys.has(String(sectionKey)) ? " anim-open" : "");
     header.innerHTML =
       `<span class="itemTitle">${escapeHtml(sectionTitle)}</span>` +
       `<span class="groupChevron${collapsed ? " is-collapsed" : ""}${animClass}" aria-hidden="true">` +
@@ -4870,23 +4896,25 @@ function renderThreads(items) {
       const currentlyCollapsed = state.collapsedWorkspaceKeys.has(sectionKey);
       if (currentlyCollapsed) {
         state.collapsedWorkspaceKeys.delete(sectionKey);
-        state.lastChevronToggleKey = sectionKey;
-        state.lastChevronToggleCollapsed = false;
         state.threadListAnimateNextRender = false;
         state.threadListAnimateThreadIds = new Set();
         state.threadListExpandAnimateGroupKeys = new Set([String(sectionKey)]);
+        state.threadListCollapseAnimateGroupKeys = new Set();
+        state.threadListChevronOpenAnimateKeys = new Set([String(sectionKey)]);
+        state.threadListChevronCloseAnimateKeys = new Set();
         state.threadListSkipScrollRestoreOnce = true;
         renderThreads(state.threadItems);
         return;
       }
       const bodyNode = group.querySelector(".groupBody");
-      state.lastChevronToggleKey = sectionKey;
-      state.lastChevronToggleCollapsed = true;
+      state.threadListChevronOpenAnimateKeys = new Set();
+      state.threadListChevronCloseAnimateKeys = new Set([String(sectionKey)]);
       animateCollapseBody(bodyNode, () => {
         state.collapsedWorkspaceKeys.add(sectionKey);
         state.threadListAnimateNextRender = false;
         state.threadListAnimateThreadIds = new Set();
         state.threadListExpandAnimateGroupKeys = new Set();
+        state.threadListCollapseAnimateGroupKeys = new Set();
         state.threadListSkipScrollRestoreOnce = true;
         renderThreads(state.threadItems);
       });
@@ -4937,10 +4965,9 @@ function renderThreads(items) {
     const header = document.createElement("button");
     const collapsed = state.collapsedWorkspaceKeys.has(workspaceKey);
     header.className = `groupHeader${collapsed ? " is-collapsed" : ""}${animateEnter ? " threadHeaderEnter" : ""}`;
-    const animClass =
-      state.lastChevronToggleKey === workspaceKey
-        ? (state.lastChevronToggleCollapsed ? " anim-close" : " anim-open")
-        : "";
+    const animClass = chevronCloseAnimateKeys.has(String(workspaceKey))
+      ? " anim-close"
+      : (chevronOpenAnimateKeys.has(String(workspaceKey)) ? " anim-open" : "");
     header.innerHTML =
       `<span class="itemTitle">${escapeHtml(workspace)}</span>` +
       `<span class="groupChevron${collapsed ? " is-collapsed" : ""}${animClass}" aria-hidden="true">` +
@@ -4949,50 +4976,64 @@ function renderThreads(items) {
     header.onclick = () => {
       const currentlyCollapsed = state.collapsedWorkspaceKeys.has(workspaceKey);
       if (currentlyCollapsed) {
-        // Open this group and keep others collapsed (single-expanded behavior).
-        for (const [, , key] of entries) state.collapsedWorkspaceKeys.add(key);
-        state.collapsedWorkspaceKeys.delete(workspaceKey);
-        state.lastChevronToggleKey = workspaceKey;
-        state.lastChevronToggleCollapsed = false;
-        state.threadListAnimateNextRender = false;
-        state.threadListAnimateThreadIds = new Set();
-        state.threadListExpandAnimateGroupKeys = new Set([String(workspaceKey)]);
-        state.threadListSkipScrollRestoreOnce = true;
-        renderThreads(state.threadItems);
+        const currentlyOpenKey =
+          entries.find(([, , key]) => key !== workspaceKey && !state.collapsedWorkspaceKeys.has(key))?.[2] || "";
+        startExclusiveGroupSwitch(
+          workspaceKey,
+          currentlyOpenKey,
+          entries.map(([, , key]) => key),
+        );
         return;
       }
       const bodyNode = group.querySelector(".groupBody");
-      state.lastChevronToggleKey = workspaceKey;
-      state.lastChevronToggleCollapsed = true;
+      state.threadListChevronOpenAnimateKeys = new Set();
+      state.threadListChevronCloseAnimateKeys = new Set([String(workspaceKey)]);
       animateCollapseBody(bodyNode, () => {
         // Collapse this group when tapping it again.
         state.collapsedWorkspaceKeys.add(workspaceKey);
         state.threadListAnimateNextRender = false;
         state.threadListAnimateThreadIds = new Set();
         state.threadListExpandAnimateGroupKeys = new Set();
+        state.threadListCollapseAnimateGroupKeys = new Set();
         state.threadListSkipScrollRestoreOnce = true;
         renderThreads(state.threadItems);
       });
     };
     group.appendChild(header);
     let bodyForExpandAnim = null;
-    if (!collapsed) {
+    let bodyForCollapseAnim = null;
+    const renderCollapsedBody = collapsed && collapseAnimateGroupKeys.has(String(workspaceKey));
+    if (!collapsed || renderCollapsedBody) {
       const body = document.createElement("div");
       body.className = "groupBody";
       for (const thread of filtered) body.appendChild(renderThreadCard(thread));
       group.appendChild(body);
-      if (expandAnimateGroupKeys.has(String(workspaceKey))) bodyForExpandAnim = body;
+      if (renderCollapsedBody) bodyForCollapseAnim = body;
+      else if (expandAnimateGroupKeys.has(String(workspaceKey))) bodyForExpandAnim = body;
       const prevTop = prevGroupScroll.get(String(workspaceKey));
-      if (typeof prevTop === "number" && Number.isFinite(prevTop) && prevTop > 0) {
+      if (!renderCollapsedBody && typeof prevTop === "number" && Number.isFinite(prevTop) && prevTop > 0) {
         pendingScrollRestores.push({ node: body, top: prevTop });
       }
     }
     list.appendChild(group);
     if (bodyForExpandAnim) animateExpandBody(bodyForExpandAnim);
+    if (bodyForCollapseAnim) {
+      animateCollapseBody(bodyForCollapseAnim, () => {
+        const activeCollapseKeys =
+          state.threadListCollapseAnimateGroupKeys instanceof Set
+            ? state.threadListCollapseAnimateGroupKeys
+            : new Set();
+        state.threadListCollapseAnimateGroupKeys = new Set(
+          Array.from(activeCollapseKeys).filter((key) => key !== String(workspaceKey)),
+        );
+        state.threadListAnimateNextRender = false;
+        state.threadListAnimateThreadIds = new Set();
+        state.threadListSkipScrollRestoreOnce = true;
+        renderThreads(state.threadItems);
+      });
+    }
   }
   if (!renderedThreads) renderThreadListState("No threads match search.");
-  state.lastChevronToggleKey = "";
-  state.lastChevronToggleCollapsed = false;
   if (!list.childElementCount && !String(list.textContent || "").trim()) {
     if (state.threadListLoading) renderThreadListState("Loading chats...", "spinner");
     else renderThreadListState("Waiting for chats...", "spinner");
@@ -5003,6 +5044,8 @@ function renderThreads(items) {
   state.threadListAnimateNextRender = false;
   state.threadListAnimateThreadIds = new Set();
   state.threadListExpandAnimateGroupKeys = new Set();
+  state.threadListChevronOpenAnimateKeys = new Set();
+  state.threadListChevronCloseAnimateKeys = new Set();
   if (animateEnter && sourceItems.length > 0 && document.body.classList.contains("drawer-left-open")) {
     // Consume the "open sidebar with enter animation" intent on the first non-empty onscreen render.
     // Without this, a later refresh/finalizer render can replay the same group-enter animation a second

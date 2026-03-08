@@ -108,6 +108,20 @@ async function main() {
           { id: 'a1', title: 'a1', preview: 'a1', cwd: 'API-Router', workspace: 'windows', updatedAt: 1001, createdAt: 1001 },
           { id: 'c1', title: 'c1', preview: 'c1', cwd: 'beta', workspace: 'windows', updatedAt: 1002, createdAt: 1002 }
         ];
+        try {
+          const origFetch = window.fetch;
+          window.__webCodexE2E_threadlistEnterOrigFetch = origFetch;
+          window.fetch = async (input, init) => {
+            const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+            if (typeof url === 'string' && url.includes('/codex/threads') && !url.includes('/history')) {
+              return new Response(JSON.stringify({ items, nextCursor: '', hasMore: false }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
+            return origFetch(input, init);
+          };
+        } catch {}
         const r = await h.refreshThreadsWithMock('windows', items);
         done(r);
       })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
@@ -150,6 +164,74 @@ async function main() {
       `)
       return !!settled?.ok && Number(settled.opacity) >= 0.99
     }, 1500, 'group enter animation settle')
+
+    // Regression: when switching from a lower expanded workspace group to an upper one,
+    // the upper group should expand while the lower group collapses in the same transition.
+    await driver.executeScript(`
+      const headers = Array.from(document.querySelectorAll('#threadList .groupHeader'));
+      if (headers.length < 2) throw new Error('expected at least two group headers');
+      headers[1].click();
+    `)
+    await waitFor(async () => {
+      const probe = await driver.executeScript(`
+        const groups = Array.from(document.querySelectorAll('#threadList .groupCard'));
+        const betaGroup = groups.find((node) => node.getAttribute('data-group-key') === 'beta');
+        const body = betaGroup?.querySelector('.groupBody') || null;
+        const height = Math.max(0, body?.getBoundingClientRect?.().height || 0);
+        return {
+          expanded: !!body && height > 10 && !body.classList.contains('is-expanding') && !body.classList.contains('is-collapsing'),
+        };
+      `)
+      return !!probe?.expanded
+    }, 2000, 'lower group expanded')
+
+    await driver.executeScript(`
+      const headers = Array.from(document.querySelectorAll('#threadList .groupHeader'));
+      if (headers.length < 2) throw new Error('expected at least two group headers');
+      headers[0].click();
+    `)
+    const switchProbe = await driver.executeScript(`
+      const groups = Array.from(document.querySelectorAll('#threadList .groupCard'));
+      const summarize = (node) => {
+        const body = node.querySelector('.groupBody');
+        return {
+          key: String(node.getAttribute('data-group-key') || ''),
+          title: String(node.querySelector('.itemTitle')?.textContent || '').trim(),
+          hasBody: !!body,
+          bodyClass: String(body?.className || ''),
+        };
+      };
+      const apiGroup = groups.find((node) => node.getAttribute('data-group-key') === 'api-router');
+      const betaGroup = groups.find((node) => node.getAttribute('data-group-key') === 'beta');
+      return {
+        groups: groups.map(summarize),
+        apiExpanding: !!apiGroup?.querySelector('.groupBody.is-expanding'),
+        betaCollapsing: !!betaGroup?.querySelector('.groupBody.is-collapsing'),
+      };
+    `)
+    if (!switchProbe?.apiExpanding || !switchProbe?.betaCollapsing) {
+      throw new Error(`expected upper group to expand while lower group collapses, got ${JSON.stringify(switchProbe)}`)
+    }
+
+    await sleep(320)
+    const openedProbe = await driver.executeScript(`
+      const groups = Array.from(document.querySelectorAll('#threadList .groupCard'));
+      const betaGroup = groups.find((node) => node.getAttribute('data-group-key') === 'beta');
+      const apiGroup = groups.find((node) => node.getAttribute('data-group-key') === 'api-router');
+      const betaBody = betaGroup?.querySelector('.groupBody') || null;
+      const apiBody = apiGroup?.querySelector('.groupBody') || null;
+      return {
+        groups: groups.map((node) => ({
+          key: String(node.getAttribute('data-group-key') || ''),
+          bodyClass: String(node.querySelector('.groupBody')?.className || ''),
+        })),
+        apiVisible: !!apiBody,
+        betaCollapsed: !betaBody,
+      };
+    `)
+    if (!openedProbe?.apiVisible || !openedProbe?.betaCollapsed) {
+      throw new Error(`expected upper group to finish open after the shared switch animation, got ${JSON.stringify(openedProbe)}`)
+    }
 
     console.log('[ui:e2e:codex-threadlist-enter] PASS')
   } finally {
