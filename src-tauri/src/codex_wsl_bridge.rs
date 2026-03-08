@@ -10,6 +10,7 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+#[cfg(target_os = "windows")]
 const BRIDGE_REQUEST_TIMEOUT: Duration = Duration::from_secs(35);
 #[cfg(target_os = "windows")]
 const BRIDGE_START_TIMEOUT: Duration = Duration::from_secs(8);
@@ -536,7 +537,7 @@ async fn start_bridge(target: &BridgeTarget) -> Result<BridgeRuntime, String> {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = target;
-        return Err("WSL bridge is only supported on Windows host".to_string());
+        Err("WSL bridge is only supported on Windows host".to_string())
     }
     #[cfg(target_os = "windows")]
     {
