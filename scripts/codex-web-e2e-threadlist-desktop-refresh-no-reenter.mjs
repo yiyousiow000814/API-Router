@@ -120,6 +120,28 @@ async function main() {
       }
     }, 20000, 'threadList element after cache refresh')
 
+    const startupReplay = await driver.executeScript(`
+      const events = window.__webCodexAnimDebug?.getEvents?.() || [];
+      return {
+        starts: events.filter((entry) => entry.type === 'animation:start').length,
+        renderEvents: events.filter((entry) => entry.type === 'renderThreads').map((entry) => ({
+          animateEnter: !!entry.animateEnter,
+          pendingVisibleAnimation: !!entry.pendingVisibleAnimation,
+          animateNextRender: !!entry.animateNextRender,
+          listActuallyVisible: !!entry.listActuallyVisible,
+          sourceCount: Number(entry.sourceCount || 0),
+        })),
+        groupEnterCount: document.querySelectorAll('#threadList .groupCard.groupEnter').length,
+        threadEnterCount: document.querySelectorAll('#threadList .itemCard.threadEnter').length,
+      };
+    `)
+    if (!Array.isArray(startupReplay?.renderEvents) || !startupReplay.renderEvents.some((entry) => entry.animateEnter && entry.listActuallyVisible && entry.sourceCount > 0)) {
+      throw new Error(`expected cached desktop refresh render to mark animateEnter: ${JSON.stringify(startupReplay)}`)
+    }
+    if (Number(startupReplay?.groupEnterCount || 0) <= 0 && Number(startupReplay?.threadEnterCount || 0) <= 0) {
+      throw new Error(`expected cached desktop refresh DOM to contain enter-animation classes: ${JSON.stringify(startupReplay)}`)
+    }
+
     const seeded = await driver.executeAsyncScript(`
       const done = arguments[0];
       (async () => {

@@ -3363,6 +3363,13 @@ function restoreThreadsCache(target) {
     if (!next.length) return false;
     state.threadItemsAll = next.slice();
     state.threadItems = sortThreadsByNewest(next.slice());
+    // Cache hydration should use the same visible-list animation policy as later workspace hydration:
+    // animate immediately when the list is already onscreen, otherwise keep one pending enter animation
+    // for the first time the user actually sees the list after refresh/startup.
+    state.threadListPendingVisibleAnimationByWorkspace[target] = true;
+    state.threadListAnimateNextRender = isThreadListActuallyVisible();
+    state.threadListAnimateThreadIds = new Set();
+    state.threadListExpandAnimateGroupKeys = new Set();
     return true;
   } catch {
     return false;
@@ -6908,7 +6915,6 @@ function bootstrap() {
   }
   applyWorkspaceUi();
   syncHeaderModelPicker();
-  if (Array.isArray(state.threadItems) && state.threadItems.length) renderThreads(state.threadItems);
   if (SANDBOX_MODE) {
     const sandboxBadge = byId("sandboxBadge");
     if (sandboxBadge) sandboxBadge.style.display = "inline-flex";
@@ -7035,6 +7041,7 @@ function bootstrap() {
   startThreadAutoRefreshLoop();
   startActiveThreadLivePollLoop();
   setMobileTab("chat");
+  document.body.classList.add("thread-list-bootstrapped");
   // Always attempt connect: gateway auth can now come from HttpOnly cookie.
   connect().catch((e) => setStatus(e.message, true));
 }

@@ -630,6 +630,9 @@
       color: #637188;
       padding: 8px 4px;
     }
+    body:not(.thread-list-bootstrapped) #threadList > .threadListState[data-bootstrap-placeholder="true"] {
+      display: none;
+    }
     .threadListStateText,
     .threadListPlainState {
       display: inline-block;
@@ -2523,7 +2526,7 @@
             </span>
           </div>
           <div id="threadList" class="itemList">
-            <div class="threadListState">
+            <div class="threadListState" data-bootstrap-placeholder="true">
               <span class="threadListStateSpinner" aria-hidden="true"></span>
               <span>Waiting for chats...</span>
             </div>
