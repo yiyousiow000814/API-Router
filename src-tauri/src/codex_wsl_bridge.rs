@@ -93,7 +93,6 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-#[cfg(any(test, target_os = "windows"))]
 fn parse_unc_home(value: &str) -> Option<(String, String)> {
     let mut text = value.trim().replace('/', "\\");
     if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
