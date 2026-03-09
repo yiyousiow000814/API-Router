@@ -1,14 +1,19 @@
+#[cfg(target_os = "windows")]
 use reqwest::Client;
 use serde_json::{json, Value};
+#[cfg(any(test, target_os = "windows"))]
 use std::borrow::Cow;
+#[cfg(target_os = "windows")]
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use std::process::Stdio;
+#[cfg(any(test, target_os = "windows"))]
 use std::sync::OnceLock;
 #[cfg(target_os = "windows")]
 use std::time::Duration;
 #[cfg(target_os = "windows")]
 use tokio::process::Command;
+#[cfg(any(test, target_os = "windows"))]
 use tokio::sync::Mutex;
 
 #[cfg(target_os = "windows")]
@@ -23,10 +28,12 @@ const BRIDGE_PORT_BASE: u16 = 42180;
 const BRIDGE_PORT_SPREAD: u16 = 211;
 #[cfg(any(test, target_os = "windows"))]
 const BRIDGE_PORT_CANDIDATES: usize = 4;
+#[cfg(target_os = "windows")]
 const BRIDGE_HEALTH_MARKER: &str = "api-router-wsl-codex-bridge";
 #[cfg(any(test, target_os = "windows"))]
 const BRIDGE_LOG_PATH: &str = "/tmp/api-router-wsl-codex-bridge.log";
 
+#[cfg(target_os = "windows")]
 static BRIDGES: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<BridgeRuntime>>>>> =
     OnceLock::new();
 
@@ -55,22 +62,26 @@ static TEST_REPLAY_HANDLER: OnceLock<
 > = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(any(test, target_os = "windows"))]
 struct BridgeTarget {
     distro: Option<String>,
     codex_home_linux: Option<String>,
 }
 
 #[derive(Clone)]
+#[cfg(target_os = "windows")]
 struct BridgeEndpoint {
     base_url: String,
     client: Client,
 }
 
+#[cfg(target_os = "windows")]
 struct BridgeRuntime {
     endpoint: BridgeEndpoint,
     child: Option<tokio::process::Child>,
 }
 
+#[cfg(target_os = "windows")]
 impl BridgeRuntime {
     fn is_dead(&mut self) -> Result<bool, String> {
         let Some(child) = self.child.as_mut() else {
@@ -84,6 +95,7 @@ impl BridgeRuntime {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn bridge_map() -> &'static Mutex<HashMap<String, std::sync::Arc<Mutex<BridgeRuntime>>>> {
     BRIDGES.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -93,6 +105,7 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn parse_unc_home(value: &str) -> Option<(String, String)> {
     let mut text = value.trim().replace('/', "\\");
     if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
@@ -115,6 +128,7 @@ fn parse_unc_home(value: &str) -> Option<(String, String)> {
     Some((distro, linux_path))
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn parse_bridge_target(codex_home: Option<&str>) -> Option<BridgeTarget> {
     let trimmed = codex_home?.trim();
     if trimmed.is_empty() {
@@ -135,6 +149,7 @@ fn parse_bridge_target(codex_home: Option<&str>) -> Option<BridgeTarget> {
     None
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn default_bridge_key(target: &BridgeTarget) -> Cow<'_, str> {
     match target.distro.as_deref() {
         Some(distro) if !distro.trim().is_empty() => Cow::Borrowed(distro),
@@ -509,6 +524,7 @@ async fn maybe_handle_test_replay(
     Some(handler(codex_home, since_event_id, max))
 }
 
+#[cfg(target_os = "windows")]
 async fn healthcheck(base_url: &str, client: &Client) -> Result<bool, String> {
     let response = client
         .get(format!("{base_url}/health"))
@@ -525,6 +541,7 @@ async fn healthcheck(base_url: &str, client: &Client) -> Result<bool, String> {
     )
 }
 
+#[cfg(target_os = "windows")]
 async fn start_bridge(target: &BridgeTarget) -> Result<BridgeRuntime, String> {
     #[cfg(not(target_os = "windows"))]
     {
@@ -594,6 +611,7 @@ async fn start_bridge(target: &BridgeTarget) -> Result<BridgeRuntime, String> {
     }
 }
 
+#[cfg(target_os = "windows")]
 async fn ensure_bridge(target: &BridgeTarget) -> Result<BridgeEndpoint, String> {
     let key = default_bridge_key(target).to_string();
     let lock = bridge_map();
@@ -650,7 +668,7 @@ pub async fn try_request_in_home(
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (codex_home, method, params);
-        return None;
+        None
     }
     #[cfg(target_os = "windows")]
     {
@@ -673,7 +691,7 @@ pub async fn try_replay_notifications_since_in_home(
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (codex_home, since_event_id, max);
-        return None;
+        None
     }
     #[cfg(target_os = "windows")]
     {
@@ -688,6 +706,7 @@ pub async fn try_replay_notifications_since_in_home(
     }
 }
 
+#[cfg(target_os = "windows")]
 async fn request_via_bridge(
     target: &BridgeTarget,
     method: &str,
@@ -720,6 +739,7 @@ async fn request_via_bridge(
         .ok_or_else(|| "WSL bridge response missing result".to_string())
 }
 
+#[cfg(target_os = "windows")]
 async fn replay_via_bridge(
     target: &BridgeTarget,
     since_event_id: u64,
