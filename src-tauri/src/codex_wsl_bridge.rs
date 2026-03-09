@@ -1,6 +1,8 @@
 #[cfg(target_os = "windows")]
 use reqwest::Client;
-use serde_json::{json, Value};
+#[cfg(target_os = "windows")]
+use serde_json::json;
+use serde_json::Value;
 #[cfg(any(test, target_os = "windows"))]
 use std::borrow::Cow;
 #[cfg(target_os = "windows")]
