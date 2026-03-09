@@ -152,6 +152,7 @@ const state = {
   inlineEffortMenuOpen: false,
   inlineEffortMenuForModel: "",
   openingThreadReqId: 0,
+  pendingThreadResumes: new Map(),
   // When we open the mobile drawer on pointerdown, some environments (touch WebViews / remote-control)
   // may synthesize a subsequent click that retargets to the backdrop and immediately closes it.
   // Suppress click-close for a short window after open.
@@ -425,6 +426,26 @@ function mobilePromptMaxHeightPx() {
   if (typeof window === "undefined") return MOBILE_PROMPT_MAX_HEIGHT_PX;
   const fromViewport = Math.floor(window.innerHeight * 0.45);
   return Math.max(132, Math.min(MOBILE_PROMPT_MAX_HEIGHT_PX, fromViewport));
+}
+
+function registerPendingThreadResume(threadId, promise) {
+  if (!threadId || !promise) return;
+  state.pendingThreadResumes.set(threadId, promise);
+  promise.finally(() => {
+    if (state.pendingThreadResumes.get(threadId) === promise) {
+      state.pendingThreadResumes.delete(threadId);
+    }
+  });
+}
+
+async function waitPendingThreadResume(threadId) {
+  if (!threadId) return;
+  const pending = state.pendingThreadResumes.get(threadId);
+  if (!pending) return;
+  try {
+    await pending;
+  } catch (_) {
+  }
 }
 
 function toRecord(value) {
