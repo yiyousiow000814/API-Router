@@ -117,31 +117,23 @@ fn parse_unc_home(value: &str) -> Option<(String, String)> {
 }
 
 fn parse_bridge_target(codex_home: Option<&str>) -> Option<BridgeTarget> {
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = codex_home;
-        None
+    let trimmed = codex_home?.trim();
+    if trimmed.is_empty() {
+        return None;
     }
-    #[cfg(target_os = "windows")]
-    {
-        let trimmed = codex_home?.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        if let Some((distro, path)) = parse_unc_home(trimmed) {
-            return Some(BridgeTarget {
-                distro: Some(distro),
-                codex_home_linux: Some(path),
-            });
-        }
-        if trimmed.starts_with('/') {
-            return Some(BridgeTarget {
-                distro: None,
-                codex_home_linux: Some(trimmed.to_string()),
-            });
-        }
-        None
+    if let Some((distro, path)) = parse_unc_home(trimmed) {
+        return Some(BridgeTarget {
+            distro: Some(distro),
+            codex_home_linux: Some(path),
+        });
     }
+    if trimmed.starts_with('/') {
+        return Some(BridgeTarget {
+            distro: None,
+            codex_home_linux: Some(trimmed.to_string()),
+        });
+    }
+    None
 }
 
 fn default_bridge_key(target: &BridgeTarget) -> Cow<'_, str> {
@@ -656,14 +648,22 @@ pub async fn try_request_in_home(
     method: &str,
     params: Value,
 ) -> Option<Result<Value, String>> {
-    let target = parse_bridge_target(codex_home)?;
-    #[cfg(test)]
-    if let Some(result) =
-        maybe_handle_test_rpc(target.codex_home_linux.as_deref(), method, &params).await
+    #[cfg(not(target_os = "windows"))]
     {
-        return Some(result);
+        let _ = (codex_home, method, params);
+        return None;
     }
-    Some(request_via_bridge(&target, method, params).await)
+    #[cfg(target_os = "windows")]
+    {
+        let target = parse_bridge_target(codex_home)?;
+        #[cfg(test)]
+        if let Some(result) =
+            maybe_handle_test_rpc(target.codex_home_linux.as_deref(), method, &params).await
+        {
+            return Some(result);
+        }
+        Some(request_via_bridge(&target, method, params).await)
+    }
 }
 
 pub async fn try_replay_notifications_since_in_home(
@@ -671,14 +671,22 @@ pub async fn try_replay_notifications_since_in_home(
     since_event_id: u64,
     max: usize,
 ) -> Option<(Vec<Value>, Option<u64>, Option<u64>, bool)> {
-    let target = parse_bridge_target(codex_home)?;
-    #[cfg(test)]
-    if let Some(result) =
-        maybe_handle_test_replay(target.codex_home_linux.as_deref(), since_event_id, max).await
+    #[cfg(not(target_os = "windows"))]
     {
-        return Some(result);
+        let _ = (codex_home, since_event_id, max);
+        return None;
     }
-    Some(replay_via_bridge(&target, since_event_id, max).await)
+    #[cfg(target_os = "windows")]
+    {
+        let target = parse_bridge_target(codex_home)?;
+        #[cfg(test)]
+        if let Some(result) =
+            maybe_handle_test_replay(target.codex_home_linux.as_deref(), since_event_id, max).await
+        {
+            return Some(result);
+        }
+        Some(replay_via_bridge(&target, since_event_id, max).await)
+    }
 }
 
 async fn request_via_bridge(

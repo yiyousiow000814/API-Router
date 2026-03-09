@@ -1,6 +1,6 @@
-use super::web_codex_home::{
-    linux_path_to_unc, parse_wsl_unc_to_linux_path, resolve_wsl_identity, WorkspaceTarget,
-};
+#[cfg(target_os = "windows")]
+use super::web_codex_home::{linux_path_to_unc, resolve_wsl_identity};
+use super::web_codex_home::{parse_wsl_unc_to_linux_path, WorkspaceTarget};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs::File;
@@ -212,10 +212,16 @@ fn resolve_rollout_path(
                     linux_path: Some(linux_path),
                 });
             }
-            let (distro, _) = resolve_wsl_identity()?;
             let linux_path = trimmed.replace('\\', "/");
+            #[cfg(target_os = "windows")]
+            let local_path = {
+                let (distro, _) = resolve_wsl_identity()?;
+                linux_path_to_unc(trimmed, &distro)
+            };
+            #[cfg(not(target_os = "windows"))]
+            let local_path = Path::new(trimmed).to_path_buf();
             Ok(ResolvedRolloutPath {
-                local_path: linux_path_to_unc(trimmed, &distro),
+                local_path,
                 linux_path: Some(linux_path),
             })
         }
@@ -751,18 +757,19 @@ mod tests {
     }
 
     #[test]
-    fn wsl_rollout_path_resolves_to_unc() {
+    fn wsl_rollout_path_resolves_host_specific_local_path() {
         let _home = EnvGuard::set("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
-        let path = resolve_rollout_path(
-            Some(WorkspaceTarget::Wsl2),
-            "/home/test/.codex/sessions/2026/03/07/rollout.jsonl",
-        )
-        .expect("resolve wsl rollout path");
+        let raw_path = "/home/test/.codex/sessions/2026/03/07/rollout.jsonl";
+        let path = resolve_rollout_path(Some(WorkspaceTarget::Wsl2), raw_path)
+            .expect("resolve wsl rollout path");
         let text = path.local_path.to_string_lossy().replace('/', "\\");
+        #[cfg(target_os = "windows")]
         assert!(
-            text.starts_with(r"\\wsl.localhost\") || text.starts_with(r"\\wsl$\"),
+            text.starts_with("\\\\wsl.localhost\\") || text.starts_with("\\\\wsl$\\"),
             "expected WSL UNC path, got {text}"
         );
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(path.local_path, std::path::PathBuf::from(raw_path));
         assert_eq!(
             path.linux_path.as_deref(),
             Some("/home/test/.codex/sessions/2026/03/07/rollout.jsonl")
