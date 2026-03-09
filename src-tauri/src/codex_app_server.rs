@@ -207,7 +207,7 @@ fn resolve_launch_spec(codex_home: Option<&str>) -> LaunchSpec {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string());
-    #[cfg(target_os = "windows")]
+    #[cfg(any(test, target_os = "windows"))]
     {
         if let Some(ref value) = home {
             if let Some((distro, linux_path)) = parse_wsl_unc_codex_home(value) {
@@ -216,6 +216,7 @@ fn resolve_launch_spec(codex_home: Option<&str>) -> LaunchSpec {
                     codex_home_linux: Some(linux_path),
                 };
             }
+            #[cfg(target_os = "windows")]
             if value.starts_with('/') {
                 return LaunchSpec::Wsl {
                     distro: None,
