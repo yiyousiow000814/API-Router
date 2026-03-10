@@ -1,4 +1,4 @@
-﻿export function workspaceKeyOfThread(thread) {
+export function workspaceKeyOfThread(thread) {
   const raw = thread.cwd || thread.workspace || thread.project || thread.directory || thread.path || "";
   const text = String(raw || "").trim();
   if (!text) return "Default folder";
@@ -16,6 +16,10 @@ export function createLiveNotificationsModule(deps) {
     byId,
     addChat,
     scheduleChatLiveFollow,
+    hideWelcomeCard = () => {},
+    createAssistantStreamingMessage = () => ({ msg: null, body: null }),
+    appendStreamingDelta = () => {},
+    finalizeAssistantMessage = () => {},
     normalizeType,
     normalizeInline,
     normalizeMultiline,
@@ -96,12 +100,91 @@ export function createLiveNotificationsModule(deps) {
     );
   }
 
+  function clearActiveAssistantLiveState() {
+    state.activeThreadLiveAssistantThreadId = "";
+    state.activeThreadLiveAssistantIndex = -1;
+    state.activeThreadLiveAssistantMsgNode = null;
+    state.activeThreadLiveAssistantBodyNode = null;
+    state.activeThreadLiveAssistantText = "";
+  }
+
+  function ensureAssistantLiveStream(threadId) {
+    const liveThreadId = String(state.activeThreadLiveAssistantThreadId || "");
+    const liveMsg = state.activeThreadLiveAssistantMsgNode;
+    const liveBody = state.activeThreadLiveAssistantBodyNode;
+    if (liveThreadId === threadId && liveMsg && liveBody) {
+      return { msg: liveMsg, body: liveBody };
+    }
+    const box = byId("chatBox");
+    if (!box) return null;
+    hideWelcomeCard();
+    const created = createAssistantStreamingMessage();
+    const msg = created?.msg || null;
+    const body = created?.body || null;
+    if (!msg || !body) return null;
+    try {
+      msg.setAttribute?.("data-live-assistant", "1");
+      msg.setAttribute?.("data-live-thread-id", threadId);
+    } catch {}
+    box.appendChild(msg);
+    state.activeThreadLiveAssistantThreadId = threadId;
+    state.activeThreadLiveAssistantIndex = Array.isArray(state.activeThreadMessages)
+      ? state.activeThreadMessages.length
+      : 0;
+    state.activeThreadLiveAssistantMsgNode = msg;
+    state.activeThreadLiveAssistantBodyNode = body;
+    state.activeThreadLiveAssistantText = "";
+    if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
+    state.activeThreadMessages.push({ role: "assistant", text: "", kind: "" });
+    return { msg, body };
+  }
+
+  function renderAssistantDelta(threadId, delta) {
+    const text = String(delta || "");
+    if (!text) return;
+    const live = ensureAssistantLiveStream(threadId);
+    if (!live) return;
+    appendStreamingDelta(live.body, text);
+    state.activeThreadLiveAssistantText = `${String(state.activeThreadLiveAssistantText || "")}${text}`;
+    const index = Number(state.activeThreadLiveAssistantIndex);
+    if (
+      Array.isArray(state.activeThreadMessages) &&
+      index >= 0 &&
+      index < state.activeThreadMessages.length &&
+      state.activeThreadMessages[index]
+    ) {
+      state.activeThreadMessages[index] = {
+        ...state.activeThreadMessages[index],
+        role: "assistant",
+        kind: "",
+        text: state.activeThreadLiveAssistantText,
+      };
+    }
+    scheduleChatLiveFollow(700);
+  }
+
+  function finalizeAssistantLive(threadId) {
+    if (!threadId || String(state.activeThreadLiveAssistantThreadId || "") !== threadId) return;
+    const msg = state.activeThreadLiveAssistantMsgNode;
+    const body = state.activeThreadLiveAssistantBodyNode;
+    const text = String(state.activeThreadLiveAssistantText || "");
+    if (msg && body) finalizeAssistantMessage(msg, body, text);
+    clearActiveAssistantLiveState();
+    scheduleChatLiveFollow(800);
+  }
+
   function renderLiveNotification(notification) {
     const record = toRecord(notification);
     const method = String(record?.method || "");
     if (!method) return;
     const threadId = extractNotificationThreadId(record);
     if (!threadId || threadId !== state.activeThreadId) return;
+    const params = toRecord(record?.params) || null;
+
+    if (method.includes("turn/assistant/delta")) {
+      renderAssistantDelta(threadId, params?.delta);
+      return;
+    }
 
     const toolItem = notificationToToolItem(record);
     if (toolItem) {
@@ -113,7 +196,6 @@ export function createLiveNotificationsModule(deps) {
       }
     }
 
-    const params = toRecord(record?.params) || null;
     const status =
       normalizeType(params?.status) || normalizeType(params?.turn?.status) || normalizeType(params?.thread?.status);
     const isRunning = /running|inprogress|working|queued/.test(status || "") || method.includes("turn/started");
@@ -132,6 +214,7 @@ export function createLiveNotificationsModule(deps) {
       return;
     }
     if (method.includes("turn/completed") || method.includes("turn/finished") || method.includes("turn/failed") || method.includes("turn/cancelled")) {
+      finalizeAssistantLive(threadId);
       try {
         const box = byId("chatBox");
         box?.querySelector?.('.msg.system.kind-thinking[data-thinking="1"]')?.remove?.();

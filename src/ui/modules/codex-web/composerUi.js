@@ -1,4 +1,4 @@
-﻿export function createComposerUiModule(deps) {
+export function createComposerUiModule(deps) {
   const {
     state,
     byId,

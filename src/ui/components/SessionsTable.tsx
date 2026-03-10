@@ -25,10 +25,21 @@ type Props = {
   sessions: SessionRow[]
   providers: string[]
   globalPreferred: string
+  routeMode?: 'follow_preferred_auto' | 'balanced_auto'
   wslGatewayHost?: string
   updating: Record<string, boolean>
   onSetPreferred: (sessionId: string, provider: string | null) => void
   allowPreferredChanges?: boolean
+}
+
+export function sessionPreferredPlaceholderLabel(
+  globalPreferred: string,
+  routeMode: 'follow_preferred_auto' | 'balanced_auto' = 'follow_preferred_auto',
+): string {
+  if (routeMode === 'balanced_auto') {
+    return '(follow balanced mode)'
+  }
+  return `(follow global: ${globalPreferred})`
 }
 
 export function isWslSessionRow(
@@ -127,6 +138,7 @@ export function SessionsTable({
   sessions,
   providers,
   globalPreferred,
+  routeMode = 'follow_preferred_auto',
   wslGatewayHost = GATEWAY_WSL2_HOST,
   updating,
   onSetPreferred,
@@ -261,7 +273,7 @@ export function SessionsTable({
           <td className="aoSessionsMono" title={currentReason}>{currentProvider}</td>
           <td>
             <select
-              className="aoSelect"
+              className="aoSelect aoSessionsPreferredSelect"
               value={s.preferred_provider ?? ''}
               disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession || isAgent}
               onChange={(e) => {
@@ -269,7 +281,7 @@ export function SessionsTable({
                 onSetPreferred(s.id, v ? v : null)
               }}
             >
-              <option value="">{`(follow global: ${globalPreferred})`}</option>
+              <option value="">{sessionPreferredPlaceholderLabel(globalPreferred, routeMode)}</option>
               {providers.map((p) => (
                 <option key={p} value={p}>
                   {p}

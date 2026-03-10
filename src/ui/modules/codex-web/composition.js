@@ -1,4 +1,4 @@
-﻿export function createCodexWebComposition(deps) {
+export function createCodexWebComposition(deps) {
   let renderThreads = () => {};
   let wireThreadPullToRefresh = () => {};
   let startThreadAutoRefreshLoop = () => {};

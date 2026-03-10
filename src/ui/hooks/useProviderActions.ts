@@ -77,6 +77,7 @@ export function useProviderActions({
     setProviderQuotaHardCap,
     openUsageBaseModal,
     openUsageAuthModal,
+    openPackycodeLogin,
     openProviderEmailModal,
   } = useProviderUsageActions({
     config,
@@ -118,6 +119,7 @@ export function useProviderActions({
     openProviderBaseUrlModal,
     openUsageBaseModal,
     openUsageAuthModal,
+    openPackycodeLogin,
     openProviderEmailModal,
     addProvider,
   }

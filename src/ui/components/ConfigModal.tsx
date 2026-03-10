@@ -43,6 +43,7 @@ export function ConfigModal({
   renderProviderCard,
 }: Props) {
   if (!open || !config) return null
+  const dragPlaceholderHeight = dragCardHeight > 0 ? dragCardHeight : 56
   return (
     <ModalBackdrop onClose={onClose}>
       <div className="aoModal aoModalWide" onClick={(e) => e.stopPropagation()}>
@@ -103,7 +104,7 @@ export function ConfigModal({
                   <div
                     className="aoProviderConfigPlaceholder"
                     key={`${name}-placeholder`}
-                    style={{ height: dragCardHeight || 0 }}
+                    style={{ height: dragPlaceholderHeight, minHeight: dragPlaceholderHeight }}
                   />
                 )
               }

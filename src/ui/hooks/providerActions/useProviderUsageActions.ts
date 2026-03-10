@@ -4,6 +4,9 @@ import type { UseProviderActionsParams } from './types'
 import type { Config } from '../../types'
 import { buildProviderGroupMaps, resolveProviderDisplayName } from '../../utils/providerGroups'
 
+const PACKYCODE_LOGIN_SYNC_POLL_MS = 2000
+const PACKYCODE_LOGIN_SYNC_TIMEOUT_MS = 10 * 60 * 1000
+
 type UsageAuthPayload = {
   token: string
   username: string
@@ -29,6 +32,28 @@ type ProviderUsageActions = Pick<
 >
 
 export type QuotaHardCapField = 'daily' | 'weekly' | 'monthly'
+
+export function applyProviderUsageLoginLocalPatch(
+  prev: Config | null,
+  providers: string[],
+  enabled: boolean,
+): Config | null {
+  if (!prev) return prev
+  if (providers.length === 0) return prev
+  const nextProviders = { ...prev.providers }
+  let changed = false
+  for (const provider of providers) {
+    const current = nextProviders[provider]
+    if (!current) continue
+    if (Boolean(current.has_usage_token) === enabled) continue
+    nextProviders[provider] = {
+      ...current,
+      has_usage_token: enabled,
+    }
+    changed = true
+  }
+  return changed ? { ...prev, providers: nextProviders } : prev
+}
 
 export function applyProviderQuotaHardCapLocalPatch(
   prev: Config | null,
@@ -73,18 +98,30 @@ type SetProviderQuotaHardCapParams = {
 
 export function buildUsageBaseModalDraft(
   provider: string,
+  baseUrl: string | null | undefined,
   explicitValue: string | null | undefined,
   effectiveValue: string | null | undefined,
+  payload?: Partial<UsageAuthPayload> | null,
+  options?: { showUrlInput?: boolean; showPackycodeLogin?: boolean; hasUsageLogin?: boolean },
 ) {
   const explicit = (explicitValue ?? '').trim()
   const effective = (effectiveValue ?? '').trim()
   return {
     open: true,
     provider,
+    baseUrl: (baseUrl ?? '').trim(),
+    showUrlInput: options?.showUrlInput ?? true,
+    showPackycodeLogin: options?.showPackycodeLogin ?? false,
+    hasUsageLogin: options?.hasUsageLogin ?? false,
     value: explicit,
     auto: !explicit,
     explicitValue: explicit,
     effectiveValue: effective,
+    token: (payload?.token ?? '').trim(),
+    username: (payload?.username ?? '').trim(),
+    password: payload?.password ?? '',
+    loading: false,
+    loadFailed: false,
   }
 }
 
@@ -108,6 +145,38 @@ export function buildUsageAuthModalDraft(
 function supportsUsageAuthProvider(baseUrl?: string | null): boolean {
   const text = `${baseUrl ?? ''}`.trim().toLowerCase()
   return text.includes('codex-for')
+}
+
+export function supportsPackycodeLoginProvider(baseUrl?: string | null): boolean {
+  const text = `${baseUrl ?? ''}`.trim().toLowerCase()
+  return text.includes('packycode')
+}
+
+function providerHasUsageLogin(config: Config | null | undefined, provider: string): boolean {
+  const providerConfig = config?.providers?.[provider]
+  return Boolean(providerConfig?.has_usage_token || providerConfig?.has_usage_login)
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+export async function waitForProviderUsageLogin(
+  provider: string,
+  getConfig: () => Promise<Config>,
+  options?: { pollMs?: number; timeoutMs?: number },
+): Promise<boolean> {
+  const pollMs = options?.pollMs ?? PACKYCODE_LOGIN_SYNC_POLL_MS
+  const timeoutMs = options?.timeoutMs ?? PACKYCODE_LOGIN_SYNC_TIMEOUT_MS
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    const cfg = await getConfig()
+    if (providerHasUsageLogin(cfg, provider)) {
+      return true
+    }
+    await delay(pollMs)
+  }
+  return false
 }
 
 export async function setProviderQuotaHardCapFieldWithRefresh({
@@ -169,7 +238,7 @@ export function useProviderUsageActions({
     async (name: string) => {
       setRefreshingProviders((prev) => ({ ...prev, [name]: true }))
       try {
-        await invoke('refresh_quota_shared', { provider: name })
+        await invokeManualQuotaRefresh(name)
         await refreshStatus()
         flashToast(`Usage refreshed: ${name}`)
       } catch (e) {
@@ -338,7 +407,7 @@ export function useProviderUsageActions({
           : `Usage auth saved: ${scopeLabel}`,
       )
     },
-    [flashToast, isDevPreview, providerScopeLabel, providersForTarget, refreshConfig, refreshStatus],
+    [flashToast, isDevPreview, providerScopeLabel, providersForTarget, refreshConfig, refreshStatus, setConfig],
   )
 
   const saveUsageBaseUrl = useCallback(async () => {
@@ -349,10 +418,19 @@ export function useProviderUsageActions({
       setUsageBaseModal({
         open: false,
         provider: '',
+        baseUrl: '',
+        showUrlInput: true,
+        showPackycodeLogin: false,
+        hasUsageLogin: false,
         value: '',
         auto: false,
         explicitValue: '',
         effectiveValue: '',
+        token: '',
+        username: '',
+        password: '',
+        loading: false,
+        loadFailed: false,
       })
     } catch (e) {
       flashToast(String(e), 'error')
@@ -463,6 +541,7 @@ export function useProviderUsageActions({
       if (!provider) return
       const targets = providersForTarget(provider)
       if (isDevPreview) {
+        setConfig((prev) => applyProviderUsageLoginLocalPatch(prev, targets, false))
         const scopeLabel = providerScopeLabel(provider)
         flashToast(
           targets.length > 1
@@ -581,22 +660,43 @@ export function useProviderUsageActions({
   )
 
   const openUsageBaseModal = useCallback(
-    async (provider: string, current: string | null | undefined) => {
+    async (
+      provider: string,
+      current: string | null | undefined,
+      options?: { showUrlInput?: boolean },
+    ) => {
       const explicit = (current ?? '').trim()
-      setUsageBaseModal(buildUsageBaseModalDraft(provider, explicit, ''))
+      const providerCfg = config?.providers?.[provider]
+      const providerBaseUrl = providerCfg?.base_url ?? ''
+      const showUrlInput = options?.showUrlInput ?? true
+      setUsageBaseModal({
+        ...buildUsageBaseModalDraft(provider, providerBaseUrl, explicit, '', undefined, {
+          showUrlInput,
+          showPackycodeLogin: supportsPackycodeLoginProvider(providerBaseUrl),
+          hasUsageLogin: providerHasUsageLogin(config, provider),
+        }),
+      })
       if (isDevPreview) return
-      try {
-        const effective = await invoke<string | null>('get_effective_usage_base', { provider })
-        setUsageBaseModal((m) => {
-          if (!m.open || m.provider !== provider) return m
-          const nextEffective = (effective ?? '').trim()
-          return { ...m, value: m.explicitValue, auto: !m.explicitValue, effectiveValue: nextEffective }
-        })
-      } catch (e) {
-        console.warn('Failed to load usage base', e)
+      const effectiveResult = await invoke<string | null>('get_effective_usage_base', { provider })
+        .then((value) => ({ status: 'fulfilled' as const, value }))
+        .catch((reason) => ({ status: 'rejected' as const, reason }))
+      setUsageBaseModal((m) => {
+        if (!m.open || m.provider !== provider) return m
+        const nextEffective =
+          effectiveResult.status === 'fulfilled' ? (effectiveResult.value ?? '').trim() : m.effectiveValue
+        return {
+          ...m,
+          value: m.explicitValue,
+          auto: !m.explicitValue,
+          effectiveValue: nextEffective,
+          loading: false,
+        }
+      })
+      if (effectiveResult.status === 'rejected') {
+        console.warn('Failed to load usage base', effectiveResult.reason)
       }
     },
-    [isDevPreview, setUsageBaseModal],
+    [config, isDevPreview, setUsageBaseModal],
   )
 
   const openUsageAuthModal = useCallback(
@@ -634,6 +734,48 @@ export function useProviderUsageActions({
     [config, flashToast, isDevPreview, setUsageAuthModal],
   )
 
+  const openPackycodeLogin = useCallback(
+    async (provider: string) => {
+      const providerCfg = config?.providers?.[provider]
+      if (!supportsPackycodeLoginProvider(providerCfg?.base_url)) {
+        flashToast('Packycode login only supports packycode hosts', 'error')
+        return
+      }
+      if (isDevPreview) {
+        setConfig((prev) => applyProviderUsageLoginLocalPatch(prev, [provider], true))
+        setUsageBaseModal((modal) =>
+          modal.open && modal.provider === provider ? { ...modal, hasUsageLogin: true } : modal,
+        )
+        flashToast(`Packycode login opened [TEST]: ${provider}`)
+        return
+      }
+      try {
+        await invoke('open_packycode_login_window', { provider })
+        flashToast(`Packycode login opened: ${provider}`)
+        void waitForProviderUsageLogin(
+          provider,
+          () => invoke<Config>('get_config'),
+          undefined,
+        )
+          .then(async (synced) => {
+            if (!synced) return
+            setUsageBaseModal((modal) =>
+              modal.open && modal.provider === provider ? { ...modal, hasUsageLogin: true } : modal,
+            )
+            await refreshConfig()
+            await refreshStatus()
+            flashToast(`Packycode login imported: ${provider}`)
+          })
+          .catch((err) => {
+            console.warn('Failed to sync Packycode login state', err)
+          })
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+    },
+    [config, flashToast, isDevPreview, refreshConfig, refreshStatus, setUsageBaseModal],
+  )
+
   return {
     refreshQuota,
     refreshQuotaAll,
@@ -647,6 +789,11 @@ export function useProviderUsageActions({
     setProviderQuotaHardCap,
     openUsageBaseModal,
     openUsageAuthModal,
+    openPackycodeLogin,
     openProviderEmailModal,
   }
+}
+
+export function invokeManualQuotaRefresh(name: string) {
+  return invoke('refresh_quota', { provider: name })
 }

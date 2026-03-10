@@ -8,6 +8,7 @@ function buildConfig(
   group: string | null,
   baseUrl = 'https://example.com',
   accountEmail: string | null = null,
+  hasUsageToken = false,
 ): Config {
   return {
     listen: { host: '127.0.0.1', port: 4000 },
@@ -26,6 +27,7 @@ function buildConfig(
         group,
         has_key: true,
         account_email: accountEmail,
+        has_usage_token: hasUsageToken,
       },
     },
   }
@@ -159,11 +161,31 @@ describe('provider usage controls rendering', () => {
     expect(html).not.toContain('monthly cap')
   })
 
-  it('shows usage auth for codex-for hosts', () => {
+  it('hides usage url for codex-for hosts', () => {
     const html = renderCardHtml(buildConfig(null, 'https://api-vip.codex-for.vip/v1'), buildStatus())
     expect(html).toContain('Email')
     expect(html).toContain('Usage Auth')
     expect(html).not.toContain('Usage URL')
     expect(html).not.toContain('Usage URL sets the usage endpoint.')
+  })
+
+  it('keeps only usage url for packycode hosts', () => {
+    const html = renderCardHtml(buildConfig(null, 'https://codex.packycode.com/v1'), buildStatus())
+    expect(html).toContain('Email')
+    expect(html).toContain('Usage URL')
+    expect(html).not.toContain('Login')
+    expect(html).not.toContain('Logout')
+  })
+
+  it('does not show auth button even when usage auth exists', () => {
+    const html = renderCardHtml(buildConfig(null, 'https://codex.packycode.com/v1', null, true), buildStatus())
+    expect(html).not.toContain('Logout')
+    expect(html).not.toContain('Logged in')
+  })
+
+  it('does not show auth status pill on grouped cards', () => {
+    const html = renderCardHtml(buildConfig('alpha', 'https://codex.packycode.com/v1', null, true), buildStatus())
+    expect(html).not.toContain('Logged in')
+    expect(html).not.toContain('Logout')
   })
 })

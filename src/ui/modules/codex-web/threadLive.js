@@ -1,4 +1,4 @@
-﻿export function resolveThreadAutoRefreshInterval(wsOpen, wsSubscribed, connectedMs, disconnectedMs) {
+export function resolveThreadAutoRefreshInterval(wsOpen, wsSubscribed, connectedMs, disconnectedMs) {
   return wsOpen && wsSubscribed ? connectedMs : disconnectedMs;
 }
 

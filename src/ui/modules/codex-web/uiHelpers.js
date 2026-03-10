@@ -1,4 +1,4 @@
-﻿export function shouldSuppressSyntheticClickEvent(untilTs, now, eventType) {
+export function shouldSuppressSyntheticClickEvent(untilTs, now, eventType) {
   return String(eventType || "") === "click" && now <= Number(untilTs || 0);
 }
 

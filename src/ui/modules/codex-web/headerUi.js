@@ -1,4 +1,4 @@
-﻿export function compactModelLabel(raw) {
+export function compactModelLabel(raw) {
   const text = String(raw || "").trim();
   if (!text) return "";
   return text.startsWith("gpt-") ? text.slice(4) : text;

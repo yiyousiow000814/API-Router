@@ -131,13 +131,17 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
               </div>
               <div className="aoProviderHeadActions">
                 <button
-                  className="aoActionBtn"
+                  className="aoActionBtn aoProviderHeadBtn"
                   title="Set base URL"
                   onClick={() => options.openProviderBaseUrlModal(name, p.base_url)}
                 >
                   <span>Base URL</span>
                 </button>
-                <button className="aoActionBtn" title="Set key" onClick={() => void options.openKeyModal(name)}>
+                <button
+                  className="aoActionBtn aoProviderHeadBtn"
+                  title="Set key"
+                  onClick={() => void options.openKeyModal(name)}
+                >
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <g transform="rotate(-28 12 12)">
                       <circle cx="7.2" cy="12" r="3.2" />
@@ -150,21 +154,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   <span>Key</span>
                 </button>
                 <button
-                  className="aoActionBtn aoActionBtnDanger"
-                  title="Delete provider"
-                  aria-label="Delete provider"
-                  onClick={() => void options.deleteProvider(name)}
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M3 6h18" />
-                    <path d="M8 6V4h8v2" />
-                    <path d="M19 6 18 20H6L5 6" />
-                    <path d="M10 11v6" />
-                    <path d="M14 11v6" />
-                  </svg>
-                </button>
-                <button
-                  className={`aoStatusSwitch ${p.disabled ? 'aoStatusSwitchOff' : 'aoStatusSwitchOn'}`}
+                  className={`aoStatusSwitch aoProviderHeadSwitch ${p.disabled ? 'aoStatusSwitchOff' : 'aoStatusSwitchOn'}`}
                   title={
                     p.disabled
                       ? 'Click to activate provider'
@@ -241,6 +231,16 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 ) : null}
               </div>
             )}
+          </div>
+          <div className="aoProviderDeleteSlot">
+            <button
+              className="aoProviderDeleteBtn"
+              title="Delete provider"
+              aria-label="Delete provider"
+              onClick={() => void options.deleteProvider(name)}
+            >
+              <span aria-hidden="true">x</span>
+            </button>
           </div>
         </div>
       </div>

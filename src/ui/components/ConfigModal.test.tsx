@@ -54,4 +54,32 @@ describe('ConfigModal', () => {
     expect(html).toContain('Base URL (e.g. https://api.openai.com/v1)')
     expect(html).toContain('placeholder="Key"')
   })
+
+  it('keeps drag placeholder height aligned with the measured drag card height', () => {
+    const html = renderToStaticMarkup(
+      <ConfigModal
+        open
+        config={buildConfig()}
+        newProviderName=""
+        newProviderBaseUrl=""
+        newProviderKey=""
+        nextProviderPlaceholder="provider1"
+        setNewProviderName={() => undefined}
+        setNewProviderBaseUrl={() => undefined}
+        setNewProviderKey={() => undefined}
+        onAddProvider={() => undefined}
+        onOpenGroupManager={() => undefined}
+        onClose={() => undefined}
+        providerListRef={{ current: null }}
+        orderedConfigProviders={['p1']}
+        dragPreviewOrder={['p1']}
+        draggingProvider="p1"
+        dragCardHeight={50}
+        renderProviderCard={() => null}
+      />,
+    )
+
+    expect(html).toContain('height:50px')
+    expect(html).toContain('min-height:50px')
+  })
 })

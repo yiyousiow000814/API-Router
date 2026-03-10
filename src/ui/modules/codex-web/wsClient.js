@@ -144,10 +144,13 @@ export function createWsClientModule(deps) {
         renderLiveNotification({
           method: "thread/status",
           params: {
+            conversationId,
+            threadId: conversationId,
             status: readString(record?.status) || "",
             message: readString(record?.message) || "",
             code: readString(record?.code) || "",
             thread: {
+              id: conversationId,
               status: readString(record?.status) || "",
               message: readString(record?.message) || "",
             },
@@ -158,7 +161,11 @@ export function createWsClientModule(deps) {
       if (kind === "assistant_delta") {
         renderLiveNotification({
           method: "turn/assistant/delta",
-          params: { delta: readString(record?.delta) || "" },
+          params: {
+            conversationId,
+            threadId: conversationId,
+            delta: readString(record?.delta) || "",
+          },
         });
         return;
       }
@@ -166,6 +173,8 @@ export function createWsClientModule(deps) {
         renderLiveNotification({
           method: "item/updated",
           params: {
+            conversationId,
+            threadId: conversationId,
             itemId: readString(record?.itemId) || "",
             item: toRecord(record?.item) || {},
           },

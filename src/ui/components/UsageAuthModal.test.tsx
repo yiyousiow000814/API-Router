@@ -27,6 +27,29 @@ describe('UsageAuthModal', () => {
     expect(html).toContain('Usage auth')
     expect(html).toContain('Username')
     expect(html).toContain('Password')
+    expect(html).toContain('padding:0 12px')
+  })
+
+  it('does not render loading copy while auth is loading', () => {
+    const html = renderToStaticMarkup(
+      <UsageAuthModal
+        open
+        provider="codex"
+        baseUrl="https://api-vip.codex-for.vip/v1"
+        token=""
+        username=""
+        password=""
+        loading
+        loadFailed={false}
+        onChangeUsername={noop}
+        onChangePassword={noop}
+        onCancel={noop}
+        onClear={noop}
+        onSave={noop}
+      />,
+    )
+
+    expect(html).not.toContain('Loading...')
   })
 
   it('does not render for unsupported hosts', () => {

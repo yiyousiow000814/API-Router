@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { relativeTimeLabel, truncateLabel } from "./appPersistence.js";
 

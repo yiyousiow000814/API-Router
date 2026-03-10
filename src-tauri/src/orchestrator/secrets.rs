@@ -110,6 +110,10 @@ pub struct SecretStore {
 const GATEWAY_TOKEN_KEY: &str = "__gateway_token__";
 
 impl SecretStore {
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     fn apply_provider_quota_hard_cap(
         data: &mut SecretsFile,
         provider: &str,

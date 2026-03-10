@@ -1,4 +1,4 @@
-﻿export function truncateLabel(label, max = 28) {
+export function truncateLabel(label, max = 28) {
   const text = String(label || "");
   return text.length > max ? `${text.slice(0, max - 1)}â€¦` : text;
 }

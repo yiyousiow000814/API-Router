@@ -1,11 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Config } from '../../types'
 import {
+  applyProviderUsageLoginLocalPatch,
   applyProviderQuotaHardCapLocalPatch,
   buildUsageAuthModalDraft,
   buildUsageBaseModalDraft,
+  invokeManualQuotaRefresh,
   setProviderQuotaHardCapFieldWithRefresh,
+  supportsPackycodeLoginProvider,
+  waitForProviderUsageLogin,
 } from './useProviderUsageActions'
+import { invoke } from '@tauri-apps/api/core'
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}))
 
 function buildConfig(): Config {
   return {
@@ -41,27 +50,122 @@ describe('applyProviderQuotaHardCapLocalPatch', () => {
   })
 })
 
+describe('applyProviderUsageLoginLocalPatch', () => {
+  it('toggles usage auth state locally for selected providers', () => {
+    const base = buildConfig()
+    const next = applyProviderUsageLoginLocalPatch(base, ['p1'], true)
+    expect(next?.providers.p1.has_usage_token).toBe(true)
+
+    const cleared = applyProviderUsageLoginLocalPatch(next, ['p1'], false)
+    expect(cleared?.providers.p1.has_usage_token).toBe(false)
+  })
+})
+
 describe('buildUsageBaseModalDraft', () => {
   it('keeps inferred endpoint out of the editable field', () => {
-    expect(buildUsageBaseModalDraft('p1', '', 'https://codex.packycode.com')).toEqual({
+    expect(buildUsageBaseModalDraft('p1', 'https://codex-api.packycode.com/v1', '', 'https://codex.packycode.com')).toEqual({
       open: true,
       provider: 'p1',
+      baseUrl: 'https://codex-api.packycode.com/v1',
+      showUrlInput: true,
+      showPackycodeLogin: false,
+      hasUsageLogin: false,
       value: '',
       auto: true,
       explicitValue: '',
       effectiveValue: 'https://codex.packycode.com',
+      token: '',
+      username: '',
+      password: '',
+      loading: false,
+      loadFailed: false,
     })
   })
 
   it('preserves explicit value when present', () => {
-    expect(buildUsageBaseModalDraft('p1', 'https://manual.example.com', 'https://codex.packycode.com')).toEqual({
+    expect(buildUsageBaseModalDraft('p1', 'https://codex-api.packycode.com/v1', 'https://manual.example.com', 'https://codex.packycode.com')).toEqual({
       open: true,
       provider: 'p1',
+      baseUrl: 'https://codex-api.packycode.com/v1',
+      showUrlInput: true,
+      showPackycodeLogin: false,
+      hasUsageLogin: false,
       value: 'https://manual.example.com',
       auto: false,
       explicitValue: 'https://manual.example.com',
       effectiveValue: 'https://codex.packycode.com',
+      token: '',
+      username: '',
+      password: '',
+      loading: false,
+      loadFailed: false,
     })
+  })
+
+  it('supports login-only mode for group member packycode auth', () => {
+    expect(
+      buildUsageBaseModalDraft(
+        'p1',
+        'https://codex.packycode.com/v1',
+        'https://codex.packycode.com',
+        'https://codex.packycode.com',
+        undefined,
+        { showUrlInput: false, showPackycodeLogin: true, hasUsageLogin: true },
+      ),
+    ).toEqual({
+      open: true,
+      provider: 'p1',
+      baseUrl: 'https://codex.packycode.com/v1',
+      showUrlInput: false,
+      showPackycodeLogin: true,
+      hasUsageLogin: true,
+      value: 'https://codex.packycode.com',
+      auto: false,
+      explicitValue: 'https://codex.packycode.com',
+      effectiveValue: 'https://codex.packycode.com',
+      token: '',
+      username: '',
+      password: '',
+      loading: false,
+      loadFailed: false,
+    })
+  })
+})
+
+describe('supportsPackycodeLoginProvider', () => {
+  it('matches packycode hosts only', () => {
+    expect(supportsPackycodeLoginProvider('https://codex.packycode.com/v1')).toBe(true)
+    expect(supportsPackycodeLoginProvider('https://api-vip.codex-for.me/v1')).toBe(false)
+  })
+})
+
+describe('waitForProviderUsageLogin', () => {
+  it('resolves true once provider usage auth appears in config', async () => {
+    let reads = 0
+    const getConfig = vi.fn(async () => {
+      reads += 1
+      return {
+        ...buildConfig(),
+        providers: {
+          p1: {
+            ...buildConfig().providers.p1,
+            has_usage_token: reads >= 2,
+          },
+        },
+      }
+    })
+
+    await expect(waitForProviderUsageLogin('p1', getConfig, { pollMs: 1, timeoutMs: 50 })).resolves.toBe(
+      true,
+    )
+  })
+
+  it('resolves false after timeout when usage auth never appears', async () => {
+    const getConfig = vi.fn(async () => buildConfig())
+
+    await expect(waitForProviderUsageLogin('p1', getConfig, { pollMs: 1, timeoutMs: 5 })).resolves.toBe(
+      false,
+    )
   })
 })
 
@@ -190,4 +294,15 @@ describe('setProviderQuotaHardCapFieldWithRefresh', () => {
     expect(flashToast).toHaveBeenCalledWith('Hard cap updated [TEST]: p1.monthly')
   })
 
+})
+
+describe('invokeManualQuotaRefresh', () => {
+  it('uses single-provider refresh command', async () => {
+    const invokeMock = vi.mocked(invoke)
+    invokeMock.mockResolvedValue(undefined)
+
+    await invokeManualQuotaRefresh('p1')
+
+    expect(invokeMock).toHaveBeenCalledWith('refresh_quota', { provider: 'p1' })
+  })
 })

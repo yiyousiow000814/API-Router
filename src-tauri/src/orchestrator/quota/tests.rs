@@ -694,7 +694,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn packycode_budget_info_does_not_fall_back_to_jwt_on_429() {
+    async fn packycode_budget_info_prefers_login_token_over_provider_key() {
         use axum::extract::State;
         use axum::http::{HeaderMap, StatusCode};
         use axum::routing::get;
@@ -778,11 +778,147 @@ mod tests {
         handle.abort();
         clear_usage_base_refresh_gate();
 
-        assert_eq!(snap.updated_at_unix_ms, 0);
-        assert_eq!(snap.kind.as_str(), "token_stats");
-        assert_eq!(snap.daily_spent_usd, None);
-        assert!(!snap.last_error.is_empty(), "expected refresh error");
+        assert!(snap.last_error.is_empty(), "unexpected refresh error: {}", snap.last_error);
+        assert_eq!(snap.kind.as_str(), "budget_info");
+        assert_eq!(snap.daily_spent_usd, Some(13.657));
+        assert_eq!(snap.daily_budget_usd, Some(60.0));
+        assert_eq!(snap.monthly_spent_usd, Some(55.927));
+        assert_eq!(snap.monthly_budget_usd, Some(180.0));
         assert_eq!(user_info_hits.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn packycode_budget_info_labels_login_and_provider_key_failures() {
+        use axum::extract::State;
+        use axum::http::{HeaderMap, StatusCode};
+        use axum::routing::get;
+        use axum::{Json, Router};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        #[derive(Clone)]
+        struct MockState {
+            token_stats_hits: Arc<AtomicU64>,
+        }
+
+        let state = MockState {
+            token_stats_hits: Arc::new(AtomicU64::new(0)),
+        };
+        let token_stats_hits = Arc::clone(&state.token_stats_hits);
+
+        let app = Router::new()
+            .route(
+                "/api/backend/users/info",
+                get(|headers: HeaderMap| async move {
+                    let auth = headers
+                        .get(axum::http::header::AUTHORIZATION)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default();
+                    let status = if auth == "Bearer jwt-token" {
+                        StatusCode::UNAUTHORIZED
+                    } else {
+                        StatusCode::TOO_MANY_REQUESTS
+                    };
+                    (status, Json(serde_json::json!({ "error": "nope" })))
+                }),
+            )
+            .route(
+                "/api/token-stats",
+                get({
+                    move |State(state): State<MockState>| async move {
+                        state.token_stats_hits.fetch_add(1, Ordering::Relaxed);
+                        (
+                            StatusCode::TOO_MANY_REQUESTS,
+                            Json(serde_json::json!({ "error": "rate limited" })),
+                        )
+                    }
+                }),
+            )
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{}:{}", addr.ip(), addr.port());
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "api-key").unwrap();
+        secrets.set_usage_token("p1", "jwt-token").unwrap();
+        let st = mk_state(format!("{base}/v1"), secrets);
+        {
+            let mut cfg = st.cfg.write();
+            if let Some(p) = cfg.providers.get_mut("p1") {
+                p.base_url = "https://codex-api.packycode.com/v1".to_string();
+                p.usage_base_url = Some(base.clone());
+            }
+        }
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        handle.abort();
+        clear_usage_base_refresh_gate();
+
+        assert_eq!(snap.updated_at_unix_ms, 0);
+        assert!(snap.last_error.contains("packycode browser session:"));
+        assert!(snap.last_error.contains("packycode login token: http 401"));
+        assert!(snap.last_error.contains("provider key: http 429"));
+        assert!(snap.last_error.contains("token stats fallback: "));
+        assert_eq!(token_stats_hits.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn extract_packycode_browser_auth_storage_user_reads_runtime_evaluate_value() {
+        let payload = serde_json::json!({
+            "result": {
+                "result": {
+                    "value": {
+                        "state": {
+                            "user": {
+                                "daily_spent_usd": 1,
+                                "plan_expires_at": "2030-01-01T00:00:00Z"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let extracted = extract_packycode_browser_auth_storage_user(&payload).expect("payload");
+        assert_eq!(extracted["daily_spent_usd"], 1);
+        assert_eq!(extracted["plan_expires_at"], "2030-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn extract_packycode_browser_auth_storage_user_reads_stringified_storage() {
+        let payload = serde_json::json!({
+            "result": {
+                "result": {
+                    "value": "{\"state\":{\"user\":{\"monthly_spent_usd\":\"699.7540\",\"monthly_budget_usd\":\"3600.00000000\"}}}"
+                }
+            }
+        });
+        let extracted = extract_packycode_browser_auth_storage_user(&payload).expect("payload");
+        assert_eq!(extracted["monthly_spent_usd"], "699.7540");
+        assert_eq!(extracted["monthly_budget_usd"], "3600.00000000");
+    }
+
+    #[test]
+    fn packycode_usage_browser_args_are_headless() {
+        let args = packycode_usage_browser_args(
+            std::path::Path::new("C:/tmp/packycode-login/provider-1"),
+            "https://codex.packycode.com/dashboard",
+        );
+        assert!(args.iter().any(|arg| arg == "--headless=new"));
+        assert!(args.iter().any(|arg| arg == "--remote-debugging-port=0"));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--user-data-dir=C:/tmp/packycode-login/provider-1"));
+        assert!(!args.iter().any(|arg| arg == "--new-window"));
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("https://codex.packycode.com/dashboard")
+        );
     }
 
     #[tokio::test]
@@ -1178,6 +1314,107 @@ mod tests {
         assert_eq!(
             merged.last_error,
             "http 429 from https://codex.packycode.com".to_string()
+        );
+    }
+
+    #[test]
+    fn repeated_failed_refresh_still_keeps_last_successful_usage_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://example.com/v1".to_string(), secrets);
+
+        let mut previous = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        previous.updated_at_unix_ms = 123;
+        previous.daily_spent_usd = Some(12.5);
+        previous.daily_budget_usd = Some(120.0);
+        previous.weekly_spent_usd = Some(50.0);
+        previous.weekly_budget_usd = Some(360.0);
+        previous.last_error = "usage base rate limited: https://codex.packycode.com".to_string();
+        previous.effective_usage_base = Some("https://codex.packycode.com".to_string());
+        st.store
+            .put_quota_snapshot("p1", &previous.to_json())
+            .expect("seed previous failed snapshot");
+
+        let mut failed = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        failed.last_error = "usage base rate limited: https://codex.packycode.com (retry in ~23m)".to_string();
+        let merged = preserved_quota_snapshot_for_storage(&st, "p1", &failed);
+
+        assert_eq!(merged.updated_at_unix_ms, 123);
+        assert_eq!(merged.daily_spent_usd, Some(12.5));
+        assert_eq!(merged.daily_budget_usd, Some(120.0));
+        assert_eq!(merged.weekly_spent_usd, Some(50.0));
+        assert_eq!(merged.weekly_budget_usd, Some(360.0));
+        assert_eq!(
+            merged.effective_usage_base.as_deref(),
+            Some("https://codex.packycode.com")
+        );
+        assert_eq!(
+            merged.last_error,
+            "usage base rate limited: https://codex.packycode.com (retry in ~23m)"
+        );
+    }
+
+    #[test]
+    fn repeated_rate_limited_failures_do_not_spam_duplicate_error_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://example.com/v1".to_string(), secrets);
+
+        let mut first = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        first.last_error =
+            "usage base rate limited: https://codex.packycode.com (retry in ~7m 2s)".to_string();
+        store_quota_snapshot(&st, "p1", &first);
+
+        let mut second = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        second.last_error =
+            "usage base rate limited: https://codex.packycode.com (retry in ~3m 1s)".to_string();
+        store_quota_snapshot(&st, "p1", &second);
+
+        let failed_events = st
+            .store
+            .list_events_range(None, None, Some(20))
+            .into_iter()
+            .filter(|event| {
+                event.get("code").and_then(Value::as_str) == Some("usage.refresh_failed")
+            })
+            .count();
+        assert_eq!(failed_events, 1);
+    }
+
+    #[test]
+    fn successful_refresh_after_failure_emits_recovered_event_with_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://example.com/v1".to_string(), secrets);
+
+        let mut failed = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        failed.last_error = "usage base rate limited: https://codex.packycode.com".to_string();
+        store_quota_snapshot(&st, "p1", &failed);
+
+        let mut recovered = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        recovered.updated_at_unix_ms = 123;
+        recovered.daily_spent_usd = Some(1.0);
+        recovered.daily_budget_usd = Some(10.0);
+        recovered.effective_usage_base = Some("https://codex.packycode.com".to_string());
+        recovered.effective_usage_source = Some("packycode_browser_session".to_string());
+        store_quota_snapshot(&st, "p1", &recovered);
+
+        let recovered_event = st
+            .store
+            .list_events_range(None, None, Some(20))
+            .into_iter()
+            .find(|event| event.get("code").and_then(Value::as_str) == Some("usage.refresh_recovered"))
+            .expect("missing recovered event");
+        assert_eq!(
+            recovered_event.get("provider").and_then(Value::as_str),
+            Some("p1")
+        );
+        assert!(
+            recovered_event
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("Packycode dashboard session")
         );
     }
 

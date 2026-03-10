@@ -177,6 +177,11 @@ export function createChatTimelineModule(deps) {
     if (!preserveScroll) box.scrollTop = 0;
     state.activeThreadRenderSig = "";
     state.activeThreadMessages = [];
+    state.activeThreadLiveAssistantThreadId = "";
+    state.activeThreadLiveAssistantIndex = -1;
+    state.activeThreadLiveAssistantMsgNode = null;
+    state.activeThreadLiveAssistantBodyNode = null;
+    state.activeThreadLiveAssistantText = "";
     state.historyWindowEnabled = false;
     state.historyWindowThreadId = "";
     state.historyWindowStart = 0;

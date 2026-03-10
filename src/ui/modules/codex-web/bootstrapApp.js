@@ -1,4 +1,4 @@
-﻿export function restoreStartCwdState(savedStartCwdRaw, normalizeStartCwd) {
+export function restoreStartCwdState(savedStartCwdRaw, normalizeStartCwd) {
   try {
     if (!savedStartCwdRaw) {
       return { windows: "", wsl2: "" };

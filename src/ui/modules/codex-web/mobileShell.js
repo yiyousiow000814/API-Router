@@ -1,4 +1,4 @@
-﻿export function shouldOpenDrawerWithAnimation(tab, wasThreadsOpen) {
+export function shouldOpenDrawerWithAnimation(tab, wasThreadsOpen) {
   return tab === "threads" && !wasThreadsOpen;
 }
 

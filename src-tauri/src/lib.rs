@@ -514,6 +514,7 @@ pub fn run() {
             commands::refresh_quota,
             commands::refresh_quota_shared,
             commands::refresh_quota_all,
+            commands::open_packycode_login_window,
             commands::get_usage_auth,
             commands::set_usage_auth,
             commands::clear_usage_auth,

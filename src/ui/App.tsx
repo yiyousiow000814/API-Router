@@ -115,10 +115,19 @@ export default function App() {
   const [usageBaseModal, setUsageBaseModal] = useState<UsageBaseModalState>({
     open: false,
     provider: '',
+    baseUrl: '',
+    showUrlInput: true,
+    showPackycodeLogin: false,
+    hasUsageLogin: false,
     value: '',
     auto: false,
     explicitValue: '',
     effectiveValue: '',
+    token: '',
+    username: '',
+    password: '',
+    loading: false,
+    loadFailed: false,
   })
   const [usageAuthModal, setUsageAuthModal] = useState<UsageAuthModalState>({
     open: false,
@@ -758,6 +767,7 @@ export default function App() {
     applyProviderOrder,
     onDevPreviewBootstrap,
   } = useAppActions({
+    isDevPreview,
     status,
     config,
     setConfig,
@@ -1014,7 +1024,7 @@ export default function App() {
     setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, refreshQuota, refreshQuotaAll,
     saveUsageBaseUrl, saveUsageAuth, clearUsageAuth, saveProviderEmail, clearProviderEmail,
     setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap,
-    openKeyModal, openProviderBaseUrlModal, openUsageBaseModal, openUsageAuthModal, openProviderEmailModal, addProvider,
+    openKeyModal, openProviderBaseUrlModal, openUsageBaseModal, openUsageAuthModal, openPackycodeLogin, openProviderEmailModal, addProvider,
     setProvidersGroup,
   } = useProviderActions({
     config,
@@ -1293,6 +1303,7 @@ export default function App() {
         usageBaseModal={usageBaseModal}
         setUsageBaseModal={setUsageBaseModal}
         saveUsageBaseUrl={saveUsageBaseUrl}
+        openPackycodeLogin={openPackycodeLogin}
         instructionModalOpen={instructionModalOpen}
         setInstructionModalOpen={setInstructionModalOpen}
         openRawConfigModal={openRawConfigModal}
@@ -1442,8 +1453,11 @@ export default function App() {
         onAssignGroup={setProvidersGroup}
         onSetUsageBase={setUsageBaseUrl}
         onClearUsageBase={clearUsageBaseUrl}
+        onClearUsageAuth={clearUsageAuth}
         onSetHardCap={setProviderQuotaHardCap}
         onOpenProviderEmailModal={openProviderEmailModal}
+        onOpenPackycodeLogin={openPackycodeLogin}
+        onOpenUsageAuthModal={openUsageAuthModal}
       />
     </div>
   )

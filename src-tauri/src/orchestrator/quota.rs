@@ -5,7 +5,10 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::{TimeZone, Timelike};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
 
 use super::config::ProviderConfig;
 use super::gateway::GatewayState;
@@ -103,6 +106,7 @@ pub struct QuotaSnapshot {
     pub package_expires_at_unix_ms: Option<u64>,
     pub last_error: String,
     pub effective_usage_base: Option<String>,
+    pub effective_usage_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -188,6 +192,16 @@ fn note_usage_base_rate_limited(base: &str, now_ms: u64, backoff_ms: u64) {
     gate.insert(key, next_allowed.max(now_ms.saturating_add(backoff_ms)));
 }
 
+fn clear_usage_base_refresh_gate_for_base(base: &str) {
+    let key = usage_base_gate_key(base);
+    if key.is_empty() {
+        return;
+    }
+    let lock = usage_base_refresh_gate();
+    let mut gate = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    gate.remove(&key);
+}
+
 fn parse_rate_limit_backoff_ms(
     headers: &reqwest::header::HeaderMap,
     now_ms: u64,
@@ -270,6 +284,7 @@ impl QuotaSnapshot {
             package_expires_at_unix_ms: None,
             last_error: String::new(),
             effective_usage_base: None,
+            effective_usage_source: None,
         }
     }
 
@@ -289,6 +304,7 @@ impl QuotaSnapshot {
             "package_expires_at_unix_ms": self.package_expires_at_unix_ms,
             "last_error": self.last_error,
             "effective_usage_base": self.effective_usage_base,
+            "effective_usage_source": self.effective_usage_source,
         })
     }
 }
@@ -470,24 +486,60 @@ async fn compute_quota_snapshot(
     package_expiry_strategy: PackageExpiryStrategy,
 ) -> QuotaSnapshot {
     if package_expiry_strategy == PackageExpiryStrategy::Packycode {
-        let primary_budget_token = credentials.provider_key.or(credentials.usage_token);
+        let mut budget_errors: Vec<String> = Vec::new();
 
-        if let Some(token) = primary_budget_token {
-            let budget = fetch_budget_info_any(
+        if credentials.usage_token.is_some() {
+            let browser_base = bases
+                .first()
+                .map(|value| value.as_str())
+                .unwrap_or("https://codex.packycode.com");
+            let budget = fetch_packycode_budget_info_via_browser_context(
                 st,
                 provider_name,
-                bases,
-                Some(token),
-                package_expiry_strategy,
+                browser_base,
+                credentials.usage_token,
             )
             .await;
             if budget.last_error.is_empty() {
                 return budget;
             }
+            budget_errors.push(format!("packycode browser session: {}", budget.last_error));
+
+            if let Some(token) = credentials.usage_token {
+                let budget = fetch_budget_info_any(
+                    st,
+                    provider_name,
+                    bases,
+                    Some(token),
+                    package_expiry_strategy,
+                )
+                .await;
+                if budget.last_error.is_empty() {
+                    return budget;
+                }
+                budget_errors.push(format!("packycode login token: {}", budget.last_error));
+            }
+        }
+
+        if let Some(token) = credentials.provider_key {
+            if credentials.usage_token != Some(token) {
+                let budget = fetch_budget_info_any(
+                    st,
+                    provider_name,
+                    bases,
+                    Some(token),
+                    package_expiry_strategy,
+                )
+                .await;
+                if budget.last_error.is_empty() {
+                    return budget;
+                }
+                budget_errors.push(format!("provider key: {}", budget.last_error));
+            }
         }
 
         if credentials.provider_key.is_some() {
-            return fetch_token_stats_any(
+            let mut stats = fetch_token_stats_any(
                 st,
                 provider_name,
                 bases,
@@ -496,6 +548,20 @@ async fn compute_quota_snapshot(
                 package_expiry_strategy,
             )
             .await;
+            if !stats.last_error.is_empty() && !budget_errors.is_empty() {
+                stats.last_error = format!(
+                    "{}; token stats fallback: {}",
+                    budget_errors.join("; "),
+                    stats.last_error
+                );
+            }
+            return stats;
+        }
+
+        if !budget_errors.is_empty() {
+            let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+            out.last_error = budget_errors.join("; ");
+            return out;
         }
     }
 
@@ -608,6 +674,10 @@ async fn compute_quota_snapshot(
 }
 
 fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
+    let previous_snapshot = st
+        .store
+        .get_quota_snapshot(provider_name)
+        .and_then(|value| quota_snapshot_from_json(&value));
     let snapshot_to_store = preserved_quota_snapshot_for_storage(st, provider_name, snap);
     let _ = st
         .store
@@ -617,10 +687,43 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
         st.router
             .mark_usage_refresh_success(provider_name, snap.updated_at_unix_ms);
         st.store.reset_ledger(provider_name);
+        if previous_snapshot
+            .as_ref()
+            .is_some_and(|previous| !previous.last_error.trim().is_empty())
+        {
+            let source = quota_refresh_source_label(
+                snapshot_to_store
+                    .effective_usage_source
+                    .as_deref()
+                    .unwrap_or_default(),
+            );
+            let message = if source.is_empty() {
+                "usage refresh recovered".to_string()
+            } else {
+                format!("usage refresh recovered via {source}")
+            };
+            st.store.add_event(
+                provider_name,
+                "info",
+                "usage.refresh_recovered",
+                &message,
+                serde_json::json!({
+                    "source": snapshot_to_store.effective_usage_source,
+                    "effective_usage_base": snapshot_to_store.effective_usage_base,
+                }),
+            );
+        }
     }
     // Avoid spamming the event log on routine/background refreshes. Only surface failures here;
     // user-initiated success summaries are logged by the tauri command layer.
     if !snap.last_error.is_empty() && !is_quota_refresh_config_gap(&snap.last_error) {
+        let previous_key = previous_snapshot
+            .as_ref()
+            .map(|previous| quota_refresh_error_log_key(&previous.last_error));
+        let current_key = quota_refresh_error_log_key(&snap.last_error);
+        if previous_key.as_deref() == Some(current_key.as_str()) {
+            return;
+        }
         let err = snap.last_error.chars().take(300).collect::<String>();
         st.store.add_event(
             provider_name,
@@ -672,6 +775,10 @@ fn quota_snapshot_from_json(value: &Value) -> Option<QuotaSnapshot> {
             .get("effective_usage_base")
             .and_then(Value::as_str)
             .map(ToString::to_string),
+        effective_usage_source: value
+            .get("effective_usage_source")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
     })
 }
 
@@ -702,7 +809,7 @@ fn preserved_quota_snapshot_for_storage(
     else {
         return snap.clone();
     };
-    if !previous.last_error.is_empty() || previous.updated_at_unix_ms == 0 {
+    if previous.updated_at_unix_ms == 0 {
         return snap.clone();
     }
 
@@ -725,6 +832,36 @@ fn preserved_quota_snapshot_for_storage(
         package_expires_at_unix_ms: previous.package_expires_at_unix_ms,
         last_error: snap.last_error.clone(),
         effective_usage_base: previous.effective_usage_base,
+        effective_usage_source: previous.effective_usage_source,
+    }
+}
+
+fn quota_refresh_source_label(source: &str) -> &'static str {
+    match source.trim() {
+        "packycode_browser_session" => "Packycode dashboard session",
+        "usage_base" => "usage base",
+        "token_stats" => "token stats",
+        "codex_for_me_balance" => "codex-for.me dashboard",
+        _ => "",
+    }
+}
+
+fn quota_refresh_error_log_key(err: &str) -> String {
+    let trimmed = err.trim();
+    if let Some(rest) = trimmed.strip_prefix("usage base rate limited: ") {
+        let base = rest.split(" (retry in").next().unwrap_or(rest).trim();
+        return format!("usage_base_rate_limited:{base}");
+    }
+    trimmed.to_string()
+}
+
+pub(crate) fn clear_usage_refresh_gate_for_provider(st: &GatewayState, provider_name: &str) {
+    let cfg = st.cfg.read().clone();
+    let Some(provider) = cfg.providers.get(provider_name) else {
+        return;
+    };
+    for base in candidate_quota_bases(provider) {
+        clear_usage_base_refresh_gate_for_base(&base);
     }
 }
 
@@ -758,11 +895,8 @@ fn can_refresh_quota_for_provider(
         return false;
     }
     let provider_key = st.secrets.get_provider_key(provider_name);
-    let mut usage_token = st.secrets.get_usage_token(provider_name);
+    let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
-    if usage_token.is_none() && is_packycode_base(&provider.base_url) {
-        usage_token = provider_key.clone();
-    }
     if is_codex_for_me_base(provider_name, &bases) {
         return usage_token.is_some() || usage_login.is_some();
     }
@@ -978,11 +1112,8 @@ async fn propagate_quota_snapshot_shared(
         }
 
         let provider_key = st.secrets.get_provider_key(name);
-        let mut usage_token = st.secrets.get_usage_token(name);
+        let usage_token = st.secrets.get_usage_token(name);
         let usage_login = st.secrets.get_usage_login(name);
-        if usage_token.is_none() && is_packycode_base(&p.base_url) {
-            usage_token = provider_key.clone();
-        }
 
         let bases = candidate_quota_bases(p);
         let Some(shared_base) = bases.first().map(|s| s.as_str()) else {
@@ -1019,11 +1150,8 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     };
 
     let provider_key = st.secrets.get_provider_key(provider_name);
-    let mut usage_token = st.secrets.get_usage_token(provider_name);
+    let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
-    if usage_token.is_none() && is_packycode_base(&p.base_url) {
-        usage_token = provider_key.clone();
-    }
     let bases_raw = candidate_quota_bases(p);
     let Some(shared_base) = bases_raw.first().cloned() else {
         let mut out = QuotaSnapshot::empty(UsageKind::None);
@@ -1080,11 +1208,8 @@ async fn refresh_quota_for_provider_cached(
     };
 
     let provider_key = st.secrets.get_provider_key(provider_name);
-    let mut usage_token = st.secrets.get_usage_token(provider_name);
+    let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
-    if usage_token.is_none() && is_packycode_base(&p.base_url) {
-        usage_token = provider_key.clone();
-    }
     let bases_raw = candidate_quota_bases(p);
     let Some(shared_base) = bases_raw.first().cloned() else {
         let mut out = QuotaSnapshot::empty(UsageKind::None);
@@ -1143,11 +1268,8 @@ fn usage_shared_key_for_provider(st: &GatewayState, provider_name: &str) -> Opti
     let cfg = st.cfg.read().clone();
     let p = cfg.providers.get(provider_name)?;
     let provider_key = st.secrets.get_provider_key(provider_name);
-    let mut usage_token = st.secrets.get_usage_token(provider_name);
+    let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
-    if usage_token.is_none() && is_packycode_base(&p.base_url) {
-        usage_token = provider_key.clone();
-    }
     let bases = candidate_quota_bases(p);
     let shared_base = bases.first()?.as_str();
     Some(usage_shared_key(
