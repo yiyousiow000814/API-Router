@@ -1158,7 +1158,6 @@ async fn models(
     if let Some(resp) = require_gateway_auth(&st, &headers) {
         return resp;
     }
-    st.last_activity_unix_ms.store(unix_ms(), Ordering::Relaxed);
     let cfg = st.cfg.read().clone();
 
     // Respect per-session preferred providers (keyed by Codex session id). Fall back to the global
@@ -1204,8 +1203,9 @@ async fn models(
         Ok((code, j)) if (200..300).contains(&code) => {
             // Do not update `last_used_by_session` for `/v1/models` since Codex may call it
             // opportunistically. We only want to track actual routing decisions for user
-            // requests (/v1/responses) to keep "back to preferred" semantics stable.
-            st.router.mark_success(&provider_name, unix_ms());
+            // requests (/v1/responses) to keep "back to preferred" semantics stable. It also
+            // must not update last activity / last_ok, otherwise startup model probes would look
+            // like real Codex usage and trigger quota refresh scheduling.
             (StatusCode::OK, Json(j)).into_response()
         }
         _ => (StatusCode::OK, Json(json!({"object":"list","data":[]}))).into_response(),

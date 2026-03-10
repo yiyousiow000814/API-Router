@@ -2,7 +2,7 @@ import { HeroCodexCard, HeroRoutingCard, HeroStatusCard } from './HeroCards'
 import { DashboardProvidersSection } from './DashboardProvidersSection'
 import { DashboardSessionsSection } from './DashboardSessionsSection'
 import type { LastErrorJump } from './ProvidersTable'
-import type { Config, Status } from '../types'
+import type { Config, Status, UsageStatistics } from '../types'
 import './DashboardPanel.css'
 
 type Props = {
@@ -32,6 +32,7 @@ type Props = {
   refreshingProviders: Record<string, boolean>
   onRefreshQuota: (provider: string) => void
   onOpenLastErrorInEventLog: (payload: LastErrorJump) => void
+  usageStatistics?: UsageStatistics | null
   clientSessions: NonNullable<Status['client_sessions']>
   updatingSessionPref: Record<string, boolean>
   onSetSessionPreferred: (sessionId: string, provider: string | null) => void
@@ -64,6 +65,7 @@ export function DashboardPanel({
   refreshingProviders,
   onRefreshQuota,
   onOpenLastErrorInEventLog,
+  usageStatistics,
   clientSessions,
   updatingSessionPref,
   onSetSessionPreferred,
@@ -110,6 +112,7 @@ export function DashboardPanel({
         onRefreshQuota={onRefreshQuota}
         onOpenConfigModal={onOpenConfigModal}
         onOpenLastErrorInEventLog={onOpenLastErrorInEventLog}
+        usageStatistics={usageStatistics ?? null}
       />
 
       <DashboardSessionsSection

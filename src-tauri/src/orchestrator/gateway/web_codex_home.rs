@@ -7,7 +7,7 @@ const MAX_FOLDER_LIST_ITEMS: usize = 1200;
 const WSL_IDENTITY_CACHE_SECS: i64 = 600;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum WorkspaceTarget {
+pub(crate) enum WorkspaceTarget {
     Windows,
     Wsl2,
 }

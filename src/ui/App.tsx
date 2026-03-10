@@ -46,7 +46,13 @@ import { useUsageOpsBridge } from './hooks/useUsageOpsBridge'
 import { useUsageUiDerived } from './hooks/useUsageUiDerived'
 import { useMainContentCallbacks } from './hooks/useMainContentCallbacks'
 import { useTopNavIntentPrefetch } from './hooks/useTopNavIntentPrefetch'
-import type { KeyModalState, UsageBaseModalState } from './hooks/providerActions/types'
+import type {
+  KeyModalState,
+  ProviderBaseUrlModalState,
+  ProviderEmailModalState,
+  UsageAuthModalState,
+  UsageBaseModalState,
+} from './hooks/providerActions/types'
 import {
   buildCodexSwapBadge,
   resolveCliHomes,
@@ -87,11 +93,12 @@ export default function App() {
   const rawConfigTestMode = useMemo(() => parseDevFlag(devFlags.get('test')), [devFlags])
   const [status, setStatus] = useState<Status | null>(null)
   const [config, setConfig] = useState<Config | null>(null)
-  const [baselineBaseUrls, setBaselineBaseUrls] = useState<Record<string, string>>({})
+  const [, setBaselineBaseUrls] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<string>('')
   const [override, setOverride] = useState<string>('') // '' => auto
   const [newProviderName, setNewProviderName] = useState<string>('')
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
+  const [newProviderKey, setNewProviderKey] = useState<string>('')
   const [providerPanelsOpen, setProviderPanelsOpen] = useState<Record<string, boolean>>({})
   const [keyModal, setKeyModal] = useState<KeyModalState>({
     open: false,
@@ -100,6 +107,11 @@ export default function App() {
     loading: false,
     loadFailed: false,
   })
+  const [providerBaseUrlModal, setProviderBaseUrlModal] = useState<ProviderBaseUrlModalState>({
+    open: false,
+    provider: '',
+    value: '',
+  })
   const [usageBaseModal, setUsageBaseModal] = useState<UsageBaseModalState>({
     open: false,
     provider: '',
@@ -107,6 +119,21 @@ export default function App() {
     auto: false,
     explicitValue: '',
     effectiveValue: '',
+  })
+  const [usageAuthModal, setUsageAuthModal] = useState<UsageAuthModalState>({
+    open: false,
+    provider: '',
+    baseUrl: '',
+    token: '',
+    username: '',
+    password: '',
+    loading: false,
+    loadFailed: false,
+  })
+  const [providerEmailModal, setProviderEmailModal] = useState<ProviderEmailModalState>({
+    open: false,
+    provider: '',
+    value: '',
   })
   const overrideDirtyRef = useRef<boolean>(false)
   const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>('')
@@ -984,8 +1011,10 @@ export default function App() {
     usageOriginFilterOptions,
   })
   const {
-    saveProvider, setProviderDisabled, deleteProvider, saveKey, clearKey, refreshQuota, refreshQuotaAll,
-    saveUsageBaseUrl, setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap, openKeyModal, openUsageBaseModal, addProvider,
+    setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, refreshQuota, refreshQuotaAll,
+    saveUsageBaseUrl, saveUsageAuth, clearUsageAuth, saveProviderEmail, clearProviderEmail,
+    setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap,
+    openKeyModal, openProviderBaseUrlModal, openUsageBaseModal, openUsageAuthModal, openProviderEmailModal, addProvider,
     setProvidersGroup,
   } = useProviderActions({
     config,
@@ -993,13 +1022,21 @@ export default function App() {
     isDevPreview,
     setConfig,
     keyModal,
+    providerBaseUrlModal,
+    providerEmailModal,
     usageBaseModal,
+    usageAuthModal,
     newProviderName,
     newProviderBaseUrl,
+    newProviderKey,
     setKeyModal,
+    setProviderBaseUrlModal,
+    setProviderEmailModal,
     setUsageBaseModal,
+    setUsageAuthModal,
     setNewProviderName,
     setNewProviderBaseUrl,
+    setNewProviderKey,
     setRefreshingProviders,
     refreshStatus,
     refreshConfig,
@@ -1066,12 +1103,8 @@ export default function App() {
     autoSaveUsageScheduleRows,
   })
   const {
-    setAllProviderPanels,
-    allProviderPanelsOpen,
     renderProviderCard,
   } = useProviderPanelUi({
-    orderedConfigProviders,
-    providerPanelsOpen,
     setProviderPanelsOpen,
     setEditingProviderName,
     setProviderNameDrafts,
@@ -1086,15 +1119,15 @@ export default function App() {
     onProviderHandlePointerDown,
     config,
     status,
-    setConfig,
-    baselineBaseUrls,
-    saveProvider,
     openProviderGroupManager,
     setProviderDisabled,
     deleteProvider,
     openKeyModal,
+    openProviderBaseUrlModal,
     clearKey,
     openUsageBaseModal,
+    openUsageAuthModal,
+    openProviderEmailModal,
     clearUsageBaseUrl,
     setProviderQuotaHardCap,
     editingProviderName,
@@ -1167,6 +1200,7 @@ export default function App() {
               eventLogSeedDailyStats={eventLogPreloadDailyStats}
               eventLogFocusRequest={eventLogFocusRequest}
               onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
+              usageStatistics={usageStatistics}
               usageProps={{
                 config,
                 usageWindowHours,
@@ -1245,6 +1279,17 @@ export default function App() {
         keyModal={keyModal}
         setKeyModal={setKeyModal}
         saveKey={saveKey}
+        providerBaseUrlModal={providerBaseUrlModal}
+        setProviderBaseUrlModal={setProviderBaseUrlModal}
+        saveProviderBaseUrl={saveProviderBaseUrl}
+        providerEmailModal={providerEmailModal}
+        setProviderEmailModal={setProviderEmailModal}
+        saveProviderEmail={saveProviderEmail}
+        clearProviderEmail={clearProviderEmail}
+        usageAuthModal={usageAuthModal}
+        setUsageAuthModal={setUsageAuthModal}
+        saveUsageAuth={saveUsageAuth}
+        clearUsageAuth={clearUsageAuth}
         usageBaseModal={usageBaseModal}
         setUsageBaseModal={setUsageBaseModal}
         saveUsageBaseUrl={saveUsageBaseUrl}
@@ -1253,13 +1298,13 @@ export default function App() {
         openRawConfigModal={openRawConfigModal}
         configModalOpen={configModalOpen}
         config={config}
-        allProviderPanelsOpen={allProviderPanelsOpen}
-        setAllProviderPanels={setAllProviderPanels}
         newProviderName={newProviderName}
         newProviderBaseUrl={newProviderBaseUrl}
+        newProviderKey={newProviderKey}
         nextProviderPlaceholder={nextProviderPlaceholder}
         setNewProviderName={setNewProviderName}
         setNewProviderBaseUrl={setNewProviderBaseUrl}
+        setNewProviderKey={setNewProviderKey}
         addProvider={addProvider}
         openProviderGroupManager={openProviderGroupManager}
         setConfigModalOpen={setConfigModalOpen}
@@ -1398,6 +1443,7 @@ export default function App() {
         onSetUsageBase={setUsageBaseUrl}
         onClearUsageBase={clearUsageBaseUrl}
         onSetHardCap={setProviderQuotaHardCap}
+        onOpenProviderEmailModal={openProviderEmailModal}
       />
     </div>
   )

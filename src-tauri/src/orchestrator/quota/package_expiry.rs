@@ -14,7 +14,8 @@ fn detect_package_expiry_strategy(base_url: &str) -> PackageExpiryStrategy {
 
 async fn fetch_package_expiry_for_strategy(
     strategy: PackageExpiryStrategy,
-    client: &reqwest::Client,
+    st: &GatewayState,
+    provider_name: &str,
     bases: &[String],
     token: &str,
     preferred_base: Option<&str>,
@@ -23,13 +24,22 @@ async fn fetch_package_expiry_for_strategy(
     match strategy {
         PackageExpiryStrategy::None => None,
         PackageExpiryStrategy::Packycode => {
-            fetch_packycode_package_expiry(client, bases, token, preferred_base, budget_root).await
+            fetch_packycode_package_expiry(
+                st,
+                provider_name,
+                bases,
+                token,
+                preferred_base,
+                budget_root,
+            )
+            .await
         }
     }
 }
 
 async fn fetch_packycode_package_expiry(
-    client: &reqwest::Client,
+    st: &GatewayState,
+    provider_name: &str,
     bases: &[String],
     token: &str,
     preferred_base: Option<&str>,
@@ -60,10 +70,10 @@ async fn fetch_packycode_package_expiry(
     }
 
     for base in ordered_bases {
-        if let Some(found) = fetch_packycode_expiry_from_user_info(client, &base, token).await {
+        if let Some(found) = fetch_packycode_expiry_from_user_info(st, provider_name, &base, token).await {
             return Some(found);
         }
-        if let Some(found) = fetch_packycode_expiry_from_subscriptions(client, &base, token).await {
+        if let Some(found) = fetch_packycode_expiry_from_subscriptions(st, provider_name, &base, token).await {
             return Some(found);
         }
     }
@@ -71,12 +81,17 @@ async fn fetch_packycode_package_expiry(
 }
 
 async fn fetch_packycode_expiry_from_user_info(
-    client: &reqwest::Client,
+    st: &GatewayState,
+    provider_name: &str,
     base: &str,
     token: &str,
 ) -> Option<u64> {
     const PACKAGE_EXPIRY_TIMEOUT_SECS: u64 = 8;
+    let client = build_usage_http_client(st, provider_name).ok()?;
     let url = format!("{base}/api/backend/users/info");
+    if wait_for_usage_base_refresh_slot(base).await.is_err() {
+        return None;
+    }
     let resp = client
         .get(url)
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
@@ -84,6 +99,11 @@ async fn fetch_packycode_expiry_from_user_info(
         .send()
         .await
         .ok()?;
+    if resp.status().as_u16() == 429 {
+        let backoff_ms =
+            parse_rate_limit_backoff_ms(resp.headers(), unix_ms(), USAGE_BASE_429_BACKOFF_MS);
+        note_usage_base_rate_limited(base, unix_ms(), backoff_ms);
+    }
     if !resp.status().is_success() {
         return None;
     }
@@ -93,12 +113,17 @@ async fn fetch_packycode_expiry_from_user_info(
 }
 
 async fn fetch_packycode_expiry_from_subscriptions(
-    client: &reqwest::Client,
+    st: &GatewayState,
+    provider_name: &str,
     base: &str,
     token: &str,
 ) -> Option<u64> {
     const PACKAGE_EXPIRY_TIMEOUT_SECS: u64 = 8;
+    let client = build_usage_http_client(st, provider_name).ok()?;
     let url = format!("{base}/api/backend/subscriptions?page=1&per_page=50");
+    if wait_for_usage_base_refresh_slot(base).await.is_err() {
+        return None;
+    }
     let resp = client
         .get(url)
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
@@ -106,6 +131,11 @@ async fn fetch_packycode_expiry_from_subscriptions(
         .send()
         .await
         .ok()?;
+    if resp.status().as_u16() == 429 {
+        let backoff_ms =
+            parse_rate_limit_backoff_ms(resp.headers(), unix_ms(), USAGE_BASE_429_BACKOFF_MS);
+        note_usage_base_rate_limited(base, unix_ms(), backoff_ms);
+    }
     if !resp.status().is_success() {
         return None;
     }

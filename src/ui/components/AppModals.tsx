@@ -23,8 +23,17 @@ import type {
   UsagePricingSaveState,
   UsageScheduleSaveState,
 } from '../types/usage'
-import type { KeyModalState, UsageBaseModalState } from '../hooks/providerActions/types'
+import type {
+  KeyModalState,
+  ProviderBaseUrlModalState,
+  ProviderEmailModalState,
+  UsageAuthModalState,
+  UsageBaseModalState,
+} from '../hooks/providerActions/types'
 import { KeyModal } from './KeyModal'
+import { ProviderBaseUrlModal } from './ProviderBaseUrlModal'
+import { ProviderEmailModal } from './ProviderEmailModal'
+import { UsageAuthModal } from './UsageAuthModal'
 import { UsageBaseModal } from './UsageBaseModal'
 import { UsageHistoryModal } from './UsageHistoryModal'
 import { UsagePricingModal } from './UsagePricingModal'
@@ -59,6 +68,17 @@ type Props = {
   keyModal: KeyModalState
   setKeyModal: Dispatch<SetStateAction<KeyModalState>>
   saveKey: () => Promise<void>
+  providerBaseUrlModal: ProviderBaseUrlModalState
+  setProviderBaseUrlModal: Dispatch<SetStateAction<ProviderBaseUrlModalState>>
+  saveProviderBaseUrl: () => Promise<void>
+  providerEmailModal: ProviderEmailModalState
+  setProviderEmailModal: Dispatch<SetStateAction<ProviderEmailModalState>>
+  saveProviderEmail: () => Promise<void>
+  clearProviderEmail: (provider: string) => Promise<void>
+  usageAuthModal: UsageAuthModalState
+  setUsageAuthModal: Dispatch<SetStateAction<UsageAuthModalState>>
+  saveUsageAuth: () => Promise<void>
+  clearUsageAuth: (provider: string) => Promise<void>
   usageBaseModal: UsageBaseModalState
   setUsageBaseModal: Dispatch<SetStateAction<UsageBaseModalState>>
   saveUsageBaseUrl: () => Promise<void>
@@ -67,13 +87,13 @@ type Props = {
   openRawConfigModal: (options?: { reopenGettingStartedOnFail?: boolean }) => Promise<void>
   configModalOpen: boolean
   config: Config | null
-  allProviderPanelsOpen: boolean
-  setAllProviderPanels: (open: boolean) => void
   newProviderName: string
   newProviderBaseUrl: string
+  newProviderKey: string
   nextProviderPlaceholder: string
   setNewProviderName: Dispatch<SetStateAction<string>>
   setNewProviderBaseUrl: Dispatch<SetStateAction<string>>
+  setNewProviderKey: Dispatch<SetStateAction<string>>
   addProvider: () => Promise<void>
   openProviderGroupManager: (provider?: string) => void
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
@@ -224,6 +244,17 @@ export function AppModals(props: Props) {
     keyModal,
     setKeyModal,
     saveKey,
+    providerBaseUrlModal,
+    setProviderBaseUrlModal,
+    saveProviderBaseUrl,
+    providerEmailModal,
+    setProviderEmailModal,
+    saveProviderEmail,
+    clearProviderEmail,
+    usageAuthModal,
+    setUsageAuthModal,
+    saveUsageAuth,
+    clearUsageAuth,
     usageBaseModal,
     setUsageBaseModal,
     saveUsageBaseUrl,
@@ -232,13 +263,13 @@ export function AppModals(props: Props) {
     openRawConfigModal,
     configModalOpen,
     config,
-    allProviderPanelsOpen,
-    setAllProviderPanels,
     newProviderName,
     newProviderBaseUrl,
+    newProviderKey,
     nextProviderPlaceholder,
     setNewProviderName,
     setNewProviderBaseUrl,
+    setNewProviderKey,
     addProvider,
     openProviderGroupManager,
     setConfigModalOpen,
@@ -386,10 +417,33 @@ export function AppModals(props: Props) {
         onSave={() => void saveKey()}
       />
 
+      <ProviderBaseUrlModal
+        open={providerBaseUrlModal.open}
+        provider={providerBaseUrlModal.provider}
+        value={providerBaseUrlModal.value}
+        onChange={(value) => setProviderBaseUrlModal((modal) => ({ ...modal, value }))}
+        onCancel={() => setProviderBaseUrlModal({ open: false, provider: '', value: '' })}
+        onSave={() => void saveProviderBaseUrl()}
+      />
+
+      <ProviderEmailModal
+        open={providerEmailModal.open}
+        provider={providerEmailModal.provider}
+        value={providerEmailModal.value}
+        onChange={(value) => setProviderEmailModal((modal) => ({ ...modal, value }))}
+        onCancel={() => setProviderEmailModal({ open: false, provider: '', value: '' })}
+        onClear={() => {
+          void clearProviderEmail(providerEmailModal.provider)
+          setProviderEmailModal({ open: false, provider: '', value: '' })
+        }}
+        onSave={() => void saveProviderEmail()}
+      />
+
       <UsageBaseModal
         open={usageBaseModal.open}
         provider={usageBaseModal.provider}
         value={usageBaseModal.value}
+        effectiveValue={usageBaseModal.effectiveValue}
         onChange={(value) =>
           setUsageBaseModal((m) => ({
             ...m,
@@ -419,6 +473,45 @@ export function AppModals(props: Props) {
         onSave={() => void saveUsageBaseUrl()}
       />
 
+      <UsageAuthModal
+        open={usageAuthModal.open}
+        provider={usageAuthModal.provider}
+        baseUrl={usageAuthModal.baseUrl}
+        token={usageAuthModal.token}
+        username={usageAuthModal.username}
+        password={usageAuthModal.password}
+        loading={usageAuthModal.loading}
+        loadFailed={usageAuthModal.loadFailed}
+        onChangeUsername={(username) => setUsageAuthModal((m) => ({ ...m, username }))}
+        onChangePassword={(password) => setUsageAuthModal((m) => ({ ...m, password }))}
+        onCancel={() =>
+          setUsageAuthModal({
+            open: false,
+            provider: '',
+            baseUrl: '',
+            token: '',
+            username: '',
+            password: '',
+            loading: false,
+            loadFailed: false,
+          })
+        }
+        onClear={() => {
+          void clearUsageAuth(usageAuthModal.provider)
+          setUsageAuthModal({
+            open: false,
+            provider: '',
+            baseUrl: '',
+            token: '',
+            username: '',
+            password: '',
+            loading: false,
+            loadFailed: false,
+          })
+        }}
+        onSave={() => void saveUsageAuth()}
+      />
+
       <InstructionModal
         open={instructionModalOpen}
         onClose={() => setInstructionModalOpen(false)}
@@ -446,13 +539,13 @@ requires_openai_auth = true`}
       <ConfigModal
         open={configModalOpen}
         config={config}
-        allProviderPanelsOpen={allProviderPanelsOpen}
-        setAllProviderPanels={setAllProviderPanels}
         newProviderName={newProviderName}
         newProviderBaseUrl={newProviderBaseUrl}
+        newProviderKey={newProviderKey}
         nextProviderPlaceholder={nextProviderPlaceholder}
         setNewProviderName={setNewProviderName}
         setNewProviderBaseUrl={setNewProviderBaseUrl}
+        setNewProviderKey={setNewProviderKey}
         onAddProvider={() => void addProvider()}
         onOpenGroupManager={() => openProviderGroupManager()}
         onClose={() => setConfigModalOpen(false)}

@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Config } from '../../types'
 import {
   applyProviderQuotaHardCapLocalPatch,
+  buildUsageAuthModalDraft,
+  buildUsageBaseModalDraft,
   setProviderQuotaHardCapFieldWithRefresh,
 } from './useProviderUsageActions'
 
@@ -35,6 +37,51 @@ describe('applyProviderQuotaHardCapLocalPatch', () => {
       daily: true,
       weekly: false,
       monthly: true,
+    })
+  })
+})
+
+describe('buildUsageBaseModalDraft', () => {
+  it('keeps inferred endpoint out of the editable field', () => {
+    expect(buildUsageBaseModalDraft('p1', '', 'https://codex.packycode.com')).toEqual({
+      open: true,
+      provider: 'p1',
+      value: '',
+      auto: true,
+      explicitValue: '',
+      effectiveValue: 'https://codex.packycode.com',
+    })
+  })
+
+  it('preserves explicit value when present', () => {
+    expect(buildUsageBaseModalDraft('p1', 'https://manual.example.com', 'https://codex.packycode.com')).toEqual({
+      open: true,
+      provider: 'p1',
+      value: 'https://manual.example.com',
+      auto: false,
+      explicitValue: 'https://manual.example.com',
+      effectiveValue: 'https://codex.packycode.com',
+    })
+  })
+})
+
+describe('buildUsageAuthModalDraft', () => {
+  it('normalizes loaded usage auth payload', () => {
+    expect(
+      buildUsageAuthModalDraft('codex-for.me', 'https://api-vip.codex-for.me/v1', {
+        token: ' jwt-token ',
+        username: ' alice ',
+        password: 'secret',
+      }),
+    ).toEqual({
+      open: true,
+      provider: 'codex-for.me',
+      baseUrl: 'https://api-vip.codex-for.me/v1',
+      token: 'jwt-token',
+      username: 'alice',
+      password: 'secret',
+      loading: false,
+      loadFailed: false,
     })
   })
 })

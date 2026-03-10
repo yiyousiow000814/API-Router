@@ -10,9 +10,15 @@ use uuid::Uuid;
 struct SecretsFile {
     #[serde(default)]
     providers: BTreeMap<String, String>,
+    #[serde(default)]
+    provider_account_emails: BTreeMap<String, String>,
     /// Optional non-upstream secrets used by the app (e.g. usage JWTs).
     #[serde(default)]
     usage_tokens: BTreeMap<String, String>,
+    #[serde(default)]
+    usage_logins: BTreeMap<String, UsageLoginSecret>,
+    #[serde(default)]
+    usage_proxy_pools: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     provider_pricing: BTreeMap<String, ProviderPricingOverride>,
     #[serde(default)]
@@ -29,6 +35,18 @@ struct ProviderPricingOverride {
     gap_fill_mode: Option<String>,
     #[serde(default)]
     gap_fill_amount_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UsageLoginSecret {
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageLoginConfig {
+    pub username: String,
+    pub password: String,
 }
 
 fn default_hard_cap_enabled() -> bool {
@@ -137,6 +155,33 @@ impl SecretStore {
         self.inner.lock().providers.get(provider).cloned()
     }
 
+    pub fn get_provider_account_email(&self, provider: &str) -> Option<String> {
+        self.inner
+            .lock()
+            .provider_account_emails
+            .get(provider)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn set_provider_account_email(&self, provider: &str, email: &str) -> Result<(), String> {
+        let normalized = email.trim().to_string();
+        let mut data = self.inner.lock();
+        if normalized.is_empty() {
+            data.provider_account_emails.remove(provider);
+        } else {
+            data.provider_account_emails
+                .insert(provider.to_string(), normalized);
+        }
+        self.persist(&data)
+    }
+
+    pub fn clear_provider_account_email(&self, provider: &str) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        data.provider_account_emails.remove(provider);
+        self.persist(&data)
+    }
+
     pub fn set_provider_key(&self, provider: &str, key: &str) -> Result<(), String> {
         let mut data = self.inner.lock();
         data.providers.insert(provider.to_string(), key.to_string());
@@ -166,6 +211,72 @@ impl SecretStore {
         self.persist(&data)
     }
 
+    pub fn get_usage_login(&self, provider: &str) -> Option<UsageLoginConfig> {
+        self.inner
+            .lock()
+            .usage_logins
+            .get(provider)
+            .map(|entry| UsageLoginConfig {
+                username: entry.username.clone(),
+                password: entry.password.clone(),
+            })
+            .filter(|entry| !entry.username.trim().is_empty() && !entry.password.is_empty())
+    }
+
+    pub fn set_usage_login(
+        &self,
+        provider: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<(), String> {
+        let normalized_username = username.trim().to_string();
+        let normalized_password = password.to_string();
+        let mut data = self.inner.lock();
+        if normalized_username.is_empty() || normalized_password.is_empty() {
+            data.usage_logins.remove(provider);
+        } else {
+            data.usage_logins.insert(
+                provider.to_string(),
+                UsageLoginSecret {
+                    username: normalized_username,
+                    password: normalized_password,
+                },
+            );
+        }
+        self.persist(&data)
+    }
+
+    pub fn clear_usage_login(&self, provider: &str) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        data.usage_logins.remove(provider);
+        self.persist(&data)
+    }
+
+    pub fn get_usage_proxy_pool(&self, provider: &str) -> Vec<String> {
+        self.inner
+            .lock()
+            .usage_proxy_pools
+            .get(provider)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn set_usage_proxy_pool(&self, provider: &str, pool: Vec<String>) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        let normalized: Vec<String> = pool
+            .into_iter()
+            .map(|entry| entry.trim().to_string())
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        if normalized.is_empty() {
+            data.usage_proxy_pools.remove(provider);
+        } else {
+            data.usage_proxy_pools
+                .insert(provider.to_string(), normalized);
+        }
+        self.persist(&data)
+    }
+
     pub fn rename_provider(&self, old: &str, new: &str) -> Result<(), String> {
         if old == new {
             return Ok(());
@@ -174,8 +285,17 @@ impl SecretStore {
         if let Some(v) = data.providers.remove(old) {
             data.providers.insert(new.to_string(), v);
         }
+        if let Some(v) = data.provider_account_emails.remove(old) {
+            data.provider_account_emails.insert(new.to_string(), v);
+        }
         if let Some(v) = data.usage_tokens.remove(old) {
             data.usage_tokens.insert(new.to_string(), v);
+        }
+        if let Some(v) = data.usage_logins.remove(old) {
+            data.usage_logins.insert(new.to_string(), v);
+        }
+        if let Some(v) = data.usage_proxy_pools.remove(old) {
+            data.usage_proxy_pools.insert(new.to_string(), v);
         }
         if let Some(v) = data.provider_pricing.remove(old) {
             data.provider_pricing.insert(new.to_string(), v);
@@ -580,8 +700,43 @@ impl SecretStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderQuotaHardCapConfig, SecretStore};
+    use super::{ProviderQuotaHardCapConfig, SecretStore, UsageLoginConfig};
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn provider_account_email_roundtrip_and_rename() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path.clone());
+
+        store
+            .set_provider_account_email("p1", "user@example.com")
+            .expect("set provider account email");
+        assert_eq!(
+            store.get_provider_account_email("p1").as_deref(),
+            Some("user@example.com")
+        );
+
+        let reloaded = SecretStore::new(path);
+        assert_eq!(
+            reloaded.get_provider_account_email("p1").as_deref(),
+            Some("user@example.com")
+        );
+
+        reloaded
+            .rename_provider("p1", "p2")
+            .expect("rename provider");
+        assert_eq!(reloaded.get_provider_account_email("p1"), None);
+        assert_eq!(
+            reloaded.get_provider_account_email("p2").as_deref(),
+            Some("user@example.com")
+        );
+
+        reloaded
+            .clear_provider_account_email("p2")
+            .expect("clear provider account email");
+        assert_eq!(reloaded.get_provider_account_email("p2"), None);
+    }
 
     #[test]
     fn quota_hard_cap_field_update_roundtrip_and_cleanup() {
@@ -705,5 +860,35 @@ mod tests {
                 got
             );
         }
+    }
+
+    #[test]
+    fn usage_login_roundtrip_and_clear() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path.clone());
+
+        store
+            .set_usage_login("p1", "alice", "secret-pass")
+            .expect("set usage login");
+        assert_eq!(
+            store.get_usage_login("p1"),
+            Some(UsageLoginConfig {
+                username: "alice".to_string(),
+                password: "secret-pass".to_string(),
+            })
+        );
+
+        let reloaded = SecretStore::new(path.clone());
+        assert_eq!(
+            reloaded.get_usage_login("p1"),
+            Some(UsageLoginConfig {
+                username: "alice".to_string(),
+                password: "secret-pass".to_string(),
+            })
+        );
+
+        reloaded.clear_usage_login("p1").expect("clear usage login");
+        assert_eq!(reloaded.get_usage_login("p1"), None);
     }
 }

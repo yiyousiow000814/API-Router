@@ -38,7 +38,8 @@
 - **EXE naming policy (required)**: Treat repo-root `API Router.exe` as the canonical runtime binary name. `api_router.exe` is a build artifact under `src-tauri/target/...` and should not be used as the default launch target.
 - **Line endings**: Use LF as the repository standard. CRLF is only allowed for Windows script files (`.bat`, `.cmd`, `.ps1`).
 - **File size guideline (industry style)**: Prefer small, focused files (roughly 200-500 lines) when practical.
-- **Hard cap**: For non-lock source files, 800 lines is the maximum. If a file goes over 800 lines, split it into coherent modules/files in the same PR unless there is a clear, documented reason not to.
+- **Modularization rule (required)**: Prefer splitting code by clear responsibility boundaries instead of enforcing an arbitrary line cap. When a file grows large, refactor it into coherent modules organized by ownership and data flow (for example parsing, rendering, transport, state, tests), even if some resulting files are still larger than 500 lines.
+- **Large-file policy**: There is no automatic hard cap such as 800 lines. Large files are allowed only when the structure is still responsibility-driven and easy to navigate. If a file feels hard to reason about, hard to test, or mixes multiple concerns, split it by responsibility in the same PR unless there is a clear documented reason not to.
 - **Exceptions**: Lock/generated files are excluded from this rule (for example `Cargo.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`).
 
 

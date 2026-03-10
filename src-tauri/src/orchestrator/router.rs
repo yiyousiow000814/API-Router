@@ -233,12 +233,11 @@ impl RouterState {
         }
     }
 
-    pub fn mark_usage_refresh_success(&self, provider: &str, now_ms: u64) {
+    pub fn mark_usage_refresh_success(&self, provider: &str, _now_ms: u64) {
         let mut health = self.health.write();
         if let Some(h) = health.get_mut(provider) {
             if matches!(h.state, HealthState::Unknown) {
                 h.state = HealthState::Healthy;
-                h.last_ok_at_unix_ms = now_ms;
             }
         }
     }
@@ -405,14 +404,14 @@ mod tests {
         let snapshot = router.snapshot(1_000);
         let health = snapshot.get(provider).expect("provider health snapshot");
         assert_eq!(health.status, "healthy");
-        assert_eq!(health.last_ok_at_unix_ms, 1_000);
+        assert_eq!(health.last_ok_at_unix_ms, 0);
 
         router.mark_failure(provider, &cfg, "boom", 2_000);
         router.mark_usage_refresh_success(provider, 3_000);
         let snapshot = router.snapshot(3_000);
         let health = snapshot.get(provider).expect("provider health snapshot");
         assert_eq!(health.status, "unhealthy");
-        assert_eq!(health.last_ok_at_unix_ms, 1_000);
+        assert_eq!(health.last_ok_at_unix_ms, 0);
     }
 
     #[test]

@@ -499,7 +499,7 @@ export const devConfig: Config = {
       display_name: 'provider_2',
       base_url: 'https://codex-api.packycode.com/v1',
       usage_adapter: 'packycode',
-      usage_base_url: 'https://codex-api.packycode.com',
+      usage_base_url: 'https://codex.packycode.com',
       quota_hard_cap: {
         daily: false,
         weekly: true,

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { ProvidersTable } from './ProvidersTable'
-import type { Config, Status } from '../types'
+import type { Config, Status, UsageStatistics } from '../types'
 
 function buildStatus(): Status {
   return {
@@ -167,5 +167,99 @@ describe('ProvidersTable', () => {
 
     expect(html).toContain('daily:')
     expect(html).not.toContain('weekly:')
+  })
+
+  it('shows simulated budget spend between real quota refreshes', () => {
+    const status = buildStatus()
+    status.ledgers = {
+      packycode: {
+        since_last_quota_refresh_requests: 3,
+        since_last_quota_refresh_total_tokens: 300,
+        last_reset_unix_ms: 1_000,
+      },
+    }
+    const usageStatistics: UsageStatistics = {
+      ok: true,
+      generated_at_unix_ms: 1_000,
+      window_hours: 24,
+      bucket_seconds: 300,
+      summary: {
+        total_requests: 10,
+        total_tokens: 1000,
+        unique_models: 1,
+        estimated_total_cost_usd: 1.2,
+        by_model: [],
+        by_provider: [
+          {
+            provider: 'packycode',
+            requests: 10,
+            total_tokens: 1000,
+            estimated_total_cost_usd: 1.2,
+            estimated_avg_request_cost_usd: 0.12,
+            estimated_cost_request_count: 10,
+          },
+        ],
+        timeline: [],
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['packycode']}
+        status={status}
+        usageStatistics={usageStatistics}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('daily: $120.36 / $120')
+  })
+
+  it('shows codex-for dashboard daily and monthly values', () => {
+    const status = buildStatus()
+    status.providers = {
+      'codex-for.me': {
+        status: 'healthy',
+        consecutive_failures: 0,
+        cooldown_until_unix_ms: 0,
+        last_error: '',
+        last_ok_at_unix_ms: 0,
+        last_fail_at_unix_ms: 0,
+      },
+    }
+    status.quota = {
+      'codex-for.me': {
+        kind: 'budget_info',
+        updated_at_unix_ms: 1234,
+        remaining: 5959.08,
+        today_used: null,
+        today_added: null,
+        daily_spent_usd: 26.03,
+        daily_budget_usd: 200,
+        weekly_spent_usd: null,
+        weekly_budget_usd: null,
+        monthly_spent_usd: 40.92,
+        monthly_budget_usd: 6000.304,
+        package_expires_at_unix_ms: 1_900_000_000_000,
+        last_error: '',
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['codex-for.me']}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('daily: $26.03 / $200')
+    expect(html).toContain('monthly: $40.92 / $6,000.304')
+    expect(html).not.toContain('balance: $5,959.08')
+    expect(html).not.toContain('account summary')
   })
 })

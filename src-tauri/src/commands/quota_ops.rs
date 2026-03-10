@@ -1,4 +1,13 @@
+use serde::{Deserialize, Serialize};
+
 const USAGE_REFRESH_SUMMARY_WINDOW_MS: u64 = 30 * 60 * 1000;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct UsageAuthPayload {
+    pub token: String,
+    pub username: String,
+    pub password: String,
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct UsageRefreshSummaryWindow {
@@ -212,15 +221,102 @@ pub(crate) fn clear_usage_token(
 }
 
 #[tauri::command]
+pub(crate) fn get_usage_auth(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+) -> Result<UsageAuthPayload, String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let token = state.secrets.get_usage_token(&provider).unwrap_or_default();
+    let login = state.secrets.get_usage_login(&provider);
+    Ok(UsageAuthPayload {
+        token,
+        username: login
+            .as_ref()
+            .map(|entry| entry.username.clone())
+            .unwrap_or_default(),
+        password: login.map(|entry| entry.password).unwrap_or_default(),
+    })
+}
+
+#[tauri::command]
+pub(crate) fn set_usage_auth(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    token: String,
+    username: String,
+    password: String,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let normalized_token = token.trim().to_string();
+    let normalized_username = username.trim().to_string();
+    if normalized_token.is_empty() {
+        state.secrets.clear_usage_token(&provider)?;
+    } else {
+        state.secrets.set_usage_token(&provider, &normalized_token)?;
+    }
+    if normalized_username.is_empty() || password.is_empty() {
+        state.secrets.clear_usage_login(&provider)?;
+    } else {
+        state
+            .secrets
+            .set_usage_login(&provider, &normalized_username, &password)?;
+    }
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        "config.usage_auth_updated",
+        "usage auth updated (user-data/secrets.json)",
+        serde_json::json!({
+            "has_token": !normalized_token.is_empty(),
+            "has_login": !normalized_username.is_empty() && !password.is_empty(),
+        }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn clear_usage_auth(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    state.secrets.clear_usage_token(&provider)?;
+    state.secrets.clear_usage_login(&provider)?;
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        "config.usage_auth_cleared",
+        "usage auth cleared (user-data/secrets.json)",
+        serde_json::Value::Null,
+    );
+    Ok(())
+}
+
+#[tauri::command]
 pub(crate) fn set_usage_base_url(
     state: tauri::State<'_, app_state::AppState>,
     provider: String,
     url: String,
 ) -> Result<(), String> {
-    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+    let provider_base_url = {
+        let cfg = state.gateway.cfg.read();
+        cfg.providers
+            .get(&provider)
+            .map(|provider| provider.base_url.clone())
+    };
+    let Some(provider_base_url) = provider_base_url else {
         return Err(format!("unknown provider: {provider}"));
-    }
-    let u = url.trim().trim_end_matches('/').to_string();
+    };
+    let parsed = url.trim().trim_end_matches('/').to_string();
+    let u = crate::orchestrator::quota::canonical_packycode_usage_base(&provider_base_url)
+        .filter(|_| crate::orchestrator::quota::canonical_packycode_usage_base(&parsed).is_some())
+        .unwrap_or(parsed);
     if u.is_empty() {
         return Err("url is required".to_string());
     }
@@ -259,12 +355,33 @@ pub(crate) fn clear_usage_base_url(
         }
     }
     persist_config(&state).map_err(|e| e.to_string())?;
+    crate::orchestrator::quota::clear_quota_snapshot(&state.gateway, &provider);
     state.gateway.store.add_event(
         &provider,
         "info",
         "config.usage_base_url_cleared",
         "usage base url cleared",
         serde_json::Value::Null,
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn set_usage_proxy_pool(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    proxies: Vec<String>,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    state.secrets.set_usage_proxy_pool(&provider, proxies.clone())?;
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        "config.usage_proxy_pool_updated",
+        "usage proxy pool updated",
+        serde_json::json!({ "count": proxies.len() }),
     );
     Ok(())
 }

@@ -4,13 +4,13 @@ import type { Config } from '../types'
 type Props = {
   open: boolean
   config: Config | null
-  allProviderPanelsOpen: boolean
-  setAllProviderPanels: (next: boolean) => void
   newProviderName: string
   newProviderBaseUrl: string
+  newProviderKey: string
   nextProviderPlaceholder: string
   setNewProviderName: (next: string) => void
   setNewProviderBaseUrl: (next: string) => void
+  setNewProviderKey: (next: string) => void
   onAddProvider: () => void
   onOpenGroupManager: () => void
   onClose: () => void
@@ -25,13 +25,13 @@ type Props = {
 export function ConfigModal({
   open,
   config,
-  allProviderPanelsOpen,
-  setAllProviderPanels,
   newProviderName,
   newProviderBaseUrl,
+  newProviderKey,
   nextProviderPlaceholder,
   setNewProviderName,
   setNewProviderBaseUrl,
+  setNewProviderKey,
   onAddProvider,
   onOpenGroupManager,
   onClose,
@@ -47,13 +47,13 @@ export function ConfigModal({
     <ModalBackdrop onClose={onClose}>
       <div className="aoModal aoModalWide" onClick={(e) => e.stopPropagation()}>
         <div className="aoModalHeader">
-          <div className="aoModalTitle">Config</div>
+          <div className="aoConfigHeaderMeta">
+            <div className="aoModalTitle">Config</div>
+            <div className="aoModalSub aoConfigHeaderSub">keys are stored in ./user-data/secrets.json</div>
+          </div>
           <div className="aoRow aoConfigHeaderActions">
             <button className="aoBtn aoBtnPrimary aoConfigHeaderBtn" onClick={onOpenGroupManager}>
               Group Manager
-            </button>
-            <button className="aoBtn aoConfigHeaderBtn" onClick={() => setAllProviderPanels(!allProviderPanelsOpen)}>
-              {allProviderPanelsOpen ? 'Hide all' : 'Show all'}
             </button>
             <span className="aoConfigHeaderDivider" aria-hidden="true" />
             <button className="aoBtn aoConfigHeaderBtn aoConfigHeaderBtnClose" onClick={onClose}>
@@ -63,7 +63,6 @@ export function ConfigModal({
         </div>
         <div className="aoModalBody aoConfigModalBody">
           <div className="aoConfigStickyAddProvider">
-            <div className="aoModalSub aoConfigStickySub">keys are stored in ./user-data/secrets.json</div>
             <div className="aoCard aoConfigCard">
               <div className="aoConfigDeck">
                 <div className="aoConfigPanel">
@@ -80,6 +79,13 @@ export function ConfigModal({
                       placeholder="Base URL (e.g. https://api.openai.com/v1)"
                       value={newProviderBaseUrl}
                       onChange={(e) => setNewProviderBaseUrl(e.target.value)}
+                    />
+                    <input
+                      className="aoInput"
+                      type="password"
+                      placeholder="Key"
+                      value={newProviderKey}
+                      onChange={(e) => setNewProviderKey(e.target.value)}
                     />
                     <button className="aoBtn aoBtnPrimary" onClick={onAddProvider}>
                       Add

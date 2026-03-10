@@ -401,6 +401,7 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route("/responses", post(responses))
         .route("/codex-web", get(codex_web_index))
         .route("/codex-web/app.js", get(codex_web_app_js))
+        .route("/codex-web/modules/*path", get(codex_web_module_js))
         .route("/codex-web/codex-icon.svg", get(codex_web_icon_svg))
         .route("/favicon.ico", get(codex_web_favicon))
         .route("/ao-icon.png", get(codex_web_logo_png))
@@ -483,10 +484,42 @@ fn write_gateway_startup_diag(stage: &str, addr: Option<SocketAddr>, detail: Opt
 }
 
 include!("gateway/request_helpers.rs");
+mod web_codex_actions;
+mod web_codex_assets;
+mod web_codex_auth;
 mod web_codex_history;
 mod web_codex_home;
+mod web_codex_hosts;
+mod web_codex_meta;
+mod web_codex_rollout_import;
+mod web_codex_runtime;
+mod web_codex_storage;
+mod web_codex_thread_routes;
 mod web_codex_threads;
+mod web_codex_ws;
 include!("gateway/web_codex.rs");
+use self::web_codex_actions::{
+    codex_approval_resolve, codex_attachments_upload, codex_rpc_proxy, codex_slash_execute,
+    codex_turn_interrupt, codex_turn_start, codex_turn_stream, codex_user_input_resolve,
+};
+use self::web_codex_assets::{
+    codex_web_app_js, codex_web_favicon, codex_web_icon_svg, codex_web_index, codex_web_logo_png,
+    codex_web_module_js,
+};
+use self::web_codex_hosts::{
+    codex_hosts_create, codex_hosts_delete, codex_hosts_list, codex_hosts_update,
+};
+use self::web_codex_meta::{
+    codex_cli_config, codex_file, codex_folders_list, codex_health, codex_models,
+    codex_pending_approvals, codex_pending_user_inputs,
+};
+use self::web_codex_runtime::{codex_terminal_exec, codex_version_info};
+#[cfg(test)]
+use self::web_codex_thread_routes::codex_test_block_history;
+use self::web_codex_thread_routes::{
+    codex_thread_history, codex_thread_resume, codex_threads_create, codex_threads_list,
+};
+use self::web_codex_ws::{codex_auth_verify, codex_ws};
 const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
 
 #[cfg(test)]

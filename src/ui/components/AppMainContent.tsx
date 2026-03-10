@@ -43,6 +43,7 @@ type Props = {
   onEventLogFocusRequestHandled: (nonce: number) => void
   usageProps: any
   switchboardProps: any
+  usageStatistics?: any
 }
 
 export function AppMainContent(props: Props) {
@@ -83,6 +84,7 @@ export function AppMainContent(props: Props) {
     onEventLogFocusRequestHandled,
     usageProps,
     switchboardProps,
+    usageStatistics,
   } = props
   if (activePage === 'usage_statistics') {
     return <UsageAnalyticsPanel usageProps={usageProps} />
@@ -144,6 +146,7 @@ export function AppMainContent(props: Props) {
         refreshingProviders={refreshingProviders}
         onRefreshQuota={onRefreshQuota}
         onOpenLastErrorInEventLog={onOpenLastErrorInEventLog}
+        usageStatistics={usageStatistics}
         clientSessions={clientSessions ?? []}
         updatingSessionPref={updatingSessionPref}
         onSetSessionPreferred={onSetSessionPreferred}

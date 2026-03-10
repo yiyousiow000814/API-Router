@@ -94,7 +94,7 @@ function buildStatusWithMixedWindows(): Status {
 }
 
 describe('ProviderGroupManagerModal', () => {
-  it('shows only hard-cap periods that are visible in any group member usage window', () => {
+  it('shows email actions and only visible cap periods for group members', () => {
     const html = renderToStaticMarkup(
       <ProviderGroupManagerModal
         open
@@ -106,11 +106,13 @@ describe('ProviderGroupManagerModal', () => {
         onSetUsageBase={async () => {}}
         onClearUsageBase={async () => {}}
         onSetHardCap={async () => {}}
+        onOpenProviderEmailModal={() => {}}
       />,
     )
 
-    expect(html).toContain('daily hard cap')
-    expect(html).toContain('weekly hard cap')
-    expect(html).not.toContain('monthly hard cap')
+    expect(html).toContain('Email')
+    expect(html).toContain('daily cap')
+    expect(html).toContain('weekly cap')
+    expect(html).not.toContain('monthly cap')
   })
 })

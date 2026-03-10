@@ -91,7 +91,9 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
         .iter()
         .map(|(name, p)| {
             let key = state.secrets.get_provider_key(name);
+            let account_email = state.secrets.get_provider_account_email(name);
             let usage_token = state.secrets.get_usage_token(name);
+            let usage_login = state.secrets.get_usage_login(name);
             let manual_pricing = pricing.get(name).cloned();
             let quota_hard_cap = quota_hard_caps.get(name).copied().unwrap_or_default();
             let active_package = active_package_period(manual_pricing.as_ref(), now);
@@ -117,16 +119,21 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                   "group": p.group.clone(),
                   "disabled": p.disabled,
                   "usage_adapter": p.usage_adapter.clone(),
-                  "usage_base_url": p.usage_base_url.clone(),
+                  "usage_base_url": p.usage_base_url.clone().map(|value| {
+                    crate::orchestrator::quota::canonical_packycode_usage_base(&value)
+                        .unwrap_or(value)
+                  }),
                   "quota_hard_cap": quota_hard_cap,
                   "manual_pricing_mode": manual_mode.filter(|m| m != "none"),
                   "manual_pricing_amount_usd": manual_amount,
                   "manual_pricing_expires_at_unix_ms": active_package_expires,
                   "manual_gap_fill_mode": manual_pricing.as_ref().and_then(|v| v.gap_fill_mode.clone()),
                   "manual_gap_fill_amount_usd": manual_pricing.as_ref().and_then(|v| v.gap_fill_amount_usd),
+                  "account_email": account_email,
                   "has_key": has_key
                   ,"key_preview": key_preview,
-                  "has_usage_token": usage_token.is_some()
+                  "has_usage_token": usage_token.is_some(),
+                  "has_usage_login": usage_login.is_some()
                 }),
             )
         })
@@ -138,6 +145,47 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
       "providers": providers,
       "provider_order": cfg.provider_order
     })
+}
+
+#[tauri::command]
+pub(crate) fn set_provider_account_email(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    email: String,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    state
+        .secrets
+        .set_provider_account_email(&provider, &email)?;
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        "config.provider_account_email_updated",
+        "provider account email updated (user-data/secrets.json)",
+        serde_json::json!({ "has_email": !email.trim().is_empty() }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn clear_provider_account_email(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+) -> Result<(), String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    state.secrets.clear_provider_account_email(&provider)?;
+    state.gateway.store.add_event(
+        &provider,
+        "info",
+        "config.provider_account_email_cleared",
+        "provider account email cleared (user-data/secrets.json)",
+        serde_json::Value::Null,
+    );
+    Ok(())
 }
 
 #[tauri::command]

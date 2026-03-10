@@ -46,6 +46,71 @@ async fn health_and_status_work_without_upstream() {
 }
 
 #[tokio::test]
+async fn models_probe_does_not_update_last_ok_or_activity() {
+    use axum::routing::get;
+    use axum::{Json, Router as AxumRouter};
+    use tower::ServiceExt;
+
+    let app = AxumRouter::new().route(
+        "/v1/models",
+        get(|| async move {
+            Json(serde_json::json!({
+                "object": "list",
+                "data": [{ "id": "gpt-5", "object": "model" }]
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut cfg = AppConfig::default_config();
+    let provider = cfg
+        .providers
+        .get_mut("official")
+        .expect("official provider");
+    provider.base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("models response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    assert_eq!(state.last_activity_unix_ms.load(Ordering::Relaxed), 0);
+    let snapshot = state.router.snapshot(unix_ms());
+    let health = snapshot.get("official").expect("provider snapshot");
+    assert_eq!(health.last_ok_at_unix_ms, 0);
+    assert_eq!(health.status, "unknown");
+}
+
+#[tokio::test]
 async fn auth_verify_returns_while_history_read_is_blocked() {
     use std::sync::{mpsc, Arc, Condvar, Mutex as StdMutex};
     use std::time::Duration;

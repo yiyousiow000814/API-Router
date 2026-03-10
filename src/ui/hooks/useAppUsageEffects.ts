@@ -127,8 +127,8 @@ export function useAppUsageEffects(params: Params) {
   }, [refreshUsageHistory])
 
   useEffect(() => {
-    if (activePage !== 'usage_statistics') return
-    const enteringUsagePage = previousActivePageRef.current !== 'usage_statistics'
+    if (activePage !== 'usage_statistics' && activePage !== 'dashboard') return
+    const enteringUsagePage = previousActivePageRef.current !== activePage
     void refreshUsageStatistics({ silent: enteringUsagePage })
     const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), 15_000)
     return () => window.clearInterval(t)

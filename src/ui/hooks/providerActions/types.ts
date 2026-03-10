@@ -18,6 +18,29 @@ export type UsageBaseModalState = {
   effectiveValue: string
 }
 
+export type UsageAuthModalState = {
+  open: boolean
+  provider: string
+  baseUrl: string
+  token: string
+  username: string
+  password: string
+  loading: boolean
+  loadFailed: boolean
+}
+
+export type ProviderEmailModalState = {
+  open: boolean
+  provider: string
+  value: string
+}
+
+export type ProviderBaseUrlModalState = {
+  open: boolean
+  provider: string
+  value: string
+}
+
 export type UseProviderActionsParams = {
   config: Config | null
   status: Status | null
@@ -25,12 +48,20 @@ export type UseProviderActionsParams = {
   setConfig: Dispatch<SetStateAction<Config | null>>
   keyModal: KeyModalState
   usageBaseModal: UsageBaseModalState
+  usageAuthModal: UsageAuthModalState
+  providerEmailModal: ProviderEmailModalState
+  providerBaseUrlModal: ProviderBaseUrlModalState
   newProviderName: string
   newProviderBaseUrl: string
+  newProviderKey: string
   setKeyModal: Dispatch<SetStateAction<KeyModalState>>
   setUsageBaseModal: Dispatch<SetStateAction<UsageBaseModalState>>
+  setUsageAuthModal: Dispatch<SetStateAction<UsageAuthModalState>>
+  setProviderEmailModal: Dispatch<SetStateAction<ProviderEmailModalState>>
+  setProviderBaseUrlModal: Dispatch<SetStateAction<ProviderBaseUrlModalState>>
   setNewProviderName: Dispatch<SetStateAction<string>>
   setNewProviderBaseUrl: Dispatch<SetStateAction<string>>
+  setNewProviderKey: Dispatch<SetStateAction<string>>
   setRefreshingProviders: Dispatch<SetStateAction<Record<string, boolean>>>
   refreshStatus: (options?: { refreshSwapStatus?: boolean }) => Promise<void>
   refreshConfig: (options?: { refreshProviderSwitchStatus?: boolean }) => Promise<void>
@@ -52,6 +83,11 @@ export type UseProviderActionsResult = {
   refreshQuota: (name: string) => Promise<void>
   refreshQuotaAll: (opts?: RefreshQuotaOptions) => Promise<void>
   saveUsageBaseUrl: () => Promise<void>
+  saveUsageAuth: () => Promise<void>
+  clearUsageAuth: (provider: string) => Promise<void>
+  saveProviderEmail: () => Promise<void>
+  clearProviderEmail: (provider: string) => Promise<void>
+  saveProviderBaseUrl: () => Promise<void>
   setUsageBaseUrl: (provider: string, url: string) => Promise<void>
   clearUsageBaseUrl: (name: string) => Promise<void>
   setProviderQuotaHardCap: (
@@ -60,6 +96,9 @@ export type UseProviderActionsResult = {
     enabled: boolean,
   ) => Promise<void>
   openKeyModal: (provider: string) => Promise<void>
+  openProviderBaseUrlModal: (provider: string, current: string) => void
   openUsageBaseModal: (provider: string, current: string | null | undefined) => Promise<void>
+  openUsageAuthModal: (provider: string) => Promise<void>
+  openProviderEmailModal: (provider: string, current: string | null | undefined) => void
   addProvider: () => Promise<void>
 }

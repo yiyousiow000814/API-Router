@@ -59,7 +59,7 @@ export default defineConfig({
             let html = fs.readFileSync(htmlPath, 'utf-8')
             const gatewayToken = resolveGatewayTokenFromSecrets()
             html = html.replace(
-              '<script src="/codex-web/app.js"></script>',
+              '<script type="module" src="/codex-web/app.js"></script>',
               '<script type="module" src="/src/ui/codex-web-dev.js"></script>',
             )
             if (isSandboxWeb) {

@@ -13,7 +13,7 @@ pub struct Store {
     events_db: Arc<Mutex<rusqlite::Connection>>,
 }
 
-const LEDGER_DEFAULT: &str = r#"{"since_last_quota_refresh_input_tokens":0,"since_last_quota_refresh_output_tokens":0,"since_last_quota_refresh_total_tokens":0,"last_reset_unix_ms":0}"#;
+const LEDGER_DEFAULT: &str = r#"{"since_last_quota_refresh_requests":0,"since_last_quota_refresh_input_tokens":0,"since_last_quota_refresh_output_tokens":0,"since_last_quota_refresh_total_tokens":0,"last_reset_unix_ms":0}"#;
 
 #[derive(Clone, Copy)]
 struct UsageTokenIncrements {
@@ -1119,7 +1119,14 @@ impl Store {
 
         // Fast path: flush once at the end in add_usage_request.
         self.bump_metrics(provider, 1, 0, total_tokens, false);
-        self.bump_ledger(provider, input_tokens, output_tokens, total_tokens, false);
+        self.bump_ledger(
+            provider,
+            1,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            false,
+        );
         self.add_usage_request(
             provider,
             &Self::model_for_usage(response_obj, model_override),
@@ -1202,6 +1209,12 @@ impl Store {
         )?;
         let _ = self.db.flush();
         Ok(())
+    }
+
+    pub fn get_quota_snapshot(&self, provider: &str) -> Option<Value> {
+        let key = format!("quota:{provider}");
+        let raw = self.db.get(key.as_bytes()).ok()??;
+        serde_json::from_slice::<Value>(&raw).ok()
     }
 
     pub fn list_quota_snapshots(&self) -> serde_json::Value {
@@ -1362,6 +1375,7 @@ impl Store {
     pub fn reset_ledger(&self, provider: &str) {
         let key = format!("ledger:{provider}");
         let v = serde_json::json!({
+            "since_last_quota_refresh_requests": 0u64,
             "since_last_quota_refresh_input_tokens": 0u64,
             "since_last_quota_refresh_output_tokens": 0u64,
             "since_last_quota_refresh_total_tokens": 0u64,
@@ -1453,6 +1467,7 @@ impl Store {
     fn bump_ledger(
         &self,
         provider: &str,
+        request_inc: u64,
         input_inc: u64,
         output_inc: u64,
         total_inc: u64,
@@ -1461,6 +1476,7 @@ impl Store {
         let key = format!("ledger:{provider}");
         let cur = self.get_ledger(provider);
         let next = serde_json::json!({
+            "since_last_quota_refresh_requests": cur.get("since_last_quota_refresh_requests").and_then(|v| v.as_u64()).unwrap_or(0) + request_inc,
             "since_last_quota_refresh_input_tokens": cur.get("since_last_quota_refresh_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) + input_inc,
             "since_last_quota_refresh_output_tokens": cur.get("since_last_quota_refresh_output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) + output_inc,
             "since_last_quota_refresh_total_tokens": cur.get("since_last_quota_refresh_total_tokens").and_then(|v| v.as_u64()).unwrap_or(0) + total_inc,
