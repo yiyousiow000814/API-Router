@@ -483,9 +483,13 @@ async fn compute_quota_snapshot(
     kind: UsageKind,
     bases: &[String],
     credentials: QuotaCredentials<'_>,
-    package_expiry_strategy: PackageExpiryStrategy,
+    provider_strategy: PackageExpiryStrategy,
+    package_expiry_fetch_strategy: PackageExpiryStrategy,
 ) -> QuotaSnapshot {
-    if package_expiry_strategy == PackageExpiryStrategy::Packycode {
+    let should_use_packycode_usage_flow = provider_strategy == PackageExpiryStrategy::Packycode
+        && (credentials.usage_token.is_some()
+            || package_expiry_fetch_strategy == PackageExpiryStrategy::Packycode);
+    if should_use_packycode_usage_flow {
         let mut budget_errors: Vec<String> = Vec::new();
 
         if credentials.usage_token.is_some() {
@@ -511,7 +515,7 @@ async fn compute_quota_snapshot(
                     provider_name,
                     bases,
                     Some(token),
-                    package_expiry_strategy,
+                    package_expiry_fetch_strategy,
                 )
                 .await;
                 if budget.last_error.is_empty() {
@@ -528,7 +532,7 @@ async fn compute_quota_snapshot(
                     provider_name,
                     bases,
                     Some(token),
-                    package_expiry_strategy,
+                    package_expiry_fetch_strategy,
                 )
                 .await;
                 if budget.last_error.is_empty() {
@@ -545,7 +549,7 @@ async fn compute_quota_snapshot(
                 bases,
                 credentials.provider_key,
                 credentials.usage_token,
-                package_expiry_strategy,
+                package_expiry_fetch_strategy,
             )
             .await;
             if !stats.last_error.is_empty() && !budget_errors.is_empty() {
@@ -584,7 +588,7 @@ async fn compute_quota_snapshot(
                 bases,
                 credentials.provider_key,
                 credentials.usage_token,
-                package_expiry_strategy,
+                package_expiry_fetch_strategy,
             )
             .await
         }
@@ -594,7 +598,7 @@ async fn compute_quota_snapshot(
                 provider_name,
                 bases,
                 credentials.usage_token,
-                package_expiry_strategy,
+                package_expiry_fetch_strategy,
             )
             .await
         }
@@ -616,7 +620,7 @@ async fn compute_quota_snapshot(
                     bases,
                     credentials.provider_key,
                     credentials.usage_token,
-                    package_expiry_strategy,
+                    package_expiry_fetch_strategy,
                 )
                 .await;
                 if s.last_error.is_empty() {
@@ -627,7 +631,7 @@ async fn compute_quota_snapshot(
                         provider_name,
                         bases,
                         credentials.usage_token,
-                        package_expiry_strategy,
+                        package_expiry_fetch_strategy,
                     )
                     .await
                 } else if credentials.usage_login.is_some()
@@ -650,7 +654,7 @@ async fn compute_quota_snapshot(
                     provider_name,
                     bases,
                     credentials.usage_token,
-                    package_expiry_strategy,
+                    package_expiry_fetch_strategy,
                 )
                 .await
             } else if credentials.usage_login.is_some()
@@ -1165,10 +1169,11 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     let kind = detect_usage_kind(p);
     let cached_package_expiry =
         cached_future_package_expiry_for_provider(st, provider_name, unix_ms());
-    let package_expiry_strategy = if cached_package_expiry.is_some() {
+    let provider_strategy = detect_package_expiry_strategy(&p.base_url);
+    let package_expiry_fetch_strategy = if cached_package_expiry.is_some() {
         PackageExpiryStrategy::None
     } else {
-        detect_package_expiry_strategy(&p.base_url)
+        provider_strategy
     };
     let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token, &usage_login);
     let mut snap = compute_quota_snapshot(
@@ -1181,7 +1186,8 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
             usage_token: usage_token.as_deref(),
             usage_login: usage_login.as_ref(),
         },
-        package_expiry_strategy,
+        provider_strategy,
+        package_expiry_fetch_strategy,
     )
     .await;
     if snap.effective_usage_base.is_none() {
@@ -1223,10 +1229,11 @@ async fn refresh_quota_for_provider_cached(
     let kind = detect_usage_kind(p);
     let cached_package_expiry =
         cached_future_package_expiry_for_provider(st, provider_name, unix_ms());
-    let package_expiry_strategy = if cached_package_expiry.is_some() {
+    let provider_strategy = detect_package_expiry_strategy(&p.base_url);
+    let package_expiry_fetch_strategy = if cached_package_expiry.is_some() {
         PackageExpiryStrategy::None
     } else {
-        detect_package_expiry_strategy(&p.base_url)
+        provider_strategy
     };
     let key = usage_request_key(&bases, &provider_key, &usage_token, &usage_login, kind);
     let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token, &usage_login);
@@ -1243,7 +1250,8 @@ async fn refresh_quota_for_provider_cached(
                 usage_token: usage_token.as_deref(),
                 usage_login: usage_login.as_ref(),
             },
-            package_expiry_strategy,
+            provider_strategy,
+            package_expiry_fetch_strategy,
         )
         .await;
         if computed.effective_usage_base.is_none() {

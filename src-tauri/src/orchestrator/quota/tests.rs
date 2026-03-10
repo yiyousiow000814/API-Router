@@ -1018,6 +1018,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cached_future_package_expiry_does_not_disable_packycode_browser_fallback() {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        use axum::{Json, Router};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        clear_usage_base_refresh_gate();
+
+        let budget_hits = Arc::new(AtomicU64::new(0));
+        let token_stats_hits = Arc::new(AtomicU64::new(0));
+        let budget_hits_ref = Arc::clone(&budget_hits);
+        let token_stats_hits_ref = Arc::clone(&token_stats_hits);
+        let app = Router::new()
+            .route(
+                "/api/backend/users/info",
+                get(move || {
+                    let budget_hits_ref = Arc::clone(&budget_hits_ref);
+                    async move {
+                        budget_hits_ref.fetch_add(1, Ordering::Relaxed);
+                        (
+                            StatusCode::TOO_MANY_REQUESTS,
+                            Json(serde_json::json!({ "error": "rate limited" })),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/api/token-stats",
+                get(move || {
+                    let token_stats_hits_ref = Arc::clone(&token_stats_hits_ref);
+                    async move {
+                        token_stats_hits_ref.fetch_add(1, Ordering::Relaxed);
+                        (
+                            StatusCode::TOO_MANY_REQUESTS,
+                            Json(serde_json::json!({ "error": "rate limited" })),
+                        )
+                    }
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{}:{}", addr.ip(), addr.port());
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "api-key").unwrap();
+        secrets.set_usage_token("p1", "jwt-token").unwrap();
+        let st = mk_state(format!("{base}/v1"), secrets);
+        {
+            let mut cfg = st.cfg.write();
+            if let Some(p) = cfg.providers.get_mut("p1") {
+                p.base_url = "https://codex-api.packycode.com/v1".to_string();
+                p.usage_base_url = Some(base.clone());
+            }
+        }
+        st.store
+            .put_quota_snapshot(
+                "p1",
+                &serde_json::json!({
+                    "kind": "budget_info",
+                    "updated_at_unix_ms": unix_ms(),
+                    "daily_spent_usd": 1.0,
+                    "package_expires_at_unix_ms": unix_ms().saturating_add(24 * 60 * 60 * 1000),
+                    "last_error": "",
+                    "effective_usage_base": base
+                }),
+            )
+            .expect("seed cached quota snapshot");
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        handle.abort();
+        clear_usage_base_refresh_gate();
+
+        assert_eq!(snap.updated_at_unix_ms, 0);
+        assert!(snap.last_error.contains("packycode browser session:"));
+        assert!(snap.last_error.contains("packycode login token: http 429"));
+        assert!(
+            snap.last_error.contains("provider key:")
+                || snap.last_error.contains("token stats fallback:")
+        );
+    }
+
+    #[tokio::test]
     async fn package_expiry_does_not_propagate_to_non_packycode_provider() {
         let (base, _h) = start_mock_server(true).await;
         let tmp = tempfile::tempdir().unwrap();
