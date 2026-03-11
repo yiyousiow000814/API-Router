@@ -381,8 +381,6 @@ async fn finalize_packycode_login(
             "has_email": imported_email.is_some(),
         }),
     );
-    crate::orchestrator::quota::clear_usage_refresh_gate_for_provider(&gateway, &provider);
-    let _ = crate::orchestrator::quota::refresh_quota_for_provider(&gateway, &provider).await;
 }
 
 async fn monitor_packycode_login_browser(

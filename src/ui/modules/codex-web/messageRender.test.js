@@ -36,6 +36,18 @@ describe("messageRender", () => {
     );
   });
 
+  it("stops plain http links before adjacent chinese punctuation and text", () => {
+    const html = renderInlineMessageText(
+      "你去开http://127.0.0.1:5173/codex-web?debuglive=1，然后开目前的sessions"
+    );
+    expect(html).toContain(
+      '<a class="msgLink" href="http://127.0.0.1:5173/codex-web?debuglive=1"'
+    );
+    expect(html).toContain(
+      ">http://127.0.0.1:5173/codex-web?debuglive=1</a>，然后开目前的sessions"
+    );
+  });
+
   it("keeps inline command snippets as code when they only contain a trailing file path", () => {
     const command = "- npm test -- --run src/ui/utils/providerCardRenderer.test.tsx";
     expect(looksLikeFileRef(command)).toBe(false);
@@ -52,6 +64,21 @@ describe("messageRender", () => {
     expect(html).toContain("<ol>");
     expect(html).toContain("<ul>");
     expect(html).toContain('msgListItem depth-1');
+  });
+
+  it("does not create a phantom outer ordered item for indented top-level numbering", () => {
+    const html = renderMessageRichHtml(
+      [
+        "可以， build exe后 然后顺便修正你说的问题",
+        "",
+        "  1. 去掉/修正 request_user_input/list 这组无效请求",
+        "  2. 继续沿着新日志抓 socket_read_error 的真实断链原因",
+      ].join("\n")
+    );
+    expect((html.match(/<ol>/g) || []).length).toBe(1);
+    expect(html).not.toContain('<li class="msgListItem depth-0"><ol>');
+    expect(html).toContain("去掉/修正 request_user_input/list 这组无效请求");
+    expect(html).toContain("继续沿着新日志抓 socket_read_error 的真实断链原因");
   });
 
   it("renders non-chat roles as escaped paragraphs", () => {

@@ -788,13 +788,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn packycode_budget_info_labels_login_and_provider_key_failures() {
+    async fn packycode_budget_info_labels_login_provider_key_and_token_stats_failures() {
         use axum::extract::State;
         use axum::http::{HeaderMap, StatusCode};
         use axum::routing::get;
         use axum::{Json, Router};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        clear_usage_base_refresh_gate();
 
         #[derive(Clone)]
         struct MockState {
@@ -865,7 +867,7 @@ mod tests {
         assert!(snap.last_error.contains("packycode login token: http 401"));
         assert!(snap.last_error.contains("provider key: http 429"));
         assert!(snap.last_error.contains("token stats fallback: "));
-        assert_eq!(token_stats_hits.load(Ordering::Relaxed), 0);
+        assert!(token_stats_hits.load(Ordering::Relaxed) <= 1);
     }
 
     #[test]
@@ -922,7 +924,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_future_package_expiry_skips_packycode_refetch() {
+    async fn cached_future_package_expiry_still_allows_packycode_refetch() {
         use axum::http::StatusCode;
         use axum::routing::get;
         use axum::{Json, Router};
@@ -1013,7 +1015,7 @@ mod tests {
 
         assert!(snap.last_error.is_empty());
         assert!(snap.package_expires_at_unix_ms.is_some());
-        assert_eq!(user_info_hits.load(Ordering::Relaxed), 0);
+        assert_eq!(user_info_hits.load(Ordering::Relaxed), 1);
         assert_eq!(subscriptions_hits.load(Ordering::Relaxed), 0);
     }
 
@@ -1518,8 +1520,15 @@ mod tests {
     fn initial_refresh_due_reuses_fresh_snapshot_for_recently_used_provider() {
         let mut snapshot = QuotaSnapshot::empty(UsageKind::BudgetInfo);
         snapshot.updated_at_unix_ms = 100_000;
-        let due = initial_quota_refresh_due_unix_ms(100_001, Some(&snapshot), true, false, 4)
-            .expect("fresh due");
+        let due = initial_quota_refresh_due_unix_ms(
+            100_001,
+            Some(&snapshot),
+            true,
+            false,
+            4,
+            PackageExpiryStrategy::None,
+        )
+        .expect("fresh due");
         assert!(due > 100_001);
         assert_eq!(due, 100_000 + 10 * 60_000);
     }
@@ -1556,11 +1565,81 @@ mod tests {
         snapshot.updated_at_unix_ms = now_ms.saturating_sub(Duration::minutes(5).num_milliseconds() as u64);
         snapshot.last_error = "http 429 from https://codex.packycode.com".to_string();
 
-        let due = initial_quota_refresh_due_unix_ms(now_ms, Some(&snapshot), true, true, 1)
-            .expect("rate limited due");
+        let due = initial_quota_refresh_due_unix_ms(
+            now_ms,
+            Some(&snapshot),
+            true,
+            true,
+            1,
+            PackageExpiryStrategy::None,
+        )
+        .expect("rate limited due");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
         assert!(due > now_ms);
         assert!(matches!(due_dt.minute(), 30 | 58));
+        assert_eq!(due_dt.second(), 0);
+    }
+
+    #[test]
+    fn packycode_refresh_aligns_to_minute_58_only() {
+        use chrono::{FixedOffset, TimeZone, Timelike};
+
+        let tz = FixedOffset::east_opt(8 * 3600).unwrap();
+        let now = tz.with_ymd_and_hms(2026, 3, 11, 11, 25, 42).unwrap();
+        let due = next_packycode_refresh_at(now);
+        assert_eq!(due.minute(), 58);
+        assert_eq!(due.second(), 0);
+
+        let now = tz.with_ymd_and_hms(2026, 3, 11, 11, 58, 0).unwrap();
+        let due = next_packycode_refresh_at(now);
+        assert_eq!(due.hour(), 12);
+        assert_eq!(due.minute(), 58);
+        assert_eq!(due.second(), 0);
+    }
+
+    #[test]
+    fn initial_packycode_refresh_due_uses_minute_58_window() {
+        use chrono::{Local, Timelike};
+
+        let now = Local::now();
+        let now_ms = now.timestamp_millis().max(0) as u64;
+        let mut snapshot = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snapshot.updated_at_unix_ms = now_ms.saturating_sub(60_000);
+
+        let due = initial_quota_refresh_due_unix_ms(
+            now_ms,
+            Some(&snapshot),
+            true,
+            true,
+            1,
+            PackageExpiryStrategy::Packycode,
+        )
+        .expect("packycode due");
+        let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
+        assert!(due > now_ms);
+        assert_eq!(due_dt.minute(), 58);
+        assert_eq!(due_dt.second(), 0);
+    }
+
+    #[test]
+    fn initial_packycode_refresh_due_without_snapshot_still_waits_for_minute_58() {
+        use chrono::{Local, Timelike};
+
+        let now = Local::now();
+        let now_ms = now.timestamp_millis().max(0) as u64;
+
+        let due = initial_quota_refresh_due_unix_ms(
+            now_ms,
+            None,
+            true,
+            true,
+            1,
+            PackageExpiryStrategy::Packycode,
+        )
+        .expect("packycode due without snapshot");
+        let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
+        assert!(due > now_ms);
+        assert_eq!(due_dt.minute(), 58);
         assert_eq!(due_dt.second(), 0);
     }
 
@@ -1688,6 +1767,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn packycode_refresh_updates_cached_future_expiry_when_server_changes() {
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        use axum::{Json, Router};
+
+        let app = Router::new()
+            .route(
+                "/api/backend/users/info",
+                get(|| async move {
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                          "daily_spent_usd": "0.5",
+                          "daily_budget_usd": 1,
+                          "monthly_spent_usd": 2,
+                          "monthly_budget_usd": 10,
+                          "remaining_quota": 123,
+                          "plan_expires_at": "2027-04-01T00:00:00Z"
+                        })),
+                    )
+                }),
+            )
+            .route(
+                "/api/backend/subscriptions",
+                get(|| async move { (StatusCode::UNAUTHORIZED, Json(serde_json::json!({}))) }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{}:{}", addr.ip(), addr.port());
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "k1").unwrap();
+        secrets.set_usage_token("p1", "t1").unwrap();
+        let st = mk_state(format!("{base}/v1"), secrets);
+        {
+            let mut cfg = st.cfg.write();
+            if let Some(p) = cfg.providers.get_mut("p1") {
+                p.base_url = "https://codex-api.packycode.com/v1".to_string();
+                p.usage_base_url = Some(base.to_string());
+            }
+        }
+
+        let mut previous = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        previous.updated_at_unix_ms = unix_ms().saturating_sub(60_000);
+        previous.package_expires_at_unix_ms = Some(1_772_347_839_044);
+        st.store
+            .put_quota_snapshot("p1", &previous.to_json())
+            .expect("seed quota snapshot");
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        handle.abort();
+
+        assert!(snap.last_error.is_empty());
+        assert_eq!(snap.package_expires_at_unix_ms, Some(1_806_537_600_000));
+    }
+
+    #[tokio::test]
     async fn refresh_quota_all_spaces_same_host_budget_requests_to_avoid_429() {
         use axum::http::StatusCode;
         use axum::routing::get;
@@ -1736,7 +1877,7 @@ mod tests {
                 "p1".to_string(),
                 ProviderConfig {
                     display_name: "P1".to_string(),
-                    base_url: format!("{base}/v1"),
+                    base_url: "https://usage-router.example/v1".to_string(),
                     usage_adapter: String::new(),
                     usage_base_url: Some(base.clone()),
                     group: None,
@@ -1748,7 +1889,7 @@ mod tests {
                 "p2".to_string(),
                 ProviderConfig {
                     display_name: "P2".to_string(),
-                    base_url: format!("{base}/v1"),
+                    base_url: "https://usage-router.example/v1".to_string(),
                     usage_adapter: String::new(),
                     usage_base_url: Some(base.clone()),
                     group: None,

@@ -18,7 +18,7 @@ export function createCodexWebComposition(deps) {
     deps.MutationObserverRef ??
     (typeof MutationObserver === "undefined" ? class {} : MutationObserver);
 
-  const { api, connectWs, handleWsPayload, wsCall, wsSend } = deps.createWsClientModule({
+  const { api, connectWs, handleWsPayload, syncEventSubscription, wsCall, wsSend } = deps.createWsClientModule({
     state: deps.state,
     setStatus: deps.setStatus,
     toRecord: deps.toRecord,
@@ -113,6 +113,7 @@ export function createCodexWebComposition(deps) {
     addChat: chatTimeline.addChat,
     buildMsgNode: chatTimeline.buildMsgNode,
     clearChatMessages: chatTimeline.clearChatMessages,
+    syncEventSubscription,
   });
 
   const modelPicker = deps.createModelPickerModule({
@@ -227,10 +228,12 @@ export function createCodexWebComposition(deps) {
     wsCall,
     nextReqId: deps.nextReqId,
     connectWs,
+    syncEventSubscription,
     getPromptValue: deps.getPromptValue,
     getWorkspaceTarget: workspaceUi.getWorkspaceTarget,
     getStartCwdForWorkspace: workspaceUi.getStartCwdForWorkspace,
     waitPendingThreadResume: deps.waitPendingThreadResume,
+    registerPendingThreadResume: deps.registerPendingThreadResume,
     updateHeaderUi: deps.updateHeaderUi,
     addChat: chatTimeline.addChat,
     clearChatMessages: chatTimeline.clearChatMessages,

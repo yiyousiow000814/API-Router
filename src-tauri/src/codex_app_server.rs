@@ -13,12 +13,14 @@ use tokio::sync::Mutex;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const NOTIFICATION_QUEUE_CAP: usize = 2048;
+const DEBUG_EVENT_CAP: usize = 160;
 
 // Keyed by CODEX_HOME override ("" means inherit parent env / default process CODEX_HOME).
 // Value is per-home server mutex so different homes can run concurrently without global lock blocking.
 static APP_SERVERS: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<AppServer>>>>> =
     OnceLock::new();
 static NOTIFICATION_STATE: OnceLock<Mutex<HashMap<String, NotificationState>>> = OnceLock::new();
+static DEBUG_EVENTS: OnceLock<Mutex<VecDeque<Value>>> = OnceLock::new();
 
 #[cfg(test)]
 static TEST_REQUEST_HANDLER: OnceLock<
@@ -78,6 +80,96 @@ fn notification_state_map() -> &'static Mutex<HashMap<String, NotificationState>
     NOTIFICATION_STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn debug_event_queue() -> &'static Mutex<VecDeque<Value>> {
+    DEBUG_EVENTS.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+async fn push_debug_event(kind: &str, payload: Value) {
+    let mut guard = debug_event_queue().lock().await;
+    let obj = payload.as_object().cloned().unwrap_or_default();
+    let mut map = serde_json::Map::with_capacity(obj.len() + 2);
+    map.insert(
+        "at".to_string(),
+        serde_json::json!(crate::orchestrator::store::unix_ms()),
+    );
+    map.insert("kind".to_string(), Value::from(kind));
+    for (key, value) in obj {
+        map.insert(key, value);
+    }
+    let entry = Value::Object(map);
+    guard.push_back(entry.clone());
+    while guard.len() > DEBUG_EVENT_CAP {
+        guard.pop_front();
+    }
+    drop(guard);
+    let _ = crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(
+        &serde_json::json!({
+            "source": "backend.app",
+            "entry": entry,
+        }),
+    );
+}
+
+pub async fn debug_snapshot() -> Value {
+    let homes = {
+        let guard = notification_state_map().lock().await;
+        let mut homes = Vec::with_capacity(guard.len());
+        for (home, state) in guard.iter() {
+            let first_event_id = state.items.front().map(|(id, _)| *id);
+            let last = state.items.back();
+            let last_event_id = last.map(|(id, _)| *id);
+            let last_method = last
+                .and_then(|(_, value)| value.get("method"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let last_thread_id = last
+                .and_then(|(_, value)| extract_thread_id_for_debug(value))
+                .unwrap_or_default();
+            homes.push(serde_json::json!({
+                "home": home,
+                "queueLen": state.items.len(),
+                "nextEventId": state.next_event_id,
+                "firstEventId": first_event_id,
+                "lastEventId": last_event_id,
+                "lastMethod": last_method,
+                "lastThreadId": last_thread_id,
+            }));
+        }
+        homes
+    };
+    let recent = {
+        let guard = debug_event_queue().lock().await;
+        guard.iter().cloned().collect::<Vec<_>>()
+    };
+    serde_json::json!({
+        "homes": homes,
+        "recent": recent,
+    })
+}
+
+fn extract_thread_id_for_debug(value: &Value) -> Option<String> {
+    let params = value
+        .get("params")
+        .and_then(Value::as_object)
+        .or_else(|| value.get("payload").and_then(Value::as_object));
+    let direct = params
+        .and_then(|map| map.get("threadId").and_then(Value::as_str))
+        .or_else(|| params.and_then(|map| map.get("thread_id").and_then(Value::as_str)));
+    if let Some(thread_id) = direct {
+        return Some(thread_id.to_string());
+    }
+    let item = params
+        .and_then(|map| map.get("item").and_then(Value::as_object))
+        .or_else(|| params.and_then(|map| map.get("msg").and_then(Value::as_object)));
+    item.and_then(|map| {
+        map.get("threadId")
+            .and_then(Value::as_str)
+            .or_else(|| map.get("thread_id").and_then(Value::as_str))
+            .map(str::to_string)
+    })
+}
+
 async fn push_notification(codex_home: Option<&str>, value: Value) {
     let key = normalize_home_key(codex_home);
     let map = notification_state_map();
@@ -90,10 +182,29 @@ async fn push_notification(codex_home: Option<&str>, value: Value) {
         });
     let event_id = st.next_event_id;
     st.next_event_id = st.next_event_id.saturating_add(1);
+    let method = value
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let thread_id = extract_thread_id_for_debug(&value).unwrap_or_default();
     st.items.push_back((event_id, value));
     while st.items.len() > NOTIFICATION_QUEUE_CAP {
         st.items.pop_front();
     }
+    let queue_len = st.items.len();
+    drop(guard);
+    push_debug_event(
+        "app.notification.push",
+        serde_json::json!({
+            "home": key.as_ref(),
+            "eventId": event_id,
+            "method": method,
+            "threadId": thread_id,
+            "queueLen": queue_len,
+        }),
+    )
+    .await;
 }
 
 fn with_event_id(mut value: Value, event_id: u64) -> Value {
@@ -122,6 +233,19 @@ pub async fn replay_notifications_since_in_home(
     )
     .await
     {
+        push_debug_event(
+            "app.notification.replay.bridge",
+            serde_json::json!({
+                "home": normalize_home_key(codex_home).as_ref(),
+                "sinceEventId": since_event_id,
+                "max": max,
+                "count": result.0.len(),
+                "firstEventId": result.1,
+                "lastEventId": result.2,
+                "gap": result.3,
+            }),
+        )
+        .await;
         return result;
     }
     let cap = max.clamp(1, NOTIFICATION_QUEUE_CAP);
@@ -129,6 +253,16 @@ pub async fn replay_notifications_since_in_home(
     let map = notification_state_map();
     let guard = map.lock().await;
     let Some(st) = guard.get(key.as_ref()) else {
+        drop(guard);
+        push_debug_event(
+            "app.notification.replay.empty_home",
+            serde_json::json!({
+                "home": key.as_ref(),
+                "sinceEventId": since_event_id,
+                "max": cap,
+            }),
+        )
+        .await;
         return (Vec::new(), None, None, false);
     };
     let first = st.items.front().map(|(id, _)| *id);
@@ -146,6 +280,21 @@ pub async fn replay_notifications_since_in_home(
             break;
         }
     }
+    let out_len = out.len();
+    drop(guard);
+    push_debug_event(
+        "app.notification.replay",
+        serde_json::json!({
+            "home": key.as_ref(),
+            "sinceEventId": since_event_id,
+            "max": cap,
+            "count": out_len,
+            "firstEventId": first,
+            "lastEventId": last,
+            "gap": gap,
+        }),
+    )
+    .await;
     (out, first, last, gap)
 }
 
@@ -281,6 +430,9 @@ pub async fn _clear_notifications_for_test() {
     let map = notification_state_map();
     let mut guard = map.lock().await;
     guard.clear();
+    drop(guard);
+    let mut debug = debug_event_queue().lock().await;
+    debug.clear();
 }
 
 async fn write_json_line(
@@ -334,9 +486,27 @@ async fn route_stdout_lines(
             continue;
         }
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            push_debug_event(
+                "app.stdout.drop.invalid_json",
+                serde_json::json!({
+                    "home": codex_home.as_deref().unwrap_or(""),
+                    "raw": line.chars().take(180).collect::<String>(),
+                }),
+            )
+            .await;
             continue;
         };
         if let Some(id) = value.get("id").and_then(|v| v.as_i64()) {
+            push_debug_event(
+                "app.stdout.response",
+                serde_json::json!({
+                    "home": codex_home.as_deref().unwrap_or(""),
+                    "requestId": id,
+                    "hasResult": value.get("result").is_some(),
+                    "hasError": value.get("error").is_some(),
+                }),
+            )
+            .await;
             let _ = router.deliver(id, value).await;
             continue;
         }
@@ -356,14 +526,35 @@ struct AppServer {
 
 impl AppServer {
     async fn spawn(codex_home: Option<&str>) -> Result<Self, String> {
+        let home = normalize_home_key(codex_home).to_string();
+        push_debug_event(
+            "app.server.spawn.start",
+            serde_json::json!({
+                "home": home,
+            }),
+        )
+        .await;
         let mut cmd = build_codex_command(codex_home);
 
-        let mut child = cmd
+        let mut child = match cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("failed to start codex app-server: {e}"))?;
+        {
+            Ok(child) => child,
+            Err(error) => {
+                push_debug_event(
+                    "app.server.spawn.error",
+                    serde_json::json!({
+                        "home": home,
+                        "message": error.to_string(),
+                    }),
+                )
+                .await;
+                return Err(format!("failed to start codex app-server: {error}"));
+            }
+        };
 
         let stdin = child
             .stdin
@@ -410,6 +601,13 @@ impl AppServer {
         write_json_line(&mut server.stdin, &initialized).await?;
 
         server.next_id = 2;
+        push_debug_event(
+            "app.server.spawn.ok",
+            serde_json::json!({
+                "home": normalize_home_key(codex_home).as_ref(),
+            }),
+        )
+        .await;
         Ok(server)
     }
 
@@ -706,13 +904,43 @@ pub async fn request_in_home(
         return result;
     }
 
+    let home = normalize_home_key(codex_home).to_string();
+    let thread_id = extract_thread_id_for_debug(&serde_json::json!({
+        "params": params.clone(),
+    }))
+    .unwrap_or_default();
+    push_debug_event(
+        "app.request.start",
+        serde_json::json!({
+            "home": home,
+            "method": method,
+            "threadId": thread_id,
+        }),
+    )
+    .await;
+
     if let Some(result) =
         crate::codex_wsl_bridge::try_request_in_home(codex_home, method, params.clone()).await
     {
+        let is_ok = result.is_ok();
+        push_debug_event(
+            if is_ok {
+                "app.request.bridge.ok"
+            } else {
+                "app.request.bridge.error"
+            },
+            serde_json::json!({
+                "home": home,
+                "method": method,
+                "threadId": thread_id,
+                "message": result.as_ref().err().cloned().unwrap_or_default(),
+            }),
+        )
+        .await;
         return result;
     }
 
-    let key = normalize_home_key(codex_home).to_string();
+    let key = home.clone();
     let lock = APP_SERVERS.get_or_init(|| Mutex::new(HashMap::new()));
 
     let server_arc = loop {
@@ -739,6 +967,15 @@ pub async fn request_in_home(
             continue;
         }
 
+        push_debug_event(
+            "app.server.spawn.requested",
+            serde_json::json!({
+                "home": key,
+                "method": method,
+                "threadId": thread_id,
+            }),
+        )
+        .await;
         let spawned = AppServer::spawn(if key.is_empty() {
             None
         } else {
@@ -756,7 +993,18 @@ pub async fn request_in_home(
 
     let mut server = server_arc.lock().await;
     match server.request(method, params).await {
-        Ok(result) => Ok(result),
+        Ok(result) => {
+            push_debug_event(
+                "app.request.ok",
+                serde_json::json!({
+                    "home": home,
+                    "method": method,
+                    "threadId": thread_id,
+                }),
+            )
+            .await;
+            Ok(result)
+        }
         Err(e) => {
             let lower = e.to_ascii_lowercase();
             let should_respawn = lower.contains("closed")
@@ -773,6 +1021,17 @@ pub async fn request_in_home(
                     guard.remove(&key);
                 }
             }
+            push_debug_event(
+                "app.request.error",
+                serde_json::json!({
+                    "home": home,
+                    "method": method,
+                    "threadId": thread_id,
+                    "message": e.clone(),
+                    "respawn": should_respawn,
+                }),
+            )
+            .await;
             Err(e)
         }
     }

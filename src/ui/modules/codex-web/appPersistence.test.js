@@ -4,7 +4,7 @@ import { relativeTimeLabel, truncateLabel } from "./appPersistence.js";
 
 describe("appPersistence", () => {
   it("truncates labels with ellipsis", () => {
-    expect(truncateLabel("123456", 5)).toBe("1234â€¦");
+    expect(truncateLabel("123456", 5)).toBe("1234...");
   });
 
   it("formats relative time labels", () => {

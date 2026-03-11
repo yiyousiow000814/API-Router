@@ -1,19 +1,31 @@
 export function buildTurnPayload({
   activeThreadId,
   prompt,
+  workspace,
   startCwd,
   shouldSendStartCwd,
   selectedModel,
   selectedReasoningEffort,
 }) {
   return {
-    threadId: activeThreadId || null,
+    threadId: String(activeThreadId || "").trim(),
     prompt,
+    workspace:
+      workspace === "windows" || workspace === "wsl2" ? workspace : undefined,
     cwd: shouldSendStartCwd ? startCwd || undefined : undefined,
     model: selectedModel || undefined,
     reasoningEffort: selectedReasoningEffort || undefined,
-    collaborationMode: "default",
   };
+}
+
+function buildThreadResumeUrl(threadId, options = {}) {
+  const params = new URLSearchParams();
+  const workspace = String(options.workspace || "").trim();
+  const rolloutPath = String(options.rolloutPath || "").trim();
+  if (workspace === "windows" || workspace === "wsl2") params.set("workspace", workspace);
+  if (rolloutPath) params.set("rolloutPath", rolloutPath);
+  const query = params.toString();
+  return `/codex/threads/${encodeURIComponent(threadId)}/resume${query ? `?${query}` : ""}`;
 }
 
 export function createTurnActionsModule(deps) {
@@ -25,10 +37,12 @@ export function createTurnActionsModule(deps) {
     wsCall,
     nextReqId,
     connectWs,
+    syncEventSubscription = () => {},
     getPromptValue,
     getWorkspaceTarget,
     getStartCwdForWorkspace,
     waitPendingThreadResume,
+    registerPendingThreadResume = () => {},
     updateHeaderUi,
     addChat,
     clearChatMessages,
@@ -56,6 +70,35 @@ export function createTurnActionsModule(deps) {
     TextDecoderRef = TextDecoder,
   } = deps;
 
+  function syncPendingAssistantMessage(text) {
+    if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
+    const nextText = String(text || "");
+    const lastIndex = state.activeThreadMessages.length - 1;
+    const last = lastIndex >= 0 ? state.activeThreadMessages[lastIndex] : null;
+    if (!last || last.role !== "assistant" || String(last.kind || "").trim()) {
+      state.activeThreadMessages.push({ role: "assistant", text: nextText, kind: "" });
+      return;
+    }
+    state.activeThreadMessages[lastIndex] = {
+      ...last,
+      role: "assistant",
+      kind: "",
+      text: nextText,
+    };
+  }
+
+  function pushLiveDebugEvent(kind, payload = {}) {
+    if (!Array.isArray(state.liveDebugEvents)) state.liveDebugEvents = [];
+    state.liveDebugEvents.push({
+      at: Date.now(),
+      kind: String(kind || ""),
+      ...payload,
+    });
+    if (state.liveDebugEvents.length > 80) {
+      state.liveDebugEvents.splice(0, state.liveDebugEvents.length - 80);
+    }
+  }
+
   async function addHost() {
     if (blockInSandbox("host changes")) return;
     const name = byId("hostNameInput").value.trim();
@@ -75,6 +118,7 @@ export function createTurnActionsModule(deps) {
     setActiveThread("");
     state.activeThreadStarted = false;
     state.activeThreadWorkspace = workspace;
+    state.activeThreadRolloutPath = "";
     state.activeThreadTokenUsage = null;
     renderComposerContextLeft();
     clearChatMessages();
@@ -89,10 +133,13 @@ export function createTurnActionsModule(deps) {
       },
     });
     const id = data.id || data.threadId || data?.thread?.id || "";
+    const rolloutPath =
+      String(data?.thread?.path || data?.path || data?.rolloutPath || data?.rollout_path || "").trim();
     if (id) {
       setActiveThread(id);
       state.activeThreadStarted = false;
       state.activeThreadWorkspace = workspace;
+      state.activeThreadRolloutPath = rolloutPath;
       state.activeThreadTokenUsage = null;
       renderComposerContextLeft();
       clearChatMessages();
@@ -109,147 +156,95 @@ export function createTurnActionsModule(deps) {
     if (!prompt) return;
     const workspace = getWorkspaceTarget();
     const startCwd = getStartCwdForWorkspace(workspace);
-    const shouldSendStartCwd = !String(state.activeThreadId || "").trim();
     await waitPendingThreadResume(state.activeThreadId);
+    let activeThreadId = String(state.activeThreadId || "").trim();
+    if (!activeThreadId) {
+      const created = await api("/codex/threads", {
+        method: "POST",
+        body: {
+          workspace,
+          cwd: startCwd || undefined,
+        },
+      });
+      const createdRolloutPath = String(
+        created?.thread?.path || created?.path || created?.rolloutPath || created?.rollout_path || ""
+      ).trim();
+      activeThreadId = String(created?.id || created?.threadId || created?.thread?.id || "").trim();
+      if (!activeThreadId) throw new Error("turn start failed: missing threadId");
+      setActiveThread(activeThreadId);
+      state.activeThreadWorkspace = workspace;
+      state.activeThreadRolloutPath = createdRolloutPath;
+      state.activeThreadNeedsResume = false;
+    } else if (state.activeThreadNeedsResume) {
+      const resumePromise = api(
+        buildThreadResumeUrl(activeThreadId, {
+          workspace: state.activeThreadWorkspace || workspace,
+          rolloutPath: state.activeThreadRolloutPath,
+        }),
+        { method: "POST" }
+      );
+      registerPendingThreadResume(state.pendingThreadResumes, activeThreadId, resumePromise);
+      const resumed = await resumePromise;
+      const resumedThreadId = String(
+        resumed?.threadId || resumed?.thread_id || resumed?.id || resumed?.thread?.id || activeThreadId
+      ).trim();
+      if (!resumedThreadId) throw new Error("turn resume failed: missing threadId");
+      activeThreadId = resumedThreadId;
+      if (state.activeThreadId !== resumedThreadId) setActiveThread(resumedThreadId);
+      state.activeThreadNeedsResume = false;
+    }
     const payload = buildTurnPayload({
-      activeThreadId: state.activeThreadId,
+      activeThreadId,
       prompt,
+      workspace,
       startCwd,
-      shouldSendStartCwd,
+      shouldSendStartCwd: false,
       selectedModel: state.selectedModel,
       selectedReasoningEffort: state.selectedReasoningEffort,
     });
     const shouldAnimateWorkspaceBadge = !state.activeThreadStarted;
     state.activeThreadStarted = true;
     state.activeThreadWorkspace = workspace;
+    state.activeThreadPendingTurnThreadId = activeThreadId;
+    state.activeThreadPendingUserMessage = prompt;
+    state.activeThreadPendingAssistantMessage = "";
     updateHeaderUi(shouldAnimateWorkspaceBadge);
+    hideWelcomeCard();
     addChat("user", prompt);
+    if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
+    state.activeThreadMessages = state.activeThreadMessages.concat([{ role: "user", text: prompt, kind: "" }]);
     state.chatShouldStickToBottom = true;
     scrollToBottomReliable();
     setMainTab("chat");
     clearPromptValue();
     connectWs();
-
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      const reqId = nextReqId();
-      let text = "";
-      hideWelcomeCard();
-      const { msg, body } = createAssistantStreamingMessage();
-      if (!body) return;
-      byId("chatBox").appendChild(msg);
-      scheduleChatLiveFollow(900);
-      await new Promise((resolve) => {
-        state.wsReqHandlers.set(reqId, (evt) => {
-          const type = evt.type;
-          const data = evt.payload || {};
-          if (type === "delta") {
-            if (typeof data.text === "string" && data.text) {
-              const chunk = (text ? " " : "") + data.text;
-              text += chunk;
-              appendStreamingDelta(body, chunk);
-            }
-            scheduleChatLiveFollow(700);
-            if (typeof data.threadId === "string" && data.threadId) setActiveThread(data.threadId);
-          } else if (type === "completed") {
-            const result = data.result || {};
-            const threadId =
-              result.threadId || result.thread_id || result?.thread?.id || state.activeThreadId;
-            if (threadId) setActiveThread(threadId);
-            if (!text.trim()) text = normalizeTextPayload(result);
-            finalizeAssistantMessage(msg, body, text);
-            scheduleChatLiveFollow(800);
-            maybeNotifyTurnDone(text || "");
-            state.wsReqHandlers.delete(reqId);
-            resolve();
-          } else if (type === "error") {
-            setStatus(evt.message || "WS stream error.", true);
-            finalizeAssistantMessage(msg, body, text);
-            scheduleChatLiveFollow(800);
-            state.wsReqHandlers.delete(reqId);
-            resolve();
-          }
-        });
-        if (!wsSend({ type: "turn.stream", reqId, payload })) {
-          state.wsReqHandlers.delete(reqId);
-          resolve();
-        }
-      });
-      await refreshThreads();
-      return;
-    }
-
-    const headers = { "Content-Type": "application/json" };
-    if (state.token.trim()) headers.Authorization = `Bearer ${state.token.trim()}`;
-    const res = await fetch("/codex/turns/stream", {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
+    syncEventSubscription();
+    pushLiveDebugEvent("turn.send", {
+      threadId: activeThreadId,
+      usedWs: !!(state.ws && state.ws.readyState === WebSocket.OPEN),
+      promptChars: prompt.length,
     });
-    if (!res.ok || !res.body) {
-      const fallback = await api("/codex/turns/start", { method: "POST", body: payload });
-      const threadId =
-        fallback.threadId || fallback.thread_id || fallback?.thread?.id || state.activeThreadId;
-      if (threadId) setActiveThread(threadId);
-      addChat("assistant", normalizeTextPayload(fallback.result || fallback));
-      await refreshThreads();
-      return;
+    const started = await api("/codex/turns/start", { method: "POST", body: payload });
+    const startedThreadId = String(started?.threadId || started?.thread_id || activeThreadId).trim();
+    const startedRolloutPath = String(
+      started?.thread?.path ||
+        started?.path ||
+        started?.rolloutPath ||
+        started?.rollout_path ||
+        started?.result?.thread?.path ||
+        started?.result?.path ||
+        ""
+    ).trim();
+    if (startedThreadId) {
+      setActiveThread(startedThreadId);
+      state.activeThreadPendingTurnThreadId = startedThreadId;
+      state.activeThreadNeedsResume = false;
     }
-
-    let text = "";
-    hideWelcomeCard();
-    const { msg, body } = createAssistantStreamingMessage();
-    if (!body) return;
-    byId("chatBox").appendChild(msg);
-    scheduleChatLiveFollow(900);
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoderRef();
-    let sseBuffer = "";
-    while (true) {
-      const part = await reader.read();
-      if (part.done) break;
-      sseBuffer += decoder.decode(part.value, { stream: true });
-      const chunks = sseBuffer.split("\n\n");
-      sseBuffer = chunks.pop() || "";
-      for (const chunk of chunks) {
-        const lines = chunk.split("\n");
-        let evtName = "message";
-        let dataLine = "";
-        for (const line of lines) {
-          if (line.startsWith("event:")) evtName = line.slice(6).trim();
-          if (line.startsWith("data:")) dataLine += line.slice(5).trim();
-        }
-        if (!dataLine) continue;
-        let data = {};
-        try {
-          data = JSON.parse(dataLine);
-        } catch {
-          data = {};
-        }
-        if (evtName === "delta") {
-          const delta = typeof data.text === "string" ? data.text : "";
-          if (delta) {
-            const piece = (text ? " " : "") + delta;
-            text += piece;
-            appendStreamingDelta(body, piece);
-          }
-          scheduleChatLiveFollow(700);
-          if (typeof data.threadId === "string" && data.threadId) setActiveThread(data.threadId);
-        } else if (evtName === "completed") {
-          const result = data.result || {};
-          const threadId =
-            result.threadId || result.thread_id || result?.thread?.id || state.activeThreadId;
-          if (threadId) setActiveThread(threadId);
-          if (!text.trim()) text = normalizeTextPayload(result);
-          finalizeAssistantMessage(msg, body, text);
-          scheduleChatLiveFollow(800);
-          maybeNotifyTurnDone(text || "");
-        } else if (evtName === "error") {
-          setStatus(data?.message || "Stream error.", true);
-        }
-      }
-    }
-    if (body.childNodes.length === 0) finalizeAssistantMessage(msg, body, text);
+    if (startedRolloutPath) state.activeThreadRolloutPath = startedRolloutPath;
+    pushLiveDebugEvent("turn.start.ack", {
+      threadId: startedThreadId,
+      turnId: String(started?.turnId || started?.turn_id || started?.result?.turn?.id || "").trim(),
+    });
     await refreshThreads();
   }
 

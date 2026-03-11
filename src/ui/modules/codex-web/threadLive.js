@@ -2,6 +2,15 @@ export function resolveThreadAutoRefreshInterval(wsOpen, wsSubscribed, connected
   return wsOpen && wsSubscribed ? connectedMs : disconnectedMs;
 }
 
+export function shouldPollActiveThreadLive({
+  threadId,
+  activeMainTab,
+}) {
+  if (!String(threadId || "").trim()) return false;
+  if (String(activeMainTab || "").trim() !== "chat") return false;
+  return true;
+}
+
 export function createThreadLiveModule(deps) {
   const {
     state,
@@ -189,16 +198,22 @@ export function createThreadLiveModule(deps) {
   function startActiveThreadLivePollLoop() {
     setIntervalRef(async () => {
       const threadId = state.activeThreadId || "";
-      if (!threadId) return;
-      if (state.activeMainTab !== "chat") return;
       const wsOpen = !!(state.ws && state.ws.readyState === WebSocketRef.OPEN);
       const wsSubscribed = !!(wsOpen && state.wsSubscribedEvents);
-      if (wsSubscribed) {
-        const now = Date.now();
-        const last = Number(state.activeThreadLiveLastPollMs || 0);
-        if (now - last < ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS) return;
-        state.activeThreadLiveLastPollMs = now;
-      }
+      if (
+        !shouldPollActiveThreadLive({
+          threadId,
+          activeMainTab: state.activeMainTab,
+          wsReadyState: state.ws?.readyState,
+          wsSubscribed,
+          webSocketOpenValue: WebSocketRef.OPEN,
+        })
+      ) return;
+      const now = Date.now();
+      const last = Number(state.activeThreadLiveLastPollMs || 0);
+      const minInterval = wsSubscribed ? ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS : ACTIVE_THREAD_LIVE_POLL_MS;
+      if (now - last < minInterval) return;
+      state.activeThreadLiveLastPollMs = now;
       if (state.activeThreadLivePolling) return;
       state.activeThreadLivePolling = true;
       try {

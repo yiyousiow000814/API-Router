@@ -36,6 +36,7 @@ export function createConnectionFlowsModule(deps) {
 
   function renderHosts(items) {
     const list = byId("hostList");
+    if (!list) return;
     list.innerHTML = "";
     for (const host of items) {
       const row = document.createElement("div");
@@ -133,7 +134,16 @@ export function createConnectionFlowsModule(deps) {
   async function refreshPending() {
     connectWs();
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      wsSend({ type: "events.refresh", reqId: nextReqId(), payload: {} });
+      wsSend({
+        type: "events.refresh",
+        reqId: nextReqId(),
+        payload: {
+          workspace:
+            state.activeThreadWorkspace === "wsl2" || state.activeThreadWorkspace === "windows"
+              ? state.activeThreadWorkspace
+              : getWorkspaceTarget(),
+        },
+      });
       return;
     }
     await refreshPendingFromHttp();
@@ -166,7 +176,6 @@ export function createConnectionFlowsModule(deps) {
     await refreshCodexVersions().catch((e) => setStatus(e.message, true));
     await refreshAll();
     setMainTab("chat");
-    setMobileTab("chat");
   }
 
   return {

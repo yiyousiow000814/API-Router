@@ -14,6 +14,18 @@ export function createChatTimelineModule(deps) {
     documentRef = document,
   } = deps;
 
+  function pushLiveDebugEvent(kind, payload = {}) {
+    if (!Array.isArray(state.liveDebugEvents)) state.liveDebugEvents = [];
+    state.liveDebugEvents.push({
+      at: Date.now(),
+      kind: String(kind || ""),
+      ...payload,
+    });
+    if (state.liveDebugEvents.length > 120) {
+      state.liveDebugEvents.splice(0, state.liveDebugEvents.length - 120);
+    }
+  }
+
   function attachMessageDebugMeta(node, payload = {}) {
     if (!node) return node;
     try {
@@ -159,12 +171,23 @@ export function createChatTimelineModule(deps) {
       bodyNode.removeAttribute("data-streaming");
       bodyNode.__streaming = null;
     } catch {}
+    try {
+      msgNode.removeAttribute("data-live-assistant");
+      msgNode.removeAttribute("data-live-thread-id");
+    } catch {}
     bodyNode.innerHTML = renderMessageBody("assistant", finalText);
     attachMessageDebugMeta(msgNode, { role: "assistant", kind: "", text: finalText, source: "finalizeAssistantMessage" });
     wireMessageLinks(msgNode);
   }
 
   function clearChatMessages(options = {}) {
+    pushLiveDebugEvent("chat.clear", {
+      activeThreadId: String(state.activeThreadId || ""),
+      pendingThreadId: String(state.activeThreadPendingTurnThreadId || ""),
+      pendingUser: String(state.activeThreadPendingUserMessage || ""),
+      pendingAssistant: String(state.activeThreadPendingAssistantMessage || ""),
+      preservePendingTurn: !!(options && options.preservePendingTurn === true),
+    });
     const box = byId("chatBox");
     if (!box) return;
     const preserveScroll = options && options.preserveScroll === true;
@@ -177,6 +200,11 @@ export function createChatTimelineModule(deps) {
     if (!preserveScroll) box.scrollTop = 0;
     state.activeThreadRenderSig = "";
     state.activeThreadMessages = [];
+    if (!(options && options.preservePendingTurn === true)) {
+      state.activeThreadPendingTurnThreadId = "";
+      state.activeThreadPendingUserMessage = "";
+      state.activeThreadPendingAssistantMessage = "";
+    }
     state.activeThreadLiveAssistantThreadId = "";
     state.activeThreadLiveAssistantIndex = -1;
     state.activeThreadLiveAssistantMsgNode = null;

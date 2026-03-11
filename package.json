@@ -25,6 +25,8 @@
     "ui:e2e:codex-threadlist-open-guard": "node scripts/codex-web-e2e-threadlist-open-guard.mjs",
     "ui:e2e:codex-open-thread-history-only": "node scripts/codex-web-e2e-open-thread-history-only.mjs",
     "ui:e2e:codex-history-render": "node scripts/codex-web-e2e-history-render.mjs",
+    "ui:e2e:codex-live-thread-sync": "node scripts/codex-web-e2e-live-thread-sync.mjs",
+    "ui:e2e:codex-send-turn-live": "node scripts/codex-web-e2e-send-turn-live.mjs",
     "check:codex-open-latency": "node scripts/benchmark-thread-open-latency.mjs --threads 1 --samples 3 --max-visible-ms 3000",
     "e2e:build-root-exe-restart": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-root-exe.e2e.ps1",
     "backend:check": "node scripts/run-with-win-sdk.mjs cargo test --manifest-path src-tauri/Cargo.toml --locked",

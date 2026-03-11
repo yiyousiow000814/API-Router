@@ -410,6 +410,33 @@ fn next_rate_limited_refresh_due_unix_ms(now_ms: u64) -> u64 {
     next_rate_limited_refresh_at(now).timestamp_millis().max(0) as u64
 }
 
+fn next_packycode_refresh_at<Tz>(now: chrono::DateTime<Tz>) -> chrono::DateTime<Tz>
+where
+    Tz: chrono::TimeZone,
+    Tz::Offset: Copy,
+{
+    let base = now
+        .with_second(0)
+        .and_then(|dt| dt.with_nanosecond(0))
+        .unwrap_or(now);
+    if base.minute() < 58 {
+        return base.with_minute(58).unwrap_or(base);
+    }
+    (base + chrono::Duration::hours(1))
+        .with_minute(58)
+        .and_then(|dt| dt.with_second(0))
+        .and_then(|dt| dt.with_nanosecond(0))
+        .unwrap_or(base + chrono::Duration::hours(1))
+}
+
+fn next_packycode_refresh_due_unix_ms(now_ms: u64) -> u64 {
+    let now = chrono::Local
+        .timestamp_millis_opt(now_ms as i64)
+        .single()
+        .unwrap_or_else(chrono::Local::now);
+    next_packycode_refresh_at(now).timestamp_millis().max(0) as u64
+}
+
 include!("quota/base_resolution.rs");
 include!("quota/package_expiry.rs");
 pub async fn effective_usage_base(st: &GatewayState, provider_name: &str) -> Option<String> {
@@ -907,6 +934,10 @@ fn can_refresh_quota_for_provider(
     provider_key.is_some() || usage_token.is_some() || usage_login.is_some()
 }
 
+pub(crate) fn uses_packycode_usage_schedule(provider: &ProviderConfig) -> bool {
+    detect_package_expiry_strategy(&provider.base_url) == PackageExpiryStrategy::Packycode
+}
+
 fn quota_refresh_interval_ms(
     now_ms: u64,
     is_active_provider: bool,
@@ -914,7 +945,11 @@ fn quota_refresh_interval_ms(
     has_successful_snapshot: bool,
     shared_provider_count: usize,
     last_error: &str,
+    provider_strategy: PackageExpiryStrategy,
 ) -> u64 {
+    if provider_strategy == PackageExpiryStrategy::Packycode {
+        return next_packycode_refresh_due_unix_ms(now_ms).saturating_sub(now_ms);
+    }
     if is_rate_limited_quota_error(last_error) {
         return next_rate_limited_refresh_due_unix_ms(now_ms).saturating_sub(now_ms);
     }
@@ -934,7 +969,11 @@ fn initial_quota_refresh_due_unix_ms(
     is_active_provider: bool,
     is_preferred_provider: bool,
     shared_provider_count: usize,
+    provider_strategy: PackageExpiryStrategy,
 ) -> Option<u64> {
+    if provider_strategy == PackageExpiryStrategy::Packycode {
+        return Some(next_packycode_refresh_due_unix_ms(now_ms));
+    }
     let existing = existing_snapshot?;
     if existing.updated_at_unix_ms == 0 {
         return None;
@@ -1170,7 +1209,9 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     let cached_package_expiry =
         cached_future_package_expiry_for_provider(st, provider_name, unix_ms());
     let provider_strategy = detect_package_expiry_strategy(&p.base_url);
-    let package_expiry_fetch_strategy = if cached_package_expiry.is_some() {
+    let package_expiry_fetch_strategy = if cached_package_expiry.is_some()
+        && provider_strategy != PackageExpiryStrategy::Packycode
+    {
         PackageExpiryStrategy::None
     } else {
         provider_strategy
@@ -1230,7 +1271,9 @@ async fn refresh_quota_for_provider_cached(
     let cached_package_expiry =
         cached_future_package_expiry_for_provider(st, provider_name, unix_ms());
     let provider_strategy = detect_package_expiry_strategy(&p.base_url);
-    let package_expiry_fetch_strategy = if cached_package_expiry.is_some() {
+    let package_expiry_fetch_strategy = if cached_package_expiry.is_some()
+        && provider_strategy != PackageExpiryStrategy::Packycode
+    {
         PackageExpiryStrategy::None
     } else {
         provider_strategy
@@ -1350,8 +1393,8 @@ pub async fn refresh_quota_all_with_summary(st: &GatewayState) -> (usize, usize,
             err += 1;
             failed.push(name.clone());
         }
-        // Manual/all refresh: keep a small delay so we don't look like a burst/DDOS.
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        // Manual/all refresh: space requests enough to avoid tripping shared usage hosts.
+        tokio::time::sleep(Duration::from_millis(USAGE_BASE_MIN_GAP_MS)).await;
     }
 
     (ok, err, failed)
@@ -1414,6 +1457,7 @@ pub async fn run_quota_scheduler(st: GatewayState) {
                     is_recently_used,
                     name == &cfg.routing.preferred_provider,
                     shared_provider_count,
+                    detect_package_expiry_strategy(&p.base_url),
                 )
                 .unwrap_or(0)
             });
@@ -1433,6 +1477,7 @@ pub async fn run_quota_scheduler(st: GatewayState) {
                 previous_success,
                 shared_provider_count,
                 &snap.last_error,
+                detect_package_expiry_strategy(&p.base_url),
             );
             next_refresh_unix_ms.insert(name.clone(), now.saturating_add(jitter_ms));
 

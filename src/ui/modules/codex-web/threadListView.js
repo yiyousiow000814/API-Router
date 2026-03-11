@@ -388,6 +388,7 @@ export function createThreadListViewModule(deps) {
         setMainTab("chat");
         setMobileTab("chat");
         setActiveThread(id);
+        state.activeThreadNeedsResume = true;
         const rolloutPath = String(thread?.path || "").trim();
         state.activeThreadRolloutPath = rolloutPath;
         setChatOpening(true);

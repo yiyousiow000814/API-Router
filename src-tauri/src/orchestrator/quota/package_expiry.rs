@@ -45,6 +45,7 @@ async fn fetch_packycode_package_expiry(
     preferred_base: Option<&str>,
     budget_root: Option<&Value>,
 ) -> Option<u64> {
+    let fetched_budget_root = budget_root.is_some();
     if let Some(root) = budget_root {
         if let Some(expiry) = extract_packycode_package_expiry_from_value(root) {
             return Some(expiry);
@@ -70,10 +71,16 @@ async fn fetch_packycode_package_expiry(
     }
 
     for base in ordered_bases {
-        if let Some(found) = fetch_packycode_expiry_from_user_info(st, provider_name, &base, token).await {
-            return Some(found);
+        if !fetched_budget_root {
+            if let Some(found) =
+                fetch_packycode_expiry_from_user_info(st, provider_name, &base, token).await
+            {
+                return Some(found);
+            }
         }
-        if let Some(found) = fetch_packycode_expiry_from_subscriptions(st, provider_name, &base, token).await {
+        if let Some(found) =
+            fetch_packycode_expiry_from_subscriptions(st, provider_name, &base, token).await
+        {
             return Some(found);
         }
     }
@@ -89,9 +96,6 @@ async fn fetch_packycode_expiry_from_user_info(
     const PACKAGE_EXPIRY_TIMEOUT_SECS: u64 = 8;
     let client = build_usage_http_client(st, provider_name).ok()?;
     let url = format!("{base}/api/backend/users/info");
-    if wait_for_usage_base_refresh_slot(base).await.is_err() {
-        return None;
-    }
     let resp = client
         .get(url)
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
@@ -121,9 +125,6 @@ async fn fetch_packycode_expiry_from_subscriptions(
     const PACKAGE_EXPIRY_TIMEOUT_SECS: u64 = 8;
     let client = build_usage_http_client(st, provider_name).ok()?;
     let url = format!("{base}/api/backend/subscriptions?page=1&per_page=50");
-    if wait_for_usage_base_refresh_slot(base).await.is_err() {
-        return None;
-    }
     let resp = client
         .get(url)
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))

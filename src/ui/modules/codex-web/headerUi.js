@@ -67,6 +67,21 @@ export function pickLatestModelId(options) {
   return String(best?.id || "").trim();
 }
 
+export function classifyStatusBadge(message, isWarn = false) {
+  const text = String(message || "").trim().toLowerCase();
+  if (
+    /connected|ok|sent|selected|resumed|running|receiving|live|sync|approval|input requested|completed|refreshing|loading|opened|ready/.test(
+      text
+    )
+  ) {
+    return { label: "Connected", warn: false };
+  }
+  if (isWarn || /error|failed|timeout|closed|disabled|cancelled|attention/.test(text)) {
+    return { label: "Attention", warn: true };
+  }
+  return { label: "Disconnected", warn: true };
+}
+
 export function createHeaderUiModule(deps) {
   const {
     state,
@@ -88,15 +103,12 @@ export function createHeaderUiModule(deps) {
     if (statusLine) statusLine.textContent = message || "";
     const badge = byId("statusBadge");
     if (!badge) return;
-    if (/connected|ok|sent|selected|resumed/i.test(message || "")) {
-      badge.textContent = "Connected";
-      badge.classList.remove("warn");
-    } else if (isWarn || /error|failed|timeout|closed|disabled/i.test(message)) {
-      badge.textContent = "Attention";
+    const next = classifyStatusBadge(message, isWarn);
+    badge.textContent = next.label;
+    if (next.warn) {
       badge.classList.add("warn");
     } else {
-      badge.textContent = "Disconnected";
-      badge.classList.add("warn");
+      badge.classList.remove("warn");
     }
   }
 

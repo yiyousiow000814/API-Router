@@ -46,6 +46,8 @@ const WEB_CODEX_MOBILE_SHELL_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/mobileShell.js");
 const WEB_CODEX_MODEL_PICKER_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/modelPicker.js");
+const WEB_CODEX_NOTIFICATION_ROUTING_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/notificationRouting.js");
 const WEB_CODEX_PROMPT_STATE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/promptState.js");
 const WEB_CODEX_THREAD_LIST_REFRESH_JS: &str =
@@ -89,6 +91,7 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/messageRender.js" => Some(WEB_CODEX_MESSAGE_RENDER_JS),
         "codex-web/mobileShell.js" => Some(WEB_CODEX_MOBILE_SHELL_JS),
         "codex-web/modelPicker.js" => Some(WEB_CODEX_MODEL_PICKER_JS),
+        "codex-web/notificationRouting.js" => Some(WEB_CODEX_NOTIFICATION_ROUTING_JS),
         "codex-web/pendingThreadResume.js" => Some(WEB_CODEX_PENDING_THREAD_RESUME_JS),
         "codex-web/promptState.js" => Some(WEB_CODEX_PROMPT_STATE_JS),
         "codex-web/threadListRefresh.js" => Some(WEB_CODEX_THREAD_LIST_REFRESH_JS),
@@ -204,6 +207,7 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/messageData.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/modelPicker.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/mobileShell.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/notificationRouting.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadListRefresh.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadLive.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadMeta.js").is_some());

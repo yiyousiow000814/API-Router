@@ -11,16 +11,55 @@ use serde::Deserialize;
 #[serde(rename_all = "camelCase")]
 pub(super) struct TurnStartRequest {
     #[serde(default)]
-    thread_id: Option<String>,
-    prompt: String,
+    pub(super) thread_id: Option<String>,
+    pub(super) prompt: String,
     #[serde(default)]
-    cwd: Option<String>,
+    pub(super) workspace: Option<String>,
     #[serde(default)]
-    model: Option<String>,
+    pub(super) cwd: Option<String>,
     #[serde(default)]
-    reasoning_effort: Option<String>,
+    pub(super) model: Option<String>,
     #[serde(default)]
-    collaboration_mode: Option<String>,
+    pub(super) reasoning_effort: Option<String>,
+}
+
+pub(super) fn turn_thread_id(req: &TurnStartRequest) -> Option<&str> {
+    req.thread_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+pub(super) fn build_turn_start_params(thread_id: &str, req: &TurnStartRequest) -> Value {
+    json!({
+        "threadId": thread_id,
+        "input": [
+            {
+                "type": "text",
+                "text": req.prompt,
+                "textElements": []
+            }
+        ],
+        "workspace": req.workspace,
+        "cwd": req.cwd,
+        "model": req.model,
+        "effort": req.reasoning_effort,
+    })
+}
+
+pub(super) fn build_turn_start_response(thread_id: &str, result: Value) -> Value {
+    let turn_id = result
+        .get("turn")
+        .and_then(|value| value.get("id"))
+        .cloned()
+        .or_else(|| result.get("turnId").cloned())
+        .or_else(|| result.get("turn_id").cloned())
+        .unwrap_or(Value::Null);
+    json!({
+        "threadId": thread_id,
+        "turnId": turn_id,
+        "result": result,
+    })
 }
 
 pub(super) async fn codex_turn_start(
@@ -34,80 +73,19 @@ pub(super) async fn codex_turn_start(
     if req.prompt.trim().is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "prompt is required");
     }
-    let params = json!({
-        "threadId": req.thread_id,
-        "prompt": req.prompt,
-        "cwd": req.cwd,
-        "model": req.model,
-        "reasoningEffort": req.reasoning_effort,
-        "collaborationMode": req.collaboration_mode.unwrap_or_else(|| "default".to_string()),
-    });
+    let Some(thread_id) = turn_thread_id(&req).map(ToString::to_string) else {
+        return api_error(StatusCode::BAD_REQUEST, "threadId is required");
+    };
+    let params = build_turn_start_params(&thread_id, &req);
     match super::codex_rpc_call("turn/start", params).await {
-        Ok(v) => Json(v).into_response(),
+        Ok(v) => Json(build_turn_start_response(&thread_id, v)).into_response(),
         Err(resp) => resp,
     }
-}
-
-pub(super) fn split_stream_chunks(text: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut cur = String::new();
-
-    let push_cur = |out: &mut Vec<String>, cur: &mut String| {
-        let trimmed = cur.trim_matches(' ');
-        if !trimmed.is_empty() {
-            out.push(trimmed.to_string());
-        }
-        cur.clear();
-    };
-
-    let lines: Vec<&str> = text.split('\n').collect();
-    for (idx, line) in lines.iter().enumerate() {
-        for word in line.split_whitespace() {
-            if cur.is_empty() {
-                cur.push_str(word);
-            } else if cur.len().saturating_add(1).saturating_add(word.len()) >= 44 {
-                push_cur(&mut out, &mut cur);
-                cur.push_str(word);
-            } else {
-                cur.push(' ');
-                cur.push_str(word);
-            }
-        }
-        if idx + 1 < lines.len() {
-            push_cur(&mut out, &mut cur);
-            out.push("\n".to_string());
-        }
-    }
-    push_cur(&mut out, &mut cur);
-    if out.is_empty() {
-        out.push(String::new());
-    }
-    out
 }
 
 fn sse_event(name: &str, value: &Value) -> Bytes {
     let data = value.to_string();
     Bytes::from(format!("event: {name}\ndata: {data}\n\n"))
-}
-
-pub(super) fn extract_turn_text(result: &Value) -> String {
-    if let Some(text) = result.get("output_text").and_then(|v| v.as_str()) {
-        return text.to_string();
-    }
-    if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
-        return text.to_string();
-    }
-    if let Some(arr) = result.get("output_text").and_then(|v| v.as_array()) {
-        let joined = arr
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !joined.trim().is_empty() {
-            return joined;
-        }
-    }
-    serde_json::to_string_pretty(result).unwrap_or_else(|_| "{}".to_string())
 }
 
 pub(super) async fn codex_turn_stream(
@@ -121,46 +99,23 @@ pub(super) async fn codex_turn_stream(
     if req.prompt.trim().is_empty() {
         return api_error(StatusCode::BAD_REQUEST, "prompt is required");
     }
-    let params = json!({
-        "threadId": req.thread_id,
-        "prompt": req.prompt,
-        "cwd": req.cwd,
-        "model": req.model,
-        "reasoningEffort": req.reasoning_effort,
-        "collaborationMode": req.collaboration_mode.unwrap_or_else(|| "default".to_string()),
-    });
-    let started = sse_event("started", &json!({ "ok": true }));
-    let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
+    let Some(thread_id) = turn_thread_id(&req).map(ToString::to_string) else {
+        return api_error(StatusCode::BAD_REQUEST, "threadId is required");
+    };
+    let params = build_turn_start_params(&thread_id, &req);
+    let started = sse_event("started", &json!({ "ok": true, "threadId": thread_id }));
+    let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(
+        req.workspace
+            .as_deref()
+            .and_then(crate::orchestrator::gateway::web_codex_home::parse_workspace_target),
+    );
     let call =
         crate::codex_app_server::request_in_home(home.as_deref(), "turn/start", params).await;
     let stream = async_stream::stream! {
         yield Ok::<Bytes, std::convert::Infallible>(started);
         match call {
             Ok(result) => {
-                let thread_id = result
-                    .get("threadId")
-                    .or_else(|| result.get("thread_id"))
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                let turn_id = result
-                    .get("turnId")
-                    .or_else(|| result.get("turn_id"))
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                let text = extract_turn_text(&result);
-                for chunk in split_stream_chunks(&text) {
-                    let event = sse_event(
-                        "delta",
-                        &json!({
-                            "threadId": thread_id,
-                            "turnId": turn_id,
-                            "text": chunk,
-                        }),
-                    );
-                    yield Ok(event);
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                }
-                yield Ok(sse_event("completed", &json!({ "result": result })));
+                yield Ok(sse_event("completed", &build_turn_start_response(&thread_id, result)));
             }
             Err(err) => {
                 yield Ok(sse_event("error", &json!({ "message": err.to_string() })));
@@ -352,7 +307,7 @@ pub(super) fn parse_slash_command(input: &str) -> Option<ParsedSlash> {
             params: Value::Null,
         }),
         "/new" => Some(ParsedSlash {
-            method: "thread/new".to_string(),
+            method: "thread/start".to_string(),
             params: Value::Null,
         }),
         "/status" => Some(ParsedSlash {
@@ -412,7 +367,7 @@ pub(super) fn parse_slash_command(input: &str) -> Option<ParsedSlash> {
             }
             Some(ParsedSlash {
                 method: "turn/start".to_string(),
-                params: json!({ "prompt": arg, "collaborationMode": "plan" }),
+                params: json!({ "prompt": arg }),
             })
         }
         _ => None,
@@ -474,29 +429,69 @@ pub(super) async fn codex_rpc_proxy(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_slash_command, split_stream_chunks, TurnStartRequest};
+    use super::{
+        build_turn_start_params, build_turn_start_response, parse_slash_command, turn_thread_id,
+        TurnStartRequest,
+    };
+    use serde_json::{json, Value};
 
     #[test]
     fn turn_start_request_accepts_reasoning_effort() {
-        let raw = r#"{"threadId":"t1","prompt":"hi","model":"gpt-5.2","reasoningEffort":"high","collaborationMode":"default"}"#;
+        let raw = r#"{"threadId":"t1","prompt":"hi","model":"gpt-5.2","reasoningEffort":"high"}"#;
         let req: TurnStartRequest = serde_json::from_str(raw).expect("deserialize");
         assert_eq!(req.model.as_deref(), Some("gpt-5.2"));
         assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]
-    fn chunks_split_on_newlines_and_length() {
-        let txt = "line1\nline2\n".to_string() + &"x".repeat(120);
-        let chunks = split_stream_chunks(&txt);
-        assert!(
-            chunks.len() >= 4,
-            "expected multiple chunks, got {}",
-            chunks.len()
+    fn turn_start_params_omit_collaboration_mode_when_absent() {
+        let raw = r#"{"threadId":"t1","prompt":"hi","workspace":"wsl2","model":"gpt-5.2","reasoningEffort":"high"}"#;
+        let req: TurnStartRequest = serde_json::from_str(raw).expect("deserialize");
+        let params = build_turn_start_params("t1", &req);
+        assert_eq!(params.get("collaborationMode"), None);
+        assert_eq!(params["threadId"], "t1");
+        assert_eq!(params["workspace"], "wsl2");
+        assert_eq!(params["input"][0]["type"], "text");
+        assert_eq!(params["input"][0]["text"], "hi");
+        assert_eq!(params["effort"], "high");
+    }
+
+    #[test]
+    fn turn_start_params_ignore_legacy_collaboration_mode_field() {
+        let raw = r#"{"threadId":"t1","prompt":"hi","collaborationMode":"plan"}"#;
+        let req: TurnStartRequest = serde_json::from_str(raw).expect("deserialize");
+        let params = build_turn_start_params("t1", &req);
+        assert_eq!(params.get("collaborationMode"), None);
+    }
+
+    #[test]
+    fn turn_thread_id_requires_non_empty_value() {
+        let req = TurnStartRequest {
+            thread_id: None,
+            prompt: "hi".to_string(),
+            workspace: None,
+            cwd: None,
+            model: None,
+            reasoning_effort: None,
+        };
+        assert_eq!(turn_thread_id(&req), None);
+    }
+
+    #[test]
+    fn turn_start_response_includes_thread_and_turn_ids() {
+        let response = build_turn_start_response(
+            "thread-1",
+            json!({
+                "turn": {
+                    "id": "turn-1",
+                    "items": [],
+                    "status": "inProgress",
+                    "error": Value::Null
+                }
+            }),
         );
-        assert!(
-            chunks.iter().any(|c| c.contains('\n')),
-            "expected newline-preserving chunks"
-        );
+        assert_eq!(response["threadId"], "thread-1");
+        assert_eq!(response["turnId"], "turn-1");
     }
 
     #[test]
@@ -507,7 +502,8 @@ mod tests {
 
         let prompt = parse_slash_command("/plan add checklist").expect("prompt");
         assert_eq!(prompt.method, "turn/start");
-        assert_eq!(prompt.params["collaborationMode"], "plan");
+        assert_eq!(prompt.params["prompt"], "add checklist");
+        assert!(prompt.params.get("collaborationMode").is_none());
     }
 
     #[test]

@@ -1,9 +1,11 @@
 export function buildThreadHistoryUrl(threadId, options = {}, fallbackWorkspace = "") {
   const params = new URLSearchParams();
   const workspace = String(options.workspace || fallbackWorkspace || "").trim();
+  const rolloutPath = String(options.rolloutPath || "").trim();
   const before = String(options.before || "").trim();
   const limit = Number(options.limit || 0) || 0;
   if (workspace === "windows" || workspace === "wsl2") params.set("workspace", workspace);
+  if (rolloutPath) params.set("rolloutPath", rolloutPath);
   if (before) params.set("before", before);
   if (limit > 0) params.set("limit", String(limit));
   const query = params.toString();
@@ -12,13 +14,24 @@ export function buildThreadHistoryUrl(threadId, options = {}, fallbackWorkspace 
 
 export function mergeHistoryTurns(existingTurns, incomingTurns) {
   const merged = [];
-  const seen = new Set();
+  const indexes = new Map();
+  const seenAnonymous = new Set();
   const pushTurn = (turn) => {
     if (!turn || typeof turn !== "object") return;
     const id = String(turn.id || "").trim();
-    const key = id || JSON.stringify(turn);
-    if (!key || seen.has(key)) return;
-    seen.add(key);
+    if (id) {
+      const existingIndex = indexes.get(id);
+      if (existingIndex !== undefined) {
+        merged[existingIndex] = turn;
+        return;
+      }
+      indexes.set(id, merged.length);
+      merged.push(turn);
+      return;
+    }
+    const key = JSON.stringify(turn);
+    if (!key || seenAnonymous.has(key)) return;
+    seenAnonymous.add(key);
     merged.push(turn);
   };
   for (const turn of Array.isArray(existingTurns) ? existingTurns : []) pushTurn(turn);
@@ -54,6 +67,45 @@ export function shouldUseHistoryWindow(messages, options = {}, state = {}) {
   return true;
 }
 
+function messageMatches(a, b) {
+  return !!a && !!b && a.role === b.role && a.kind === b.kind && a.text === b.text;
+}
+
+export function mergePendingLiveMessages(messages, state = {}, threadId = "") {
+  const out = Array.isArray(messages) ? messages.slice() : [];
+  const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+  if (!pendingThreadId || !threadId || pendingThreadId !== threadId) return out;
+
+  const pendingUser = String(state.activeThreadPendingUserMessage || "");
+  const pendingAssistant = String(state.activeThreadPendingAssistantMessage || "");
+  const hasPendingUser = !!pendingUser.trim();
+  const hasPendingAssistant = !!pendingAssistant.trim();
+  const pending = [];
+  if (hasPendingUser) pending.push({ role: "user", text: pendingUser, kind: "" });
+  if (hasPendingAssistant) pending.push({ role: "assistant", text: pendingAssistant, kind: "" });
+  if (!pending.length) return out;
+
+  const endsWithPending =
+    pending.length <= out.length &&
+    pending.every((msg, index) => messageMatches(out[out.length - pending.length + index], msg));
+  if (endsWithPending) {
+    if (hasPendingAssistant || !hasPendingUser) {
+      state.activeThreadPendingTurnThreadId = "";
+      state.activeThreadPendingUserMessage = "";
+      state.activeThreadPendingAssistantMessage = "";
+    } else {
+      state.activeThreadPendingUserMessage = "";
+    }
+    return out;
+  }
+
+  let appendFrom = 0;
+  if (pending.length >= 1 && out.length >= 1 && messageMatches(out[out.length - 1], pending[0])) {
+    appendFrom = 1;
+  }
+  return out.concat(pending.slice(appendFrom));
+}
+
 export function createHistoryLoaderModule(deps) {
   const {
     state,
@@ -86,7 +138,20 @@ export function createHistoryLoaderModule(deps) {
     addChat,
     buildMsgNode,
     clearChatMessages,
+    syncEventSubscription = () => {},
   } = deps;
+
+  function pushLiveDebugEvent(kind, payload = {}) {
+    if (!Array.isArray(state.liveDebugEvents)) state.liveDebugEvents = [];
+    state.liveDebugEvents.push({
+      at: Date.now(),
+      kind: String(kind || ""),
+      ...payload,
+    });
+    if (state.liveDebugEvents.length > 120) {
+      state.liveDebugEvents.splice(0, state.liveDebugEvents.length - 120);
+    }
+  }
 
   async function mapThreadReadMessages(thread) {
     const turns = Array.isArray(thread?.turns) ? thread.turns : [];
@@ -235,7 +300,10 @@ export function createHistoryLoaderModule(deps) {
     state.chatRenderToken = (Number(state.chatRenderToken || 0) + 1) | 0;
     const token = state.chatRenderToken;
 
-    clearChatMessages({ preserveScroll: options && options.preserveScroll === true });
+    clearChatMessages({
+      preserveScroll: options && options.preserveScroll === true,
+      preservePendingTurn: true,
+    });
     state.activeThreadMessages = [];
 
     const slowYield = !!options.slowRender;
@@ -257,15 +325,26 @@ export function createHistoryLoaderModule(deps) {
   }
 
   async function applyThreadToChat(thread, options = {}) {
+    pushLiveDebugEvent("history.apply", {
+      threadId: String(thread?.id || state.activeThreadId || ""),
+      forceRender: !!options.forceRender,
+      historyItems: Array.isArray(thread?.historyItems) ? thread.historyItems.length : 0,
+      turns: Array.isArray(thread?.turns) ? thread.turns.length : 0,
+      pendingThreadId: String(state.activeThreadPendingTurnThreadId || ""),
+      pendingUser: String(state.activeThreadPendingUserMessage || ""),
+      pendingAssistant: String(state.activeThreadPendingAssistantMessage || ""),
+    });
     if (options.stickToBottom) {
       state.chatShouldStickToBottom = true;
       state.chatUserScrolledAwayAt = 0;
       state.chatProgrammaticScrollUntil = Date.now() + 260;
     }
     const historyItems = Array.isArray(thread?.historyItems) ? thread.historyItems : [];
-    const messages = historyItems.length
+    const rawMessages = historyItems.length
       ? await mapSessionHistoryMessages(historyItems)
       : await mapThreadReadMessages(thread);
+    const threadId = String(thread?.id || state.activeThreadId || "");
+    const messages = mergePendingLiveMessages(rawMessages, state, threadId);
     const turns = Array.isArray(thread?.turns) ? thread.turns : [];
     state.activeThreadTokenUsage = normalizeThreadTokenUsage(thread?.tokenUsage);
     renderComposerContextLeft();
@@ -277,13 +356,20 @@ export function createHistoryLoaderModule(deps) {
       String(lastMsg?.role || ""),
       String(lastMsg?.text || ""),
     ].join("::");
-    const threadId = String(thread?.id || state.activeThreadId || "");
     state.activeThreadStarted = messages.length > 0 || turns.length > 0 || historyItems.length > 0;
     const detectedTarget = detectThreadWorkspaceTarget(thread);
     const target = detectedTarget !== "unknown"
       ? detectedTarget
       : ((options.workspace === "windows" || options.workspace === "wsl2") ? options.workspace : "unknown");
+    const previousWorkspace = String(state.activeThreadWorkspace || "").trim();
     if (target !== "unknown") state.activeThreadWorkspace = target;
+    if (
+      target !== "unknown" &&
+      target !== previousWorkspace &&
+      state.activeThreadId === threadId
+    ) {
+      syncEventSubscription();
+    }
     if (!options.forceRender && state.activeThreadRenderSig === renderSig) {
       if (state.activeThreadStarted) hideWelcomeCard();
       else showWelcomeCard();
@@ -302,7 +388,7 @@ export function createHistoryLoaderModule(deps) {
       const doWindowedRender = () => {
         const size = Math.max(40, Number(state.historyWindowSize || 160) | 0);
         const start = Math.max(0, messages.length - size);
-        clearChatMessages();
+        clearChatMessages({ preservePendingTurn: true });
         state.historyWindowEnabled = true;
         state.historyWindowThreadId = threadId;
         state.historyWindowStart = start;
@@ -461,7 +547,10 @@ export function createHistoryLoaderModule(deps) {
       if (shouldAsyncRender) {
         await renderChatFull(messages, { slowRender: !!options.slowRender, preserveScroll: !!state.chatShouldStickToBottom });
       } else {
-        clearChatMessages({ preserveScroll: !!state.chatShouldStickToBottom });
+        clearChatMessages({
+          preserveScroll: !!state.chatShouldStickToBottom,
+          preservePendingTurn: true,
+        });
         for (const msg of messages) {
           addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
         }
@@ -486,6 +575,11 @@ export function createHistoryLoaderModule(deps) {
 
   async function loadThreadMessages(threadId, options = {}) {
     if (!threadId) return;
+    pushLiveDebugEvent("history.load", {
+      threadId: String(threadId || ""),
+      forceRender: !!options.forceRender,
+      workspace: String(options.workspace || ""),
+    });
     if (state.activeThreadHistoryInFlightPromise && state.activeThreadHistoryInFlightThreadId === threadId) {
       queuePendingActiveThreadHistoryRefresh(threadId, options);
       return state.activeThreadHistoryInFlightPromise;
@@ -542,7 +636,21 @@ export function createHistoryLoaderModule(deps) {
       if (!thread) return;
       try { windowRef.__webCodexE2E_lastHistorySource = "history"; } catch {}
       await applyThreadToChat(thread, { ...options, forceHistoryWindow: !!page?.hasMore });
-    })();
+      pushLiveDebugEvent("history.load:success", {
+        threadId: String(threadId || ""),
+        workspace: String(options.workspace || state.activeThreadWorkspace || ""),
+        turns: mergedTurns.length,
+        hasMore: !!page?.hasMore,
+      });
+    })().catch((error) => {
+      pushLiveDebugEvent("history.load:error", {
+        threadId: String(threadId || ""),
+        workspace: String(options.workspace || state.activeThreadWorkspace || ""),
+        message: String(error?.message || error || "").slice(0, 220),
+        rolloutPath: String(options.rolloutPath || state.activeThreadRolloutPath || "").slice(0, 220),
+      });
+      throw error;
+    });
     state.activeThreadHistoryInFlightPromise = loadPromise;
     state.activeThreadHistoryInFlightThreadId = threadId;
     try {

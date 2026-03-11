@@ -134,6 +134,17 @@ export function renderInlineCodeSpan(content, fenceLen = 1) {
 }
 
 const INLINE_MESSAGE_PLAIN_TOKEN_PATTERN = /\[([^\]\n]+)\]\(([^)\n]+)\)|\*\*([^*\n]+)\*\*|(https?:\/\/[^\s<>()]+)|((?:(?:(?:%[A-Za-z0-9_]+%|[A-Za-z]:|\\\\[^\\\s]+|\.{1,2}|~|\/)[\\/])?(?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})(?::\d+(?::\d+)?)?(?:#L\d+(?:C\d+)?)?)/g;
+const INLINE_HTTP_URL_CHAR_PATTERN = /^[A-Za-z0-9\-._~:/?#[\]@!$&'*+,;=%]$/;
+
+function splitPlainHttpUrlToken(value) {
+  const raw = String(value || "");
+  let end = 0;
+  while (end < raw.length && INLINE_HTTP_URL_CHAR_PATTERN.test(raw[end])) end += 1;
+  return {
+    url: raw.slice(0, end),
+    remainder: raw.slice(end),
+  };
+}
 
 function renderPlainInlineToken(match) {
   if (match[1] && match[2]) {
@@ -144,7 +155,9 @@ function renderPlainInlineToken(match) {
     return `<strong>${escapeHtml(match[3])}</strong>`;
   }
   if (match[4]) {
-    return buildMessageLink(match[4], match[4], false);
+    const { url, remainder } = splitPlainHttpUrlToken(match[4]);
+    if (!url) return escapeHtml(String(match[4] || ""));
+    return `${buildMessageLink(url, url, false)}${escapeHtml(remainder)}`;
   }
   if (match[5]) {
     const candidate = String(match[5] || "").trim();
@@ -211,6 +224,10 @@ export function renderMessageRichHtml(text) {
       items.push({ depth, type: parsed.type, text: parsed.text });
     }
     if (!items.length) return "";
+    const minDepth = items.reduce((lowest, item) => Math.min(lowest, item.depth), items[0].depth);
+    if (minDepth > 0) {
+      for (const item of items) item.depth -= minDepth;
+    }
 
     let out = "";
     const openLists = [];

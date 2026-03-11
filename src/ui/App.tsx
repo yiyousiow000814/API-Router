@@ -1021,7 +1021,7 @@ export default function App() {
     usageOriginFilterOptions,
   })
   const {
-    setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, refreshQuota, refreshQuotaAll,
+    setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, refreshQuota,
     saveUsageBaseUrl, saveUsageAuth, clearUsageAuth, saveProviderEmail, clearProviderEmail,
     setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap,
     openKeyModal, openProviderBaseUrlModal, openUsageBaseModal, openUsageAuthModal, openPackycodeLogin, openProviderEmailModal, addProvider,
@@ -1054,7 +1054,6 @@ export default function App() {
   })
   useAppPolling({
     isDevPreview,
-    statusLastActivityUnixMs: status?.last_activity_unix_ms,
     codexSwapDir1,
     codexSwapDir2,
     codexSwapUseWindows,
@@ -1062,7 +1061,6 @@ export default function App() {
     refreshStatus,
     refreshConfig,
     refreshProviderSwitchStatus,
-    refreshQuotaAll,
     onDevPreviewBootstrap,
     onDevPreviewTick,
   })

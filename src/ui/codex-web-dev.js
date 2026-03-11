@@ -1,4 +1,7 @@
-import { waitPendingThreadResume as waitPendingThreadResumeInStore } from "./modules/codex-web/pendingThreadResume.js";
+import {
+  registerPendingThreadResume as registerPendingThreadResumeInStore,
+  waitPendingThreadResume as waitPendingThreadResumeInStore,
+} from "./modules/codex-web/pendingThreadResume.js";
 import {
   escapeHtml,
   findNextInlineCodeSpan,
@@ -100,6 +103,12 @@ import { createComposerUiModule } from "./modules/codex-web/composerUi.js";
 import { createAppPersistenceModule } from "./modules/codex-web/appPersistence.js";
 import { createLiveNotificationsModule } from "./modules/codex-web/liveNotifications.js";
 import { createMobileShellModule } from "./modules/codex-web/mobileShell.js";
+import {
+  extractNotificationEventId,
+  extractNotificationThreadId,
+  shouldRefreshActiveThreadFromNotification,
+  shouldRefreshThreadsFromNotification,
+} from "./modules/codex-web/notificationRouting.js";
 
 try {
   window.__webCodexScriptLoaded = true;
@@ -208,84 +217,6 @@ function markEventIdSeen(eventId) {
   }
 }
 
-function extractNotificationEventId(notification) {
-  const record = toRecord(notification);
-  const id = readNumber(record?.eventId) ?? readNumber(record?.event_id);
-  if (id === null) return null;
-  const normalized = Math.floor(id);
-  return normalized > 0 ? normalized : null;
-}
-
-function extractNotificationThreadId(notification) {
-  const record = toRecord(notification);
-  const params = toRecord(record?.params);
-  const msg = toRecord(params?.msg);
-  const thread = toRecord(params?.thread) || toRecord(params?.threadState) || toRecord(params?.thread_state);
-  const turn = toRecord(params?.turn) || toRecord(params?.turnState) || toRecord(params?.turn_state);
-  const item = toRecord(params?.item) || toRecord(params?.itemState) || toRecord(params?.item_state);
-  const source = toRecord(params?.source) || toRecord(msg?.source);
-  const subagent = toRecord(toRecord(source?.subagent)?.thread_spawn);
-  const keys = new Set(["thread_id", "threadId", "conversation_id", "conversationId"]);
-  const seen = new Set();
-  const deepFindThreadId = (root, depth = 0) => {
-    if (!root || depth > 6 || typeof root !== "object" || seen.has(root)) return null;
-    seen.add(root);
-    if (Array.isArray(root)) {
-      for (let i = 0; i < Math.min(root.length, 40); i += 1) {
-        const found = deepFindThreadId(root[i], depth + 1);
-        if (found) return found;
-      }
-      return null;
-    }
-    for (const key of Object.keys(root)) {
-      if (keys.has(key)) {
-        const found = readString(root[key]);
-        if (found) return found;
-      }
-    }
-    for (const key of Object.keys(root)) {
-      const found = deepFindThreadId(root[key], depth + 1);
-      if (found) return found;
-    }
-    return null;
-  };
-  return (
-    readString(msg?.thread_id) ||
-    readString(msg?.threadId) ||
-    readString(msg?.conversation_id) ||
-    readString(msg?.conversationId) ||
-    readString(params?.thread_id) ||
-    readString(params?.threadId) ||
-    readString(thread?.id) ||
-    readString(thread?.thread_id) ||
-    readString(thread?.threadId) ||
-    readString(turn?.thread_id) ||
-    readString(turn?.threadId) ||
-    readString(item?.thread_id) ||
-    readString(item?.threadId) ||
-    readString(source?.thread_id) ||
-    readString(source?.threadId) ||
-    readString(source?.parent_thread_id) ||
-    readString(source?.parentThreadId) ||
-    readString(subagent?.parent_thread_id) ||
-    deepFindThreadId(params) ||
-    null
-  );
-}
-
-function shouldRefreshThreadsFromNotification(method) {
-  return (
-    method.startsWith("thread/") ||
-    method.startsWith("turn/") ||
-    method.startsWith("item/") ||
-    method.startsWith("codex/event/")
-  );
-}
-
-function shouldRefreshActiveThreadFromNotification(method) {
-  return shouldRefreshThreadsFromNotification(method) || method === "thread/name/updated" || method === "thread/status/changed";
-}
-
 function scheduleThreadRefresh(delayMs = THREAD_REFRESH_DEBOUNCE_MS) {
   if (state.scheduledRefreshTimer) clearTimeout(state.scheduledRefreshTimer);
   state.scheduledRefreshTimer = setTimeout(() => {
@@ -387,6 +318,7 @@ const composition = createCodexWebComposition({
   refreshCodexVersions: (...args) => refreshCodexVersions(...args),
   getPromptValue: (...args) => getPromptValue(...args),
   waitPendingThreadResume,
+  registerPendingThreadResume: registerPendingThreadResumeInStore,
   clearPromptValue: (...args) => clearPromptValue(...args),
   normalizeTextPayload,
   maybeNotifyTurnDone: (...args) => maybeNotifyTurnDone(...args),
@@ -567,6 +499,7 @@ renderThreads = (...args) => renderThreadsFromComposition(...args);
 } = createLiveNotificationsModule({
   state,
   byId,
+  setStatus: (...args) => setStatus(...args),
   addChat: (...args) => addChat(...args),
   scheduleChatLiveFollow: (...args) => scheduleChatLiveFollow(...args),
   hideWelcomeCard: (...args) => hideWelcomeCard(...args),

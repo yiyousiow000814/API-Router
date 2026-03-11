@@ -1,6 +1,6 @@
 ﻿import { describe, expect, it } from "vitest";
 
-import { compactModelLabel, parseModelRankParts, pickLatestModelId } from "./headerUi.js";
+import { classifyStatusBadge, compactModelLabel, parseModelRankParts, pickLatestModelId } from "./headerUi.js";
 
 describe("headerUi", () => {
   it("compacts gpt prefixes", () => {
@@ -23,6 +23,24 @@ describe("headerUi", () => {
       major: 5,
       minor: 2,
       date: 20251211,
+    });
+  });
+
+  it("treats live activity statuses as connected", () => {
+    expect(classifyStatusBadge("Running git commit...")).toEqual({
+      label: "Connected",
+      warn: false,
+    });
+    expect(classifyStatusBadge("Receiving response...")).toEqual({
+      label: "Connected",
+      warn: false,
+    });
+  });
+
+  it("keeps failure statuses as attention", () => {
+    expect(classifyStatusBadge("Command failed: git commit", true)).toEqual({
+      label: "Attention",
+      warn: true,
     });
   });
 });

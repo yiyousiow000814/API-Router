@@ -63,6 +63,7 @@ describe("composition", () => {
       refreshCodexVersions: async () => {},
       getPromptValue: () => "",
       waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
       clearPromptValue: () => {},
       normalizeTextPayload: (v) => v,
       maybeNotifyTurnDone: () => {},

@@ -46,11 +46,12 @@ export default defineConfig({
             url === '/codex-web/' ||
             url.startsWith('/codex-web?') ||
             url.startsWith('/codex-web/?')
-          const isSandboxWeb =
+          const isExplicitSandboxWeb =
             url === '/sandbox/codex-web' ||
             url === '/sandbox/codex-web/' ||
             url.startsWith('/sandbox/codex-web?') ||
             url.startsWith('/sandbox/codex-web/?')
+          const isSandboxWeb = isExplicitSandboxWeb
           if (!isCodexWeb && !isSandboxWeb) {
             next()
             return
@@ -90,6 +91,15 @@ export default defineConfig({
         target: gatewayProxyTarget,
         changeOrigin: true,
         ws: true,
+        configure(proxy) {
+          proxy.on('error', (err, req) => {
+            const code = String((err as { code?: string } | undefined)?.code || '').trim()
+            const url = String(req?.url || '')
+            if (code === 'ECONNRESET' && url.startsWith('/codex/ws')) {
+              return
+            }
+          })
+        },
       },
     },
   },

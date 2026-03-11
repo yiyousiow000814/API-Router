@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { hasQueryFlag, readDebugMessageNode } from "./debugTools.js";
+import {
+  collectPendingLiveTraceEvents,
+  hasQueryFlag,
+  readDebugMessageNode,
+} from "./debugTools.js";
 
 describe("debugTools", () => {
   it("detects query flags", () => {
@@ -47,5 +51,20 @@ describe("debugTools", () => {
     expect(info.inline).toEqual(["a"]);
     expect(info.pseudo).toEqual(["b"]);
     expect(info.links).toEqual([{ text: "c", href: "/x" }]);
+  });
+
+  it("collects only unsent live trace events", () => {
+    const state = {
+      liveDebugEvents: [
+        { at: 1, kind: "a", __traceUploaded: true },
+        { at: 2, kind: "b" },
+        { at: 3, kind: "c" },
+      ],
+    };
+    expect(collectPendingLiveTraceEvents(state, 1)).toEqual([{ at: 2, kind: "b" }]);
+    expect(collectPendingLiveTraceEvents(state, 5)).toEqual([
+      { at: 2, kind: "b" },
+      { at: 3, kind: "c" },
+    ]);
   });
 });

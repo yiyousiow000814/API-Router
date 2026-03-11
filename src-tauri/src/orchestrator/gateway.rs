@@ -345,6 +345,14 @@ async fn refresh_usage_once_after_first_failure(
     }
     *usage_refreshed_after_first_failure = true;
 
+    let cfg = st.cfg.read().clone();
+    let Some(provider) = cfg.providers.get(provider_name) else {
+        return;
+    };
+    if super::quota::uses_packycode_usage_schedule(provider) {
+        return;
+    }
+
     st.router.require_usage_confirmation(provider_name);
     let snap = super::quota::refresh_quota_for_provider(st, provider_name).await;
     let refresh_ok = snap.updated_at_unix_ms > 0 && snap.last_error.trim().is_empty();
@@ -408,6 +416,8 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route("/codex/health", get(codex_health))
         .route("/codex/ws", get(codex_ws))
         .route("/codex/auth/verify", post(codex_auth_verify))
+        .route("/codex/debug/live", get(codex_live_debug))
+        .route("/codex/debug/live/client", post(codex_live_debug_client))
         .route(
             "/codex/hosts",
             get(codex_hosts_list).post(codex_hosts_create),
@@ -493,7 +503,7 @@ mod web_codex_hosts;
 mod web_codex_meta;
 mod web_codex_rollout_import;
 mod web_codex_runtime;
-mod web_codex_storage;
+pub(crate) mod web_codex_storage;
 mod web_codex_thread_routes;
 mod web_codex_threads;
 mod web_codex_ws;
@@ -519,7 +529,7 @@ use self::web_codex_thread_routes::codex_test_block_history;
 use self::web_codex_thread_routes::{
     codex_thread_history, codex_thread_resume, codex_threads_create, codex_threads_list,
 };
-use self::web_codex_ws::{codex_auth_verify, codex_ws};
+use self::web_codex_ws::{codex_auth_verify, codex_live_debug, codex_live_debug_client, codex_ws};
 const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
 
 #[cfg(test)]

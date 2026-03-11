@@ -4,6 +4,12 @@ use crate::orchestrator::gateway::web_codex_auth::{
 };
 use serde::{Deserialize, Serialize};
 
+fn is_all_candidate_rpc_methods_unsupported(error: &str) -> bool {
+    error
+        .trim()
+        .eq_ignore_ascii_case("all candidate rpc methods are marked unsupported")
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CliConfigSnapshot {
@@ -142,6 +148,9 @@ pub(super) async fn codex_pending_approvals(
     .await
     {
         Ok(v) => Json(json!({ "items": v.get("items").cloned().unwrap_or(v) })).into_response(),
+        Err(e) if is_all_candidate_rpc_methods_unsupported(&e) => {
+            Json(json!({ "items": [] })).into_response()
+        }
         Err(e) => api_error_detail(
             StatusCode::BAD_GATEWAY,
             "failed to list pending approvals",
@@ -168,6 +177,9 @@ pub(super) async fn codex_pending_user_inputs(
     .await
     {
         Ok(v) => Json(json!({ "items": v.get("items").cloned().unwrap_or(v) })).into_response(),
+        Err(e) if is_all_candidate_rpc_methods_unsupported(&e) => {
+            Json(json!({ "items": [] })).into_response()
+        }
         Err(e) => api_error_detail(
             StatusCode::BAD_GATEWAY,
             "failed to list pending user inputs",

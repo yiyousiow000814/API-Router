@@ -77,6 +77,45 @@ fn build_threads_response_with_meta(items: Vec<Value>, meta: Value) -> Response 
     .into_response()
 }
 
+fn thread_id_from_create_response(value: &Value) -> Option<String> {
+    value
+        .get("id")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("threadId").and_then(Value::as_str))
+        .or_else(|| value.get("thread_id").and_then(Value::as_str))
+        .or_else(|| {
+            value
+                .get("thread")
+                .and_then(Value::as_object)
+                .and_then(|thread| thread.get("id"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
+fn attach_rollout_path_to_create_response(mut value: Value, rollout_path: Option<&str>) -> Value {
+    let Some(path) = rollout_path.map(str::trim).filter(|path| !path.is_empty()) else {
+        return value;
+    };
+    if let Some(obj) = value.as_object_mut() {
+        obj.entry("path".to_string())
+            .or_insert_with(|| Value::String(path.to_string()));
+        match obj.get_mut("thread") {
+            Some(Value::Object(thread)) => {
+                thread
+                    .entry("path".to_string())
+                    .or_insert_with(|| Value::String(path.to_string()));
+            }
+            _ => {
+                obj.insert("thread".to_string(), json!({ "path": path }));
+            }
+        }
+    }
+    value
+}
+
 pub(super) async fn codex_threads_list(
     State(st): State<GatewayState>,
     headers: HeaderMap,
@@ -117,10 +156,24 @@ pub(super) async fn codex_threads_create(
         return resp;
     }
     let params = json!({ "workspace": req.workspace, "title": req.title, "cwd": req.cwd });
-    match codex_rpc_call("thread/new", params).await {
+    match codex_rpc_call("thread/start", params).await {
         Ok(value) => {
             crate::orchestrator::gateway::web_codex_threads::invalidate_thread_list_cache_all();
-            Json(value).into_response()
+            let workspace_target = req.workspace.as_deref().and_then(parse_workspace_target);
+            let rollout_path = match (workspace_target, thread_id_from_create_response(&value)) {
+                (Some(target), Some(thread_id)) => {
+                    crate::orchestrator::gateway::web_codex_threads::known_rollout_path_for_thread(
+                        target, &thread_id,
+                    )
+                    .await
+                }
+                _ => None,
+            };
+            Json(attach_rollout_path_to_create_response(
+                value,
+                rollout_path.as_deref(),
+            ))
+            .into_response()
         }
         Err(resp) => resp,
     }
@@ -410,5 +463,29 @@ mod tests {
             None,
             Some("C:\\\\tmp\\\\a.jsonl")
         ));
+    }
+
+    #[test]
+    fn attach_rollout_path_to_create_response_keeps_existing_shape() {
+        let value = json!({
+            "threadId": "thread-1",
+            "thread": { "id": "thread-1" }
+        });
+        let next = attach_rollout_path_to_create_response(value, Some("C:\\temp\\rollout.jsonl"));
+        assert_eq!(
+            next.get("path").and_then(Value::as_str),
+            Some("C:\\temp\\rollout.jsonl")
+        );
+        assert_eq!(
+            next.get("thread")
+                .and_then(Value::as_object)
+                .and_then(|thread| thread.get("path"))
+                .and_then(Value::as_str),
+            Some("C:\\temp\\rollout.jsonl")
+        );
+        assert_eq!(
+            thread_id_from_create_response(&next).as_deref(),
+            Some("thread-1")
+        );
     }
 }

@@ -43,6 +43,10 @@ export function createInitialState() {
     activeThreadRolloutPath: "",
     openingThreadAbort: null,
     ws: null,
+    wsPingTimer: null,
+    wsReconnectTimer: null,
+    wsReconnectAttempt: 0,
+    wsConnectSeq: 0,
     wsReqHandlers: new Map(),
     pendingApprovals: [],
     pendingUserInputs: [],
@@ -81,6 +85,12 @@ export function createInitialState() {
     activeThreadLiveAssistantText: "",
     activeThreadRenderSig: "",
     activeThreadMessages: [],
+    activeThreadPendingTurnThreadId: "",
+    activeThreadPendingUserMessage: "",
+    activeThreadPendingAssistantMessage: "",
+    liveDebugEvents: [],
+    liveTraceUploadedCount: 0,
+    liveTraceSyncInFlight: false,
     wsLastEventId: 0,
     wsRecentEventIds: new Set(),
     wsRecentEventIdQueue: [],
@@ -156,6 +166,7 @@ export function createInitialState() {
     activeThreadHistoryInFlightThreadId: "",
     activeThreadHistoryPendingRefresh: null,
     activeThreadTokenUsage: null,
+    activeThreadNeedsResume: false,
   };
 }
 

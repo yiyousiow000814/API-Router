@@ -37,6 +37,12 @@ export function hasQueryFlag(search, key, expected = "1") {
   return params.get(key) === expected;
 }
 
+export function collectPendingLiveTraceEvents(state, limit = 40) {
+  const events = Array.isArray(state?.liveDebugEvents) ? state.liveDebugEvents : [];
+  const max = Math.max(1, Number(limit || 40) | 0);
+  return events.filter((event) => event && event.__traceUploaded !== true).slice(0, max);
+}
+
 export function createDebugToolsModule(deps) {
   const {
     state,
@@ -78,6 +84,214 @@ export function createDebugToolsModule(deps) {
     performanceRef = performance,
   } = deps;
 
+  function getActiveState() {
+    return {
+      activeThreadId: String(state.activeThreadId || ""),
+      activeThreadWorkspace: String(state.activeThreadWorkspace || ""),
+      activeThreadRolloutPath: String(state.activeThreadRolloutPath || ""),
+      activeThreadRenderSig: String(state.activeThreadRenderSig || ""),
+      activeThreadPendingTurnThreadId: String(state.activeThreadPendingTurnThreadId || ""),
+      activeThreadPendingUserMessage: String(state.activeThreadPendingUserMessage || ""),
+      activeThreadPendingAssistantMessage: String(state.activeThreadPendingAssistantMessage || ""),
+      wsSubscribedEvents: !!state.wsSubscribedEvents,
+      wsReadyState: Number(state.ws?.readyState ?? -1),
+      messageCount: documentRef.querySelectorAll("#chatBox .msg").length,
+      statusLine: String(documentRef.getElementById("statusLine")?.textContent || "").trim(),
+    };
+  }
+
+  function getLivePipelineSnapshot(limit = 24) {
+    const max = Math.max(1, Number(limit || 24) | 0);
+    const events = Array.isArray(state.liveDebugEvents) ? state.liveDebugEvents : [];
+    const recent = events.slice(Math.max(0, events.length - max));
+    const reverse = recent.slice().reverse();
+    const pickLast = (predicate) => reverse.find(predicate) || null;
+    return {
+      active: getActiveState(),
+      lastReceived:
+        pickLast((event) => event?.kind === "rpc.notification" || event?.kind === "ui.event") || null,
+      lastRender: pickLast((event) => String(event?.kind || "").startsWith("live.render:")) || null,
+      lastDrop: pickLast((event) => /^(live|ws)\.drop:/.test(String(event?.kind || ""))) || null,
+      lastHistory:
+        pickLast((event) => String(event?.kind || "").startsWith("history.load")) ||
+        pickLast((event) => event?.kind === "history.apply") ||
+        null,
+      lastTurn:
+        pickLast((event) => event?.kind === "turn.start.ack") ||
+        pickLast((event) => event?.kind === "turn.send") ||
+        null,
+      recent,
+    };
+  }
+
+  function formatLiveEventLine(event) {
+    if (!event || typeof event !== "object") return "";
+    const time = new Date(Number(event.at || Date.now())).toLocaleTimeString("en-GB", {
+      hour12: false,
+    });
+    const bits = [time, String(event.kind || "")];
+    if (typeof event.clientId === "number") bits.push(`client=${event.clientId}`);
+    if (event.method) bits.push(`method=${event.method}`);
+    if (event.threadId) bits.push(`thread=${event.threadId}`);
+    if (event.activeThreadId) bits.push(`active=${event.activeThreadId}`);
+    if (event.reason) bits.push(`reason=${String(event.reason).slice(0, 80)}`);
+    if (event.message) bits.push(`msg=${String(event.message).slice(0, 80)}`);
+    if (event.itemType) bits.push(`item=${event.itemType}`);
+    if (typeof event.count === "number") bits.push(`count=${event.count}`);
+    if (event.gap === true) bits.push("gap=yes");
+    if (typeof event.code === "number" && event.code > 0) bits.push(`code=${event.code}`);
+    if (typeof event.wasClean === "boolean") bits.push(`clean=${event.wasClean}`);
+    if (typeof event.eventId === "number") bits.push(`eventId=${event.eventId}`);
+    return bits.join(" | ");
+  }
+
+  function installLiveInspector() {
+    try {
+      const previous = windowRef.__webCodexLiveInspector || null;
+      if (previous?.destroy) {
+        previous.destroy();
+      }
+    } catch {}
+
+    let root = null;
+    let timer = 0;
+    let backendSnapshot = null;
+    let backendInflight = false;
+
+    const refreshBackendSnapshot = async () => {
+      if (backendInflight) return;
+      backendInflight = true;
+      try {
+        const res = await windowRef.fetch("/codex/debug/live", {
+          credentials: "same-origin",
+        });
+        if (!res.ok) {
+          backendSnapshot = {
+            error: `HTTP ${res.status}`,
+          };
+          return;
+        }
+        backendSnapshot = await res.json().catch(() => ({ error: "invalid json" }));
+      } catch (error) {
+        backendSnapshot = {
+          error: String(error?.message || error || ""),
+        };
+      } finally {
+        backendInflight = false;
+      }
+    };
+
+    const ensureRoot = () => {
+      if (root?.isConnected) return root;
+      root = documentRef.createElement("div");
+      root.id = "webCodexLiveInspector";
+      root.setAttribute("aria-live", "off");
+      Object.assign(root.style, {
+        position: "fixed",
+        right: "12px",
+        bottom: "12px",
+        width: "min(520px, calc(100vw - 24px))",
+        maxHeight: "min(58vh, 560px)",
+        overflow: "hidden",
+        borderRadius: "12px",
+        border: "1px solid rgba(90, 120, 180, 0.45)",
+        background: "rgba(7, 11, 18, 0.94)",
+        color: "#d7e4ff",
+        boxShadow: "0 12px 36px rgba(0,0,0,0.34)",
+        backdropFilter: "blur(12px)",
+        zIndex: "var(--z-modal, 120)",
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+        fontSize: "11px",
+        lineHeight: "1.45",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+      });
+      documentRef.body.appendChild(root);
+      return root;
+    };
+
+    const render = () => {
+      const host = ensureRoot();
+      const snap = getLivePipelineSnapshot(18);
+      const backendState =
+        backendSnapshot && typeof backendSnapshot === "object" && backendSnapshot.backend
+          ? backendSnapshot.backend
+          : backendSnapshot;
+      const appState =
+        backendSnapshot && typeof backendSnapshot === "object" ? backendSnapshot.app : null;
+      const appHomes = Array.isArray(appState?.homes) ? appState.homes : [];
+      const appRecent = Array.isArray(appState?.recent) ? appState.recent : [];
+      const summaryLines = [
+        "LIVE PIPELINE",
+        `thread: ${snap.active.activeThreadId || "(none)"}`,
+        `workspace: ${snap.active.activeThreadWorkspace || "(none)"}`,
+        `rollout: ${snap.active.activeThreadRolloutPath || "(empty)"}`,
+        `ws: ${snap.active.wsReadyState} | subscribed: ${snap.active.wsSubscribedEvents ? "yes" : "no"}`,
+        `messages: ${snap.active.messageCount} | status: ${snap.active.statusLine || "(empty)"}`,
+        `pendingThread: ${snap.active.activeThreadPendingTurnThreadId || "(none)"}`,
+      ];
+      const backendLines = [
+        "BACKEND",
+        backendSnapshot?.error
+          ? `state: error:${backendSnapshot.error}`
+          : `connections: active=${backendState?.connections?.active ?? "(n/a)"} | subscribed=${backendState?.connections?.subscribed ?? "(n/a)"} | total=${backendState?.connections?.total ?? "(n/a)"}`,
+        `trace file: ${String(backendSnapshot?.traceFile || "(unknown)")}`,
+        `last backend event: ${formatLiveEventLine(Array.isArray(backendState?.recent) ? backendState.recent[backendState.recent.length - 1] : null) || "(none)"}`,
+        `app homes: ${appHomes.length || 0}`,
+        `last app event: ${formatLiveEventLine(appRecent[appRecent.length - 1]) || "(none)"}`,
+      ];
+      const clientLines = [
+        "CLIENT",
+        `trace uploaded: ${Number(state.liveTraceUploadedCount || 0)}`,
+        `last received: ${formatLiveEventLine(snap.lastReceived) || "(none)"}`,
+        `last render: ${formatLiveEventLine(snap.lastRender) || "(none)"}`,
+        `last drop: ${formatLiveEventLine(snap.lastDrop) || "(none)"}`,
+        `last history: ${formatLiveEventLine(snap.lastHistory) || "(none)"}`,
+        `last turn: ${formatLiveEventLine(snap.lastTurn) || "(none)"}`,
+      ];
+      const lines = [
+        ...summaryLines,
+        "",
+        ...backendLines,
+        "",
+        ...clientLines,
+        "",
+        "APP HOMES",
+        ...appHomes.slice(-3).map((home) => {
+          const name = String(home?.home || "").trim() || "(default)";
+          return `${name}\n  queue=${home?.queueLen ?? "(n/a)"} | next=${home?.nextEventId ?? "(n/a)"} | first=${home?.firstEventId ?? "(none)"} | last=${home?.lastEventId ?? "(none)"}\n  method=${home?.lastMethod || "(none)"} | thread=${home?.lastThreadId || "(none)"}`;
+        }),
+        "",
+        "RECENT EVENTS",
+        ...(Array.isArray(backendState?.recent)
+          ? backendState.recent.slice(-3).map((event) => `BE  ${formatLiveEventLine(event)}`)
+          : []),
+        ...appRecent.slice(-4).map((event) => `APP ${formatLiveEventLine(event)}`),
+        ...snap.recent.slice(-10).map((event) => `UI  ${formatLiveEventLine(event)}`),
+      ];
+      host.textContent = lines.join("\n");
+    };
+
+    render();
+    refreshBackendSnapshot().catch(() => {});
+    timer = windowRef.setInterval(() => {
+      render();
+      refreshBackendSnapshot().catch(() => {});
+    }, 250);
+    windowRef.__webCodexLiveInspector = {
+      destroy() {
+        if (timer) {
+          windowRef.clearInterval(timer);
+          timer = 0;
+        }
+        try {
+          root?.remove?.();
+        } catch {}
+      },
+      render,
+    };
+  }
+
   function installWebCodexDebug() {
     try {
       const previous = windowRef.__webCodexDebug || {};
@@ -93,10 +307,13 @@ export function createDebugToolsModule(deps) {
             loadedAt: String(windowRef.__webCodexDebug?.loadedAt || ""),
             activeThreadId: String(state.activeThreadId || ""),
             activeThreadWorkspace: String(state.activeThreadWorkspace || ""),
+            activeThreadRolloutPath: String(state.activeThreadRolloutPath || ""),
             activeThreadRenderSig: String(state.activeThreadRenderSig || ""),
             messageCount: documentRef.querySelectorAll("#chatBox .msg").length,
           };
         },
+        getActiveState,
+        getLivePipelineSnapshot,
         dumpMessages(limit = 8) {
           const max = Math.max(1, Number(limit || 8) | 0);
           const nodes = Array.from(documentRef.querySelectorAll("#chatBox .msg"));
@@ -105,6 +322,11 @@ export function createDebugToolsModule(deps) {
             .map((node, index) =>
               readDebugMessageNode(node, nodes.length - Math.min(max, nodes.length) + index)
             );
+        },
+        getRecentLiveEvents(limit = 40) {
+          const max = Math.max(1, Number(limit || 40) | 0);
+          const events = Array.isArray(state.liveDebugEvents) ? state.liveDebugEvents : [];
+          return events.slice(Math.max(0, events.length - max));
         },
         findMessage(needle) {
           const query = String(needle || "");
@@ -147,8 +369,68 @@ export function createDebugToolsModule(deps) {
           }
           return spans;
         },
+        toggleLiveInspector(force) {
+          const shouldOpen =
+            typeof force === "boolean"
+              ? force
+              : !documentRef.getElementById("webCodexLiveInspector");
+          if (shouldOpen) installLiveInspector();
+          else windowRef.__webCodexLiveInspector?.destroy?.();
+          return {
+            ok: true,
+            open: !!documentRef.getElementById("webCodexLiveInspector"),
+          };
+        },
       };
     } catch {}
+  }
+
+  function installLiveTraceBackgroundSync() {
+    try {
+      if (windowRef.__webCodexLiveTraceSyncInstalled) return;
+      windowRef.__webCodexLiveTraceSyncInstalled = true;
+    } catch {}
+
+    const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const flush = async () => {
+      if (state.liveTraceSyncInFlight) return;
+      const batch = collectPendingLiveTraceEvents(state, 40);
+      if (!batch.length) return;
+      state.liveTraceSyncInFlight = true;
+      try {
+        const res = await windowRef.fetch("/codex/debug/live/client", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            sessionId,
+            page: String(windowRef.location?.pathname || ""),
+            events: batch.map((event) => {
+              const copy = { ...event };
+              delete copy.__traceUploaded;
+              return copy;
+            }),
+          }),
+        });
+        if (!res.ok) return;
+        for (const event of batch) event.__traceUploaded = true;
+        state.liveTraceUploadedCount = (Number(state.liveTraceUploadedCount || 0) + batch.length) | 0;
+      } catch {
+      } finally {
+        state.liveTraceSyncInFlight = false;
+      }
+    };
+
+    windowRef.setInterval(() => {
+      flush().catch(() => {});
+    }, 1500);
+    windowRef.addEventListener("visibilitychange", () => {
+      if (documentRef.visibilityState === "hidden") {
+        flush().catch(() => {});
+      }
+    });
   }
 
   function installThreadAnimDebug() {
@@ -175,6 +457,10 @@ export function createDebugToolsModule(deps) {
   function installDebugAndE2E() {
     try {
       installWebCodexDebug();
+      installLiveTraceBackgroundSync();
+      if (hasQueryFlag(windowRef.location.search, "debuglive")) {
+        installLiveInspector();
+      }
       const params = new URLSearchParams(windowRef.location.search);
       if (params.get("animdebug") === "1") {
         threadAnimDebug.enabled = true;
@@ -286,6 +572,13 @@ export function createDebugToolsModule(deps) {
         getThreadHistory(threadId) {
           return historyByThreadId.get(String(threadId || ""));
         },
+        setThreadHistory(threadId, thread) {
+          const id = String(threadId || "").trim();
+          if (!id) return { ok: false, error: "missing threadId" };
+          const next = thread && typeof thread === "object" ? { ...thread, id } : { id, turns: [] };
+          historyByThreadId.set(id, next);
+          return { ok: true, threadId: id };
+        },
         getComposerContextLeft() {
           const node = documentRef.getElementById("mobileContextLeft");
           if (!node) return { text: "", top: 0, left: 0, width: 0, height: 0 };
@@ -333,6 +626,7 @@ export function createDebugToolsModule(deps) {
           setMainTab("chat");
           setMobileTab("chat");
           setActiveThread(id);
+          state.activeThreadNeedsResume = true;
           setChatOpening(false);
           await loadThreadMessages(id, {
             animateBadge: true,
@@ -342,6 +636,80 @@ export function createDebugToolsModule(deps) {
             rolloutPath: state.activeThreadRolloutPath,
           });
           return { ok: true };
+        },
+        async refreshActiveThread() {
+          const id = String(state.activeThreadId || this._activeThreadId || "").trim();
+          if (!id) return { ok: false, error: "missing active thread" };
+          await loadThreadMessages(id, {
+            animateBadge: false,
+            forceRender: true,
+            workspace: state.activeThreadWorkspace,
+            rolloutPath: state.activeThreadRolloutPath,
+          });
+          return { ok: true, threadId: id };
+        },
+        installMockTurnStream(config = {}) {
+          const threadId = String(config.threadId || this._activeThreadId || state.activeThreadId || "").trim();
+          if (!threadId) return { ok: false, error: "missing threadId" };
+          const chunks = Array.isArray(config.chunks) && config.chunks.length
+            ? config.chunks.map((item) => String(item || ""))
+            : ["live", " reply"];
+          const finalText = String(config.finalText || chunks.join("")).trim() || "live reply";
+          const delayMs = Math.max(0, Number(config.delayMs || 40) || 40);
+          const completedResult =
+            config.completedResult && typeof config.completedResult === "object"
+              ? { ...config.completedResult }
+              : { threadId, output_text: finalText };
+          const notifications = Array.isArray(config.notifications) ? config.notifications.slice() : [];
+          state.ws = {
+            readyState: 1,
+            send(raw) {
+              let payload = null;
+              try {
+                payload = JSON.parse(String(raw || ""));
+              } catch {
+                return;
+              }
+              if (payload?.type !== "turn.stream") return;
+              const reqId = String(payload?.reqId || "");
+              if (!reqId) return;
+              const emit = (evt) => {
+                const handler = state.wsReqHandlers.get(reqId);
+                if (typeof handler === "function") handler(evt);
+              };
+              chunks.forEach((chunk, index) => {
+                setTimeout(() => {
+                  emit({
+                    type: "delta",
+                    payload: {
+                      threadId,
+                      text: String(chunk || ""),
+                    },
+                  });
+                }, delayMs * (index + 1));
+              });
+              setTimeout(() => {
+                emit({
+                  type: "completed",
+                  payload: {
+                    result: completedResult,
+                  },
+                });
+              }, delayMs * (chunks.length + 2));
+              notifications.forEach((notification, index) => {
+                setTimeout(() => {
+                  handleWsPayload({
+                    type: "rpc.notification",
+                    payload: notification,
+                  });
+                }, delayMs * (chunks.length + 3 + index));
+              });
+            },
+            close() {
+              this.readyState = 3;
+            },
+          };
+          return { ok: true, threadId, chunks, finalText, delayMs };
         },
         emitWsPayload(payload) {
           handleWsPayload(payload);
@@ -407,7 +775,9 @@ export function createDebugToolsModule(deps) {
   }
 
   return {
+    collectPendingLiveTraceEvents,
     installDebugAndE2E,
+    installLiveTraceBackgroundSync,
     installThreadAnimDebug,
     installWebCodexDebug,
   };
