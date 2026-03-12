@@ -1,3 +1,5 @@
+import { toolItemToMessage } from "./messageData.js";
+
 export function workspaceKeyOfThread(thread) {
   const raw = thread.cwd || thread.workspace || thread.project || thread.directory || thread.path || "";
   const text = String(raw || "").trim();
@@ -30,6 +32,7 @@ export function normalizeLiveMethod(value) {
     turn_started: "turn/started",
     task_complete: "turn/completed",
     turn_complete: "turn/completed",
+    task_aborted: "turn/cancelled",
     turn_aborted: "turn/cancelled",
     item_started: "item/started",
     item_completed: "item/completed",
@@ -190,7 +193,13 @@ export function createLiveNotificationsModule(deps) {
     hideWelcomeCard = () => {},
     createAssistantStreamingMessage = () => ({ msg: null, body: null }),
     appendStreamingDelta = () => {},
+    renderAssistantLiveBody = null,
     finalizeAssistantMessage = () => {},
+    setRuntimeActivity = () => {},
+    applyToolItemRuntimeUpdate = () => {},
+    applyPlanDeltaUpdate = () => {},
+    applyPlanSnapshotUpdate = () => {},
+    finalizeRuntimeState = () => {},
     normalizeType,
     normalizeInline,
     normalizeMultiline,
@@ -213,65 +222,35 @@ export function createLiveNotificationsModule(deps) {
   }
 
   function toToolLikeMessage(item) {
-    const itemType = normalizeType(item?.type);
-    if (!itemType) return null;
-    if (itemType === "plan") return normalizeMultiline(item?.text, 1800) || null;
-    if (itemType === "commandexecution") {
-      const command = normalizeInline(item?.command, 240) ?? "command";
-      const status = normalizeType(item?.status);
-      const output =
-        normalizeMultiline(item?.aggregatedOutput, 2400) ??
-        normalizeMultiline(item?.aggregated_output, 2400) ??
-        normalizeMultiline(item?.output, 2400);
-      const exitCode = readNumber(item?.exitCode) ?? readNumber(item?.exit_code);
-      const title =
-        status === "failed" || status === "error"
-          ? `- Command failed \`${command}\``
-          : `- Ran \`${command}\``;
-      const lines = [title];
-      if (exitCode !== null) lines.push(`  - exit code ${String(exitCode)}`);
-      if (output) lines.push(`  - ${output.replace(/\n/g, "\n    ")}`);
-      return lines.join("\n");
+    return toolItemToMessage(item, { compact: true });
+  }
+
+  function clearTransientToolMessages() {
+    state.activeThreadTransientToolText = "";
+    try {
+      const box = byId("chatBox");
+      const nodes = Array.from(box?.querySelectorAll?.('.msg.system.kind-tool[data-msg-transient="1"]') || []);
+      for (const node of nodes) node.remove?.();
+    } catch {}
+  }
+
+  function hasMatchingTransientToolNode(toolText) {
+    try {
+      const box = byId("chatBox");
+      const nodes = Array.from(box?.querySelectorAll?.('.msg.system.kind-tool[data-msg-transient="1"]') || []);
+      return nodes.some((node) => String(node?.__webCodexRawText || "").trim() === toolText);
+    } catch {
+      return false;
     }
-    if (itemType === "mcptoolcall") {
-      const server = normalizeInline(item?.server, 120);
-      const tool = normalizeInline(item?.tool, 120);
-      const label = [server, tool].filter(Boolean).join(" / ") || "MCP tool call";
-      const status = normalizeType(item?.status);
-      const err = toRecord(item?.error);
-      const errMsg = normalizeInline(err?.message, 240) ?? normalizeInline(item?.error, 240);
-      const result = toStructuredPreview(item?.result, 240);
-      const detail = status === "failed" || status === "error" ? errMsg ?? result : result ?? errMsg;
-      const title =
-        status === "failed" || status === "error"
-          ? `- Tool failed \`${label}\``
-          : `- Called tool \`${label}\``;
-      return detail ? `${title}\n  - ${detail.replace(/\n/g, "\n    ")}` : title;
-    }
-    if (itemType === "websearch") {
-      const query = normalizeInline(item?.query, 180);
-      const action = toRecord(item?.action);
-      const actionType = normalizeType(action?.type);
-      let detail = query;
-      if (actionType === "openpage") detail = normalizeInline(action?.url, 240) ?? detail;
-      else if (actionType === "findinpage") {
-        const url = normalizeInline(action?.url, 180);
-        const pattern = normalizeInline(action?.pattern, 120);
-        detail = [url, pattern ? `pattern: ${pattern}` : null].filter(Boolean).join(" | ") || detail;
-      }
-      const title = query ? `- Searched web for "${query}"` : "- Searched web";
-      return detail && detail !== query ? `${title}\n  - ${detail}` : title;
-    }
-    if (itemType === "filechange") {
-      const status = normalizeType(item?.status);
-      const changeCount = Array.isArray(item?.changes) ? item.changes.length : 0;
-      const title = status === "failed" || status === "error" ? "- File changes failed" : "- Applied file changes";
-      return changeCount > 0 ? `${title}\n  - ${String(changeCount)} file(s) changed` : title;
-    }
-    if (itemType === "enteredreviewmode") return "- Entered review mode";
-    if (itemType === "exitedreviewmode") return "- Exited review mode";
-    if (itemType === "contextcompaction") return "- Compacted conversation context";
-    return null;
+  }
+
+  function showTransientToolMessage(text) {
+    const toolText = String(text || "");
+    if (!toolText) return;
+    if (String(state.activeThreadTransientToolText || "") === toolText && hasMatchingTransientToolNode(toolText)) return;
+    clearTransientToolMessages();
+    state.activeThreadTransientToolText = toolText;
+    addChat("system", toolText, { kind: "tool", scroll: false, source: "live", transient: true });
   }
 
   function notificationToToolItem(notification) {
@@ -388,8 +367,12 @@ export function createLiveNotificationsModule(deps) {
       });
       return;
     }
-    appendStreamingDelta(live.body, text);
     state.activeThreadLiveAssistantText = `${String(state.activeThreadLiveAssistantText || "")}${text}`;
+    if (typeof renderAssistantLiveBody === "function") {
+      renderAssistantLiveBody(live.msg, live.body, state.activeThreadLiveAssistantText);
+    } else {
+      appendStreamingDelta(live.body, text);
+    }
     const index = Number(state.activeThreadLiveAssistantIndex);
     if (
       Array.isArray(state.activeThreadMessages) &&
@@ -471,7 +454,9 @@ export function createLiveNotificationsModule(deps) {
     }
     const currentText = String(state.activeThreadLiveAssistantText || "");
     if (nextText !== currentText) {
-      if (currentText && nextText.startsWith(currentText)) {
+      if (typeof renderAssistantLiveBody === "function") {
+        renderAssistantLiveBody(live.msg, live.body, nextText);
+      } else if (currentText && nextText.startsWith(currentText)) {
         appendStreamingDelta(live.body, nextText.slice(currentText.length));
       } else if (!currentText) {
         appendStreamingDelta(live.body, nextText);
@@ -512,6 +497,7 @@ export function createLiveNotificationsModule(deps) {
       threadId: String(threadId || ""),
       chars: text.length,
     });
+    clearTransientToolMessages();
     scheduleChatLiveFollow(800);
   }
 
@@ -590,15 +576,35 @@ export function createLiveNotificationsModule(deps) {
       renderAssistantSnapshot(threadId, assistantUpdate.text, { final: isFinalAssistantUpdate });
       return;
     }
+    if (method.includes("turn/plan/updated")) {
+      applyPlanSnapshotUpdate({ ...(params || {}), threadId });
+      clearTransientToolMessages();
+      scheduleChatLiveFollow(900);
+      return;
+    }
+    if (method.includes("item/plan/delta")) {
+      applyPlanDeltaUpdate({ ...(params || {}), threadId });
+      clearTransientToolMessages();
+      scheduleChatLiveFollow(900);
+      return;
+    }
     if (toolItem) {
+      applyToolItemRuntimeUpdate(toolItem, { threadId, method, timestamp: Date.now() });
       const toolLike = toToolLikeMessage(toolItem);
       if (toolLike) {
+        if (
+          !(Array.isArray(state.activeThreadActiveCommands) && state.activeThreadActiveCommands.length > 0) &&
+          !state.activeThreadPlan
+        ) {
+          showTransientToolMessage(toolLike);
+        } else {
+          clearTransientToolMessages();
+        }
         pushLiveDebugEvent("live.render:tool_message", {
           method,
           threadId: String(threadId || ""),
           itemType: String(toolItem?.type || ""),
         });
-        addChat("system", toolLike, { kind: "tool", scroll: false });
         scheduleChatLiveFollow(900);
         return;
       }
@@ -608,27 +614,7 @@ export function createLiveNotificationsModule(deps) {
       normalizeType(params?.status) || normalizeType(params?.turn?.status) || normalizeType(params?.thread?.status);
     const isRunning = /running|inprogress|working|queued/.test(status || "") || method.includes("turn/started");
     if (isRunning) {
-      const box = byId("chatBox");
-      if (!box) {
-        pushLiveDebugEvent("live.drop:no_chat_box", {
-          method,
-          threadId: String(threadId || ""),
-        });
-        return;
-      }
-      const existing = box.querySelector('.msg.system.kind-thinking[data-thinking="1"]');
-      if (!existing) {
-        pushLiveDebugEvent("live.render:thinking", {
-          method,
-          threadId: String(threadId || ""),
-        });
-        addChat("system", "- Thinkingâ€¦", { kind: "thinking", scroll: false });
-        try {
-          const last = box.lastElementChild;
-          if (last?.classList?.contains("kind-thinking")) last.setAttribute("data-thinking", "1");
-        } catch {}
-        scheduleChatLiveFollow(800);
-      }
+      setRuntimeActivity({ threadId, title: "Thinking", detail: "", tone: "running" });
       return;
     }
     if (method.includes("turn/completed") || method.includes("turn/finished") || method.includes("turn/failed") || method.includes("turn/cancelled")) {
@@ -637,6 +623,8 @@ export function createLiveNotificationsModule(deps) {
         threadId: String(threadId || ""),
       });
       finalizeAssistantLive(threadId);
+      clearTransientToolMessages();
+      finalizeRuntimeState(threadId);
       try {
         const box = byId("chatBox");
         box?.querySelector?.('.msg.system.kind-thinking[data-thinking="1"]')?.remove?.();
@@ -645,6 +633,7 @@ export function createLiveNotificationsModule(deps) {
   }
 
   return {
+    clearTransientToolMessages,
     deriveLiveStatusFromNotification,
     deriveLiveStatusFromToolItem,
     isFailedLiveStatus,
@@ -652,6 +641,7 @@ export function createLiveNotificationsModule(deps) {
     normalizeLiveMethod,
     notificationToToolItem,
     renderLiveNotification,
+    showTransientToolMessage,
     toToolLikeMessage,
     workspaceKeyOfThread,
   };

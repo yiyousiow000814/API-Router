@@ -800,8 +800,7 @@
     .scrollToBottomBtn {
       position: absolute;
       left: 50%;
-      /* Sit above the composer (which can grow). Uses a conservative offset. */
-      bottom: 78px;
+      bottom: 12px;
       width: 38px;
       height: 38px;
       border-radius: 999px;
@@ -1007,14 +1006,12 @@
       background: rgba(43, 33, 13, 0.42);
     }
     .msg.system.kind-tool {
-      border-color: rgba(13, 18, 32, 0.14);
-      background: rgba(255, 255, 255, 0.78);
+      border-color: transparent;
+      background: transparent;
+      box-shadow: none;
+      padding: 0;
       color: #2c3950;
-    }
-    .msg.system.kind-tool .msgHead {
-      text-transform: uppercase;
-      letter-spacing: .08em;
-      font-size: 10px;
+      max-width: min(760px, 94%);
     }
     .msg.system.kind-tool.msg-enter { 
       animation-name: msg-enter-tool; 
@@ -1306,20 +1303,161 @@
     .msgBody ul {
       margin: 4px 0 8px;
       padding-left: 20px;
+      list-style: none;
     }
     .msgBody ol {
       margin: 4px 0 8px;
       padding-left: 20px;
+      list-style: none;
+      counter-reset: msg-ol;
     }
     .msgBody li {
       margin: 2px 0;
       min-width: 0;
+      position: relative;
+    }
+    .msgBody ol > li {
+      counter-increment: msg-ol;
+    }
+    .msgBody ol > li::before {
+      content: counter(msg-ol) ".";
+      position: absolute;
+      left: -20px;
+      top: 0;
+      width: 16px;
+      text-align: right;
+      color: #52627d;
+      font-variant-numeric: tabular-nums;
+    }
+    .msgBody ul > li::before {
+      content: "•";
+      position: absolute;
+      left: -16px;
+      top: 0;
+      width: 12px;
+      text-align: center;
+      color: #52627d;
+    }
+    .msgBody ul ul > li::before { content: "◦"; }
+    .msgBody ul ul ul > li::before { content: "▪"; }
+    .msgBody li > ul,
+    .msgBody li > ol {
+      margin-top: 4px;
     }
     /* Nested list indentation is handled by real nested <ul>/<ol> now (see renderMessageRichHtml). */
     .msgBody .msgListItem { margin-left: 0; }
     .msgBody strong {
       font-weight: 700;
       color: #0d1220;
+    }
+    .msgToolLine {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 7px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(11, 91, 211, 0.12);
+      background: rgba(255, 255, 255, 0.82);
+      box-shadow: 0 6px 18px rgba(13, 18, 32, 0.05);
+    }
+    .msgToolLine .msgToolLead,
+    .msgToolLine .msgToolTail {
+      flex: none;
+      width: 14px;
+      height: 14px;
+      position: relative;
+    }
+    .msgToolLine .msgToolText {
+      min-width: 0;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #16233c;
+      font-size: 12px;
+      line-height: 1.45;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .msgToolLine.mono .msgToolText {
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", monospace;
+    }
+    .msgToolLine .msgToolText .msgInlineCode,
+    .msgToolLine .msgToolText .msgPseudoLink,
+    .msgToolLine .msgToolText .msgLink {
+      font-size: 12px;
+    }
+    .msgToolLine .msgToolText .msgInlineCode {
+      display: inline-block;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .msgToolMore,
+    .runtimeToolItemMeta {
+      flex: none;
+      font-size: 11px;
+      color: #637188;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .msgToolLine .msgToolLead::before {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      line-height: 1;
+      color: #0b5bd3;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      content: "•";
+    }
+    .msgToolLine.icon-command .msgToolLead::before { content: "›"; }
+    .msgToolLine.icon-tool .msgToolLead::before { content: "◦"; }
+    .msgToolLine.icon-search .msgToolLead::before { content: "⌕"; }
+    .msgToolLine.icon-patch .msgToolLead::before { content: "✎"; }
+    .msgToolLine.icon-plan .msgToolLead::before { content: "≡"; }
+    .msgToolLine.icon-image .msgToolLead::before { content: "◱"; }
+    .msgToolLine.icon-input .msgToolLead::before { content: "?"; }
+    .msgToolLine.icon-agent .msgToolLead::before { content: "◎"; }
+    .msgToolLine.state-running .msgToolTail {
+      border: 2px solid rgba(11, 91, 211, 0.18);
+      border-top-color: #0b5bd3;
+      border-radius: 999px;
+      animation: msg-tool-spin 900ms linear infinite;
+    }
+    .msgToolLine.state-complete .msgToolTail::before {
+      content: "";
+      position: absolute;
+      left: 3px;
+      top: 2px;
+      width: 6px;
+      height: 3px;
+      border-left: 2px solid #22834f;
+      border-bottom: 2px solid #22834f;
+      transform: rotate(-45deg);
+    }
+    .msgToolLine.state-error .msgToolTail::before,
+    .msgToolLine.state-error .msgToolTail::after {
+      content: "";
+      position: absolute;
+      left: 6px;
+      top: 1px;
+      width: 2px;
+      height: 12px;
+      background: #c33a3a;
+      border-radius: 999px;
+    }
+    .msgToolLine.state-error .msgToolTail::before { transform: rotate(45deg); }
+    .msgToolLine.state-error .msgToolTail::after { transform: rotate(-45deg); }
+    @keyframes msg-tool-spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
     }
     .msgInlineCode {
       font-family: ui-monospace, "Cascadia Mono", "Consolas", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", monospace;
@@ -1376,6 +1514,284 @@
       cursor: default;
       overflow-wrap: anywhere;
       word-break: break-word;
+    }
+    .runtimeDock {
+      display: grid;
+      gap: 6px;
+      padding: 8px 10px 0;
+    }
+    .runtimeActivityMount {
+      display: grid;
+      gap: 8px;
+    }
+    .runtimeChatPanels {
+      display: grid;
+      gap: 8px;
+      padding: 6px 0 2px;
+      position: sticky;
+      bottom: 0;
+      z-index: 2;
+      background: linear-gradient(180deg, rgba(246, 248, 252, 0), rgba(246, 248, 252, 0.94) 18px, rgba(246, 248, 252, 0.98));
+    }
+    .runtimePlanMount,
+    .runtimeToolPanel {
+      display: grid;
+      gap: 8px;
+    }
+    .runtimePlanMount-dock,
+    .runtimeToolPanel-dock {
+      width: 100%;
+    }
+    .runtimeToolPanel-inline {
+      padding-left: 2px;
+    }
+    .runtimeToolItem {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 7px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      border-left: 2px solid rgba(11, 91, 211, 0.22);
+      background: rgba(255, 255, 255, 0.8);
+      box-shadow: 0 6px 16px rgba(13, 18, 32, 0.045);
+      animation: runtime-panel-in 180ms cubic-bezier(.22,1,.36,1);
+    }
+    .runtimeToolItemLead,
+    .runtimeToolItemTail {
+      width: 14px;
+      height: 14px;
+      flex: none;
+      position: relative;
+    }
+    .runtimeToolItemText {
+      min-width: 0;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #16233c;
+      font-size: 12px;
+      line-height: 1.45;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", monospace;
+    }
+    .runtimeToolItemPreview {
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+      font-weight: 600;
+    }
+    .runtimeToolItemText .msgInlineCode {
+      display: inline-block;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .runtimeToolItemLead::before {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      line-height: 1;
+      color: #0b5bd3;
+      content: "•";
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+    }
+    .runtimeToolItem.icon-command .runtimeToolItemLead::before { content: "›"; }
+    .runtimeToolItem.icon-tool .runtimeToolItemLead::before { content: "◦"; }
+    .runtimeToolItem.icon-search .runtimeToolItemLead::before { content: "⌕"; }
+    .runtimeToolItem.icon-patch .runtimeToolItemLead::before { content: "✎"; }
+    .runtimeToolItem.icon-plan .runtimeToolItemLead::before { content: "≡"; }
+    .runtimeToolItem.icon-image .runtimeToolItemLead::before { content: "◱"; }
+    .runtimeToolItem.icon-input .runtimeToolItemLead::before { content: "?"; }
+    .runtimeToolItem.icon-agent .runtimeToolItemLead::before { content: "◎"; }
+    .runtimeToolItem.state-running .runtimeToolItemTail {
+      border: 2px solid rgba(11, 91, 211, 0.18);
+      border-top-color: #0b5bd3;
+      border-radius: 999px;
+      animation: msg-tool-spin 900ms linear infinite;
+    }
+    .runtimeToolItem.state-complete .runtimeToolItemTail::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 6px;
+      height: 3px;
+      border-left: 2px solid #22834f;
+      border-bottom: 2px solid #22834f;
+      transform: translate(-50%, -58%) rotate(-45deg);
+    }
+    .runtimeToolItem.state-error .runtimeToolItemTail::before,
+    .runtimeToolItem.state-error .runtimeToolItemTail::after {
+      content: "";
+      position: absolute;
+      left: 6px;
+      top: 1px;
+      width: 2px;
+      height: 12px;
+      background: #c33a3a;
+      border-radius: 999px;
+    }
+    .runtimeToolItem.state-error .runtimeToolItemTail::before { transform: rotate(45deg); }
+    .runtimeToolItem.state-error .runtimeToolItemTail::after { transform: rotate(-45deg); }
+    .runtimeActivity {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(13, 18, 32, 0.12);
+      background: rgba(248, 250, 255, 0.92);
+      box-shadow: 0 8px 18px rgba(13, 18, 32, 0.045);
+      animation: runtime-panel-in 180ms cubic-bezier(.22,1,.36,1);
+    }
+    .runtimeActivityLead {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      flex: none;
+      background: #0b5bd3;
+      box-shadow: 0 0 0 4px rgba(11, 91, 211, 0.12);
+    }
+    .runtimeActivity.tone-running .runtimeActivityLead {
+      animation: runtime-activity-lead-pulse 1200ms ease-in-out infinite;
+    }
+    .runtimeActivity.tone-complete .runtimeActivityLead {
+      background: #22834f;
+      box-shadow: 0 0 0 4px rgba(34, 131, 79, 0.12);
+    }
+    .runtimeActivity.tone-error .runtimeActivityLead {
+      background: #c33a3a;
+      box-shadow: 0 0 0 4px rgba(195, 58, 58, 0.12);
+    }
+    .runtimeActivityText {
+      min-width: 0;
+      flex: 1;
+      font-size: 12px;
+      line-height: 1.4;
+      color: #14213a;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .runtimeActivityText strong {
+      font-size: 12px;
+      color: #14213a;
+    }
+    .runtimeActivityDetail {
+      color: #51627f;
+      font-weight: 500;
+    }
+    .runtimeActivityDots {
+      display: inline-flex;
+      gap: 3px;
+      flex: none;
+      align-items: center;
+    }
+    .runtimeActivityDots span {
+      width: 4px;
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(11, 91, 211, 0.34);
+      animation: runtime-activity-pulse 1200ms ease-in-out infinite;
+    }
+    .runtimeActivityDots span:nth-child(2) { animation-delay: 120ms; }
+    .runtimeActivityDots span:nth-child(3) { animation-delay: 240ms; }
+    @keyframes runtime-activity-pulse {
+      0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+      40% { opacity: 1; transform: translateY(-1px); }
+    }
+    @keyframes runtime-activity-lead-pulse {
+      0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(11, 91, 211, 0.22); }
+      55% { transform: scale(1.08); box-shadow: 0 0 0 6px rgba(11, 91, 211, 0); }
+    }
+    .runtimePlanCard {
+      border: 1px solid rgba(11, 91, 211, 0.14);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(244, 248, 255, 0.92));
+      box-shadow: 0 10px 22px rgba(13, 18, 32, 0.05);
+      padding: 10px 12px;
+      animation: runtime-panel-in 180ms cubic-bezier(.22,1,.36,1);
+    }
+    @keyframes runtime-panel-in {
+      0% {
+        opacity: 0;
+        transform: translateY(4px);
+      }
+      100% {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    .runtimePlanHeader {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: #0b5bd3;
+      margin-bottom: 6px;
+    }
+    .runtimePlanExplanation {
+      font-size: 12px;
+      line-height: 1.45;
+      color: #16233c;
+      margin-bottom: 8px;
+    }
+    .runtimePlanSteps {
+      display: grid;
+      gap: 6px;
+    }
+    .runtimePlanStep {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      min-width: 0;
+    }
+    .runtimePlanGlyph {
+      width: 14px;
+      height: 14px;
+      flex: none;
+      position: relative;
+      margin-top: 1px;
+    }
+    .runtimePlanGlyph::before {
+      content: "";
+      position: absolute;
+      inset: 3px;
+      border-radius: 999px;
+      border: 1.5px solid rgba(81, 98, 127, 0.6);
+      background: rgba(81, 98, 127, 0.08);
+    }
+    .runtimePlanStep.status-completed .runtimePlanGlyph::before {
+      border-color: #22834f;
+      background: #22834f;
+    }
+    .runtimePlanStep.status-inprogress .runtimePlanGlyph::before {
+      border-color: #0b5bd3;
+      background: rgba(11, 91, 211, 0.2);
+    }
+    .runtimePlanStepText {
+      min-width: 0;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #16233c;
+    }
+    .runtimePlanDelta {
+      font-size: 12px;
+      line-height: 1.45;
+      color: #51627f;
     }
 
     .composer {
@@ -2601,6 +3017,11 @@
                 <button id="enableNotifBtn">Enable notifications</button>
                 <span id="notifState" class="muted">Notification: off</span>
               </div>
+              <div class="drawerSectionTitle" style="margin-top:14px;">Debug</div>
+              <div class="row wrap settingsActions">
+                <button id="toggleLiveInspectorBtn">Live inspector: Off</button>
+                <span id="liveInspectorState" class="muted">Hidden</span>
+              </div>
             </div>
           </div>
         </div>
@@ -2621,12 +3042,15 @@
               <button id="quickPrompt2" class="welcomePrompt">Write tests for the main module</button>
             </div>
           </div>
-          <div id="chatOpeningOverlay" class="chatOpeningOverlay" aria-live="polite">
-            <div class="chatOpeningSpinner" aria-hidden="true"></div>
-            <div>Opening chat...</div>
-          </div>
+        <div id="chatOpeningOverlay" class="chatOpeningOverlay" aria-live="polite">
+          <div class="chatOpeningSpinner" aria-hidden="true"></div>
+          <div>Opening chat...</div>
         </div>
-        <div class="composer">
+      </div>
+      <div id="runtimeDock" class="runtimeDock" style="display:none;">
+        <div id="runtimeActivityBar" class="runtimeActivityMount" style="display:none;"></div>
+      </div>
+      <div class="composer">
           <div id="attachmentPills" class="pillRow"></div>
           <input id="attachInput" type="file" style="display:none;" />
           <div class="mobileComposerRow">

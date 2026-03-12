@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -16,6 +17,7 @@ pub(super) struct HistoryTurn {
 pub(super) struct ParsedRolloutHistory {
     pub(super) turns: Vec<HistoryTurn>,
     pub(super) token_usage: Option<Value>,
+    pub(super) incomplete: bool,
 }
 
 pub(super) fn parse_rollout_history(path: &Path) -> Result<ParsedRolloutHistory, String> {
@@ -45,6 +47,7 @@ pub(super) fn parse_rollout_history(path: &Path) -> Result<ParsedRolloutHistory,
         let payload = value.get("payload").unwrap_or(&Value::Null);
         match item_type {
             "event_msg" => builder.handle_event(payload),
+            "response_item" => builder.handle_response_item(payload),
             "compacted" => builder.handle_compacted(),
             _ => {}
         }
@@ -125,21 +128,36 @@ pub(super) fn history_parse_count_for_path(path: &Path) -> usize {
     }
 }
 
-#[derive(Clone, Default, Serialize, Deserialize, Debug)]
+#[derive(Clone, Default, Debug)]
 struct HistoryTurnBuilder {
     turns: Vec<HistoryTurn>,
     current_turn: Option<HistoryTurn>,
     next_turn_index: usize,
     next_item_index: usize,
     token_usage: Option<Value>,
+    pending_tool_calls: HashMap<String, PendingToolCall>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PendingToolCall {
+    index: usize,
+    kind: PendingToolKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingToolKind {
+    CommandExecution,
+    ToolCall,
 }
 
 impl HistoryTurnBuilder {
     fn finish(mut self) -> ParsedRolloutHistory {
+        let incomplete = self.current_turn.is_some();
         self.finish_current_turn();
         ParsedRolloutHistory {
             turns: self.turns,
             token_usage: self.token_usage,
+            incomplete,
         }
     }
 
@@ -149,14 +167,31 @@ impl HistoryTurnBuilder {
             .and_then(Value::as_str)
             .unwrap_or_default();
         match event_type {
-            "turn_started" => self.handle_turn_started(payload),
-            "turn_complete" => self.handle_turn_complete(),
-            "turn_aborted" => self.handle_turn_aborted(),
+            "turn_started" | "task_started" => self.handle_turn_started(payload),
+            "turn_complete" | "task_complete" => self.handle_turn_complete(),
+            "turn_aborted" | "task_aborted" => self.handle_turn_aborted(),
             "user_message" => self.handle_user_message(payload),
             "agent_message" => self.handle_agent_message(payload),
             "token_count" => self.handle_token_count(payload),
             "context_compacted" => self.handle_context_compacted(),
             "thread_rolled_back" => self.handle_thread_rollback(payload),
+            "item_completed" => self.handle_item_completed(payload),
+            _ => {}
+        }
+    }
+
+    fn handle_response_item(&mut self, payload: &Value) {
+        let item_type = payload
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        match item_type {
+            "function_call" => self.handle_function_call(payload),
+            "function_call_output" => self.handle_function_call_output(payload),
+            "custom_tool_call" => self.handle_custom_tool_call(payload),
+            "custom_tool_call_output" => self.handle_custom_tool_call_output(payload),
+            "web_search_call" => self.handle_web_search_call(payload),
+            "message" => self.handle_response_message(payload),
             _ => {}
         }
     }
@@ -217,12 +252,7 @@ impl HistoryTurnBuilder {
         if text.is_empty() {
             return;
         }
-        let item_id = self.next_item_id();
-        self.ensure_turn().items.push(json!({
-            "type": "agentMessage",
-            "id": item_id,
-            "text": text,
-        }));
+        self.push_assistant_text_item("agentMessage", text);
     }
 
     fn handle_context_compacted(&mut self) {
@@ -231,6 +261,171 @@ impl HistoryTurnBuilder {
             "type": "contextCompaction",
             "id": item_id,
         }));
+    }
+
+    fn handle_item_completed(&mut self, payload: &Value) {
+        let Some(item) = payload.get("item") else {
+            return;
+        };
+        let Some(value) = canonicalize_history_tool_item(item) else {
+            return;
+        };
+        self.push_turn_item(value);
+    }
+
+    fn handle_function_call(&mut self, payload: &Value) {
+        let name = payload
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let item_id = self.next_item_id();
+        let call_id = payload
+            .get("call_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let value = if is_shell_like_tool_name(name) {
+            json!({
+                "type": "commandExecution",
+                "id": item_id,
+                "callId": empty_to_none(call_id),
+                "command": read_command_from_tool_arguments(payload.get("arguments")),
+                "status": payload.get("status").and_then(Value::as_str),
+            })
+        } else {
+            json!({
+                "type": "toolCall",
+                "id": item_id,
+                "callId": empty_to_none(call_id),
+                "tool": empty_to_none(name),
+                "arguments": payload.get("arguments").cloned().unwrap_or(Value::Null),
+                "status": payload.get("status").and_then(Value::as_str),
+            })
+        };
+        let index = self.push_turn_item(value);
+        if !call_id.is_empty() {
+            let kind = if is_shell_like_tool_name(name) {
+                PendingToolKind::CommandExecution
+            } else {
+                PendingToolKind::ToolCall
+            };
+            self.pending_tool_calls
+                .insert(call_id.to_string(), PendingToolCall { index, kind });
+        }
+    }
+
+    fn handle_function_call_output(&mut self, payload: &Value) {
+        let call_id = payload
+            .get("call_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if call_id.is_empty() {
+            return;
+        }
+        let Some(pending) = self.pending_tool_calls.get(call_id).copied() else {
+            return;
+        };
+        let parsed = parse_embedded_json_value(payload.get("output")).unwrap_or(Value::Null);
+        match pending.kind {
+            PendingToolKind::CommandExecution => {
+                let output = extract_tool_text(&parsed);
+                let exit_code = parsed
+                    .get("metadata")
+                    .and_then(Value::as_object)
+                    .and_then(|value| value.get("exit_code"))
+                    .and_then(Value::as_i64);
+                if let Some(item) = self.turn_item_object_mut(pending.index) {
+                    item.insert("status".to_string(), json!("completed"));
+                    if let Some(value) = output {
+                        item.insert("output".to_string(), Value::String(value));
+                    }
+                    if let Some(value) = exit_code {
+                        item.insert("exitCode".to_string(), json!(value));
+                    }
+                }
+            }
+            PendingToolKind::ToolCall => {
+                if let Some(item) = self.turn_item_object_mut(pending.index) {
+                    item.insert("status".to_string(), json!("completed"));
+                    if !parsed.is_null() {
+                        if let Some(value) = extract_tool_text_value(&parsed) {
+                            item.insert("result".to_string(), value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_custom_tool_call(&mut self, payload: &Value) {
+        let item_id = self.next_item_id();
+        let call_id = payload
+            .get("call_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let tool = payload
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let value = json!({
+            "type": "toolCall",
+            "id": item_id,
+            "callId": empty_to_none(call_id),
+            "tool": empty_to_none(tool),
+            "input": payload.get("input").cloned().unwrap_or(Value::Null),
+            "status": payload.get("status").and_then(Value::as_str),
+        });
+        let index = self.push_turn_item(value);
+        if !call_id.is_empty() {
+            self.pending_tool_calls.insert(
+                call_id.to_string(),
+                PendingToolCall {
+                    index,
+                    kind: PendingToolKind::ToolCall,
+                },
+            );
+        }
+    }
+
+    fn handle_custom_tool_call_output(&mut self, payload: &Value) {
+        self.handle_function_call_output(payload);
+    }
+
+    fn handle_web_search_call(&mut self, payload: &Value) {
+        let item_id = self.next_item_id();
+        let action = payload.get("action").cloned().unwrap_or(Value::Null);
+        let query = action
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        self.push_turn_item(json!({
+            "type": "webSearch",
+            "id": item_id,
+            "status": payload.get("status").and_then(Value::as_str),
+            "query": query,
+            "action": action,
+        }));
+    }
+
+    fn handle_response_message(&mut self, payload: &Value) {
+        let role = payload
+            .get("role")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !role.eq_ignore_ascii_case("assistant") {
+            return;
+        }
+        let Some(text) = extract_response_message_text(payload.get("content")) else {
+            return;
+        };
+        self.push_assistant_text_item("assistantMessage", &text);
     }
 
     fn handle_compacted(&mut self) {
@@ -254,6 +449,7 @@ impl HistoryTurnBuilder {
     fn ensure_turn(&mut self) -> &mut HistoryTurn {
         if self.current_turn.is_none() {
             self.current_turn = Some(self.new_turn(None, false));
+            self.pending_tool_calls.clear();
         }
         self.current_turn.as_mut().expect("turn exists")
     }
@@ -262,6 +458,7 @@ impl HistoryTurnBuilder {
         let Some(turn) = self.current_turn.take() else {
             return;
         };
+        self.pending_tool_calls.clear();
         if turn.items.is_empty() && !turn.saw_compaction {
             return;
         }
@@ -281,6 +478,240 @@ impl HistoryTurnBuilder {
     fn next_item_id(&mut self) -> String {
         self.next_item_index += 1;
         format!("history-item-{}", self.next_item_index)
+    }
+
+    fn push_turn_item(&mut self, item: Value) -> usize {
+        let turn = self.ensure_turn();
+        turn.items.push(item);
+        turn.items.len().saturating_sub(1)
+    }
+
+    fn push_assistant_text_item(&mut self, item_type: &str, text: &str) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let should_skip_duplicate = self
+            .current_turn
+            .as_ref()
+            .and_then(|turn| turn.items.last())
+            .and_then(Value::as_object)
+            .is_some_and(|item| {
+                let existing_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
+                let existing_text = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or_default();
+                matches!(existing_type, "agentMessage" | "assistantMessage")
+                    && existing_text == trimmed
+            });
+        if should_skip_duplicate {
+            return;
+        }
+        let item_id = self.next_item_id();
+        self.push_turn_item(json!({
+            "type": item_type,
+            "id": item_id,
+            "text": trimmed,
+        }));
+    }
+
+    fn turn_item_object_mut(
+        &mut self,
+        index: usize,
+    ) -> Option<&mut serde_json::Map<String, Value>> {
+        self.current_turn
+            .as_mut()
+            .and_then(|turn| turn.items.get_mut(index))
+            .and_then(Value::as_object_mut)
+    }
+}
+
+fn empty_to_none(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn normalize_history_item_type(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn parse_embedded_json_value(value: Option<&Value>) -> Option<Value> {
+    let raw = value?;
+    match raw {
+        Value::Null => None,
+        Value::String(text) => serde_json::from_str::<Value>(text).ok().or_else(|| {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| Value::String(trimmed.to_string()))
+        }),
+        other => Some(other.clone()),
+    }
+}
+
+fn extract_tool_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        Value::Object(map) => map
+            .get("output")
+            .and_then(extract_tool_text)
+            .or_else(|| map.get("text").and_then(extract_tool_text)),
+        Value::Array(items) => {
+            let parts = items
+                .iter()
+                .filter_map(extract_tool_text)
+                .collect::<Vec<_>>();
+            (!parts.is_empty()).then(|| parts.join("\n"))
+        }
+        _ => None,
+    }
+}
+
+fn extract_tool_text_value(value: &Value) -> Option<Value> {
+    if let Some(text) = extract_tool_text(value) {
+        return Some(Value::String(text));
+    }
+    match value {
+        Value::Null => None,
+        other => Some(other.clone()),
+    }
+}
+
+fn read_command_from_tool_arguments(arguments: Option<&Value>) -> Option<String> {
+    let parsed = parse_embedded_json_value(arguments)?;
+    let command = parsed
+        .get("command")
+        .or_else(|| parsed.get("cmd"))
+        .or_else(|| parsed.get("args"))?;
+    match command {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        Value::Array(parts) => {
+            let joined = parts
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            (!joined.is_empty()).then_some(joined)
+        }
+        other => serde_json::to_string(other).ok(),
+    }
+}
+
+fn is_shell_like_tool_name(name: &str) -> bool {
+    let normalized = normalize_history_item_type(name);
+    normalized == "shell"
+        || normalized.ends_with("shellcommand")
+        || normalized.ends_with("localshell")
+        || normalized.ends_with("containerexec")
+        || normalized.ends_with("unifiedexec")
+}
+
+fn extract_response_message_text(content: Option<&Value>) -> Option<String> {
+    let parts = content?.as_array()?;
+    let lines = parts
+        .iter()
+        .filter_map(|part| {
+            let part_type = part.get("type").and_then(Value::as_str).unwrap_or_default();
+            let normalized = normalize_history_item_type(part_type);
+            if normalized != "outputtext" && normalized != "inputtext" && normalized != "text" {
+                return None;
+            }
+            extract_tool_text(part.get("text").unwrap_or(&Value::Null))
+        })
+        .collect::<Vec<_>>();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn canonicalize_history_tool_item(item: &Value) -> Option<Value> {
+    let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
+    let normalized = normalize_history_item_type(item_type);
+    let item_id = item.get("id").cloned().unwrap_or(Value::Null);
+    match normalized.as_str() {
+        "plan" => {
+            let text = item.get("text").and_then(Value::as_str)?.trim();
+            (!text.is_empty()).then(|| {
+                json!({
+                    "type": "plan",
+                    "id": item_id,
+                    "text": text,
+                })
+            })
+        }
+        "commandexecution" => Some(json!({
+            "type": "commandExecution",
+            "id": item_id,
+            "command": item.get("command").and_then(Value::as_str),
+            "status": item.get("status").and_then(Value::as_str),
+            "output": extract_tool_text_value(item.get("output").unwrap_or(&Value::Null)),
+            "exitCode": item.get("exitCode").and_then(Value::as_i64).or_else(|| item.get("exit_code").and_then(Value::as_i64)),
+        })),
+        "mcptoolcall" | "toolcall" => {
+            let tool = item
+                .get("tool")
+                .and_then(Value::as_str)
+                .or_else(|| item.get("name").and_then(Value::as_str));
+            if is_shell_like_tool_name(tool.unwrap_or_default()) {
+                let command = item
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| read_command_from_tool_arguments(item.get("arguments")))
+                    .or_else(|| read_command_from_tool_arguments(item.get("input")));
+                Some(json!({
+                    "type": "commandExecution",
+                    "id": item_id,
+                    "command": command,
+                    "status": item.get("status").and_then(Value::as_str),
+                    "output": extract_tool_text_value(item.get("output").unwrap_or(&Value::Null)).or_else(|| item.get("result").cloned()),
+                    "exitCode": item.get("exitCode").and_then(Value::as_i64).or_else(|| item.get("exit_code").and_then(Value::as_i64)),
+                }))
+            } else {
+                Some(json!({
+                    "type": "toolCall",
+                    "id": item_id,
+                    "tool": tool,
+                    "server": item.get("server").and_then(Value::as_str),
+                    "arguments": item.get("arguments").cloned().unwrap_or(Value::Null),
+                    "input": item.get("input").cloned().unwrap_or(Value::Null),
+                    "status": item.get("status").and_then(Value::as_str),
+                    "result": item.get("result").cloned().or_else(|| extract_tool_text_value(item.get("output").unwrap_or(&Value::Null))),
+                    "error": item.get("error").cloned().unwrap_or(Value::Null),
+                }))
+            }
+        }
+        "websearch" => Some(json!({
+            "type": "webSearch",
+            "id": item_id,
+            "status": item.get("status").and_then(Value::as_str),
+            "query": item.get("query").and_then(Value::as_str).or_else(|| item.get("action").and_then(|value| value.get("query")).and_then(Value::as_str)),
+            "action": item.get("action").cloned().unwrap_or(Value::Null),
+        })),
+        "filechange" => Some(json!({
+            "type": "fileChange",
+            "id": item_id,
+            "status": item.get("status").and_then(Value::as_str),
+            "changes": item.get("changes").cloned().unwrap_or_else(|| json!([])),
+        })),
+        "enteredreviewmode" => Some(json!({ "type": "enteredReviewMode", "id": item_id })),
+        "exitedreviewmode" => Some(json!({ "type": "exitedReviewMode", "id": item_id })),
+        "contextcompaction" => Some(json!({ "type": "contextCompaction", "id": item_id })),
+        _ => None,
     }
 }
 
@@ -322,4 +753,76 @@ fn build_user_content(payload: &Value) -> Vec<Value> {
         }
     }
     content
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_rollout_history;
+    use std::io::Write;
+
+    fn write_rollout(lines: &[&str]) -> tempfile::NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().expect("temp rollout");
+        for line in lines {
+            writeln!(file, "{line}").expect("write rollout line");
+        }
+        file
+    }
+
+    #[test]
+    fn parser_dedupes_same_assistant_text_from_event_and_response_item() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-dup"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hello","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"same reply"}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"same reply"}]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#,
+        ]);
+
+        let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
+        assert_eq!(parsed.turns.len(), 1);
+        let items = &parsed.turns[0].items;
+        assert_eq!(items.len(), 2, "duplicate assistant item should be removed");
+        assert_eq!(items[0]["type"].as_str(), Some("userMessage"));
+        assert_eq!(items[1]["text"].as_str(), Some("same reply"));
+    }
+
+    #[test]
+    fn parser_accepts_task_event_aliases_as_turn_boundaries() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-task-alias"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hello","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first reply"}]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"again","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_aborted"}}"#,
+        ]);
+
+        let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
+        assert!(
+            !parsed.incomplete,
+            "task_complete/task_aborted should close the current turn"
+        );
+        assert_eq!(
+            parsed.turns.len(),
+            2,
+            "task aliases should split rollout into distinct turns"
+        );
+        assert_eq!(parsed.turns[0].id, "turn-1");
+        assert_eq!(parsed.turns[1].id, "turn-2");
+        assert_eq!(
+            parsed.turns[0].items[0]["type"].as_str(),
+            Some("userMessage")
+        );
+        assert_eq!(
+            parsed.turns[0].items[1]["text"].as_str(),
+            Some("first reply")
+        );
+        assert_eq!(
+            parsed.turns[1].items[0]["type"].as_str(),
+            Some("userMessage")
+        );
+    }
 }

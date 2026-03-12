@@ -292,8 +292,6 @@ export function createChatViewportModule(deps) {
   }
 
   function ensureScrollToBottomBtn() {
-    const chatPanel = documentRef.querySelector("section.panel.chatPanel");
-    if (!chatPanel) return null;
     const box = byId("chatBox");
     if (!box) return null;
     const btn = byId("scrollToBottomBtn");
@@ -305,7 +303,7 @@ export function createChatViewportModule(deps) {
         updateScrollToBottomBtn();
       };
     }
-    if (btn.parentElement !== chatPanel) chatPanel.appendChild(btn);
+    if (btn.parentElement !== box) box.appendChild(btn);
     return btn;
   }
 

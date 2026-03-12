@@ -33,6 +33,7 @@ import {
   normalizeInline,
   normalizeMultiline,
   normalizeTextPayload,
+  toolItemToMessage,
   normalizeThreadItemText,
   normalizeType,
   parseUserMessageParts,
@@ -74,6 +75,7 @@ import {
   GUIDE_DISMISSED_KEY,
   HISTORY_WINDOW_THRESHOLD,
   LAST_EVENT_ID_KEY,
+  LIVE_INSPECTOR_ENABLED_KEY,
   MODEL_LOADING_MIN_MS,
   MODELS_CACHE_KEY,
   MODEL_USER_SELECTED_KEY,
@@ -128,6 +130,16 @@ let clearPromptValue = () => {};
 let hideWelcomeCard = () => {};
 let showWelcomeCard = () => {};
 let renderComposerContextLeft = () => {};
+let renderRuntimePanels = () => {};
+let clearRuntimeState = () => {};
+let setRuntimeActivity = () => {};
+let setActiveCommands = () => {};
+let setActivePlan = () => {};
+let syncRuntimeStateFromHistory = () => {};
+let applyToolItemRuntimeUpdate = () => {};
+let applyPlanDeltaUpdate = () => {};
+let applyPlanSnapshotUpdate = () => {};
+let finalizeRuntimeState = () => {};
 let updateMobileComposerState = () => {};
 let setMainTab = () => {};
 let syncSettingsControlsFromMain = () => {};
@@ -141,9 +153,12 @@ let applyManagedTokenUi = () => {};
 let truncateLabel = (value) => String(value || "");
 let relativeTimeLabel = () => "";
 let renderAttachmentPills = () => {};
+let clearTransientToolMessages = () => {};
+let renderAssistantLiveBody = () => {};
 let toToolLikeMessage = () => null;
 let notificationToToolItem = () => null;
 let renderLiveNotification = () => {};
+let showTransientToolMessage = () => {};
 let workspaceKeyOfThread = () => "Default folder";
 let setMobileTab = () => {};
 let getWorkspaceTarget = () => normalizeWorkspaceTarget(state.workspaceTarget || "windows");
@@ -246,7 +261,10 @@ function normalizeWorkspaceTarget(value) {
 function setActiveThread(id) {
   const prev = state.activeThreadId || "";
   state.activeThreadId = id || "";
-  if (prev !== state.activeThreadId) state.activeThreadRenderSig = "";
+  if (prev !== state.activeThreadId) {
+    state.activeThreadRenderSig = "";
+    clearRuntimeState();
+  }
   if (!state.activeThreadId) {
     state.activeThreadStarted = false;
     state.activeThreadWorkspace = getWorkspaceTarget();
@@ -282,6 +300,16 @@ const composition = createCodexWebComposition({
   nextReqId,
   normalizeThreadTokenUsage,
   renderComposerContextLeft: (...args) => renderComposerContextLeft(...args),
+  renderRuntimePanels: (...args) => renderRuntimePanels(...args),
+  clearRuntimeState: (...args) => clearRuntimeState(...args),
+  setRuntimeActivity: (...args) => setRuntimeActivity(...args),
+  setActiveCommands: (...args) => setActiveCommands(...args),
+  setActivePlan: (...args) => setActivePlan(...args),
+  syncRuntimeStateFromHistory: (...args) => syncRuntimeStateFromHistory(...args),
+  applyToolItemRuntimeUpdate: (...args) => applyToolItemRuntimeUpdate(...args),
+  applyPlanDeltaUpdate: (...args) => applyPlanDeltaUpdate(...args),
+  applyPlanSnapshotUpdate: (...args) => applyPlanSnapshotUpdate(...args),
+  finalizeRuntimeState: (...args) => finalizeRuntimeState(...args),
   parseUserMessageParts,
   isBootstrapAgentsPrompt,
   normalizeThreadItemText,
@@ -313,6 +341,7 @@ const composition = createCodexWebComposition({
   setMobileTab: (...args) => setMobileTab(...args),
   setActiveThread,
   renderAttachmentPills: (...args) => renderAttachmentPills(...args),
+  clearTransientToolMessages: (...args) => clearTransientToolMessages(...args),
   blockInSandbox: (...args) => blockInSandbox(...args),
   getEmbeddedToken,
   refreshCodexVersions: (...args) => refreshCodexVersions(...args),
@@ -332,6 +361,7 @@ const composition = createCodexWebComposition({
   wireMessageLinks,
   renderInlineMessageText,
   findNextInlineCodeSpan,
+  showTransientToolMessage: (...args) => showTransientToolMessage(...args),
   normalizeModelOption,
   isThreadAnimDebugEnabled,
   threadAnimDebug,
@@ -368,6 +398,7 @@ const composition = createCodexWebComposition({
   ACTIVE_THREAD_LIVE_POLL_MS,
   ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS,
   LAST_EVENT_ID_KEY,
+  LIVE_INSPECTOR_ENABLED_KEY,
   createWsClientModule,
   createWorkspaceUiModule,
   createChatViewportModule,
@@ -397,6 +428,7 @@ const {
   bootstrap,
   createAssistantStreamingMessage,
   finalizeAssistantMessage,
+  renderAssistantLiveBody: renderAssistantLiveBodyFromComposition,
   getActiveWorkspaceBadgeLabel,
   getWorkspaceTarget: getWorkspaceTargetFromComposition,
   isThreadListActuallyVisible,
@@ -414,6 +446,7 @@ syncActiveThreadMetaFromList = (...args) => syncActiveThreadMetaFromListFromComp
 refreshThreads = (...args) => refreshThreadsFromComposition(...args);
 loadThreadMessages = (...args) => loadThreadMessagesFromComposition(...args);
 renderThreads = (...args) => renderThreadsFromComposition(...args);
+renderAssistantLiveBody = (...args) => renderAssistantLiveBodyFromComposition(...args);
 
 ({
   blockInSandbox,
@@ -444,6 +477,16 @@ renderThreads = (...args) => renderThreadsFromComposition(...args);
   getPromptValue,
   hideWelcomeCard,
   renderComposerContextLeft,
+  renderRuntimePanels,
+  clearRuntimeState,
+  setRuntimeActivity,
+  setActiveCommands,
+  setActivePlan,
+  syncRuntimeStateFromHistory,
+  applyToolItemRuntimeUpdate,
+  applyPlanDeltaUpdate,
+  applyPlanSnapshotUpdate,
+  finalizeRuntimeState,
   setMainTab,
   showWelcomeCard,
   syncSettingsControlsFromMain,
@@ -456,7 +499,13 @@ renderThreads = (...args) => renderThreadsFromComposition(...args);
   clearPromptInput,
   resolveMobilePromptLayout,
   renderComposerContextLeftInNode,
+  renderInlineMessageText,
+  toolItemToMessage,
+  normalizeType,
+  escapeHtml,
   updateHeaderUi: (...args) => updateHeaderUi(...args),
+  LIVE_INSPECTOR_ENABLED_KEY,
+  localStorageRef: localStorage,
   documentRef: document,
   windowRef: window,
 }));
@@ -492,8 +541,10 @@ renderThreads = (...args) => renderThreadsFromComposition(...args);
 }));
 
 ({
+  clearTransientToolMessages,
   notificationToToolItem,
   renderLiveNotification,
+  showTransientToolMessage,
   toToolLikeMessage,
   workspaceKeyOfThread,
 } = createLiveNotificationsModule({
@@ -505,7 +556,13 @@ renderThreads = (...args) => renderThreadsFromComposition(...args);
   hideWelcomeCard: (...args) => hideWelcomeCard(...args),
   createAssistantStreamingMessage: (...args) => createAssistantStreamingMessage(...args),
   appendStreamingDelta: (...args) => appendStreamingDelta(...args),
+  renderAssistantLiveBody: (...args) => renderAssistantLiveBody(...args),
   finalizeAssistantMessage: (...args) => finalizeAssistantMessage(...args),
+  setRuntimeActivity: (...args) => setRuntimeActivity(...args),
+  applyToolItemRuntimeUpdate: (...args) => applyToolItemRuntimeUpdate(...args),
+  applyPlanDeltaUpdate: (...args) => applyPlanDeltaUpdate(...args),
+  applyPlanSnapshotUpdate: (...args) => applyPlanSnapshotUpdate(...args),
+  finalizeRuntimeState: (...args) => finalizeRuntimeState(...args),
   normalizeType,
   normalizeInline,
   normalizeMultiline,

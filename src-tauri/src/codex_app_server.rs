@@ -58,10 +58,18 @@ async fn maybe_handle_test_request(
     Some(handler(codex_home, method, params.clone()))
 }
 
-#[derive(Default)]
 struct NotificationState {
     next_event_id: u64,
     items: VecDeque<(u64, Value)>,
+}
+
+impl Default for NotificationState {
+    fn default() -> Self {
+        Self {
+            next_event_id: 1,
+            items: VecDeque::new(),
+        }
+    }
 }
 
 fn normalize_home_key(codex_home: Option<&str>) -> Cow<'static, str> {
@@ -78,6 +86,13 @@ fn normalize_home_key(codex_home: Option<&str>) -> Cow<'static, str> {
 
 fn notification_state_map() -> &'static Mutex<HashMap<String, NotificationState>> {
     NOTIFICATION_STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+async fn ensure_notification_home_state(codex_home: Option<&str>) {
+    let key = normalize_home_key(codex_home).to_string();
+    let map = notification_state_map();
+    let mut guard = map.lock().await;
+    guard.entry(key).or_insert_with(NotificationState::default);
 }
 
 fn debug_event_queue() -> &'static Mutex<VecDeque<Value>> {
@@ -189,11 +204,25 @@ async fn push_notification(codex_home: Option<&str>, value: Value) {
         .to_string();
     let thread_id = extract_thread_id_for_debug(&value).unwrap_or_default();
     st.items.push_back((event_id, value));
+    let mut dropped = None;
     while st.items.len() > NOTIFICATION_QUEUE_CAP {
-        st.items.pop_front();
+        dropped = st.items.pop_front();
     }
     let queue_len = st.items.len();
     drop(guard);
+    if let Some((dropped_event_id, dropped_value)) = dropped {
+        push_debug_event(
+            "app.notification.drop.overflow",
+            serde_json::json!({
+                "home": key.as_ref(),
+                "droppedEventId": dropped_event_id,
+                "droppedMethod": dropped_value.get("method").and_then(Value::as_str).unwrap_or_default(),
+                "droppedThreadId": extract_thread_id_for_debug(&dropped_value).unwrap_or_default(),
+                "queueLen": queue_len,
+            }),
+        )
+        .await;
+    }
     push_debug_event(
         "app.notification.push",
         serde_json::json!({
@@ -296,6 +325,74 @@ pub async fn replay_notifications_since_in_home(
     )
     .await;
     (out, first, last, gap)
+}
+
+pub async fn ensure_server_in_home(codex_home: Option<&str>) -> Result<(), String> {
+    ensure_notification_home_state(codex_home).await;
+
+    #[cfg(test)]
+    {
+        let lock = TEST_REQUEST_HANDLER.get_or_init(|| Mutex::new(None));
+        if lock.lock().await.is_some() {
+            push_debug_event(
+                "app.server.ensure.test",
+                serde_json::json!({
+                    "home": normalize_home_key(codex_home).as_ref(),
+                }),
+            )
+            .await;
+            return Ok(());
+        }
+    }
+
+    let key = normalize_home_key(codex_home).to_string();
+    let lock = APP_SERVERS.get_or_init(|| Mutex::new(HashMap::new()));
+
+    loop {
+        let existing = {
+            let guard = lock.lock().await;
+            guard.get(&key).cloned()
+        };
+
+        if let Some(server) = existing {
+            let dead = {
+                let mut srv = server.lock().await;
+                srv.is_dead().unwrap_or(true)
+            };
+            if !dead {
+                return Ok(());
+            }
+            let mut guard = lock.lock().await;
+            if guard
+                .get(&key)
+                .is_some_and(|current| std::sync::Arc::ptr_eq(current, &server))
+            {
+                guard.remove(&key);
+            }
+            continue;
+        }
+
+        push_debug_event(
+            "app.server.ensure.spawn_requested",
+            serde_json::json!({
+                "home": key,
+            }),
+        )
+        .await;
+
+        let spawned = AppServer::spawn(if key.is_empty() {
+            None
+        } else {
+            Some(key.as_str())
+        })
+        .await?;
+        let spawned_arc = std::sync::Arc::new(Mutex::new(spawned));
+        let mut guard = lock.lock().await;
+        guard
+            .entry(key.clone())
+            .or_insert_with(|| spawned_arc.clone());
+        return Ok(());
+    }
 }
 
 fn resolve_codex_cmd() -> Option<PathBuf> {
@@ -481,37 +578,73 @@ async fn route_stdout_lines(
     codex_home: Option<String>,
 ) {
     let mut reader = BufReader::new(stdout).lines();
-    while let Ok(Some(line)) = reader.next_line().await {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
-            push_debug_event(
-                "app.stdout.drop.invalid_json",
-                serde_json::json!({
-                    "home": codex_home.as_deref().unwrap_or(""),
-                    "raw": line.chars().take(180).collect::<String>(),
-                }),
-            )
-            .await;
-            continue;
-        };
-        if let Some(id) = value.get("id").and_then(|v| v.as_i64()) {
-            push_debug_event(
-                "app.stdout.response",
-                serde_json::json!({
-                    "home": codex_home.as_deref().unwrap_or(""),
-                    "requestId": id,
-                    "hasResult": value.get("result").is_some(),
-                    "hasError": value.get("error").is_some(),
-                }),
-            )
-            .await;
-            let _ = router.deliver(id, value).await;
-            continue;
-        }
-        if value.get("method").and_then(|v| v.as_str()).is_some() {
-            push_notification(codex_home.as_deref(), value).await;
+    loop {
+        match reader.next_line().await {
+            Ok(Some(line)) => {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                    push_debug_event(
+                        "app.stdout.drop.invalid_json",
+                        serde_json::json!({
+                            "home": codex_home.as_deref().unwrap_or(""),
+                            "raw": line.chars().take(180).collect::<String>(),
+                        }),
+                    )
+                    .await;
+                    continue;
+                };
+                if let Some(id) = value.get("id").and_then(|v| v.as_i64()) {
+                    push_debug_event(
+                        "app.stdout.response",
+                        serde_json::json!({
+                            "home": codex_home.as_deref().unwrap_or(""),
+                            "requestId": id,
+                            "hasResult": value.get("result").is_some(),
+                            "hasError": value.get("error").is_some(),
+                        }),
+                    )
+                    .await;
+                    let _ = router.deliver(id, value).await;
+                    continue;
+                }
+                if value.get("method").and_then(|v| v.as_str()).is_some() {
+                    push_notification(codex_home.as_deref(), value).await;
+                    continue;
+                }
+                push_debug_event(
+                    "app.stdout.drop.ignored_shape",
+                    serde_json::json!({
+                        "home": codex_home.as_deref().unwrap_or(""),
+                        "hasId": value.get("id").is_some(),
+                        "hasMethod": value.get("method").is_some(),
+                        "keys": value.as_object().map(|obj| obj.keys().cloned().collect::<Vec<_>>()).unwrap_or_default(),
+                    }),
+                )
+                .await;
+            }
+            Ok(None) => {
+                push_debug_event(
+                    "app.stdout.eof",
+                    serde_json::json!({
+                        "home": codex_home.as_deref().unwrap_or(""),
+                    }),
+                )
+                .await;
+                break;
+            }
+            Err(error) => {
+                push_debug_event(
+                    "app.stdout.read_error",
+                    serde_json::json!({
+                        "home": codex_home.as_deref().unwrap_or(""),
+                        "message": error.to_string(),
+                    }),
+                )
+                .await;
+                break;
+            }
         }
     }
 }
@@ -784,6 +917,50 @@ mod tests {
         assert!(first.unwrap() > 1);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn notification_overflow_emits_debug_event() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+
+        for i in 0..(NOTIFICATION_QUEUE_CAP + 1) {
+            push_notification(
+                None,
+                serde_json::json!({
+                    "method": "turn/status",
+                    "params": { "thread_id": format!("thread-{i}") }
+                }),
+            )
+            .await;
+        }
+
+        let snapshot = debug_snapshot().await;
+        let recent = snapshot
+            .get("recent")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let overflow = recent
+            .iter()
+            .rev()
+            .find(|entry| {
+                entry.get("kind").and_then(Value::as_str) == Some("app.notification.drop.overflow")
+            })
+            .cloned()
+            .expect("overflow debug event");
+        assert_eq!(
+            overflow.get("droppedEventId").and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            overflow.get("droppedMethod").and_then(Value::as_str),
+            Some("turn/status")
+        );
+        assert_eq!(
+            overflow.get("droppedThreadId").and_then(Value::as_str),
+            Some("thread-0")
+        );
+    }
+
     #[cfg(target_os = "windows")]
     #[tokio::test(flavor = "current_thread")]
     async fn wsl_homes_route_requests_through_bridge_transport() {
@@ -850,6 +1027,56 @@ mod tests {
         assert_eq!(items[0].get("eventId").and_then(|v| v.as_u64()), Some(5));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn ensure_server_in_home_initializes_notification_ring_for_selected_home() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        _set_test_request_handler(Some(std::sync::Arc::new(
+            |_codex_home, _method, _params| Ok(serde_json::json!({ "ok": true })),
+        )))
+        .await;
+
+        ensure_server_in_home(Some(r"C:\Users\yiyou\.codex"))
+            .await
+            .expect("ensure server");
+
+        let snapshot = debug_snapshot().await;
+        let homes = snapshot
+            .get("homes")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(homes.iter().any(|entry| {
+            entry.get("home").and_then(Value::as_str) == Some(r"C:\Users\yiyou\.codex")
+        }));
+
+        _set_test_request_handler(None).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn notification_home_state_starts_event_ids_at_one() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+
+        ensure_notification_home_state(Some(r"C:\Users\yiyou\.codex")).await;
+        push_notification(
+            Some(r"C:\Users\yiyou\.codex"),
+            serde_json::json!({
+                "method": "thread/status/changed",
+                "params": { "threadId": "thread-1" }
+            }),
+        )
+        .await;
+
+        let (items, first, last, gap) =
+            replay_notifications_since_in_home(Some(r"C:\Users\yiyou\.codex"), 0, 8).await;
+        assert!(!gap);
+        assert_eq!(first, Some(1));
+        assert_eq!(last, Some(1));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].get("eventId").and_then(Value::as_u64), Some(1));
+    }
+
     #[test]
     fn resolves_native_launcher_for_windows_home() {
         let spec = resolve_launch_spec(Some(r"C:\Users\yiyou\.codex"));
@@ -905,6 +1132,7 @@ pub async fn request_in_home(
     }
 
     let home = normalize_home_key(codex_home).to_string();
+    ensure_notification_home_state(codex_home).await;
     let thread_id = extract_thread_id_for_debug(&serde_json::json!({
         "params": params.clone(),
     }))

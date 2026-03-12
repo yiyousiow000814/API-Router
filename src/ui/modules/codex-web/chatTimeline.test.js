@@ -233,6 +233,7 @@ describe("chatTimeline", () => {
       scheduleChatLiveFollow: vi.fn(),
       updateScrollToBottomBtn: vi.fn(),
       scrollChatToBottom: vi.fn(),
+      renderRuntimePanels: vi.fn(),
       requestAnimationFrameRef: (cb) => cb(),
     };
     module = createChatTimelineModule({
@@ -264,6 +265,22 @@ describe("chatTimeline", () => {
     expect(state.activeThreadHistoryPendingRefresh).toBeNull();
   });
 
+  it("marks transient tool messages on DOM nodes so they can be cleared later", () => {
+    module.addChat("system", "Called tool `shell_command`", {
+      kind: "tool",
+      transient: true,
+      source: "live",
+      scroll: false,
+    });
+
+    const nodes = dom.chatBox.children.filter((child) => child.classList.contains("msg"));
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].__webCodexTransient).toBe(true);
+    expect(nodes[0].attributes.get("data-msg-transient")).toBe("1");
+    expect(nodes[0].attributes.get("data-msg-source")).toBe("live");
+    expect(refs.renderRuntimePanels).toHaveBeenCalledTimes(1);
+  });
+
   it("opens chat overlay and resets sticky state", () => {
     module.setChatOpening(true);
 
@@ -278,5 +295,28 @@ describe("chatTimeline", () => {
 
     expect(body.querySelectorAll(".streamChunk")).toHaveLength(2);
     expect(body.querySelectorAll("br")).toHaveLength(1);
+  });
+
+  it("renders live assistant body with rich message HTML", () => {
+    const richModule = createChatTimelineModule({
+      byId: (id) => dom.documentRef.getElementById(id),
+      state,
+      escapeHtml: (value) => String(value || ""),
+      renderMessageAttachments: () => "",
+      renderMessageBody: (_role, text) =>
+        String(text || "") === "**关于 tool live**"
+          ? "<span><strong>关于 tool live</strong></span>"
+          : `<span>${String(text || "")}</span>`,
+      wireMessageLinks: vi.fn(),
+      wireMessageAttachments: vi.fn(),
+      ...refs,
+      documentRef: dom.documentRef,
+    });
+    const { msg, body } = richModule.createAssistantStreamingMessage();
+
+    richModule.renderAssistantLiveBody(msg, body, "**关于 tool live**");
+
+    expect(String(body.innerHTML || "")).toContain("<span><strong>关于 tool live</strong></span>");
+    expect(body.attributes.get("data-streaming")).toBe("1");
   });
 });

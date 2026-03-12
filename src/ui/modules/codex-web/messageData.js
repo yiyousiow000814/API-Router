@@ -121,6 +121,214 @@ export function toStructuredPreview(value, maxChars) {
   }
 }
 
+function parseToolPayload(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  const text = String(value || "").trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function joinCommandParts(parts) {
+  if (!Array.isArray(parts)) return null;
+  const joined = parts
+    .map((part) => {
+      if (typeof part === "string") return part.trim();
+      if (part == null) return "";
+      try {
+        return JSON.stringify(part);
+      } catch {
+        return String(part);
+      }
+    })
+    .filter(Boolean)
+    .join(" ");
+  return joined || null;
+}
+
+function isShellLikeToolName(name) {
+  const normalized = normalizeType(name);
+  return normalized === "shell"
+    || normalized.endsWith("shellcommand")
+    || normalized.endsWith("localshell")
+    || normalized.endsWith("containerexec")
+    || normalized.endsWith("unifiedexec");
+}
+
+function readCommandFromToolPayload(value) {
+  const payload = parseToolPayload(value);
+  if (!payload) return null;
+  const command = payload.command ?? payload.cmd ?? payload.args;
+  if (typeof command === "string") return command.trim() || null;
+  return joinCommandParts(command);
+}
+
+function readCommandFromToolLikeItem(item, maxChars) {
+  const direct =
+    normalizeInline(item?.command, maxChars) ??
+    normalizeInline(item?.cmd, maxChars);
+  if (direct) return direct;
+  return (
+    normalizeInline(readCommandFromToolPayload(item?.arguments), maxChars) ??
+    normalizeInline(readCommandFromToolPayload(item?.input), maxChars) ??
+    normalizeInline(readCommandFromToolPayload(item?.args), maxChars)
+  );
+}
+
+function formatCommandTitle(command, status, compact) {
+  if (status === "failed" || status === "error") return `Command failed \`${command}\``;
+  if (compact && (status === "running" || status === "inprogress" || status === "working" || status === "started")) {
+    return `Running \`${command}\``;
+  }
+  return `Ran \`${command}\``;
+}
+
+function formatGenericToolTitle(label, tool, status, compact) {
+  if (status === "failed" || status === "error") return `Tool failed \`${label}\``;
+  if (compact) {
+    const normalizedTool = normalizeType(tool);
+    if (normalizedTool === "applypatch") return "Editing files";
+    if (normalizedTool === "updateplan") return "Updating plan";
+    if (normalizedTool === "webrun") return "Searching web";
+    if (normalizedTool === "viewimage") return "Viewing image";
+    if (normalizedTool === "requestuserinput") return "Waiting for input";
+    if (normalizedTool === "spawnagent") return "Spawning agent";
+    if (normalizedTool === "wait") return "Waiting for agent";
+    if (status === "running" || status === "inprogress" || status === "working" || status === "started") {
+      return `Running tool \`${label}\``;
+    }
+  }
+  return `Called tool \`${label}\``;
+}
+
+function extractApplyPatchFiles(item) {
+  const raw = [
+    normalizeTextPayload(item?.result),
+    normalizeTextPayload(item?.output),
+    normalizeTextPayload(item?.error?.message),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  if (!raw) return [];
+  const files = [];
+  for (const line of raw.replace(/\r\n/g, "\n").split("\n")) {
+    const trimmed = String(line || "").trim();
+    const match = trimmed.match(/^(?:[ACDMRTUX?!]|M)\s+(.+)$/);
+    if (!match) continue;
+    const path = String(match[1] || "").trim();
+    if (path) files.push(path);
+  }
+  return Array.from(new Set(files));
+}
+
+export function toolItemToMessage(item, options = {}) {
+  const compact = options && options.compact === true;
+  const itemType = normalizeType(item?.type);
+  if (!itemType) return null;
+
+  if (itemType === "plan") {
+    return normalizeMultiline(item?.text, 1800) || null;
+  }
+
+  if (itemType === "commandexecution") {
+    const command = normalizeInline(item?.command, 240) ?? "command";
+    const status = normalizeType(item?.status);
+    const output =
+      normalizeMultiline(item?.aggregatedOutput, 2400) ??
+      normalizeMultiline(item?.aggregated_output, 2400) ??
+      toStructuredPreview(item?.output, 2400);
+    const exitCode = Number.isFinite(Number(item?.exitCode))
+      ? Number(item.exitCode)
+      : (Number.isFinite(Number(item?.exit_code)) ? Number(item.exit_code) : null);
+    const title = formatCommandTitle(command, status, compact);
+    if (compact) return title;
+    const lines = [title];
+    if (exitCode !== null) lines.push(`  - exit code ${String(exitCode)}`);
+    if (output) lines.push(`  - ${String(output).replace(/\n/g, "\n    ")}`);
+    return lines.join("\n");
+  }
+
+  if (itemType === "toolcall" || itemType === "mcptoolcall") {
+    const rawTool =
+      normalizeInline(item?.tool, 120) ??
+      normalizeInline(item?.name, 120);
+    const status = normalizeType(item?.status);
+    const command = isShellLikeToolName(rawTool)
+      ? readCommandFromToolLikeItem(item, 240)
+      : null;
+    if (command) {
+      const title = formatCommandTitle(command, status, compact);
+      if (compact) return title;
+      const output =
+        toStructuredPreview(item?.result, 2400) ??
+        toStructuredPreview(item?.output, 2400);
+      const lines = [title];
+      if (output) lines.push(`  - ${String(output).replace(/\n/g, "\n    ")}`);
+      return lines.join("\n");
+    }
+    const server = normalizeInline(item?.server, 120);
+    const tool = rawTool;
+    const normalizedTool = normalizeType(tool);
+    if (compact && normalizedTool === "applypatch") {
+      const files = extractApplyPatchFiles(item);
+      if (files.length === 1) return `Edited \`${files[0]}\``;
+      if (files.length > 1) return `Edited \`${files[0]}\` +${String(files.length - 1)} files`;
+      if (status === "running" || status === "inprogress" || status === "working" || status === "started") {
+        return "Editing files";
+      }
+      return "Edited files";
+    }
+    const label = [server, tool].filter(Boolean).join(" / ") || "tool";
+    const errorMessage =
+      normalizeInline(item?.error?.message, 240) ??
+      normalizeInline(item?.error, 240);
+    const result =
+      toStructuredPreview(item?.result, 2400) ??
+      toStructuredPreview(item?.output, 2400);
+    const detail = status === "failed" || status === "error"
+      ? (errorMessage ?? result)
+      : (result ?? errorMessage);
+    const title = formatGenericToolTitle(label, tool, status, compact);
+    if (compact) return title;
+    return detail ? `${title}\n  - ${detail.replace(/\n/g, "\n    ")}` : title;
+  }
+
+  if (itemType === "websearch") {
+    const query =
+      normalizeInline(item?.query, 180) ??
+      normalizeInline(item?.action?.query, 180);
+    const actionType = normalizeType(item?.action?.type);
+    let detail = query;
+    if (actionType === "openpage") {
+      detail = normalizeInline(item?.action?.url, 240) ?? detail;
+    } else if (actionType === "findinpage") {
+      const url = normalizeInline(item?.action?.url, 180);
+      const pattern = normalizeInline(item?.action?.pattern, 120);
+      detail = [url, pattern ? `pattern: ${pattern}` : null].filter(Boolean).join(" | ") || detail;
+    }
+    const title = query ? `- Searched web for "${query}"` : "- Searched web";
+    return detail && detail !== query ? `${title}\n  - ${detail}` : title;
+  }
+
+  if (itemType === "filechange") {
+    const status = normalizeType(item?.status);
+    const changeCount = Array.isArray(item?.changes) ? item.changes.length : 0;
+    const title = status === "failed" || status === "error" ? "- File changes failed" : "- Applied file changes";
+    return changeCount > 0 ? `${title}\n  - ${String(changeCount)} file(s) changed` : title;
+  }
+
+  if (itemType === "enteredreviewmode") return "- Entered review mode";
+  if (itemType === "exitedreviewmode") return "- Exited review mode";
+  if (itemType === "contextcompaction") return "- Compacted conversation context";
+
+  return null;
+}
+
 export function parseUserMessageParts(item) {
   const content = Array.isArray(item?.content) ? item.content : [];
   const lines = [];
@@ -193,12 +401,13 @@ export function parseUserMessageParts(item) {
 }
 
 export function normalizeThreadItemText(item) {
+  const options = arguments.length > 1 ? arguments[1] : {};
   if (!item || typeof item !== "object") return "";
   const type = String(item.type || "").trim();
   if (!type) return "";
   if (type === "agentMessage" || type === "assistantMessage") {
     return stripCodexImageBlocks(String(item.text || "")).trim();
   }
-  if (type !== "userMessage") return "";
+  if (type !== "userMessage") return toolItemToMessage(item, options) || "";
   return parseUserMessageParts(item).text;
 }

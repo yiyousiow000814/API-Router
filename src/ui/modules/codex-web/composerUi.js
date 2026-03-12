@@ -6,10 +6,624 @@ export function createComposerUiModule(deps) {
     clearPromptInput,
     resolveMobilePromptLayout,
     renderComposerContextLeftInNode,
+    renderInlineMessageText = (value) => String(value || ""),
+    toolItemToMessage = () => "",
+    normalizeType = (value) => String(value || "").trim().toLowerCase(),
+    escapeHtml = (value) => String(value || ""),
     updateHeaderUi,
-    documentRef = document,
-    windowRef = window,
+    LIVE_INSPECTOR_ENABLED_KEY,
+    localStorageRef,
+    documentRef,
+    windowRef,
   } = deps;
+  const storage = localStorageRef ?? globalThis.localStorage ?? { getItem() { return ""; } };
+  const doc = documentRef ?? globalThis.document;
+  const win = windowRef ?? globalThis.window ?? {};
+  const MAX_VISIBLE_ACTIVE_COMMANDS = 3;
+
+  function normalizeRunningState(value, fallback = "complete") {
+    const normalized = normalizeType(value);
+    if (/failed|error|cancelled|timeout|denied/.test(normalized)) return "error";
+    if (/running|inprogress|working|queued|started|streaming|updating/.test(normalized)) return "running";
+    if (normalized) return "complete";
+    return fallback;
+  }
+
+  function isRuntimeActiveState(value) {
+    return normalizeRunningState(value, "") === "running";
+  }
+
+  function readText(value) {
+    return value == null ? "" : String(value).trim();
+  }
+
+  function readCommandFromPayload(value) {
+    if (!value) return "";
+    if (typeof value === "string") {
+      const raw = value.trim();
+      if (!raw) return "";
+      try {
+        const parsed = JSON.parse(raw);
+        return readCommandFromPayload(parsed);
+      } catch {
+        return raw;
+      }
+    }
+    if (typeof value !== "object") return "";
+    return readText(value.command || value.cmd || value.script);
+  }
+
+  function parseJsonObject(value) {
+    if (!value) return null;
+    if (typeof value === "object") return value;
+    if (typeof value !== "string") return null;
+    const raw = value.trim();
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function normalizePlanSteps(value) {
+    const items = Array.isArray(value) ? value : [];
+    return items
+      .map((step) => ({
+        step: readText(step?.step),
+        status: normalizeType(step?.status) || "pending",
+      }))
+      .filter((step) => step.step);
+  }
+
+  function extractPlanUpdate(item, threadId = "") {
+    const itemType = normalizeType(item?.type);
+    if (itemType !== "toolcall" && itemType !== "mcptoolcall") return null;
+    const toolName = normalizeType(item?.tool || item?.name);
+    if (toolName !== "updateplan") return null;
+    const payload =
+      parseJsonObject(item?.arguments) ||
+      parseJsonObject(item?.input) ||
+      parseJsonObject(item?.args);
+    if (!payload) return null;
+    const steps = normalizePlanSteps(payload.plan);
+    const explanation = readText(payload.explanation);
+    if (!steps.length && !explanation) return null;
+    return {
+      threadId: String(threadId || state.activeThreadId || ""),
+      turnId: readText(item?.turnId || item?.turn_id),
+      title: "Updated Plan",
+      explanation,
+      steps,
+      deltaText: "",
+    };
+  }
+
+  function summarizeSnippet(value, maxChars = 88) {
+    const raw = String(value || "").replace(/\r\n/g, "\n").trim();
+    if (!raw) return { preview: "", extraLines: 0, full: "" };
+    const lines = raw.split("\n").map((line) => line.trimEnd());
+    const isWrapperLine = (line) => {
+      const trimmed = String(line || "").trim();
+      return /^@['"]$/.test(trimmed) || /^['"]@$/.test(trimmed) || /^<<[-~]?\w+$/.test(trimmed);
+    };
+    const visibleLines = lines.filter((line) => String(line || "").trim());
+    const previewLine = String(visibleLines.find((line) => !isWrapperLine(line)) || visibleLines[0] || lines[0] || "").trim();
+    const preview = previewLine.length > maxChars
+      ? `${previewLine.slice(0, Math.max(0, maxChars - 1))}…`
+      : previewLine;
+    return {
+      preview,
+      extraLines: Math.max(0, visibleLines.length - 1),
+      full: raw,
+    };
+  }
+
+  function buildToolEntryKey(item, text, identity = "") {
+    const itemId = String(item?.id || item?.itemId || item?.item_id || item?.callId || item?.call_id || "").trim();
+    if (itemId) return itemId;
+    const seed = String(identity || "").trim();
+    if (seed) return `${String(item?.type || "tool")}::${seed}`;
+    return `${String(item?.type || "tool")}::${String(text || "").trim()}`;
+  }
+
+  function stripWrappingBackticks(value) {
+    const raw = readText(value);
+    if (!raw) return "";
+    const match = raw.match(/^`(.+)`$/);
+    return match ? match[1].trim() : raw;
+  }
+
+  function stripInlineCodeMarkdown(value) {
+    const raw = readText(value);
+    if (!raw) return "";
+    return raw
+      .replace(/`{1,3}([^`]+?)`{1,3}/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function deriveToolRuntimeState(item, options = {}) {
+    const explicitStatus = readText(item?.status);
+    if (explicitStatus) return normalizeRunningState(explicitStatus, "complete");
+    const method = normalizeType(options.method);
+    if (method.endsWith("itemstarted") || method.endsWith("turnstarted")) return "running";
+    if (
+      method.endsWith("itemcompleted") ||
+      method.endsWith("turncompleted") ||
+      method.endsWith("turnfinished") ||
+      method.endsWith("turnfailed") ||
+      method.endsWith("turncancelled")
+    ) {
+      return "complete";
+    }
+    return "complete";
+  }
+
+  function describeToolItem(item, options = {}) {
+    const itemType = normalizeType(item?.type);
+    if (!itemType || itemType === "plan" || itemType === "usermessage" || itemType === "assistantmessage" || itemType === "agentmessage") {
+      return null;
+    }
+    const compactText = readText(toolItemToMessage(item, { compact: true }));
+    const status = deriveToolRuntimeState(item, options);
+    const toolName = readText(item?.tool || item?.name);
+    const lowerToolName = normalizeType(toolName);
+    const directCommand = readText(item?.command || item?.cmd);
+    const payloadCommand = readCommandFromPayload(item?.arguments || item?.input || item?.args);
+    const command = directCommand || payloadCommand;
+    if (itemType === "commandexecution" || (/shellcommand/.test(lowerToolName) && command)) {
+      const identity = command || compactText;
+      return {
+        key: buildToolEntryKey(item, compactText || command, identity),
+        text: compactText || command,
+        state: status,
+        icon: "command",
+        presentation: "code",
+        title: status === "error" ? "Command failed" : status === "running" ? "Running command" : "Ran command",
+        detail: command,
+        label: command || stripWrappingBackticks(compactText),
+      };
+    }
+    if (itemType === "websearch") {
+      const query = readText(item?.query || item?.action?.query || item?.action?.url);
+      return {
+        key: buildToolEntryKey(item, compactText || query || "Searching web", query || compactText),
+        text: compactText || (query ? `Searching web: ${query}` : "Searching web"),
+        state: status,
+        icon: "search",
+        presentation: "text",
+        title: status === "error" ? "Web search failed" : status === "running" ? "Searching web" : "Searched web",
+        detail: query,
+        label: query || "Searching web",
+      };
+    }
+    if (itemType === "filechange") {
+      const changeCount = Array.isArray(item?.changes) ? item.changes.length : 0;
+      const label = changeCount > 0 ? `${String(changeCount)} file change(s)` : "Apply file changes";
+      return {
+        key: buildToolEntryKey(item, compactText || label, label),
+        text: compactText || label,
+        state: status,
+        icon: "patch",
+        presentation: "text",
+        title: status === "error" ? "File changes failed" : status === "running" ? "Applying file changes" : "Applied file changes",
+        detail: label,
+        label,
+      };
+    }
+    const server = readText(item?.server);
+    const compactLabel = stripInlineCodeMarkdown(compactText);
+    const genericLabel = compactLabel || [server, toolName].filter(Boolean).join(" / ") || stripWrappingBackticks(compactText) || "Tool";
+    let icon = "tool";
+    let title = "Running tool";
+    if (lowerToolName === "applypatch") {
+      icon = "patch";
+      title = status === "complete" ? "Edited files" : "Editing files";
+    } else if (lowerToolName === "requestuserinput") {
+      icon = "input";
+      title = "Waiting for input";
+    } else if (lowerToolName === "spawnagent") {
+      icon = "agent";
+      title = "Spawning agent";
+    } else if (lowerToolName === "wait") {
+      icon = "agent";
+      title = "Waiting for agent";
+    } else if (lowerToolName === "viewimage") {
+      icon = "image";
+      title = "Viewing image";
+    }
+    const identity = [server, toolName, compactText].filter(Boolean).join(" / ") || genericLabel;
+    return {
+      key: buildToolEntryKey(item, compactText || genericLabel, identity),
+      text: compactText || genericLabel,
+      state: status,
+      icon,
+      presentation: "text",
+      title: status === "error" ? "Tool failed" : status === "complete" ? "Tool finished" : title,
+      detail: genericLabel,
+      label: genericLabel,
+    };
+  }
+
+  function parsePlanStepsFromText(text) {
+    const lines = String(text || "")
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((line) => String(line || "").trim())
+      .filter(Boolean);
+    return lines
+      .map((line) => line.replace(/^[-*•]\s+/, "").replace(/^\d+\.\s+/, "").trim())
+      .filter(Boolean)
+      .map((step) => ({ step, status: "pending" }));
+  }
+
+  function toActiveCommandEntry(item, options = {}) {
+    const meta = describeToolItem(item, options);
+    if (!meta) return null;
+    return {
+      key: meta.key,
+      text: meta.text,
+      state: meta.state,
+      icon: meta.icon,
+      title: meta.title,
+      detail: meta.detail,
+      label: meta.label || meta.detail || meta.text,
+      presentation: meta.presentation || "text",
+      timestamp: Number(options.timestamp || Date.now()),
+    };
+  }
+
+  function toActivityFromEntry(entry) {
+    if (!entry) return null;
+    return {
+      title: entry.title || "Working",
+      detail: entry.detail || "",
+      tone: entry.state || "running",
+    };
+  }
+
+  function renderActivityHtml(activity) {
+    if (!activity) return "";
+    const title = escapeHtml(String(activity.title || "").trim() || "Working");
+    const detailRaw = String(activity.detail || "").trim();
+    const detail = detailRaw ? renderInlineMessageText(detailRaw) : "";
+    const tone = escapeHtml(String(activity.tone || "running"));
+    const dots = tone === "running" ? '<span class="runtimeActivityDots"><span></span><span></span><span></span></span>' : "";
+    return (
+      `<div class="runtimeActivity tone-${tone}" data-activity-tone="${tone}">` +
+        `<span class="runtimeActivityLead" aria-hidden="true"></span>` +
+        `<span class="runtimeActivityText"><strong>${title}</strong>${detail ? `<span class="runtimeActivityDetail"> · ${detail}</span>` : ""}</span>` +
+        `${dots}` +
+      `</div>`
+    );
+  }
+
+  function renderCommandEntryHtml(entry) {
+    const snippet = summarizeSnippet(entry?.label || entry?.detail || entry?.text || "");
+    const icon = escapeHtml(String(entry?.icon || "tool"));
+    const stateName = escapeHtml(String(entry?.state || "complete"));
+    const previewHtml = snippet.preview
+      ? (
+        entry?.presentation === "code"
+          ? `<code class="msgInlineCode">${escapeHtml(snippet.preview)}</code>`
+          : `<span class="runtimeToolItemPreview">${escapeHtml(snippet.preview)}</span>`
+      )
+      : "";
+    const moreHtml = snippet.extraLines > 0
+      ? `<span class="runtimeToolItemMeta">+${String(snippet.extraLines)} lines</span>`
+      : "";
+    return (
+      `<div class="runtimeToolItem state-${stateName} icon-${icon}" data-command-key="${escapeHtml(entry?.key || "")}">` +
+        `<span class="runtimeToolItemLead" aria-hidden="true"></span>` +
+        `<span class="runtimeToolItemText">${previewHtml}${moreHtml}</span>` +
+        `<span class="runtimeToolItemTail" aria-hidden="true"></span>` +
+      `</div>`
+    );
+  }
+
+  function renderPlanHtml(plan) {
+    if (!plan) return "";
+    const title = escapeHtml(String(plan.title || "Plan").trim() || "Plan");
+    const explanation = String(plan.explanation || "").trim();
+    const steps = Array.isArray(plan.steps) ? plan.steps : [];
+    const deltaText = String(plan.deltaText || "").trim();
+    const renderedSteps = steps.map((step) => {
+      const status = escapeHtml(normalizeType(step?.status) || "pending");
+      const text = escapeHtml(String(step?.step || "").trim());
+      return (
+        `<div class="runtimePlanStep status-${status}">` +
+          `<span class="runtimePlanGlyph" aria-hidden="true"></span>` +
+          `<span class="runtimePlanStepText">${text}</span>` +
+        `</div>`
+      );
+    }).join("");
+    return (
+      `<div class="runtimePlanCard">` +
+        `<div class="runtimePlanHeader">${title}</div>` +
+        `${explanation ? `<div class="runtimePlanExplanation">${escapeHtml(explanation)}</div>` : ""}` +
+        `${renderedSteps ? `<div class="runtimePlanSteps">${renderedSteps}</div>` : ""}` +
+        `${!renderedSteps && deltaText ? `<div class="runtimePlanDelta">${escapeHtml(deltaText)}</div>` : ""}` +
+      `</div>`
+    );
+  }
+
+  function renderRuntimePanels() {
+    const dock = byId("runtimeDock");
+    const activityNode = byId("runtimeActivityBar");
+    if (!dock || !activityNode) return;
+    const inChat = state.activeMainTab !== "settings";
+    const commands = Array.isArray(state.activeThreadActiveCommands)
+      ? state.activeThreadActiveCommands.slice(-MAX_VISIBLE_ACTIVE_COMMANDS)
+      : [];
+    const plan = state.activeThreadPlan && state.activeThreadPlan.threadId === state.activeThreadId
+      ? state.activeThreadPlan
+      : null;
+    const activity = state.activeThreadActivity && state.activeThreadActivity.threadId === state.activeThreadId
+      ? state.activeThreadActivity
+      : null;
+    const chatBox = byId("chatBox");
+    let chatMount = null;
+    let planNode = null;
+    let commandNode = null;
+    if (chatBox && inChat) {
+      chatMount = chatBox.querySelector("#runtimeChatPanels");
+      if (!chatMount) {
+        chatMount = doc.createElement("div");
+        chatMount.id = "runtimeChatPanels";
+        chatMount.className = "runtimeChatPanels";
+        planNode = doc.createElement("div");
+        planNode.id = "runtimePlanInline";
+        planNode.className = "runtimePlanMount";
+        commandNode = doc.createElement("div");
+        commandNode.id = "runtimeToolInline";
+        commandNode.className = "runtimeToolPanel runtimeToolPanel-inline";
+        chatMount.appendChild(planNode);
+        chatMount.appendChild(commandNode);
+      } else {
+        planNode = chatMount.querySelector("#runtimePlanInline");
+        commandNode = chatMount.querySelector("#runtimeToolInline");
+      }
+    }
+    const updateHtmlIfChanged = (node, html) => {
+      if (!node) return;
+      const nextHtml = String(html || "");
+      if (node.__runtimeHtml === nextHtml) return;
+      node.innerHTML = nextHtml;
+      node.__runtimeHtml = nextHtml;
+    };
+
+    if (planNode) {
+      updateHtmlIfChanged(planNode, plan ? renderPlanHtml(plan) : "");
+      planNode.style.display = plan ? "" : "none";
+    }
+    if (commandNode) {
+      updateHtmlIfChanged(commandNode, commands.length ? commands.map(renderCommandEntryHtml).join("") : "");
+      commandNode.style.display = commands.length ? "" : "none";
+    }
+    updateHtmlIfChanged(activityNode, activity ? renderActivityHtml(activity) : "");
+    activityNode.style.display = activity ? "" : "none";
+    if (chatMount && chatBox) {
+      if (plan || commands.length) {
+        const lastChild = Array.isArray(chatBox.children) ? chatBox.children[chatBox.children.length - 1] : null;
+        if (lastChild !== chatMount) chatBox.appendChild(chatMount);
+      } else {
+        chatMount.remove();
+      }
+    }
+    dock.style.display = inChat && activity ? "" : "none";
+  }
+
+  function clearRuntimeState() {
+    state.activeThreadActivity = null;
+    state.activeThreadActiveCommands = [];
+    state.activeThreadPlan = null;
+    renderRuntimePanels();
+  }
+
+  function setRuntimeActivity(activity) {
+    state.activeThreadActivity = activity
+      ? { threadId: String(activity.threadId || state.activeThreadId || ""), title: activity.title || "", detail: activity.detail || "", tone: activity.tone || "running" }
+      : null;
+    renderRuntimePanels();
+  }
+
+  function upsertActiveCommand(entry) {
+    if (!entry) return;
+    const next = Array.isArray(state.activeThreadActiveCommands) ? [...state.activeThreadActiveCommands] : [];
+    const hasRunning = next.some((item) => item && item.state === "running");
+    const index = next.findIndex((item) => item && item.key === entry.key);
+    if (entry.state === "running" && !hasRunning && next.length > 0 && index < 0) {
+      next.splice(0, next.length);
+    }
+    if (index >= 0) next[index] = { ...next[index], ...entry };
+    else next.push(entry);
+    state.activeThreadActiveCommands = next.slice(-Math.max(MAX_VISIBLE_ACTIVE_COMMANDS, 6));
+    renderRuntimePanels();
+  }
+
+  function removeActiveCommand(key) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey) return false;
+    const next = Array.isArray(state.activeThreadActiveCommands)
+      ? state.activeThreadActiveCommands.filter((item) => String(item?.key || "").trim() !== normalizedKey)
+      : [];
+    if (next.length === (Array.isArray(state.activeThreadActiveCommands) ? state.activeThreadActiveCommands.length : 0)) {
+      return false;
+    }
+    state.activeThreadActiveCommands = next;
+    renderRuntimePanels();
+    return true;
+  }
+
+  function setActiveCommands(entries) {
+    state.activeThreadActiveCommands = Array.isArray(entries) ? entries.slice(-Math.max(MAX_VISIBLE_ACTIVE_COMMANDS, 6)) : [];
+    renderRuntimePanels();
+  }
+
+  function setActivePlan(plan) {
+    state.activeThreadPlan = plan
+      ? {
+          threadId: String(plan.threadId || state.activeThreadId || ""),
+          turnId: String(plan.turnId || ""),
+          title: String(plan.title || "Plan").trim() || "Plan",
+          explanation: String(plan.explanation || "").trim(),
+          steps: Array.isArray(plan.steps) ? plan.steps : [],
+          deltaText: String(plan.deltaText || "").trim(),
+        }
+      : null;
+    renderRuntimePanels();
+  }
+
+  function syncRuntimeActivityFromState(threadId = state.activeThreadId) {
+    const currentThreadId = String(threadId || state.activeThreadId || "").trim();
+    const plan = state.activeThreadPlan && state.activeThreadPlan.threadId === currentThreadId
+      ? state.activeThreadPlan
+      : null;
+    if (plan) {
+      setRuntimeActivity({
+        threadId: currentThreadId,
+        title: "Planning",
+        detail: plan.explanation || "",
+        tone: "running",
+      });
+      return;
+    }
+    const commands = Array.isArray(state.activeThreadActiveCommands)
+      ? state.activeThreadActiveCommands.filter((entry) => entry && entry.state === "running")
+      : [];
+    const latestRunning = commands.length ? commands[commands.length - 1] : null;
+    if (latestRunning) {
+      setRuntimeActivity({ threadId: currentThreadId, ...toActivityFromEntry(latestRunning) });
+      return;
+    }
+    setRuntimeActivity(null);
+  }
+
+  function syncRuntimeStateFromHistory(thread) {
+    const threadId = String(thread?.id || state.activeThreadId || "").trim();
+    const pageIncomplete = !!thread?.page?.incomplete;
+    if (!pageIncomplete || !threadId || threadId !== state.activeThreadId) {
+      clearRuntimeState();
+      return;
+    }
+    const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+    const lastTurn = turns.length ? turns[turns.length - 1] : null;
+    const items = Array.isArray(lastTurn?.items) ? lastTurn.items : [];
+    const commands = [];
+    let latestRunning = null;
+    let plan = null;
+    for (const item of items) {
+      const type = String(item?.type || "").trim();
+      if (!type) continue;
+      const updatePlan = extractPlanUpdate(item, threadId);
+      if (updatePlan) {
+        plan = updatePlan;
+        continue;
+      }
+      if (type === "plan") {
+        plan = {
+          threadId,
+          turnId: String(lastTurn?.id || ""),
+          title: "Updated Plan",
+          explanation: "",
+          steps: parsePlanStepsFromText(item?.text),
+          deltaText: "",
+        };
+        continue;
+      }
+      if (type === "userMessage" || type === "assistantMessage" || type === "agentMessage") continue;
+      const entry = toActiveCommandEntry(item);
+      if (!entry) continue;
+      commands.push(entry);
+      if (isRuntimeActiveState(entry.state)) latestRunning = entry;
+    }
+    setActiveCommands(commands);
+    setActivePlan(plan);
+    if (plan) setRuntimeActivity({ threadId, title: "Planning", detail: plan.explanation || "", tone: "running" });
+    else if (latestRunning) setRuntimeActivity({ threadId, ...toActivityFromEntry(latestRunning) });
+    else if (commands.length) {
+      const last = commands[commands.length - 1];
+      setRuntimeActivity({ threadId, ...toActivityFromEntry(last) });
+    } else {
+      setRuntimeActivity(null);
+    }
+  }
+
+  function applyToolItemRuntimeUpdate(item, options = {}) {
+    const threadId = String(options.threadId || state.activeThreadId || "").trim();
+    if (!threadId || threadId !== state.activeThreadId) return;
+    const planUpdate = extractPlanUpdate(item, threadId);
+    if (planUpdate) {
+      setActivePlan(planUpdate);
+      setRuntimeActivity({
+        threadId,
+        title: "Updated Plan",
+        detail: planUpdate.explanation || "",
+        tone: "running",
+      });
+      return;
+    }
+    const entry = toActiveCommandEntry(item, options);
+    if (!entry) return;
+    if (isRuntimeActiveState(entry.state)) {
+      upsertActiveCommand(entry);
+      const activity = toActivityFromEntry(entry);
+      if (activity) setRuntimeActivity({ threadId, ...activity });
+      return;
+    }
+    upsertActiveCommand(entry);
+    syncRuntimeActivityFromState(threadId);
+  }
+
+  function applyPlanDeltaUpdate(payload = {}) {
+    const threadId = String(payload.threadId || payload.thread_id || state.activeThreadId || "").trim();
+    if (!threadId || threadId !== state.activeThreadId) return;
+    const turnId = String(payload.turnId || payload.turn_id || "").trim();
+    const delta = String(payload.delta || "").trim();
+    const previous = state.activeThreadPlan && state.activeThreadPlan.threadId === threadId
+      ? state.activeThreadPlan
+      : { threadId, turnId, title: "Updated Plan", explanation: "", steps: [], deltaText: "" };
+    setActivePlan({
+      ...previous,
+      threadId,
+      turnId: turnId || previous.turnId || "",
+      title: previous.title || "Updated Plan",
+      deltaText: `${String(previous.deltaText || "")}${delta}`,
+    });
+    setRuntimeActivity({ threadId, title: "Planning", detail: "", tone: "running" });
+  }
+
+  function applyPlanSnapshotUpdate(payload = {}) {
+    const threadId = String(payload.threadId || payload.thread_id || state.activeThreadId || "").trim();
+    if (!threadId || threadId !== state.activeThreadId) return;
+    const turnId = String(payload.turnId || payload.turn_id || "").trim();
+    const steps = Array.isArray(payload.plan) ? payload.plan : [];
+    setActivePlan({
+      threadId,
+      turnId,
+      title: "Updated Plan",
+      explanation: String(payload.explanation || "").trim(),
+      steps: steps.map((step) => ({
+        step: String(step?.step || "").trim(),
+        status: normalizeType(step?.status) || "pending",
+      })).filter((step) => step.step),
+      deltaText: "",
+    });
+    setRuntimeActivity({
+      threadId,
+      title: "Planning",
+      detail: String(payload.explanation || "").trim(),
+      tone: "running",
+    });
+  }
+
+  function finalizeRuntimeState(threadId = "") {
+    const current = String(threadId || state.activeThreadId || "").trim();
+    if (current && current !== state.activeThreadId) return;
+    clearRuntimeState();
+  }
 
   function getPromptValue() {
     return readPromptValue(byId("mobilePromptInput"));
@@ -63,18 +677,48 @@ export function createComposerUiModule(deps) {
     if (chatBox) chatBox.style.display = isSideTab ? "none" : "";
     if (composer) composer.style.display = isSideTab ? "none" : "";
     updateHeaderUi();
+    renderRuntimePanels();
   }
 
-  function syncSettingsControlsFromMain() {}
+  function syncSettingsControlsFromMain() {
+    const toggleBtn = byId("toggleLiveInspectorBtn");
+    const stateNode = byId("liveInspectorState");
+    const open = !!doc?.getElementById?.("webCodexLiveInspector");
+    let enabled = false;
+    try {
+      enabled = String(storage.getItem(LIVE_INSPECTOR_ENABLED_KEY) || "") === "1";
+    } catch {}
+    if (toggleBtn) toggleBtn.textContent = `Live inspector: ${enabled ? "On" : "Off"}`;
+    if (stateNode) stateNode.textContent = open ? "Visible" : "Hidden";
+  }
+
+  try {
+    if (!win.__webCodexLiveInspectorSettingsSyncInstalled) {
+      win.__webCodexLiveInspectorSettingsSyncInstalled = true;
+      win.addEventListener?.("web-codex-live-inspector-changed", () => {
+        syncSettingsControlsFromMain();
+      });
+    }
+  } catch {}
   function updateWelcomeSelections() {}
 
   return {
+    applyPlanDeltaUpdate,
+    applyPlanSnapshotUpdate,
+    applyToolItemRuntimeUpdate,
+    clearRuntimeState,
     clearPromptValue,
+    finalizeRuntimeState,
     getPromptValue,
     hideWelcomeCard,
+    renderRuntimePanels,
     renderComposerContextLeft,
+    setActiveCommands,
+    setActivePlan,
+    setRuntimeActivity,
     setMainTab,
     showWelcomeCard,
+    syncRuntimeStateFromHistory,
     syncSettingsControlsFromMain,
     updateMobileComposerState,
     updateWelcomeSelections,

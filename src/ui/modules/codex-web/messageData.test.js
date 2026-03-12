@@ -5,6 +5,7 @@ import {
   normalizeTextPayload,
   parseUserMessageParts,
   stripCodexImageBlocks,
+  toolItemToMessage,
 } from "./messageData.js";
 
 describe("messageData", () => {
@@ -37,5 +38,19 @@ describe("messageData", () => {
       isBootstrapAgentsPrompt("# AGENTS.md instructions for repo\n<INSTRUCTIONS>Agent Defaults</INSTRUCTIONS>")
     ).toBe(true);
     expect(isBootstrapAgentsPrompt("hello world")).toBe(false);
+  });
+
+  it("summarizes apply_patch results as edited files in compact mode", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "apply_patch",
+          status: "completed",
+          result: "Success. Updated the following files:\nM src/ui/modules/codex-web/chatTimeline.js",
+        },
+        { compact: true }
+      )
+    ).toBe("Edited `src/ui/modules/codex-web/chatTimeline.js`");
   });
 });

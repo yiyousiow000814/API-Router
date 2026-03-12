@@ -35,6 +35,48 @@ export function filterWorkspaceSectionThreads(threads, favoriteSet, query, works
   });
 }
 
+export function buildThreadResumeUrl(threadId, options = {}) {
+  const params = new URLSearchParams();
+  const workspace = String(options.workspace || "").trim();
+  const rolloutPath = String(options.rolloutPath || "").trim();
+  if (workspace === "windows" || workspace === "wsl2") params.set("workspace", workspace);
+  if (rolloutPath) params.set("rolloutPath", rolloutPath);
+  const query = params.toString();
+  return `/codex/threads/${encodeURIComponent(threadId)}/resume${query ? `?${query}` : ""}`;
+}
+
+export async function resumeThreadLiveOnOpen({
+  threadId,
+  workspace,
+  rolloutPath,
+  state,
+  api,
+  connectWs = () => {},
+  syncEventSubscription = () => {},
+  registerPendingThreadResume = () => {},
+}) {
+  const id = String(threadId || "").trim();
+  if (!id) return null;
+  connectWs();
+  syncEventSubscription();
+  const resumePromise = api(
+    buildThreadResumeUrl(id, {
+      workspace,
+      rolloutPath,
+    }),
+    { method: "POST" }
+  );
+  registerPendingThreadResume(state?.pendingThreadResumes, id, resumePromise);
+  try {
+    const resumed = await resumePromise;
+    if (state) state.activeThreadNeedsResume = false;
+    return resumed;
+  } catch {
+    if (state) state.activeThreadNeedsResume = true;
+    return null;
+  }
+}
+
 export function createThreadListViewModule(deps) {
   const {
     state,
@@ -55,6 +97,10 @@ export function createThreadListViewModule(deps) {
     setChatOpening,
     detectThreadWorkspaceTarget,
     loadThreadMessages,
+    api,
+    connectWs = () => {},
+    syncEventSubscription = () => {},
+    registerPendingThreadResume = () => {},
     setStatus,
     scheduleThreadRefresh,
     scrollToBottomReliable,
@@ -408,6 +454,16 @@ export function createThreadListViewModule(deps) {
           if (state.openingThreadReqId === reqId) {
             setStatus(`Opened ${label} ${truncateLabel(id, 12)} history ${historyLatencyMs}ms`);
           }
+          resumeThreadLiveOnOpen({
+            threadId: id,
+            workspace: workspaceHint === "unknown" ? "" : workspaceHint,
+            rolloutPath,
+            state,
+            api,
+            connectWs,
+            syncEventSubscription,
+            registerPendingThreadResume,
+          }).catch(() => null);
           if (state.openingThreadReqId === reqId) scheduleThreadRefresh();
           if (state.openingThreadReqId === reqId) {
             setChatOpening(false);

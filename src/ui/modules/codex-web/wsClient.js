@@ -274,6 +274,7 @@ export function createWsClientModule(deps) {
       pushLiveDebugEvent("ui.event", {
         eventKind: readString(record?.kind) || "",
         conversationId,
+        method: liveMethod,
       });
       const eventId = readNumber(record?.eventId);
       if (eventId !== null) {

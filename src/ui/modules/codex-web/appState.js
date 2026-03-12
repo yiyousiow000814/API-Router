@@ -10,6 +10,7 @@ export const MODELS_CACHE_KEY = "web_codex_models_cache_v1";
 export const THREADS_CACHE_KEY = "web_codex_threads_cache_v1";
 export const REASONING_EFFORT_KEY = "web_codex_reasoning_effort_v1";
 export const LAST_EVENT_ID_KEY = "web_codex_last_event_id_v1";
+export const LIVE_INSPECTOR_ENABLED_KEY = "web_codex_live_inspector_enabled_v1";
 export const MODEL_USER_SELECTED_KEY = "web_codex_model_user_selected_v1";
 export const EFFORT_USER_SELECTED_KEY = "web_codex_effort_user_selected_v1";
 const WINDOW_REF = typeof window === "undefined" ? null : window;
@@ -167,6 +168,10 @@ export function createInitialState() {
     activeThreadHistoryPendingRefresh: null,
     activeThreadTokenUsage: null,
     activeThreadNeedsResume: false,
+    activeThreadTransientToolText: "",
+    activeThreadActivity: null,
+    activeThreadActiveCommands: [],
+    activeThreadPlan: null,
   };
 }
 

@@ -45,7 +45,17 @@ export function createActionBindingsModule(deps) {
     refreshPending,
     uploadAttachment,
     sendTurn,
+    syncSettingsControlsFromMain = () => {},
+    LIVE_INSPECTOR_ENABLED_KEY = "web_codex_live_inspector_enabled_v1",
+    localStorageRef,
+    windowRef,
+    documentRef,
+    NotificationRef,
   } = deps;
+  const storage = localStorageRef ?? globalThis.localStorage ?? { getItem() { return ""; }, setItem() {} };
+  const win = windowRef ?? globalThis.window ?? {};
+  const doc = documentRef ?? globalThis.document;
+  const NotificationApi = NotificationRef ?? globalThis.Notification;
 
   function wireActions() {
     bindClick("addHostBtn", () => addHost().catch((e) => setStatus(resolveActionErrorMessage(e), true)));
@@ -76,14 +86,26 @@ export function createActionBindingsModule(deps) {
       sendTurn().catch((e) => setStatus(resolveActionErrorMessage(e), true));
     });
     bindClick("enableNotifBtn", async () => {
-      if (!("Notification" in window)) {
+      if (!("Notification" in win)) {
         setStatus("Notifications are not supported.", true);
         return;
       }
       try {
-        await Notification.requestPermission();
+        await NotificationApi.requestPermission();
       } catch {}
       updateNotificationState();
+    });
+    bindClick("toggleLiveInspectorBtn", async () => {
+      const current =
+        String(storage.getItem(LIVE_INSPECTOR_ENABLED_KEY) || "").trim() === "1";
+      const next = !current;
+      try {
+        storage.setItem(LIVE_INSPECTOR_ENABLED_KEY, next ? "1" : "0");
+      } catch {}
+      try {
+        win.__webCodexDebug?.toggleLiveInspector?.(next);
+      } catch {}
+      syncSettingsControlsFromMain();
     });
     bindClick("dismissGuideBtn", () => {
       localStorage.setItem("web_codex_guide_dismissed_v2", "1");
@@ -146,7 +168,7 @@ export function createActionBindingsModule(deps) {
         renderFolderPicker();
       })
     );
-    document.addEventListener("keydown", (event) => {
+    doc.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && state.folderPickerOpen) closeFolderPicker();
     });
     bindClick("leftStartDirBtn", () =>
@@ -209,9 +231,9 @@ export function createActionBindingsModule(deps) {
         }
       };
     }
-    if (!document.__wiredSyntheticClickCapture) {
-      document.__wiredSyntheticClickCapture = true;
-      document.addEventListener(
+    if (!doc.__wiredSyntheticClickCapture) {
+      doc.__wiredSyntheticClickCapture = true;
+      doc.addEventListener(
         "click",
         (event) => {
           shouldSuppressSyntheticClick(event);
@@ -219,7 +241,7 @@ export function createActionBindingsModule(deps) {
         true
       );
     }
-    document.addEventListener("click", (event) => {
+    doc.addEventListener("click", (event) => {
       if (shouldSuppressSyntheticClick(event)) return;
       const target = event.target;
       if (!headerModelPicker || !(target instanceof Node)) return;
@@ -246,7 +268,7 @@ export function createActionBindingsModule(deps) {
       };
     }
     wireThreadPullToRefresh();
-    window.addEventListener("resize", () => {
+    win.addEventListener?.("resize", () => {
       updateMobileComposerState();
       setMobileTab("chat");
     });

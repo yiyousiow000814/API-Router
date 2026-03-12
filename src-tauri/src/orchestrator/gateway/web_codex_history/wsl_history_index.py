@@ -18,6 +18,8 @@ AGENT_MESSAGE_BYTES = b'"payload":{"type":"agent_message"'
 TOKEN_COUNT_BYTES = b'"payload":{"type":"token_count"'
 CONTEXT_COMPACTED_BYTES = b'"payload":{"type":"context_compacted"'
 THREAD_ROLLED_BACK_BYTES = b'"payload":{"type":"thread_rolled_back"'
+ITEM_COMPLETED_BYTES = b'"payload":{"type":"item_completed"'
+RESPONSE_ITEM_BYTES = b'"type":"response_item"'
 COMPACTED_BYTES = b'"type":"compacted"'
 
 FAST_TAIL_RELEVANT_MARKERS = (
@@ -29,6 +31,8 @@ FAST_TAIL_RELEVANT_MARKERS = (
     TOKEN_COUNT_BYTES,
     CONTEXT_COMPACTED_BYTES,
     THREAD_ROLLED_BACK_BYTES,
+    ITEM_COMPLETED_BYTES,
+    RESPONSE_ITEM_BYTES,
     COMPACTED_BYTES,
 )
 
@@ -78,6 +82,143 @@ def normalize_token_usage_info(info):
     }
 
 
+def normalize_history_item_type(value):
+    return "".join(ch.lower() for ch in str(value or "") if ch.isalnum())
+
+
+def parse_embedded_json_value(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except Exception:
+            return text
+    return value
+
+
+def extract_tool_text(value):
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, dict):
+        for key in ("output", "text"):
+            text = extract_tool_text(value.get(key))
+            if text:
+                return text
+        return None
+    if isinstance(value, list):
+        parts = [part for part in (extract_tool_text(item) for item in value) if part]
+        return "\n".join(parts) if parts else None
+    return None
+
+
+def extract_tool_text_value(value):
+    text = extract_tool_text(value)
+    if text:
+        return text
+    if value is None:
+        return None
+    return value
+
+
+def read_command_from_tool_arguments(arguments):
+    parsed = parse_embedded_json_value(arguments)
+    if not isinstance(parsed, dict):
+        return parsed if isinstance(parsed, str) else None
+    command = parsed.get("command")
+    if command is None:
+        command = parsed.get("cmd")
+    if command is None:
+        command = parsed.get("args")
+    if isinstance(command, str):
+        text = command.strip()
+        return text or None
+    if isinstance(command, list):
+        parts = [str(part).strip() for part in command if str(part).strip()]
+        return " ".join(parts) if parts else None
+    if command is None:
+        return None
+    try:
+        return json.dumps(command, ensure_ascii=False)
+    except Exception:
+        return str(command)
+
+
+def extract_response_message_text(content):
+    if not isinstance(content, list):
+        return None
+    lines = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        part_type = normalize_history_item_type(part.get("type"))
+        if part_type not in ("outputtext", "inputtext", "text"):
+            continue
+        text = extract_tool_text(part.get("text"))
+        if text:
+            lines.append(text)
+    return "\n".join(lines) if lines else None
+
+
+def canonicalize_history_tool_item(item):
+    if not isinstance(item, dict):
+        return None
+    item_type = normalize_history_item_type(item.get("type"))
+    item_id = item.get("id")
+    if item_type == "plan":
+        text = str(item.get("text") or "").strip()
+        if not text:
+            return None
+        return {"type": "plan", "id": item_id, "text": text}
+    if item_type == "commandexecution":
+        return {
+            "type": "commandExecution",
+            "id": item_id,
+            "command": item.get("command"),
+            "status": item.get("status"),
+            "output": extract_tool_text_value(item.get("output")),
+            "exitCode": item.get("exitCode", item.get("exit_code")),
+        }
+    if item_type in ("mcptoolcall", "toolcall"):
+        return {
+            "type": "toolCall",
+            "id": item_id,
+            "tool": item.get("tool", item.get("name")),
+            "server": item.get("server"),
+            "status": item.get("status"),
+            "result": item.get("result", extract_tool_text_value(item.get("output"))),
+            "error": item.get("error"),
+        }
+    if item_type == "websearch":
+        action = item.get("action") if isinstance(item.get("action"), dict) else {}
+        return {
+            "type": "webSearch",
+            "id": item_id,
+            "status": item.get("status"),
+            "query": item.get("query", action.get("query")),
+            "action": action,
+        }
+    if item_type == "filechange":
+        changes = item.get("changes") if isinstance(item.get("changes"), list) else []
+        return {
+            "type": "fileChange",
+            "id": item_id,
+            "status": item.get("status"),
+            "changes": changes,
+        }
+    if item_type == "enteredreviewmode":
+        return {"type": "enteredReviewMode", "id": item_id}
+    if item_type == "exitedreviewmode":
+        return {"type": "exitedReviewMode", "id": item_id}
+    if item_type == "contextcompaction":
+        return {"type": "contextCompaction", "id": item_id}
+    return None
+
+
 class Builder:
     def __init__(self):
         self.turns = []
@@ -85,6 +226,7 @@ class Builder:
         self.next_turn_index = 0
         self.next_item_index = 0
         self.token_usage = None
+        self.pending_tool_calls = {}
 
     def next_turn_id(self):
         self.next_turn_index += 1
@@ -105,6 +247,7 @@ class Builder:
     def ensure_turn(self):
         if self.current_turn is None:
             self.current_turn = self.new_turn()
+            self.pending_tool_calls = {}
         return self.current_turn
 
     def finish_current_turn(self):
@@ -112,6 +255,7 @@ class Builder:
             return
         turn = self.current_turn
         self.current_turn = None
+        self.pending_tool_calls = {}
         if not turn["items"] and not turn["saw_compaction"]:
             return
         self.turns.append(turn)
@@ -185,6 +329,124 @@ class Builder:
             }
         )
 
+    def push_turn_item(self, item):
+        turn = self.ensure_turn()
+        turn["items"].append(item)
+        return len(turn["items"]) - 1
+
+    def turn_item(self, index):
+        if self.current_turn is None:
+            return None
+        items = self.current_turn.get("items") or []
+        if index < 0 or index >= len(items):
+            return None
+        item = items[index]
+        return item if isinstance(item, dict) else None
+
+    def handle_item_completed(self, payload):
+        item = payload.get("item")
+        canonical = canonicalize_history_tool_item(item)
+        if canonical is not None:
+            self.push_turn_item(canonical)
+
+    def handle_function_call(self, payload):
+        name = str(payload.get("name") or "").strip()
+        call_id = str(payload.get("call_id") or "").strip()
+        item_id = self.next_item_id()
+        if name.lower() == "shell":
+            item = {
+                "type": "commandExecution",
+                "id": item_id,
+                "callId": call_id or None,
+                "command": read_command_from_tool_arguments(payload.get("arguments")),
+                "status": payload.get("status"),
+            }
+            kind = "commandExecution"
+        else:
+            item = {
+                "type": "toolCall",
+                "id": item_id,
+                "callId": call_id or None,
+                "tool": name or None,
+                "status": payload.get("status"),
+            }
+            kind = "toolCall"
+        index = self.push_turn_item(item)
+        if call_id:
+            self.pending_tool_calls[call_id] = {"index": index, "kind": kind}
+
+    def handle_function_call_output(self, payload):
+        call_id = str(payload.get("call_id") or "").strip()
+        if not call_id:
+            return
+        pending = self.pending_tool_calls.get(call_id)
+        if not isinstance(pending, dict):
+            return
+        parsed = parse_embedded_json_value(payload.get("output"))
+        item = self.turn_item(int(pending.get("index") or -1))
+        if not item:
+            return
+        if pending.get("kind") == "commandExecution":
+            output = extract_tool_text(parsed)
+            metadata = parsed.get("metadata") if isinstance(parsed, dict) else None
+            exit_code = metadata.get("exit_code") if isinstance(metadata, dict) else None
+            item["status"] = "completed"
+            if output:
+                item["output"] = output
+            if exit_code is not None:
+                item["exitCode"] = exit_code
+            return
+        item["status"] = "completed"
+        result = extract_tool_text_value(parsed)
+        if result is not None:
+            item["result"] = result
+
+    def handle_custom_tool_call(self, payload):
+        call_id = str(payload.get("call_id") or "").strip()
+        tool = str(payload.get("name") or "").strip()
+        index = self.push_turn_item(
+            {
+                "type": "toolCall",
+                "id": self.next_item_id(),
+                "callId": call_id or None,
+                "tool": tool or None,
+                "status": payload.get("status"),
+            }
+        )
+        if call_id:
+            self.pending_tool_calls[call_id] = {"index": index, "kind": "toolCall"}
+
+    def handle_custom_tool_call_output(self, payload):
+        self.handle_function_call_output(payload)
+
+    def handle_web_search_call(self, payload):
+        action = payload.get("action") if isinstance(payload.get("action"), dict) else {}
+        query = str(action.get("query") or "").strip() or None
+        self.push_turn_item(
+            {
+                "type": "webSearch",
+                "id": self.next_item_id(),
+                "status": payload.get("status"),
+                "query": query,
+                "action": action,
+            }
+        )
+
+    def handle_response_message(self, payload):
+        role = str(payload.get("role") or "").strip().lower()
+        if role != "assistant":
+            return
+        text = extract_response_message_text(payload.get("content"))
+        if not text:
+            return
+        self.push_turn_item(
+            {
+                "type": "assistantMessage",
+                "id": self.next_item_id(),
+                "text": text,
+            }
+        )
+
     def handle_compacted(self):
         self.ensure_turn()["saw_compaction"] = True
 
@@ -222,6 +484,25 @@ class Builder:
                 self.handle_context_compacted()
             elif event_type == "thread_rolled_back":
                 self.handle_thread_rollback(payload)
+            elif event_type == "item_completed":
+                self.handle_item_completed(payload)
+        elif record_type == "response_item":
+            payload = value.get("payload") or {}
+            if not isinstance(payload, dict):
+                return
+            event_type = str(payload.get("type") or "").strip()
+            if event_type == "function_call":
+                self.handle_function_call(payload)
+            elif event_type == "function_call_output":
+                self.handle_function_call_output(payload)
+            elif event_type == "custom_tool_call":
+                self.handle_custom_tool_call(payload)
+            elif event_type == "custom_tool_call_output":
+                self.handle_custom_tool_call_output(payload)
+            elif event_type == "web_search_call":
+                self.handle_web_search_call(payload)
+            elif event_type == "message":
+                self.handle_response_message(payload)
         elif record_type == "compacted":
             self.handle_compacted()
 

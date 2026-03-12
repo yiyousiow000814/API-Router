@@ -351,7 +351,114 @@ export function renderMessageRichHtml(text) {
   return html || `<p>${escapeHtml(source)}</p>`;
 }
 
-export function renderMessageBody(role, text) {
+function classifyToolSummaryText(text) {
+  const source = String(text || "").trim();
+  const lower = source.toLowerCase();
+  if (!source) return { state: "idle", icon: "tool", text: "" };
+  if (lower.startsWith("running `")) return { state: "running", icon: "command", text: source, mono: true };
+  if (lower.startsWith("ran `")) return { state: "complete", icon: "command", text: source, mono: true };
+  if (lower.startsWith("command failed `")) return { state: "error", icon: "command", text: source, mono: true };
+  if (lower.startsWith("searching web")) return { state: "running", icon: "search", text: source, mono: false };
+  if (lower.startsWith("viewing image")) return { state: "running", icon: "image", text: source, mono: false };
+  if (lower.startsWith("editing files")) return { state: "running", icon: "patch", text: source, mono: false };
+  if (lower.startsWith("updating plan")) return { state: "running", icon: "plan", text: source, mono: false };
+  if (lower.startsWith("waiting for input")) return { state: "running", icon: "input", text: source, mono: false };
+  if (lower.startsWith("spawning agent")) return { state: "running", icon: "agent", text: source, mono: false };
+  if (lower.startsWith("waiting for agent")) return { state: "running", icon: "agent", text: source, mono: false };
+  if (lower.startsWith("running tool `")) return { state: "running", icon: "tool", text: source, mono: false };
+  if (lower.startsWith("called tool `")) return { state: "complete", icon: "tool", text: source, mono: false };
+  if (lower.startsWith("tool failed `")) return { state: "error", icon: "tool", text: source, mono: false };
+  return { state: "complete", icon: "tool", text: source, mono: false };
+}
+
+function stripToolWrappingBackticks(value) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^`([\s\S]+)`$/);
+  return match ? String(match[1] || "").trim() : raw;
+}
+
+function summarizeToolSnippet(value, maxChars = 92) {
+  const raw = String(value || "").replace(/\r\n/g, "\n").trim();
+  if (!raw) return { preview: "", extraLines: 0 };
+  const lines = raw.split("\n").map((line) => line.trimEnd());
+  const isWrapperLine = (line) => {
+    const trimmed = String(line || "").trim();
+    return /^@['"]$/.test(trimmed) || /^['"]@$/.test(trimmed) || /^<<[-~]?\w+$/.test(trimmed);
+  };
+  const visibleLines = lines.filter((line) => String(line || "").trim());
+  const previewLine = String(visibleLines.find((line) => !isWrapperLine(line)) || visibleLines[0] || lines[0] || "").trim();
+  const preview = previewLine.length > maxChars
+    ? `${previewLine.slice(0, Math.max(0, maxChars - 1))}…`
+    : previewLine;
+  return {
+    preview,
+    extraLines: Math.max(0, visibleLines.length - 1),
+  };
+}
+
+function parseStructuredToolSummary(text) {
+  const source = String(text || "").trim();
+  const lower = source.toLowerCase();
+  const prefixes = [
+    { prefix: "Running ", state: "running", icon: "command", kind: "command" },
+    { prefix: "Ran ", state: "complete", icon: "command", kind: "command" },
+    { prefix: "Command failed ", state: "error", icon: "command", kind: "command" },
+    { prefix: "Running tool ", state: "running", icon: "tool", kind: "tool" },
+    { prefix: "Called tool ", state: "complete", icon: "tool", kind: "tool" },
+    { prefix: "Tool failed ", state: "error", icon: "tool", kind: "tool" },
+  ];
+  for (const entry of prefixes) {
+    if (!lower.startsWith(entry.prefix.toLowerCase())) continue;
+    const detail = stripToolWrappingBackticks(source.slice(entry.prefix.length));
+    const snippet = summarizeToolSnippet(detail);
+    return {
+      state: entry.state,
+      icon: entry.icon,
+      mono: true,
+      preview: snippet.preview,
+      extraLines: snippet.extraLines,
+      kind: entry.kind,
+    };
+  }
+  return null;
+}
+
+export function renderToolSummaryHtml(text) {
+  const structured = parseStructuredToolSummary(text);
+  if (structured) {
+    const safeState = escapeHtml(structured.state || "idle");
+    const safeIcon = escapeHtml(structured.icon || "tool");
+    const monoClass = structured.mono ? " mono" : "";
+    const previewHtml = structured.preview
+      ? `<code class="msgInlineCode">${escapeHtml(structured.preview)}</code>`
+      : "";
+    const moreHtml = structured.extraLines > 0
+      ? `<span class="msgToolMore">+${String(structured.extraLines)} lines</span>`
+      : "";
+    return (
+      `<div class="msgToolLine state-${safeState} icon-${safeIcon}${monoClass}" data-tool-state="${safeState}" data-tool-icon="${safeIcon}">` +
+        `<span class="msgToolLead" aria-hidden="true"></span>` +
+        `<span class="msgToolText">${previewHtml}${moreHtml}</span>` +
+        `<span class="msgToolTail" aria-hidden="true"></span>` +
+      `</div>`
+    );
+  }
+  const summary = classifyToolSummaryText(text);
+  const safeState = escapeHtml(summary.state || "idle");
+  const safeIcon = escapeHtml(summary.icon || "tool");
+  const body = renderInlineMessageText(summary.text || "");
+  const monoClass = summary.mono ? " mono" : "";
+  return (
+    `<div class="msgToolLine state-${safeState} icon-${safeIcon}${monoClass}" data-tool-state="${safeState}" data-tool-icon="${safeIcon}">` +
+      `<span class="msgToolLead" aria-hidden="true"></span>` +
+      `<span class="msgToolText">${body}</span>` +
+      `<span class="msgToolTail" aria-hidden="true"></span>` +
+    `</div>`
+  );
+}
+
+export function renderMessageBody(role, text, options = {}) {
+  if (options && options.kind === "tool") return renderToolSummaryHtml(text);
   if (role === "assistant" || role === "system" || role === "user") return renderMessageRichHtml(text);
   return `<p>${escapeHtml(text || "").replace(/\n/g, "<br>")}</p>`;
 }

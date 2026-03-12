@@ -24,6 +24,17 @@ pub(super) struct ThreadHistoryPage {
     pub(super) page: Value,
 }
 
+struct BuildThreadHistoryPageInput<'a> {
+    thread_id: &'a str,
+    workspace_value: Option<&'a str>,
+    rollout_path: &'a str,
+    turns: &'a [HistoryTurn],
+    token_usage: Option<&'a Value>,
+    incomplete: bool,
+    before: Option<&'a str>,
+    normalized_limit: usize,
+}
+
 struct ResolvedRolloutPath {
     local_path: PathBuf,
     #[cfg_attr(not(test), allow(dead_code))]
@@ -121,27 +132,32 @@ fn load_thread_history_page_impl(
         }
     }
     let parsed = load_cached_rollout_history(&resolved.local_path)?;
-    let page = build_thread_history_page(
+    let page = build_thread_history_page(BuildThreadHistoryPageInput {
         thread_id,
         workspace_value,
-        raw_rollout_path,
-        parsed.turns.as_slice(),
-        parsed.token_usage.as_ref(),
+        rollout_path: raw_rollout_path,
+        turns: parsed.turns.as_slice(),
+        token_usage: parsed.token_usage.as_ref(),
+        incomplete: parsed.incomplete,
         before,
         normalized_limit,
-    )?;
+    })?;
     Ok(page)
 }
 
 fn build_thread_history_page(
-    thread_id: &str,
-    workspace_value: Option<&str>,
-    rollout_path: &str,
-    turns: &[HistoryTurn],
-    token_usage: Option<&Value>,
-    before: Option<&str>,
-    normalized_limit: usize,
+    input: BuildThreadHistoryPageInput<'_>,
 ) -> Result<ThreadHistoryPage, String> {
+    let BuildThreadHistoryPageInput {
+        thread_id,
+        workspace_value,
+        rollout_path,
+        turns,
+        token_usage,
+        incomplete,
+        before,
+        normalized_limit,
+    } = input;
     let page_end = before
         .and_then(|cursor| {
             turns
@@ -181,6 +197,7 @@ fn build_thread_history_page(
             "beforeCursor": before_cursor,
             "limit": normalized_limit,
             "totalTurns": turns.len(),
+            "incomplete": incomplete && page_end == turns.len(),
         }),
     })
 }
@@ -436,6 +453,201 @@ mod tests {
             older_turns[0]["items"][0]["content"][0]["text"].as_str(),
             Some("two")
         );
+    }
+
+    #[test]
+    fn history_page_keeps_response_items_as_tool_and_assistant_entries() {
+        let function_call_arguments = serde_json::to_string(
+            &serde_json::json!({ "command": ["powershell.exe", "-Command", "git status --short"] }),
+        )
+        .expect("function call args");
+        let function_call_output = serde_json::to_string(&serde_json::json!({
+            "output": "M src/ui/codex-web-dev.js\n",
+            "metadata": { "exit_code": 0 }
+        }))
+        .expect("function call output");
+        let custom_tool_output = serde_json::to_string(&serde_json::json!({
+            "output": "Success. Updated the following files:\nM AGENTS.md\n"
+        }))
+        .expect("custom tool output");
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-tools"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"inspect history","images":[],"local_images":[],"text_elements":[]}}"#,
+            &serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "shell_command",
+                    "arguments": function_call_arguments,
+                    "call_id": "call-shell-1"
+                }
+            })
+            .to_string(),
+            &serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-shell-1",
+                    "output": function_call_output
+                }
+            })
+            .to_string(),
+            &serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "status": "completed",
+                    "name": "apply_patch",
+                    "call_id": "call-tool-1",
+                    "input": "*** Begin Patch\n*** End Patch\n"
+                }
+            })
+            .to_string(),
+            &serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call-tool-1",
+                    "output": custom_tool_output
+                }
+            })
+            .to_string(),
+            r#"{"type":"response_item","payload":{"type":"web_search_call","status":"completed","action":{"type":"search","query":"openai codex history tools"}}}"#,
+            &serde_json::json!({
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "thread_id": "thread-tools",
+                    "item": {
+                        "type": "Plan",
+                        "text": "Step 1\nStep 2"
+                    }
+                }
+            })
+            .to_string(),
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#,
+        ]);
+        let result = load_thread_history_page(
+            "thread-tools",
+            Some(WorkspaceTarget::Windows),
+            Some(&rollout.path().to_string_lossy()),
+            None,
+            10,
+        )
+        .expect("history page");
+
+        let turns = result
+            .thread
+            .get("turns")
+            .and_then(|v| v.as_array())
+            .expect("turns array");
+        assert_eq!(turns.len(), 1);
+        let items = turns[0]["items"].as_array().expect("items");
+        assert_eq!(items[1]["type"].as_str(), Some("commandExecution"));
+        assert_eq!(
+            items[1]["command"].as_str(),
+            Some("powershell.exe -Command git status --short")
+        );
+        assert_eq!(items[1]["exitCode"].as_i64(), Some(0));
+        assert_eq!(
+            items[1]["output"].as_str(),
+            Some("M src/ui/codex-web-dev.js")
+        );
+        assert_eq!(items[2]["type"].as_str(), Some("toolCall"));
+        assert_eq!(items[2]["tool"].as_str(), Some("apply_patch"));
+        assert_eq!(
+            items[2]["result"].as_str(),
+            Some("Success. Updated the following files:\nM AGENTS.md")
+        );
+        assert_eq!(items[3]["type"].as_str(), Some("webSearch"));
+        assert_eq!(
+            items[3]["query"].as_str(),
+            Some("openai codex history tools")
+        );
+        assert_eq!(items[4]["type"].as_str(), Some("plan"));
+        assert_eq!(items[4]["text"].as_str(), Some("Step 1\nStep 2"));
+        assert_eq!(items[5]["type"].as_str(), Some("assistantMessage"));
+        assert_eq!(items[5]["text"].as_str(), Some("done"));
+    }
+
+    #[test]
+    fn history_page_marks_latest_turn_incomplete_when_rollout_has_no_turn_complete() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-incomplete"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hello","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call-1","arguments":"{\"command\":\"pwd\"}"}}"#,
+        ]);
+        let result = load_thread_history_page(
+            "thread-incomplete",
+            Some(WorkspaceTarget::Windows),
+            Some(&rollout.path().to_string_lossy()),
+            None,
+            10,
+        )
+        .expect("history page");
+
+        assert_eq!(result.page["incomplete"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn history_page_maps_shell_command_tool_items_to_command_execution() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-shell-item"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-1"}}"#,
+            &serde_json::json!({
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "thread_id": "thread-shell-item",
+                    "item": {
+                        "type": "toolCall",
+                        "id": "tool-1",
+                        "tool": "shell_command",
+                        "status": "running",
+                        "arguments": serde_json::json!({ "command": "cargo test --lib" }),
+                    }
+                }
+            })
+            .to_string(),
+        ]);
+        let result = load_thread_history_page(
+            "thread-shell-item",
+            Some(WorkspaceTarget::Windows),
+            Some(&rollout.path().to_string_lossy()),
+            None,
+            10,
+        )
+        .expect("history page");
+
+        let turns = result
+            .thread
+            .get("turns")
+            .and_then(|v| v.as_array())
+            .expect("turns array");
+        let items = turns[0]["items"].as_array().expect("items");
+        assert_eq!(items[0]["type"].as_str(), Some("commandExecution"));
+        assert_eq!(items[0]["command"].as_str(), Some("cargo test --lib"));
+    }
+
+    #[test]
+    fn history_page_marks_task_started_turns_incomplete_too() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-task-incomplete"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hello","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","call_id":"call-1","arguments":"{\"command\":\"pwd\"}"}}"#,
+        ]);
+        let result = load_thread_history_page(
+            "thread-task-incomplete",
+            Some(WorkspaceTarget::Windows),
+            Some(&rollout.path().to_string_lossy()),
+            None,
+            10,
+        )
+        .expect("history page");
+
+        assert_eq!(result.page["incomplete"].as_bool(), Some(true));
     }
 
     #[test]

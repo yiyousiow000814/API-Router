@@ -8,6 +8,7 @@ import {
   renderMessageAttachments,
   renderMessageBody,
   renderMessageRichHtml,
+  renderToolSummaryHtml,
 } from "./messageRender.js";
 
 describe("messageRender", () => {
@@ -57,6 +58,29 @@ describe("messageRender", () => {
     expect(renderMessageRichHtml(`- \`${command}\``)).toContain(
       `<li class="msgListItem depth-0"><code class="msgInlineCode">${command}</code></li>`
     );
+  });
+
+  it("renders tool command summaries as a single-line tool block instead of a markdown list", () => {
+    const command = "Running `cargo test --manifest-path src-tauri/Cargo.toml web_codex_history --lib`";
+    const html = renderToolSummaryHtml(command);
+    expect(html).toContain('class="msgToolLine state-running icon-command mono"');
+    expect(html).toContain('<code class="msgInlineCode">cargo test --manifest-path src-tauri/Cargo.toml web_codex_history --lib</code>');
+    expect(html).not.toContain("<ul>");
+    expect(renderMessageBody("system", command, { kind: "tool" })).toContain('msgToolLine');
+  });
+
+  it("summarizes multiline tool commands instead of dumping the full payload", () => {
+    const command = "Ran `@'\nimport { x } from \"./file.js\";\nconsole.log(x);\n'@ | node --input-type=module`";
+    const html = renderToolSummaryHtml(command);
+    expect(html).toContain('<code class="msgInlineCode">import { x } from &quot;./file.js&quot;;</code>');
+    expect(html).toContain("msgToolMore");
+    expect(html).toContain("+3 lines");
+  });
+
+  it("unescapes escaped backticks in plain tool-like sentences", () => {
+    const html = renderInlineMessageText("runtime tool 卡片不再靠解析 Running \\`...\\` 这种 markdown 文本来反推命令");
+    expect(html).toContain("Running `...`");
+    expect(html).not.toContain("\\`");
   });
 
   it("renders nested list blocks without flattening numbering", () => {

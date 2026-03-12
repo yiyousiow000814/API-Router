@@ -10,6 +10,7 @@ export function createChatTimelineModule(deps) {
     scheduleChatLiveFollow,
     updateScrollToBottomBtn,
     scrollChatToBottom,
+    renderRuntimePanels = () => {},
     requestAnimationFrameRef = requestAnimationFrame,
     documentRef = document,
   } = deps;
@@ -33,6 +34,12 @@ export function createChatTimelineModule(deps) {
       node.__webCodexKind = String(payload.kind || "").trim();
       node.__webCodexRawText = typeof payload.text === "string" ? payload.text : String(payload.text || "");
       node.__webCodexSource = String(payload.source || "").trim();
+      node.__webCodexTransient = payload.transient === true;
+      if (node.setAttribute) {
+        if (node.__webCodexSource) node.setAttribute("data-msg-source", node.__webCodexSource);
+        if (node.__webCodexTransient) node.setAttribute("data-msg-transient", "1");
+        else node.removeAttribute("data-msg-transient");
+      }
     } catch {}
     return node;
   }
@@ -55,11 +62,18 @@ export function createChatTimelineModule(deps) {
     const hasText = !!String(text || "").trim();
     const attachmentClass = role === "user" && hasAttachments && hasText ? " withAttachments" : "";
     node.className = `msg ${role}${kind ? ` kind-${kind}` : ""}${attachmentClass}`.trim();
+    const showHead = !(role === "assistant" || role === "user" || (role === "system" && kind === "tool"));
     const headLabel = kind && role === "system" ? kind : role;
     const attachmentsHtml = renderMessageAttachments(attachments);
-    const bodyHtml = renderMessageBody(role, text);
-    node.innerHTML = `<div class="msgHead">${escapeHtml(headLabel)}</div><div class="msgBody">${attachmentsHtml}${bodyHtml}</div>`;
-    attachMessageDebugMeta(node, { role, kind, text, source: String(options.source || "").trim() || "createMessageNode" });
+    const bodyHtml = renderMessageBody(role, text, { kind });
+    node.innerHTML = `${showHead ? `<div class="msgHead">${escapeHtml(headLabel)}</div>` : ""}<div class="msgBody">${attachmentsHtml}${bodyHtml}</div>`;
+    attachMessageDebugMeta(node, {
+      role,
+      kind,
+      text,
+      source: String(options.source || "").trim() || "createMessageNode",
+      transient: options.transient === true,
+    });
     wireMessageLinks(node);
     wireMessageAttachments(node);
     return node;
@@ -81,7 +95,8 @@ export function createChatTimelineModule(deps) {
     const node = createMessageNode(role, text, {
       kind: options.kind,
       attachments: options.attachments,
-      source: "addChat",
+      source: String(options.source || "").trim() || "addChat",
+      transient: options.transient === true,
     });
     if (options.animate !== false) {
       const defaultDelay = role === "assistant" || role === "system" ? 50 : 0;
@@ -89,6 +104,7 @@ export function createChatTimelineModule(deps) {
       animateMessageNode(node, delayMs);
     }
     box.appendChild(node);
+    renderRuntimePanels();
     if (options.scroll !== false) {
       state.chatShouldStickToBottom = true;
       state.chatUserScrolledAwayAt = 0;
@@ -159,6 +175,23 @@ export function createChatTimelineModule(deps) {
     requestAnimationFrameRef(() => flushStreamingBody(body));
   }
 
+  function renderAssistantLiveBody(msgNode, bodyNode, text) {
+    if (!msgNode || !bodyNode) return;
+    const liveText = String(text || "");
+    try {
+      bodyNode.setAttribute("data-streaming", "1");
+      bodyNode.__streaming = null;
+    } catch {}
+    bodyNode.innerHTML = renderMessageBody("assistant", liveText, { kind: "" });
+    attachMessageDebugMeta(msgNode, {
+      role: "assistant",
+      kind: "",
+      text: liveText,
+      source: "renderAssistantLiveBody",
+    });
+    wireMessageLinks(msgNode);
+  }
+
   function finalizeAssistantMessage(msgNode, bodyNode, text) {
     if (!msgNode || !bodyNode) return;
     try {
@@ -175,7 +208,7 @@ export function createChatTimelineModule(deps) {
       msgNode.removeAttribute("data-live-assistant");
       msgNode.removeAttribute("data-live-thread-id");
     } catch {}
-    bodyNode.innerHTML = renderMessageBody("assistant", finalText);
+    bodyNode.innerHTML = renderMessageBody("assistant", finalText, { kind: "" });
     attachMessageDebugMeta(msgNode, { role: "assistant", kind: "", text: finalText, source: "finalizeAssistantMessage" });
     wireMessageLinks(msgNode);
   }
@@ -225,6 +258,11 @@ export function createChatTimelineModule(deps) {
     state.activeThreadHistoryInFlightPromise = null;
     state.activeThreadHistoryInFlightThreadId = "";
     state.activeThreadHistoryPendingRefresh = null;
+    state.activeThreadTransientToolText = "";
+    state.activeThreadActivity = null;
+    state.activeThreadActiveCommands = [];
+    state.activeThreadPlan = null;
+    renderRuntimePanels();
   }
 
   function setChatOpening(isOpening) {
@@ -254,6 +292,7 @@ export function createChatTimelineModule(deps) {
     ensureStreamingBody,
     finalizeAssistantMessage,
     flushStreamingBody,
+    renderAssistantLiveBody,
     setChatOpening,
   };
 }

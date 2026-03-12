@@ -30,6 +30,31 @@ describe("liveNotifications", () => {
     expect(toToolLikeMessage({ type: "commandExecution", command: "pwd", exitCode: 0 })).toContain("pwd");
   });
 
+  it("formats shell_command tool calls as compact command lines", () => {
+    const { toToolLikeMessage } = createLiveNotificationsModule({
+      state: { activeThreadId: "" },
+      byId() { return null; },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      normalizeType(value) { return String(value || "").toLowerCase(); },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId() { return ""; },
+    });
+
+    expect(
+      toToolLikeMessage({
+        type: "toolCall",
+        tool: "shell_command",
+        status: "running",
+        arguments: JSON.stringify({ command: "cargo test --manifest-path src-tauri/Cargo.toml web_codex_history --lib" }),
+      })
+    ).toBe("Running `cargo test --manifest-path src-tauri/Cargo.toml web_codex_history --lib`");
+  });
+
   it("derives live status from command execution updates", () => {
     expect(
       deriveLiveStatusFromToolItem(
@@ -60,6 +85,7 @@ describe("liveNotifications", () => {
     expect(normalizeLiveMethod("turn.completed")).toBe("turn/completed");
     expect(normalizeLiveMethod("item_completed")).toBe("item/completed");
     expect(normalizeLiveMethod("task_complete")).toBe("turn/completed");
+    expect(normalizeLiveMethod("task_aborted")).toBe("turn/cancelled");
   });
 
   it("streams assistant deltas into the active thread", () => {
@@ -139,6 +165,63 @@ describe("liveNotifications", () => {
     expect(finalized[0].text).toBe("hello world");
     expect(statuses[0]).toEqual({ message: "Receiving response...", isWarn: false });
     expect(statuses[statuses.length - 1]).toEqual({ message: "Turn completed.", isWarn: false });
+  });
+
+  it("renders live assistant markdown through rich body renderer when available", () => {
+    const rendered = [];
+    const chatBox = {
+      appendChild(node) {
+        this.lastElementChild = node;
+      },
+      querySelector() {
+        return null;
+      },
+      lastElementChild: null,
+    };
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      normalizeType(value) { return String(value || "").toLowerCase(); },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+      hideWelcomeCard() {},
+      createAssistantStreamingMessage() {
+        return { msg: { setAttribute() {} }, body: {} };
+      },
+      renderAssistantLiveBody(_msg, _body, text) {
+        rendered.push(text);
+      },
+      appendStreamingDelta() {
+        throw new Error("should not use raw streaming fallback");
+      },
+      finalizeAssistantMessage() {},
+    });
+
+    module.renderLiveNotification({
+      method: "turn/assistant/delta",
+      params: { threadId: "thread-1", delta: "**关于 tool live**" },
+    });
+
+    expect(rendered).toEqual(["**关于 tool live**"]);
   });
 
   it("renders assistant message items live for the active thread", () => {
@@ -362,6 +445,235 @@ describe("liveNotifications", () => {
       },
     });
     expect(state.activeThreadPendingAssistantMessage).toBe("live reply");
+  });
+
+  it("shows only the latest live tool message and clears it on turn completion", () => {
+    const added = [];
+    const removed = [];
+    const transientNode = (text) => ({
+      __webCodexRole: "system",
+      __webCodexKind: "tool",
+      __webCodexRawText: text,
+      remove() {
+        removed.push(text);
+      },
+    });
+    const chatBox = {
+      nodes: [],
+      querySelectorAll(selector) {
+        if (selector === '.msg.system.kind-tool[data-msg-transient="1"]') {
+          return this.nodes;
+        }
+        return [];
+      },
+    };
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [{ role: "user", text: "hello", kind: "" }],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat(role, text, options = {}) {
+        added.push({ role, text, kind: options.kind || "", transient: options.transient === true });
+        if (options.transient === true) chatBox.nodes = [transientNode(text)];
+      },
+      scheduleChatLiveFollow() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "item/updated",
+      params: {
+        threadId: "thread-1",
+        item: {
+          type: "commandExecution",
+          command: "npm test",
+          status: "running",
+        },
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "item/updated",
+      params: {
+        threadId: "thread-1",
+        item: {
+          type: "mcpToolCall",
+          server: "x",
+          tool: "y",
+          status: "running",
+        },
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/completed",
+      params: { threadId: "thread-1" },
+    });
+
+    expect(added).toEqual([
+      { role: "system", text: "Running `npm test`", kind: "tool", transient: true },
+      { role: "system", text: "Running tool `x / y`", kind: "tool", transient: true },
+    ]);
+    expect(removed).toEqual(["Running `npm test`", "Running tool `x / y`"]);
+    expect(state.activeThreadMessages).toEqual([
+      { role: "user", text: "hello", kind: "" },
+    ]);
+  });
+
+  it("routes live command updates into runtime state and skips chat fallback when active commands are present", () => {
+    const added = [];
+    const runtimeUpdates = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      addChat(role, text) {
+        added.push({ role, text });
+      },
+      scheduleChatLiveFollow() {},
+      applyToolItemRuntimeUpdate(item, options) {
+        runtimeUpdates.push({ item, options });
+        state.activeThreadActiveCommands = [{ key: "cmd-1" }];
+      },
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "item/updated",
+      params: {
+        threadId: "thread-1",
+        item: { id: "cmd-1", type: "commandExecution", command: "npm test", status: "running" },
+      },
+    });
+
+    expect(runtimeUpdates).toHaveLength(1);
+    expect(added).toEqual([]);
+  });
+
+  it("routes turn plan updates into runtime plan state", () => {
+    const planUpdates = [];
+    const module = createLiveNotificationsModule({
+      state: { activeThreadId: "thread-1", activeThreadMessages: [] },
+      byId() { return null; },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      applyPlanSnapshotUpdate(payload) {
+        planUpdates.push(payload);
+      },
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/plan/updated",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        explanation: "Need plan",
+        plan: [{ step: "Inspect", status: "completed" }],
+      },
+    });
+
+    expect(planUpdates).toEqual([
+      {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        explanation: "Need plan",
+        plan: [{ step: "Inspect", status: "completed" }],
+      },
+    ]);
+  });
+
+  it("does not re-add the same transient tool bubble on repeated history polls", () => {
+    const added = [];
+    const removed = [];
+    const transientNode = (text) => ({
+      __webCodexRole: "system",
+      __webCodexKind: "tool",
+      __webCodexRawText: text,
+      remove() {
+        removed.push(text);
+      },
+    });
+    const chatBox = {
+      nodes: [],
+      querySelectorAll(selector) {
+        if (selector === '.msg.system.kind-tool[data-msg-transient="1"]') return this.nodes;
+        return [];
+      },
+    };
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [{ role: "user", text: "hello", kind: "" }],
+      activeThreadTransientToolText: "",
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat(role, text, options = {}) {
+        added.push({ role, text, kind: options.kind || "", transient: options.transient === true });
+        if (options.transient === true) chatBox.nodes = [transientNode(text)];
+      },
+      scheduleChatLiveFollow() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.showTransientToolMessage("Ran `npm test`");
+    state.activeThreadMessages = [{ role: "user", text: "hello", kind: "" }];
+    module.showTransientToolMessage("Ran `npm test`");
+
+    expect(added).toEqual([
+      { role: "system", text: "Ran `npm test`", kind: "tool", transient: true },
+    ]);
+    expect(removed).toEqual([]);
   });
 
   it("reuses an existing live assistant node after live state pointers are cleared", () => {

@@ -47,6 +47,7 @@ export function createBootstrapModule(deps) {
     renderFolderPicker,
     renderAttachmentPills,
     renderComposerContextLeft,
+    renderRuntimePanels = () => {},
     updateMobileComposerState,
     syncSettingsControlsFromMain,
     updateWelcomeSelections,
@@ -132,6 +133,7 @@ export function createBootstrapModule(deps) {
     renderFolderPicker();
     renderAttachmentPills([]);
     renderComposerContextLeft();
+    renderRuntimePanels();
     updateMobileComposerState();
     syncSettingsControlsFromMain();
     updateWelcomeSelections();

@@ -79,10 +79,16 @@ export function createDebugToolsModule(deps) {
     pushThreadAnimDebug,
     threadAnimDebug,
     WEB_CODEX_DEV_DEBUG_VERSION,
-    documentRef = document,
-    windowRef = window,
-    performanceRef = performance,
+    LIVE_INSPECTOR_ENABLED_KEY = "web_codex_live_inspector_enabled_v1",
+    localStorageRef,
+    documentRef,
+    windowRef,
+    performanceRef,
   } = deps;
+  const storage = localStorageRef ?? globalThis.localStorage ?? { getItem() { return ""; }, setItem() {} };
+  const doc = documentRef ?? globalThis.document;
+  const win = windowRef ?? globalThis.window ?? {};
+  const perf = performanceRef ?? globalThis.performance;
 
   function getActiveState() {
     return {
@@ -95,8 +101,8 @@ export function createDebugToolsModule(deps) {
       activeThreadPendingAssistantMessage: String(state.activeThreadPendingAssistantMessage || ""),
       wsSubscribedEvents: !!state.wsSubscribedEvents,
       wsReadyState: Number(state.ws?.readyState ?? -1),
-      messageCount: documentRef.querySelectorAll("#chatBox .msg").length,
-      statusLine: String(documentRef.getElementById("statusLine")?.textContent || "").trim(),
+      messageCount: doc?.querySelectorAll?.("#chatBox .msg")?.length || 0,
+      statusLine: String(doc?.getElementById?.("statusLine")?.textContent || "").trim(),
     };
   }
 
@@ -106,19 +112,36 @@ export function createDebugToolsModule(deps) {
     const recent = events.slice(Math.max(0, events.length - max));
     const reverse = recent.slice().reverse();
     const pickLast = (predicate) => reverse.find(predicate) || null;
+    const isTurnLifecycleEvent = (event) => {
+      const kind = String(event?.kind || "");
+      if (kind === "turn.start.ack" || kind === "turn.send" || kind === "live.render:turn_terminal") return true;
+      if (kind !== "rpc.notification" && kind !== "ui.event") return false;
+      const method = String(event?.method || "");
+      return /(^|\/)turn\/(started|completed|finished|failed|cancelled)\b/.test(method);
+    };
     return {
       active: getActiveState(),
       lastReceived:
-        pickLast((event) => event?.kind === "rpc.notification" || event?.kind === "ui.event") || null,
-      lastRender: pickLast((event) => String(event?.kind || "").startsWith("live.render:")) || null,
+        pickLast(
+          (event) =>
+            event?.kind === "rpc.notification" ||
+            event?.kind === "ui.event" ||
+            event?.kind === "history.receive" ||
+            String(event?.kind || "").startsWith("history.load")
+        ) || null,
+      lastRender:
+        pickLast(
+          (event) =>
+            String(event?.kind || "").startsWith("live.render:") ||
+            String(event?.kind || "").startsWith("history.render:")
+        ) || null,
       lastDrop: pickLast((event) => /^(live|ws)\.drop:/.test(String(event?.kind || ""))) || null,
       lastHistory:
         pickLast((event) => String(event?.kind || "").startsWith("history.load")) ||
         pickLast((event) => event?.kind === "history.apply") ||
         null,
       lastTurn:
-        pickLast((event) => event?.kind === "turn.start.ack") ||
-        pickLast((event) => event?.kind === "turn.send") ||
+        pickLast(isTurnLifecycleEvent) ||
         null,
       recent,
     };
@@ -147,22 +170,28 @@ export function createDebugToolsModule(deps) {
 
   function installLiveInspector() {
     try {
-      const previous = windowRef.__webCodexLiveInspector || null;
+      const previous = win.__webCodexLiveInspector || null;
       if (previous?.destroy) {
         previous.destroy();
       }
     } catch {}
 
     let root = null;
+    let body = null;
     let timer = 0;
     let backendSnapshot = null;
     let backendInflight = false;
+    let collapsed = false;
+    let expandedHeight = "";
+    let gripDragging = false;
+    let gripStartY = 0;
+    let gripStartHeight = 0;
 
     const refreshBackendSnapshot = async () => {
       if (backendInflight) return;
       backendInflight = true;
       try {
-        const res = await windowRef.fetch("/codex/debug/live", {
+        const res = await win.fetch("/codex/debug/live", {
           credentials: "same-origin",
         });
         if (!res.ok) {
@@ -183,15 +212,25 @@ export function createDebugToolsModule(deps) {
 
     const ensureRoot = () => {
       if (root?.isConnected) return root;
-      root = documentRef.createElement("div");
+      root = doc.createElement("div");
       root.id = "webCodexLiveInspector";
       root.setAttribute("aria-live", "off");
+      body = doc.createElement("pre");
+      const header = doc.createElement("div");
+      const title = doc.createElement("div");
+      const actions = doc.createElement("div");
+      const collapseBtn = doc.createElement("button");
+      const closeBtn = doc.createElement("button");
+      const grip = doc.createElement("div");
+
       Object.assign(root.style, {
         position: "fixed",
         right: "12px",
         bottom: "12px",
-        width: "min(520px, calc(100vw - 24px))",
-        maxHeight: "min(58vh, 560px)",
+        width: "min(420px, calc(100vw - 24px))",
+        maxHeight: "calc(100vh - 12px)",
+        minWidth: "280px",
+        minHeight: "120px",
         overflow: "hidden",
         borderRadius: "12px",
         border: "1px solid rgba(90, 120, 180, 0.45)",
@@ -200,13 +239,140 @@ export function createDebugToolsModule(deps) {
         boxShadow: "0 12px 36px rgba(0,0,0,0.34)",
         backdropFilter: "blur(12px)",
         zIndex: "var(--z-modal, 120)",
+        display: "flex",
+        flexDirection: "column",
+        resize: "none",
+        paddingTop: "0",
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
         fontSize: "11px",
         lineHeight: "1.45",
+        boxSizing: "border-box",
+      });
+
+      Object.assign(header.style, {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: "8px",
+        padding: "10px 12px 8px",
+        borderBottom: "1px solid rgba(90, 120, 180, 0.2)",
+        flex: "0 0 auto",
+      });
+      Object.assign(title.style, {
+        fontWeight: "700",
+        letterSpacing: "0.04em",
+        color: "#edf4ff",
+      });
+      title.textContent = "LIVE PIPELINE";
+      Object.assign(actions.style, {
+        display: "flex",
+        alignItems: "center",
+        gap: "6px",
+        flex: "0 0 auto",
+      });
+      const buttonStyle = {
+        appearance: "none",
+        border: "1px solid rgba(120, 154, 218, 0.35)",
+        background: "rgba(25, 36, 58, 0.9)",
+        color: "#d7e4ff",
+        borderRadius: "8px",
+        padding: "2px 8px",
+        minWidth: "30px",
+        cursor: "pointer",
+        font: "inherit",
+        lineHeight: "1.4",
+      };
+      Object.assign(collapseBtn.style, buttonStyle);
+      Object.assign(closeBtn.style, buttonStyle);
+      collapseBtn.textContent = "−";
+      closeBtn.textContent = "×";
+      collapseBtn.setAttribute("type", "button");
+      closeBtn.setAttribute("type", "button");
+      root.__webCodexLiveInspectorCollapseBtn = collapseBtn;
+      collapseBtn.addEventListener("click", () => {
+        collapsed = !collapsed;
+        collapseBtn.textContent = collapsed ? "+" : "−";
+        if (collapsed) {
+          expandedHeight = String(root.style.height || "");
+          root.style.height = "";
+        } else if (expandedHeight) {
+          root.style.height = expandedHeight;
+        }
+        if (body) body.style.display = collapsed ? "none" : "block";
+        root.style.minHeight = collapsed ? "0" : "120px";
+      });
+      closeBtn.addEventListener("click", () => {
+        try {
+          storage.setItem(LIVE_INSPECTOR_ENABLED_KEY, "0");
+        } catch {}
+        win.__webCodexLiveInspector?.destroy?.();
+      });
+      actions.appendChild(collapseBtn);
+      actions.appendChild(closeBtn);
+      header.appendChild(title);
+      header.appendChild(actions);
+
+      Object.assign(body.style, {
+        margin: "0",
+        padding: "10px 12px 12px",
+        overflowX: "hidden",
+        overflowY: "auto",
+        flex: "1 1 auto",
+        minHeight: "0",
         whiteSpace: "pre-wrap",
         wordBreak: "break-word",
       });
-      documentRef.body.appendChild(root);
+      root.__webCodexLiveInspectorBody = body;
+      Object.assign(grip.style, {
+        position: "absolute",
+        top: "-3px",
+        left: "0",
+        right: "0",
+        height: "6px",
+        cursor: "ns-resize",
+        background: "transparent",
+      });
+      root.__webCodexLiveInspectorGrip = grip;
+      const stopGripDrag = () => {
+        gripDragging = false;
+        try {
+          win.removeEventListener?.("pointermove", onGripPointerMove);
+          win.removeEventListener?.("pointerup", stopGripDrag);
+          win.removeEventListener?.("pointercancel", stopGripDrag);
+        } catch {}
+      };
+      const onGripPointerMove = (event) => {
+        if (!gripDragging || !root) return;
+        const pointerY = Number(event?.clientY ?? gripStartY);
+        const delta = gripStartY - pointerY;
+        const nextHeight = Math.max(120, Math.round(gripStartHeight + delta));
+        root.style.height = `${nextHeight}px`;
+      };
+      grip.addEventListener("pointerdown", (event) => {
+        gripDragging = true;
+        gripStartY = Number(event?.clientY ?? 0);
+        gripStartHeight =
+          Number.parseFloat(String(root?.style?.height || "").replace(/px$/i, "")) ||
+          root?.offsetHeight ||
+          320;
+        try {
+          grip.setPointerCapture?.(event.pointerId);
+        } catch {}
+        win.addEventListener?.("pointermove", onGripPointerMove);
+        win.addEventListener?.("pointerup", stopGripDrag);
+        win.addEventListener?.("pointercancel", stopGripDrag);
+      });
+      root.appendChild(header);
+      root.appendChild(grip);
+      root.appendChild(body);
+      doc.body.appendChild(root);
+      try {
+        win.dispatchEvent?.(
+          new CustomEvent("web-codex-live-inspector-changed", {
+            detail: { open: true },
+          })
+        );
+      } catch {}
       return root;
     };
 
@@ -222,7 +388,6 @@ export function createDebugToolsModule(deps) {
       const appHomes = Array.isArray(appState?.homes) ? appState.homes : [];
       const appRecent = Array.isArray(appState?.recent) ? appState.recent : [];
       const summaryLines = [
-        "LIVE PIPELINE",
         `thread: ${snap.active.activeThreadId || "(none)"}`,
         `workspace: ${snap.active.activeThreadWorkspace || "(none)"}`,
         `rollout: ${snap.active.activeThreadRolloutPath || "(empty)"}`,
@@ -269,23 +434,34 @@ export function createDebugToolsModule(deps) {
         ...appRecent.slice(-4).map((event) => `APP ${formatLiveEventLine(event)}`),
         ...snap.recent.slice(-10).map((event) => `UI  ${formatLiveEventLine(event)}`),
       ];
-      host.textContent = lines.join("\n");
+      if (host.__webCodexLiveInspectorBody) {
+        host.__webCodexLiveInspectorBody.textContent = lines.join("\n");
+      } else {
+        host.textContent = lines.join("\n");
+      }
     };
 
     render();
     refreshBackendSnapshot().catch(() => {});
-    timer = windowRef.setInterval(() => {
+    timer = win.setInterval(() => {
       render();
       refreshBackendSnapshot().catch(() => {});
     }, 250);
-    windowRef.__webCodexLiveInspector = {
+    win.__webCodexLiveInspector = {
       destroy() {
         if (timer) {
-          windowRef.clearInterval(timer);
+          win.clearInterval(timer);
           timer = 0;
         }
         try {
           root?.remove?.();
+        } catch {}
+        try {
+          win.dispatchEvent?.(
+            new CustomEvent("web-codex-live-inspector-changed", {
+              detail: { open: false },
+            })
+          );
         } catch {}
       },
       render,
@@ -294,8 +470,8 @@ export function createDebugToolsModule(deps) {
 
   function installWebCodexDebug() {
     try {
-      const previous = windowRef.__webCodexDebug || {};
-      windowRef.__webCodexDebug = {
+      const previous = win.__webCodexDebug || {};
+      win.__webCodexDebug = {
         ...previous,
         version: WEB_CODEX_DEV_DEBUG_VERSION,
         scriptUrl: typeof import.meta !== "undefined" ? String(import.meta.url || "") : "",
@@ -304,19 +480,19 @@ export function createDebugToolsModule(deps) {
           return {
             version: WEB_CODEX_DEV_DEBUG_VERSION,
             scriptUrl: typeof import.meta !== "undefined" ? String(import.meta.url || "") : "",
-            loadedAt: String(windowRef.__webCodexDebug?.loadedAt || ""),
+            loadedAt: String(win.__webCodexDebug?.loadedAt || ""),
             activeThreadId: String(state.activeThreadId || ""),
             activeThreadWorkspace: String(state.activeThreadWorkspace || ""),
             activeThreadRolloutPath: String(state.activeThreadRolloutPath || ""),
             activeThreadRenderSig: String(state.activeThreadRenderSig || ""),
-            messageCount: documentRef.querySelectorAll("#chatBox .msg").length,
+            messageCount: doc?.querySelectorAll?.("#chatBox .msg")?.length || 0,
           };
         },
         getActiveState,
         getLivePipelineSnapshot,
         dumpMessages(limit = 8) {
           const max = Math.max(1, Number(limit || 8) | 0);
-          const nodes = Array.from(documentRef.querySelectorAll("#chatBox .msg"));
+          const nodes = Array.from(doc?.querySelectorAll?.("#chatBox .msg") || []);
           return nodes
             .slice(Math.max(0, nodes.length - max))
             .map((node, index) =>
@@ -330,7 +506,7 @@ export function createDebugToolsModule(deps) {
         },
         findMessage(needle) {
           const query = String(needle || "");
-          const nodes = Array.from(documentRef.querySelectorAll("#chatBox .msg"));
+          const nodes = Array.from(doc?.querySelectorAll?.("#chatBox .msg") || []);
           for (let i = 0; i < nodes.length; i += 1) {
             const info = readDebugMessageNode(nodes[i], i);
             if (
@@ -345,7 +521,7 @@ export function createDebugToolsModule(deps) {
           return null;
         },
         getChatHtml() {
-          return String(documentRef.getElementById("chatBox")?.innerHTML || "");
+          return String(doc?.getElementById?.("chatBox")?.innerHTML || "");
         },
         renderInlineText(text) {
           return renderInlineMessageText(String(text || ""));
@@ -373,12 +549,12 @@ export function createDebugToolsModule(deps) {
           const shouldOpen =
             typeof force === "boolean"
               ? force
-              : !documentRef.getElementById("webCodexLiveInspector");
+              : !doc?.getElementById?.("webCodexLiveInspector");
           if (shouldOpen) installLiveInspector();
-          else windowRef.__webCodexLiveInspector?.destroy?.();
+          else win.__webCodexLiveInspector?.destroy?.();
           return {
             ok: true,
-            open: !!documentRef.getElementById("webCodexLiveInspector"),
+            open: !!doc?.getElementById?.("webCodexLiveInspector"),
           };
         },
       };
@@ -398,7 +574,7 @@ export function createDebugToolsModule(deps) {
       if (!batch.length) return;
       state.liveTraceSyncInFlight = true;
       try {
-        const res = await windowRef.fetch("/codex/debug/live/client", {
+        const res = await win.fetch("/codex/debug/live/client", {
           method: "POST",
           credentials: "same-origin",
           headers: {
@@ -406,7 +582,7 @@ export function createDebugToolsModule(deps) {
           },
           body: JSON.stringify({
             sessionId,
-            page: String(windowRef.location?.pathname || ""),
+            page: String(win.location?.pathname || ""),
             events: batch.map((event) => {
               const copy = { ...event };
               delete copy.__traceUploaded;
@@ -423,11 +599,11 @@ export function createDebugToolsModule(deps) {
       }
     };
 
-    windowRef.setInterval(() => {
+    win.setInterval(() => {
       flush().catch(() => {});
     }, 1500);
-    windowRef.addEventListener("visibilitychange", () => {
-      if (documentRef.visibilityState === "hidden") {
+    win.addEventListener?.("visibilitychange", () => {
+      if (doc?.visibilityState === "hidden") {
         flush().catch(() => {});
       }
     });
@@ -458,10 +634,13 @@ export function createDebugToolsModule(deps) {
     try {
       installWebCodexDebug();
       installLiveTraceBackgroundSync();
-      if (hasQueryFlag(windowRef.location.search, "debuglive")) {
+      const debugLiveEnabled =
+        hasQueryFlag(win.location?.search || "", "debuglive") ||
+        String(storage.getItem(LIVE_INSPECTOR_ENABLED_KEY) || "").trim() === "1";
+      if (debugLiveEnabled) {
         installLiveInspector();
       }
-      const params = new URLSearchParams(windowRef.location.search);
+      const params = new URLSearchParams(win.location?.search || "");
       if (params.get("animdebug") === "1") {
         threadAnimDebug.enabled = true;
         installThreadAnimDebug();
@@ -477,9 +656,9 @@ export function createDebugToolsModule(deps) {
           },
         };
       }
-      if (params.get("e2e") !== "1" || windowRef.__webCodexE2E) return;
+      if (params.get("e2e") !== "1" || win.__webCodexE2E) return;
       const historyByThreadId = new Map();
-      windowRef.__webCodexE2E = {
+      win.__webCodexE2E = {
         _activeThreadId: "",
         setModelLoading(loading = true) {
           state.modelOptionsLoading = !!loading;

@@ -9,6 +9,9 @@ export function createCodexWebComposition(deps) {
   const documentRef =
     deps.documentRef ??
     (typeof document === "undefined" ? undefined : document);
+  const windowRef =
+    deps.windowRef ??
+    (typeof window === "undefined" ? undefined : window);
   const requestAnimationFrameRef =
     deps.requestAnimationFrameRef ??
     (typeof requestAnimationFrame === "undefined"
@@ -84,6 +87,7 @@ export function createCodexWebComposition(deps) {
     scheduleChatLiveFollow: chatViewport.scheduleChatLiveFollow,
     updateScrollToBottomBtn: chatViewport.updateScrollToBottomBtn,
     scrollChatToBottom: chatViewport.scrollChatToBottom,
+    renderRuntimePanels: deps.renderRuntimePanels,
   });
 
   const historyLoader = deps.createHistoryLoaderModule({
@@ -113,6 +117,9 @@ export function createCodexWebComposition(deps) {
     addChat: chatTimeline.addChat,
     buildMsgNode: chatTimeline.buildMsgNode,
     clearChatMessages: chatTimeline.clearChatMessages,
+    showTransientToolMessage: deps.showTransientToolMessage,
+    clearTransientToolMessages: deps.clearTransientToolMessages,
+    syncRuntimeStateFromHistory: deps.syncRuntimeStateFromHistory,
     syncEventSubscription,
   });
 
@@ -176,6 +183,10 @@ export function createCodexWebComposition(deps) {
     setChatOpening: chatTimeline.setChatOpening,
     detectThreadWorkspaceTarget: deps.detectThreadWorkspaceTarget,
     loadThreadMessages: historyLoader.loadThreadMessages,
+    api,
+    connectWs,
+    syncEventSubscription,
+    registerPendingThreadResume: deps.registerPendingThreadResume,
     setStatus: deps.setStatus,
     scheduleThreadRefresh: deps.scheduleThreadRefresh,
     scrollToBottomReliable: chatViewport.scrollToBottomReliable,
@@ -294,6 +305,11 @@ export function createCodexWebComposition(deps) {
     refreshPending: connectionFlows.refreshPending,
     uploadAttachment: turnActions.uploadAttachment,
     sendTurn: turnActions.sendTurn,
+    syncSettingsControlsFromMain: deps.syncSettingsControlsFromMain,
+    LIVE_INSPECTOR_ENABLED_KEY: deps.LIVE_INSPECTOR_ENABLED_KEY,
+    localStorageRef,
+    windowRef,
+    documentRef,
   });
 
   const debugTools = deps.createDebugToolsModule({
@@ -331,6 +347,8 @@ export function createCodexWebComposition(deps) {
     pushThreadAnimDebug: deps.pushThreadAnimDebug,
     threadAnimDebug: deps.threadAnimDebug,
     WEB_CODEX_DEV_DEBUG_VERSION: deps.WEB_CODEX_DEV_DEBUG_VERSION,
+    LIVE_INSPECTOR_ENABLED_KEY: deps.LIVE_INSPECTOR_ENABLED_KEY,
+    localStorageRef,
     setHeaderModelMenuOpen: modelPicker.setHeaderModelMenuOpen,
     renderHeaderModelMenu: modelPicker.renderHeaderModelMenu,
     setWorkspaceTarget: workspaceUi.setWorkspaceTarget,
@@ -381,6 +399,7 @@ export function createCodexWebComposition(deps) {
     renderFolderPicker: folderPicker.renderFolderPicker,
     renderAttachmentPills: deps.renderAttachmentPills,
     renderComposerContextLeft: deps.renderComposerContextLeft,
+    renderRuntimePanels: deps.renderRuntimePanels,
     updateMobileComposerState: deps.updateMobileComposerState,
     syncSettingsControlsFromMain: deps.syncSettingsControlsFromMain,
     updateWelcomeSelections: deps.updateWelcomeSelections,
@@ -445,6 +464,7 @@ export function createCodexWebComposition(deps) {
     clearChatMessages,
     createAssistantStreamingMessage,
     finalizeAssistantMessage,
+    renderAssistantLiveBody,
     setChatOpening,
   } = chatTimeline;
   const { applyThreadToChat, loadThreadMessages, updateLoadOlderControl } = historyLoader;
@@ -529,6 +549,7 @@ export function createCodexWebComposition(deps) {
     clearChatMessages,
     createAssistantStreamingMessage,
     finalizeAssistantMessage,
+    renderAssistantLiveBody,
     setChatOpening,
     applyThreadToChat,
     loadThreadMessages,

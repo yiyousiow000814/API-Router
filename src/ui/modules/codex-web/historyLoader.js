@@ -106,6 +106,45 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "") {
   return out.concat(pending.slice(appendFrom));
 }
 
+export function buildHistoryRenderSig(threadId, turns, messages) {
+  let hash = 2166136261;
+  const pushChunk = (value) => {
+    const text = String(value || "");
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    hash ^= 124;
+    hash = Math.imul(hash, 16777619) >>> 0;
+  };
+  pushChunk(threadId);
+  pushChunk(Array.isArray(turns) ? turns.length : 0);
+  const items = Array.isArray(messages) ? messages : [];
+  pushChunk(items.length);
+  for (const message of items) {
+    pushChunk(message?.role || "");
+    pushChunk(message?.kind || "");
+    pushChunk(message?.text || "");
+  }
+  return `${String(threadId || "")}::${hash.toString(16)}`;
+}
+
+export function findLatestIncompleteToolMessage(thread, normalizeThreadItemText) {
+  const page = thread?.page || {};
+  if (!page?.incomplete) return "";
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  const lastTurn = turns.length ? turns[turns.length - 1] : null;
+  const items = Array.isArray(lastTurn?.items) ? lastTurn.items : [];
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    const type = String(item?.type || "").trim();
+    if (!type || type === "userMessage" || type === "assistantMessage" || type === "agentMessage") continue;
+    const text = typeof normalizeThreadItemText === "function" ? normalizeThreadItemText(item, { compact: true }) : "";
+    if (text) return text;
+  }
+  return "";
+}
+
 export function createHistoryLoaderModule(deps) {
   const {
     state,
@@ -138,6 +177,9 @@ export function createHistoryLoaderModule(deps) {
     addChat,
     buildMsgNode,
     clearChatMessages,
+    showTransientToolMessage = () => {},
+    clearTransientToolMessages = () => {},
+    syncRuntimeStateFromHistory = () => {},
     syncEventSubscription = () => {},
   } = deps;
 
@@ -151,6 +193,21 @@ export function createHistoryLoaderModule(deps) {
     if (state.liveDebugEvents.length > 120) {
       state.liveDebugEvents.splice(0, state.liveDebugEvents.length - 120);
     }
+  }
+
+  function syncIncompleteToolMessage(thread) {
+    syncRuntimeStateFromHistory(thread);
+    if (
+      (Array.isArray(state.activeThreadActiveCommands) && state.activeThreadActiveCommands.length > 0) ||
+      state.activeThreadPlan ||
+      state.activeThreadActivity
+    ) {
+      clearTransientToolMessages();
+      return;
+    }
+    const text = findLatestIncompleteToolMessage(thread, normalizeThreadItemText);
+    if (text) showTransientToolMessage(text);
+    else clearTransientToolMessages();
   }
 
   async function mapThreadReadMessages(thread) {
@@ -182,6 +239,7 @@ export function createHistoryLoaderModule(deps) {
         if (!text) continue;
         if (type === "agentMessage" || type === "assistantMessage") {
           messages.push({ role: "assistant", text, kind: "" });
+          continue;
         }
       }
     }
@@ -345,17 +403,22 @@ export function createHistoryLoaderModule(deps) {
       : await mapThreadReadMessages(thread);
     const threadId = String(thread?.id || state.activeThreadId || "");
     const messages = mergePendingLiveMessages(rawMessages, state, threadId);
+    const toolCount = messages.filter((message) => message?.role === "system" && message?.kind === "tool").length;
+    pushLiveDebugEvent("history.receive", {
+      threadId,
+      turns: Array.isArray(thread?.turns) ? thread.turns.length : 0,
+      messages: messages.length,
+      toolMessages: toolCount,
+      historyItems: historyItems.length,
+    });
     const turns = Array.isArray(thread?.turns) ? thread.turns : [];
     state.activeThreadTokenUsage = normalizeThreadTokenUsage(thread?.tokenUsage);
     renderComposerContextLeft();
-    const lastMsg = messages.length ? messages[messages.length - 1] : null;
-    const renderSig = [
+    const renderSig = buildHistoryRenderSig(
       String(thread?.id || state.activeThreadId || ""),
-      String(turns.length),
-      String(messages.length),
-      String(lastMsg?.role || ""),
-      String(lastMsg?.text || ""),
-    ].join("::");
+      turns,
+      messages
+    );
     state.activeThreadStarted = messages.length > 0 || turns.length > 0 || historyItems.length > 0;
     const detectedTarget = detectThreadWorkspaceTarget(thread);
     const target = detectedTarget !== "unknown"
@@ -371,9 +434,16 @@ export function createHistoryLoaderModule(deps) {
       syncEventSubscription();
     }
     if (!options.forceRender && state.activeThreadRenderSig === renderSig) {
+      state.activeThreadMessages = messages;
+      pushLiveDebugEvent("history.render:unchanged", {
+        threadId,
+        messages: messages.length,
+        toolMessages: toolCount,
+      });
       if (state.activeThreadStarted) hideWelcomeCard();
       else showWelcomeCard();
       updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+      syncIncompleteToolMessage(thread);
       if (state.historyWindowEnabled && state.historyWindowThreadId === threadId) updateLoadOlderControl();
       return;
     }
@@ -403,6 +473,13 @@ export function createHistoryLoaderModule(deps) {
         }
         state.activeThreadMessages = slice;
         state.activeThreadRenderSig = renderSig;
+        pushLiveDebugEvent("history.render:window", {
+          threadId,
+          messages: slice.length,
+          start,
+          totalMessages: messages.length,
+          toolMessages: slice.filter((message) => message?.role === "system" && message?.kind === "tool").length,
+        });
         updateLoadOlderControl();
 
         if (options.stickToBottom) {
@@ -415,6 +492,7 @@ export function createHistoryLoaderModule(deps) {
         if (state.activeThreadStarted) hideWelcomeCard();
         else showWelcomeCard();
         updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+        syncIncompleteToolMessage(thread);
         updateScrollToBottomBtn();
       };
 
@@ -436,21 +514,28 @@ export function createHistoryLoaderModule(deps) {
             if (!last.classList.contains(b.role)) return false;
             const body = last.querySelector(".msgBody");
             if (!body) return false;
-            body.innerHTML = renderMessageBody(b.role, b.text);
+            body.innerHTML = renderMessageBody(b.role, b.text, { kind: b.kind || "" });
             return true;
           })();
           if (updated) {
             state.activeThreadMessages = messages.slice(Number(state.historyWindowStart || 0));
             state.activeThreadRenderSig = renderSig;
+            pushLiveDebugEvent("history.render:update_last", {
+              threadId,
+              messages: messages.length,
+              toolMessages: toolCount,
+            });
             updateLoadOlderControl();
             if (canStartChatLiveFollow()) scheduleChatLiveFollow(900);
             if (state.activeThreadStarted) hideWelcomeCard();
             else showWelcomeCard();
             updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+            syncIncompleteToolMessage(thread);
             return;
           }
         }
         state.activeThreadRenderSig = renderSig;
+        syncIncompleteToolMessage(thread);
         updateLoadOlderControl();
         return;
       }
@@ -462,12 +547,19 @@ export function createHistoryLoaderModule(deps) {
         }
         state.activeThreadMessages = messages.slice(Number(state.historyWindowStart || 0));
         state.activeThreadRenderSig = renderSig;
+        pushLiveDebugEvent("history.render:append", {
+          threadId,
+          appended: messages.length - prevAll.length,
+          messages: messages.length,
+          toolMessages: toolCount,
+        });
         updateLoadOlderControl();
         if (state.chatShouldStickToBottom) scrollChatToBottom({ force: true });
         if (canStartChatLiveFollow()) scheduleChatLiveFollow(1100);
         if (state.activeThreadStarted) hideWelcomeCard();
         else showWelcomeCard();
         updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+        syncIncompleteToolMessage(thread);
         updateScrollToBottomBtn();
         return;
       }
@@ -495,7 +587,7 @@ export function createHistoryLoaderModule(deps) {
       return true;
     };
 
-    const updateLastNode = (role, text) => {
+    const updateLastNode = (role, text, kind = "") => {
       if (!box) return false;
       const nodes = box.querySelectorAll(".msg");
       const last = nodes.length ? nodes[nodes.length - 1] : null;
@@ -503,7 +595,7 @@ export function createHistoryLoaderModule(deps) {
       if (!last.classList.contains(role)) return false;
       const body = last.querySelector(".msgBody");
       if (!body) return false;
-      body.innerHTML = renderMessageBody(role, text);
+      body.innerHTML = renderMessageBody(role, text, { kind });
       return true;
     };
 
@@ -521,13 +613,19 @@ export function createHistoryLoaderModule(deps) {
         const a = prevMessages[prevMessages.length - 1];
         const b = messages[messages.length - 1];
         if (a.role === b.role && a.kind === b.kind && a.text !== b.text) {
-          updateLastNode(b.role, b.text);
+          updateLastNode(b.role, b.text, b.kind || "");
           state.activeThreadMessages = messages;
           state.activeThreadRenderSig = renderSig;
+          pushLiveDebugEvent("history.render:update_last", {
+            threadId,
+            messages: messages.length,
+            toolMessages: toolCount,
+          });
           if (canStartChatLiveFollow()) scheduleChatLiveFollow(900);
           if (state.activeThreadStarted) hideWelcomeCard();
           else showWelcomeCard();
           updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+          syncIncompleteToolMessage(thread);
           return;
         }
       }
@@ -540,6 +638,12 @@ export function createHistoryLoaderModule(deps) {
       }
       state.activeThreadMessages = messages;
       state.activeThreadRenderSig = renderSig;
+      pushLiveDebugEvent("history.render:append", {
+        threadId,
+        appended: messages.length - prevMessages.length,
+        messages: messages.length,
+        toolMessages: toolCount,
+      });
       if (state.chatShouldStickToBottom) scrollChatToBottom({ force: true });
       if (canStartChatLiveFollow()) scheduleChatLiveFollow(1100);
     } else {
@@ -557,6 +661,12 @@ export function createHistoryLoaderModule(deps) {
       }
       state.activeThreadMessages = messages;
       state.activeThreadRenderSig = renderSig;
+      pushLiveDebugEvent("history.render:full", {
+        threadId,
+        messages: messages.length,
+        toolMessages: toolCount,
+        async: shouldAsyncRender,
+      });
       if (state.chatShouldStickToBottom) scrollChatToBottom({ force: true });
       if (canStartChatLiveFollow()) scheduleChatLiveFollow(1100);
       else if (box) box.scrollTop = box.scrollHeight;
@@ -570,6 +680,7 @@ export function createHistoryLoaderModule(deps) {
     if (state.activeThreadStarted) hideWelcomeCard();
     else showWelcomeCard();
     updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
+    syncIncompleteToolMessage(thread);
     updateScrollToBottomBtn();
   }
 

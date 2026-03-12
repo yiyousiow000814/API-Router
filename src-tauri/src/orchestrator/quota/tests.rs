@@ -1918,10 +1918,10 @@ mod tests {
         let (base, _h) = start_mock_server(false).await;
         let providers = std::collections::BTreeMap::from([
             (
-                "packycode".to_string(),
+                "p1".to_string(),
                 ProviderConfig {
-                    display_name: "Packycode".to_string(),
-                    base_url: "https://codex-api.packycode.com/v1".to_string(),
+                    display_name: "P1".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
                     usage_adapter: String::new(),
                     usage_base_url: Some(base),
                     group: None,
@@ -1944,12 +1944,12 @@ mod tests {
         ]);
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
-        secrets.set_provider_key("packycode", "k1").unwrap();
-        secrets.set_usage_token("packycode", "t1").unwrap();
+        secrets.set_provider_key("p1", "k1").unwrap();
+        secrets.set_usage_token("p1", "t1").unwrap();
         secrets.set_provider_key("codex-for.me", "k2").unwrap();
         let st = mk_state_with_providers(
             providers,
-            vec!["packycode".to_string(), "codex-for.me".to_string()],
+            vec!["p1".to_string(), "codex-for.me".to_string()],
             secrets,
         );
 
@@ -1958,6 +1958,61 @@ mod tests {
         assert_eq!(ok, 1);
         assert_eq!(err, 0);
         assert!(failed.is_empty());
+        assert!(st.store.get_quota_snapshot("p1").is_some());
         assert!(st.store.get_quota_snapshot("codex-for.me").is_none());
+    }
+
+    #[tokio::test]
+    async fn refresh_quota_all_skips_packycode_providers_even_when_credentials_exist() {
+        let (base, _h) = start_mock_server(false).await;
+        let providers = std::collections::BTreeMap::from([
+            (
+                "packycode".to_string(),
+                ProviderConfig {
+                    display_name: "Packycode".to_string(),
+                    base_url: "https://codex.packycode.com/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some(base.clone()),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "P2".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some(base),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            ),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_usage_token("packycode", "packy-token").unwrap();
+        secrets.set_usage_token("p2", "p2-token").unwrap();
+        let st = mk_state_with_providers(
+            providers,
+            vec!["packycode".to_string(), "p2".to_string()],
+            secrets,
+        );
+
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st).await;
+
+        assert_eq!(ok, 1);
+        assert_eq!(err, 0);
+        assert!(failed.is_empty());
+        assert!(
+            st.store.get_quota_snapshot("packycode").is_none(),
+            "all-provider refresh should not touch packycode"
+        );
+        assert!(
+            st.store.get_quota_snapshot("p2").is_some(),
+            "non-packycode providers should still refresh"
+        );
     }
 }

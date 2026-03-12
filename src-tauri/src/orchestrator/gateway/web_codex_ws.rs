@@ -398,6 +398,21 @@ async fn codex_ws_poll_pending_events(
     }
 
     let home = web_codex_rpc_home_override_for_target(workspace_target);
+    if let Err(error) = crate::codex_app_server::ensure_server_in_home(home.as_deref()).await {
+        backend_live_debug_push(
+            "backend.ws.ensure_home_error",
+            json!({
+                "clientId": client_id,
+                "workspace": match workspace_target {
+                    Some(WorkspaceTarget::Wsl2) => "wsl2",
+                    Some(WorkspaceTarget::Windows) => "windows",
+                    None => "",
+                },
+                "home": home,
+                "message": error,
+            }),
+        );
+    }
     let (mut items, first, last, gap) =
         crate::codex_app_server::replay_notifications_since_in_home(
             home.as_deref(),

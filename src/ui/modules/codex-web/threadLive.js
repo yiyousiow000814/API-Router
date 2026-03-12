@@ -2,6 +2,11 @@ export function resolveThreadAutoRefreshInterval(wsOpen, wsSubscribed, connected
   return wsOpen && wsSubscribed ? connectedMs : disconnectedMs;
 }
 
+export function resolveActiveThreadLivePollInterval(wsSubscribed, historyIncomplete, liveMs, wsFallbackMs) {
+  if (historyIncomplete) return liveMs;
+  return wsSubscribed ? wsFallbackMs : liveMs;
+}
+
 export function shouldPollActiveThreadLive({
   threadId,
   activeMainTab,
@@ -211,7 +216,12 @@ export function createThreadLiveModule(deps) {
       ) return;
       const now = Date.now();
       const last = Number(state.activeThreadLiveLastPollMs || 0);
-      const minInterval = wsSubscribed ? ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS : ACTIVE_THREAD_LIVE_POLL_MS;
+      const minInterval = resolveActiveThreadLivePollInterval(
+        wsSubscribed,
+        !!state.activeThreadHistoryIncomplete,
+        ACTIVE_THREAD_LIVE_POLL_MS,
+        ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS
+      );
       if (now - last < minInterval) return;
       state.activeThreadLiveLastPollMs = now;
       if (state.activeThreadLivePolling) return;

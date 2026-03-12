@@ -1383,6 +1383,9 @@ pub async fn refresh_quota_all_with_summary(st: &GatewayState) -> (usize, usize,
     let mut failed = Vec::new();
 
     for (name, provider) in cfg.providers.iter() {
+        if uses_packycode_usage_schedule(provider) {
+            continue;
+        }
         if !can_refresh_quota_for_provider(st, name, provider) {
             continue;
         }
