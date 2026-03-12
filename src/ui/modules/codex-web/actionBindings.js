@@ -107,6 +107,18 @@ export function createActionBindingsModule(deps) {
       } catch {}
       syncSettingsControlsFromMain();
     });
+    bindClick("previewUpdatedPlanBtn", () => {
+      try {
+        const result = win.__webCodexDebug?.previewUpdatedPlan?.();
+        if (result?.ok === false && result?.error) {
+          setStatus(String(result.error), true);
+          return;
+        }
+        setStatus("Updated Plan preview shown.");
+      } catch (error) {
+        setStatus(resolveActionErrorMessage(error, "Failed to preview Updated Plan."), true);
+      }
+    });
     bindClick("dismissGuideBtn", () => {
       localStorage.setItem("web_codex_guide_dismissed_v2", "1");
       if (byId("guideList")) byId("guideList").style.display = "none";

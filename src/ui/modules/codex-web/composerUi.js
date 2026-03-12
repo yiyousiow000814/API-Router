@@ -290,7 +290,7 @@ export function createComposerUiModule(deps) {
     const detailRaw = String(activity.detail || "").trim();
     const detail = detailRaw ? renderInlineMessageText(detailRaw) : "";
     const tone = escapeHtml(String(activity.tone || "running"));
-    const dots = tone === "running" ? '<span class="runtimeActivityDots"><span></span><span></span><span></span></span>' : "";
+    const dots = '<span class="runtimeActivityDots"><span></span><span></span><span></span></span>';
     return (
       `<div class="runtimeActivity tone-${tone}" data-activity-tone="${tone}">` +
         `<span class="runtimeActivityLead" aria-hidden="true"></span>` +
@@ -360,8 +360,14 @@ export function createComposerUiModule(deps) {
     const plan = state.activeThreadPlan && state.activeThreadPlan.threadId === state.activeThreadId
       ? state.activeThreadPlan
       : null;
-    const activity = state.activeThreadActivity && state.activeThreadActivity.threadId === state.activeThreadId
+    const explicitActivity = state.activeThreadActivity && state.activeThreadActivity.threadId === state.activeThreadId
       ? state.activeThreadActivity
+      : null;
+    const fallbackActivity = explicitActivity
+      || (plan ? { threadId: state.activeThreadId, title: "Planning", detail: plan.explanation || "", tone: "running" } : null)
+      || (commands.length ? toActivityFromEntry(commands[commands.length - 1]) : null);
+    const activity = fallbackActivity
+      ? { threadId: String(fallbackActivity.threadId || state.activeThreadId || ""), title: fallbackActivity.title || "", detail: fallbackActivity.detail || "", tone: fallbackActivity.tone || "running" }
       : null;
     const chatBox = byId("chatBox");
     let chatMount = null;
@@ -412,7 +418,7 @@ export function createComposerUiModule(deps) {
         chatMount.remove();
       }
     }
-    dock.style.display = inChat && activity ? "" : "none";
+    dock.style.display = inChat && (activity || plan || commands.length) ? "" : "none";
   }
 
   function clearRuntimeState() {
@@ -543,12 +549,7 @@ export function createComposerUiModule(deps) {
     setActivePlan(plan);
     if (plan) setRuntimeActivity({ threadId, title: "Planning", detail: plan.explanation || "", tone: "running" });
     else if (latestRunning) setRuntimeActivity({ threadId, ...toActivityFromEntry(latestRunning) });
-    else if (commands.length) {
-      const last = commands[commands.length - 1];
-      setRuntimeActivity({ threadId, ...toActivityFromEntry(last) });
-    } else {
-      setRuntimeActivity(null);
-    }
+    else setRuntimeActivity(null);
   }
 
   function applyToolItemRuntimeUpdate(item, options = {}) {

@@ -86,6 +86,13 @@ def normalize_history_item_type(value):
     return "".join(ch.lower() for ch in str(value or "") if ch.isalnum())
 
 
+def is_visible_assistant_phase(payload):
+    if not isinstance(payload, dict):
+        return True
+    phase = str(payload.get("phase") or "").strip().lower()
+    return not phase or phase == "final_answer"
+
+
 def parse_embedded_json_value(value):
     if value is None:
         return None
@@ -310,6 +317,8 @@ class Builder:
         )
 
     def handle_agent_message(self, payload):
+        if not is_visible_assistant_phase(payload):
+            return
         message = str(payload.get("message") or "").strip()
         if not message:
             return
@@ -433,6 +442,8 @@ class Builder:
         )
 
     def handle_response_message(self, payload):
+        if not is_visible_assistant_phase(payload):
+            return
         role = str(payload.get("role") or "").strip().lower()
         if role != "assistant":
             return

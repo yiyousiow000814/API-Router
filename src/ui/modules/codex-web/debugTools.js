@@ -66,6 +66,9 @@ export function createDebugToolsModule(deps) {
     setMainTab,
     setMobileTab,
     setActiveThread,
+    setActivePlan = () => {},
+    setActiveCommands = () => {},
+    setRuntimeActivity = () => {},
     setChatOpening,
     loadThreadMessages,
     refreshThreads,
@@ -556,6 +559,31 @@ export function createDebugToolsModule(deps) {
             ok: true,
             open: !!doc?.getElementById?.("webCodexLiveInspector"),
           };
+        },
+        previewUpdatedPlan() {
+          const threadId = String(state.activeThreadId || "").trim();
+          setMainTab("chat");
+          setMobileTab("chat");
+          setActiveCommands([]);
+          setActivePlan({
+            threadId,
+            turnId: "debug-preview-plan",
+            title: "Updated Plan",
+            explanation: "Preview sample for runtime plan styling.",
+            steps: [
+              { step: "Trace runtime panel rendering", status: "completed" },
+              { step: "Validate Updated Plan card layout", status: "in_progress" },
+              { step: "Review spacing and animation", status: "pending" },
+            ],
+            deltaText: "",
+          });
+          setRuntimeActivity({
+            threadId,
+            title: "Updated Plan",
+            detail: "Preview sample for runtime plan styling.",
+            tone: "running",
+          });
+          return { ok: true, threadId };
         },
       };
     } catch {}

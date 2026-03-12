@@ -60,6 +60,12 @@ export function normalizeSessionAssistantText(content, deps = {}) {
   return lines.join("\n").trim();
 }
 
+export function isVisibleAssistantHistoryPhase(phase) {
+  const value = String(phase || "").trim().toLowerCase();
+  if (!value) return true;
+  return value === "final_answer";
+}
+
 export function shouldUseHistoryWindow(messages, options = {}, state = {}) {
   if (!Array.isArray(messages)) return false;
   if (options.forceHistoryWindow || state.activeThreadHistoryHasMore) return true;
@@ -238,6 +244,7 @@ export function createHistoryLoaderModule(deps) {
         const text = normalizeThreadItemText(item);
         if (!text) continue;
         if (type === "agentMessage" || type === "assistantMessage") {
+          if (!isVisibleAssistantHistoryPhase(item?.phase)) continue;
           messages.push({ role: "assistant", text, kind: "" });
           continue;
         }
@@ -273,6 +280,7 @@ export function createHistoryLoaderModule(deps) {
         continue;
       }
       if (role === "assistant") {
+        if (!isVisibleAssistantHistoryPhase(item.phase)) continue;
         const text = normalizeSessionAssistantText(item.content, {
           normalizeType,
           stripCodexImageBlocks,

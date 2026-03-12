@@ -106,4 +106,80 @@ describe("actionBindings", () => {
       globalThis.Notification = previousNotification;
     }
   });
+
+  it("triggers Updated Plan preview from settings", async () => {
+    const handlers = new Map();
+    const statusCalls = [];
+    const windowRef = {
+      addEventListener() {},
+      __webCodexDebug: {
+        previewUpdatedPlan() {
+          windowRef.__previewed = true;
+          return { ok: true };
+        },
+      },
+    };
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId() { return null; },
+      bindClick(id, handler) {
+        handlers.set(id, handler);
+      },
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus(message, isError = false) {
+        statusCalls.push({ message, isError });
+      },
+      updateMobileComposerState() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef,
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+    const previousDocument = globalThis.document;
+    const previousWindow = globalThis.window;
+    const previousNotification = globalThis.Notification;
+    globalThis.document = { addEventListener() {} };
+    globalThis.window = windowRef;
+    globalThis.Notification = deps.NotificationRef;
+
+    try {
+      createActionBindingsModule(deps).wireActions();
+      await handlers.get("previewUpdatedPlanBtn")();
+
+      expect(windowRef.__previewed).toBe(true);
+      expect(statusCalls).toEqual([{ message: "Updated Plan preview shown.", isError: false }]);
+    } finally {
+      globalThis.document = previousDocument;
+      globalThis.window = previousWindow;
+      globalThis.Notification = previousNotification;
+    }
+  });
 });

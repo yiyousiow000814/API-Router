@@ -103,6 +103,15 @@ fn normalize_token_usage_info(info: &Value) -> Option<Value> {
     }))
 }
 
+fn is_visible_assistant_phase(payload: &Value) -> bool {
+    let phase = payload
+        .get("phase")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    phase.is_empty() || phase.eq_ignore_ascii_case("final_answer")
+}
+
 #[cfg(test)]
 fn history_parse_counts_by_path(
 ) -> &'static std::sync::Mutex<std::collections::HashMap<String, usize>> {
@@ -244,6 +253,9 @@ impl HistoryTurnBuilder {
     }
 
     fn handle_agent_message(&mut self, payload: &Value) {
+        if !is_visible_assistant_phase(payload) {
+            return;
+        }
         let text = payload
             .get("message")
             .and_then(Value::as_str)
@@ -414,6 +426,9 @@ impl HistoryTurnBuilder {
     }
 
     fn handle_response_message(&mut self, payload: &Value) {
+        if !is_visible_assistant_phase(payload) {
+            return;
+        }
         let role = payload
             .get("role")
             .and_then(Value::as_str)
@@ -785,6 +800,31 @@ mod tests {
         assert_eq!(items.len(), 2, "duplicate assistant item should be removed");
         assert_eq!(items[0]["type"].as_str(), Some("userMessage"));
         assert_eq!(items[1]["text"].as_str(), Some("same reply"));
+    }
+
+    #[test]
+    fn parser_omits_commentary_phase_assistant_messages() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-commentary"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hello","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"working notes","phase":"commentary"}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"working notes"}]}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"done"}]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#,
+        ]);
+
+        let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
+        assert_eq!(parsed.turns.len(), 1);
+        let items = &parsed.turns[0].items;
+        assert_eq!(
+            items.len(),
+            2,
+            "commentary-phase assistant items should be removed"
+        );
+        assert_eq!(items[0]["type"].as_str(), Some("userMessage"));
+        assert_eq!(items[1]["type"].as_str(), Some("assistantMessage"));
+        assert_eq!(items[1]["text"].as_str(), Some("done"));
     }
 
     #[test]

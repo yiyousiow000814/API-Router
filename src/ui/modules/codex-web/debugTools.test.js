@@ -206,6 +206,77 @@ describe("debugTools", () => {
     expect(snapshot?.lastTurn?.method).toBe("turn/started");
   });
 
+  it("previews an Updated Plan card through the debug hook", () => {
+    const windowRef = {};
+    const setActivePlanCalls = [];
+    const setRuntimeActivityCalls = [];
+    const setActiveCommandsCalls = [];
+    const setMainTabCalls = [];
+    const setMobileTabCalls = [];
+    const module = createDebugToolsModule({
+      state: {
+        activeThreadId: "thread-1",
+        ws: { readyState: 1 },
+        liveDebugEvents: [],
+        wsSubscribedEvents: true,
+      },
+      byId() { return null; },
+      renderInlineMessageText(value) { return String(value || ""); },
+      findNextInlineCodeSpan() { return null; },
+      normalizeWorkspaceTarget(value) { return String(value || "windows"); },
+      normalizeModelOption(value) { return value; },
+      ensureArrayItems(value) { return Array.isArray(value) ? value : []; },
+      pickLatestModelId() { return ""; },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) { return value; },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      renderMessageAttachments() { return ""; },
+      setMainTab(value) { setMainTabCalls.push(value); },
+      setMobileTab(value) { setMobileTabCalls.push(value); },
+      setActiveThread() {},
+      setActivePlan(payload) { setActivePlanCalls.push(payload); },
+      setActiveCommands(payload) { setActiveCommandsCalls.push(payload); },
+      setRuntimeActivity(payload) { setRuntimeActivityCalls.push(payload); },
+      setChatOpening() {},
+      loadThreadMessages: async () => {},
+      refreshThreads: async () => {},
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() { return { msg: null, body: null }; },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() { return false; },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        querySelectorAll() { return []; },
+        getElementById() { return { textContent: "" }; },
+      },
+      windowRef,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installWebCodexDebug();
+    const result = windowRef.__webCodexDebug?.previewUpdatedPlan?.();
+
+    expect(result).toEqual({ ok: true, threadId: "thread-1" });
+    expect(setMainTabCalls).toEqual(["chat"]);
+    expect(setMobileTabCalls).toEqual(["chat"]);
+    expect(setActiveCommandsCalls).toEqual([[]]);
+    expect(setActivePlanCalls[0]?.title).toBe("Updated Plan");
+    expect(setActivePlanCalls[0]?.steps?.length).toBe(3);
+    expect(setRuntimeActivityCalls[0]?.title).toBe("Updated Plan");
+    expect(setRuntimeActivityCalls[0]?.tone).toBe("running");
+  });
+
   it("renders live inspector with a single title and top edge resize affordance", () => {
     const appended = [];
     const windowRef = {

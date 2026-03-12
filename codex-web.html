@@ -1528,10 +1528,6 @@
       display: grid;
       gap: 8px;
       padding: 6px 0 2px;
-      position: sticky;
-      bottom: 0;
-      z-index: 2;
-      background: linear-gradient(180deg, rgba(246, 248, 252, 0), rgba(246, 248, 252, 0.94) 18px, rgba(246, 248, 252, 0.98));
     }
     .runtimePlanMount,
     .runtimeToolPanel {
@@ -1564,6 +1560,8 @@
       height: 14px;
       flex: none;
       position: relative;
+    }
+    .runtimeToolItemLead {
     }
     .runtimeToolItemText {
       min-width: 0;
@@ -1665,17 +1663,7 @@
       flex: none;
       background: #0b5bd3;
       box-shadow: 0 0 0 4px rgba(11, 91, 211, 0.12);
-    }
-    .runtimeActivity.tone-running .runtimeActivityLead {
       animation: runtime-activity-lead-pulse 1200ms ease-in-out infinite;
-    }
-    .runtimeActivity.tone-complete .runtimeActivityLead {
-      background: #22834f;
-      box-shadow: 0 0 0 4px rgba(34, 131, 79, 0.12);
-    }
-    .runtimeActivity.tone-error .runtimeActivityLead {
-      background: #c33a3a;
-      box-shadow: 0 0 0 4px rgba(195, 58, 58, 0.12);
     }
     .runtimeActivityText {
       min-width: 0;
@@ -3020,6 +3008,7 @@
               <div class="drawerSectionTitle" style="margin-top:14px;">Debug</div>
               <div class="row wrap settingsActions">
                 <button id="toggleLiveInspectorBtn">Live inspector: Off</button>
+                <button id="previewUpdatedPlanBtn">Preview Updated Plan</button>
                 <span id="liveInspectorState" class="muted">Hidden</span>
               </div>
             </div>

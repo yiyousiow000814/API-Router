@@ -143,10 +143,17 @@ function matchesNormalizedType(value, names, normalizeType) {
   });
 }
 
+function isVisibleAssistantPhase(value) {
+  const phase = String(value || "").trim().toLowerCase();
+  if (!phase) return true;
+  return phase === "final_answer";
+}
+
 function readAssistantContentText(item, helpers) {
   const { normalizeType, normalizeMultiline } = helpers;
   const itemType = String(item?.type || "").trim();
   if (!itemType) return null;
+  if (!isVisibleAssistantPhase(item?.phase)) return null;
 
   if (
     matchesNormalizedType(

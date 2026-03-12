@@ -447,6 +447,104 @@ describe("liveNotifications", () => {
     expect(state.activeThreadPendingAssistantMessage).toBe("live reply");
   });
 
+  it("ignores commentary-phase live assistant updates in the chat transcript", () => {
+    const appended = [];
+    const finalized = [];
+    const chatBox = {
+      appendChild(node) {
+        this.lastElementChild = node;
+      },
+      querySelector() {
+        return null;
+      },
+      lastElementChild: null,
+    };
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || notification?.params?.item?.thread_id || "");
+      },
+      hideWelcomeCard() {},
+      createAssistantStreamingMessage() {
+        return { msg: { setAttribute() {} }, body: {} };
+      },
+      appendStreamingDelta(_body, text) {
+        appended.push(text);
+      },
+      finalizeAssistantMessage(_msg, _body, text) {
+        finalized.push(text);
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "item.updated",
+      params: {
+        item: {
+          type: "agent_message_content_delta",
+          thread_id: "thread-1",
+          phase: "commentary",
+          delta: "working",
+        },
+      },
+    });
+    module.renderLiveNotification({
+      method: "item.completed",
+      params: {
+        item: {
+          type: "agent_message",
+          thread_id: "thread-1",
+          phase: "commentary",
+          text: "working notes",
+        },
+      },
+    });
+    module.renderLiveNotification({
+      method: "item.completed",
+      params: {
+        item: {
+          type: "agent_message",
+          thread_id: "thread-1",
+          phase: "final_answer",
+          text: "done",
+        },
+      },
+    });
+    module.renderLiveNotification({
+      method: "turn.completed",
+      params: { threadId: "thread-1" },
+    });
+
+    expect(appended).toEqual(["done"]);
+    expect(finalized).toEqual(["done"]);
+    expect(state.activeThreadMessages).toEqual([{ role: "assistant", text: "done", kind: "" }]);
+    expect(state.activeThreadPendingAssistantMessage).toBe("done");
+  });
+
   it("shows only the latest live tool message and clears it on turn completion", () => {
     const added = [];
     const removed = [];

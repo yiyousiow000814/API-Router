@@ -166,7 +166,9 @@ describe("composerUi", () => {
     expect(nodes.get("runtimeDock").style.display).toBe("");
     expect(chatBox.querySelector("#runtimePlanInline").innerHTML).toContain("Plan");
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("npm test");
+    expect(chatBox.querySelector("#runtimeToolInline").innerHTML).not.toContain("runtimeToolItemTailDot");
     expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Planning");
+    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
   });
 
   it("derives runtime command cards from tool payloads without reparsing markdown text", () => {
@@ -279,7 +281,7 @@ describe("composerUi", () => {
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("+3 lines");
   });
 
-  it("keeps finished commands in the runtime panel but clears the activity bar", () => {
+  it("keeps finished commands in the runtime panel and mirrors the latest command in the activity bar", () => {
     const nodes = new Map();
     const runtimeDock = makeNode();
     const runtimeActivityBar = makeNode();
@@ -333,8 +335,116 @@ describe("composerUi", () => {
     }, { threadId: "thread-1", timestamp: 200 });
 
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("composerUi.test.js");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toBe("");
-    expect(nodes.get("runtimeDock").style.display).toBe("none");
+    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Ran command");
+    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
+    expect(nodes.get("runtimeDock").style.display).toBe("");
+  });
+
+  it("restores completed commands into the activity bar when syncing incomplete history", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.syncRuntimeStateFromHistory({
+      id: "thread-1",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            {
+              id: "cmd-1",
+              type: "commandExecution",
+              command: "rg -n runtimeDock codex-web.html",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("runtimeDock");
+    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Ran command");
+    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
+    expect(nodes.get("runtimeDock").style.display).toBe("");
+  });
+
+  it("renders activity dots even when the tone is complete", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.setRuntimeActivity({
+      threadId: "thread-1",
+      title: "Ran command",
+      detail: "npm test",
+      tone: "complete",
+    });
+
+    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
+    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Ran command");
   });
 
   it("renders apply_patch runtime cards from edited files instead of the raw tool name", () => {
