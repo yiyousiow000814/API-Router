@@ -1,4 +1,5 @@
 import { toolItemToMessage } from "./messageData.js";
+import { clonePlanState, extractPlanUpdate } from "./runtimePlan.js";
 
 export function workspaceKeyOfThread(thread) {
   const raw = thread.cwd || thread.workspace || thread.project || thread.directory || thread.path || "";
@@ -153,7 +154,9 @@ function readAssistantContentText(item, helpers) {
   const { normalizeType, normalizeMultiline } = helpers;
   const itemType = String(item?.type || "").trim();
   if (!itemType) return null;
-  if (!isVisibleAssistantPhase(item?.phase)) return null;
+  const phase = String(item?.phase || "").trim().toLowerCase();
+  const itemId =
+    String(item?.id || item?.itemId || item?.item_id || item?.message_id || item?.messageId || "").trim();
 
   if (
     matchesNormalizedType(
@@ -163,12 +166,12 @@ function readAssistantContentText(item, helpers) {
     )
   ) {
     const text = normalizeMultiline(item?.delta ?? item?.text ?? item?.message, 24000);
-    return text ? { mode: "delta", text } : null;
+    return text ? { mode: "delta", text, phase, itemId } : null;
   }
 
   if (matchesNormalizedType(itemType, ["agent_message", "assistant_message"], normalizeType)) {
     const text = normalizeMultiline(item?.text ?? item?.message ?? item?.delta, 24000);
-    return text ? { mode: "snapshot", text } : null;
+    return text ? { mode: "snapshot", text, phase, itemId } : null;
   }
 
   if (
@@ -184,7 +187,7 @@ function readAssistantContentText(item, helpers) {
       if (text.trim()) lines.push(text);
     }
     const joined = normalizeMultiline(lines.join("\n"), 24000);
-    return joined ? { mode: "snapshot", text: joined } : null;
+    return joined ? { mode: "snapshot", text: joined, phase, itemId } : null;
   }
 
   return null;
@@ -203,10 +206,12 @@ export function createLiveNotificationsModule(deps) {
     renderAssistantLiveBody = null,
     finalizeAssistantMessage = () => {},
     setRuntimeActivity = () => {},
+    setActiveCommands = () => {},
     applyToolItemRuntimeUpdate = () => {},
     applyPlanDeltaUpdate = () => {},
     applyPlanSnapshotUpdate = () => {},
     finalizeRuntimeState = () => {},
+    renderCommentaryArchive = () => {},
     normalizeType,
     normalizeInline,
     normalizeMultiline,
@@ -226,6 +231,20 @@ export function createLiveNotificationsModule(deps) {
     if (state.liveDebugEvents.length > 160) {
       state.liveDebugEvents.splice(0, state.liveDebugEvents.length - 160);
     }
+  }
+
+  function summarizeRecordKeys(value) {
+    const record = toRecord(value);
+    if (!record) return "";
+    return Object.keys(record)
+      .slice(0, 8)
+      .join(",");
+  }
+
+  function summarizePreview(value, maxChars = 180) {
+    const preview = toStructuredPreview(value, maxChars) ?? normalizeInline(value, maxChars);
+    if (!preview) return "";
+    return String(preview).replace(/\s+/g, " ").trim().slice(0, Math.max(1, maxChars));
   }
 
   function toToolLikeMessage(item) {
@@ -260,13 +279,264 @@ export function createLiveNotificationsModule(deps) {
     addChat("system", toolText, { kind: "tool", scroll: false, source: "live", transient: true });
   }
 
-  function notificationToToolItem(notification) {
+  function clearTransientThinkingMessages() {
+    state.activeThreadTransientThinkingText = "";
+    try {
+      const box = byId("chatBox");
+      const nodes = Array.from(box?.querySelectorAll?.('.msg.system.kind-thinking[data-msg-transient="1"]') || []);
+      for (const node of nodes) node.remove?.();
+    } catch {}
+  }
+
+  function hasMatchingTransientThinkingNode(thinkingText) {
+    try {
+      const box = byId("chatBox");
+      const nodes = Array.from(box?.querySelectorAll?.('.msg.system.kind-thinking[data-msg-transient="1"]') || []);
+      return nodes.some((node) => String(node?.__webCodexRawText || "").trim() === thinkingText);
+    } catch {
+      return false;
+    }
+  }
+
+  function showTransientThinkingMessage(text) {
+    const thinkingText = String(text || "");
+    if (!thinkingText) return;
+    state.activeThreadTransientThinkingText = thinkingText;
+    if (hasMatchingTransientThinkingNode(thinkingText)) return;
+    clearTransientThinkingMessages();
+    state.activeThreadTransientThinkingText = thinkingText;
+  }
+
+  function ensureCommentaryState() {
+    if (!Array.isArray(state.activeThreadCommentaryArchive)) state.activeThreadCommentaryArchive = [];
+    if (typeof state.activeThreadCommentaryArchiveVisible !== "boolean") state.activeThreadCommentaryArchiveVisible = false;
+    if (typeof state.activeThreadCommentaryArchiveExpanded !== "boolean") state.activeThreadCommentaryArchiveExpanded = false;
+    if (!state.activeThreadCommentaryCurrent || typeof state.activeThreadCommentaryCurrent !== "object") {
+      state.activeThreadCommentaryCurrent = null;
+    }
+  }
+
+  function pushCommentaryStateDebug(action, payload = {}) {
+    const current = state.activeThreadCommentaryCurrent;
+    const text = String((payload.text ?? current?.text) || "");
+    const tools = Array.isArray(payload.tools)
+      ? payload.tools
+      : Array.isArray(current?.tools)
+        ? current.tools
+        : [];
+    pushLiveDebugEvent("live.inspect:commentary_state", {
+      action,
+      threadId: String(payload.threadId || state.activeThreadId || current?.threadId || ""),
+      key: String(payload.key || current?.key || ""),
+      chars: text.length,
+      toolCount: tools.length,
+      archiveCount: Array.isArray(state.activeThreadCommentaryArchive) ? state.activeThreadCommentaryArchive.length : 0,
+      visible: state.activeThreadCommentaryArchiveVisible === true,
+      expanded: state.activeThreadCommentaryArchiveExpanded === true,
+      preview: summarizePreview(text, 120),
+    });
+  }
+
+  function normalizeCommentaryBlockKey(item, assistantUpdate) {
+    const explicit = String(
+      assistantUpdate?.itemId ||
+      item?.id ||
+      item?.itemId ||
+      item?.item_id ||
+      item?.message_id ||
+      item?.messageId ||
+      ""
+    ).trim();
+    if (explicit) return explicit;
+    const currentKey = String(state.activeThreadCommentaryCurrent?.key || "").trim();
+    if (currentKey) return currentKey;
+    const seed = String(assistantUpdate?.text || "").trim().slice(0, 160);
+    return seed ? `commentary:${seed}` : "";
+  }
+
+  function archiveCommentaryBlock(block) {
+    ensureCommentaryState();
+    if (!block || typeof block !== "object") return false;
+    const text = String(block.text || "").trim();
+    const tools = Array.isArray(block.tools) ? block.tools.filter((tool) => String(tool || "").trim()) : [];
+    const plan = clonePlanState(block.plan, String(block.threadId || state.activeThreadId || "").trim());
+    if (!text && !tools.length && !plan) return false;
+    const nextBlock = {
+      threadId: String(block.threadId || state.activeThreadId || "").trim(),
+      key: String(block.key || "").trim(),
+      text,
+      tools,
+      plan,
+    };
+    const last = state.activeThreadCommentaryArchive[state.activeThreadCommentaryArchive.length - 1] || null;
+    const duplicate =
+      last &&
+      String(last.key || "") === nextBlock.key &&
+      String(last.text || "") === nextBlock.text &&
+      JSON.stringify(Array.isArray(last.tools) ? last.tools : []) === JSON.stringify(nextBlock.tools) &&
+      JSON.stringify(clonePlanState(last.plan, String(last.threadId || ""))) === JSON.stringify(nextBlock.plan);
+    if (!duplicate) state.activeThreadCommentaryArchive = [...state.activeThreadCommentaryArchive, nextBlock];
+    pushCommentaryStateDebug("archive", {
+      threadId: nextBlock.threadId,
+      key: nextBlock.key,
+      text: nextBlock.text,
+      tools: nextBlock.tools,
+    });
+    return true;
+  }
+
+  function beginCommentaryBlock(threadId, item, assistantUpdate) {
+    ensureCommentaryState();
+    const blockKey = normalizeCommentaryBlockKey(item, assistantUpdate);
+    const current = state.activeThreadCommentaryCurrent;
+    const currentKey = String(current?.key || "").trim();
+    const nextThreadId = String(threadId || state.activeThreadId || "").trim();
+    const changed = !!current && (currentKey !== blockKey || String(current.threadId || "") !== nextThreadId);
+    if (changed) archiveCommentaryBlock(current);
+    if (!current || changed) {
+      state.activeThreadCommentaryCurrent = {
+        threadId: nextThreadId,
+        key: blockKey,
+        text: "",
+        tools: [],
+        toolKeys: [],
+        plan: null,
+      };
+      if (Array.isArray(state.activeThreadActiveCommands) && state.activeThreadActiveCommands.length > 0) {
+        setActiveCommands([]);
+      }
+      pushCommentaryStateDebug("begin", {
+        threadId: nextThreadId,
+        key: blockKey,
+        text: "",
+        tools: [],
+      });
+    }
+    state.activeThreadCommentaryArchiveVisible = false;
+    state.activeThreadCommentaryArchiveExpanded = false;
+    renderCommentaryArchive();
+    return { changed, block: state.activeThreadCommentaryCurrent };
+  }
+
+  function updateCurrentCommentaryText(threadId, item, assistantUpdate) {
+    const { block } = beginCommentaryBlock(threadId, item, assistantUpdate);
+    if (!block) return "";
+    const currentText = String(block.text || "");
+    const nextText = assistantUpdate.mode === "delta"
+      ? `${currentText}${assistantUpdate.text}`
+      : assistantUpdate.text;
+    state.activeThreadCommentaryCurrent = {
+      ...block,
+      text: nextText,
+      tools: Array.isArray(block.tools) ? block.tools.slice() : [],
+      toolKeys: Array.isArray(block.toolKeys) ? block.toolKeys.slice() : [],
+    };
+    pushCommentaryStateDebug("update", {
+      threadId,
+      key: String(state.activeThreadCommentaryCurrent?.key || ""),
+      text: nextText,
+      tools: state.activeThreadCommentaryCurrent?.tools,
+      plan: clonePlanState(state.activeThreadCommentaryCurrent?.plan, threadId),
+    });
+    return nextText;
+  }
+
+  function recordCommentaryPlan(plan) {
+    ensureCommentaryState();
+    if (!state.activeThreadCommentaryCurrent) return;
+    const current = state.activeThreadCommentaryCurrent;
+    const snapshot = clonePlanState(plan, String(current.threadId || state.activeThreadId || ""));
+    if (!snapshot) return;
+    state.activeThreadCommentaryCurrent = {
+      ...current,
+      plan: snapshot,
+    };
+    pushCommentaryStateDebug("plan", {
+      threadId: String(current.threadId || state.activeThreadId || ""),
+      key: String(current.key || ""),
+      text: String(current.text || ""),
+      tools: current.tools,
+    });
+  }
+
+  function recordCommentaryTool(toolItem, toolText) {
+    ensureCommentaryState();
+    if (!state.activeThreadCommentaryCurrent || !toolText) return;
+    const current = state.activeThreadCommentaryCurrent;
+    const toolKey = String(toolItem?.id || toolItem?.callId || toolItem?.call_id || toolText).trim() || toolText;
+    const tools = Array.isArray(current.tools) ? current.tools.slice() : [];
+    const toolKeys = Array.isArray(current.toolKeys) ? current.toolKeys.slice() : [];
+    const index = toolKeys.findIndex((value) => value === toolKey);
+    if (index >= 0) tools[index] = toolText;
+    else {
+      toolKeys.push(toolKey);
+      tools.push(toolText);
+    }
+    state.activeThreadCommentaryCurrent = {
+      ...current,
+      tools,
+      toolKeys,
+      plan: clonePlanState(current.plan, String(current.threadId || state.activeThreadId || "")),
+    };
+    pushCommentaryStateDebug("tool", {
+      threadId: String(current.threadId || state.activeThreadId || ""),
+      key: String(current.key || ""),
+      text: String(current.text || ""),
+      tools,
+    });
+  }
+
+  function finalizeCommentaryArchive(anchorNode = null) {
+    ensureCommentaryState();
+    if (state.activeThreadCommentaryCurrent) {
+      archiveCommentaryBlock(state.activeThreadCommentaryCurrent);
+      state.activeThreadCommentaryCurrent = null;
+    }
+    state.activeThreadCommentaryArchiveVisible = state.activeThreadCommentaryArchive.length > 0;
+    pushCommentaryStateDebug("finalize", {
+      threadId: String(state.activeThreadId || ""),
+      key: "",
+      text: "",
+      tools: [],
+    });
+    if (state.activeThreadCommentaryArchiveVisible) {
+      renderCommentaryArchive({ anchorNode });
+    } else {
+      renderCommentaryArchive();
+    }
+  }
+
+  function extractNotificationCandidate(notification) {
     const record = toRecord(notification);
-    const params = toRecord(record?.params) || toRecord(record?.payload) || null;
-    if (!params) return null;
-    return (
-      toRecord(params?.msg) || toRecord(params?.item) || toRecord(params?.delta) || toRecord(params?.event) || null
-    );
+    const paramsRecord = toRecord(record?.params);
+    const payloadRecord = toRecord(record?.payload);
+    const params = paramsRecord || payloadRecord || null;
+    const paramsSource = paramsRecord ? "params" : payloadRecord ? "payload" : "";
+    if (!params) {
+      return { params: null, paramsSource, item: null, itemSource: "" };
+    }
+    const slots = [
+      ["msg", toRecord(params?.msg)],
+      ["item", toRecord(params?.item)],
+      ["delta", toRecord(params?.delta)],
+      ["event", toRecord(params?.event)],
+      ["payload", toRecord(params?.payload)],
+    ];
+    for (const [slot, item] of slots) {
+      if (item) {
+        return {
+          params,
+          paramsSource,
+          item,
+          itemSource: paramsSource ? `${paramsSource}.${slot}` : slot,
+        };
+      }
+    }
+    return { params, paramsSource, item: null, itemSource: "" };
+  }
+
+  function notificationToToolItem(notification) {
+    return extractNotificationCandidate(notification).item;
   }
 
   function clearActiveAssistantLiveState() {
@@ -281,6 +551,12 @@ export function createLiveNotificationsModule(deps) {
     const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
     if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return;
     state.activeThreadPendingAssistantMessage = String(text || "");
+  }
+
+  function finishPendingTurnRun(threadId) {
+    const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+    if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return;
+    state.activeThreadPendingTurnRunning = false;
   }
 
   function findAssistantLiveStream(box, threadId) {
@@ -477,6 +753,7 @@ export function createLiveNotificationsModule(deps) {
         threadId: String(threadId || ""),
         chars: nextText.length,
       });
+      finishPendingTurnRun(threadId);
       finalizeAssistantLive(threadId);
       return;
     }
@@ -498,6 +775,7 @@ export function createLiveNotificationsModule(deps) {
     const msg = state.activeThreadLiveAssistantMsgNode;
     const body = state.activeThreadLiveAssistantBodyNode;
     const text = String(state.activeThreadLiveAssistantText || "");
+    finalizeCommentaryArchive(msg || null);
     if (msg && body) finalizeAssistantMessage(msg, body, text);
     clearActiveAssistantLiveState();
     pushLiveDebugEvent("live.render:assistant_finalize", {
@@ -505,6 +783,7 @@ export function createLiveNotificationsModule(deps) {
       chars: text.length,
     });
     clearTransientToolMessages();
+    clearTransientThinkingMessages();
     scheduleChatLiveFollow(800);
   }
 
@@ -516,12 +795,76 @@ export function createLiveNotificationsModule(deps) {
       return;
     }
     const threadId = extractNotificationThreadId(record);
-    const params = toRecord(record?.params) || null;
+    const candidate = extractNotificationCandidate(record);
+    const params = candidate.params;
+    const toolItem = candidate.item;
+    const assistantUpdate = toolItem
+      ? readAssistantContentText(toolItem, {
+          normalizeType,
+          normalizeMultiline,
+        })
+      : null;
     pushLiveDebugEvent("live.notification", {
       method,
       threadId: String(threadId || ""),
       activeThreadId: String(state.activeThreadId || ""),
     });
+    if (
+      toolItem ||
+      method.includes("codex/event/") ||
+      method.includes("item/") ||
+      method.includes("item.") ||
+      method.includes("agent_message") ||
+      method.includes("response_item")
+    ) {
+      if (toolItem) {
+        pushLiveDebugEvent("live.inspect:item_candidate", {
+          method,
+          threadId: String(threadId || ""),
+          activeThreadId: String(state.activeThreadId || ""),
+          paramsSource: candidate.paramsSource,
+          itemSource: candidate.itemSource,
+          itemType: String(toolItem?.type || ""),
+          itemId: String(
+            toolItem?.id ||
+            toolItem?.itemId ||
+            toolItem?.item_id ||
+            toolItem?.message_id ||
+            toolItem?.messageId ||
+            ""
+          ),
+          phase: String(toolItem?.phase || ""),
+          paramsKeys: summarizeRecordKeys(params),
+          itemKeys: summarizeRecordKeys(toolItem),
+          preview: summarizePreview(toolItem?.message ?? toolItem?.text ?? toolItem?.delta ?? toolItem?.content, 120),
+        });
+      } else {
+        pushLiveDebugEvent("live.inspect:no_item_candidate", {
+          method,
+          threadId: String(threadId || ""),
+          activeThreadId: String(state.activeThreadId || ""),
+          paramsSource: candidate.paramsSource,
+          paramsKeys: summarizeRecordKeys(params),
+          preview: summarizePreview(params, 120),
+        });
+      }
+    }
+    if (assistantUpdate?.text) {
+      pushLiveDebugEvent("live.inspect:assistant_candidate", {
+        method,
+        threadId: String(threadId || ""),
+        activeThreadId: String(state.activeThreadId || ""),
+        paramsSource: candidate.paramsSource,
+        itemSource: candidate.itemSource,
+        itemType: String(toolItem?.type || ""),
+        itemId: String(assistantUpdate.itemId || ""),
+        mode: assistantUpdate.mode,
+        phase: String(assistantUpdate.phase || ""),
+        visible: isVisibleAssistantPhase(assistantUpdate.phase),
+        chars: assistantUpdate.text.length,
+        preview: summarizePreview(assistantUpdate.text, 120),
+      });
+    }
     if (!threadId || threadId === state.activeThreadId) {
       const nextStatus = deriveLiveStatusFromNotification(record, {
         normalizeType,
@@ -555,25 +898,56 @@ export function createLiveNotificationsModule(deps) {
       return;
     }
 
+    if (method.includes("turn/started")) {
+      state.activeThreadPendingTurnRunning = true;
+      ensureCommentaryState();
+      state.activeThreadCommentaryCurrent = null;
+      state.activeThreadCommentaryArchive = [];
+      state.activeThreadCommentaryArchiveVisible = false;
+      state.activeThreadCommentaryArchiveExpanded = false;
+      pushCommentaryStateDebug("reset", {
+        threadId: String(threadId || ""),
+        key: "",
+        text: "",
+        tools: [],
+      });
+      renderCommentaryArchive();
+    }
+
     if (method.includes("turn/assistant/delta")) {
       renderAssistantDelta(threadId, params?.delta);
       return;
     }
-
-    const toolItem = notificationToToolItem(record);
-    const assistantUpdate = toolItem
-      ? readAssistantContentText(toolItem, {
-          normalizeType,
-          normalizeMultiline,
-        })
-      : null;
     if (assistantUpdate?.text) {
+      if (!isVisibleAssistantPhase(assistantUpdate.phase)) {
+        const nextThinkingText = updateCurrentCommentaryText(threadId, toolItem, assistantUpdate);
+        showTransientThinkingMessage(nextThinkingText);
+        setRuntimeActivity({
+          threadId,
+          title: String(nextThinkingText || "").trim() ? "Thinking" : "Working",
+          detail: String(nextThinkingText || "").trim(),
+          tone: "running",
+        });
+        pushLiveDebugEvent("live.match:commentary_update", {
+          method,
+          threadId: String(threadId || ""),
+          mode: assistantUpdate.mode,
+          chars: nextThinkingText.length,
+        });
+        scheduleChatLiveFollow(700);
+        return;
+      }
+      clearTransientThinkingMessages();
       const toolStatus = normalizeType(toolItem?.status);
       const isFinalAssistantUpdate =
         assistantUpdate.mode === "snapshot" &&
         (method.includes("completed") ||
           method.includes("finished") ||
           (!isRunningLiveStatus(toolStatus) && toolStatus !== "updating"));
+      if (isFinalAssistantUpdate) {
+        finalizeCommentaryArchive(state.activeThreadLiveAssistantMsgNode || null);
+        finalizeRuntimeState(threadId);
+      }
       pushLiveDebugEvent("live.match:assistant_update", {
         method,
         threadId: String(threadId || ""),
@@ -584,22 +958,54 @@ export function createLiveNotificationsModule(deps) {
       return;
     }
     if (method.includes("turn/plan/updated")) {
-      applyPlanSnapshotUpdate({ ...(params || {}), threadId });
+      const payload = { ...(params || {}), threadId };
+      applyPlanSnapshotUpdate(payload);
+      recordCommentaryPlan({
+        threadId,
+        turnId: String(payload.turnId || payload.turn_id || ""),
+        title: "Updated Plan",
+        explanation: String(payload.explanation || "").trim(),
+        steps: Array.isArray(payload.plan) ? payload.plan : [],
+        deltaText: "",
+      });
       clearTransientToolMessages();
       scheduleChatLiveFollow(900);
       return;
     }
     if (method.includes("item/plan/delta")) {
-      applyPlanDeltaUpdate({ ...(params || {}), threadId });
+      const payload = { ...(params || {}), threadId };
+      applyPlanDeltaUpdate(payload);
+      recordCommentaryPlan({
+        threadId,
+        turnId: String(payload.turnId || payload.turn_id || ""),
+        title: "Updated Plan",
+        explanation: "",
+        steps: [],
+        deltaText: String(payload.delta || "").trim(),
+      });
       clearTransientToolMessages();
       scheduleChatLiveFollow(900);
       return;
     }
     if (toolItem) {
+      const planUpdate = extractPlanUpdate(toolItem, {
+        threadId,
+        normalizeType,
+      });
       applyToolItemRuntimeUpdate(toolItem, { threadId, method, timestamp: Date.now() });
+      if (planUpdate) {
+        recordCommentaryPlan(planUpdate);
+        clearTransientToolMessages();
+        scheduleChatLiveFollow(900);
+        return;
+      }
       const toolLike = toToolLikeMessage(toolItem);
       if (toolLike) {
+        if (state.activeThreadCommentaryCurrent) {
+          recordCommentaryTool(toolItem, toolLike);
+        }
         if (
+          !state.activeThreadCommentaryCurrent &&
           !(Array.isArray(state.activeThreadActiveCommands) && state.activeThreadActiveCommands.length > 0) &&
           !state.activeThreadPlan
         ) {
@@ -621,6 +1027,7 @@ export function createLiveNotificationsModule(deps) {
       normalizeType(params?.status) || normalizeType(params?.turn?.status) || normalizeType(params?.thread?.status);
     const isRunning = /running|inprogress|working|queued/.test(status || "") || method.includes("turn/started");
     if (isRunning) {
+      state.activeThreadPendingTurnRunning = true;
       setRuntimeActivity({ threadId, title: "Thinking", detail: "", tone: "running" });
       return;
     }
@@ -629,17 +1036,22 @@ export function createLiveNotificationsModule(deps) {
         method,
         threadId: String(threadId || ""),
       });
+      finishPendingTurnRun(threadId);
+      if (
+        state.activeThreadCommentaryCurrent &&
+        !String(state.activeThreadLiveAssistantThreadId || "").trim()
+      ) {
+        finalizeCommentaryArchive(null);
+      }
       finalizeAssistantLive(threadId);
       clearTransientToolMessages();
+      clearTransientThinkingMessages();
       finalizeRuntimeState(threadId);
-      try {
-        const box = byId("chatBox");
-        box?.querySelector?.('.msg.system.kind-thinking[data-thinking="1"]')?.remove?.();
-      } catch {}
     }
   }
 
   return {
+    clearTransientThinkingMessages,
     clearTransientToolMessages,
     deriveLiveStatusFromNotification,
     deriveLiveStatusFromToolItem,
@@ -648,6 +1060,7 @@ export function createLiveNotificationsModule(deps) {
     normalizeLiveMethod,
     notificationToToolItem,
     renderLiveNotification,
+    showTransientThinkingMessage,
     showTransientToolMessage,
     toToolLikeMessage,
     workspaceKeyOfThread,

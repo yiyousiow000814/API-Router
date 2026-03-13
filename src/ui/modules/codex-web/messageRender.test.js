@@ -56,7 +56,7 @@ describe("messageRender", () => {
       `<code class="msgInlineCode">${command}</code>`
     );
     expect(renderMessageRichHtml(`- \`${command}\``)).toContain(
-      `<li class="msgListItem depth-0"><code class="msgInlineCode">${command}</code></li>`
+      `<li class="msgListItem depth-0" data-list-marker="-"><code class="msgInlineCode">${command}</code></li>`
     );
   });
 
@@ -75,6 +75,20 @@ describe("messageRender", () => {
     expect(html).toContain('<code class="msgInlineCode">import { x } from &quot;./file.js&quot;;</code>');
     expect(html).toContain("msgToolMore");
     expect(html).toContain("+3 lines");
+  });
+
+  it("renders apply_patch summaries with colored diff counts", () => {
+    const html = renderToolSummaryHtml("Edited 2 files (+2 -0)");
+    expect(html).toContain('class="msgToolLine state-complete icon-patch"');
+    expect(html).toContain("Edited 2 files");
+    expect(html).toContain('class="msgToolDiffAdd">+2</span>');
+    expect(html).toContain('class="msgToolDiffDel">-0</span>');
+  });
+
+  it("renders searched web summaries with the search icon", () => {
+    const html = renderToolSummaryHtml("Searched web for `openai codex previous messages animation final message divider`");
+    expect(html).toContain('class="msgToolLine state-complete icon-search"');
+    expect(html).toContain("<code class=\"msgInlineCode\">openai codex previous messages animation final message divider</code>");
   });
 
   it("unescapes escaped backticks in plain tool-like sentences", () => {
@@ -105,8 +119,67 @@ describe("messageRender", () => {
     expect(html).toContain("继续沿着新日志抓 socket_read_error 的真实断链原因");
   });
 
+  it("keeps ordered list numbering across blank lines between items", () => {
+    const html = renderMessageRichHtml(
+      [
+        "1. first",
+        "",
+        "2. second",
+        "",
+        "3. third",
+      ].join("\n")
+    );
+    expect((html.match(/<ol>/g) || []).length).toBe(1);
+    expect((html.match(/msgListItem depth-0/g) || []).length).toBe(3);
+    expect(html).toContain(">first<");
+    expect(html).toContain(">second<");
+    expect(html).toContain(">third<");
+    expect(html).toContain('data-list-marker="1."');
+    expect(html).toContain('data-list-marker="2."');
+    expect(html).toContain('data-list-marker="3."');
+    expect(html).toContain('has-gap-before');
+    expect(html).toContain('margin-top:10px');
+  });
+
+  it("preserves the user's explicit ordered markers instead of recomputing them", () => {
+    const html = renderMessageRichHtml(
+      [
+        "1. first",
+        "",
+        "4. fourth",
+        "",
+        "9. ninth",
+      ].join("\n")
+    );
+
+    expect((html.match(/data-list-marker=/g) || []).length).toBe(3);
+    expect(html).toContain('data-list-marker="1."');
+    expect(html).toContain('data-list-marker="4."');
+    expect(html).toContain('data-list-marker="9."');
+    expect(html).toContain('has-gap-before');
+  });
+
   it("renders non-chat roles as escaped paragraphs", () => {
     expect(renderMessageBody("tool", "<x>\nline 2")).toBe("<p>&lt;x&gt;<br>line 2</p>");
+  });
+
+  it("preserves explicit blank lines between paragraphs", () => {
+    const html = renderMessageRichHtml(
+      [
+        "第一段第一行",
+        "第一段第二行",
+        "",
+        "第二段",
+        "",
+        "",
+        "第三段",
+      ].join("\n")
+    );
+
+    expect(html).toContain("<p>第一段第一行<br>第一段第二行</p>");
+    expect((html.match(/msgBlankLine/g) || []).length).toBe(3);
+    expect(html).toContain("<p>第二段</p>");
+    expect(html).toContain("<p>第三段</p>");
   });
 
   it("renders compact attachment mosaics and overflow overlay", () => {

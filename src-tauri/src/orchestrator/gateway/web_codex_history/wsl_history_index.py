@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 
-INDEX_VERSION = 2
+INDEX_VERSION = 5
 CHUNK_SIZE = 60
 FAST_TAIL_CHUNK_BYTES = 2 * 1024 * 1024
 
@@ -86,11 +86,22 @@ def normalize_history_item_type(value):
     return "".join(ch.lower() for ch in str(value or "") if ch.isalnum())
 
 
-def is_visible_assistant_phase(payload):
+def is_shell_like_tool_name(name):
+    normalized = normalize_history_item_type(name)
+    return (
+        normalized == "shell"
+        or normalized.endswith("shellcommand")
+        or normalized.endswith("localshell")
+        or normalized.endswith("containerexec")
+        or normalized.endswith("unifiedexec")
+    )
+
+
+def assistant_phase(payload):
     if not isinstance(payload, dict):
-        return True
-    phase = str(payload.get("phase") or "").strip().lower()
-    return not phase or phase == "final_answer"
+        return None
+    phase = str(payload.get("phase") or "").strip()
+    return phase or None
 
 
 def parse_embedded_json_value(value):
@@ -191,11 +202,28 @@ def canonicalize_history_tool_item(item):
             "exitCode": item.get("exitCode", item.get("exit_code")),
         }
     if item_type in ("mcptoolcall", "toolcall"):
+        tool = item.get("tool", item.get("name"))
+        if is_shell_like_tool_name(tool):
+            command = item.get("command")
+            if not isinstance(command, str) or not command.strip():
+                command = read_command_from_tool_arguments(item.get("arguments"))
+            if not isinstance(command, str) or not command.strip():
+                command = read_command_from_tool_arguments(item.get("input"))
+            return {
+                "type": "commandExecution",
+                "id": item_id,
+                "command": command,
+                "status": item.get("status"),
+                "output": item.get("result", extract_tool_text_value(item.get("output"))),
+                "exitCode": item.get("exitCode", item.get("exit_code")),
+            }
         return {
             "type": "toolCall",
             "id": item_id,
-            "tool": item.get("tool", item.get("name")),
+            "tool": tool,
             "server": item.get("server"),
+            "arguments": item.get("arguments"),
+            "input": item.get("input"),
             "status": item.get("status"),
             "result": item.get("result", extract_tool_text_value(item.get("output"))),
             "error": item.get("error"),
@@ -317,18 +345,10 @@ class Builder:
         )
 
     def handle_agent_message(self, payload):
-        if not is_visible_assistant_phase(payload):
-            return
         message = str(payload.get("message") or "").strip()
         if not message:
             return
-        self.ensure_turn()["items"].append(
-            {
-                "type": "agentMessage",
-                "id": self.next_item_id(),
-                "text": message,
-            }
-        )
+        self.push_assistant_text_item("agentMessage", message, assistant_phase(payload))
 
     def handle_context_compacted(self):
         self.ensure_turn()["items"].append(
@@ -362,7 +382,7 @@ class Builder:
         name = str(payload.get("name") or "").strip()
         call_id = str(payload.get("call_id") or "").strip()
         item_id = self.next_item_id()
-        if name.lower() == "shell":
+        if is_shell_like_tool_name(name):
             item = {
                 "type": "commandExecution",
                 "id": item_id,
@@ -377,6 +397,7 @@ class Builder:
                 "id": item_id,
                 "callId": call_id or None,
                 "tool": name or None,
+                "arguments": payload.get("arguments"),
                 "status": payload.get("status"),
             }
             kind = "toolCall"
@@ -442,21 +463,35 @@ class Builder:
         )
 
     def handle_response_message(self, payload):
-        if not is_visible_assistant_phase(payload):
-            return
         role = str(payload.get("role") or "").strip().lower()
         if role != "assistant":
             return
         text = extract_response_message_text(payload.get("content"))
         if not text:
             return
-        self.push_turn_item(
-            {
-                "type": "assistantMessage",
-                "id": self.next_item_id(),
-                "text": text,
-            }
-        )
+        self.push_assistant_text_item("assistantMessage", text, assistant_phase(payload))
+
+    def push_assistant_text_item(self, item_type, text, phase=None):
+        message = str(text or "").strip()
+        if not message:
+            return
+        items = (self.current_turn or {}).get("items") or []
+        last = items[-1] if items else None
+        if isinstance(last, dict):
+            last_type = str(last.get("type") or "").strip()
+            last_text = str(last.get("text") or "").strip()
+            last_phase = str(last.get("phase") or "").strip() or None
+            next_phase = str(phase or "").strip() or None
+            if last_type in ("agentMessage", "assistantMessage") and last_text == message and last_phase == next_phase:
+                return
+        item = {
+            "type": item_type,
+            "id": self.next_item_id(),
+            "text": message,
+        }
+        if phase:
+            item["phase"] = phase
+        self.push_turn_item(item)
 
     def handle_compacted(self):
         self.ensure_turn()["saw_compaction"] = True
@@ -518,8 +553,9 @@ class Builder:
             self.handle_compacted()
 
     def finish(self):
+        incomplete = self.current_turn is not None
         self.finish_current_turn()
-        return {"turns": self.turns, "tokenUsage": self.token_usage}
+        return {"turns": self.turns, "tokenUsage": self.token_usage, "incomplete": incomplete}
 
 
 def parse_page_args():
@@ -626,6 +662,7 @@ def write_index(cache_dir, source, parsed):
             "totalTurns": len(turns),
             "turnIds": [str(turn.get("id") or "").strip() for turn in turns],
             "tokenUsage": parsed.get("tokenUsage"),
+            "incomplete": bool(parsed.get("incomplete")),
         }
         with open(manifest_path(tmp_dir), "w", encoding="utf-8") as fh:
             json.dump(manifest, fh, ensure_ascii=False, separators=(",", ":"))
@@ -768,7 +805,7 @@ def load_latest_page_fast(rollout_path, limit):
         "hasMore": False,
         "beforeCursor": None,
         "totalTurns": approx_total,
-        "incomplete": has_older,
+        "incomplete": bool(parsed.get("incomplete")),
     }
 
 
@@ -795,7 +832,7 @@ def handle_page_mode():
             "beforeCursor": before_cursor,
             "limit": args["limit"],
             "totalTurns": int(manifest.get("totalTurns") or len(turn_ids)),
-            "incomplete": False,
+            "incomplete": bool(manifest.get("incomplete")) and page_end == len(turn_ids),
         }
     elif args["before"].strip():
         manifest, build_ms, page_source = build_index(args["cache_root"], args["rollout_path"])
@@ -811,7 +848,7 @@ def handle_page_mode():
             "beforeCursor": before_cursor,
             "limit": args["limit"],
             "totalTurns": int(manifest.get("totalTurns") or len(turn_ids)),
-            "incomplete": False,
+            "incomplete": bool(manifest.get("incomplete")) and page_end == len(turn_ids),
         }
     else:
         page_started = time.perf_counter()
@@ -860,6 +897,60 @@ def handle_build_index_mode():
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
+def handle_self_test_mode():
+    shell_call = canonicalize_history_tool_item(
+        {
+            "type": "toolCall",
+            "tool": "shell_command",
+            "arguments": '{"command":"pwd"}',
+            "status": "running",
+        }
+    )
+    if not isinstance(shell_call, dict) or shell_call.get("type") != "commandExecution" or shell_call.get("command") != "pwd":
+        raise SystemExit("self-test failed: shell-like toolCall was not canonicalized to commandExecution")
+
+    generic_call = canonicalize_history_tool_item(
+        {
+            "type": "toolCall",
+            "tool": "spawn_agent",
+            "arguments": {"task": "inspect"},
+            "status": "running",
+        }
+    )
+    if not isinstance(generic_call, dict) or generic_call.get("type") != "toolCall" or generic_call.get("arguments") != {"task": "inspect"}:
+        raise SystemExit("self-test failed: generic toolCall arguments were not preserved")
+
+    builder = Builder()
+    builder.handle_turn_started({"turn_id": "turn-1"})
+    builder.handle_function_call(
+        {
+            "name": "local_shell",
+            "call_id": "call-1",
+            "arguments": '{"command":"npm test"}',
+            "status": "running",
+        }
+    )
+    builder.handle_function_call_output(
+        {
+            "call_id": "call-1",
+            "output": '{"output":"ok","metadata":{"exit_code":0}}',
+        }
+    )
+    parsed = builder.finish()
+    turns = parsed.get("turns") if isinstance(parsed, dict) else None
+    items = turns[0].get("items") if isinstance(turns, list) and turns else None
+    first_item = items[0] if isinstance(items, list) and items else None
+    if not isinstance(first_item, dict) or first_item.get("type") != "commandExecution" or first_item.get("command") != "npm test":
+        raise SystemExit("self-test failed: Builder.handle_function_call did not emit commandExecution for shell-like tools")
+    running = Builder()
+    running.handle_turn_started({"turn_id": "turn-running"})
+    running.handle_agent_message({"message": "thinking", "phase": "commentary"})
+    running_parsed = running.finish()
+    if running_parsed.get("incomplete") is not True:
+        raise SystemExit("self-test failed: running rollout should remain incomplete before turn_complete")
+    print(json.dumps({"ok": True, "version": INDEX_VERSION}, ensure_ascii=False, separators=(",", ":")))
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     if mode == "page":
@@ -867,6 +958,9 @@ def main():
         return
     if mode == "build-index":
         handle_build_index_mode()
+        return
+    if mode == "self-test":
+        handle_self_test_mode()
         return
     raise SystemExit("unknown mode")
 

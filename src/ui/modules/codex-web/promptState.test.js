@@ -35,4 +35,9 @@ describe('promptState', () => {
     expect(input.value).toBe('')
     expect(readPromptValue(input)).toBe('')
   })
+
+  it('preserves internal blank lines while trimming outer whitespace', () => {
+    const input = { value: '  line one\n\nline two  ' }
+    expect(readPromptValue(input)).toBe('line one\n\nline two')
+  })
 })

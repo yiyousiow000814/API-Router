@@ -52,7 +52,9 @@ export function createChatViewportModule(deps) {
     if (!box) return;
     const btn = ensureScrollToBottomBtn();
     if (!btn) return;
-    const show = !isChatNearBottomForJumpBtn() && box.scrollHeight > box.clientHeight + 40;
+    const show =
+      box.scrollHeight > box.clientHeight + 40 &&
+      (!state.chatShouldStickToBottom || !isChatNearBottomForJumpBtn());
     btn.classList.toggle("show", !!show);
     btn.setAttribute("aria-hidden", show ? "false" : "true");
     if (!show) {

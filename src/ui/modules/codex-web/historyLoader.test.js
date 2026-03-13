@@ -4,6 +4,8 @@ import {
   buildHistoryRenderSig,
   buildThreadHistoryUrl,
   createHistoryLoaderModule,
+  extractLatestCommentaryArchive,
+  extractLatestCommentaryState,
   findLatestIncompleteToolMessage,
   mergePendingLiveMessages,
   mergeHistoryTurns,
@@ -153,6 +155,63 @@ describe("historyLoader", () => {
     expect(messages).toEqual([{ role: "assistant", text: "done", kind: "" }]);
   });
 
+  it("extracts the latest turn commentary archive from raw turn items", () => {
+    const archive = extractLatestCommentaryArchive(
+      {
+        turns: [
+          {
+            id: "turn-1",
+            items: [
+              { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+              { type: "agentMessage", id: "commentary-1", phase: "commentary", text: "thinking one" },
+              { type: "commandExecution", command: "npm test", status: "running" },
+              { type: "assistantMessage", phase: "final_answer", text: "done" },
+            ],
+          },
+        ],
+      },
+      { normalizeThreadItemText: normalizeThreadItemTextImpl }
+    );
+
+    expect(archive).toEqual([
+      expect.objectContaining({
+        key: "commentary-1",
+        text: "thinking one",
+        tools: ["Running `npm test`"],
+      }),
+    ]);
+  });
+
+  it("extracts the current commentary block from an incomplete latest turn", () => {
+    const commentary = extractLatestCommentaryState(
+      {
+        turns: [
+          {
+            id: "turn-1",
+            items: [
+              { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+              { type: "agentMessage", id: "commentary-1", phase: "commentary", text: "thinking one" },
+              { type: "commandExecution", command: "npm test", status: "completed" },
+              { type: "agentMessage", id: "commentary-2", phase: "commentary", text: "thinking two" },
+              { type: "commandExecution", command: "npm run build", status: "running" },
+            ],
+          },
+        ],
+      },
+      { normalizeThreadItemText: normalizeThreadItemTextImpl }
+    );
+
+    expect(commentary).toEqual({
+      current: expect.objectContaining({
+        key: "commentary-2",
+        text: "thinking two",
+        tools: ["Running `npm run build`"],
+      }),
+      archive: [],
+      visible: false,
+    });
+  });
+
   it("enables history windowing only when threshold or flags require it", () => {
     expect(shouldUseHistoryWindow(new Array(10).fill({}), {}, { HISTORY_WINDOW_THRESHOLD: 20 })).toBe(false);
     expect(shouldUseHistoryWindow(new Array(20).fill({}), {}, { HISTORY_WINDOW_THRESHOLD: 20 })).toBe(true);
@@ -197,6 +256,7 @@ describe("historyLoader", () => {
   it("clears pending turn state once history catches up", () => {
     const state = {
       activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
       activeThreadPendingUserMessage: "hello",
       activeThreadPendingAssistantMessage: "world",
     };
@@ -216,6 +276,7 @@ describe("historyLoader", () => {
       { role: "assistant", text: "world", kind: "" },
     ]);
     expect(state.activeThreadPendingTurnThreadId).toBe("");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
     expect(state.activeThreadPendingUserMessage).toBe("");
     expect(state.activeThreadPendingAssistantMessage).toBe("");
   });
@@ -577,6 +638,1014 @@ describe("historyLoader", () => {
       "clear-history-dom",
       "show:Running `npm test`",
     ]);
+  });
+
+  it("re-applies live commentary after a full history re-render while the turn is still running", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "older-render",
+      activeThreadMessages: [{ role: "assistant", text: "stale", kind: "" }],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: false,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadTransientThinkingText: "正在分析",
+      activeThreadCommentaryCurrent: {
+        threadId: "thread-1",
+        key: "commentary-1",
+        text: "正在分析",
+        tools: ["Running `npm test`"],
+        toolKeys: ["cmd-1"],
+      },
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {
+        ops.push("clear-history-dom");
+        state.activeThreadTransientThinkingText = "";
+        state.activeThreadCommentaryCurrent = null;
+        state.activeThreadCommentaryArchive = [];
+        state.activeThreadCommentaryArchiveVisible = false;
+        state.activeThreadCommentaryArchiveExpanded = false;
+      },
+      showTransientThinkingMessage(text) {
+        ops.push(`thinking:${text}`);
+      },
+      renderCommentaryArchive() {
+        ops.push(`archive:${state.activeThreadCommentaryArchiveVisible ? "visible" : "hidden"}`);
+      },
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+            { type: "assistantMessage", text: "done" },
+          ],
+        },
+      ],
+    });
+
+    expect(state.activeThreadCommentaryCurrent).toEqual(
+      expect.objectContaining({
+        key: "commentary-1",
+        text: "正在分析",
+        tools: ["Running `npm test`"],
+      })
+    );
+    expect(ops).toContain("thinking:正在分析");
+  });
+
+  it("reconstructs the latest commentary archive from history on full render", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: false,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {
+        ops.push("clear-history-dom");
+      },
+      renderCommentaryArchive() {
+        ops.push(`archive:${state.activeThreadCommentaryArchiveVisible ? "visible" : "hidden"}`);
+      },
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+            { type: "agentMessage", id: "commentary-1", phase: "commentary", text: "thinking one" },
+            { type: "commandExecution", command: "npm test", status: "running" },
+            { type: "assistantMessage", phase: "final_answer", text: "done" },
+          ],
+        },
+      ],
+    });
+
+    expect(state.activeThreadCommentaryArchiveVisible).toBe(true);
+    expect(state.activeThreadCommentaryArchive).toEqual([
+      expect.objectContaining({
+        key: "commentary-1",
+        text: "thinking one",
+        tools: ["Running `npm test`"],
+      }),
+    ]);
+    expect(ops).toContain("archive:visible");
+  });
+
+  it("renders completed turn commentary archives inline before each final assistant message", async () => {
+    const added = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: false,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadInlineCommentaryArchiveCount: 0,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat(role, text, options = {}) {
+        added.push({
+          role,
+          text,
+          kind: options.kind || "",
+          archiveKey: options.archiveKey || "",
+          archiveBlocks: Array.isArray(options.archiveBlocks) ? options.archiveBlocks : [],
+        });
+      },
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      renderCommentaryArchive() {},
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+            { type: "agentMessage", id: "commentary-1", phase: "commentary", text: "thinking one" },
+            { type: "commandExecution", command: "npm test", status: "completed" },
+            { type: "assistantMessage", phase: "final_answer", text: "done one" },
+          ],
+        },
+        {
+          id: "turn-2",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "again" }] },
+            { type: "agentMessage", id: "commentary-2", phase: "commentary", text: "thinking two" },
+            { type: "commandExecution", command: "npm run build", status: "completed" },
+            { type: "assistantMessage", phase: "final_answer", text: "done two" },
+          ],
+        },
+      ],
+    });
+
+    expect(added.map((item) => `${item.role}:${item.kind || "plain"}:${item.kind === "commentaryArchive" ? item.archiveKey : item.text}`)).toEqual([
+      "user:plain:hello",
+      "system:commentaryArchive:turn-1",
+      "assistant:plain:done one",
+      "user:plain:again",
+      "system:commentaryArchive:turn-2",
+      "assistant:plain:done two",
+    ]);
+    expect(added[1].archiveBlocks).toEqual([
+      expect.objectContaining({
+        key: "commentary-1",
+        text: "thinking one",
+        tools: ["Ran `npm test`"],
+      }),
+    ]);
+    expect(added[4].archiveBlocks).toEqual([
+      expect.objectContaining({
+        key: "commentary-2",
+        text: "thinking two",
+        tools: ["Ran `npm run build`"],
+      }),
+    ]);
+    expect(state.activeThreadInlineCommentaryArchiveCount).toBe(2);
+  });
+
+  it("captures plan updates into completed turn commentary archives", async () => {
+    const added = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: false,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat(role, text, options = {}) {
+        added.push({
+          role,
+          text,
+          kind: options.kind || "",
+          archiveKey: options.archiveKey || "",
+          archiveBlocks: Array.isArray(options.archiveBlocks) ? options.archiveBlocks : [],
+        });
+      },
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      renderCommentaryArchive() {},
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+            { type: "agentMessage", id: "commentary-1", phase: "commentary", text: "thinking one" },
+            {
+              type: "toolCall",
+              tool: "update_plan",
+              arguments: JSON.stringify({
+                explanation: "Investigate runtime display",
+                plan: [{ step: "Inspect live stack", status: "in_progress" }],
+              }),
+            },
+            { type: "commandExecution", command: "npm test", status: "completed" },
+            { type: "assistantMessage", phase: "final_answer", text: "done one" },
+          ],
+        },
+      ],
+    });
+
+    expect(added[1]?.archiveBlocks).toEqual([
+      expect.objectContaining({
+        key: "commentary-1",
+        text: "thinking one",
+        plan: expect.objectContaining({
+          title: "Updated Plan",
+          explanation: "Investigate runtime display",
+          steps: [{ step: "Inspect live stack", status: "inprogress" }],
+        }),
+        tools: ["Ran `npm test`"],
+      }),
+    ]);
+  });
+
+  it("reconstructs the current commentary block from history on full render while the turn is incomplete", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: false,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {
+        ops.push("clear-history-dom");
+      },
+      showTransientThinkingMessage(text) {
+        ops.push(`thinking:${text}`);
+      },
+      clearTransientThinkingMessages() {
+        ops.push("thinking:clear");
+      },
+      renderCommentaryArchive() {
+        ops.push(`archive:${state.activeThreadCommentaryArchiveVisible ? "visible" : "hidden"}`);
+      },
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+            { type: "agentMessage", id: "commentary-1", phase: "commentary", text: "thinking one" },
+            { type: "commandExecution", command: "npm test", status: "completed" },
+            { type: "agentMessage", id: "commentary-2", phase: "commentary", text: "thinking two" },
+            { type: "commandExecution", command: "npm run build", status: "running" },
+          ],
+        },
+      ],
+    });
+
+    expect(state.activeThreadCommentaryCurrent).toEqual(
+      expect.objectContaining({
+        key: "commentary-2",
+        text: "thinking two",
+        tools: ["Running `npm run build`"],
+      })
+    );
+    expect(state.activeThreadCommentaryArchiveVisible).toBe(false);
+    expect(ops).toContain("thinking:thinking two");
+    expect(ops).toContain("archive:hidden");
+  });
+
+  it("prefers history current commentary over an archive-only live snapshot", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: false,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [
+        {
+          threadId: "thread-1",
+          key: "commentary-1",
+          text: "thinking one",
+          tools: ["Running `npm test`"],
+          toolKeys: [],
+        },
+      ],
+      activeThreadCommentaryArchiveVisible: true,
+      activeThreadCommentaryArchiveExpanded: true,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {
+        ops.push("clear-history-dom");
+      },
+      showTransientThinkingMessage(text) {
+        ops.push(`thinking:${text}`);
+      },
+      clearTransientThinkingMessages() {
+        ops.push("thinking:clear");
+      },
+      renderCommentaryArchive() {
+        ops.push(`archive:${state.activeThreadCommentaryArchiveVisible ? "visible" : "hidden"}`);
+      },
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+            { type: "agentMessage", id: "commentary-1", phase: "commentary", text: "thinking one" },
+            { type: "commandExecution", command: "npm test", status: "completed" },
+            { type: "agentMessage", id: "commentary-2", phase: "commentary", text: "thinking two" },
+            { type: "commandExecution", command: "npm run build", status: "running" },
+          ],
+        },
+      ],
+    });
+
+    expect(state.activeThreadCommentaryCurrent).toEqual(
+      expect.objectContaining({
+        key: "commentary-2",
+        text: "thinking two",
+        tools: ["Running `npm run build`"],
+      })
+    );
+    expect(state.activeThreadCommentaryArchive).toEqual([]);
+    expect(state.activeThreadCommentaryArchiveVisible).toBe(false);
+    expect(state.activeThreadCommentaryArchiveExpanded).toBe(false);
+    expect(ops).toContain("thinking:thinking two");
+    expect(ops).toContain("archive:hidden");
+  });
+
+  it("suppresses stale history commentary and runtime state until the pending user turn appears in history", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "new live turn",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadActivity: { threadId: "thread-1", title: "Thinking", detail: "stale", tone: "running" },
+      activeThreadActiveCommands: [{ key: "cmd-1", text: "Running `npm run build`", state: "running" }],
+      activeThreadPlan: {
+        threadId: "thread-1",
+        title: "Updated Plan",
+        explanation: "stale plan",
+        steps: [],
+      },
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientThinkingMessage(text) {
+        ops.push(`thinking:${text}`);
+      },
+      clearTransientThinkingMessages() {
+        ops.push("thinking:clear");
+      },
+      showTransientToolMessage(text) {
+        ops.push(`tool:${text}`);
+      },
+      clearTransientToolMessages() {
+        ops.push("tool:clear");
+      },
+      clearRuntimeState() {
+        ops.push("runtime:clear");
+        state.activeThreadActivity = null;
+        state.activeThreadActiveCommands = [];
+        state.activeThreadPlan = null;
+      },
+      renderCommentaryArchive() {
+        ops.push(`archive:${state.activeThreadCommentaryArchiveVisible ? "visible" : "hidden"}`);
+      },
+      syncRuntimeStateFromHistory() {
+        ops.push("runtime:sync");
+        state.activeThreadActivity = {
+          threadId: "thread-1",
+          title: "Thinking",
+          detail: "构建已完成。",
+          tone: "running",
+        };
+      },
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-old",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "older user" }] },
+            { type: "agentMessage", id: "commentary-old", phase: "commentary", text: "构建已完成。" },
+            { type: "commandExecution", command: "npm run build", status: "running" },
+          ],
+        },
+      ],
+    });
+
+    expect(state.activeThreadCommentaryCurrent).toBeNull();
+    expect(state.activeThreadActivity).toBeNull();
+    expect(state.activeThreadActiveCommands).toEqual([]);
+    expect(state.activeThreadPlan).toBeNull();
+    expect(ops).toContain("thinking:clear");
+    expect(ops).toContain("tool:clear");
+    expect(ops).toContain("runtime:clear");
+    expect(ops).not.toContain("runtime:sync");
+  });
+
+  it("replaces a stale live commentary current with the latest history commentary block", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: false,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: {
+        threadId: "thread-1",
+        key: "commentary-1",
+        text: "thinking one",
+        tools: ["Running `npm test`"],
+        toolKeys: ["cmd-1"],
+      },
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientThinkingMessage(text) {
+        ops.push(`thinking:${text}`);
+      },
+      clearTransientThinkingMessages() {
+        ops.push("thinking:clear");
+      },
+      renderCommentaryArchive() {
+        ops.push(`archive:${state.activeThreadCommentaryArchiveVisible ? "visible" : "hidden"}`);
+      },
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+            { type: "agentMessage", id: "commentary-2", phase: "commentary", text: "thinking two" },
+            { type: "commandExecution", command: "npm run build", status: "running" },
+          ],
+        },
+      ],
+    });
+
+    expect(state.activeThreadCommentaryCurrent).toEqual(
+      expect.objectContaining({
+        key: "commentary-2",
+        text: "thinking two",
+        tools: ["Running `npm run build`"],
+      })
+    );
+    expect(ops).toContain("thinking:thinking two");
+    expect(ops).toContain("archive:hidden");
+  });
+
+  it("clears a stale live commentary current when history only has archived commentary before the final answer", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: {
+        threadId: "thread-1",
+        key: "commentary-stale",
+        text: "构建已完成。",
+        tools: ["Running `npm run build`"],
+        toolKeys: ["cmd-1"],
+      },
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientThinkingMessage(text) {
+        ops.push(`thinking:${text}`);
+      },
+      clearTransientThinkingMessages() {
+        ops.push("thinking:clear");
+      },
+      renderCommentaryArchive() {
+        ops.push(`archive:${state.activeThreadCommentaryArchiveVisible ? "visible" : "hidden"}`);
+      },
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+            { type: "agentMessage", id: "commentary-1", phase: "commentary", text: "thinking one" },
+            { type: "commandExecution", command: "npm run build", status: "completed" },
+            { type: "assistantMessage", id: "assistant-final", phase: "final_answer", text: "done" },
+          ],
+        },
+      ],
+    });
+
+    expect(state.activeThreadCommentaryCurrent).toBeNull();
+    expect(state.activeThreadCommentaryArchiveVisible).toBe(true);
+    expect(state.activeThreadCommentaryArchive).toEqual([
+      expect.objectContaining({
+        key: "commentary-1",
+        text: "thinking one",
+        tools: ["Ran `npm run build`"],
+      }),
+    ]);
+    expect(ops).toContain("thinking:clear");
+    expect(ops).toContain("archive:visible");
   });
 
   it("prefers runtime dock state over transient tool bubbles during incomplete history", async () => {

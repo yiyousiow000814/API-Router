@@ -281,6 +281,97 @@ describe("chatTimeline", () => {
     expect(refs.renderRuntimePanels).toHaveBeenCalledTimes(1);
   });
 
+  it("renders inline commentary archive messages as collapsible archive mounts", () => {
+    const node = module.buildMsgNode({
+      role: "system",
+      kind: "commentaryArchive",
+      text: "thinking one\n\nRan `npm test`",
+      archiveKey: "turn-1",
+      archiveBlocks: [
+        {
+          key: "commentary-1",
+          text: "thinking one",
+          tools: ["Ran `npm test`"],
+        },
+      ],
+    });
+
+    expect(node.className).toContain("commentaryArchiveMount");
+    expect(node.attributes.get("data-msg-source")).toBe("buildMsgNode");
+    expect(node.attributes.get("data-commentary-archive-key")).toBe("turn-1");
+    expect(node.querySelector(".commentaryArchiveToggle")).not.toBeNull();
+    expect(node.querySelector(".commentaryArchiveCount")?.textContent).toBe("1 previous message");
+    expect(node.querySelector(".commentaryArchiveBody")).not.toBeNull();
+    expect(node.querySelector(".commentaryArchiveBodyInner")).not.toBeNull();
+    expect(String(node.querySelector(".commentaryArchiveFinalDivider")?.innerHTML || "")).toContain("Final message");
+    expect(node.querySelector(".commentaryArchiveFinalDivider")?.parentElement?.className).toContain("commentaryArchiveBodyInner");
+    expect(node.querySelector(".commentaryArchiveToggle")?.attributes.get("aria-expanded")).toBe("false");
+    expect(node.querySelector(".commentaryArchiveBody")?.attributes.get("aria-hidden")).toBe("true");
+  });
+
+  it("renders commentary archive plan cards before thinking and tools", () => {
+    const node = module.buildMsgNode({
+      role: "system",
+      kind: "commentaryArchive",
+      text: "plan\n\nthinking",
+      archiveKey: "turn-2",
+      archiveBlocks: [
+        {
+          key: "commentary-2",
+          plan: {
+            title: "Updated Plan",
+            explanation: "Investigate runtime display",
+            steps: [{ step: "Inspect live stack", status: "in_progress" }],
+          },
+          text: "thinking two",
+          tools: ["Ran `npm test`"],
+        },
+      ],
+    });
+
+    const planWrap = node.querySelector(".commentaryArchivePlan");
+    expect(planWrap).not.toBeNull();
+    expect(String(planWrap?.innerHTML || "")).toContain("Updated Plan");
+    expect(String(planWrap?.innerHTML || "")).toContain("Investigate runtime display");
+  });
+
+  it("renders commentary archive thinking blocks without a visible heading label", () => {
+    const node = module.buildMsgNode({
+      role: "system",
+      kind: "commentaryArchive",
+      text: "thinking one",
+      archiveKey: "turn-3",
+      archiveBlocks: [
+        {
+          key: "commentary-3",
+          text: "thinking one",
+        },
+      ],
+    });
+
+    expect(node.querySelector(".kind-thinking")).not.toBeNull();
+    expect(node.querySelector(".msgHead")).toBeNull();
+  });
+
+  it("does not render tool rows inside commentary archives", () => {
+    const node = module.buildMsgNode({
+      role: "system",
+      kind: "commentaryArchive",
+      text: "thinking one\n\nRan `npm test`",
+      archiveKey: "turn-4",
+      archiveBlocks: [
+        {
+          key: "commentary-4",
+          text: "thinking one",
+          tools: ["Ran `npm test`"],
+        },
+      ],
+    });
+
+    expect(node.querySelector(".commentaryArchiveTools")).toBeNull();
+    expect(node.querySelector(".msg.system.kind-tool")).toBeNull();
+  });
+
   it("opens chat overlay and resets sticky state", () => {
     module.setChatOpening(true);
 

@@ -33,6 +33,15 @@ describe("messageData", () => {
     ]);
   });
 
+  it("preserves intentional blank lines in user text parts", () => {
+    const parsed = parseUserMessageParts({
+      content: [
+        { type: "input_text", text: "line 1\n\nline 2" },
+      ],
+    });
+    expect(parsed.text).toBe("line 1\n\nline 2");
+  });
+
   it("detects bootstrap prompts", () => {
     expect(
       isBootstrapAgentsPrompt("# AGENTS.md instructions for repo\n<INSTRUCTIONS>Agent Defaults</INSTRUCTIONS>")
@@ -52,5 +61,69 @@ describe("messageData", () => {
         { compact: true }
       )
     ).toBe("Edited `src/ui/modules/codex-web/chatTimeline.js`");
+  });
+
+  it("summarizes apply_patch arguments with file and diff counts in compact mode", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "apply_patch",
+          status: "completed",
+          arguments: `*** Begin Patch
+*** Update File: src/ui/modules/codex-web/chatTimeline.test.js
+@@
+-expect(oldValue).toBe(true);
++expect(oldValue).toBe(false);
++expect(nextValue).toBe(true);
+*** End Patch`,
+        },
+        { compact: true }
+      )
+    ).toBe("Edited `src/ui/modules/codex-web/chatTimeline.test.js` (+2 -1)");
+  });
+
+  it("summarizes multi-file apply_patch edits with aggregate diff counts", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "apply_patch",
+          status: "completed",
+          arguments: `*** Begin Patch
+*** Update File: src/ui/modules/codex-web/composition.js
+@@
++renderCommentaryArchive: chatTimeline.renderCommentaryArchive,
+*** Update File: src/ui/modules/codex-web/debugTools.js
+@@
++renderCommentaryArchive = () => {},
+*** End Patch`,
+        },
+        { compact: true }
+      )
+    ).toBe("Edited 2 files (+2 -0)");
+  });
+
+  it("formats compact web search summaries with an explicit searched prefix", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "webSearch",
+          query: "openai codex previous messages animation final message divider",
+        },
+        { compact: true }
+      )
+    ).toBe("Searched web for `openai codex previous messages animation final message divider`");
+  });
+
+  it("formats context compaction summaries without a leading bullet", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "context_compaction",
+        },
+        { compact: true }
+      )
+    ).toBe("Compacted conversation context");
   });
 });

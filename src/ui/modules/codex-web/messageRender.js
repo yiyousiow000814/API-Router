@@ -206,6 +206,7 @@ export function renderMessageRichHtml(text) {
   const source = String(text || "").replace(/\r\n/g, "\n");
   if (!source.trim()) return "";
   let html = "";
+  let pendingBlankLines = 0;
   const parseListLine = (line) => {
     const match = String(line || "").match(/^(\s*)([-*•]|\d+\.)\s+(.+)$/);
     if (!match) return null;
@@ -217,11 +218,23 @@ export function renderMessageRichHtml(text) {
   const isListLine = (line) => !!parseListLine(line);
   const renderListBlock = (listLines) => {
     const items = [];
+    let pendingGapBefore = 0;
     for (const itemLine of listLines) {
+      if (itemLine && typeof itemLine === "object" && itemLine.type === "blank") {
+        pendingGapBefore += Math.max(1, Number(itemLine.count || 1));
+        continue;
+      }
       const parsed = parseListLine(itemLine);
       if (!parsed) continue;
       const depth = Math.min(6, Math.floor(Number(parsed.indent || 0) / 2));
-      items.push({ depth, type: parsed.type, text: parsed.text });
+      items.push({
+        depth,
+        type: parsed.type,
+        marker: parsed.marker,
+        text: parsed.text,
+        gapBefore: pendingGapBefore,
+      });
+      pendingGapBefore = 0;
     }
     if (!items.length) return "";
     const minDepth = items.reduce((lowest, item) => Math.min(lowest, item.depth), items[0].depth);
@@ -272,7 +285,12 @@ export function renderMessageRichHtml(text) {
         out += "</li>";
         openLi[item.depth] = false;
       }
-      out += `<li class="msgListItem depth-${Math.min(6, item.depth)}">${renderInlineMessageText(item.text)}`;
+      const gapClass = item.gapBefore > 0 ? " has-gap-before" : "";
+      const gapStyle = item.gapBefore > 0
+        ? ` style="margin-top:${String(Math.min(28, 10 * Number(item.gapBefore || 1)))}px"`
+        : "";
+      const markerAttr = escapeHtml(String(item.marker || (item.type === "ol" ? "1." : "•")));
+      out += `<li class="msgListItem depth-${Math.min(6, item.depth)}${gapClass}" data-list-marker="${markerAttr}"${gapStyle}>${renderInlineMessageText(item.text)}`;
       openLi[item.depth] = true;
       if (!next || next.depth <= item.depth) {
         out += "</li>";
@@ -298,6 +316,11 @@ export function renderMessageRichHtml(text) {
   let listLines = [];
   let codeLines = [];
   let inCodeBlock = false;
+  const flushBlankLines = () => {
+    if (pendingBlankLines <= 0) return;
+    html += '<div class="msgBlankLine" aria-hidden="true"></div>'.repeat(pendingBlankLines);
+    pendingBlankLines = 0;
+  };
   const flushParagraph = () => {
     if (!paragraphLines.length) return;
     html += `<p>${paragraphLines.map((line) => renderInlineMessageText(line)).join("<br>")}</p>`;
@@ -327,16 +350,27 @@ export function renderMessageRichHtml(text) {
       continue;
     }
     if (isFenceLine) {
+      flushBlankLines();
       flushParagraph();
       flushList();
       inCodeBlock = true;
       continue;
     }
     if (!line.trim()) {
+      if (listLines.length) {
+        let nextIndex = lineIdx + 1;
+        while (nextIndex < lines.length && !String(lines[nextIndex] || "").trim()) nextIndex += 1;
+        if (nextIndex < lines.length && isListLine(lines[nextIndex])) {
+          listLines.push({ type: "blank", count: 1 });
+          continue;
+        }
+      }
       flushParagraph();
       flushList();
+      if (html) pendingBlankLines += 1;
       continue;
     }
+    flushBlankLines();
     if (isListLine(line)) {
       flushParagraph();
       listLines.push(line);
@@ -359,6 +393,7 @@ function classifyToolSummaryText(text) {
   if (lower.startsWith("ran `")) return { state: "complete", icon: "command", text: source, mono: true };
   if (lower.startsWith("command failed `")) return { state: "error", icon: "command", text: source, mono: true };
   if (lower.startsWith("searching web")) return { state: "running", icon: "search", text: source, mono: false };
+  if (lower.startsWith("searched web")) return { state: "complete", icon: "search", text: source, mono: false };
   if (lower.startsWith("viewing image")) return { state: "running", icon: "image", text: source, mono: false };
   if (lower.startsWith("editing files")) return { state: "running", icon: "patch", text: source, mono: false };
   if (lower.startsWith("updating plan")) return { state: "running", icon: "plan", text: source, mono: false };
@@ -375,6 +410,62 @@ function stripToolWrappingBackticks(value) {
   const raw = String(value || "").trim();
   const match = raw.match(/^`([\s\S]+)`$/);
   return match ? String(match[1] || "").trim() : raw;
+}
+
+function parseEditedToolSummary(text) {
+  const source = String(text || "").trim();
+  if (!source) return null;
+  let match = source.match(/^Edited\s+`([^`]+)`(?:\s+\(\+(\d+)\s+-(\d+)\))?$/);
+  if (match) {
+    return {
+      mode: "single",
+      label: `Edited ${String(match[1] || "").trim()}`,
+      path: String(match[1] || "").trim(),
+      additions: Number(match[2] || 0),
+      deletions: Number(match[3] || 0),
+    };
+  }
+  match = source.match(/^Edited\s+(\d+)\s+files?(?:\s+\(\+(\d+)\s+-(\d+)\))?$/i);
+  if (match) {
+    return {
+      mode: "multiple",
+      label: `Edited ${String(match[1] || "").trim()} files`,
+      fileCount: Number(match[1] || 0),
+      additions: Number(match[2] || 0),
+      deletions: Number(match[3] || 0),
+    };
+  }
+  return null;
+}
+
+function renderDiffSummaryHtml(additions, deletions, prefix = "msgTool") {
+  const plus = Number.isFinite(Number(additions)) ? Number(additions) : 0;
+  const minus = Number.isFinite(Number(deletions)) ? Number(deletions) : 0;
+  if (plus <= 0 && minus <= 0) return "";
+  return (
+    `<span class="${prefix}Diff" aria-label="diff summary">(` +
+      `<span class="${prefix}DiffAdd">+${String(plus)}</span>` +
+      ` ` +
+      `<span class="${prefix}DiffDel">-${String(minus)}</span>` +
+    `)</span>`
+  );
+}
+
+export function renderToolPreviewHtml(text, options = {}) {
+  const source = String(text || "").trim();
+  const className = String(options.className || "").trim();
+  const edited = parseEditedToolSummary(source);
+  if (edited) {
+    const label = escapeHtml(edited.label || source);
+    const diffHtml = renderDiffSummaryHtml(edited.additions, edited.deletions, String(options.diffPrefix || "msgTool"));
+    const classAttr = className ? ` class="${escapeHtml(className)}"` : "";
+    return `<span${classAttr}>${label}${diffHtml ? ` ${diffHtml}` : ""}</span>`;
+  }
+  if (options.code === true) {
+    return `<code class="msgInlineCode">${escapeHtml(source)}</code>`;
+  }
+  const classAttr = className ? ` class="${escapeHtml(className)}"` : "";
+  return `<span${classAttr}>${escapeHtml(source)}</span>`;
 }
 
 function summarizeToolSnippet(value, maxChars = 92) {
@@ -424,6 +515,16 @@ function parseStructuredToolSummary(text) {
 }
 
 export function renderToolSummaryHtml(text) {
+  const edited = parseEditedToolSummary(text);
+  if (edited) {
+    return (
+      `<div class="msgToolLine state-complete icon-patch" data-tool-state="complete" data-tool-icon="patch">` +
+        `<span class="msgToolLead" aria-hidden="true"></span>` +
+        `<span class="msgToolText">${renderToolPreviewHtml(text, { diffPrefix: "msgTool" })}</span>` +
+        `<span class="msgToolTail" aria-hidden="true"></span>` +
+      `</div>`
+    );
+  }
   const structured = parseStructuredToolSummary(text);
   if (structured) {
     const safeState = escapeHtml(structured.state || "idle");

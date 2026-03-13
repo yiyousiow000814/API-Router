@@ -206,6 +206,120 @@ describe("debugTools", () => {
     expect(snapshot?.lastTurn?.method).toBe("turn/started");
   });
 
+  it("captures commentary diagnostics in the live pipeline snapshot", () => {
+    const windowRef = {};
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "C:\\rollout.jsonl",
+      activeThreadRenderSig: "sig",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadTransientThinkingText: "thinking block two",
+      activeThreadTransientToolText: "Running `npm test`",
+      activeThreadCommentaryCurrent: {
+        key: "commentary-2",
+        text: "thinking block two",
+        tools: ["Running `npm test`"],
+      },
+      activeThreadCommentaryArchive: [{ key: "commentary-1", text: "thinking block one", tools: [] }],
+      activeThreadCommentaryArchiveVisible: true,
+      activeThreadCommentaryArchiveExpanded: false,
+      wsSubscribedEvents: true,
+      ws: { readyState: 1 },
+      liveDebugEvents: [
+        {
+          at: 1,
+          kind: "live.inspect:item_candidate",
+          method: "codex/event/agent_message",
+          threadId: "thread-1",
+          paramsSource: "params",
+          itemSource: "params.payload",
+          itemType: "agent_message",
+          itemId: "commentary-2",
+          phase: "commentary",
+        },
+        {
+          at: 2,
+          kind: "live.inspect:assistant_candidate",
+          method: "codex/event/agent_message",
+          threadId: "thread-1",
+          itemId: "commentary-2",
+          phase: "commentary",
+          mode: "snapshot",
+          visible: false,
+          preview: "thinking block two",
+        },
+        {
+          at: 3,
+          kind: "live.inspect:commentary_state",
+          threadId: "thread-1",
+          action: "update",
+          key: "commentary-2",
+          chars: 18,
+          toolCount: 1,
+          archiveCount: 1,
+          preview: "thinking block two",
+        },
+      ],
+    };
+    const module = createDebugToolsModule({
+      state,
+      byId() { return null; },
+      renderInlineMessageText(value) { return String(value || ""); },
+      findNextInlineCodeSpan() { return null; },
+      normalizeWorkspaceTarget(value) { return String(value || "windows"); },
+      normalizeModelOption(value) { return value; },
+      ensureArrayItems(value) { return Array.isArray(value) ? value : []; },
+      pickLatestModelId() { return ""; },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) { return value; },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      renderMessageAttachments() { return ""; },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      loadThreadMessages: async () => {},
+      refreshThreads: async () => {},
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() { return { msg: null, body: null }; },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() { return false; },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        querySelectorAll() { return []; },
+        getElementById() { return { textContent: "" }; },
+      },
+      windowRef,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installWebCodexDebug();
+    const snapshot = windowRef.__webCodexDebug
+      ? windowRef.__webCodexDebug.getLivePipelineSnapshot()
+      : null;
+
+    expect(snapshot?.commentary.currentKey).toBe("commentary-2");
+    expect(snapshot?.commentary.currentToolCount).toBe(1);
+    expect(snapshot?.commentary.archiveCount).toBe(1);
+    expect(snapshot?.commentary.lastItemCandidate?.itemSource).toBe("params.payload");
+    expect(snapshot?.commentary.lastAssistantCandidate?.phase).toBe("commentary");
+    expect(snapshot?.commentary.lastState?.action).toBe("update");
+  });
+
   it("previews an Updated Plan card through the debug hook", () => {
     const windowRef = {};
     const setActivePlanCalls = [];
@@ -393,6 +507,150 @@ describe("debugTools", () => {
     expect(grip.style.left).toBe("0");
     expect(grip.style.right).toBe("0");
     expect(grip.style.background).toBe("transparent");
+  });
+
+  it("renders commentary diagnostics in the live inspector body", () => {
+    const appended = [];
+    const windowRef = {
+      fetch: async () => ({
+        ok: true,
+        json: async () => ({ backend: { recent: [] }, app: { homes: [], recent: [] } }),
+      }),
+      setInterval() {
+        return 1;
+      },
+      clearInterval() {},
+      location: { search: "" },
+      dispatchEvent() {},
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    const documentRef = {
+      body: {
+        appendChild(node) {
+          appended.push(node);
+          node.isConnected = true;
+        },
+      },
+      querySelectorAll() {
+        return [];
+      },
+      getElementById(id) {
+        return appended.find((node) => node.id === id) || null;
+      },
+      createElement(tag) {
+        const listeners = new Map();
+        return {
+          tagName: String(tag || "").toUpperCase(),
+          style: {},
+          children: [],
+          isConnected: false,
+          textContent: "",
+          setAttribute() {},
+          appendChild(child) {
+            this.children.push(child);
+            child.parentNode = this;
+          },
+          addEventListener(type, handler) {
+            listeners.set(type, handler);
+          },
+          __listeners: listeners,
+          remove() {
+            this.isConnected = false;
+          },
+        };
+      },
+    };
+    const module = createDebugToolsModule({
+      state: {
+        activeThreadId: "thread-1",
+        activeThreadWorkspace: "windows",
+        activeThreadRolloutPath: "C:\\rollout.jsonl",
+        activeThreadRenderSig: "sig",
+        activeThreadPendingTurnThreadId: "",
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadTransientThinkingText: "thinking block two",
+        activeThreadTransientToolText: "Running `npm test`",
+        activeThreadCommentaryCurrent: {
+          key: "commentary-2",
+          text: "thinking block two",
+          tools: ["Running `npm test`"],
+        },
+        activeThreadCommentaryArchive: [{ key: "commentary-1", text: "thinking block one", tools: [] }],
+        activeThreadCommentaryArchiveVisible: true,
+        activeThreadCommentaryArchiveExpanded: false,
+        ws: { readyState: 1 },
+        liveDebugEvents: [
+          {
+            at: 2,
+            kind: "live.inspect:assistant_candidate",
+            method: "codex/event/agent_message",
+            threadId: "thread-1",
+            phase: "commentary",
+            mode: "snapshot",
+            visible: false,
+            preview: "thinking block two",
+          },
+          {
+            at: 3,
+            kind: "live.inspect:commentary_state",
+            threadId: "thread-1",
+            action: "update",
+            key: "commentary-2",
+            chars: 18,
+            toolCount: 1,
+            archiveCount: 1,
+          },
+        ],
+        wsSubscribedEvents: true,
+      },
+      byId() { return null; },
+      renderInlineMessageText(value) { return String(value || ""); },
+      findNextInlineCodeSpan() { return null; },
+      normalizeWorkspaceTarget(value) { return String(value || "windows"); },
+      normalizeModelOption(value) { return value; },
+      ensureArrayItems(value) { return Array.isArray(value) ? value : []; },
+      pickLatestModelId() { return ""; },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) { return value; },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      renderMessageAttachments() { return ""; },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      loadThreadMessages: async () => {},
+      refreshThreads: async () => {},
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() { return { msg: null, body: null }; },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() { return false; },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef,
+      windowRef,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installWebCodexDebug();
+    windowRef.__webCodexDebug.toggleLiveInspector(true);
+
+    const node = appended.find((entry) => entry.id === "webCodexLiveInspector");
+    const body = node.__webCodexLiveInspectorBody;
+    expect(String(body.textContent || "")).toContain("COMMENTARY");
+    expect(String(body.textContent || "")).toContain("current: key=commentary-2");
+    expect(String(body.textContent || "")).toContain("last assistant candidate:");
   });
 
   it("collapses inspector without leaving a tall empty shell", () => {

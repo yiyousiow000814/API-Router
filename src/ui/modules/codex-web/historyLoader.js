@@ -1,3 +1,5 @@
+import { buildPlanSignature, clonePlanState, extractPlanUpdate } from "./runtimePlan.js";
+
 export function buildThreadHistoryUrl(threadId, options = {}, fallbackWorkspace = "") {
   const params = new URLSearchParams();
   const workspace = String(options.workspace || fallbackWorkspace || "").trim();
@@ -73,6 +75,151 @@ export function shouldUseHistoryWindow(messages, options = {}, state = {}) {
   return true;
 }
 
+function cloneArchiveBlock(block) {
+  if (!block || typeof block !== "object") return null;
+  const text = String(block.text || "").trim();
+  const tools = Array.isArray(block.tools) ? block.tools.map((tool) => String(tool || "").trim()).filter(Boolean) : [];
+  const plan = clonePlanState(block.plan, String(block.threadId || "").trim());
+  if (!text && !tools.length && !plan) return null;
+  return {
+    key: String(block.key || "").trim(),
+    text,
+    tools,
+    plan,
+  };
+}
+
+function finalizeArchiveBlocks(currentBlocks, currentBlock, hasFinalAssistant) {
+  const blocks = Array.isArray(currentBlocks) ? currentBlocks.slice() : [];
+  const clonedCurrent = cloneArchiveBlock(currentBlock);
+  if (clonedCurrent) blocks.push(clonedCurrent);
+  if (!hasFinalAssistant || !blocks.length) return [];
+  return blocks;
+}
+
+function buildCommentaryArchiveSignature(blocks) {
+  const archive = Array.isArray(blocks) ? blocks : [];
+  return archive
+    .map((block) => [
+      buildPlanSignature(block?.plan),
+      String(block?.key || "").trim(),
+      String(block?.text || "").trim(),
+      ...(Array.isArray(block?.tools) ? block.tools.map((tool) => String(tool || "").trim()) : []),
+    ].filter(Boolean).join("\n"))
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function buildCommentaryArchiveMessage(turnId, blocks) {
+  const archive = Array.isArray(blocks) ? blocks.map((block) => cloneArchiveBlock(block)).filter(Boolean) : [];
+  if (!archive.length) return null;
+  return {
+    role: "system",
+    kind: "commentaryArchive",
+    text: buildCommentaryArchiveSignature(archive),
+    archiveKey: String(turnId || "").trim() || `commentary-archive-${archive.length}`,
+    archiveBlocks: archive,
+  };
+}
+
+function updateArchiveBlock(block, item, nextText) {
+  const toolText = String(nextText || "").trim();
+  if (!toolText && !String(block?.text || "").trim() && !clonePlanState(block?.plan)) return block;
+  const nextBlock = block && typeof block === "object"
+    ? {
+        key: String(block.key || "").trim(),
+        text: String(block.text || "").trim(),
+        tools: Array.isArray(block.tools) ? block.tools.slice() : [],
+        plan: clonePlanState(block.plan),
+      }
+    : {
+        key: String(item?.id || item?.messageId || item?.message_id || "").trim(),
+        text: "",
+        tools: [],
+        plan: null,
+      };
+  if (toolText) nextBlock.text = toolText;
+  return nextBlock;
+}
+
+export function extractLatestCommentaryState(thread, helpers = {}) {
+  const normalizeThreadItemText =
+    typeof helpers.normalizeThreadItemText === "function"
+      ? helpers.normalizeThreadItemText
+      : () => "";
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  let latestState = {
+    current: null,
+    archive: [],
+    visible: false,
+  };
+
+  for (const turn of turns) {
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    let blocks = [];
+    let currentBlock = null;
+    let hasFinalAssistant = false;
+    let pendingPlan = null;
+
+    for (const item of items) {
+      if (!item || typeof item !== "object") continue;
+      const type = String(item.type || "").trim();
+      if (!type || type === "userMessage") continue;
+      const planUpdate = extractPlanUpdate(item, { threadId: String(thread?.id || "").trim() });
+      if (planUpdate) {
+        if (currentBlock) currentBlock = { ...currentBlock, plan: clonePlanState(planUpdate, String(thread?.id || "").trim()) };
+        else pendingPlan = clonePlanState(planUpdate, String(thread?.id || "").trim());
+        continue;
+      }
+      if (type === "agentMessage" || type === "assistantMessage") {
+        const phase = String(item.phase || "").trim().toLowerCase();
+        const text = String(normalizeThreadItemText(item) || "").trim();
+        if (!text) continue;
+        if (!phase || phase === "final_answer") {
+          hasFinalAssistant = true;
+          continue;
+        }
+        if (currentBlock) {
+          const finalized = cloneArchiveBlock(currentBlock);
+          if (finalized) blocks.push(finalized);
+        }
+        currentBlock = updateArchiveBlock(
+          {
+            key: String(item.id || item.messageId || item.message_id || text.slice(0, 80)).trim(),
+            text: "",
+            tools: [],
+            plan: pendingPlan,
+          },
+          item,
+          text
+        );
+        pendingPlan = null;
+        continue;
+      }
+      if (!currentBlock) continue;
+      const toolText = String(normalizeThreadItemText(item, { compact: true }) || "").trim();
+      if (!toolText) continue;
+      currentBlock = {
+        ...currentBlock,
+        tools: [...(Array.isArray(currentBlock.tools) ? currentBlock.tools : []), toolText],
+      };
+    }
+
+    const archive = finalizeArchiveBlocks(blocks, currentBlock, hasFinalAssistant);
+    latestState = {
+      current: hasFinalAssistant ? null : cloneArchiveBlock(currentBlock),
+      archive,
+      visible: hasFinalAssistant && archive.length > 0,
+    };
+  }
+
+  return latestState;
+}
+
+export function extractLatestCommentaryArchive(thread, helpers = {}) {
+  return extractLatestCommentaryState(thread, helpers).archive;
+}
+
 function messageMatches(a, b) {
   return !!a && !!b && a.role === b.role && a.kind === b.kind && a.text === b.text;
 }
@@ -97,6 +244,7 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "") {
   if (endsWithPending) {
     if (hasPendingAssistant || !hasPendingUser) {
       state.activeThreadPendingTurnThreadId = "";
+      state.activeThreadPendingTurnRunning = false;
       state.activeThreadPendingUserMessage = "";
       state.activeThreadPendingAssistantMessage = "";
     } else {
@@ -131,6 +279,7 @@ export function buildHistoryRenderSig(threadId, turns, messages) {
     pushChunk(message?.role || "");
     pushChunk(message?.kind || "");
     pushChunk(message?.text || "");
+    pushChunk(message?.archiveKey || "");
   }
   return `${String(threadId || "")}::${hash.toString(16)}`;
 }
@@ -184,7 +333,11 @@ export function createHistoryLoaderModule(deps) {
     buildMsgNode,
     clearChatMessages,
     showTransientToolMessage = () => {},
+    showTransientThinkingMessage = () => {},
     clearTransientToolMessages = () => {},
+    clearTransientThinkingMessages = () => {},
+    clearRuntimeState = () => {},
+    renderCommentaryArchive = () => {},
     syncRuntimeStateFromHistory = () => {},
     syncEventSubscription = () => {},
   } = deps;
@@ -202,6 +355,15 @@ export function createHistoryLoaderModule(deps) {
   }
 
   function syncIncompleteToolMessage(thread) {
+    if (shouldSuppressStalePendingHistoryLiveState(thread)) {
+      clearRuntimeState();
+      clearTransientToolMessages();
+      pushLiveDebugEvent("history.runtime:suppress_stale_pending", {
+        threadId: String(thread?.id || state.activeThreadId || "").trim(),
+        promptChars: String(state.activeThreadPendingUserMessage || "").trim().length,
+      });
+      return;
+    }
     syncRuntimeStateFromHistory(thread);
     if (
       (Array.isArray(state.activeThreadActiveCommands) && state.activeThreadActiveCommands.length > 0) ||
@@ -214,6 +376,204 @@ export function createHistoryLoaderModule(deps) {
     const text = findLatestIncompleteToolMessage(thread, normalizeThreadItemText);
     if (text) showTransientToolMessage(text);
     else clearTransientToolMessages();
+  }
+
+  function cloneCommentaryBlock(block) {
+    if (!block || typeof block !== "object") return null;
+    return {
+      threadId: String(block.threadId || "").trim(),
+      key: String(block.key || "").trim(),
+      text: String(block.text || ""),
+      tools: Array.isArray(block.tools) ? block.tools.map((tool) => String(tool || "")) : [],
+      toolKeys: Array.isArray(block.toolKeys) ? block.toolKeys.map((tool) => String(tool || "")) : [],
+      plan: clonePlanState(block.plan, String(block.threadId || "").trim()),
+    };
+  }
+
+  function latestTurnContainsPendingUserEcho(thread) {
+    const threadId = String(thread?.id || state.activeThreadId || "").trim();
+    const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+    const pendingPrompt = String(state.activeThreadPendingUserMessage || "").trim();
+    if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return true;
+    if (!pendingPrompt) return true;
+    const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+    const lastTurn = turns.length ? turns[turns.length - 1] : null;
+    const items = Array.isArray(lastTurn?.items) ? lastTurn.items : [];
+    for (const item of items) {
+      if (String(item?.type || "").trim() !== "userMessage") continue;
+      const parsed = parseUserMessageParts(item);
+      const text = String(parsed?.text || "").trim();
+      if (text && text === pendingPrompt) return true;
+    }
+    return false;
+  }
+
+  function shouldSuppressStalePendingHistoryLiveState(thread) {
+    return latestTurnContainsPendingUserEcho(thread) !== true;
+  }
+
+  function createCommentarySnapshotFromHistory(thread, commentaryState) {
+    if (!commentaryState || typeof commentaryState !== "object") return null;
+    const threadId = String(thread?.id || state.activeThreadId || "").trim();
+    const current = cloneArchiveBlock(commentaryState.current);
+    const archive = Array.isArray(commentaryState.archive)
+      ? commentaryState.archive.map((block) => cloneArchiveBlock(block)).filter(Boolean)
+      : [];
+    const visible = commentaryState.visible === true && archive.length > 0;
+    if (!current && !archive.length && !visible) return null;
+    return {
+      current: current
+        ? {
+            threadId,
+            key: String(current.key || "").trim(),
+            text: String(current.text || ""),
+            tools: Array.isArray(current.tools) ? current.tools.slice() : [],
+            toolKeys: [],
+            plan: clonePlanState(current.plan, threadId),
+          }
+        : null,
+      archive: archive.map((block) => ({
+        threadId,
+        key: String(block.key || "").trim(),
+        text: String(block.text || ""),
+        tools: Array.isArray(block.tools) ? block.tools.slice() : [],
+        toolKeys: [],
+        plan: clonePlanState(block.plan, threadId),
+      })),
+      visible,
+      expanded: false,
+    };
+  }
+
+  function captureLiveCommentarySnapshot(threadId) {
+    const normalizedThreadId = String(threadId || "").trim();
+    const current = cloneCommentaryBlock(state.activeThreadCommentaryCurrent);
+    const currentThreadId = String(current?.threadId || normalizedThreadId).trim();
+    const matchesThread = !!current && (!normalizedThreadId || !currentThreadId || currentThreadId === normalizedThreadId);
+    const archive = Array.isArray(state.activeThreadCommentaryArchive)
+      ? state.activeThreadCommentaryArchive.map((block) => cloneCommentaryBlock(block)).filter(Boolean)
+      : [];
+    if (!matchesThread && !archive.length && state.activeThreadCommentaryArchiveVisible !== true) return null;
+    return {
+      current: matchesThread ? { ...current, threadId: currentThreadId || normalizedThreadId } : null,
+      archive,
+      visible: state.activeThreadCommentaryArchiveVisible === true,
+      expanded: state.activeThreadCommentaryArchiveExpanded === true,
+    };
+  }
+
+  function restoreLiveCommentarySnapshot(snapshot, thread, options = {}) {
+    const historySnapshot = createCommentarySnapshotFromHistory(thread, options.historyCommentary);
+    const suppressStalePendingHistory = shouldSuppressStalePendingHistoryLiveState(thread);
+    if (suppressStalePendingHistory && historySnapshot?.current) {
+      pushLiveDebugEvent("history.commentary:suppress_stale_pending", {
+        threadId: String(thread?.id || state.activeThreadId || "").trim(),
+        key: String(historySnapshot.current.key || "").trim(),
+        chars: String(historySnapshot.current.text || "").length,
+      });
+      historySnapshot.current = null;
+    }
+    let effectiveSnapshot = snapshot
+      ? {
+          current: snapshot.current ? cloneCommentaryBlock(snapshot.current) : null,
+          archive: Array.isArray(snapshot.archive)
+            ? snapshot.archive.map((block) => cloneCommentaryBlock(block)).filter(Boolean)
+            : [],
+          visible: snapshot.visible === true,
+          expanded: snapshot.expanded === true,
+        }
+      : null;
+    if (!effectiveSnapshot && historySnapshot) {
+      effectiveSnapshot = historySnapshot;
+    } else if (effectiveSnapshot && historySnapshot) {
+      const historyCurrent = historySnapshot.current ? cloneCommentaryBlock(historySnapshot.current) : null;
+      const effectiveCurrent = effectiveSnapshot.current ? cloneCommentaryBlock(effectiveSnapshot.current) : null;
+      const historyCurrentKey = String(historyCurrent?.key || "").trim();
+      const effectiveCurrentKey = String(effectiveCurrent?.key || "").trim();
+      const historyCurrentText = String(historyCurrent?.text || "");
+      const effectiveCurrentText = String(effectiveCurrent?.text || "");
+      const historyCurrentTools = JSON.stringify(Array.isArray(historyCurrent?.tools) ? historyCurrent.tools : []);
+      const effectiveCurrentTools = JSON.stringify(Array.isArray(effectiveCurrent?.tools) ? effectiveCurrent.tools : []);
+      const shouldReplaceCurrent =
+        !!historyCurrent &&
+        (
+          !effectiveCurrent ||
+          historyCurrentKey !== effectiveCurrentKey ||
+          historyCurrentText !== effectiveCurrentText ||
+          historyCurrentTools !== effectiveCurrentTools
+        );
+      if (shouldReplaceCurrent) {
+        effectiveSnapshot.current = historyCurrent;
+        effectiveSnapshot.archive = historySnapshot.archive;
+        effectiveSnapshot.visible = false;
+        effectiveSnapshot.expanded = false;
+        pushLiveDebugEvent(
+          effectiveCurrent
+            ? "history.commentary:replace_current"
+            : "history.commentary:promote_current",
+          {
+            threadId: String(thread?.id || state.activeThreadId || ""),
+            archiveCount: historySnapshot.archive.length,
+            chars: historyCurrentText.length,
+            previousKey: effectiveCurrentKey,
+            nextKey: historyCurrentKey,
+          }
+        );
+      }
+      const shouldClearCurrent =
+        !historyCurrent &&
+        !!effectiveCurrent &&
+        (
+          historySnapshot.visible === true ||
+          suppressStalePendingHistory ||
+          !thread?.page?.incomplete
+        );
+      if (shouldClearCurrent) {
+        effectiveSnapshot.current = null;
+        effectiveSnapshot.archive = historySnapshot.archive;
+        effectiveSnapshot.visible = historySnapshot.visible === true;
+        effectiveSnapshot.expanded = false;
+        pushLiveDebugEvent("history.commentary:clear_current", {
+          threadId: String(thread?.id || state.activeThreadId || ""),
+          archiveCount: historySnapshot.archive.length,
+          previousKey: effectiveCurrentKey,
+          stalePending: suppressStalePendingHistory === true,
+          historyVisible: historySnapshot.visible === true,
+          incomplete: !!thread?.page?.incomplete,
+        });
+      }
+      if (historySnapshot.archive.length > effectiveSnapshot.archive.length) {
+        effectiveSnapshot.archive = historySnapshot.archive;
+      }
+      if (!effectiveSnapshot.visible && historySnapshot.visible) {
+        effectiveSnapshot.visible = true;
+      }
+      if (effectiveSnapshot.visible !== true) {
+        effectiveSnapshot.expanded = false;
+      }
+    }
+    if (effectiveSnapshot) {
+      state.activeThreadCommentaryCurrent = effectiveSnapshot.current;
+      state.activeThreadCommentaryArchive = effectiveSnapshot.archive;
+      state.activeThreadCommentaryArchiveVisible = effectiveSnapshot.visible === true;
+      state.activeThreadCommentaryArchiveExpanded =
+        effectiveSnapshot.visible === true && effectiveSnapshot.expanded === true;
+    } else {
+      state.activeThreadCommentaryCurrent = null;
+      state.activeThreadCommentaryArchive = [];
+      state.activeThreadCommentaryArchiveVisible = false;
+      state.activeThreadCommentaryArchiveExpanded = false;
+    }
+    if (String(state.activeThreadCommentaryCurrent?.text || "").trim()) {
+      showTransientThinkingMessage(state.activeThreadCommentaryCurrent.text);
+    } else {
+      clearTransientThinkingMessages();
+    }
+    const box = byId("chatBox");
+    const assistantNodes = Array.from(box?.querySelectorAll?.(".msg.assistant") || []);
+    const anchorNode = assistantNodes.length ? assistantNodes[assistantNodes.length - 1] : null;
+    renderCommentaryArchive(anchorNode ? { anchorNode } : {});
+    syncIncompleteToolMessage(thread);
   }
 
   async function mapThreadReadMessages(thread) {
@@ -230,6 +590,9 @@ export function createHistoryLoaderModule(deps) {
       }
       const turn = turns[ti];
       const items = Array.isArray(turn?.items) ? turn.items : [];
+      let commentaryBlocks = [];
+      let currentCommentaryBlock = null;
+      let pendingPlan = null;
       for (const item of items) {
         const type = String(item?.type || "").trim();
         if (type === "userMessage") {
@@ -241,12 +604,56 @@ export function createHistoryLoaderModule(deps) {
           }
           continue;
         }
+        const planUpdate = extractPlanUpdate(item, { threadId: String(thread?.id || "").trim() });
+        if (planUpdate) {
+          if (currentCommentaryBlock) {
+            currentCommentaryBlock = {
+              ...currentCommentaryBlock,
+              plan: clonePlanState(planUpdate, String(thread?.id || "").trim()),
+            };
+          } else {
+            pendingPlan = clonePlanState(planUpdate, String(thread?.id || "").trim());
+          }
+          continue;
+        }
         const text = normalizeThreadItemText(item);
-        if (!text) continue;
         if (type === "agentMessage" || type === "assistantMessage") {
+          const phase = String(item?.phase || "").trim().toLowerCase();
+          if (phase && phase !== "final_answer") {
+            if (currentCommentaryBlock) {
+              const finalized = cloneArchiveBlock(currentCommentaryBlock);
+              if (finalized) commentaryBlocks.push(finalized);
+            }
+            currentCommentaryBlock = updateArchiveBlock(
+              {
+                key: String(item.id || item.messageId || item.message_id || text.slice(0, 80)).trim(),
+                text: "",
+                tools: [],
+                plan: pendingPlan,
+              },
+              item,
+              text
+            );
+            pendingPlan = null;
+            continue;
+          }
+          if (!text) continue;
+          const archiveMessage = buildCommentaryArchiveMessage(turn?.id, finalizeArchiveBlocks(commentaryBlocks, currentCommentaryBlock, true));
+          if (archiveMessage) messages.push(archiveMessage);
+          commentaryBlocks = [];
+          currentCommentaryBlock = null;
           if (!isVisibleAssistantHistoryPhase(item?.phase)) continue;
           messages.push({ role: "assistant", text, kind: "" });
           continue;
+        }
+        if (currentCommentaryBlock) {
+          const toolText = String(normalizeThreadItemText(item, { compact: true }) || "").trim();
+          if (toolText) {
+            currentCommentaryBlock = {
+              ...currentCommentaryBlock,
+              tools: [...(Array.isArray(currentCommentaryBlock.tools) ? currentCommentaryBlock.tools : []), toolText],
+            };
+          }
         }
       }
     }
@@ -370,6 +777,7 @@ export function createHistoryLoaderModule(deps) {
       preserveScroll: options && options.preserveScroll === true,
       preservePendingTurn: true,
     });
+    state.activeThreadInlineCommentaryArchiveCount = messages.filter((message) => message?.kind === "commentaryArchive").length;
     state.activeThreadMessages = [];
 
     const slowYield = !!options.slowRender;
@@ -410,7 +818,11 @@ export function createHistoryLoaderModule(deps) {
       ? await mapSessionHistoryMessages(historyItems)
       : await mapThreadReadMessages(thread);
     const threadId = String(thread?.id || state.activeThreadId || "");
+    const historyCommentary = extractLatestCommentaryState(thread, { normalizeThreadItemText });
     const messages = mergePendingLiveMessages(rawMessages, state, threadId);
+    const inlineCommentaryArchiveCount = messages.filter((message) => message?.kind === "commentaryArchive").length;
+    state.activeThreadInlineCommentaryArchiveCount = inlineCommentaryArchiveCount;
+    const liveCommentarySnapshot = captureLiveCommentarySnapshot(threadId);
     const toolCount = messages.filter((message) => message?.role === "system" && message?.kind === "tool").length;
     pushLiveDebugEvent("history.receive", {
       threadId,
@@ -451,7 +863,7 @@ export function createHistoryLoaderModule(deps) {
       if (state.activeThreadStarted) hideWelcomeCard();
       else showWelcomeCard();
       updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
-      syncIncompleteToolMessage(thread);
+      restoreLiveCommentarySnapshot(liveCommentarySnapshot, thread, { historyCommentary });
       if (state.historyWindowEnabled && state.historyWindowThreadId === threadId) updateLoadOlderControl();
       return;
     }
@@ -467,6 +879,7 @@ export function createHistoryLoaderModule(deps) {
         const size = Math.max(40, Number(state.historyWindowSize || 160) | 0);
         const start = Math.max(0, messages.length - size);
         clearChatMessages({ preservePendingTurn: true });
+        state.activeThreadInlineCommentaryArchiveCount = inlineCommentaryArchiveCount;
         state.historyWindowEnabled = true;
         state.historyWindowThreadId = threadId;
         state.historyWindowStart = start;
@@ -500,7 +913,7 @@ export function createHistoryLoaderModule(deps) {
         if (state.activeThreadStarted) hideWelcomeCard();
         else showWelcomeCard();
         updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
-        syncIncompleteToolMessage(thread);
+        restoreLiveCommentarySnapshot(liveCommentarySnapshot, thread, { historyCommentary });
         updateScrollToBottomBtn();
       };
 
@@ -538,12 +951,12 @@ export function createHistoryLoaderModule(deps) {
             if (state.activeThreadStarted) hideWelcomeCard();
             else showWelcomeCard();
             updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
-            syncIncompleteToolMessage(thread);
+            restoreLiveCommentarySnapshot(liveCommentarySnapshot, thread, { historyCommentary });
             return;
           }
         }
         state.activeThreadRenderSig = renderSig;
-        syncIncompleteToolMessage(thread);
+        restoreLiveCommentarySnapshot(liveCommentarySnapshot, thread, { historyCommentary });
         updateLoadOlderControl();
         return;
       }
@@ -551,7 +964,13 @@ export function createHistoryLoaderModule(deps) {
       if (messages.length > prevAll.length) {
         for (let i = prevAll.length; i < messages.length; i += 1) {
           const msg = messages[i];
-          addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
+          addChat(msg.role, msg.text, {
+            scroll: false,
+            kind: msg.kind || "",
+            attachments: msg.images || [],
+            archiveBlocks: msg.archiveBlocks || [],
+            archiveKey: msg.archiveKey || "",
+          });
         }
         state.activeThreadMessages = messages.slice(Number(state.historyWindowStart || 0));
         state.activeThreadRenderSig = renderSig;
@@ -567,7 +986,7 @@ export function createHistoryLoaderModule(deps) {
         if (state.activeThreadStarted) hideWelcomeCard();
         else showWelcomeCard();
         updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
-        syncIncompleteToolMessage(thread);
+        restoreLiveCommentarySnapshot(liveCommentarySnapshot, thread, { historyCommentary });
         updateScrollToBottomBtn();
         return;
       }
@@ -633,7 +1052,7 @@ export function createHistoryLoaderModule(deps) {
           if (state.activeThreadStarted) hideWelcomeCard();
           else showWelcomeCard();
           updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
-          syncIncompleteToolMessage(thread);
+          restoreLiveCommentarySnapshot(liveCommentarySnapshot, thread, { historyCommentary });
           return;
         }
       }
@@ -642,7 +1061,13 @@ export function createHistoryLoaderModule(deps) {
     if (isSamePrefix(prevMessages, messages)) {
       for (let i = prevMessages.length; i < messages.length; i += 1) {
         const msg = messages[i];
-        addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
+        addChat(msg.role, msg.text, {
+          scroll: false,
+          kind: msg.kind || "",
+          attachments: msg.images || [],
+          archiveBlocks: msg.archiveBlocks || [],
+          archiveKey: msg.archiveKey || "",
+        });
       }
       state.activeThreadMessages = messages;
       state.activeThreadRenderSig = renderSig;
@@ -663,8 +1088,15 @@ export function createHistoryLoaderModule(deps) {
           preserveScroll: !!state.chatShouldStickToBottom,
           preservePendingTurn: true,
         });
+        state.activeThreadInlineCommentaryArchiveCount = inlineCommentaryArchiveCount;
         for (const msg of messages) {
-          addChat(msg.role, msg.text, { scroll: false, kind: msg.kind || "", attachments: msg.images || [] });
+          addChat(msg.role, msg.text, {
+            scroll: false,
+            kind: msg.kind || "",
+            attachments: msg.images || [],
+            archiveBlocks: msg.archiveBlocks || [],
+            archiveKey: msg.archiveKey || "",
+          });
         }
       }
       state.activeThreadMessages = messages;
@@ -688,7 +1120,7 @@ export function createHistoryLoaderModule(deps) {
     if (state.activeThreadStarted) hideWelcomeCard();
     else showWelcomeCard();
     updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
-    syncIncompleteToolMessage(thread);
+    restoreLiveCommentarySnapshot(liveCommentarySnapshot, thread, { historyCommentary });
     updateScrollToBottomBtn();
   }
 

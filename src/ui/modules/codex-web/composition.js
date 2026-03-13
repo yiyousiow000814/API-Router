@@ -118,7 +118,11 @@ export function createCodexWebComposition(deps) {
     buildMsgNode: chatTimeline.buildMsgNode,
     clearChatMessages: chatTimeline.clearChatMessages,
     showTransientToolMessage: deps.showTransientToolMessage,
+    showTransientThinkingMessage: deps.showTransientThinkingMessage,
     clearTransientToolMessages: deps.clearTransientToolMessages,
+    clearTransientThinkingMessages: deps.clearTransientThinkingMessages,
+    clearRuntimeState: deps.clearRuntimeState,
+    renderCommentaryArchive: chatTimeline.renderCommentaryArchive,
     syncRuntimeStateFromHistory: deps.syncRuntimeStateFromHistory,
     syncEventSubscription,
   });
@@ -268,6 +272,12 @@ export function createCodexWebComposition(deps) {
     setMainTab: deps.setMainTab,
     setMobileTab: deps.setMobileTab,
     setChatOpening: chatTimeline.setChatOpening,
+    syncPendingTurnUi: () => {
+      chatTimeline.renderCommentaryArchive();
+      deps.renderRuntimePanels();
+    },
+    clearTransientToolMessages: deps.clearTransientToolMessages,
+    clearTransientThinkingMessages: deps.clearTransientThinkingMessages,
     blockInSandbox: deps.blockInSandbox,
   });
 
@@ -315,6 +325,7 @@ export function createCodexWebComposition(deps) {
   const debugTools = deps.createDebugToolsModule({
     state: deps.state,
     byId: deps.byId,
+    addChat: chatTimeline.addChat,
     renderInlineMessageText: deps.renderInlineMessageText,
     findNextInlineCodeSpan: deps.findNextInlineCodeSpan,
     normalizeWorkspaceTarget: deps.normalizeWorkspaceTarget,
@@ -324,6 +335,8 @@ export function createCodexWebComposition(deps) {
     REASONING_EFFORT_KEY: deps.REASONING_EFFORT_KEY,
     MODEL_LOADING_MIN_MS: deps.MODEL_LOADING_MIN_MS,
     normalizeThreadTokenUsage: deps.normalizeThreadTokenUsage,
+    renderRuntimePanels: deps.renderRuntimePanels,
+    renderCommentaryArchive: chatTimeline.renderCommentaryArchive,
     renderComposerContextLeft: deps.renderComposerContextLeft,
     clearChatMessages: chatTimeline.clearChatMessages,
     showWelcomeCard: deps.showWelcomeCard,
@@ -467,6 +480,7 @@ export function createCodexWebComposition(deps) {
     clearChatMessages,
     createAssistantStreamingMessage,
     finalizeAssistantMessage,
+    renderCommentaryArchive,
     renderAssistantLiveBody,
     setChatOpening,
   } = chatTimeline;
@@ -552,6 +566,7 @@ export function createCodexWebComposition(deps) {
     clearChatMessages,
     createAssistantStreamingMessage,
     finalizeAssistantMessage,
+    renderCommentaryArchive,
     renderAssistantLiveBody,
     setChatOpening,
     applyThreadToChat,

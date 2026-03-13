@@ -99,6 +99,45 @@ fn debug_event_queue() -> &'static Mutex<VecDeque<Value>> {
     DEBUG_EVENTS.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
+fn deep_find_thread_id(value: &Value, depth: usize) -> Option<String> {
+    if depth > 6 {
+        return None;
+    }
+    match value {
+        Value::Object(map) => {
+            for key in [
+                "threadId",
+                "thread_id",
+                "conversationId",
+                "conversation_id",
+                "sessionId",
+                "session_id",
+                "parentThreadId",
+                "parent_thread_id",
+            ] {
+                if let Some(found) = map
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                {
+                    return Some(found.to_string());
+                }
+            }
+            for child in map.values() {
+                if let Some(found) = deep_find_thread_id(child, depth + 1) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Value::Array(items) => items
+            .iter()
+            .take(40)
+            .find_map(|child| deep_find_thread_id(child, depth + 1)),
+        _ => None,
+    }
+}
+
 async fn push_debug_event(kind: &str, payload: Value) {
     let mut guard = debug_event_queue().lock().await;
     let obj = payload.as_object().cloned().unwrap_or_default();
@@ -183,6 +222,37 @@ fn extract_thread_id_for_debug(value: &Value) -> Option<String> {
             .or_else(|| map.get("thread_id").and_then(Value::as_str))
             .map(str::to_string)
     })
+    .or_else(|| deep_find_thread_id(value, 0))
+}
+
+fn normalize_stdout_notification(value: &Value) -> Option<Value> {
+    if value.get("method").and_then(Value::as_str).is_some() {
+        return Some(value.clone());
+    }
+    let record_type = value.get("type").and_then(Value::as_str)?;
+    let payload = value.get("payload")?.clone();
+    match record_type {
+        "event_msg" => {
+            let event_type = payload
+                .get("type")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or("event_msg");
+            Some(serde_json::json!({
+                "method": format!("codex/event/{event_type}"),
+                "params": {
+                    "payload": payload,
+                },
+            }))
+        }
+        "response_item" => Some(serde_json::json!({
+            "method": "codex/event/response_item",
+            "params": {
+                "payload": payload,
+            },
+        })),
+        _ => None,
+    }
 }
 
 async fn push_notification(codex_home: Option<&str>, value: Value) {
@@ -609,8 +679,8 @@ async fn route_stdout_lines(
                     let _ = router.deliver(id, value).await;
                     continue;
                 }
-                if value.get("method").and_then(|v| v.as_str()).is_some() {
-                    push_notification(codex_home.as_deref(), value).await;
+                if let Some(notification) = normalize_stdout_notification(&value) {
+                    push_notification(codex_home.as_deref(), notification).await;
                     continue;
                 }
                 push_debug_event(
@@ -834,8 +904,8 @@ mod tests {
                     let _ = router_for_task.deliver(id, value).await;
                     continue;
                 }
-                if value.get("method").and_then(|v| v.as_str()).is_some() {
-                    push_notification(None, value).await;
+                if let Some(notification) = normalize_stdout_notification(&value) {
+                    push_notification(None, notification).await;
                 }
             }
         });
@@ -843,8 +913,24 @@ mod tests {
         // Register a pending request and send a notification + response lines.
         let rx = router.register(99).await;
         let notif = serde_json::json!({"method":"turn/status","params":{"thread_id":"t1","status":"running"}});
+        let commentary = serde_json::json!({
+            "type":"event_msg",
+            "payload":{"type":"agent_message","thread_id":"t1","phase":"commentary","message":"thinking"}
+        });
+        let final_item = serde_json::json!({
+            "type":"response_item",
+            "payload":{"type":"message","role":"assistant","thread_id":"t1","phase":"final_answer","content":[{"type":"output_text","text":"done"}]}
+        });
         let resp = serde_json::json!({"id":99,"result":{"ok":true}});
         w.write_all(notif.to_string().as_bytes()).await.unwrap();
+        w.write_all(b"\n").await.unwrap();
+        w.write_all(commentary.to_string().as_bytes())
+            .await
+            .unwrap();
+        w.write_all(b"\n").await.unwrap();
+        w.write_all(final_item.to_string().as_bytes())
+            .await
+            .unwrap();
         w.write_all(b"\n").await.unwrap();
         w.write_all(resp.to_string().as_bytes()).await.unwrap();
         w.write_all(b"\n").await.unwrap();
@@ -857,14 +943,57 @@ mod tests {
         assert_eq!(got.get("id").and_then(|v| v.as_i64()), Some(99));
 
         let (drained, _first, _last, _gap) = replay_notifications_since_in_home(None, 0, 8).await;
-        assert!(!drained.is_empty(), "expected at least one notification");
+        assert_eq!(drained.len(), 3);
         assert_eq!(
             drained[0].get("method").and_then(|v| v.as_str()),
             Some("turn/status")
         );
+        assert_eq!(
+            drained[1].get("method").and_then(|v| v.as_str()),
+            Some("codex/event/agent_message")
+        );
+        assert_eq!(
+            drained[2].get("method").and_then(|v| v.as_str()),
+            Some("codex/event/response_item")
+        );
         assert_eq!(drained[0].get("eventId").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(drained[1].get("eventId").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(drained[2].get("eventId").and_then(|v| v.as_u64()), Some(3));
 
         let _ = read_task.await;
+    }
+
+    #[test]
+    fn normalize_stdout_notification_wraps_commentary_shapes() {
+        let event_msg = serde_json::json!({
+            "type":"event_msg",
+            "payload":{"type":"agent_message","thread_id":"thread-1","phase":"commentary","message":"thinking"}
+        });
+        let response_item = serde_json::json!({
+            "type":"response_item",
+            "payload":{"type":"message","role":"assistant","thread_id":"thread-1","phase":"final_answer","content":[{"type":"output_text","text":"done"}]}
+        });
+
+        let wrapped_event = normalize_stdout_notification(&event_msg).expect("wrapped event_msg");
+        let wrapped_item =
+            normalize_stdout_notification(&response_item).expect("wrapped response_item");
+
+        assert_eq!(
+            wrapped_event.get("method").and_then(Value::as_str),
+            Some("codex/event/agent_message")
+        );
+        assert_eq!(
+            wrapped_item.get("method").and_then(Value::as_str),
+            Some("codex/event/response_item")
+        );
+        assert_eq!(
+            extract_thread_id_for_debug(&wrapped_event).as_deref(),
+            Some("thread-1")
+        );
+        assert_eq!(
+            extract_thread_id_for_debug(&wrapped_item).as_deref(),
+            Some("thread-1")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

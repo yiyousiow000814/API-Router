@@ -66,9 +66,58 @@ export function createTurnActionsModule(deps) {
     setMainTab,
     setMobileTab,
     setChatOpening,
+    syncPendingTurnUi = () => {},
+    clearTransientToolMessages = () => {},
+    clearTransientThinkingMessages = () => {},
     blockInSandbox,
     TextDecoderRef = TextDecoder,
   } = deps;
+
+  function resetLiveTurnStateForNewTurn() {
+    state.activeThreadTransientToolText = "";
+    state.activeThreadTransientThinkingText = "";
+    state.activeThreadCommentaryCurrent = null;
+    state.activeThreadCommentaryArchive = [];
+    state.activeThreadCommentaryArchiveVisible = false;
+    state.activeThreadCommentaryArchiveExpanded = false;
+    state.activeThreadActivity = null;
+    state.activeThreadActiveCommands = [];
+    state.activeThreadPlan = null;
+    state.activeThreadLiveAssistantThreadId = "";
+    state.activeThreadLiveAssistantIndex = -1;
+    state.activeThreadLiveAssistantMsgNode = null;
+    state.activeThreadLiveAssistantBodyNode = null;
+    state.activeThreadLiveAssistantText = "";
+    clearTransientToolMessages();
+    clearTransientThinkingMessages();
+    syncPendingTurnUi();
+  }
+
+  function primePendingTurnRuntime(threadId, prompt = "") {
+    const normalizedThreadId = String(threadId || state.activeThreadId || "").trim();
+    if (!normalizedThreadId) return false;
+    state.activeThreadPendingTurnThreadId = normalizedThreadId;
+    state.activeThreadPendingTurnRunning = true;
+    state.activeThreadPendingUserMessage = String(prompt || "");
+    state.activeThreadPendingAssistantMessage = "";
+    resetLiveTurnStateForNewTurn();
+    return true;
+  }
+
+  function clearPendingTurnRuntimePlaceholder(threadId, options = {}) {
+    const normalizedThreadId = String(threadId || state.activeThreadId || "").trim();
+    const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+    if (!normalizedThreadId || !pendingThreadId || pendingThreadId !== normalizedThreadId) return;
+    if (options.force !== true) {
+      if (String(state.activeThreadPendingUserMessage || "").trim()) return;
+      if (String(state.activeThreadPendingAssistantMessage || "").trim()) return;
+    }
+    state.activeThreadPendingTurnThreadId = "";
+    state.activeThreadPendingTurnRunning = false;
+    state.activeThreadPendingUserMessage = "";
+    state.activeThreadPendingAssistantMessage = "";
+    syncPendingTurnUi();
+  }
 
   function syncPendingAssistantMessage(text) {
     if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
@@ -156,42 +205,49 @@ export function createTurnActionsModule(deps) {
     if (!prompt) return;
     const workspace = getWorkspaceTarget();
     const startCwd = getStartCwdForWorkspace(workspace);
-    await waitPendingThreadResume(state.activeThreadId);
     let activeThreadId = String(state.activeThreadId || "").trim();
-    if (!activeThreadId) {
-      const created = await api("/codex/threads", {
-        method: "POST",
-        body: {
-          workspace,
-          cwd: startCwd || undefined,
-        },
-      });
-      const createdRolloutPath = String(
-        created?.thread?.path || created?.path || created?.rolloutPath || created?.rollout_path || ""
-      ).trim();
-      activeThreadId = String(created?.id || created?.threadId || created?.thread?.id || "").trim();
-      if (!activeThreadId) throw new Error("turn start failed: missing threadId");
-      setActiveThread(activeThreadId);
-      state.activeThreadWorkspace = workspace;
-      state.activeThreadRolloutPath = createdRolloutPath;
-      state.activeThreadNeedsResume = false;
-    } else if (state.activeThreadNeedsResume) {
-      const resumePromise = api(
-        buildThreadResumeUrl(activeThreadId, {
-          workspace: state.activeThreadWorkspace || workspace,
-          rolloutPath: state.activeThreadRolloutPath,
-        }),
-        { method: "POST" }
-      );
-      registerPendingThreadResume(state.pendingThreadResumes, activeThreadId, resumePromise);
-      const resumed = await resumePromise;
-      const resumedThreadId = String(
-        resumed?.threadId || resumed?.thread_id || resumed?.id || resumed?.thread?.id || activeThreadId
-      ).trim();
-      if (!resumedThreadId) throw new Error("turn resume failed: missing threadId");
-      activeThreadId = resumedThreadId;
-      if (state.activeThreadId !== resumedThreadId) setActiveThread(resumedThreadId);
-      state.activeThreadNeedsResume = false;
+    const primedPendingRuntime = primePendingTurnRuntime(activeThreadId, prompt);
+    try {
+      await waitPendingThreadResume(state.activeThreadId);
+      activeThreadId = String(state.activeThreadId || "").trim();
+      if (!activeThreadId) {
+        const created = await api("/codex/threads", {
+          method: "POST",
+          body: {
+            workspace,
+            cwd: startCwd || undefined,
+          },
+        });
+        const createdRolloutPath = String(
+          created?.thread?.path || created?.path || created?.rolloutPath || created?.rollout_path || ""
+        ).trim();
+        activeThreadId = String(created?.id || created?.threadId || created?.thread?.id || "").trim();
+        if (!activeThreadId) throw new Error("turn start failed: missing threadId");
+        setActiveThread(activeThreadId);
+        state.activeThreadWorkspace = workspace;
+        state.activeThreadRolloutPath = createdRolloutPath;
+        state.activeThreadNeedsResume = false;
+      } else if (state.activeThreadNeedsResume) {
+        const resumePromise = api(
+          buildThreadResumeUrl(activeThreadId, {
+            workspace: state.activeThreadWorkspace || workspace,
+            rolloutPath: state.activeThreadRolloutPath,
+          }),
+          { method: "POST" }
+        );
+        registerPendingThreadResume(state.pendingThreadResumes, activeThreadId, resumePromise);
+        const resumed = await resumePromise;
+        const resumedThreadId = String(
+          resumed?.threadId || resumed?.thread_id || resumed?.id || resumed?.thread?.id || activeThreadId
+        ).trim();
+        if (!resumedThreadId) throw new Error("turn resume failed: missing threadId");
+        activeThreadId = resumedThreadId;
+        if (state.activeThreadId !== resumedThreadId) setActiveThread(resumedThreadId);
+        state.activeThreadNeedsResume = false;
+      }
+    } catch (error) {
+      if (primedPendingRuntime) clearPendingTurnRuntimePlaceholder(activeThreadId, { force: true });
+      throw error;
     }
     const payload = buildTurnPayload({
       activeThreadId,
@@ -206,8 +262,10 @@ export function createTurnActionsModule(deps) {
     state.activeThreadStarted = true;
     state.activeThreadWorkspace = workspace;
     state.activeThreadPendingTurnThreadId = activeThreadId;
+    state.activeThreadPendingTurnRunning = true;
     state.activeThreadPendingUserMessage = prompt;
     state.activeThreadPendingAssistantMessage = "";
+    resetLiveTurnStateForNewTurn();
     updateHeaderUi(shouldAnimateWorkspaceBadge);
     hideWelcomeCard();
     addChat("user", prompt);
@@ -238,6 +296,7 @@ export function createTurnActionsModule(deps) {
     if (startedThreadId) {
       setActiveThread(startedThreadId);
       state.activeThreadPendingTurnThreadId = startedThreadId;
+      state.activeThreadPendingTurnRunning = true;
       state.activeThreadNeedsResume = false;
     }
     if (startedRolloutPath) state.activeThreadRolloutPath = startedRolloutPath;

@@ -1013,6 +1013,128 @@
       color: #2c3950;
       max-width: min(760px, 94%);
     }
+    .msg.system.kind-thinking {
+      border-color: transparent;
+      background: transparent;
+      box-shadow: none;
+      color: #334158;
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
+      padding: 0;
+    }
+    .msg.system.kind-thinking[data-msg-transient="1"] {
+      border-color: transparent;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+      padding: 0;
+    }
+    .commentaryArchiveMount {
+      width: 100%;
+      display: grid;
+      gap: 10px;
+      margin: 16px 0 8px;
+    }
+    .commentaryArchiveToggle {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: #6a778d;
+      font-size: 12px;
+      line-height: 1.2;
+    }
+    .commentaryArchiveToggle::before,
+    .commentaryArchiveToggle::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: rgba(81, 98, 127, 0.24);
+    }
+    .commentaryArchiveCount {
+      white-space: nowrap;
+    }
+    .commentaryArchiveChevron {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      color: #7f8ca1;
+      transform: rotate(90deg);
+      transition: transform 160ms ease;
+    }
+    .commentaryArchiveChevron.is-collapsed {
+      transform: rotate(0deg);
+    }
+    .commentaryArchiveBody {
+      display: grid;
+      grid-template-rows: 1fr;
+      overflow: hidden;
+      transition:
+        grid-template-rows 240ms cubic-bezier(.22, .61, .36, 1),
+        opacity 180ms ease;
+      opacity: 1;
+    }
+    .commentaryArchiveBody.collapsed {
+      grid-template-rows: 0fr;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .commentaryArchiveBodyInner {
+      min-height: 0;
+      overflow: hidden;
+      display: grid;
+      gap: 12px;
+      opacity: 1;
+      transform: translateY(0);
+      transform-origin: top center;
+      transition:
+        opacity 180ms ease,
+        transform 240ms cubic-bezier(.22, .61, .36, 1);
+    }
+    .commentaryArchiveBody.collapsed .commentaryArchiveBodyInner {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+    .commentaryArchiveFinalDivider {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: #7a8598;
+      font-size: 12px;
+      line-height: 1.2;
+      margin-top: 6px;
+    }
+    .commentaryArchiveFinalDivider::before,
+    .commentaryArchiveFinalDivider::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: rgba(81, 98, 127, 0.22);
+    }
+    .commentaryArchiveFinalLabel {
+      white-space: nowrap;
+    }
+    .commentaryArchiveBlock {
+      display: grid;
+      gap: 8px;
+    }
+    .commentaryArchivePlan {
+      display: grid;
+      gap: 8px;
+    }
+    .commentaryArchivePlanCard {
+      animation: none;
+    }
+    .commentaryArchiveTools {
+      display: grid;
+      gap: 8px;
+    }
     .msg.system.kind-tool.msg-enter { 
       animation-name: msg-enter-tool; 
       animation-duration: 288ms; 
@@ -1300,6 +1422,9 @@
     .msgBody p:last-child {
       margin-bottom: 0;
     }
+    .msgBody .msgBlankLine {
+      height: 0.9em;
+    }
     .msgBody ul {
       margin: 4px 0 8px;
       padding-left: 20px;
@@ -1309,37 +1434,22 @@
       margin: 4px 0 8px;
       padding-left: 20px;
       list-style: none;
-      counter-reset: msg-ol;
     }
     .msgBody li {
       margin: 2px 0;
       min-width: 0;
       position: relative;
     }
-    .msgBody ol > li {
-      counter-increment: msg-ol;
-    }
-    .msgBody ol > li::before {
-      content: counter(msg-ol) ".";
+    .msgBody li::before {
+      content: attr(data-list-marker);
       position: absolute;
       left: -20px;
       top: 0;
-      width: 16px;
+      min-width: 16px;
       text-align: right;
       color: #52627d;
       font-variant-numeric: tabular-nums;
     }
-    .msgBody ul > li::before {
-      content: "•";
-      position: absolute;
-      left: -16px;
-      top: 0;
-      width: 12px;
-      text-align: center;
-      color: #52627d;
-    }
-    .msgBody ul ul > li::before { content: "◦"; }
-    .msgBody ul ul ul > li::before { content: "▪"; }
     .msgBody li > ul,
     .msgBody li > ol {
       margin-top: 4px;
@@ -1404,6 +1514,21 @@
       color: #637188;
       font-weight: 600;
       white-space: nowrap;
+    }
+    .msgToolDiff,
+    .runtimeToolItemDiff {
+      flex: none;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .msgToolDiffAdd,
+    .runtimeToolItemDiffAdd {
+      color: #22834f;
+    }
+    .msgToolDiffDel,
+    .runtimeToolItemDiffDel {
+      color: #c33a3a;
     }
     .msgToolLine .msgToolLead::before {
       position: absolute;
@@ -1526,13 +1651,34 @@
     }
     .runtimeChatPanels {
       display: grid;
-      gap: 8px;
-      padding: 6px 0 2px;
+      gap: 12px;
+      padding: 12px 0 6px;
     }
     .runtimePlanMount,
+    .runtimeThinkingMount,
     .runtimeToolPanel {
       display: grid;
       gap: 8px;
+    }
+    .runtimeStackSection {
+      overflow: hidden;
+      opacity: 1;
+      transform: translateY(0);
+      max-height: 720px;
+      transition:
+        max-height 200ms cubic-bezier(.22, .61, .36, 1),
+        opacity 160ms ease,
+        transform 180ms cubic-bezier(.22, .61, .36, 1);
+      will-change: max-height, opacity, transform;
+    }
+    .runtimeStackSection.is-hidden {
+      max-height: 0;
+      opacity: 0;
+      transform: translateY(-4px);
+      pointer-events: none;
+    }
+    .runtimeStackSection.is-refreshing {
+      animation: runtime-stack-refresh 180ms cubic-bezier(.22, .61, .36, 1);
     }
     .runtimePlanMount-dock,
     .runtimeToolPanel-dock {
@@ -1540,6 +1686,20 @@
     }
     .runtimeToolPanel-inline {
       padding-left: 2px;
+    }
+    .runtimeThinkingCard {
+      display: grid;
+      gap: 4px;
+      padding: 0 2px;
+      color: #334158;
+      background: transparent;
+      box-shadow: none;
+    }
+    .runtimeThinkingBody {
+      min-width: 0;
+      color: #334158;
+      font-size: 13px;
+      line-height: 1.6;
     }
     .runtimeToolItem {
       display: flex;
@@ -1552,6 +1712,9 @@
       border-left: 2px solid rgba(11, 91, 211, 0.22);
       background: rgba(255, 255, 255, 0.8);
       box-shadow: 0 6px 16px rgba(13, 18, 32, 0.045);
+      transition: transform 180ms cubic-bezier(.22, .61, .36, 1), opacity 160ms ease;
+    }
+    .runtimeToolItem.runtimeToolItemEnter {
       animation: runtime-panel-in 180ms cubic-bezier(.22,1,.36,1);
     }
     .runtimeToolItemLead,
@@ -1668,12 +1831,16 @@
     .runtimeActivityText {
       min-width: 0;
       flex: 1;
+      display: block;
       font-size: 12px;
       line-height: 1.4;
       color: #14213a;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+    .runtimeActivityText > * {
+      white-space: nowrap;
     }
     .runtimeActivityText strong {
       font-size: 12px;
@@ -1682,6 +1849,14 @@
     .runtimeActivityDetail {
       color: #51627f;
       font-weight: 500;
+    }
+    .runtimeActivityText .msgInlineCode {
+      display: inline-block;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: bottom;
     }
     .runtimeActivityDots {
       display: inline-flex;
@@ -1712,12 +1887,24 @@
       background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(244, 248, 255, 0.92));
       box-shadow: 0 10px 22px rgba(13, 18, 32, 0.05);
       padding: 10px 12px;
+    }
+    .runtimePlanCard.runtimePlanCardEnter {
       animation: runtime-panel-in 180ms cubic-bezier(.22,1,.36,1);
     }
     @keyframes runtime-panel-in {
       0% {
         opacity: 0;
         transform: translateY(4px);
+      }
+      100% {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    @keyframes runtime-stack-refresh {
+      0% {
+        opacity: 0.62;
+        transform: translateY(2px);
       }
       100% {
         opacity: 1;

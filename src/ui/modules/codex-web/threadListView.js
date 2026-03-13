@@ -57,6 +57,19 @@ export async function resumeThreadLiveOnOpen({
 }) {
   const id = String(threadId || "").trim();
   if (!id) return null;
+  const historyThreadId = String(state?.activeThreadHistoryThreadId || "").trim();
+  const pendingThreadId = String(state?.activeThreadPendingTurnThreadId || "").trim();
+  const pendingRunningForThread =
+    state?.activeThreadPendingTurnRunning === true &&
+    (!pendingThreadId || pendingThreadId === id);
+  const historyLoadedAsCompleted =
+    historyThreadId === id &&
+    state?.activeThreadHistoryIncomplete === false &&
+    !pendingRunningForThread;
+  if (historyLoadedAsCompleted) {
+    if (state) state.activeThreadNeedsResume = false;
+    return null;
+  }
   connectWs();
   syncEventSubscription();
   const resumePromise = api(

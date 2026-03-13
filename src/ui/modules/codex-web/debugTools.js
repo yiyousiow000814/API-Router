@@ -47,6 +47,7 @@ export function createDebugToolsModule(deps) {
   const {
     state,
     byId,
+    addChat = () => {},
     renderInlineMessageText,
     findNextInlineCodeSpan,
     normalizeWorkspaceTarget,
@@ -56,6 +57,8 @@ export function createDebugToolsModule(deps) {
     REASONING_EFFORT_KEY,
     MODEL_LOADING_MIN_MS,
     normalizeThreadTokenUsage,
+    renderRuntimePanels = () => {},
+    renderCommentaryArchive = () => {},
     renderComposerContextLeft,
     clearChatMessages,
     showWelcomeCard,
@@ -100,6 +103,7 @@ export function createDebugToolsModule(deps) {
       activeThreadRolloutPath: String(state.activeThreadRolloutPath || ""),
       activeThreadRenderSig: String(state.activeThreadRenderSig || ""),
       activeThreadPendingTurnThreadId: String(state.activeThreadPendingTurnThreadId || ""),
+      activeThreadPendingTurnRunning: state.activeThreadPendingTurnRunning === true,
       activeThreadPendingUserMessage: String(state.activeThreadPendingUserMessage || ""),
       activeThreadPendingAssistantMessage: String(state.activeThreadPendingAssistantMessage || ""),
       wsSubscribedEvents: !!state.wsSubscribedEvents,
@@ -146,6 +150,35 @@ export function createDebugToolsModule(deps) {
       lastTurn:
         pickLast(isTurnLifecycleEvent) ||
         null,
+      commentary: {
+        currentKey: String(state.activeThreadCommentaryCurrent?.key || ""),
+        currentChars: String(state.activeThreadCommentaryCurrent?.text || "").length,
+        currentToolCount: Array.isArray(state.activeThreadCommentaryCurrent?.tools)
+          ? state.activeThreadCommentaryCurrent.tools.length
+          : 0,
+        currentTextPreview: String(state.activeThreadCommentaryCurrent?.text || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 120),
+        liveThinkingPreview: String(state.activeThreadTransientThinkingText || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 120),
+        liveToolPreview: String(state.activeThreadTransientToolText || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 120),
+        archiveCount: Array.isArray(state.activeThreadCommentaryArchive) ? state.activeThreadCommentaryArchive.length : 0,
+        archiveVisible: state.activeThreadCommentaryArchiveVisible === true,
+        archiveExpanded: state.activeThreadCommentaryArchiveExpanded === true,
+        lastItemCandidate:
+          pickLast(
+            (event) =>
+              event?.kind === "live.inspect:item_candidate" || event?.kind === "live.inspect:no_item_candidate"
+          ) || null,
+        lastAssistantCandidate: pickLast((event) => event?.kind === "live.inspect:assistant_candidate") || null,
+        lastState: pickLast((event) => event?.kind === "live.inspect:commentary_state") || null,
+      },
       recent,
     };
   }
@@ -163,7 +196,20 @@ export function createDebugToolsModule(deps) {
     if (event.reason) bits.push(`reason=${String(event.reason).slice(0, 80)}`);
     if (event.message) bits.push(`msg=${String(event.message).slice(0, 80)}`);
     if (event.itemType) bits.push(`item=${event.itemType}`);
+    if (event.paramsSource) bits.push(`params=${String(event.paramsSource).slice(0, 40)}`);
+    if (event.itemSource) bits.push(`source=${String(event.itemSource).slice(0, 40)}`);
+    if (event.phase) bits.push(`phase=${String(event.phase).slice(0, 40)}`);
+    if (event.itemId) bits.push(`itemId=${String(event.itemId).slice(0, 40)}`);
+    if (event.mode) bits.push(`mode=${String(event.mode).slice(0, 20)}`);
+    if (typeof event.visible === "boolean") bits.push(`visible=${event.visible ? "yes" : "no"}`);
+    if (event.action) bits.push(`action=${String(event.action).slice(0, 30)}`);
     if (typeof event.count === "number") bits.push(`count=${event.count}`);
+    if (typeof event.toolCount === "number") bits.push(`tools=${event.toolCount}`);
+    if (typeof event.archiveCount === "number") bits.push(`archive=${event.archiveCount}`);
+    if (typeof event.chars === "number") bits.push(`chars=${event.chars}`);
+    if (event.paramsKeys) bits.push(`paramsKeys=${String(event.paramsKeys).slice(0, 80)}`);
+    if (event.itemKeys) bits.push(`itemKeys=${String(event.itemKeys).slice(0, 80)}`);
+    if (event.preview) bits.push(`preview=${String(event.preview).replace(/\s+/g, " ").slice(0, 80)}`);
     if (event.gap === true) bits.push("gap=yes");
     if (typeof event.code === "number" && event.code > 0) bits.push(`code=${event.code}`);
     if (typeof event.wasClean === "boolean") bits.push(`clean=${event.wasClean}`);
@@ -396,7 +442,7 @@ export function createDebugToolsModule(deps) {
         `rollout: ${snap.active.activeThreadRolloutPath || "(empty)"}`,
         `ws: ${snap.active.wsReadyState} | subscribed: ${snap.active.wsSubscribedEvents ? "yes" : "no"}`,
         `messages: ${snap.active.messageCount} | status: ${snap.active.statusLine || "(empty)"}`,
-        `pendingThread: ${snap.active.activeThreadPendingTurnThreadId || "(none)"}`,
+        `pendingThread: ${snap.active.activeThreadPendingTurnThreadId || "(none)"} | running=${snap.active.activeThreadPendingTurnRunning ? "yes" : "no"}`,
       ];
       const backendLines = [
         "BACKEND",
@@ -417,12 +463,24 @@ export function createDebugToolsModule(deps) {
         `last history: ${formatLiveEventLine(snap.lastHistory) || "(none)"}`,
         `last turn: ${formatLiveEventLine(snap.lastTurn) || "(none)"}`,
       ];
+      const commentaryLines = [
+        "COMMENTARY",
+        `current: key=${snap.commentary.currentKey || "(none)"} | chars=${snap.commentary.currentChars} | tools=${snap.commentary.currentToolCount}`,
+        `live thinking: ${snap.commentary.liveThinkingPreview || "(empty)"}`,
+        `live tool: ${snap.commentary.liveToolPreview || "(empty)"}`,
+        `archive: count=${snap.commentary.archiveCount} | visible=${snap.commentary.archiveVisible ? "yes" : "no"} | expanded=${snap.commentary.archiveExpanded ? "yes" : "no"}`,
+        `last item candidate: ${formatLiveEventLine(snap.commentary.lastItemCandidate) || "(none)"}`,
+        `last assistant candidate: ${formatLiveEventLine(snap.commentary.lastAssistantCandidate) || "(none)"}`,
+        `last commentary state: ${formatLiveEventLine(snap.commentary.lastState) || "(none)"}`,
+      ];
       const lines = [
         ...summaryLines,
         "",
         ...backendLines,
         "",
         ...clientLines,
+        "",
+        ...commentaryLines,
         "",
         "APP HOMES",
         ...appHomes.slice(-3).map((home) => {
@@ -819,6 +877,109 @@ export function createDebugToolsModule(deps) {
           const item = { content: Array.isArray(content) ? content : [] };
           const parsed = parseUserMessageParts(item);
           return { ok: true, text: parsed.text || "", images: parsed.images || [] };
+        },
+        seedPendingTurn(config = {}) {
+          const threadId = String(config.threadId || this._activeThreadId || state.activeThreadId || "").trim();
+          const prompt = String(config.prompt || "").trim();
+          if (!threadId) return { ok: false, error: "missing threadId" };
+          if (!prompt) return { ok: false, error: "missing prompt" };
+          this._activeThreadId = threadId;
+          setMainTab("chat");
+          setMobileTab("chat");
+          setActiveThread(threadId);
+          setChatOpening(false);
+          state.activeThreadStarted = true;
+          state.activeThreadPendingTurnThreadId = threadId;
+          state.activeThreadPendingTurnRunning = true;
+          state.activeThreadPendingUserMessage = prompt;
+          state.activeThreadPendingAssistantMessage = "";
+          state.activeThreadTransientToolText = "";
+          state.activeThreadTransientThinkingText = "";
+          state.activeThreadCommentaryCurrent = null;
+          state.activeThreadCommentaryArchive = [];
+          state.activeThreadCommentaryArchiveVisible = false;
+          state.activeThreadCommentaryArchiveExpanded = false;
+          state.activeThreadActivity = null;
+          state.activeThreadActiveCommands = [];
+          state.activeThreadPlan = null;
+          state.activeThreadLiveAssistantThreadId = "";
+          state.activeThreadLiveAssistantIndex = -1;
+          state.activeThreadLiveAssistantMsgNode = null;
+          state.activeThreadLiveAssistantBodyNode = null;
+          state.activeThreadLiveAssistantText = "";
+          renderCommentaryArchive();
+          renderRuntimePanels();
+          if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
+          const last = state.activeThreadMessages.length
+            ? state.activeThreadMessages[state.activeThreadMessages.length - 1]
+            : null;
+          const alreadyVisible =
+            last &&
+            last.role === "user" &&
+            !String(last.kind || "").trim() &&
+            String(last.text || "") === prompt;
+          if (!alreadyVisible) {
+            addChat("user", prompt, { animate: false });
+            state.activeThreadMessages = state.activeThreadMessages.concat([{ role: "user", text: prompt, kind: "" }]);
+          }
+          scrollToBottomReliable();
+          return { ok: true, threadId, prompt };
+        },
+        seedRuntimePanels(config = {}) {
+          const threadId = String(config.threadId || this._activeThreadId || state.activeThreadId || "").trim();
+          if (!threadId) return { ok: false, error: "missing threadId" };
+          this._activeThreadId = threadId;
+          setMainTab("chat");
+          setMobileTab("chat");
+          setActiveThread(threadId);
+          const commands = Array.isArray(config.commands)
+            ? config.commands
+              .map((item) => (item && typeof item === "object" ? { ...item } : null))
+              .filter(Boolean)
+              .map((item, index) => ({
+                key: String(item.key || `e2e-command-${index + 1}`),
+                text: String(item.text || item.label || item.detail || item.title || "Working"),
+                state: String(item.state || "running"),
+                icon: String(item.icon || "command"),
+                title: String(item.title || "Working"),
+                detail: String(item.detail || item.label || item.text || ""),
+                label: String(item.label || item.detail || item.text || item.title || ""),
+                presentation: item.presentation === "code" ? "code" : "text",
+                timestamp: Number(item.timestamp || Date.now()),
+              }))
+            : [];
+          const plan = config.plan && typeof config.plan === "object"
+            ? {
+                threadId,
+                turnId: String(config.plan.turnId || "e2e-runtime-plan"),
+                title: String(config.plan.title || "Updated Plan"),
+                explanation: String(config.plan.explanation || ""),
+                steps: Array.isArray(config.plan.steps) ? config.plan.steps.slice() : [],
+                deltaText: String(config.plan.deltaText || ""),
+              }
+            : null;
+          state.activeThreadActiveCommands = commands;
+          state.activeThreadPlan = plan;
+          if (plan) {
+            state.activeThreadActivity = {
+              threadId,
+              title: String(plan.title || "Updated Plan"),
+              detail: String(plan.explanation || ""),
+              tone: "running",
+            };
+          } else if (commands.length) {
+            const last = commands[commands.length - 1];
+            state.activeThreadActivity = {
+              threadId,
+              title: String(last.title || "Working"),
+              detail: String(last.detail || ""),
+              tone: String(last.state || "running"),
+            };
+          } else {
+            state.activeThreadActivity = null;
+          }
+          renderRuntimePanels();
+          return { ok: true, threadId, commandCount: commands.length, hasPlan: !!plan };
         },
         renderAttachmentsHtml(images) {
           return {

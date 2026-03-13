@@ -393,6 +393,7 @@ describe("liveNotifications", () => {
       activeThreadLiveAssistantBodyNode: null,
       activeThreadLiveAssistantText: "",
       activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
       activeThreadPendingUserMessage: "hello",
       activeThreadPendingAssistantMessage: "",
     };
@@ -447,9 +448,7 @@ describe("liveNotifications", () => {
     expect(state.activeThreadPendingAssistantMessage).toBe("live reply");
   });
 
-  it("ignores commentary-phase live assistant updates in the chat transcript", () => {
-    const appended = [];
-    const finalized = [];
+  it("ends the pending runtime indicator once a final assistant snapshot arrives", () => {
     const chatBox = {
       appendChild(node) {
         this.lastElementChild = node;
@@ -468,6 +467,81 @@ describe("liveNotifications", () => {
       activeThreadLiveAssistantBodyNode: null,
       activeThreadLiveAssistantText: "",
       activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "partial",
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || notification?.params?.item?.thread_id || "");
+      },
+      hideWelcomeCard() {},
+      createAssistantStreamingMessage() {
+        return { msg: { setAttribute() {}, removeAttribute() {} }, body: { removeAttribute() {} } };
+      },
+      appendStreamingDelta() {},
+      finalizeAssistantMessage() {},
+    });
+
+    module.renderLiveNotification({
+      method: "item.completed",
+      params: {
+        item: {
+          type: "agent_message",
+          thread_id: "thread-1",
+          phase: "final_answer",
+          text: "done",
+        },
+      },
+    });
+
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingUserMessage).toBe("hello");
+    expect(state.activeThreadPendingAssistantMessage).toBe("done");
+  });
+
+  it("ignores commentary-phase live assistant updates in the chat transcript", () => {
+    const appended = [];
+    const finalized = [];
+    const chatBox = {
+      nodes: [],
+      appendChild(node) {
+        this.lastElementChild = node;
+      },
+      querySelectorAll(selector) {
+        if (selector === '.msg.system.kind-thinking[data-msg-transient="1"]') return this.nodes;
+        return [];
+      },
+      querySelector() {
+        return null;
+      },
+      lastElementChild: null,
+    };
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
       activeThreadPendingUserMessage: "hello",
       activeThreadPendingAssistantMessage: "",
     };
@@ -541,8 +615,491 @@ describe("liveNotifications", () => {
 
     expect(appended).toEqual(["done"]);
     expect(finalized).toEqual(["done"]);
+    expect(state.activeThreadTransientThinkingText).toBe("");
     expect(state.activeThreadMessages).toEqual([{ role: "assistant", text: "done", kind: "" }]);
     expect(state.activeThreadPendingAssistantMessage).toBe("done");
+  });
+
+  it("archives the previous commentary block and clears live runtime tools when a new commentary block starts", () => {
+    const clearedCommandBatches = [];
+    const renderArchiveCalls = [];
+    const chatBox = {
+      nodes: [],
+      appendChild(node) {
+        this.lastElementChild = node;
+      },
+      querySelectorAll(selector) {
+        if (selector === '.msg.system.kind-thinking[data-msg-transient="1"]') return this.nodes;
+        return [];
+      },
+      querySelector() {
+        return null;
+      },
+      lastElementChild: null,
+    };
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadActiveCommands: [{ key: "old-cmd" }],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadTransientThinkingText: "",
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      setActiveCommands(entries) {
+        clearedCommandBatches.push(Array.isArray(entries) ? entries.slice() : entries);
+        state.activeThreadActiveCommands = Array.isArray(entries) ? entries.slice() : [];
+      },
+      renderCommentaryArchive() {
+        renderArchiveCalls.push({
+          visible: state.activeThreadCommentaryArchiveVisible,
+          archiveCount: Array.isArray(state.activeThreadCommentaryArchive) ? state.activeThreadCommentaryArchive.length : 0,
+        });
+      },
+      applyToolItemRuntimeUpdate(item) {
+        state.activeThreadActiveCommands = [{ key: String(item?.id || "tool") }];
+      },
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || notification?.params?.item?.thread_id || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "item.updated",
+      params: {
+        item: {
+          id: "commentary-1",
+          type: "agent_message_content_delta",
+          thread_id: "thread-1",
+          phase: "commentary",
+          delta: "thinking one",
+        },
+      },
+    });
+    module.renderLiveNotification({
+      method: "item/updated",
+      params: {
+        threadId: "thread-1",
+        item: {
+          id: "cmd-1",
+          type: "commandExecution",
+          command: "npm test",
+          status: "running",
+        },
+      },
+    });
+    module.renderLiveNotification({
+      method: "item.updated",
+      params: {
+        item: {
+          id: "commentary-2",
+          type: "agent_message_content_delta",
+          thread_id: "thread-1",
+          phase: "commentary",
+          delta: "thinking two",
+        },
+      },
+    });
+
+    expect(clearedCommandBatches).toEqual([[], []]);
+    expect(state.activeThreadCommentaryArchiveVisible).toBe(false);
+    expect(state.activeThreadCommentaryArchive).toEqual([
+      expect.objectContaining({
+        key: "commentary-1",
+        text: "thinking one",
+        tools: ["Running `npm test`"],
+      }),
+    ]);
+    expect(state.activeThreadCommentaryCurrent).toEqual(
+      expect.objectContaining({
+        key: "commentary-2",
+        text: "thinking two",
+        tools: [],
+      })
+    );
+    expect(renderArchiveCalls.at(-1)).toEqual({ visible: false, archiveCount: 1 });
+    expect(state.activeThreadTransientThinkingText).toBe("thinking two");
+  });
+
+  it("shows archived commentary only after final answer arrives", () => {
+    const renderArchiveCalls = [];
+    const chatBox = {
+      nodes: [],
+      appendChild(node) {
+        this.lastElementChild = node;
+      },
+      querySelectorAll(selector) {
+        if (selector === '.msg.system.kind-thinking[data-msg-transient="1"]') return this.nodes;
+        return [];
+      },
+      querySelector() {
+        return null;
+      },
+      lastElementChild: null,
+    };
+    const makeThinkingNode = (text) => ({
+      __webCodexRole: "system",
+      __webCodexKind: "thinking",
+      __webCodexRawText: text,
+      remove() {
+        chatBox.nodes = chatBox.nodes.filter((node) => node !== this);
+      },
+    });
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadTransientThinkingText: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat(_role, text, options = {}) {
+        if (options.kind === "thinking" && options.transient === true) {
+          chatBox.nodes = [makeThinkingNode(text)];
+        }
+      },
+      scheduleChatLiveFollow() {},
+      renderCommentaryArchive(options = {}) {
+        renderArchiveCalls.push({
+          visible: state.activeThreadCommentaryArchiveVisible,
+          archiveCount: Array.isArray(state.activeThreadCommentaryArchive) ? state.activeThreadCommentaryArchive.length : 0,
+          hasAnchor: !!options.anchorNode,
+        });
+      },
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || notification?.params?.item?.thread_id || "");
+      },
+      hideWelcomeCard() {},
+      createAssistantStreamingMessage() {
+        return { msg: { setAttribute() {}, removeAttribute() {} }, body: { innerHTML: "", removeAttribute() {} } };
+      },
+      appendStreamingDelta() {},
+      finalizeAssistantMessage() {},
+    });
+
+    module.renderLiveNotification({
+      method: "item.updated",
+      params: {
+        item: {
+          id: "commentary-1",
+          type: "agent_message_content_delta",
+          thread_id: "thread-1",
+          phase: "commentary",
+          delta: "thinking one",
+        },
+      },
+    });
+    module.renderLiveNotification({
+      method: "item.completed",
+      params: {
+        item: {
+          type: "agent_message",
+          thread_id: "thread-1",
+          phase: "final_answer",
+          text: "done",
+        },
+      },
+    });
+
+    expect(state.activeThreadCommentaryCurrent).toBeNull();
+    expect(state.activeThreadCommentaryArchiveVisible).toBe(true);
+    expect(state.activeThreadCommentaryArchive).toEqual([
+      expect.objectContaining({ key: "commentary-1", text: "thinking one" }),
+    ]);
+    expect(renderArchiveCalls.at(-1)).toEqual(
+      expect.objectContaining({ visible: true, archiveCount: 1 })
+    );
+  });
+
+  it("accepts codex/event agent_message commentary payloads and archives them on turn completion", () => {
+    const renderArchiveCalls = [];
+    const chatBox = {
+      nodes: [],
+      appendChild(node) {
+        this.lastElementChild = node;
+      },
+      querySelectorAll(selector) {
+        if (selector === '.msg.system.kind-thinking[data-msg-transient="1"]') return this.nodes;
+        return [];
+      },
+      querySelector() {
+        return null;
+      },
+      lastElementChild: null,
+    };
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadTransientThinkingText: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      renderCommentaryArchive(options = {}) {
+        renderArchiveCalls.push({
+          visible: state.activeThreadCommentaryArchiveVisible,
+          archiveCount: Array.isArray(state.activeThreadCommentaryArchive) ? state.activeThreadCommentaryArchive.length : 0,
+          hasAnchor: !!options.anchorNode,
+        });
+      },
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(
+          notification?.params?.threadId ||
+          notification?.params?.payload?.thread_id ||
+          notification?.params?.payload?.threadId ||
+          ""
+        );
+      },
+      hideWelcomeCard() {},
+      createAssistantStreamingMessage() {
+        return { msg: { setAttribute() {}, removeAttribute() {} }, body: { innerHTML: "", removeAttribute() {} } };
+      },
+      appendStreamingDelta() {},
+      finalizeAssistantMessage() {},
+    });
+
+    module.renderLiveNotification({
+      method: "codex/event/agent_message",
+      params: {
+        payload: {
+          id: "commentary-raw-1",
+          type: "agent_message",
+          thread_id: "thread-1",
+          phase: "commentary",
+          message: "working notes",
+        },
+      },
+    });
+    module.renderLiveNotification({
+      method: "turn.completed",
+      params: { threadId: "thread-1" },
+    });
+
+    expect(state.activeThreadCommentaryArchiveVisible).toBe(true);
+    expect(state.activeThreadCommentaryArchive).toEqual([
+      expect.objectContaining({ key: "commentary-raw-1", text: "working notes" }),
+    ]);
+    expect(renderArchiveCalls.at(-1)).toEqual(
+      expect.objectContaining({ visible: true, archiveCount: 1 })
+    );
+  });
+
+  it("accepts codex/event response_item assistant commentary payloads", () => {
+    const chatBox = {
+      nodes: [],
+      appendChild(node) {
+        this.lastElementChild = node;
+      },
+      querySelectorAll(selector) {
+        if (selector === '.msg.system.kind-thinking[data-msg-transient="1"]') return this.nodes;
+        return [];
+      },
+      querySelector() {
+        return null;
+      },
+      lastElementChild: null,
+    };
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadTransientThinkingText: "",
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.payload?.thread_id || notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "codex/event/response_item",
+      params: {
+        payload: {
+          id: "commentary-raw-2",
+          type: "message",
+          role: "assistant",
+          thread_id: "thread-1",
+          phase: "commentary",
+          content: [{ type: "output_text", text: "thinking from response item" }],
+        },
+      },
+    });
+
+    expect(state.activeThreadCommentaryCurrent).toEqual(
+      expect.objectContaining({ key: "commentary-raw-2", text: "thinking from response item" })
+    );
+    expect(state.activeThreadTransientThinkingText).toBe("thinking from response item");
+  });
+
+  it("records commentary diagnostics for raw codex events in live debug trace", () => {
+    const chatBox = {
+      nodes: [],
+      appendChild(node) {
+        this.lastElementChild = node;
+      },
+      querySelectorAll(selector) {
+        if (selector === '.msg.system.kind-thinking[data-msg-transient="1"]') return this.nodes;
+        return [];
+      },
+      querySelector() {
+        return null;
+      },
+      lastElementChild: null,
+    };
+    const makeThinkingNode = (text) => ({
+      __webCodexRole: "system",
+      __webCodexKind: "thinking",
+      __webCodexRawText: text,
+      remove() {
+        chatBox.nodes = chatBox.nodes.filter((node) => node !== this);
+      },
+    });
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadTransientThinkingText: "",
+      liveDebugEvents: [],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat(_role, text, options = {}) {
+        if (options.kind === "thinking" && options.transient === true) {
+          chatBox.nodes = [makeThinkingNode(text)];
+        }
+      },
+      scheduleChatLiveFollow() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.payload?.thread_id || notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "codex/event/agent_message",
+      params: {
+        payload: {
+          id: "commentary-raw-3",
+          type: "agent_message",
+          thread_id: "thread-1",
+          phase: "commentary",
+          message: "diagnostic trace text",
+        },
+      },
+    });
+
+    expect(state.liveDebugEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "live.inspect:item_candidate",
+          method: "codex/event/agent_message",
+          itemSource: "params.payload",
+          itemType: "agent_message",
+          phase: "commentary",
+          itemId: "commentary-raw-3",
+        }),
+        expect.objectContaining({
+          kind: "live.inspect:assistant_candidate",
+          method: "codex/event/agent_message",
+          phase: "commentary",
+          visible: false,
+          preview: "diagnostic trace text",
+        }),
+        expect.objectContaining({
+          kind: "live.inspect:commentary_state",
+          action: "update",
+          key: "commentary-raw-3",
+          preview: "diagnostic trace text",
+        }),
+      ])
+    );
   });
 
   it("shows only the latest live tool message and clears it on turn completion", () => {
@@ -716,6 +1273,65 @@ describe("liveNotifications", () => {
         plan: [{ step: "Inspect", status: "completed" }],
       },
     ]);
+  });
+
+  it("switches runtime activity back to thinking when commentary resumes after a plan update", () => {
+    const runtimeActivity = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadTransientThinkingText: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      setRuntimeActivity(payload) {
+        runtimeActivity.push(payload);
+      },
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/plan/updated",
+      params: {
+        threadId: "thread-1",
+        explanation: "Need plan",
+        plan: [{ step: "Inspect", status: "completed" }],
+      },
+    });
+    module.renderLiveNotification({
+      method: "item/updated",
+      params: {
+        threadId: "thread-1",
+        item: {
+          id: "commentary-1",
+          type: "agentMessage",
+          phase: "commentary",
+          text: "thinking again",
+        },
+      },
+    });
+
+    expect(runtimeActivity[runtimeActivity.length - 1]).toEqual({
+      threadId: "thread-1",
+      title: "Thinking",
+      detail: "thinking again",
+      tone: "running",
+    });
   });
 
   it("does not re-add the same transient tool bubble on repeated history polls", () => {

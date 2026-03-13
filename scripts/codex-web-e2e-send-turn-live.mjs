@@ -119,23 +119,6 @@ async function main() {
           ],
         });
         await h.openThread(threadId);
-        const originalFetch = window.fetch.bind(window);
-        window.fetch = async (input, init) => {
-          const url = typeof input === 'string' ? input : String(input?.url || '');
-          if (url.includes('/codex/threads/' + threadId + '/resume')) {
-            return new Response(JSON.stringify({ threadId }), {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
-            });
-          }
-          if (url.endsWith('/codex/turns/start')) {
-            return new Response(JSON.stringify({ threadId, turnId: 'e2e-turn-1' }), {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
-            });
-          }
-          return originalFetch(input, init);
-        };
         window.__e2eErrors = [];
         window.addEventListener('error', (event) => {
           window.__e2eErrors.push({
@@ -161,15 +144,83 @@ async function main() {
       return Number(count || 0) >= 2
     }, 10000, 'seeded thread render')
 
-    await driver.executeScript(`
-      const input = document.getElementById('mobilePromptInput');
-      if (!input) throw new Error('missing mobilePromptInput');
-      input.value = 'new live turn';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'n' }));
+    const seededPending = await driver.executeAsyncScript(`
+      const done = arguments[0];
+      const h = window.__webCodexE2E;
+      if (!h || typeof h.seedPendingTurn !== 'function') {
+        return done({ ok: false, error: 'seedPendingTurn missing' });
+      }
+      done(h.seedPendingTurn({
+        threadId: '019c8000-0000-7000-8000-0000000000a1',
+        prompt: 'new live turn',
+      }));
     `)
-    await driver.findElement(By.id('mobileSendBtn')).click()
+    if (!seededPending?.ok) throw new Error(`seed pending turn failed: ${seededPending?.error || 'unknown'}`)
+
+    const refreshedStaleHistory = await driver.executeAsyncScript(`
+      const done = arguments[0];
+      (async () => {
+        const h = window.__webCodexE2E;
+        const threadId = '019c8000-0000-7000-8000-0000000000a1';
+        if (!h || typeof h.setThreadHistory !== 'function' || typeof h.refreshActiveThread !== 'function') {
+          return done({ ok: false, error: 'missing history refresh hooks' });
+        }
+        h.setThreadHistory(threadId, {
+          id: threadId,
+          modelName: 'gpt-5.3-codex',
+          page: { incomplete: true },
+          turns: [
+            {
+              id: 't-stale',
+              items: [
+                { type: 'userMessage', content: [{ type: 'input_text', text: 'older user' }] },
+                { type: 'agentMessage', id: 'commentary-stale', phase: 'commentary', text: '构建已完成。' },
+                { type: 'commandExecution', command: 'npm run build', status: 'running' },
+              ],
+            },
+          ],
+        });
+        await h.refreshActiveThread();
+        done({ ok: true });
+      })().catch((e) => done({ ok: false, error: String(e && e.message ? e.message : e) }));
+    `)
+    if (!refreshedStaleHistory?.ok) {
+      throw new Error(`refresh stale history failed: ${refreshedStaleHistory?.error || 'unknown'}`)
+    }
+
+    try {
+      await waitFor(async () => {
+        const runtime = await driver.executeScript(`
+          const dock = document.getElementById('runtimeDock');
+          const activity = document.getElementById('runtimeActivityBar');
+        return {
+          dockDisplay: String(dock?.style?.display || ''),
+          activityText: String(activity?.textContent || '').trim(),
+          activityHtml: String(activity?.innerHTML || ''),
+          thinkingText: String(document.getElementById('runtimeThinkingInline')?.textContent || '').trim(),
+        };
+      `)
+        return runtime.dockDisplay !== 'none' &&
+          runtime.activityText.includes('Thinking') &&
+          !runtime.activityText.includes('构建已完成') &&
+          runtime.activityHtml.includes('runtimeActivityDots') &&
+          !runtime.thinkingText.includes('构建已完成')
+      }, 5000, 'pending runtime dock placeholder')
+    } catch (error) {
+      const debug = await driver.executeScript(`
+        return {
+          active: window.__webCodexDebug?.getActiveState?.() || null,
+          liveEvents: window.__webCodexDebug?.getRecentLiveEvents?.(30) || [],
+          dump: window.__webCodexDebug?.dumpMessages?.(12) || [],
+          errors: Array.isArray(window.__e2eErrors) ? window.__e2eErrors.slice() : [],
+          runtimeDockHtml: String(document.getElementById('runtimeDock')?.outerHTML || ''),
+          runtimeActivityHtml: String(document.getElementById('runtimeActivityBar')?.outerHTML || ''),
+          chatHtml: String(document.getElementById('chatBox')?.innerHTML || ''),
+        };
+      `)
+      throw new Error(`${error.message}; debug=${JSON.stringify(debug)}`)
+    }
+
     await driver.executeAsyncScript(`
       const done = arguments[0];
       const h = window.__webCodexE2E;
@@ -254,6 +305,18 @@ async function main() {
     if (!dumpText.includes('live reply')) {
       throw new Error(`expected pending assistant reply to remain visible without refresh, got ${JSON.stringify(finalDebug)}`)
     }
+
+    await waitFor(async () => {
+      const runtime = await driver.executeScript(`
+        const dock = document.getElementById('runtimeDock');
+        const activity = document.getElementById('runtimeActivityBar');
+        return {
+          dockDisplay: String(dock?.style?.display || ''),
+          activityText: String(activity?.textContent || '').trim(),
+        };
+      `)
+      return runtime.dockDisplay === 'none' || runtime.activityText === ''
+    }, 5000, 'runtime dock hidden after final answer')
 
     console.log('[codex-web-e2e-send-turn-live] ok')
   } finally {

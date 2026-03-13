@@ -92,4 +92,42 @@ describe("threadListView", () => {
     ]);
     expect(state.activeThreadNeedsResume).toBe(false);
   });
+
+  it("does not resume completed threads after history load", async () => {
+    const calls = [];
+    const state = {
+      activeThreadNeedsResume: true,
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryIncomplete: false,
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingTurnThreadId: "",
+      pendingThreadResumes: new Map(),
+    };
+    const api = async (path, options = {}) => {
+      calls.push({ path, method: options.method || "GET" });
+      return { ok: true };
+    };
+    const ws = [];
+
+    await resumeThreadLiveOnOpen({
+      threadId: "thread-1",
+      workspace: "windows",
+      rolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+      state,
+      api,
+      connectWs() {
+        ws.push("connect");
+      },
+      syncEventSubscription() {
+        ws.push("sync");
+      },
+      registerPendingThreadResume(map, threadId, promise) {
+        map.set(threadId, promise);
+      },
+    });
+
+    expect(ws).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(state.activeThreadNeedsResume).toBe(false);
+  });
 });

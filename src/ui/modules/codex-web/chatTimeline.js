@@ -1,3 +1,5 @@
+import { renderPlanCardHtml } from "./runtimePlan.js";
+
 export function createChatTimelineModule(deps) {
   const {
     byId,
@@ -62,7 +64,7 @@ export function createChatTimelineModule(deps) {
     const hasText = !!String(text || "").trim();
     const attachmentClass = role === "user" && hasAttachments && hasText ? " withAttachments" : "";
     node.className = `msg ${role}${kind ? ` kind-${kind}` : ""}${attachmentClass}`.trim();
-    const showHead = !(role === "assistant" || role === "user" || (role === "system" && kind === "tool"));
+    const showHead = !(role === "assistant" || role === "user" || (role === "system" && (kind === "tool" || kind === "thinking")));
     const headLabel = kind && role === "system" ? kind : role;
     const attachmentsHtml = renderMessageAttachments(attachments);
     const bodyHtml = renderMessageBody(role, text, { kind });
@@ -80,6 +82,12 @@ export function createChatTimelineModule(deps) {
   }
 
   function buildMsgNode(msg) {
+    if (msg?.kind === "commentaryArchive") {
+      return createCommentaryArchiveNode(msg?.archiveBlocks, {
+        source: "buildMsgNode",
+        key: msg?.archiveKey,
+      });
+    }
     return createMessageNode(msg?.role || "", msg?.text || "", {
       kind: msg?.kind || "",
       attachments: msg?.images || [],
@@ -87,17 +95,151 @@ export function createChatTimelineModule(deps) {
     });
   }
 
+  function removeCommentaryArchiveMount() {
+    const mount = byId("commentaryArchiveMount");
+    mount?.remove?.();
+  }
+
+  function createCommentaryArchiveNode(blocks, options = {}) {
+    const archive = Array.isArray(blocks)
+      ? blocks.filter((block) => block && (String(block.text || "").trim() || block?.plan))
+      : [];
+    const mount = documentRef.createElement("div");
+    mount.className = "commentaryArchiveMount";
+    attachMessageDebugMeta(mount, {
+      role: "system",
+      kind: "commentaryArchive",
+      text: archive
+        .map((block) => [
+          String(block?.text || "").trim(),
+          ...(Array.isArray(block?.tools) ? block.tools.map((tool) => String(tool || "").trim()) : []),
+        ].filter(Boolean).join("\n"))
+        .filter(Boolean)
+        .join("\n\n"),
+      source: String(options.source || "").trim() || "commentaryArchive",
+      transient: false,
+    });
+    if (options.key) {
+      try { mount.setAttribute("data-commentary-archive-key", String(options.key)); } catch {}
+    }
+    const expandedState = { value: false };
+    const toggle = documentRef.createElement("button");
+    toggle.type = "button";
+    toggle.className = "commentaryArchiveToggle is-collapsed";
+    toggle.setAttribute("aria-expanded", "false");
+    const countLabel = documentRef.createElement("span");
+    countLabel.className = "commentaryArchiveCount";
+    countLabel.textContent = `${String(archive.length)} previous message${archive.length === 1 ? "" : "s"}`;
+    const chevron = documentRef.createElement("span");
+    chevron.className = "commentaryArchiveChevron is-collapsed";
+    chevron.setAttribute("aria-hidden", "true");
+    chevron.textContent = "›";
+    toggle.appendChild(countLabel);
+    toggle.appendChild(chevron);
+    mount.appendChild(toggle);
+
+    const body = documentRef.createElement("div");
+    body.className = "commentaryArchiveBody collapsed";
+    body.setAttribute("aria-hidden", "true");
+    const bodyInner = documentRef.createElement("div");
+    bodyInner.className = "commentaryArchiveBodyInner";
+    for (const block of archive) {
+      const blockNode = documentRef.createElement("div");
+      blockNode.className = "commentaryArchiveBlock";
+      if (block?.plan) {
+        const planNode = documentRef.createElement("div");
+        planNode.className = "commentaryArchivePlan";
+        planNode.innerHTML = renderPlanCardHtml(block.plan, {
+          escapeHtml,
+          cardClass: "commentaryArchivePlanCard",
+        });
+        blockNode.appendChild(planNode);
+      }
+      if (String(block?.text || "").trim()) {
+        blockNode.appendChild(createMessageNode("system", block.text, {
+          kind: "thinking",
+          source: "commentaryArchive",
+        }));
+      }
+      bodyInner.appendChild(blockNode);
+    }
+    const finalDivider = documentRef.createElement("div");
+    finalDivider.className = "commentaryArchiveFinalDivider";
+    finalDivider.innerHTML = '<span class="commentaryArchiveFinalLabel">Final message</span>';
+    bodyInner.appendChild(finalDivider);
+    body.appendChild(bodyInner);
+    mount.appendChild(body);
+
+    const syncExpandedUi = () => {
+      toggle.className = `commentaryArchiveToggle${expandedState.value ? "" : " is-collapsed"}`;
+      chevron.className = `commentaryArchiveChevron${expandedState.value ? "" : " is-collapsed"}`;
+      body.className = `commentaryArchiveBody${expandedState.value ? "" : " collapsed"}`;
+      toggle.setAttribute("aria-expanded", expandedState.value ? "true" : "false");
+      body.setAttribute("aria-hidden", expandedState.value ? "false" : "true");
+    };
+    toggle.addEventListener("click", () => {
+      expandedState.value = !(expandedState.value === true);
+      syncExpandedUi();
+    });
+    syncExpandedUi();
+    return mount;
+  }
+
+  function renderCommentaryArchive(options = {}) {
+    const box = byId("chatBox");
+    if (!box) return;
+    const inlineArchiveCount = Math.max(0, Number(state.activeThreadInlineCommentaryArchiveCount || 0));
+    const archive = Array.isArray(state.activeThreadCommentaryArchive)
+      ? state.activeThreadCommentaryArchive.filter((block) => block && (String(block.text || "").trim() || block?.plan))
+      : [];
+    const visible = state.activeThreadCommentaryArchiveVisible === true && archive.length > 0;
+    removeCommentaryArchiveMount();
+    if (!visible || inlineArchiveCount > 0) return;
+
+    const mount = createCommentaryArchiveNode(archive, { source: "commentaryArchiveMount" });
+    mount.id = "commentaryArchiveMount";
+    const toggle = mount.querySelector(".commentaryArchiveToggle");
+    const chevron = mount.querySelector(".commentaryArchiveChevron");
+    const body = mount.querySelector(".commentaryArchiveBody");
+    const syncExpandedUi = () => {
+      if (toggle) toggle.className = `commentaryArchiveToggle${state.activeThreadCommentaryArchiveExpanded ? "" : " is-collapsed"}`;
+      if (chevron) chevron.className = `commentaryArchiveChevron${state.activeThreadCommentaryArchiveExpanded ? "" : " is-collapsed"}`;
+      if (body) body.className = `commentaryArchiveBody${state.activeThreadCommentaryArchiveExpanded ? "" : " collapsed"}`;
+      if (toggle) toggle.setAttribute("aria-expanded", state.activeThreadCommentaryArchiveExpanded ? "true" : "false");
+      if (body) body.setAttribute("aria-hidden", state.activeThreadCommentaryArchiveExpanded ? "false" : "true");
+    };
+    if (toggle) {
+      toggle.addEventListener("click", () => {
+        state.activeThreadCommentaryArchiveExpanded = !(state.activeThreadCommentaryArchiveExpanded === true);
+        syncExpandedUi();
+      });
+    }
+    syncExpandedUi();
+
+    const anchorNode =
+      (options.anchorNode && options.anchorNode.parentElement === box ? options.anchorNode : null) ||
+      box.querySelector("#runtimeChatPanels") ||
+      null;
+    if (anchorNode) box.insertBefore(mount, anchorNode);
+    else box.appendChild(mount);
+  }
+
   function addChat(role, text, options = {}) {
     const box = byId("chatBox");
     const welcome = byId("welcomeCard");
     if (!box) return;
     if (welcome) welcome.style.display = "none";
-    const node = createMessageNode(role, text, {
-      kind: options.kind,
-      attachments: options.attachments,
-      source: String(options.source || "").trim() || "addChat",
-      transient: options.transient === true,
-    });
+    const node = options.kind === "commentaryArchive"
+      ? createCommentaryArchiveNode(options.archiveBlocks, {
+          source: String(options.source || "").trim() || "addChat",
+          key: options.archiveKey,
+        })
+      : createMessageNode(role, text, {
+          kind: options.kind,
+          attachments: options.attachments,
+          source: String(options.source || "").trim() || "addChat",
+          transient: options.transient === true,
+        });
     if (options.animate !== false) {
       const defaultDelay = role === "assistant" || role === "system" ? 50 : 0;
       const delayMs = Number.isFinite(Number(options.delayMs)) ? Number(options.delayMs) : defaultDelay;
@@ -194,11 +336,6 @@ export function createChatTimelineModule(deps) {
 
   function finalizeAssistantMessage(msgNode, bodyNode, text) {
     if (!msgNode || !bodyNode) return;
-    try {
-      const box = byId("chatBox");
-      const node = box?.querySelector?.('.msg.system.kind-thinking[data-thinking="1"]') || null;
-      if (node) node.remove();
-    } catch {}
     const finalText = String(text || "").trim();
     try {
       bodyNode.removeAttribute("data-streaming");
@@ -235,6 +372,7 @@ export function createChatTimelineModule(deps) {
     state.activeThreadMessages = [];
     if (!(options && options.preservePendingTurn === true)) {
       state.activeThreadPendingTurnThreadId = "";
+      state.activeThreadPendingTurnRunning = false;
       state.activeThreadPendingUserMessage = "";
       state.activeThreadPendingAssistantMessage = "";
     }
@@ -259,6 +397,12 @@ export function createChatTimelineModule(deps) {
     state.activeThreadHistoryInFlightThreadId = "";
     state.activeThreadHistoryPendingRefresh = null;
     state.activeThreadTransientToolText = "";
+    state.activeThreadTransientThinkingText = "";
+    state.activeThreadCommentaryCurrent = null;
+    state.activeThreadCommentaryArchive = [];
+    state.activeThreadCommentaryArchiveVisible = false;
+    state.activeThreadCommentaryArchiveExpanded = false;
+    state.activeThreadInlineCommentaryArchiveCount = 0;
     state.activeThreadActivity = null;
     state.activeThreadActiveCommands = [];
     state.activeThreadPlan = null;
@@ -292,7 +436,9 @@ export function createChatTimelineModule(deps) {
     ensureStreamingBody,
     finalizeAssistantMessage,
     flushStreamingBody,
+    renderCommentaryArchive,
     renderAssistantLiveBody,
+    removeCommentaryArchiveMount,
     setChatOpening,
   };
 }

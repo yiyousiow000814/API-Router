@@ -126,6 +126,45 @@ fn backend_live_debug_push_send(client_id: u64, notif: &Value, delivered: bool) 
 }
 
 fn extract_notification_thread_id_for_debug(notif: &Value) -> Option<String> {
+    fn deep_find_thread_id(value: &Value, depth: usize) -> Option<String> {
+        if depth > 6 {
+            return None;
+        }
+        match value {
+            Value::Object(map) => {
+                for key in [
+                    "threadId",
+                    "thread_id",
+                    "conversationId",
+                    "conversation_id",
+                    "sessionId",
+                    "session_id",
+                    "parentThreadId",
+                    "parent_thread_id",
+                ] {
+                    if let Some(found) = map
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                    {
+                        return Some(found.to_string());
+                    }
+                }
+                for child in map.values() {
+                    if let Some(found) = deep_find_thread_id(child, depth + 1) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            Value::Array(items) => items
+                .iter()
+                .take(40)
+                .find_map(|child| deep_find_thread_id(child, depth + 1)),
+            _ => None,
+        }
+    }
+
     let params = notif
         .get("params")
         .and_then(Value::as_object)
@@ -150,6 +189,7 @@ fn extract_notification_thread_id_for_debug(notif: &Value) -> Option<String> {
             .or_else(|| map.get("threadId").and_then(Value::as_str))
             .map(str::to_string)
     })
+    .or_else(|| deep_find_thread_id(notif, 0))
 }
 
 fn backend_live_debug_snapshot_value() -> Value {
@@ -897,6 +937,22 @@ mod tests {
             workspace_target_from_ws_payload(&json!({ "payload": {} })),
             None
         );
+    }
+
+    #[test]
+    fn extract_notification_thread_id_for_debug_reads_wrapped_payload() {
+        let thread_id = extract_notification_thread_id_for_debug(&json!({
+            "method": "codex/event/agent_message",
+            "params": {
+                "payload": {
+                    "type": "agent_message",
+                    "thread_id": "thread-1",
+                    "phase": "commentary",
+                    "message": "thinking"
+                }
+            }
+        }));
+        assert_eq!(thread_id.as_deref(), Some("thread-1"));
     }
 
     #[test]

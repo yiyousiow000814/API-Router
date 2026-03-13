@@ -154,10 +154,13 @@ let truncateLabel = (value) => String(value || "");
 let relativeTimeLabel = () => "";
 let renderAttachmentPills = () => {};
 let clearTransientToolMessages = () => {};
+let renderCommentaryArchive = () => {};
 let renderAssistantLiveBody = () => {};
 let toToolLikeMessage = () => null;
 let notificationToToolItem = () => null;
 let renderLiveNotification = () => {};
+let clearTransientThinkingMessages = () => {};
+let showTransientThinkingMessage = () => {};
 let showTransientToolMessage = () => {};
 let workspaceKeyOfThread = () => "Default folder";
 let setMobileTab = () => {};
@@ -264,6 +267,17 @@ function setActiveThread(id) {
   if (prev !== state.activeThreadId) {
     state.activeThreadRenderSig = "";
     clearRuntimeState();
+    state.activeThreadPendingTurnThreadId = "";
+    state.activeThreadPendingTurnRunning = false;
+    state.activeThreadPendingUserMessage = "";
+    state.activeThreadPendingAssistantMessage = "";
+    state.activeThreadTransientToolText = "";
+    state.activeThreadTransientThinkingText = "";
+    state.activeThreadCommentaryCurrent = null;
+    state.activeThreadCommentaryArchive = [];
+    state.activeThreadCommentaryArchiveVisible = false;
+    state.activeThreadCommentaryArchiveExpanded = false;
+    state.activeThreadInlineCommentaryArchiveCount = 0;
   }
   if (!state.activeThreadId) {
     state.activeThreadStarted = false;
@@ -361,6 +375,8 @@ const composition = createCodexWebComposition({
   wireMessageLinks,
   renderInlineMessageText,
   findNextInlineCodeSpan,
+  showTransientThinkingMessage: (...args) => showTransientThinkingMessage(...args),
+  clearTransientThinkingMessages: (...args) => clearTransientThinkingMessages(...args),
   showTransientToolMessage: (...args) => showTransientToolMessage(...args),
   normalizeModelOption,
   isThreadAnimDebugEnabled,
@@ -428,6 +444,7 @@ const {
   bootstrap,
   createAssistantStreamingMessage,
   finalizeAssistantMessage,
+  renderCommentaryArchive: renderCommentaryArchiveFromComposition,
   renderAssistantLiveBody: renderAssistantLiveBodyFromComposition,
   getActiveWorkspaceBadgeLabel,
   getWorkspaceTarget: getWorkspaceTargetFromComposition,
@@ -446,6 +463,7 @@ syncActiveThreadMetaFromList = (...args) => syncActiveThreadMetaFromListFromComp
 refreshThreads = (...args) => refreshThreadsFromComposition(...args);
 loadThreadMessages = (...args) => loadThreadMessagesFromComposition(...args);
 renderThreads = (...args) => renderThreadsFromComposition(...args);
+renderCommentaryArchive = (...args) => renderCommentaryArchiveFromComposition(...args);
 renderAssistantLiveBody = (...args) => renderAssistantLiveBodyFromComposition(...args);
 
 ({
@@ -541,9 +559,11 @@ renderAssistantLiveBody = (...args) => renderAssistantLiveBodyFromComposition(..
 }));
 
 ({
+  clearTransientThinkingMessages,
   clearTransientToolMessages,
   notificationToToolItem,
   renderLiveNotification,
+  showTransientThinkingMessage,
   showTransientToolMessage,
   toToolLikeMessage,
   workspaceKeyOfThread,
@@ -559,10 +579,12 @@ renderAssistantLiveBody = (...args) => renderAssistantLiveBodyFromComposition(..
   renderAssistantLiveBody: (...args) => renderAssistantLiveBody(...args),
   finalizeAssistantMessage: (...args) => finalizeAssistantMessage(...args),
   setRuntimeActivity: (...args) => setRuntimeActivity(...args),
+  setActiveCommands: (...args) => setActiveCommands(...args),
   applyToolItemRuntimeUpdate: (...args) => applyToolItemRuntimeUpdate(...args),
   applyPlanDeltaUpdate: (...args) => applyPlanDeltaUpdate(...args),
   applyPlanSnapshotUpdate: (...args) => applyPlanSnapshotUpdate(...args),
   finalizeRuntimeState: (...args) => finalizeRuntimeState(...args),
+  renderCommentaryArchive: (...args) => renderCommentaryArchive(...args),
   normalizeType,
   normalizeInline,
   normalizeMultiline,

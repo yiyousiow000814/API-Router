@@ -226,6 +226,77 @@ function extractApplyPatchFiles(item) {
   return Array.from(new Set(files));
 }
 
+function readApplyPatchSource(value) {
+  if (value == null) return "";
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) return "";
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object") return readApplyPatchSource(parsed);
+    } catch {}
+    return value;
+  }
+  if (typeof value !== "object") return String(value || "");
+  for (const key of ["patch", "input", "arguments", "text", "value"]) {
+    if (typeof value?.[key] === "string" && value[key].trim()) return value[key];
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "";
+  }
+}
+
+function extractApplyPatchEdits(item) {
+  const sources = [item?.arguments, item?.input, item?.args]
+    .map(readApplyPatchSource)
+    .filter((value) => String(value || "").trim());
+  for (const source of sources) {
+    const lines = String(source || "").replace(/\r\n/g, "\n").split("\n");
+    const edits = [];
+    let current = null;
+    for (const line of lines) {
+      const text = String(line || "");
+      const addMatch = text.match(/^\*\*\* Add File:\s+(.+)$/);
+      if (addMatch) {
+        current = { path: String(addMatch[1] || "").trim(), additions: 0, deletions: 0 };
+        if (current.path) edits.push(current);
+        continue;
+      }
+      const updateMatch = text.match(/^\*\*\* Update File:\s+(.+)$/);
+      if (updateMatch) {
+        current = { path: String(updateMatch[1] || "").trim(), additions: 0, deletions: 0 };
+        if (current.path) edits.push(current);
+        continue;
+      }
+      const deleteMatch = text.match(/^\*\*\* Delete File:\s+(.+)$/);
+      if (deleteMatch) {
+        current = null;
+        edits.push({ path: String(deleteMatch[1] || "").trim(), additions: 0, deletions: 0 });
+        continue;
+      }
+      const moveMatch = text.match(/^\*\*\* Move to:\s+(.+)$/);
+      if (moveMatch && current) {
+        current.path = String(moveMatch[1] || "").trim() || current.path;
+        continue;
+      }
+      if (!current) continue;
+      if (/^\+\+\+/.test(text) || /^---/.test(text)) continue;
+      if (/^\+/.test(text)) {
+        current.additions += 1;
+        continue;
+      }
+      if (/^-/.test(text)) {
+        current.deletions += 1;
+      }
+    }
+    const normalized = edits.filter((edit) => String(edit?.path || "").trim());
+    if (normalized.length) return normalized;
+  }
+  return [];
+}
+
 export function toolItemToMessage(item, options = {}) {
   const compact = options && options.compact === true;
   const itemType = normalizeType(item?.type);
@@ -275,9 +346,21 @@ export function toolItemToMessage(item, options = {}) {
     const tool = rawTool;
     const normalizedTool = normalizeType(tool);
     if (compact && normalizedTool === "applypatch") {
+      const edits = extractApplyPatchEdits(item);
+      if (edits.length === 1) {
+        const edit = edits[0];
+        const delta = ` (+${String(edit.additions || 0)} -${String(edit.deletions || 0)})`;
+        return `Edited \`${edit.path}\`${delta}`;
+      }
+      if (edits.length > 1) {
+        const additions = edits.reduce((sum, edit) => sum + Number(edit?.additions || 0), 0);
+        const deletions = edits.reduce((sum, edit) => sum + Number(edit?.deletions || 0), 0);
+        const delta = ` (+${String(additions)} -${String(deletions)})`;
+        return `Edited ${String(edits.length)} files${delta}`;
+      }
       const files = extractApplyPatchFiles(item);
       if (files.length === 1) return `Edited \`${files[0]}\``;
-      if (files.length > 1) return `Edited \`${files[0]}\` +${String(files.length - 1)} files`;
+      if (files.length > 1) return `Edited ${String(files.length)} files`;
       if (status === "running" || status === "inprogress" || status === "working" || status === "started") {
         return "Editing files";
       }
@@ -311,7 +394,8 @@ export function toolItemToMessage(item, options = {}) {
       const pattern = normalizeInline(item?.action?.pattern, 120);
       detail = [url, pattern ? `pattern: ${pattern}` : null].filter(Boolean).join(" | ") || detail;
     }
-    const title = query ? `- Searched web for "${query}"` : "- Searched web";
+    const title = query ? `Searched web for \`${query}\`` : "Searched web";
+    if (compact) return title;
     return detail && detail !== query ? `${title}\n  - ${detail}` : title;
   }
 
@@ -324,7 +408,7 @@ export function toolItemToMessage(item, options = {}) {
 
   if (itemType === "enteredreviewmode") return "- Entered review mode";
   if (itemType === "exitedreviewmode") return "- Exited review mode";
-  if (itemType === "contextcompaction") return "- Compacted conversation context";
+  if (itemType === "contextcompaction") return "Compacted conversation context";
 
   return null;
 }
@@ -345,7 +429,6 @@ export function parseUserMessageParts(item) {
         const kept = [];
         for (const line of raw.split("\n")) {
           const trimmed = line.trim();
-          if (!trimmed) continue;
           const m = /^\[(Image\s*#\d+)\]$/i.exec(trimmed);
           if (m) {
             pendingImageLabels.push(m[1].replace(/\s+/g, " ").trim());

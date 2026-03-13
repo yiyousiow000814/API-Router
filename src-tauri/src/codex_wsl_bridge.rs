@@ -216,6 +216,32 @@ def push_notification(home, payload):
             obj["eventId"] = event_id
         st["items"].append((event_id, obj))
 
+def normalize_notification(payload):
+    if isinstance(payload, dict) and payload.get("method"):
+        return payload
+    if not isinstance(payload, dict):
+        return None
+    record_type = payload.get("type")
+    record_payload = payload.get("payload")
+    if not isinstance(record_payload, dict):
+        return None
+    if record_type == "event_msg":
+        event_type = str(record_payload.get("type") or "").strip() or "event_msg"
+        return {
+            "method": f"codex/event/{event_type}",
+            "params": {
+                "payload": record_payload,
+            },
+        }
+    if record_type == "response_item":
+        return {
+            "method": "codex/event/response_item",
+            "params": {
+                "payload": record_payload,
+            },
+        }
+    return None
+
 def replay_notifications(home, since_event_id, max_items):
     key = normalize_home(home)
     cap = max(1, min(int(max_items or 1), NOTIFICATION_QUEUE_CAP))
@@ -291,8 +317,9 @@ class AppServer:
                     if waiter is not None:
                         waiter.put(payload)
                     continue
-                if isinstance(payload, dict) and payload.get("method"):
-                    push_notification(self.codex_home, payload)
+                normalized = normalize_notification(payload)
+                if normalized is not None:
+                    push_notification(self.codex_home, normalized)
         finally:
             with self.pending_lock:
                 pending = list(self.pending.values())

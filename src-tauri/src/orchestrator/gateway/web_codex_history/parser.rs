@@ -103,13 +103,13 @@ fn normalize_token_usage_info(info: &Value) -> Option<Value> {
     }))
 }
 
-fn is_visible_assistant_phase(payload: &Value) -> bool {
-    let phase = payload
+fn assistant_phase(payload: &Value) -> Option<String> {
+    payload
         .get("phase")
         .and_then(Value::as_str)
         .map(str::trim)
-        .unwrap_or_default();
-    phase.is_empty() || phase.eq_ignore_ascii_case("final_answer")
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -253,9 +253,6 @@ impl HistoryTurnBuilder {
     }
 
     fn handle_agent_message(&mut self, payload: &Value) {
-        if !is_visible_assistant_phase(payload) {
-            return;
-        }
         let text = payload
             .get("message")
             .and_then(Value::as_str)
@@ -264,7 +261,7 @@ impl HistoryTurnBuilder {
         if text.is_empty() {
             return;
         }
-        self.push_assistant_text_item("agentMessage", text);
+        self.push_assistant_text_item("agentMessage", text, assistant_phase(payload));
     }
 
     fn handle_context_compacted(&mut self) {
@@ -426,9 +423,6 @@ impl HistoryTurnBuilder {
     }
 
     fn handle_response_message(&mut self, payload: &Value) {
-        if !is_visible_assistant_phase(payload) {
-            return;
-        }
         let role = payload
             .get("role")
             .and_then(Value::as_str)
@@ -440,7 +434,7 @@ impl HistoryTurnBuilder {
         let Some(text) = extract_response_message_text(payload.get("content")) else {
             return;
         };
-        self.push_assistant_text_item("assistantMessage", &text);
+        self.push_assistant_text_item("assistantMessage", &text, assistant_phase(payload));
     }
 
     fn handle_compacted(&mut self) {
@@ -501,7 +495,7 @@ impl HistoryTurnBuilder {
         turn.items.len().saturating_sub(1)
     }
 
-    fn push_assistant_text_item(&mut self, item_type: &str, text: &str) {
+    fn push_assistant_text_item(&mut self, item_type: &str, text: &str, phase: Option<String>) {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return;
@@ -518,18 +512,34 @@ impl HistoryTurnBuilder {
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .unwrap_or_default();
+                let existing_phase = item
+                    .get("phase")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let next_phase = phase
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
                 matches!(existing_type, "agentMessage" | "assistantMessage")
                     && existing_text == trimmed
+                    && existing_phase == next_phase
             });
         if should_skip_duplicate {
             return;
         }
         let item_id = self.next_item_id();
-        self.push_turn_item(json!({
+        let mut item = json!({
             "type": item_type,
             "id": item_id,
             "text": trimmed,
-        }));
+        });
+        if let Some(phase_value) = phase.filter(|value| !value.trim().is_empty()) {
+            if let Some(map) = item.as_object_mut() {
+                map.insert("phase".to_string(), Value::String(phase_value));
+            }
+        }
+        self.push_turn_item(item);
     }
 
     fn turn_item_object_mut(
@@ -803,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn parser_omits_commentary_phase_assistant_messages() {
+    fn parser_preserves_commentary_phase_assistant_messages_for_history_state() {
         let rollout = write_rollout(&[
             r#"{"type":"session_meta","payload":{"id":"thread-commentary"}}"#,
             r#"{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-1"}}"#,
@@ -819,12 +829,16 @@ mod tests {
         let items = &parsed.turns[0].items;
         assert_eq!(
             items.len(),
-            2,
-            "commentary-phase assistant items should be removed"
+            3,
+            "commentary-phase items should remain in turn history"
         );
         assert_eq!(items[0]["type"].as_str(), Some("userMessage"));
-        assert_eq!(items[1]["type"].as_str(), Some("assistantMessage"));
-        assert_eq!(items[1]["text"].as_str(), Some("done"));
+        assert_eq!(items[1]["type"].as_str(), Some("agentMessage"));
+        assert_eq!(items[1]["phase"].as_str(), Some("commentary"));
+        assert_eq!(items[1]["text"].as_str(), Some("working notes"));
+        assert_eq!(items[2]["type"].as_str(), Some("assistantMessage"));
+        assert_eq!(items[2]["phase"].as_str(), Some("final_answer"));
+        assert_eq!(items[2]["text"].as_str(), Some("done"));
     }
 
     #[test]
