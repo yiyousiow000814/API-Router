@@ -3,6 +3,71 @@ import { describe, expect, it } from "vitest";
 import { createComposerUiModule } from "./composerUi.js";
 
 describe("composerUi", () => {
+  function makeClassList(target) {
+    const values = new Set();
+    const sync = () => {
+      target._className = [...values].join(" ").trim();
+    };
+    return {
+      _values: values,
+      add(...tokens) {
+        for (const token of tokens) {
+          const normalized = String(token || "").trim();
+          if (normalized) values.add(normalized);
+        }
+        sync();
+      },
+      remove(...tokens) {
+        for (const token of tokens) values.delete(String(token || "").trim());
+        sync();
+      },
+      contains(token) {
+        return values.has(String(token || "").trim());
+      },
+      toggle(token, force) {
+        const normalized = String(token || "").trim();
+        if (!normalized) return false;
+        if (force === true) {
+          values.add(normalized);
+          sync();
+          return true;
+        }
+        if (force === false) {
+          values.delete(normalized);
+          sync();
+          return false;
+        }
+        if (values.has(normalized)) {
+          values.delete(normalized);
+          sync();
+          return false;
+        }
+        values.add(normalized);
+        sync();
+        return true;
+      },
+    };
+  }
+
+  function installClassNameAccessor(node) {
+    Object.defineProperty(node, "className", {
+      get() {
+        return this._className || "";
+      },
+      set(value) {
+        this._className = String(value || "").trim();
+        if (this.classList?._values) {
+          this.classList._values.clear();
+          for (const token of this._className.split(/\s+/).filter(Boolean)) {
+            this.classList._values.add(token);
+          }
+        }
+      },
+      configurable: true,
+      enumerable: true,
+    });
+  }
+
   function makeNode() {
     function findById(node, selector) {
       if (!node || typeof selector !== "string" || !selector.startsWith("#")) return null;
@@ -15,11 +80,12 @@ describe("composerUi", () => {
       }
       return null;
     }
-    return {
+    const node = {
       id: "",
       style: {},
       innerHTML: "",
       textContent: "",
+      _className: "",
       children: [],
       appendChild(node) {
         this.children = this.children.filter((item) => item !== node);
@@ -36,7 +102,12 @@ describe("composerUi", () => {
       querySelector(selector) {
         return findById(this, selector);
       },
+      addEventListener() {},
+      removeEventListener() {},
     };
+    node.classList = makeClassList(node);
+    installClassNameAccessor(node);
+    return node;
   }
 
   function makeElementFactory(dockRef = null) {
@@ -51,10 +122,11 @@ describe("composerUi", () => {
       }
       return null;
     }
-    return (tag) => ({
+    return (tag) => {
+      const node = {
       tagName: String(tag || "").toUpperCase(),
       id: "",
-      className: "",
+      _className: "",
       style: {},
       innerHTML: "",
       children: [],
@@ -83,7 +155,13 @@ describe("composerUi", () => {
         }
         this.parentNode = null;
       },
-    });
+      addEventListener() {},
+      removeEventListener() {},
+    };
+      node.classList = makeClassList(node);
+      installClassNameAccessor(node);
+      return node;
+    };
   }
 
   it("reads prompt value through dependency", () => {
@@ -169,6 +247,70 @@ describe("composerUi", () => {
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).not.toContain("runtimeToolItemTailDot");
     expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Planning");
     expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
+  });
+
+  it("prepares runtime panels synchronously during chat opening without per-item enter animations", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+      chatOpening: true,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) {
+        return item?.text || "";
+      },
+      normalizeType(value) { return String(value || "").replace(/[^a-z]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.setActiveCommands([
+      { key: "cmd-1", text: "Running `npm test`", state: "running", icon: "command" },
+    ]);
+    module.setActivePlan({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      explanation: "Need a quick plan",
+      steps: [{ step: "Inspect history", status: "completed" }],
+      deltaText: "",
+    });
+    module.setRuntimeActivity({
+      threadId: "thread-1",
+      title: "Planning",
+      detail: "Need a quick plan",
+      tone: "running",
+    });
+
+    expect(chatBox.querySelector("#runtimePlanInline").className).not.toContain("is-hidden");
+    expect(chatBox.querySelector("#runtimeToolInline").className).not.toContain("is-hidden");
+    expect(nodes.get("runtimeDock").style.display).toBe("");
+    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Planning");
   });
 
   it("keeps the runtime dock visible for a pending turn before tools or commentary arrive", () => {
@@ -1130,6 +1272,78 @@ describe("composerUi", () => {
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("npm run build");
     expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Running command");
     expect(nodes.get("runtimeDock").style.display).toBe("");
+  });
+
+  it("shows Thinking for incomplete history before commentary arrives and clears it after completion", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadTransientThinkingText: "",
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.syncRuntimeStateFromHistory({
+      id: "thread-1",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", id: "user-1", content: [{ type: "text", text: "run it from terminal" }] },
+          ],
+        },
+      ],
+    });
+
+    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Thinking");
+    expect(nodes.get("runtimeDock").style.display).toBe("");
+
+    module.syncRuntimeStateFromHistory({
+      id: "thread-1",
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", id: "user-1", content: [{ type: "text", text: "run it from terminal" }] },
+            { type: "assistantMessage", id: "assistant-1", phase: "final_answer", text: "done" },
+          ],
+        },
+      ],
+    });
+
+    expect(nodes.get("runtimeActivityBar").innerHTML).toBe("");
+    expect(nodes.get("runtimeDock").style.display).toBe("none");
   });
 
   it("renders live runtime stack in the order plan then thinking then tools", () => {

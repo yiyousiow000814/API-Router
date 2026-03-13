@@ -2,9 +2,9 @@ export function resolveThreadAutoRefreshInterval(wsOpen, wsSubscribed, connected
   return wsOpen && wsSubscribed ? connectedMs : disconnectedMs;
 }
 
-export function resolveActiveThreadLivePollInterval(wsSubscribed, historyIncomplete, liveMs, wsFallbackMs) {
-  if (historyIncomplete) return liveMs;
-  return wsSubscribed ? wsFallbackMs : liveMs;
+export function resolveActiveThreadLivePollInterval(liveMs) {
+  const normalized = Number(liveMs || 0);
+  return Number.isFinite(normalized) && normalized > 0 ? normalized : 0;
 }
 
 export function shouldPollActiveThreadLive({
@@ -32,7 +32,6 @@ export function createThreadLiveModule(deps) {
     THREAD_AUTO_REFRESH_CONNECTED_MS,
     THREAD_AUTO_REFRESH_DISCONNECTED_MS,
     ACTIVE_THREAD_LIVE_POLL_MS,
-    ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS,
     WebSocketRef = WebSocket,
     setIntervalRef = setInterval,
   } = deps;
@@ -216,12 +215,7 @@ export function createThreadLiveModule(deps) {
       ) return;
       const now = Date.now();
       const last = Number(state.activeThreadLiveLastPollMs || 0);
-      const minInterval = resolveActiveThreadLivePollInterval(
-        wsSubscribed,
-        !!state.activeThreadHistoryIncomplete,
-        ACTIVE_THREAD_LIVE_POLL_MS,
-        ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS
-      );
+      const minInterval = resolveActiveThreadLivePollInterval(ACTIVE_THREAD_LIVE_POLL_MS);
       if (now - last < minInterval) return;
       state.activeThreadLiveLastPollMs = now;
       if (state.activeThreadLivePolling) return;

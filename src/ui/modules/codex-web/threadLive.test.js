@@ -56,13 +56,13 @@ describe("threadLive", () => {
     ).toBe(false);
   });
 
-  it("keeps the fast live poll interval for incomplete threads even when ws is subscribed", () => {
-    expect(resolveActiveThreadLivePollInterval(true, true, 1500, 3000)).toBe(1500);
-    expect(resolveActiveThreadLivePollInterval(true, false, 1500, 3000)).toBe(3000);
-    expect(resolveActiveThreadLivePollInterval(false, true, 1500, 3000)).toBe(1500);
+  it("keeps the fast live poll interval for active threads even when ws is subscribed", () => {
+    expect(resolveActiveThreadLivePollInterval(1500)).toBe(1500);
+    expect(resolveActiveThreadLivePollInterval(800)).toBe(800);
+    expect(resolveActiveThreadLivePollInterval(0)).toBe(0);
   });
 
-  it("uses the ws fallback polling interval when ws is subscribed", async () => {
+  it("does not slow active-thread polling just because ws is subscribed", async () => {
     const callbacks = [];
     const loadCalls = [];
     let now = 10_000;
@@ -106,10 +106,6 @@ describe("threadLive", () => {
       expect(loadCalls).toHaveLength(1);
 
       now += 2_000;
-      await callbacks[0]();
-      expect(loadCalls).toHaveLength(1);
-
-      now += 1_100;
       await callbacks[0]();
       expect(loadCalls).toHaveLength(2);
     } finally {

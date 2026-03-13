@@ -376,8 +376,19 @@ describe("chatTimeline", () => {
     module.setChatOpening(true);
 
     expect(dom.overlay.classList.contains("show")).toBe(true);
+    expect(dom.chatBox.classList.contains("chat-opening")).toBe(true);
     expect(state.chatShouldStickToBottom).toBe(true);
     expect(state.chatUserScrolledAwayAt).toBe(0);
+  });
+
+  it("reveals the prepared chat content in one batch after opening finishes", () => {
+    module.setChatOpening(true);
+    module.setChatOpening(false);
+
+    expect(dom.overlay.classList.contains("show")).toBe(false);
+    expect(state.chatOpening).toBe(false);
+    expect(dom.chatBox.classList.contains("chat-opening")).toBe(false);
+    expect(dom.chatBox.classList.contains("chat-opening-reveal")).toBe(true);
   });
 
   it("buffers and flushes streaming chunks", () => {

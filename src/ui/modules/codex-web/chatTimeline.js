@@ -47,6 +47,7 @@ export function createChatTimelineModule(deps) {
   }
 
   function animateMessageNode(node, delayMs = 0) {
+    if (state.chatOpening === true) return;
     if (delayMs > 0) node.style.setProperty("--msg-enter-delay", `${Math.floor(delayMs)}ms`);
     else node.style.removeProperty("--msg-enter-delay");
     node.classList.add("msg-enter");
@@ -413,6 +414,7 @@ export function createChatTimelineModule(deps) {
     const overlay = byId("chatOpeningOverlay");
     const box = byId("chatBox");
     if (!overlay) return;
+    state.chatOpening = isOpening === true;
     if (isOpening) {
       clearChatMessages();
       const welcome = byId("welcomeCard");
@@ -420,7 +422,22 @@ export function createChatTimelineModule(deps) {
       state.chatShouldStickToBottom = true;
       state.chatUserScrolledAwayAt = 0;
       state.chatProgrammaticScrollUntil = Date.now() + 260;
-      if (box) box.scrollTop = 0;
+      if (box) {
+        box.scrollTop = 0;
+        box.classList.add("chat-opening");
+        box.classList.remove("chat-opening-reveal");
+      }
+    } else if (box) {
+      const hadOpeningClass = box.classList.contains("chat-opening");
+      box.classList.remove("chat-opening");
+      if (hadOpeningClass) {
+        box.classList.remove("chat-opening-reveal");
+        box.classList.add("chat-opening-reveal");
+        const clearRevealClass = () => box.classList.remove("chat-opening-reveal");
+        if (typeof box.addEventListener === "function") {
+          box.addEventListener("animationend", clearRevealClass, { once: true });
+        }
+      }
     }
     overlay.classList.toggle("show", !!isOpening);
   }

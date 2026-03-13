@@ -2179,6 +2179,33 @@ async function main() {
       const shown = await driver.executeScript(`return !!document.getElementById('scrollToBottomBtn')?.classList.contains('show');`)
       return !!shown
     }, 8000, 'scroll-to-bottom button to show when not near bottom')
+    // When scrolled far up, the button must still remain in the visible chat viewport instead of
+    // being anchored near the bottom of the scrollable content.
+    const farUpVisible = await driver.executeScript(`
+      const box = document.getElementById('chatBox');
+      if (!box) return { ok: false, error: 'missing chatBox' };
+      box.scrollTop = 0;
+      box.dispatchEvent(new Event('scroll'));
+      const btn = document.getElementById('scrollToBottomBtn');
+      if (!btn) return { ok: false, error: 'missing button' };
+      const br = btn.getBoundingClientRect();
+      const cr = box.getBoundingClientRect();
+      const intersects = br.bottom >= cr.top && br.top <= cr.bottom && br.right >= cr.left && br.left <= cr.right;
+      return {
+        ok: true,
+        shown: btn.classList.contains('show'),
+        intersects,
+        btnTop: Math.round(br.top),
+        btnBottom: Math.round(br.bottom),
+        chatTop: Math.round(cr.top),
+        chatBottom: Math.round(cr.bottom),
+      };
+    `)
+    if (!farUpVisible?.ok) throw new Error(`far-up scroll probe failed: ${farUpVisible?.error || 'unknown'}`)
+    if (!farUpVisible.shown) throw new Error(`expected scroll-to-bottom button shown after scrolling far up, got ${JSON.stringify(farUpVisible)}`)
+    if (!farUpVisible.intersects) {
+      throw new Error(`expected scroll-to-bottom button to remain inside the visible chat viewport when far from bottom, got ${JSON.stringify(farUpVisible)}`)
+    }
     // Button should be horizontally centered in the chat box.
     const centered = await driver.executeScript(`
       const btn = document.getElementById('scrollToBottomBtn');

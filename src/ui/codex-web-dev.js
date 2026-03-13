@@ -65,7 +65,6 @@ import { createBootstrapModule } from "./modules/codex-web/bootstrapApp.js";
 import { createCodexWebComposition } from "./modules/codex-web/composition.js";
 import {
   ACTIVE_THREAD_LIVE_POLL_MS,
-  ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS,
   ACTIVE_THREAD_REFRESH_DEBOUNCE_MS,
   CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS,
   CHAT_LIVE_FOLLOW_MAX_STEP_PX,
@@ -412,7 +411,6 @@ const composition = createCodexWebComposition({
   THREAD_AUTO_REFRESH_CONNECTED_MS,
   THREAD_AUTO_REFRESH_DISCONNECTED_MS,
   ACTIVE_THREAD_LIVE_POLL_MS,
-  ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS,
   LAST_EVENT_ID_KEY,
   LIVE_INSPECTOR_ENABLED_KEY,
   createWsClientModule,

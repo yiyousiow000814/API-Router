@@ -240,8 +240,9 @@ export function createComposerUiModule(deps) {
     const detail = detailRaw ? renderInlineMessageText(detailRaw) : "";
     const tone = escapeHtml(String(activity.tone || "running"));
     const dots = '<span class="runtimeActivityDots"><span></span><span></span><span></span></span>';
+    const enterClass = state.chatOpening === true ? "" : " runtimeActivityEnter";
     return (
-      `<div class="runtimeActivity tone-${tone}" data-activity-tone="${tone}">` +
+      `<div class="runtimeActivity${enterClass} tone-${tone}" data-activity-tone="${tone}">` +
         `<span class="runtimeActivityLead" aria-hidden="true"></span>` +
         `<span class="runtimeActivityText"><strong>${title}</strong>${detail ? `<span class="runtimeActivityDetail"> · ${detail}</span>` : ""}</span>` +
         `${dots}` +
@@ -276,7 +277,7 @@ export function createComposerUiModule(deps) {
     const moreHtml = snippet.extraLines > 0
       ? `<span class="runtimeToolItemMeta">+${String(snippet.extraLines)} lines</span>`
       : "";
-    const enterClass = shouldAnimateEnter ? " runtimeToolItemEnter" : "";
+    const enterClass = shouldAnimateEnter && state.chatOpening !== true ? " runtimeToolItemEnter" : "";
     return (
       `<div class="runtimeToolItem${enterClass} state-${stateName} icon-${icon}" data-command-key="${escapeHtml(entry?.key || "")}">` +
         `<span class="runtimeToolItemLead" aria-hidden="true"></span>` +
@@ -294,7 +295,7 @@ export function createComposerUiModule(deps) {
     return renderPlanCardHtml(plan, {
       escapeHtml,
       normalizeType,
-      animateEnter: shouldAnimateEnter,
+      animateEnter: shouldAnimateEnter && state.chatOpening !== true,
     });
   }
 
@@ -310,6 +311,7 @@ export function createComposerUiModule(deps) {
 
   function animateRuntimeSectionRefresh(node) {
     if (!node || !node.classList) return;
+    if (state.chatOpening === true) return;
     node.classList.remove("is-refreshing");
     scheduleFrame(() => {
       node.classList.add("is-refreshing");
@@ -329,6 +331,10 @@ export function createComposerUiModule(deps) {
       if (node.__runtimeSectionVisible === true && !node.classList.contains("is-hidden")) return;
       node.__runtimeSectionVisible = true;
       node.style.display = "";
+      if (state.chatOpening === true) {
+        node.classList.remove("is-hidden");
+        return;
+      }
       scheduleFrame(() => {
         if (node.__runtimeSectionVisible === true) node.classList.remove("is-hidden");
       });
@@ -640,6 +646,11 @@ export function createComposerUiModule(deps) {
     }
     if (plan) {
       assignRuntimeActivity({ threadId, title: "Planning", detail: plan.explanation || "", tone: "running" });
+      renderRuntimePanels();
+      return;
+    }
+    if (pageIncomplete && commands.length === 0) {
+      assignRuntimeActivity({ threadId, title: "Thinking", detail: "", tone: "running" });
       renderRuntimePanels();
       return;
     }

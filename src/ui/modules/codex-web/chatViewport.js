@@ -52,6 +52,7 @@ export function createChatViewportModule(deps) {
     if (!box) return;
     const btn = ensureScrollToBottomBtn();
     if (!btn) return;
+    positionScrollToBottomBtn(btn, box);
     const show =
       box.scrollHeight > box.clientHeight + 40 &&
       (!state.chatShouldStickToBottom || !isChatNearBottomForJumpBtn());
@@ -305,8 +306,24 @@ export function createChatViewportModule(deps) {
         updateScrollToBottomBtn();
       };
     }
-    if (btn.parentElement !== box) box.appendChild(btn);
+    const panel = box.parentElement || box;
+    if (btn.parentElement !== panel) panel.appendChild(btn);
+    positionScrollToBottomBtn(btn, box);
     return btn;
+  }
+
+  function positionScrollToBottomBtn(btn, box) {
+    if (!btn || !box) return;
+    const panel = box.parentElement || null;
+    const panelRect = panel?.getBoundingClientRect?.();
+    const chatRect = box.getBoundingClientRect?.();
+    const panelBottom = Number(panelRect?.bottom);
+    const chatBottom = Number(chatRect?.bottom);
+    const overlayBottomPx =
+      Number.isFinite(panelBottom) && Number.isFinite(chatBottom)
+        ? Math.max(12, Math.round(panelBottom - chatBottom + 12))
+        : 12;
+    btn.style.bottom = `${overlayBottomPx}px`;
   }
 
   return {

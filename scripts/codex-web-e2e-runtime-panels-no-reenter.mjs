@@ -139,12 +139,12 @@ async function main() {
         commands: [
           {
             key: 'live-tool-1',
-            text: 'rg -n runtimeDock codex-web.html',
+            text: 'rg -n "runtimeDock|runtimeActivityBar|runtimeToolItemText|runtimeActivityText|chatOpeningOverlay" codex-web.html src/ui/modules/codex-web',
             state: 'running',
             icon: 'command',
             title: 'Running command',
-            detail: 'rg -n runtimeDock codex-web.html',
-            label: 'rg -n runtimeDock codex-web.html',
+            detail: 'rg -n "runtimeDock|runtimeActivityBar|runtimeToolItemText|runtimeActivityText|chatOpeningOverlay" codex-web.html src/ui/modules/codex-web',
+            label: 'rg -n "runtimeDock|runtimeActivityBar|runtimeToolItemText|runtimeActivityText|chatOpeningOverlay" codex-web.html src/ui/modules/codex-web',
             presentation: 'code',
           },
         ],
@@ -220,7 +220,7 @@ async function main() {
                 {
                   id: 'history-tool-77',
                   type: 'commandExecution',
-                  command: 'rg -n runtimeDock codex-web.html',
+                  command: 'rg -n "runtimeDock|runtimeActivityBar|runtimeToolItemText|runtimeActivityText|chatOpeningOverlay" codex-web.html src/ui/modules/codex-web',
                   status: 'running',
                 },
                 {
@@ -272,8 +272,40 @@ async function main() {
       throw new Error(`runtime plan card re-entered after history refresh: ${JSON.stringify({ beforeHistory, afterHistory })}`)
     }
 
+    const mobileClamp = await driver.executeScript(`
+      const toolText = document.querySelector('#runtimeToolInline .runtimeToolItemText');
+      const activityText = document.querySelector('#runtimeActivityBar .runtimeActivityText');
+      const read = (node) => {
+        if (!node) return null;
+        const style = getComputedStyle(node);
+        const lineHeight = Number.parseFloat(style.lineHeight || '0') || 0;
+        const rect = node.getBoundingClientRect();
+        return {
+          text: String(node.textContent || '').trim(),
+          lineHeight,
+          height: rect.height,
+          lineClamp: style.webkitLineClamp || '',
+          whiteSpace: style.whiteSpace || '',
+        };
+      };
+      return {
+        tool: read(toolText),
+        activity: read(activityText),
+      };
+    `)
+    const toolHeight = Number(mobileClamp?.tool?.height || 0)
+    const toolLineHeight = Number(mobileClamp?.tool?.lineHeight || 0)
+    const activityHeight = Number(mobileClamp?.activity?.height || 0)
+    const activityLineHeight = Number(mobileClamp?.activity?.lineHeight || 0)
+    if (!(toolHeight > toolLineHeight * 1.35 && toolHeight <= toolLineHeight * 2.7)) {
+      throw new Error(`expected mobile runtime tool text to use up to two readable lines, got ${JSON.stringify(mobileClamp)}`)
+    }
+    if (!(activityHeight > 0 && activityHeight <= activityLineHeight * 1.35)) {
+      throw new Error(`expected mobile runtime activity text to stay single-line, got ${JSON.stringify(mobileClamp)}`)
+    }
+
     console.log('[ui:e2e:codex-runtime-panels-no-reenter] PASS')
-    console.log(JSON.stringify({ beforeHistory, afterHistory }))
+    console.log(JSON.stringify({ beforeHistory, afterHistory, mobileClamp }))
   } finally {
     if (driver) await driver.quit().catch(() => {})
     if (devProc) killProcessTree(devProc)

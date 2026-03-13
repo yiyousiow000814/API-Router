@@ -107,7 +107,6 @@ describe("composition", () => {
       THREAD_AUTO_REFRESH_CONNECTED_MS: 1,
       THREAD_AUTO_REFRESH_DISCONNECTED_MS: 1,
       ACTIVE_THREAD_LIVE_POLL_MS: 1,
-      ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS: 1,
       LAST_EVENT_ID_KEY: "last",
       createWsClientModule: stubFactory({ api: async () => ({}), connectWs: () => {}, handleWsPayload: () => {}, wsCall: () => {}, wsSend: () => {} }),
       createWorkspaceUiModule: stubFactory({ applyWorkspaceUi: () => {}, getActiveWorkspaceBadgeLabel: () => "WIN", getStartCwdForWorkspace: () => "", getWorkspaceLabel: () => "", getWorkspaceTarget: () => "windows", hasDualWorkspaceTargets: () => false, isWorkspaceAvailable: () => true, persistStartCwdByWorkspace: () => {}, setStartCwdForWorkspace: () => {}, setWorkspaceTarget: () => {}, syncActiveThreadMetaFromList: () => {} }),

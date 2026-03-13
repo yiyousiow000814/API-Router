@@ -17,9 +17,17 @@ describe("chatViewport", () => {
     expect(isNearBottomForJumpButton(1200, 600, 250, 180)).toBe(false);
   });
 
-  it("mounts the jump button inside chatBox instead of the outer panel", () => {
+  it("mounts the jump button on the chat panel overlay instead of inside the scrollable chat body", () => {
+    const panel = {
+      children: [],
+      appendChild(node) {
+        node.parentElement = this;
+        this.children.push(node);
+      },
+    };
     const chatBox = {
       children: [],
+      parentElement: panel,
       appendChild(node) {
         node.parentElement = this;
         this.children.push(node);
@@ -29,6 +37,7 @@ describe("chatViewport", () => {
       __wired: false,
       parentElement: null,
       onclick: null,
+      style: {},
       classList: { toggle() {} },
       setAttribute() {},
     };
@@ -40,7 +49,21 @@ describe("chatViewport", () => {
         return null;
       },
       dbgSet() {},
-      documentRef: { querySelector() { return null; } },
+      documentRef: {
+        querySelector() { return null; },
+        createElement() {
+          return {
+            id: "",
+            className: "",
+            parentElement: null,
+            children: [],
+            appendChild(node) {
+              node.parentElement = this;
+              this.children.push(node);
+            },
+          };
+        },
+      },
       windowRef: {},
       requestAnimationFrameRef(callback) { return callback(0); },
       cancelAnimationFrameRef() {},
@@ -49,7 +72,7 @@ describe("chatViewport", () => {
     });
 
     expect(module.ensureScrollToBottomBtn()).toBe(btn);
-    expect(btn.parentElement).toBe(chatBox);
+    expect(btn.parentElement).toBe(panel);
   });
 
   it("shows the jump button as soon as chat is no longer sticky", () => {
@@ -69,6 +92,7 @@ describe("chatViewport", () => {
       __wired: false,
       parentElement: null,
       onclick: null,
+      style: {},
       disabled: true,
       tabIndex: -1,
       classList: {
@@ -92,7 +116,21 @@ describe("chatViewport", () => {
         return null;
       },
       dbgSet() {},
-      documentRef: { activeElement: null },
+      documentRef: {
+        activeElement: null,
+        createElement() {
+          return {
+            id: "",
+            className: "",
+            parentElement: null,
+            children: [],
+            appendChild(node) {
+              node.parentElement = this;
+              this.children.push(node);
+            },
+          };
+        },
+      },
       windowRef: {},
       requestAnimationFrameRef(callback) {
         return callback(0);

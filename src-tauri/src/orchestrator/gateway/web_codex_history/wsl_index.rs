@@ -4,7 +4,9 @@ use crate::orchestrator::gateway::web_codex_home::{
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::Path;
+use std::process::Stdio;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 const WSL_HISTORY_INDEX_SCRIPT: &str = include_str!("wsl_history_index.py");
@@ -109,6 +111,20 @@ fn wsl_history_cache_root() -> Result<String, String> {
     Ok(linux_path_join(&codex_home, "api-router-history-cache-v1"))
 }
 
+fn build_wsl_history_python_args(extra: &[String]) -> Vec<String> {
+    let mut args = Vec::with_capacity(extra.len() + 4);
+    args.push("-e".to_string());
+    args.push("python3".to_string());
+    args.push("-".to_string());
+    args.extend(extra.iter().cloned());
+    args
+}
+
+#[cfg(test)]
+fn estimate_wsl_launch_len(args: &[String]) -> usize {
+    "wsl.exe".len() + args.iter().map(|arg| arg.len() + 1).sum::<usize>()
+}
+
 fn run_wsl_history_page_script(
     thread_id: &str,
     workspace_value: Option<&str>,
@@ -118,27 +134,19 @@ fn run_wsl_history_page_script(
     normalized_limit: usize,
     cache_root: &str,
 ) -> Result<Value, String> {
-    let mut cmd = std::process::Command::new("wsl.exe");
-    cmd.arg("-e")
-        .arg("python3")
-        .arg("-c")
-        .arg(WSL_HISTORY_INDEX_SCRIPT)
-        .arg("page")
-        .arg(thread_id)
-        .arg(linux_rollout_path)
-        .arg(before.unwrap_or_default())
-        .arg(normalized_limit.to_string())
-        .arg(workspace_value.unwrap_or_default())
-        .arg(raw_rollout_path)
-        .arg(cache_root);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
-    let output = cmd
-        .output()
-        .map_err(|e| format!("failed to launch WSL history reader: {e}"))?;
+    let output = run_wsl_history_python(
+        &[
+            "page".to_string(),
+            thread_id.to_string(),
+            linux_rollout_path.to_string(),
+            before.unwrap_or_default().to_string(),
+            normalized_limit.to_string(),
+            workspace_value.unwrap_or_default().to_string(),
+            raw_rollout_path.to_string(),
+            cache_root.to_string(),
+        ],
+        "reader",
+    )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
@@ -152,22 +160,14 @@ fn run_wsl_history_page_script(
 }
 
 fn run_wsl_history_build_script(linux_rollout_path: &str, cache_root: &str) -> Result<(), String> {
-    let mut cmd = std::process::Command::new("wsl.exe");
-    cmd.arg("-e")
-        .arg("python3")
-        .arg("-c")
-        .arg(WSL_HISTORY_INDEX_SCRIPT)
-        .arg("build-index")
-        .arg(linux_rollout_path)
-        .arg(cache_root);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
-    let output = cmd
-        .output()
-        .map_err(|e| format!("failed to launch WSL history index builder: {e}"))?;
+    let output = run_wsl_history_python(
+        &[
+            "build-index".to_string(),
+            linux_rollout_path.to_string(),
+            cache_root.to_string(),
+        ],
+        "index builder",
+    )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
@@ -177,6 +177,35 @@ fn run_wsl_history_build_script(linux_rollout_path: &str, cache_root: &str) -> R
         });
     }
     Ok(())
+}
+
+fn run_wsl_history_python(extra: &[String], label: &str) -> Result<std::process::Output, String> {
+    let args = build_wsl_history_python_args(extra);
+    let mut cmd = std::process::Command::new("wsl.exe");
+    cmd.args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to launch WSL history {label}: {e}"))?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| format!("failed to open WSL history {label} stdin"))?;
+        stdin
+            .write_all(WSL_HISTORY_INDEX_SCRIPT.as_bytes())
+            .map_err(|e| format!("failed to stream WSL history {label} script: {e}"))?;
+    }
+    child
+        .wait_with_output()
+        .map_err(|e| format!("failed to wait for WSL history {label}: {e}"))
 }
 
 fn spawn_wsl_history_build(linux_rollout_path: String) {
@@ -329,7 +358,8 @@ fn log_wsl_history_meta(meta: Option<&Value>, raw_rollout_path: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_wait_for_wsl_history_build, wsl_history_cache_root, wsl_history_prewarm_paths,
+        build_wsl_history_python_args, estimate_wsl_launch_len, should_wait_for_wsl_history_build,
+        wsl_history_cache_root, wsl_history_prewarm_paths,
     };
     use serde_json::json;
 
@@ -409,5 +439,27 @@ mod tests {
         assert!(!should_wait_for_wsl_history_build(Some(""), true));
         assert!(should_wait_for_wsl_history_build(Some("cursor-1"), true));
         assert!(!should_wait_for_wsl_history_build(Some("cursor-1"), false));
+    }
+
+    #[test]
+    fn wsl_history_page_command_stays_under_windows_limit_for_long_rollout_paths() {
+        let args = build_wsl_history_python_args(&[
+            "page".to_string(),
+            "019c7766-db34-7c43-a808-b2e8f356c907".to_string(),
+            "/home/yiyou/.codex/sessions/2026/02/20/rollout-2026-02-20T03-35-55-019c7766-db34-7c43-a808-b2e8f356c907.jsonl".to_string(),
+            String::new(),
+            "25".to_string(),
+            "wsl2".to_string(),
+            r"\\wsl.localhost\Ubuntu\home\yiyou\.codex\sessions\2026\02\20\rollout-2026-02-20T03-35-55-019c7766-db34-7c43-a808-b2e8f356c907.jsonl".to_string(),
+            "/home/yiyou/.codex/api-router-history-cache-v1".to_string(),
+        ]);
+        assert_eq!(args[0], "-e");
+        assert_eq!(args[1], "python3");
+        assert_eq!(args[2], "-");
+        assert!(
+            estimate_wsl_launch_len(&args) < 32_767,
+            "wsl.exe command line exceeded Windows limit: {}",
+            estimate_wsl_launch_len(&args)
+        );
     }
 }

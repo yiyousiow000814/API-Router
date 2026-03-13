@@ -27,8 +27,7 @@ export const THREAD_FORCE_REFRESH_MIN_INTERVAL_MS = 1800;
 export const THREAD_AUTO_REFRESH_CONNECTED_MS = 20000;
 export const THREAD_AUTO_REFRESH_DISCONNECTED_MS = 3500;
 export const ACTIVE_THREAD_REFRESH_DEBOUNCE_MS = 380;
-export const ACTIVE_THREAD_LIVE_POLL_MS = 1500;
-export const ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS = 3000;
+export const ACTIVE_THREAD_LIVE_POLL_MS = 800;
 export const MODEL_LOADING_MIN_MS = 1000;
 export const RECENT_EVENT_ID_CACHE_SIZE = 2048;
 export const CHAT_LIVE_FOLLOW_MAX_STEP_PX = 64;
@@ -123,6 +122,7 @@ export function createInitialState() {
     threadListCollapseAnimateGroupKeys: new Set(),
     threadPullRefreshing: false,
     activeThreadStarted: false,
+    chatOpening: false,
     chatRenderToken: 0,
     chatSmoothScrollUntil: 0,
     chatSmoothScrollToken: 0,
