@@ -73,9 +73,19 @@ export function createTurnActionsModule(deps) {
     TextDecoderRef = TextDecoder,
   } = deps;
 
+  function activeThreadHistoryTurnCount(threadId = state.activeThreadId) {
+    const normalizedThreadId = String(threadId || state.activeThreadId || "").trim();
+    if (!normalizedThreadId) return 0;
+    if (String(state.activeThreadHistoryThreadId || "").trim() !== normalizedThreadId) return 0;
+    return Array.isArray(state.activeThreadHistoryTurns) ? state.activeThreadHistoryTurns.length : 0;
+  }
+
   function resetLiveTurnStateForNewTurn() {
     state.activeThreadTransientToolText = "";
     state.activeThreadTransientThinkingText = "";
+    state.activeThreadCommentaryPendingPlan = null;
+    state.activeThreadCommentaryPendingTools = [];
+    state.activeThreadCommentaryPendingToolKeys = [];
     state.activeThreadCommentaryCurrent = null;
     state.activeThreadCommentaryArchive = [];
     state.activeThreadCommentaryArchiveVisible = false;
@@ -100,6 +110,7 @@ export function createTurnActionsModule(deps) {
     state.activeThreadPendingTurnRunning = true;
     state.activeThreadPendingUserMessage = String(prompt || "");
     state.activeThreadPendingAssistantMessage = "";
+    state.activeThreadPendingTurnBaselineTurnCount = activeThreadHistoryTurnCount(normalizedThreadId);
     resetLiveTurnStateForNewTurn();
     return true;
   }
@@ -116,6 +127,7 @@ export function createTurnActionsModule(deps) {
     state.activeThreadPendingTurnRunning = false;
     state.activeThreadPendingUserMessage = "";
     state.activeThreadPendingAssistantMessage = "";
+    state.activeThreadPendingTurnBaselineTurnCount = 0;
     syncPendingTurnUi();
   }
 
@@ -265,6 +277,7 @@ export function createTurnActionsModule(deps) {
     state.activeThreadPendingTurnRunning = true;
     state.activeThreadPendingUserMessage = prompt;
     state.activeThreadPendingAssistantMessage = "";
+    state.activeThreadPendingTurnBaselineTurnCount = activeThreadHistoryTurnCount(activeThreadId);
     resetLiveTurnStateForNewTurn();
     updateHeaderUi(shouldAnimateWorkspaceBadge);
     hideWelcomeCard();
@@ -297,6 +310,7 @@ export function createTurnActionsModule(deps) {
       setActiveThread(startedThreadId);
       state.activeThreadPendingTurnThreadId = startedThreadId;
       state.activeThreadPendingTurnRunning = true;
+      state.activeThreadPendingTurnBaselineTurnCount = activeThreadHistoryTurnCount(startedThreadId);
       state.activeThreadNeedsResume = false;
     }
     if (startedRolloutPath) state.activeThreadRolloutPath = startedRolloutPath;

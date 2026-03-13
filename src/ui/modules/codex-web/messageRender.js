@@ -536,10 +536,11 @@ export function renderToolSummaryHtml(text) {
     const moreHtml = structured.extraLines > 0
       ? `<span class="msgToolMore">+${String(structured.extraLines)} lines</span>`
       : "";
+    const moreSpacer = previewHtml && moreHtml ? " " : "";
     return (
       `<div class="msgToolLine state-${safeState} icon-${safeIcon}${monoClass}" data-tool-state="${safeState}" data-tool-icon="${safeIcon}">` +
         `<span class="msgToolLead" aria-hidden="true"></span>` +
-        `<span class="msgToolText">${previewHtml}${moreHtml}</span>` +
+        `<span class="msgToolText">${previewHtml}${moreSpacer}${moreHtml}</span>` +
         `<span class="msgToolTail" aria-hidden="true"></span>` +
       `</div>`
     );

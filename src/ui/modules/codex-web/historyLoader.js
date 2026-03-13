@@ -89,6 +89,22 @@ function cloneArchiveBlock(block) {
   };
 }
 
+function createSummaryArchiveBlock(plan, tools, threadId, turnId = "") {
+  const normalizedThreadId = String(threadId || "").trim();
+  const snapshot = clonePlanState(plan, normalizedThreadId);
+  const normalizedTools = Array.isArray(tools)
+    ? tools.map((tool) => String(tool || "").trim()).filter(Boolean)
+    : [];
+  if (!snapshot && !normalizedTools.length) return null;
+  const seed = String(snapshot?.turnId || turnId || normalizedThreadId || "summary").trim() || "summary";
+  return {
+    key: `commentary-summary:${seed}`,
+    text: "",
+    tools: normalizedTools,
+    plan: snapshot,
+  };
+}
+
 function finalizeArchiveBlocks(currentBlocks, currentBlock, hasFinalAssistant) {
   const blocks = Array.isArray(currentBlocks) ? currentBlocks.slice() : [];
   const clonedCurrent = cloneArchiveBlock(currentBlock);
@@ -160,6 +176,7 @@ export function extractLatestCommentaryState(thread, helpers = {}) {
     let currentBlock = null;
     let hasFinalAssistant = false;
     let pendingPlan = null;
+    let pendingTools = [];
 
     for (const item of items) {
       if (!item || typeof item !== "object") continue;
@@ -187,25 +204,38 @@ export function extractLatestCommentaryState(thread, helpers = {}) {
           {
             key: String(item.id || item.messageId || item.message_id || text.slice(0, 80)).trim(),
             text: "",
-            tools: [],
+            tools: pendingTools,
             plan: pendingPlan,
           },
           item,
           text
         );
         pendingPlan = null;
+        pendingTools = [];
         continue;
       }
-      if (!currentBlock) continue;
       const toolText = String(normalizeThreadItemText(item, { compact: true }) || "").trim();
       if (!toolText) continue;
+      if (!currentBlock) {
+        pendingTools = [...pendingTools, toolText];
+        continue;
+      }
       currentBlock = {
         ...currentBlock,
         tools: [...(Array.isArray(currentBlock.tools) ? currentBlock.tools : []), toolText],
       };
     }
 
-    const archive = finalizeArchiveBlocks(blocks, currentBlock, hasFinalAssistant);
+    const trailingPlanOnlyBlock =
+      !currentBlock && hasFinalAssistant
+        ? createSummaryArchiveBlock(
+            pendingPlan,
+            pendingTools,
+            String(thread?.id || "").trim(),
+            String(turn?.id || "").trim()
+          )
+        : null;
+    const archive = finalizeArchiveBlocks(blocks, trailingPlanOnlyBlock || currentBlock, hasFinalAssistant);
     latestState = {
       current: hasFinalAssistant ? null : cloneArchiveBlock(currentBlock),
       archive,
@@ -394,8 +424,8 @@ export function createHistoryLoaderModule(deps) {
     const threadId = String(thread?.id || state.activeThreadId || "").trim();
     const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
     const pendingPrompt = String(state.activeThreadPendingUserMessage || "").trim();
-    if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return true;
-    if (!pendingPrompt) return true;
+    if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return false;
+    if (!pendingPrompt) return false;
     const turns = Array.isArray(thread?.turns) ? thread.turns : [];
     const lastTurn = turns.length ? turns[turns.length - 1] : null;
     const items = Array.isArray(lastTurn?.items) ? lastTurn.items : [];
@@ -409,7 +439,16 @@ export function createHistoryLoaderModule(deps) {
   }
 
   function shouldSuppressStalePendingHistoryLiveState(thread) {
-    return latestTurnContainsPendingUserEcho(thread) !== true;
+    const threadId = String(thread?.id || state.activeThreadId || "").trim();
+    const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+    const pendingRunning = state.activeThreadPendingTurnRunning === true;
+    if (!pendingRunning || !threadId || !pendingThreadId || pendingThreadId !== threadId) return false;
+    if (latestTurnContainsPendingUserEcho(thread) === true) return false;
+    const pendingPrompt = String(state.activeThreadPendingUserMessage || "").trim();
+    if (pendingPrompt) return true;
+    const baselineTurnCount = Math.max(0, Number(state.activeThreadPendingTurnBaselineTurnCount || 0));
+    const incomingTurnCount = Array.isArray(thread?.turns) ? thread.turns.length : 0;
+    return incomingTurnCount <= baselineTurnCount;
   }
 
   function createCommentarySnapshotFromHistory(thread, commentaryState) {
@@ -593,6 +632,7 @@ export function createHistoryLoaderModule(deps) {
       let commentaryBlocks = [];
       let currentCommentaryBlock = null;
       let pendingPlan = null;
+      let pendingTools = [];
       for (const item of items) {
         const type = String(item?.type || "").trim();
         if (type === "userMessage") {
@@ -628,33 +668,48 @@ export function createHistoryLoaderModule(deps) {
               {
                 key: String(item.id || item.messageId || item.message_id || text.slice(0, 80)).trim(),
                 text: "",
-                tools: [],
+                tools: pendingTools,
                 plan: pendingPlan,
               },
               item,
               text
             );
             pendingPlan = null;
+            pendingTools = [];
             continue;
           }
           if (!text) continue;
-          const archiveMessage = buildCommentaryArchiveMessage(turn?.id, finalizeArchiveBlocks(commentaryBlocks, currentCommentaryBlock, true));
+          const trailingPlanOnlyBlock =
+            !currentCommentaryBlock
+              ? createSummaryArchiveBlock(
+                  pendingPlan,
+                  pendingTools,
+                  String(thread?.id || "").trim(),
+                  String(turn?.id || "").trim()
+                )
+              : null;
+          const archiveMessage = buildCommentaryArchiveMessage(
+            turn?.id,
+            finalizeArchiveBlocks(commentaryBlocks, trailingPlanOnlyBlock || currentCommentaryBlock, true)
+          );
           if (archiveMessage) messages.push(archiveMessage);
           commentaryBlocks = [];
           currentCommentaryBlock = null;
+          pendingPlan = null;
           if (!isVisibleAssistantHistoryPhase(item?.phase)) continue;
           messages.push({ role: "assistant", text, kind: "" });
           continue;
         }
-        if (currentCommentaryBlock) {
-          const toolText = String(normalizeThreadItemText(item, { compact: true }) || "").trim();
-          if (toolText) {
-            currentCommentaryBlock = {
-              ...currentCommentaryBlock,
-              tools: [...(Array.isArray(currentCommentaryBlock.tools) ? currentCommentaryBlock.tools : []), toolText],
-            };
-          }
+        const toolText = String(normalizeThreadItemText(item, { compact: true }) || "").trim();
+        if (!toolText) continue;
+        if (!currentCommentaryBlock) {
+          pendingTools = [...pendingTools, toolText];
+          continue;
         }
+        currentCommentaryBlock = {
+          ...currentCommentaryBlock,
+          tools: [...(Array.isArray(currentCommentaryBlock.tools) ? currentCommentaryBlock.tools : []), toolText],
+        };
       }
     }
     return messages;

@@ -372,6 +372,28 @@ describe("chatTimeline", () => {
     expect(node.querySelector(".msg.system.kind-tool")).toBeNull();
   });
 
+  it("renders a non-expandable tool summary divider for tool-only archive blocks", () => {
+    const node = module.buildMsgNode({
+      role: "system",
+      kind: "commentaryArchive",
+      text: "Ran `npm test`\nRan `npm run build`",
+      archiveKey: "turn-tools",
+      archiveBlocks: [
+        {
+          key: "commentary-tools-1",
+          text: "",
+          tools: ["Ran `npm test`", "Ran `npm run build`"],
+        },
+      ],
+    });
+
+    expect(node.className).toContain("commentaryArchiveMount");
+    expect(node.querySelector(".commentaryArchiveSummary")).not.toBeNull();
+    expect(node.querySelector(".commentaryArchiveSummary")?.textContent).toContain("Used 2 tools");
+    expect(node.querySelector(".commentaryArchiveToggle")).toBeNull();
+    expect(node.querySelector(".commentaryArchiveBody")).toBeNull();
+  });
+
   it("opens chat overlay and resets sticky state", () => {
     module.setChatOpening(true);
 

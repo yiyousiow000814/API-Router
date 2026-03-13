@@ -105,6 +105,22 @@ export function createComposerUiModule(deps) {
       .trim();
   }
 
+  function isMeaninglessGenericToolPlaceholder(compactText, toolName, server) {
+    if (readText(toolName) || readText(server)) return false;
+    const normalized = readText(compactText)
+      .replace(/`/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+    return (
+      !normalized ||
+      normalized === "tool" ||
+      normalized === "running tool tool" ||
+      normalized === "called tool tool" ||
+      normalized === "tool failed tool"
+    );
+  }
+
   function deriveToolRuntimeState(item, options = {}) {
     const explicitStatus = readText(item?.status);
     if (explicitStatus) return normalizeRunningState(explicitStatus, "complete");
@@ -175,6 +191,9 @@ export function createComposerUiModule(deps) {
       };
     }
     const server = readText(item?.server);
+    if (isMeaninglessGenericToolPlaceholder(compactText, toolName, server)) {
+      return null;
+    }
     const compactLabel = stripInlineCodeMarkdown(compactText);
     const genericLabel = compactLabel || [server, toolName].filter(Boolean).join(" / ") || stripWrappingBackticks(compactText) || "Tool";
     let icon = "tool";
@@ -235,16 +254,12 @@ export function createComposerUiModule(deps) {
 
   function renderActivityHtml(activity) {
     if (!activity) return "";
-    const title = escapeHtml(String(activity.title || "").trim() || "Working");
-    const detailRaw = String(activity.detail || "").trim();
-    const detail = detailRaw ? renderInlineMessageText(detailRaw) : "";
-    const tone = escapeHtml(String(activity.tone || "running"));
+    const title = "Working";
     const dots = '<span class="runtimeActivityDots"><span></span><span></span><span></span></span>';
     const enterClass = state.chatOpening === true ? "" : " runtimeActivityEnter";
     return (
-      `<div class="runtimeActivity${enterClass} tone-${tone}" data-activity-tone="${tone}">` +
-        `<span class="runtimeActivityLead" aria-hidden="true"></span>` +
-        `<span class="runtimeActivityText"><strong>${title}</strong>${detail ? `<span class="runtimeActivityDetail"> · ${detail}</span>` : ""}</span>` +
+      `<div class="runtimeActivity${enterClass}" data-activity-tone="running">` +
+        `<span class="runtimeActivityText"><strong>${title}</strong></span>` +
         `${dots}` +
       `</div>`
     );
@@ -253,14 +268,22 @@ export function createComposerUiModule(deps) {
   function buildRuntimeAnimationIdentity(entry) {
     const icon = normalizeType(entry?.icon || "tool");
     const presentation = normalizeType(entry?.presentation || "text");
-    const label = String(entry?.label || entry?.detail || entry?.text || "")
+    const label = readRuntimeEntrySummary(entry)
       .replace(/\s+/g, " ")
       .trim();
     return [icon, presentation, label].filter(Boolean).join("::");
   }
 
+  function readRuntimeEntrySummary(entry) {
+    const rawText = String(entry?.text || "").trim();
+    if (normalizeType(entry?.icon || "tool") === "patch" && /^Edited\s+`[^`]+`(?:\s+\(\+\d+\s+-\d+\))?$/i.test(rawText)) {
+      return rawText;
+    }
+    return String(entry?.label || entry?.detail || entry?.text || "");
+  }
+
   function renderCommandEntryHtml(entry) {
-    const snippet = summarizeSnippet(entry?.label || entry?.detail || entry?.text || "");
+    const snippet = summarizeSnippet(readRuntimeEntrySummary(entry));
     const icon = escapeHtml(String(entry?.icon || "tool"));
     const stateName = escapeHtml(String(entry?.state || "complete"));
     const animationIdentity = buildRuntimeAnimationIdentity(entry) || String(entry?.key || "").trim();
@@ -277,11 +300,12 @@ export function createComposerUiModule(deps) {
     const moreHtml = snippet.extraLines > 0
       ? `<span class="runtimeToolItemMeta">+${String(snippet.extraLines)} lines</span>`
       : "";
+    const moreSpacer = previewHtml && moreHtml ? " " : "";
     const enterClass = shouldAnimateEnter && state.chatOpening !== true ? " runtimeToolItemEnter" : "";
     return (
       `<div class="runtimeToolItem${enterClass} state-${stateName} icon-${icon}" data-command-key="${escapeHtml(entry?.key || "")}">` +
         `<span class="runtimeToolItemLead" aria-hidden="true"></span>` +
-        `<span class="runtimeToolItemText">${previewHtml}${moreHtml}</span>` +
+        `<span class="runtimeToolItemText">${previewHtml}${moreSpacer}${moreHtml}</span>` +
         `<span class="runtimeToolItemTail" aria-hidden="true"></span>` +
       `</div>`
     );
@@ -382,12 +406,17 @@ export function createComposerUiModule(deps) {
           tone: "running",
         }
       : null;
-    const fallbackActivity = explicitActivity
+    const fallbackActivity = pendingTurnActivity
+      || explicitActivity
       || (plan ? { threadId: state.activeThreadId, title: "Planning", detail: plan.explanation || "", tone: "running" } : null)
-      || pendingTurnActivity
       || (commands.length ? toActivityFromEntry(commands[commands.length - 1]) : null);
     const activity = fallbackActivity
-      ? { threadId: String(fallbackActivity.threadId || state.activeThreadId || ""), title: fallbackActivity.title || "", detail: fallbackActivity.detail || "", tone: fallbackActivity.tone || "running" }
+      ? {
+          threadId: String(fallbackActivity.threadId || state.activeThreadId || ""),
+          title: fallbackActivity.title || "",
+          detail: fallbackActivity.detail || "",
+          tone: fallbackActivity.tone || "running",
+        }
       : null;
     const chatBox = byId("chatBox");
     let chatMount = null;
@@ -453,7 +482,7 @@ export function createComposerUiModule(deps) {
         chatMount.remove();
       }
     }
-    dock.style.display = inChat && (activity || plan || commands.length) ? "" : "none";
+    dock.style.display = inChat && activity ? "" : "none";
   }
 
   function clearRuntimeState() {
@@ -645,7 +674,7 @@ export function createComposerUiModule(deps) {
       return;
     }
     if (plan) {
-      assignRuntimeActivity({ threadId, title: "Planning", detail: plan.explanation || "", tone: "running" });
+      assignRuntimeActivity({ threadId, title: "Thinking", detail: "", tone: "running" });
       renderRuntimePanels();
       return;
     }

@@ -220,10 +220,40 @@ function extractApplyPatchFiles(item) {
     const trimmed = String(line || "").trim();
     const match = trimmed.match(/^(?:[ACDMRTUX?!]|M)\s+(.+)$/);
     if (!match) continue;
-    const path = String(match[1] || "").trim();
+    const path = shortenApplyPatchDisplayPath(match[1]);
     if (path) files.push(path);
   }
   return Array.from(new Set(files));
+}
+
+function shortenApplyPatchDisplayPath(value) {
+  const raw = String(value || "")
+    .trim()
+    .replace(/^\\\\\?\\UNC\\/i, "\\\\")
+    .replace(/^\\\\\?\\/i, "");
+  if (!raw) return "";
+  if (!/^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(raw)) return raw;
+  const separator = raw.includes("\\") && !raw.includes("/") ? "\\" : "/";
+  const parts = raw.split(/[\\/]+/).filter(Boolean);
+  if (!parts.length) return raw;
+  const markers = new Set([
+    ".codex",
+    ".github",
+    "docs",
+    "scripts",
+    "src",
+    "src-tauri",
+    "test",
+    "tests",
+  ]);
+  const lowerParts = parts.map((part) => String(part || "").toLowerCase());
+  const markerIndex = lowerParts.findIndex((part, index) => {
+    if (markers.has(part)) return true;
+    if (index !== parts.length - 1) return false;
+    return /^(?:package\.json|cargo\.toml|readme(?:\.[^\\/]+)?|package-lock\.json|pnpm-lock\.yaml|tsconfig(?:\.[^\\/]+)?\.json)$/i.test(part);
+  });
+  if (markerIndex >= 0) return parts.slice(markerIndex).join(separator);
+  return parts[parts.length - 1] || raw;
 }
 
 function readApplyPatchSource(value) {
@@ -260,25 +290,25 @@ function extractApplyPatchEdits(item) {
       const text = String(line || "");
       const addMatch = text.match(/^\*\*\* Add File:\s+(.+)$/);
       if (addMatch) {
-        current = { path: String(addMatch[1] || "").trim(), additions: 0, deletions: 0 };
+        current = { path: shortenApplyPatchDisplayPath(addMatch[1]), additions: 0, deletions: 0 };
         if (current.path) edits.push(current);
         continue;
       }
       const updateMatch = text.match(/^\*\*\* Update File:\s+(.+)$/);
       if (updateMatch) {
-        current = { path: String(updateMatch[1] || "").trim(), additions: 0, deletions: 0 };
+        current = { path: shortenApplyPatchDisplayPath(updateMatch[1]), additions: 0, deletions: 0 };
         if (current.path) edits.push(current);
         continue;
       }
       const deleteMatch = text.match(/^\*\*\* Delete File:\s+(.+)$/);
       if (deleteMatch) {
         current = null;
-        edits.push({ path: String(deleteMatch[1] || "").trim(), additions: 0, deletions: 0 });
+        edits.push({ path: shortenApplyPatchDisplayPath(deleteMatch[1]), additions: 0, deletions: 0 });
         continue;
       }
       const moveMatch = text.match(/^\*\*\* Move to:\s+(.+)$/);
       if (moveMatch && current) {
-        current.path = String(moveMatch[1] || "").trim() || current.path;
+        current.path = shortenApplyPatchDisplayPath(moveMatch[1]) || current.path;
         continue;
       }
       if (!current) continue;

@@ -13,9 +13,9 @@ describe("codex-web runtime layout", () => {
     expect(block).not.toMatch(/bottom:\s*0/i);
   });
 
-  it("keeps the bottom runtime activity bar on the shared blue animated status style", () => {
-    expect(source).not.toContain(".runtimeActivity.tone-complete .runtimeActivityLead");
-    expect(source).not.toContain(".runtimeActivity.tone-error .runtimeActivityLead");
+  it("places the runtime activity inside the composer meta row as a compact inline hint", () => {
+    expect(source).toContain('<div class="mobileComposerMetaRow">');
+    expect(source).toContain('<div id="runtimeDock" class="runtimeDock" style="display:none;">');
     expect(source).toContain(".runtimeActivityDots");
   });
 

@@ -103,8 +103,16 @@ export function createChatTimelineModule(deps) {
 
   function createCommentaryArchiveNode(blocks, options = {}) {
     const archive = Array.isArray(blocks)
-      ? blocks.filter((block) => block && (String(block.text || "").trim() || block?.plan))
+      ? blocks.filter((block) => {
+          const tools = Array.isArray(block?.tools) ? block.tools.map((tool) => String(tool || "").trim()).filter(Boolean) : [];
+          return !!(block && (String(block.text || "").trim() || block?.plan || tools.length));
+        })
       : [];
+    const expandableArchive = archive.filter((block) => String(block?.text || "").trim() || block?.plan);
+    const toolOnlyToolCount = archive.reduce((count, block) => {
+      if (String(block?.text || "").trim() || block?.plan) return count;
+      return count + (Array.isArray(block?.tools) ? block.tools.map((tool) => String(tool || "").trim()).filter(Boolean).length : 0);
+    }, 0);
     const mount = documentRef.createElement("div");
     mount.className = "commentaryArchiveMount";
     attachMessageDebugMeta(mount, {
@@ -123,6 +131,13 @@ export function createChatTimelineModule(deps) {
     if (options.key) {
       try { mount.setAttribute("data-commentary-archive-key", String(options.key)); } catch {}
     }
+    if (!expandableArchive.length && toolOnlyToolCount > 0) {
+      const summary = documentRef.createElement("div");
+      summary.className = "commentaryArchiveSummary";
+      summary.textContent = `Used ${String(toolOnlyToolCount)} tool${toolOnlyToolCount === 1 ? "" : "s"}`;
+      mount.appendChild(summary);
+      return mount;
+    }
     const expandedState = { value: false };
     const toggle = documentRef.createElement("button");
     toggle.type = "button";
@@ -130,7 +145,7 @@ export function createChatTimelineModule(deps) {
     toggle.setAttribute("aria-expanded", "false");
     const countLabel = documentRef.createElement("span");
     countLabel.className = "commentaryArchiveCount";
-    countLabel.textContent = `${String(archive.length)} previous message${archive.length === 1 ? "" : "s"}`;
+    countLabel.textContent = `${String(expandableArchive.length)} previous message${expandableArchive.length === 1 ? "" : "s"}`;
     const chevron = documentRef.createElement("span");
     chevron.className = "commentaryArchiveChevron is-collapsed";
     chevron.setAttribute("aria-hidden", "true");
@@ -144,7 +159,7 @@ export function createChatTimelineModule(deps) {
     body.setAttribute("aria-hidden", "true");
     const bodyInner = documentRef.createElement("div");
     bodyInner.className = "commentaryArchiveBodyInner";
-    for (const block of archive) {
+    for (const block of expandableArchive) {
       const blockNode = documentRef.createElement("div");
       blockNode.className = "commentaryArchiveBlock";
       if (block?.plan) {
@@ -191,7 +206,10 @@ export function createChatTimelineModule(deps) {
     if (!box) return;
     const inlineArchiveCount = Math.max(0, Number(state.activeThreadInlineCommentaryArchiveCount || 0));
     const archive = Array.isArray(state.activeThreadCommentaryArchive)
-      ? state.activeThreadCommentaryArchive.filter((block) => block && (String(block.text || "").trim() || block?.plan))
+      ? state.activeThreadCommentaryArchive.filter((block) => {
+          const tools = Array.isArray(block?.tools) ? block.tools.map((tool) => String(tool || "").trim()).filter(Boolean) : [];
+          return !!(block && (String(block.text || "").trim() || block?.plan || tools.length));
+        })
       : [];
     const visible = state.activeThreadCommentaryArchiveVisible === true && archive.length > 0;
     removeCommentaryArchiveMount();
@@ -399,6 +417,9 @@ export function createChatTimelineModule(deps) {
     state.activeThreadHistoryPendingRefresh = null;
     state.activeThreadTransientToolText = "";
     state.activeThreadTransientThinkingText = "";
+    if (!(options && options.preservePendingTurn === true)) state.activeThreadCommentaryPendingPlan = null;
+    if (!(options && options.preservePendingTurn === true)) state.activeThreadCommentaryPendingTools = [];
+    if (!(options && options.preservePendingTurn === true)) state.activeThreadCommentaryPendingToolKeys = [];
     state.activeThreadCommentaryCurrent = null;
     state.activeThreadCommentaryArchive = [];
     state.activeThreadCommentaryArchiveVisible = false;

@@ -73,6 +73,7 @@ describe("messageRender", () => {
     const command = "Ran `@'\nimport { x } from \"./file.js\";\nconsole.log(x);\n'@ | node --input-type=module`";
     const html = renderToolSummaryHtml(command);
     expect(html).toContain('<code class="msgInlineCode">import { x } from &quot;./file.js&quot;;</code>');
+    expect(html).toContain('</code> <span class="msgToolMore">+3 lines</span>');
     expect(html).toContain("msgToolMore");
     expect(html).toContain("+3 lines");
   });

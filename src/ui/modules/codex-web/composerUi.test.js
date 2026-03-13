@@ -164,6 +164,11 @@ describe("composerUi", () => {
     };
   }
 
+  function expectWorkingActivityBarHtml(html) {
+    expect(html).toContain("Working");
+    expect(html).toContain("runtimeActivityDots");
+  }
+
   it("reads prompt value through dependency", () => {
     const deps = {
       state: { activeThreadTokenUsage: null, activeMainTab: "chat" },
@@ -245,8 +250,62 @@ describe("composerUi", () => {
     expect(chatBox.querySelector("#runtimePlanInline").innerHTML).toContain("Plan");
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("npm test");
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).not.toContain("runtimeToolItemTailDot");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Planning");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
+  });
+
+  it("renders the activity bar as a compact generic Working hint without runtime detail text", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [{ key: "cmd-1", text: "Running `npm test`", state: "running", icon: "command" }],
+      activeThreadActivity: { threadId: "thread-1", title: "Running command", detail: "npm test", tone: "running" },
+      activeThreadPlan: {
+        threadId: "thread-1",
+        title: "Updated Plan",
+        explanation: "Inspect runtime rendering",
+        steps: [{ step: "Check activity bar", status: "in_progress" }],
+      },
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) {
+        return item?.text || "";
+      },
+      normalizeType(value) { return String(value || "").replace(/[^a-z]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      localStorageRef: { getItem() { return "0"; } },
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(runtimeDock) },
+      windowRef: { requestAnimationFrame(cb) { cb(); } },
+    });
+
+    module.renderRuntimePanels();
+
+    expect(nodes.get("runtimeDock").style.display).toBe("");
+    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Working");
     expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
+    expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("npm test");
+    expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("Updated Plan");
   });
 
   it("prepares runtime panels synchronously during chat opening without per-item enter animations", () => {
@@ -310,7 +369,7 @@ describe("composerUi", () => {
     expect(chatBox.querySelector("#runtimePlanInline").className).not.toContain("is-hidden");
     expect(chatBox.querySelector("#runtimeToolInline").className).not.toContain("is-hidden");
     expect(nodes.get("runtimeDock").style.display).toBe("");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Planning");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
   });
 
   it("keeps the runtime dock visible for a pending turn before tools or commentary arrive", () => {
@@ -360,8 +419,7 @@ describe("composerUi", () => {
     module.setActiveCommands([]);
 
     expect(nodes.get("runtimeDock").style.display).toBe("");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Thinking");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
   });
 
   it("does not leak stale commentary text into the pending runtime activity placeholder", () => {
@@ -416,7 +474,7 @@ describe("composerUi", () => {
     module.renderRuntimePanels();
 
     expect(nodes.get("runtimeDock").style.display).toBe("");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Thinking");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
     expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("构建已完成");
   });
 
@@ -474,8 +532,7 @@ describe("composerUi", () => {
     module.clearRuntimeState();
 
     expect(nodes.get("runtimeDock").style.display).toBe("");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Thinking");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
   });
 
   it("derives runtime command cards from tool payloads without reparsing markdown text", () => {
@@ -538,7 +595,7 @@ describe("composerUi", () => {
 
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("cargo test --manifest-path src-tauri/Cargo.toml");
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("github / search_issues");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Running tool");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
   });
 
   it("summarizes multiline command previews from the first meaningful line", () => {
@@ -584,6 +641,7 @@ describe("composerUi", () => {
       status: "running",
     }, { threadId: "thread-1", timestamp: 300 });
 
+    expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain('</code> <span class="runtimeToolItemMeta">+3 lines</span>');
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("import { renderMessageRichHtml }");
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("+3 lines");
   });
@@ -642,8 +700,7 @@ describe("composerUi", () => {
     }, { threadId: "thread-1", timestamp: 200 });
 
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("composerUi.test.js");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Ran command");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
     expect(nodes.get("runtimeDock").style.display).toBe("");
   });
 
@@ -702,8 +759,7 @@ describe("composerUi", () => {
     });
 
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("runtimeDock");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Ran command");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
     expect(nodes.get("runtimeDock").style.display).toBe("");
   });
 
@@ -814,8 +870,7 @@ describe("composerUi", () => {
       tone: "complete",
     });
 
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Ran command");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
   });
 
   it("clears runtime panels when the latest turn already has a final assistant message", () => {
@@ -932,6 +987,57 @@ describe("composerUi", () => {
 
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("Edited src/ui/modules/codex-web/chatTimeline.js");
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).not.toContain("apply_patch");
+  });
+
+  it("renders single-file apply_patch diff counts with colored runtime spans", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage() { return "Edited `src/ui/modules/codex-web/chatTimeline.test.js` (+11 -0)"; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.applyToolItemRuntimeUpdate({
+      id: "patch-1b",
+      type: "toolCall",
+      tool: "apply_patch",
+      status: "completed",
+    }, { threadId: "thread-1", timestamp: 100 });
+
+    const html = chatBox.querySelector("#runtimeToolInline").innerHTML;
+    expect(html).toContain("Edited src/ui/modules/codex-web/chatTimeline.test.js");
+    expect(html).toContain("runtimeToolItemDiffAdd");
+    expect(html).toContain("runtimeToolItemDiffDel");
+    expect(html).toContain("+11");
+    expect(html).toContain("-0");
   });
 
   it("renders apply_patch aggregate diff counts in runtime cards", () => {
@@ -1084,7 +1190,65 @@ describe("composerUi", () => {
     }, { threadId: "thread-1", method: "item/started", timestamp: 100 });
 
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("composerUi.test.js");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Running command");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
+  });
+
+  it("ignores placeholder tool updates that do not have any meaningful label yet", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.applyToolItemRuntimeUpdate({
+      id: "cmd-1",
+      type: "toolCall",
+      tool: "shell_command",
+      arguments: JSON.stringify({ command: "npm test -- --run src/ui/modules/codex-web/composerUi.test.js" }),
+    }, { threadId: "thread-1", method: "item/started", timestamp: 100 });
+
+    const beforeHtml = chatBox.querySelector("#runtimeToolInline").innerHTML;
+    expect(beforeHtml).toContain("composerUi.test.js");
+
+    module.applyToolItemRuntimeUpdate({
+      id: "ghost-tool-1",
+      type: "toolCall",
+      status: "running",
+    }, { threadId: "thread-1", method: "item/started", timestamp: 200 });
+
+    const afterHtml = chatBox.querySelector("#runtimeToolInline").innerHTML;
+    expect(afterHtml).toContain("composerUi.test.js");
+    expect(afterHtml).not.toContain(">Tool<");
+    expect(state.activeThreadActiveCommands).toHaveLength(1);
   });
 
   it("animates a runtime card only on first appearance for the same command key", () => {
@@ -1270,7 +1434,7 @@ describe("composerUi", () => {
 
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("npm test");
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("npm run build");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Running command");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
     expect(nodes.get("runtimeDock").style.display).toBe("");
   });
 
@@ -1325,7 +1489,7 @@ describe("composerUi", () => {
       ],
     });
 
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Thinking");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
     expect(nodes.get("runtimeDock").style.display).toBe("");
 
     module.syncRuntimeStateFromHistory({
@@ -1344,6 +1508,72 @@ describe("composerUi", () => {
 
     expect(nodes.get("runtimeActivityBar").innerHTML).toBe("");
     expect(nodes.get("runtimeDock").style.display).toBe("none");
+  });
+
+  it("keeps the activity bar on Thinking while an incomplete turn only has a plan update", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadTransientThinkingText: "",
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.syncRuntimeStateFromHistory({
+      id: "thread-1",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", id: "user-1", content: [{ type: "text", text: "run it from terminal" }] },
+            {
+              id: "plan-1",
+              type: "toolCall",
+              tool: "update_plan",
+              status: "running",
+              arguments: JSON.stringify({
+                explanation: "Keep the UI aligned with Codex",
+                plan: [{ step: "Inspect runtime", status: "in_progress" }],
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(chatBox.querySelector("#runtimePlanInline").innerHTML).toContain("Updated Plan");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
+    expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("Planning");
   });
 
   it("renders live runtime stack in the order plan then thinking then tools", () => {
@@ -1476,7 +1706,7 @@ describe("composerUi", () => {
       ],
     });
 
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Thinking");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
     expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("Planning");
   });
 
@@ -1710,7 +1940,71 @@ describe("composerUi", () => {
     expect(chatBox.querySelector("#runtimePlanInline").innerHTML).toContain("Updated Plan");
     expect(chatBox.querySelector("#runtimePlanInline").innerHTML).toContain("Fix runtime display");
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toBe("");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Updated Plan");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
+    expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("Updated Plan");
+  });
+
+  it("keeps the pending activity bar on Thinking when a live update_plan arrives before commentary", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadTransientThinkingText: "",
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage() {
+        return "Updating plan";
+      },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.applyToolItemRuntimeUpdate({
+      id: "plan-1",
+      type: "toolCall",
+      tool: "update_plan",
+      status: "running",
+      arguments: JSON.stringify({
+        explanation: "Keep the UI aligned with Codex",
+        plan: [
+          { step: "Fix runtime display", status: "in_progress" },
+          { step: "Add regression tests", status: "pending" },
+        ],
+      }),
+    }, { threadId: "thread-1", timestamp: 100 });
+
+    expect(chatBox.querySelector("#runtimePlanInline").innerHTML).toContain("Updated Plan");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
+    expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("Updated Plan");
   });
 
   it("does not re-animate an updated plan card when the same plan turn refreshes from history", () => {

@@ -83,6 +83,39 @@ describe("messageData", () => {
     ).toBe("Edited `src/ui/modules/codex-web/chatTimeline.test.js` (+2 -1)");
   });
 
+  it("shortens absolute apply_patch argument paths to project-relative display paths", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "apply_patch",
+          status: "completed",
+          arguments: `*** Begin Patch
+*** Update File: C:\\Users\\yiyou\\API-Router\\src\\ui\\modules\\codex-web\\messageRender.test.js
+@@
+-expect(oldValue).toBe(true);
++expect(oldValue).toBe(false);
+*** End Patch`,
+        },
+        { compact: true }
+      )
+    ).toBe("Edited `src\\ui\\modules\\codex-web\\messageRender.test.js` (+1 -1)");
+  });
+
+  it("shortens absolute apply_patch result paths to project-relative display paths", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "apply_patch",
+          status: "completed",
+          result: "Success. Updated the following files:\nM C:\\Users\\yiyou\\API-Router\\src\\ui\\modules\\codex-web\\chatTimeline.js",
+        },
+        { compact: true }
+      )
+    ).toBe("Edited `src\\ui\\modules\\codex-web\\chatTimeline.js`");
+  });
+
   it("summarizes multi-file apply_patch edits with aggregate diff counts", () => {
     expect(
       toolItemToMessage(

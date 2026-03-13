@@ -1066,6 +1066,22 @@
       height: 1px;
       background: rgba(81, 98, 127, 0.24);
     }
+    .commentaryArchiveSummary {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: #6a778d;
+      font-size: 12px;
+      line-height: 1.2;
+    }
+    .commentaryArchiveSummary::before,
+    .commentaryArchiveSummary::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: rgba(81, 98, 127, 0.24);
+    }
     .commentaryArchiveCount {
       white-space: nowrap;
     }
@@ -1652,13 +1668,17 @@
       word-break: break-word;
     }
     .runtimeDock {
-      display: grid;
-      gap: 6px;
-      padding: 8px 10px 0;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      min-width: 0;
+      margin-left: auto;
     }
     .runtimeActivityMount {
-      display: grid;
-      gap: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      min-width: 0;
     }
     .runtimeChatPanels {
       display: grid;
@@ -1820,33 +1840,28 @@
     .runtimeActivity {
       display: flex;
       align-items: center;
-      gap: 8px;
+      justify-content: flex-end;
+      gap: 4px;
       min-width: 0;
-      padding: 6px 10px;
-      border-radius: 999px;
-      border: 1px solid rgba(13, 18, 32, 0.12);
-      background: rgba(248, 250, 255, 0.92);
-      box-shadow: 0 8px 18px rgba(13, 18, 32, 0.045);
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
     }
     .runtimeActivity.runtimeActivityEnter {
       animation: runtime-panel-in 180ms cubic-bezier(.22,1,.36,1);
     }
     .runtimeActivityLead {
-      width: 8px;
-      height: 8px;
-      border-radius: 999px;
-      flex: none;
-      background: #0b5bd3;
-      box-shadow: 0 0 0 4px rgba(11, 91, 211, 0.12);
-      animation: runtime-activity-lead-pulse 1200ms ease-in-out infinite;
+      display: none;
     }
     .runtimeActivityText {
       min-width: 0;
-      flex: 1;
-      display: block;
-      font-size: 12px;
-      line-height: 1.4;
-      color: #14213a;
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      font-size: 11px;
+      line-height: 1.25;
+      color: #637188;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -1855,12 +1870,12 @@
       white-space: nowrap;
     }
     .runtimeActivityText strong {
-      font-size: 12px;
-      color: #14213a;
+      font-size: 11px;
+      font-weight: 400;
+      color: #637188;
     }
     .runtimeActivityDetail {
-      color: #51627f;
-      font-weight: 500;
+      display: none;
     }
     .runtimeActivityText .msgInlineCode {
       display: inline-block;
@@ -1877,10 +1892,10 @@
       align-items: center;
     }
     .runtimeActivityDots span {
-      width: 4px;
-      height: 4px;
+      width: 3px;
+      height: 3px;
       border-radius: 999px;
-      background: rgba(11, 91, 211, 0.34);
+      background: rgba(99, 113, 136, 0.72);
       animation: runtime-activity-pulse 1200ms ease-in-out infinite;
     }
     .runtimeActivityDots span:nth-child(2) { animation-delay: 120ms; }
@@ -2024,6 +2039,8 @@
       height: 14px;
       display: flex;
       align-items: center;
+      justify-content: space-between;
+      gap: 8px;
       padding-left: 2px;
       color: #637188;
       font-size: 11px;
@@ -3256,9 +3273,6 @@
           <div>Opening chat...</div>
         </div>
       </div>
-      <div id="runtimeDock" class="runtimeDock" style="display:none;">
-        <div id="runtimeActivityBar" class="runtimeActivityMount" style="display:none;"></div>
-      </div>
       <div class="composer">
           <div id="attachmentPills" class="pillRow"></div>
           <input id="attachInput" type="file" style="display:none;" />
@@ -3275,6 +3289,9 @@
           </div>
           <div class="mobileComposerMetaRow">
             <div id="mobileContextLeft" class="mobileContextLeft" data-qa="mobile-context-left" aria-live="polite">100% context left</div>
+            <div id="runtimeDock" class="runtimeDock" style="display:none;">
+              <div id="runtimeActivityBar" class="runtimeActivityMount" style="display:none;"></div>
+            </div>
           </div>
         </div>
       </section>
