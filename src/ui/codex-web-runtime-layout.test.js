@@ -68,9 +68,30 @@ describe("codex-web runtime layout", () => {
     const bodyMatch = source.match(/\.msgBody\s*\{([^}]+)\}/s);
     expect(bodyMatch).toBeTruthy();
     expect(bodyMatch?.[1] || "").toMatch(/font-size:\s*14px/i);
+    expect(bodyMatch?.[1] || "").toMatch(/Segoe UI/i);
+    const segoeIndex = (bodyMatch?.[1] || "").indexOf('"Segoe UI"');
+    const yaheiIndex = (bodyMatch?.[1] || "").indexOf('"Microsoft YaHei UI"');
+    expect(segoeIndex).toBeGreaterThanOrEqual(0);
+    expect(yaheiIndex).toBeGreaterThan(segoeIndex);
     const inlineCodeMatch = source.match(/^\s*\.msgInlineCode\s*\{([^}]+)\}/ms);
     expect(inlineCodeMatch).toBeTruthy();
+    expect(inlineCodeMatch?.[1] || "").toMatch(/font-family:\s*inherit/i);
     expect(inlineCodeMatch?.[1] || "").toMatch(/font-size:\s*inherit/i);
     expect(inlineCodeMatch?.[1] || "").toMatch(/line-height:\s*inherit/i);
+  });
+
+  it("keeps path-style text on the same typography as surrounding prose", () => {
+    const linkMatch = source.match(/^\s*\.msgLink\s*\{([^}]+)\}/ms);
+    expect(linkMatch).toBeTruthy();
+    expect(linkMatch?.[1] || "").toMatch(/font-family:\s*inherit/i);
+    expect(linkMatch?.[1] || "").toMatch(/font-size:\s*inherit/i);
+    expect(linkMatch?.[1] || "").toMatch(/line-height:\s*inherit/i);
+    expect(linkMatch?.[1] || "").toMatch(/font-weight:\s*inherit/i);
+    const pseudoLinkMatch = source.match(/^\s*\.msgPseudoLink\s*\{([^}]+)\}/ms);
+    expect(pseudoLinkMatch).toBeTruthy();
+    expect(pseudoLinkMatch?.[1] || "").toMatch(/font-family:\s*inherit/i);
+    expect(pseudoLinkMatch?.[1] || "").toMatch(/font-size:\s*inherit/i);
+    expect(pseudoLinkMatch?.[1] || "").toMatch(/line-height:\s*inherit/i);
+    expect(pseudoLinkMatch?.[1] || "").toMatch(/font-weight:\s*inherit/i);
   });
 });

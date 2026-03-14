@@ -4,6 +4,7 @@ import {
   fileRefDisplayLabel,
   findNextInlineCodeSpan,
   looksLikeFileRef,
+  looksLikePathRef,
   renderInlineMessageText,
   renderMessageAttachments,
   renderMessageBody,
@@ -14,6 +15,8 @@ import {
 describe("messageRender", () => {
   it("detects file refs and shortens display labels", () => {
     expect(looksLikeFileRef("src/ui/codex-web-dev.js:1714")).toBe(true);
+    expect(looksLikePathRef("src/ui/codex-web-dev.js:1714")).toBe(true);
+    expect(looksLikePathRef("codex-web-dev.js:1714")).toBe(false);
     expect(looksLikeFileRef("https://example.com/docs")).toBe(false);
     expect(fileRefDisplayLabel("src/ui/codex-web-dev.js:1714")).toBe("codex-web-dev.js:1714");
   });
@@ -28,13 +31,60 @@ describe("messageRender", () => {
     });
   });
 
-  it("renders inline code file refs as pseudo-links with shortened labels", () => {
+  it("renders inline code paths as pseudo-links and bare file refs as code", () => {
     expect(renderInlineMessageText("例如 `src/ui/codex-web-dev.js:1714`")).toContain(
       '<span class="msgPseudoLink">codex-web-dev.js:1714</span>'
+    );
+    expect(renderInlineMessageText("例如 `codex-web-dev.js:1714`")).toContain(
+      '<code class="msgInlineCode">codex-web-dev.js:1714</code>'
     );
     expect(renderInlineMessageText("打开 https://example.com/docs")).toContain(
       '<a class="msgLink" href="https://example.com/docs"'
     );
+  });
+
+  it("keeps explicit markdown link labels instead of replacing them with href file names", () => {
+    expect(
+      renderInlineMessageText(
+        "[mergePendingLiveMessages](C:/Users/yiyou/API-Router/src/ui/modules/codex-web/historyLoader.js#L263)"
+      )
+    ).toContain('<code class="msgInlineCode">mergePendingLiveMessages</code>');
+    expect(
+      renderInlineMessageText(
+        "[historyLoader.test.js:307](C:/Users/yiyou/API-Router/src/ui/modules/codex-web/historyLoader.test.js#L307)"
+      )
+    ).toContain('<span class="msgPseudoLink">historyLoader.test.js:307</span>');
+  });
+
+  it("renders markdown file links whose labels are wrapped in inline code", () => {
+    expect(
+      renderInlineMessageText(
+        "[`messageRender.js`](C:/Users/yiyou/API-Router/src/ui/modules/codex-web/messageRender.js#L112)"
+      )
+    ).toContain('<span class="msgPseudoLink">messageRender.js:112</span>');
+    expect(
+      renderInlineMessageText(
+        "[`mergePendingLiveMessages`](C:/Users/yiyou/API-Router/src/ui/modules/codex-web/historyLoader.js#L263)"
+      )
+    ).toContain('<code class="msgInlineCode">mergePendingLiveMessages</code>');
+  });
+
+  it("does not auto-link bare file-like tokens inside normal prose", () => {
+    const html = renderInlineMessageText(
+      "这里举例 messageRender.js:112、historyLoader.test.js:307 和 mergePendingLiveMessages，不应该自动变成路径样式。"
+    );
+    expect(html).toContain("messageRender.js:112");
+    expect(html).toContain("historyLoader.test.js:307");
+    expect(html).toContain("mergePendingLiveMessages");
+    expect(html).not.toContain("msgPseudoLink");
+  });
+
+  it("auto-links plain path-like tokens but not bare file names", () => {
+    const html = renderInlineMessageText(
+      "看 src/ui/modules/codex-web/messageRender.test.js 和 messageRender.test.js。"
+    );
+    expect(html).toContain('<span class="msgPseudoLink">messageRender.test.js</span>');
+    expect(html).toContain(" 和 messageRender.test.js。");
   });
 
   it("stops plain http links before adjacent chinese punctuation and text", () => {

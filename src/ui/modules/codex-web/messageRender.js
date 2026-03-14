@@ -39,6 +39,15 @@ export function looksLikeFileRef(value) {
   return FILE_REF_WHOLE_PATTERN.test(text);
 }
 
+export function looksLikePathRef(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  const quoted = raw.match(/^(['"])([\s\S]*)\1$/);
+  const text = quoted ? String(quoted[2] || "").trim() : raw;
+  if (!looksLikeFileRef(text)) return false;
+  return /[\\/]/.test(text) || /^(?:%[A-Za-z0-9_]+%|[A-Za-z]:|\\\\[^\\\s]+|\.{1,2}|~|\/)/.test(text);
+}
+
 export function normalizeCodeSpanContent(value) {
   const raw = String(value || "").replace(/\r?\n/g, " ");
   if (raw.length >= 2 && raw.startsWith(" ") && raw.endsWith(" ") && /[^\s]/.test(raw)) {
@@ -92,10 +101,10 @@ export function fileRefDisplayLabel(value) {
   if (!text) return "";
   let suffix = "";
   let base = text;
-  const hashMatch = base.match(/(#L\d+(?:C\d+)?)$/i);
+  const hashMatch = base.match(/#L(\d+)(?:C(\d+))?$/i);
   if (hashMatch) {
-    suffix = hashMatch[1];
-    base = base.slice(0, -suffix.length);
+    suffix = hashMatch[2] ? `:${hashMatch[1]}:${hashMatch[2]}` : `:${hashMatch[1]}`;
+    base = base.slice(0, -hashMatch[0].length);
   } else {
     const colonMatch = base.match(/(:\d+(?::\d+)?)$/);
     if (colonMatch) {
@@ -109,18 +118,86 @@ export function fileRefDisplayLabel(value) {
   return `${fileName}${suffix}`;
 }
 
+function unwrapInlineCodeLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const span = findNextInlineCodeSpan(text, 0);
+  if (span && span.start === 0 && span.end === text.length) {
+    return normalizeCodeSpanContent(span.content).trim();
+  }
+  return text;
+}
+
+function stripFileRefDisplaySuffix(value) {
+  return String(value || "").replace(/(?::\d+(?::\d+)?|#L\d+(?:C\d+)?)$/i, "");
+}
+
+function looksLikeBareFileName(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  if (/[\\/:\s]/.test(text)) return false;
+  return /^[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}$/.test(text);
+}
+
 export function buildMessageLink(label, href, preferFileLabel = false) {
   const rawHref = String(href || "").trim();
   const rawLabel = String(label || rawHref).trim();
-  const shouldUseFileLabel =
-    !!preferFileLabel || looksLikeFileRef(rawLabel) || looksLikeFileRef(rawHref);
-  const fileLabelSource = looksLikeFileRef(rawLabel) ? rawLabel : rawHref;
-  const resolvedLabel = shouldUseFileLabel
-    ? fileRefDisplayLabel(fileLabelSource || rawLabel || rawHref)
-    : rawLabel;
+  const hasExplicitLabel = !!rawLabel && rawLabel !== rawHref;
+  const hrefLooksFileish = looksLikeFileRef(rawHref);
+  const hrefLooksPathish = looksLikePathRef(rawHref);
+  const labelWrappedInlineCode = !!(
+    rawLabel &&
+    findNextInlineCodeSpan(rawLabel, 0)?.start === 0 &&
+    findNextInlineCodeSpan(rawLabel, 0)?.end === rawLabel.length
+  );
+  let resolvedLabel = rawLabel || rawHref;
+  let explicitLooksFileish = false;
+  let explicitLooksPathish = false;
+  if (hasExplicitLabel) {
+    const normalizedExplicitLabel = unwrapInlineCodeLabel(rawLabel);
+    explicitLooksFileish =
+      looksLikeFileRef(normalizedExplicitLabel) || looksLikeBareFileName(normalizedExplicitLabel);
+    explicitLooksPathish = looksLikePathRef(normalizedExplicitLabel);
+    if (explicitLooksFileish) {
+      const explicitDisplayLabel = fileRefDisplayLabel(normalizedExplicitLabel);
+      if (hrefLooksFileish) {
+        const explicitHasLocation = /(?::\d+(?::\d+)?|#L\d+(?:C\d+)?)$/i.test(normalizedExplicitLabel);
+        const hrefHasLocation = /(?::\d+(?::\d+)?|#L\d+(?:C\d+)?)$/i.test(rawHref);
+        const explicitBaseLabel = stripFileRefDisplaySuffix(explicitDisplayLabel).toLowerCase();
+        const hrefBaseLabel = stripFileRefDisplaySuffix(fileRefDisplayLabel(rawHref)).toLowerCase();
+        if (!explicitHasLocation && hrefHasLocation && explicitBaseLabel && explicitBaseLabel === hrefBaseLabel) {
+          resolvedLabel = fileRefDisplayLabel(rawHref);
+        } else {
+          resolvedLabel = explicitDisplayLabel;
+        }
+      } else {
+        resolvedLabel = explicitDisplayLabel;
+      }
+    } else {
+      resolvedLabel = normalizedExplicitLabel;
+    }
+  } else {
+    const shouldUseFileLabel =
+      !!preferFileLabel || looksLikeFileRef(rawLabel) || looksLikeFileRef(rawHref);
+    const fileLabelSource = looksLikeFileRef(rawLabel) ? rawLabel : rawHref;
+    resolvedLabel = shouldUseFileLabel
+      ? fileRefDisplayLabel(fileLabelSource || rawLabel || rawHref)
+      : rawLabel;
+  }
   const safeLabel = escapeHtml(resolvedLabel || rawHref || "link");
   const openExternal = isHttpUrl(rawHref);
-  if (!openExternal) return `<span class="msgPseudoLink">${safeLabel}</span>`;
+  if (!openExternal) {
+    const shouldRenderPathStyle = hasExplicitLabel
+      ? explicitLooksFileish && (explicitLooksPathish || hrefLooksPathish)
+      : looksLikePathRef(rawLabel || rawHref);
+    if (shouldRenderPathStyle) {
+      return `<span class="msgPseudoLink">${safeLabel}</span>`;
+    }
+    if (labelWrappedInlineCode || preferFileLabel || hrefLooksFileish || explicitLooksFileish) {
+      return `<code class="msgInlineCode">${safeLabel}</code>`;
+    }
+    return safeLabel;
+  }
   const safeHref = escapeHtml(rawHref);
   return `<a class="msgLink" href="${safeHref}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`;
 }
@@ -128,7 +205,11 @@ export function buildMessageLink(label, href, preferFileLabel = false) {
 export function renderInlineCodeSpan(content, fenceLen = 1) {
   const normalized = normalizeCodeSpanContent(content);
   if (Number(fenceLen || 0) === 1 && looksLikeFileRef(normalized)) {
-    return buildMessageLink(normalized, normalized, true);
+    const displayLabel = escapeHtml(fileRefDisplayLabel(normalized));
+    if (looksLikePathRef(normalized)) {
+      return `<span class="msgPseudoLink">${displayLabel}</span>`;
+    }
+    return `<code class="msgInlineCode">${displayLabel}</code>`;
   }
   return `<code class="msgInlineCode">${escapeHtml(normalized)}</code>`;
 }
@@ -161,7 +242,7 @@ function renderPlainInlineToken(match) {
   }
   if (match[5]) {
     const candidate = String(match[5] || "").trim();
-    return looksLikeFileRef(candidate)
+    return looksLikePathRef(candidate)
       ? buildMessageLink(candidate, candidate, true)
       : escapeHtml(candidate);
   }
@@ -183,12 +264,52 @@ function renderPlainTextSegment(text) {
   return html;
 }
 
+function findNextMarkdownLink(source, fromIndex = 0) {
+  const text = String(source || "");
+  for (let start = Math.max(0, Number(fromIndex) || 0); start < text.length; start += 1) {
+    if (text[start] !== "[") continue;
+    if (isMarkdownEscapedAt(text, start)) continue;
+    let labelEnd = -1;
+    for (let cursor = start + 1; cursor < text.length; cursor += 1) {
+      const char = text[cursor];
+      if (char === "\n") break;
+      if (char !== "]") continue;
+      if (isMarkdownEscapedAt(text, cursor)) continue;
+      if (text[cursor + 1] !== "(") continue;
+      labelEnd = cursor;
+      break;
+    }
+    if (labelEnd < 0) continue;
+    for (let cursor = labelEnd + 2; cursor < text.length; cursor += 1) {
+      const char = text[cursor];
+      if (char === "\n") break;
+      if (char !== ")") continue;
+      if (isMarkdownEscapedAt(text, cursor)) continue;
+      return {
+        start,
+        end: cursor + 1,
+      };
+    }
+    start = labelEnd;
+  }
+  return null;
+}
+
 export function renderInlineMessageText(text) {
   const source = String(text || "");
   let cursor = 0;
   let html = "";
   while (cursor < source.length) {
+    const link = findNextMarkdownLink(source, cursor);
     const span = findNextInlineCodeSpan(source, cursor);
+    if (link && (!span || link.start <= span.start)) {
+      if (link.start > cursor) {
+        html += renderPlainTextSegment(source.slice(cursor, link.start));
+      }
+      html += renderPlainTextSegment(source.slice(link.start, link.end));
+      cursor = link.end;
+      continue;
+    }
     if (!span) {
       html += renderPlainTextSegment(source.slice(cursor));
       break;

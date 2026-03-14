@@ -66,7 +66,7 @@
         radial-gradient(1100px 680px at 94% 0%, rgba(242, 193, 77, 0.2), transparent 60%),
         linear-gradient(180deg, #ffffff, var(--bg));
       color: var(--text);
-      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
       -webkit-font-smoothing: antialiased;
       text-rendering: optimizeLegibility;
     }
@@ -1179,7 +1179,7 @@
       min-width: 0; 
       white-space: normal; 
       overflow-wrap: anywhere; 
-      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
     } 
     .msgBody[data-streaming="1"] { 
       white-space: pre-wrap; 
@@ -1613,7 +1613,7 @@
       to { transform: rotate(360deg); }
     }
     .msgInlineCode {
-      font-family: ui-monospace, "Cascadia Mono", "Consolas", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", monospace;
+      font-family: inherit;
       font-size: inherit;
       line-height: inherit;
       /* NOTE: Unlike clawdex-mobile (which uses a "pill" chip), we match Codex's subtler style:
@@ -1646,8 +1646,12 @@
     }
     .msgLink {
       color: #0b5bd3;
-      font: inherit;
-      font-weight: 400;
+      font-family: inherit;
+      font-size: inherit;
+      line-height: inherit;
+      font-weight: inherit;
+      font-style: inherit;
+      letter-spacing: inherit;
       text-decoration: underline;
       text-decoration-thickness: 1px;
       text-underline-offset: 2px;
@@ -1659,8 +1663,12 @@
     }
     .msgPseudoLink {
       color: #0b5bd3;
-      font: inherit;
-      font-weight: 400;
+      font-family: inherit;
+      font-size: inherit;
+      line-height: inherit;
+      font-weight: inherit;
+      font-style: inherit;
+      letter-spacing: inherit;
       text-decoration: underline;
       text-decoration-thickness: 1px;
       text-underline-offset: 2px;
