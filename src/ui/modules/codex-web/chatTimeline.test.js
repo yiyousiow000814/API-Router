@@ -296,6 +296,110 @@ describe("chatTimeline", () => {
     expect(state.activeThreadHistoryPendingRefresh).toBeNull();
   });
 
+  it("preserves live runtime state when clearing chat for a pending turn rerender", () => {
+    state.activeThreadLiveStateEpoch = 7;
+    state.activeThreadLiveRuntimeEpoch = 7;
+    state.activeThreadPendingTurnThreadId = "thread-1";
+    state.activeThreadPendingTurnRunning = true;
+    state.activeThreadPendingUserMessage = "rerender";
+    state.activeThreadPendingAssistantMessage = "working";
+    state.activeThreadTransientToolText = "searching files";
+    state.activeThreadTransientThinkingText = "thinking about the next step";
+    state.activeThreadCommentaryPendingPlan = { title: "Updated Plan", steps: [] };
+    state.activeThreadCommentaryPendingTools = ["Read src/ui/modules/codex-web/historyLoader.js"];
+    state.activeThreadCommentaryPendingToolKeys = ["tool-1"];
+    state.activeThreadCommentaryCurrent = {
+      threadId: "thread-1",
+      key: "commentary-1",
+      text: "current commentary",
+      tools: ["Read history loader"],
+      toolKeys: ["tool-1"],
+      plan: { threadId: "thread-1", title: "Updated Plan", steps: [] },
+    };
+    state.activeThreadCommentaryArchive = [
+      {
+        threadId: "thread-1",
+        key: "commentary-archive-1",
+        text: "previous commentary",
+        tools: ["Read parser"],
+        toolKeys: ["tool-0"],
+        plan: null,
+      },
+    ];
+    state.activeThreadCommentaryArchiveVisible = true;
+    state.activeThreadCommentaryArchiveExpanded = true;
+    state.activeThreadInlineCommentaryArchiveCount = 1;
+    state.activeThreadActivity = {
+      threadId: "thread-1",
+      title: "Working",
+      detail: "updating runtime panels",
+      tone: "running",
+    };
+    state.activeThreadActiveCommands = [
+      { key: "cmd-1", label: "Searched code", state: "running" },
+    ];
+    state.activeThreadPlan = {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      title: "Updated Plan",
+      explanation: "keep runtime state during rerender",
+      steps: [{ step: "verify rerender", status: "in_progress" }],
+      deltaText: "",
+    };
+
+    module.clearChatMessages({ preservePendingTurn: true });
+
+    expect(state.activeThreadLiveStateEpoch).toBe(7);
+    expect(state.activeThreadLiveRuntimeEpoch).toBe(7);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingUserMessage).toBe("rerender");
+    expect(state.activeThreadPendingAssistantMessage).toBe("working");
+    expect(state.activeThreadTransientToolText).toBe("searching files");
+    expect(state.activeThreadTransientThinkingText).toBe("thinking about the next step");
+    expect(state.activeThreadCommentaryPendingPlan).toEqual({ title: "Updated Plan", steps: [] });
+    expect(state.activeThreadCommentaryPendingTools).toEqual(["Read src/ui/modules/codex-web/historyLoader.js"]);
+    expect(state.activeThreadCommentaryPendingToolKeys).toEqual(["tool-1"]);
+    expect(state.activeThreadCommentaryCurrent).toEqual({
+      threadId: "thread-1",
+      key: "commentary-1",
+      text: "current commentary",
+      tools: ["Read history loader"],
+      toolKeys: ["tool-1"],
+      plan: { threadId: "thread-1", title: "Updated Plan", steps: [] },
+    });
+    expect(state.activeThreadCommentaryArchive).toEqual([
+      {
+        threadId: "thread-1",
+        key: "commentary-archive-1",
+        text: "previous commentary",
+        tools: ["Read parser"],
+        toolKeys: ["tool-0"],
+        plan: null,
+      },
+    ]);
+    expect(state.activeThreadCommentaryArchiveVisible).toBe(true);
+    expect(state.activeThreadCommentaryArchiveExpanded).toBe(true);
+    expect(state.activeThreadInlineCommentaryArchiveCount).toBe(1);
+    expect(state.activeThreadActivity).toEqual({
+      threadId: "thread-1",
+      title: "Working",
+      detail: "updating runtime panels",
+      tone: "running",
+    });
+    expect(state.activeThreadActiveCommands).toEqual([
+      { key: "cmd-1", label: "Searched code", state: "running" },
+    ]);
+    expect(state.activeThreadPlan).toEqual({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      title: "Updated Plan",
+      explanation: "keep runtime state during rerender",
+      steps: [{ step: "verify rerender", status: "in_progress" }],
+      deltaText: "",
+    });
+  });
+
   it("marks transient tool messages on DOM nodes so they can be cleared later", () => {
     module.addChat("system", "Called tool `shell_command`", {
       kind: "tool",

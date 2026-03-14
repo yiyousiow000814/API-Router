@@ -442,6 +442,7 @@ export function createChatTimelineModule(deps) {
     const box = byId("chatBox");
     if (!box) return;
     const preserveScroll = options && options.preserveScroll === true;
+    const preservePendingTurn = options && options.preservePendingTurn === true;
     const welcome = byId("welcomeCard");
     const overlay = byId("chatOpeningOverlay");
     const keep = [];
@@ -451,8 +452,9 @@ export function createChatTimelineModule(deps) {
     if (!preserveScroll) box.scrollTop = 0;
     state.activeThreadRenderSig = "";
     state.activeThreadMessages = [];
-    if (!(options && options.preservePendingTurn === true)) {
+    if (!preservePendingTurn) {
       state.activeThreadLiveStateEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0)) + 1;
+      state.activeThreadLiveRuntimeEpoch = 0;
       state.activeThreadPendingTurnThreadId = "";
       state.activeThreadPendingTurnRunning = false;
       state.activeThreadPendingUserMessage = "";
@@ -478,19 +480,19 @@ export function createChatTimelineModule(deps) {
     state.activeThreadHistoryInFlightPromise = null;
     state.activeThreadHistoryInFlightThreadId = "";
     state.activeThreadHistoryPendingRefresh = null;
-    state.activeThreadTransientToolText = "";
-    state.activeThreadTransientThinkingText = "";
-    if (!(options && options.preservePendingTurn === true)) state.activeThreadCommentaryPendingPlan = null;
-    if (!(options && options.preservePendingTurn === true)) state.activeThreadCommentaryPendingTools = [];
-    if (!(options && options.preservePendingTurn === true)) state.activeThreadCommentaryPendingToolKeys = [];
-    state.activeThreadCommentaryCurrent = null;
-    state.activeThreadCommentaryArchive = [];
-    state.activeThreadCommentaryArchiveVisible = false;
-    state.activeThreadCommentaryArchiveExpanded = false;
-    state.activeThreadInlineCommentaryArchiveCount = 0;
-    state.activeThreadActivity = null;
-    state.activeThreadActiveCommands = [];
-    state.activeThreadPlan = null;
+    if (!preservePendingTurn) state.activeThreadTransientToolText = "";
+    if (!preservePendingTurn) state.activeThreadTransientThinkingText = "";
+    if (!preservePendingTurn) state.activeThreadCommentaryPendingPlan = null;
+    if (!preservePendingTurn) state.activeThreadCommentaryPendingTools = [];
+    if (!preservePendingTurn) state.activeThreadCommentaryPendingToolKeys = [];
+    if (!preservePendingTurn) state.activeThreadCommentaryCurrent = null;
+    if (!preservePendingTurn) state.activeThreadCommentaryArchive = [];
+    if (!preservePendingTurn) state.activeThreadCommentaryArchiveVisible = false;
+    if (!preservePendingTurn) state.activeThreadCommentaryArchiveExpanded = false;
+    if (!preservePendingTurn) state.activeThreadInlineCommentaryArchiveCount = 0;
+    if (!preservePendingTurn) state.activeThreadActivity = null;
+    if (!preservePendingTurn) state.activeThreadActiveCommands = [];
+    if (!preservePendingTurn) state.activeThreadPlan = null;
     renderRuntimePanels();
   }
 

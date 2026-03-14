@@ -122,6 +122,7 @@ export function createCodexWebComposition(deps) {
     clearTransientToolMessages: deps.clearTransientToolMessages,
     clearTransientThinkingMessages: deps.clearTransientThinkingMessages,
     clearRuntimeState: deps.clearRuntimeState,
+    renderRuntimePanels: deps.renderRuntimePanels,
     renderCommentaryArchive: chatTimeline.renderCommentaryArchive,
     syncRuntimeStateFromHistory: deps.syncRuntimeStateFromHistory,
     syncEventSubscription,

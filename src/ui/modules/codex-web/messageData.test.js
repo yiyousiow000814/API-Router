@@ -159,4 +159,109 @@ describe("messageData", () => {
       )
     ).toBe("Compacted conversation context");
   });
+
+  it("treats exec_command as a command execution in compact mode", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "exec_command",
+          status: "completed",
+          arguments: JSON.stringify({
+            cmd: "bash -lc 'ls -la'",
+            workdir: "/home/yiyou/project",
+          }),
+        },
+        { compact: true }
+      )
+    ).toBe("Ran `bash -lc 'ls -la'`");
+  });
+
+  it("hides passive write_stdin polling in compact mode", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "write_stdin",
+          status: "completed",
+          arguments: JSON.stringify({
+            session_id: 71512,
+            chars: "",
+            yield_time_ms: 30000,
+            max_output_tokens: 12000,
+          }),
+        },
+        { compact: true }
+      )
+    ).toBeNull();
+  });
+
+  it("formats send_input as a dedicated agent action in compact mode", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "send_input",
+          status: "completed",
+          arguments: JSON.stringify({
+            id: "019cc194-bd95-7262-84c2-fc1ddf0967bb",
+            interrupt: true,
+            message: "continue",
+          }),
+          result: JSON.stringify({
+            submission_id: "019cc23a-35a1-7350-845c-e8a390a31ec6",
+          }),
+        },
+        { compact: true }
+      )
+    ).toBe("Sent input to agent");
+  });
+
+  it("formats spawn_agent success with the spawned nickname in compact mode", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "spawn_agent",
+          status: "completed",
+          result: JSON.stringify({
+            agent_id: "019cc52a-c146-7ba3-9778-37bbddd0a8d1",
+            nickname: "Kierkegaard",
+          }),
+        },
+        { compact: true }
+      )
+    ).toBe("Spawned agent Kierkegaard");
+  });
+
+  it("maps text-only spawn_agent failures into a failed compact summary", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "spawn_agent",
+          status: "completed",
+          output: "collab spawn failed: agent thread limit reached (max 10)",
+        },
+        { compact: true }
+      )
+    ).toBe("Agent spawn failed");
+  });
+
+  it("maps structured send_input failures into a failed compact summary", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "send_input",
+          status: "completed",
+          output: JSON.stringify({
+            status: "failed",
+            error: "agent is closed",
+          }),
+        },
+        { compact: true }
+      )
+    ).toBe("Failed to send input to agent");
+  });
 });

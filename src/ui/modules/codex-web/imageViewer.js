@@ -20,6 +20,21 @@ export function clampNumber(value, lo, hi) {
   return Math.max(Number(lo), Math.min(Number(hi), Number(value)));
 }
 
+function attachmentDisplayLabel(label) {
+  const text = String(label || "").trim();
+  const match = /^Image\s*#(\d+)\s*$/i.exec(text);
+  if (match) return `#${match[1]}`;
+  return text || "image";
+}
+
+function buildBrokenAttachmentCardHtml(label, overlayHtml = "", escapeHtmlRef = (value) => String(value || "")) {
+  return (
+    `<div class="msgAttachmentChip mono">[image]</div>` +
+    `<div class="msgAttachmentLabelBadge mono">${escapeHtmlRef(attachmentDisplayLabel(label))}</div>` +
+    `${String(overlayHtml || "")}`
+  );
+}
+
 export function createImageViewerModule(deps) {
   const {
     byId,
@@ -393,11 +408,11 @@ export function createImageViewerModule(deps) {
     for (const card of cards) {
       if (card.__wired) continue;
       card.__wired = true;
-      const src = card.getAttribute("data-image-src") || "";
-      const label = card.getAttribute("data-image-label") || "";
       const open = (event) => {
         event.preventDefault();
         event.stopPropagation();
+        const src = card.getAttribute("data-image-src") || "";
+        const label = card.getAttribute("data-image-label") || "";
         if (!src) return;
         const gallery = Array.from(documentRef.querySelectorAll("#chatBox .msgAttachmentCard"))
           .map((n) => ({
@@ -417,47 +432,49 @@ export function createImageViewerModule(deps) {
       });
     }
 
-    const removeBrokenAttachment = (img) => {
+    const markBrokenAttachment = (img) => {
       const card = img?.closest(".msgAttachmentCard");
       if (!card) return;
-      const wrap = card.closest(".msgAttachments");
-      const msg = card.closest(".msg");
-      card.remove();
-      if (wrap && !wrap.querySelector(".msgAttachmentCard")) {
-        wrap.remove();
-        if (msg) {
-          msg.classList.remove("withAttachments");
-          const body = msg.querySelector(".msgBody");
-          if (body && !String(body.textContent || "").trim()) msg.remove();
-        }
-      }
+      if (card.__brokenAttachment === true) return;
+      card.__brokenAttachment = true;
+      const overlay = card.querySelector?.(".msgAttachmentMoreOverlay");
+      const label = card.getAttribute?.("data-image-label") || "image";
+      try {
+        card.setAttribute?.("data-image-src", "");
+      } catch {}
+      try {
+        card.classList?.add?.("msgAttachmentCard-missing");
+      } catch {}
+      card.innerHTML = buildBrokenAttachmentCardHtml(label, overlay?.outerHTML || "", escapeHtml);
     };
 
     const imgs = container.querySelectorAll("img.msgAttachmentImage");
     for (const img of imgs) {
       if (img.__wiredLoad) continue;
       img.__wiredLoad = true;
-      const onSettled = () => {
+      const onSettled = (options = {}) => {
         const now = Date.now();
         if (now <= Number(state.chatSmoothScrollUntil || 0)) {
           updateScrollToBottomBtn();
           return;
         }
-        if (state.chatShouldStickToBottom) scrollChatToBottom({ force: true });
+        if (options.forceScroll === true && state.chatShouldStickToBottom) {
+          scrollChatToBottom({ force: true });
+        }
         else updateScrollToBottomBtn();
       };
-      img.addEventListener("load", onSettled, { once: true });
+      img.addEventListener("load", () => onSettled({ forceScroll: true }), { once: true });
       img.addEventListener(
         "error",
         () => {
-          removeBrokenAttachment(img);
-          onSettled();
+          markBrokenAttachment(img);
+          onSettled({ forceScroll: false });
         },
         { once: true }
       );
       if (img.complete && !(img.naturalWidth > 0)) {
-        removeBrokenAttachment(img);
-        onSettled();
+        markBrokenAttachment(img);
+        onSettled({ forceScroll: false });
       }
     }
     updateScrollToBottomBtn();

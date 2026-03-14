@@ -1089,6 +1089,57 @@ describe("composerUi", () => {
     expect(html).toContain("runtimeToolItemDiffDel");
   });
 
+  it("does not resurrect passive write_stdin entries in the runtime tool list", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) {
+        if (String(item?.tool || "").trim() === "write_stdin") return null;
+        return item?.text || "";
+      },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.applyToolItemRuntimeUpdate({
+      id: "tool-write-1",
+      type: "toolCall",
+      tool: "write_stdin",
+      status: "completed",
+      arguments: JSON.stringify({ chars: "" }),
+    }, { threadId: "thread-1", timestamp: 300 });
+
+    expect(state.activeThreadActiveCommands).toEqual([]);
+    expect(chatBox.querySelector("#runtimeToolInline")).toBeNull();
+  });
+
   it("replaces the previous completed batch when a new running phase starts", () => {
     const nodes = new Map();
     const runtimeDock = makeNode();

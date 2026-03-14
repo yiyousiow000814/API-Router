@@ -154,6 +154,7 @@ function joinCommandParts(parts) {
 function isShellLikeToolName(name) {
   const normalized = normalizeType(name);
   return normalized === "shell"
+    || normalized === "execcommand"
     || normalized.endsWith("shellcommand")
     || normalized.endsWith("localshell")
     || normalized.endsWith("containerexec")
@@ -180,6 +181,112 @@ function readCommandFromToolLikeItem(item, maxChars) {
   );
 }
 
+function readWriteStdinPayload(item) {
+  const payload =
+    parseToolPayload(item?.arguments) ??
+    parseToolPayload(item?.input) ??
+    parseToolPayload(item?.args);
+  return payload && typeof payload === "object" ? payload : null;
+}
+
+function readToolTextValues(item) {
+  return [
+    normalizeTextPayload(item?.result),
+    normalizeTextPayload(item?.output),
+    normalizeTextPayload(item?.error?.message),
+    normalizeTextPayload(item?.error),
+  ].filter(Boolean);
+}
+
+function readToolObjectValues(item) {
+  return [
+    parseToolPayload(item?.result),
+    parseToolPayload(item?.output),
+    parseToolPayload(item?.error),
+  ].filter((value) => value && typeof value === "object");
+}
+
+function hasFailedStatusText(value) {
+  const text = normalizeType(value);
+  return text === "failed" || text === "error" || text === "cancelled" || text === "timeout" || text === "denied";
+}
+
+function isConservativeFailureText(toolName, value) {
+  const normalizedTool = normalizeType(toolName);
+  const text = String(value || "").toLowerCase().trim();
+  if (!text) return false;
+  if (normalizedTool === "spawnagent") {
+    return (
+      text.includes("spawn failed")
+      || text.includes("agent spawn failed")
+      || text.includes("failed to spawn")
+    );
+  }
+  if (normalizedTool === "sendinput") {
+    return (
+      text.includes("send input failed")
+      || text.includes("failed to send input")
+      || text.includes("submission failed")
+    );
+  }
+  return false;
+}
+
+function inferToolFailure(toolName, item, status) {
+  if (hasFailedStatusText(status)) return true;
+  for (const value of readToolObjectValues(item)) {
+    if (hasFailedStatusText(value?.status) || hasFailedStatusText(value?.state)) return true;
+    if (value?.success === false || value?.ok === false) return true;
+    if (typeof value?.error === "string" && value.error.trim()) return true;
+    if (value?.error && typeof value.error === "object") return true;
+  }
+  for (const value of readToolTextValues(item)) {
+    if (isConservativeFailureText(toolName, value)) return true;
+  }
+  return false;
+}
+
+function readAgentTargetName(item) {
+  const values = [
+    parseToolPayload(item?.arguments),
+    ...readToolObjectValues(item),
+  ].filter((value) => value && typeof value === "object");
+  for (const value of values) {
+    for (const key of ["nickname", "agent_name", "agentName", "target_name", "targetName", "name"]) {
+      const candidate = normalizeInline(value?.[key], 120);
+      if (candidate) return candidate;
+    }
+  }
+  return null;
+}
+
+function formatSpawnAgentTitle(item, status, compact) {
+  const failed = inferToolFailure("spawn_agent", item, status);
+  const nickname = readAgentTargetName(item);
+  if (failed) return "Agent spawn failed";
+  if (compact && (status === "running" || status === "inprogress" || status === "working" || status === "started")) {
+    return nickname ? `Spawning agent ${nickname}` : "Spawning agent";
+  }
+  if (nickname) return `Spawned agent ${nickname}`;
+  return compact ? "Spawning agent" : "Spawned agent";
+}
+
+function formatSendInputTitle(item, status, compact) {
+  const payload =
+    parseToolPayload(item?.arguments) ??
+    parseToolPayload(item?.input) ??
+    parseToolPayload(item?.args) ??
+    {};
+  const failed = inferToolFailure("send_input", item, status);
+  const target = readAgentTargetName(item) || "agent";
+  const interruptOnly = payload?.interrupt === true && !normalizeInline(payload?.message, 40);
+  if (failed) return interruptOnly ? `Failed to interrupt ${target}` : `Failed to send input to ${target}`;
+  if (compact && (status === "running" || status === "inprogress" || status === "working" || status === "started")) {
+    return interruptOnly ? `Interrupting ${target}` : `Sending input to ${target}`;
+  }
+  return interruptOnly ? `Interrupted ${target}` : `Sent input to ${target}`;
+}
+
 function formatCommandTitle(command, status, compact) {
   if (status === "failed" || status === "error") return `Command failed \`${command}\``;
   if (compact && (status === "running" || status === "inprogress" || status === "working" || status === "started")) {
@@ -188,10 +295,12 @@ function formatCommandTitle(command, status, compact) {
   return `Ran \`${command}\``;
 }
 
-function formatGenericToolTitle(label, tool, status, compact) {
+function formatGenericToolTitle(label, tool, status, compact, item) {
+  const normalizedTool = normalizeType(tool);
+  if (normalizedTool === "spawnagent") return formatSpawnAgentTitle(item, status, compact);
+  if (normalizedTool === "sendinput") return formatSendInputTitle(item, status, compact);
   if (status === "failed" || status === "error") return `Tool failed \`${label}\``;
   if (compact) {
-    const normalizedTool = normalizeType(tool);
     if (normalizedTool === "applypatch") return "Editing files";
     if (normalizedTool === "updateplan") return "Updating plan";
     if (normalizedTool === "webrun") return "Searching web";
@@ -375,6 +484,17 @@ export function toolItemToMessage(item, options = {}) {
     const server = normalizeInline(item?.server, 120);
     const tool = rawTool;
     const normalizedTool = normalizeType(tool);
+    if (normalizedTool === "writestdin") {
+      const payload = readWriteStdinPayload(item);
+      const chars = typeof payload?.chars === "string" ? payload.chars : "";
+      if (!chars) return null;
+      const title = chars === "\u0003" ? "Interrupted running command" : "Sent input to running command";
+      if (compact) return title;
+      const detail =
+        toStructuredPreview(item?.result, 2400) ??
+        toStructuredPreview(item?.output, 2400);
+      return detail ? `${title}\n  - ${String(detail).replace(/\n/g, "\n    ")}` : title;
+    }
     if (compact && normalizedTool === "applypatch") {
       const edits = extractApplyPatchEdits(item);
       if (edits.length === 1) {
@@ -406,7 +526,7 @@ export function toolItemToMessage(item, options = {}) {
     const detail = status === "failed" || status === "error"
       ? (errorMessage ?? result)
       : (result ?? errorMessage);
-    const title = formatGenericToolTitle(label, tool, status, compact);
+    const title = formatGenericToolTitle(label, tool, status, compact, item);
     if (compact) return title;
     return detail ? `${title}\n  - ${detail.replace(/\n/g, "\n    ")}` : title;
   }

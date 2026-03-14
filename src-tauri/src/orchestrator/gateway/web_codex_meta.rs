@@ -38,6 +38,55 @@ fn extract_model_and_effort_from_toml(txt: &str) -> CliConfigSnapshot {
     }
 }
 
+fn resolve_codex_file_path(raw: &str) -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    let wsl_distro = Some(
+        crate::orchestrator::gateway::web_codex_home::resolve_wsl_identity()
+            .map(|(distro, _)| distro)?,
+    );
+    #[cfg(not(target_os = "windows"))]
+    let wsl_distro: Option<String> = None;
+    resolve_codex_file_path_with_wsl_distro(raw, wsl_distro.as_deref())
+}
+
+fn resolve_codex_file_path_with_wsl_distro(
+    raw: &str,
+    wsl_distro: Option<&str>,
+) -> Result<PathBuf, String> {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    #[cfg(target_os = "windows")]
+    if raw.starts_with('/') {
+        if let Some(host_path) = resolve_windows_host_path_from_wsl_mount(raw) {
+            return Ok(host_path);
+        }
+        let distro = wsl_distro
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "failed to resolve WSL distro".to_string())?;
+        return Ok(crate::orchestrator::gateway::web_codex_home::linux_path_to_unc(raw, distro));
+    }
+    Err("path must be absolute".to_string())
+}
+
+fn resolve_windows_host_path_from_wsl_mount(raw: &str) -> Option<PathBuf> {
+    let normalized = crate::orchestrator::gateway::web_codex_home::normalize_wsl_linux_path(raw)?;
+    let suffix = normalized.strip_prefix("/mnt/")?;
+    let mut parts = suffix.split('/').filter(|part| !part.is_empty());
+    let drive = parts.next()?;
+    if drive.len() != 1 || !drive.as_bytes()[0].is_ascii_alphabetic() {
+        return None;
+    }
+    let drive_letter = drive.chars().next()?.to_ascii_uppercase();
+    let mut path = PathBuf::from(format!("{drive_letter}:\\"));
+    for part in parts {
+        path.push(part);
+    }
+    Some(path)
+}
+
 pub(super) async fn codex_cli_config(
     State(st): State<GatewayState>,
     headers: HeaderMap,
@@ -79,10 +128,15 @@ pub(super) async fn codex_file(
     if raw.is_empty() || raw.len() > 4096 {
         return api_error(StatusCode::BAD_REQUEST, "missing file path");
     }
-    let path = PathBuf::from(raw);
-    if !path.is_absolute() {
-        return api_error(StatusCode::BAD_REQUEST, "path must be absolute");
-    }
+    let path = match resolve_codex_file_path(raw) {
+        Ok(path) => path,
+        Err(err) if err == "path must be absolute" => {
+            return api_error(StatusCode::BAD_REQUEST, "path must be absolute")
+        }
+        Err(err) => {
+            return api_error_detail(StatusCode::BAD_GATEWAY, "failed to resolve file path", err)
+        }
+    };
     let ext = path
         .extension()
         .and_then(|s| s.to_str())
@@ -281,7 +335,8 @@ pub(super) async fn codex_models(State(st): State<GatewayState>, headers: Header
 
 #[cfg(test)]
 mod tests {
-    use super::extract_model_and_effort_from_toml;
+    use super::{extract_model_and_effort_from_toml, resolve_codex_file_path_with_wsl_distro};
+    use std::path::PathBuf;
 
     #[test]
     fn parses_model_and_effort() {
@@ -303,5 +358,40 @@ model_reasoning_effort = "   "
         let snap = extract_model_and_effort_from_toml(txt);
         assert_eq!(snap.model.as_deref(), None);
         assert_eq!(snap.reasoning_effort.as_deref(), None);
+    }
+
+    #[test]
+    fn rejects_relative_codex_file_paths() {
+        let err = resolve_codex_file_path_with_wsl_distro("tmp/image.png", Some("Ubuntu"))
+            .expect_err("relative paths must be rejected");
+        assert_eq!(err, "path must be absolute");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolves_wsl_mnt_codex_file_paths_to_windows_host_paths() {
+        let path = resolve_codex_file_path_with_wsl_distro(
+            "/mnt/c/Users/yiyou/AppData/Local/Temp/tmpE2DA.png",
+            Some("Ubuntu"),
+        )
+        .expect("WSL linux paths should resolve");
+        assert_eq!(
+            path,
+            PathBuf::from(r"C:\Users\yiyou\AppData\Local\Temp\tmpE2DA.png")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolves_non_mount_wsl_linux_codex_file_paths_to_unc() {
+        let path = resolve_codex_file_path_with_wsl_distro(
+            "/home/test/.codex/tmp/image.png",
+            Some("Ubuntu"),
+        )
+        .expect("WSL linux paths should resolve");
+        assert_eq!(
+            path,
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\home\test\.codex\tmp\image.png")
+        );
     }
 }

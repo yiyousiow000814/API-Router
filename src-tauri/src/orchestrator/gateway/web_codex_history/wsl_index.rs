@@ -362,6 +362,8 @@ mod tests {
         wsl_history_cache_root, wsl_history_prewarm_paths,
     };
     use serde_json::json;
+    use std::path::PathBuf;
+    use std::process::Command;
 
     struct EnvGuard {
         key: &'static str,
@@ -460,6 +462,51 @@ mod tests {
             estimate_wsl_launch_len(&args) < 32_767,
             "wsl.exe command line exceeded Windows limit: {}",
             estimate_wsl_launch_len(&args)
+        );
+    }
+
+    fn run_wsl_history_python_self_test() -> Result<std::process::Output, String> {
+        let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("orchestrator")
+            .join("gateway")
+            .join("web_codex_history")
+            .join("wsl_history_index.py");
+        let candidates: &[(&str, &[&str])] = if cfg!(windows) {
+            &[("python", &[]), ("py", &["-3"]), ("python3", &[])]
+        } else {
+            &[("python3", &[]), ("python", &[])]
+        };
+        let mut last_error = String::new();
+        for (program, prefix_args) in candidates {
+            let mut command = Command::new(program);
+            command
+                .args(*prefix_args)
+                .arg(&script_path)
+                .arg("self-test");
+            match command.output() {
+                Ok(output) => return Ok(output),
+                Err(err) => last_error = format!("{program}: {err}"),
+            }
+        }
+        Err(format!(
+            "failed to launch python for WSL history self-test: {last_error}"
+        ))
+    }
+
+    #[test]
+    fn wsl_history_python_script_self_test_passes() {
+        let output =
+            run_wsl_history_python_self_test().expect("launch WSL history python self-test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "WSL history python self-test failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stdout.contains("\"ok\":true"),
+            "unexpected WSL history python self-test stdout: {stdout}"
         );
     }
 }

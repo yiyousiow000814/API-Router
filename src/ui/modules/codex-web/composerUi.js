@@ -143,10 +143,14 @@ export function createComposerUiModule(deps) {
     if (!itemType || itemType === "plan" || itemType === "usermessage" || itemType === "assistantmessage" || itemType === "agentmessage") {
       return null;
     }
-    const compactText = readText(toolItemToMessage(item, { compact: true }));
+    const compactMessage = toolItemToMessage(item, { compact: true });
+    const compactText = readText(compactMessage);
     const status = deriveToolRuntimeState(item, options);
     const toolName = readText(item?.tool || item?.name);
     const lowerToolName = normalizeType(toolName);
+    if (compactMessage == null && lowerToolName === "writestdin") {
+      return null;
+    }
     const directCommand = readText(item?.command || item?.cmd);
     const payloadCommand = readCommandFromPayload(item?.arguments || item?.input || item?.args);
     const command = directCommand || payloadCommand;
@@ -207,6 +211,9 @@ export function createComposerUiModule(deps) {
     } else if (lowerToolName === "spawnagent") {
       icon = "agent";
       title = "Spawning agent";
+    } else if (lowerToolName === "sendinput") {
+      icon = "agent";
+      title = "Sending input to agent";
     } else if (lowerToolName === "wait") {
       icon = "agent";
       title = "Waiting for agent";

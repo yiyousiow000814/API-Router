@@ -641,6 +641,7 @@ fn read_command_from_tool_arguments(arguments: Option<&Value>) -> Option<String>
 fn is_shell_like_tool_name(name: &str) -> bool {
     let normalized = normalize_history_item_type(name);
     normalized == "shell"
+        || normalized == "execcommand"
         || normalized.ends_with("shellcommand")
         || normalized.ends_with("localshell")
         || normalized.ends_with("containerexec")
@@ -878,5 +879,25 @@ mod tests {
             parsed.turns[1].items[0]["type"].as_str(),
             Some("userMessage")
         );
+    }
+
+    #[test]
+    fn parser_treats_exec_command_response_items_as_command_execution() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-exec-command"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"inspect","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-1","arguments":"{\"cmd\":\"bash -lc 'ls -la'\",\"workdir\":\"/home/yiyou/project\"}"}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"{\"output\":\"ok\",\"metadata\":{\"exit_code\":0}}"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#,
+        ]);
+
+        let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
+        assert_eq!(parsed.turns.len(), 1);
+        let items = &parsed.turns[0].items;
+        assert_eq!(items[1]["type"].as_str(), Some("commandExecution"));
+        assert_eq!(items[1]["command"].as_str(), Some("bash -lc 'ls -la'"));
+        assert_eq!(items[1]["output"].as_str(), Some("ok"));
+        assert_eq!(items[1]["exitCode"].as_i64(), Some(0));
     }
 }

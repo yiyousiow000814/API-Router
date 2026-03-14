@@ -520,6 +520,14 @@ function classifyToolSummaryText(text) {
   if (lower.startsWith("updating plan")) return { state: "running", icon: "plan", text: source, mono: false };
   if (lower.startsWith("waiting for input")) return { state: "running", icon: "input", text: source, mono: false };
   if (lower.startsWith("spawning agent")) return { state: "running", icon: "agent", text: source, mono: false };
+  if (lower.startsWith("spawned agent")) return { state: "complete", icon: "agent", text: source, mono: false };
+  if (lower.startsWith("agent spawn failed")) return { state: "error", icon: "agent", text: source, mono: false };
+  if (lower.startsWith("sending input to ")) return { state: "running", icon: "agent", text: source, mono: false };
+  if (lower.startsWith("sent input to ")) return { state: "complete", icon: "agent", text: source, mono: false };
+  if (lower.startsWith("failed to send input to ")) return { state: "error", icon: "agent", text: source, mono: false };
+  if (lower.startsWith("interrupting ")) return { state: "running", icon: "agent", text: source, mono: false };
+  if (lower.startsWith("interrupted ")) return { state: "complete", icon: "agent", text: source, mono: false };
+  if (lower.startsWith("failed to interrupt ")) return { state: "error", icon: "agent", text: source, mono: false };
   if (lower.startsWith("waiting for agent")) return { state: "running", icon: "agent", text: source, mono: false };
   if (lower.startsWith("running tool `")) return { state: "running", icon: "tool", text: source, mono: false };
   if (lower.startsWith("called tool `")) return { state: "complete", icon: "tool", text: source, mono: false };

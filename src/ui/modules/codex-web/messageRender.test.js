@@ -142,6 +142,18 @@ describe("messageRender", () => {
     expect(html).toContain("<code class=\"msgInlineCode\">openai codex previous messages animation final message divider</code>");
   });
 
+  it("renders spawned agent summaries with the agent icon", () => {
+    const html = renderToolSummaryHtml("Spawned agent Kierkegaard");
+    expect(html).toContain('class="msgToolLine state-complete icon-agent"');
+    expect(html).toContain("Spawned agent Kierkegaard");
+  });
+
+  it("renders failed agent actions with the agent error state", () => {
+    const html = renderToolSummaryHtml("Agent spawn failed");
+    expect(html).toContain('class="msgToolLine state-error icon-agent"');
+    expect(html).toContain("Agent spawn failed");
+  });
+
   it("unescapes escaped backticks in plain tool-like sentences", () => {
     const html = renderInlineMessageText("runtime tool 卡片不再靠解析 Running \\`...\\` 这种 markdown 文本来反推命令");
     expect(html).toContain("Running `...`");
