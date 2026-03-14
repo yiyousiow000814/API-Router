@@ -80,29 +80,35 @@ function cloneArchiveBlock(block) {
   const text = String(block.text || "").trim();
   const tools = Array.isArray(block.tools) ? block.tools.map((tool) => String(tool || "").trim()).filter(Boolean) : [];
   const plan = clonePlanState(block.plan, String(block.threadId || "").trim());
-  if (!text && !tools.length && !plan) return null;
-  return {
+  const summaryOnly = block.summaryOnly === true;
+  if (!text && !tools.length && !plan && !summaryOnly) return null;
+  const cloned = {
     key: String(block.key || "").trim(),
     text,
     tools,
     plan,
   };
+  if (summaryOnly) cloned.summaryOnly = true;
+  return cloned;
 }
 
-function createSummaryArchiveBlock(plan, tools, threadId, turnId = "") {
+function createSummaryArchiveBlock(plan, tools, threadId, turnId = "", options = {}) {
   const normalizedThreadId = String(threadId || "").trim();
   const snapshot = clonePlanState(plan, normalizedThreadId);
   const normalizedTools = Array.isArray(tools)
     ? tools.map((tool) => String(tool || "").trim()).filter(Boolean)
     : [];
-  if (!snapshot && !normalizedTools.length) return null;
+  const allowEmpty = options.allowEmpty === true;
+  if (!snapshot && !normalizedTools.length && !allowEmpty) return null;
   const seed = String(snapshot?.turnId || turnId || normalizedThreadId || "summary").trim() || "summary";
-  return {
+  const block = {
     key: `commentary-summary:${seed}`,
     text: "",
     tools: normalizedTools,
     plan: snapshot,
   };
+  if (!snapshot && !normalizedTools.length) block.summaryOnly = true;
+  return block;
 }
 
 function finalizeArchiveBlocks(currentBlocks, currentBlock, hasFinalAssistant) {
@@ -699,7 +705,8 @@ export function createHistoryLoaderModule(deps) {
                   pendingPlan,
                   pendingTools,
                   String(thread?.id || "").trim(),
-                  String(turn?.id || "").trim()
+                  String(turn?.id || "").trim(),
+                  { allowEmpty: commentaryBlocks.length === 0 }
                 )
               : null;
           const archiveMessage = buildCommentaryArchiveMessage(

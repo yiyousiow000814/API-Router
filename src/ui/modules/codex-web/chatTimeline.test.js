@@ -300,7 +300,7 @@ describe("chatTimeline", () => {
     expect(node.attributes.get("data-msg-source")).toBe("buildMsgNode");
     expect(node.attributes.get("data-commentary-archive-key")).toBe("turn-1");
     expect(node.querySelector(".commentaryArchiveToggle")).not.toBeNull();
-    expect(node.querySelector(".commentaryArchiveCount")?.textContent).toBe("1 previous message");
+    expect(node.querySelector(".commentaryArchiveCount")?.textContent).toBe("1 commentary message, 1 used tool");
     expect(node.querySelector(".commentaryArchiveBody")).not.toBeNull();
     expect(node.querySelector(".commentaryArchiveBodyInner")).not.toBeNull();
     expect(String(node.querySelector(".commentaryArchiveFinalDivider")?.innerHTML || "")).toContain("Final message");
@@ -389,7 +389,29 @@ describe("chatTimeline", () => {
 
     expect(node.className).toContain("commentaryArchiveMount");
     expect(node.querySelector(".commentaryArchiveSummary")).not.toBeNull();
-    expect(node.querySelector(".commentaryArchiveSummary")?.textContent).toContain("Used 2 tools");
+    expect(node.querySelector(".commentaryArchiveSummary")?.textContent).toBe("0 commentary messages, 2 used tools");
+    expect(node.querySelector(".commentaryArchiveToggle")).toBeNull();
+    expect(node.querySelector(".commentaryArchiveBody")).toBeNull();
+  });
+
+  it("renders a non-expandable zero summary divider for empty archive blocks", () => {
+    const node = module.buildMsgNode({
+      role: "system",
+      kind: "commentaryArchive",
+      text: "",
+      archiveKey: "turn-empty",
+      archiveBlocks: [
+        {
+          key: "commentary-summary:turn-empty",
+          text: "",
+          tools: [],
+          summaryOnly: true,
+        },
+      ],
+    });
+
+    expect(node.className).toContain("commentaryArchiveMount");
+    expect(node.querySelector(".commentaryArchiveSummary")?.textContent).toBe("0 commentary messages, 0 used tools");
     expect(node.querySelector(".commentaryArchiveToggle")).toBeNull();
     expect(node.querySelector(".commentaryArchiveBody")).toBeNull();
   });

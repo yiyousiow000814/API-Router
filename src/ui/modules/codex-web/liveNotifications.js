@@ -366,7 +366,7 @@ export function createLiveNotificationsModule(deps) {
     return seed ? `commentary:${seed}` : "";
   }
 
-  function createSummaryCommentaryBlock(threadId, plan, tools = [], toolKeys = []) {
+  function createSummaryCommentaryBlock(threadId, plan, tools = [], toolKeys = [], options = {}) {
     const normalizedThreadId = String(threadId || state.activeThreadId || "").trim();
     const snapshot = clonePlanState(plan, normalizedThreadId);
     const normalizedTools = Array.isArray(tools)
@@ -375,9 +375,10 @@ export function createLiveNotificationsModule(deps) {
     const normalizedToolKeys = Array.isArray(toolKeys)
       ? toolKeys.map((key) => String(key || "").trim()).filter(Boolean)
       : [];
-    if (!snapshot && !normalizedTools.length) return null;
+    const allowEmpty = options.allowEmpty === true;
+    if (!snapshot && !normalizedTools.length && !allowEmpty) return null;
     const seed = String(snapshot?.turnId || normalizedToolKeys[0] || normalizedThreadId || "summary").trim() || "summary";
-    return {
+    const block = {
       threadId: normalizedThreadId,
       key: `commentary-summary:${seed}`,
       text: "",
@@ -385,6 +386,8 @@ export function createLiveNotificationsModule(deps) {
       toolKeys: normalizedToolKeys,
       plan: snapshot,
     };
+    if (!snapshot && !normalizedTools.length) block.summaryOnly = true;
+    return block;
   }
 
   function archiveCommentaryBlock(block) {
@@ -393,7 +396,8 @@ export function createLiveNotificationsModule(deps) {
     const text = String(block.text || "").trim();
     const tools = Array.isArray(block.tools) ? block.tools.filter((tool) => String(tool || "").trim()) : [];
     const plan = clonePlanState(block.plan, String(block.threadId || state.activeThreadId || "").trim());
-    if (!text && !tools.length && !plan) return false;
+    const summaryOnly = block.summaryOnly === true;
+    if (!text && !tools.length && !plan && !summaryOnly) return false;
     const nextBlock = {
       threadId: String(block.threadId || state.activeThreadId || "").trim(),
       key: String(block.key || "").trim(),
@@ -401,13 +405,15 @@ export function createLiveNotificationsModule(deps) {
       tools,
       plan,
     };
+    if (summaryOnly) nextBlock.summaryOnly = true;
     const last = state.activeThreadCommentaryArchive[state.activeThreadCommentaryArchive.length - 1] || null;
     const duplicate =
       last &&
       String(last.key || "") === nextBlock.key &&
       String(last.text || "") === nextBlock.text &&
       JSON.stringify(Array.isArray(last.tools) ? last.tools : []) === JSON.stringify(nextBlock.tools) &&
-      JSON.stringify(clonePlanState(last.plan, String(last.threadId || ""))) === JSON.stringify(nextBlock.plan);
+      JSON.stringify(clonePlanState(last.plan, String(last.threadId || ""))) === JSON.stringify(nextBlock.plan) &&
+      (last.summaryOnly === true) === (nextBlock.summaryOnly === true);
     if (!duplicate) state.activeThreadCommentaryArchive = [...state.activeThreadCommentaryArchive, nextBlock];
     pushCommentaryStateDebug("archive", {
       threadId: nextBlock.threadId,
@@ -578,7 +584,8 @@ export function createLiveNotificationsModule(deps) {
         String(state.activeThreadId || "").trim(),
         state.activeThreadCommentaryPendingPlan,
         state.activeThreadCommentaryPendingTools,
-        state.activeThreadCommentaryPendingToolKeys
+        state.activeThreadCommentaryPendingToolKeys,
+        { allowEmpty: state.activeThreadCommentaryArchive.length === 0 }
       );
       if (summaryBlock) archiveCommentaryBlock(summaryBlock);
     }

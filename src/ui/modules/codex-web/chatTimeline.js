@@ -101,16 +101,21 @@ export function createChatTimelineModule(deps) {
     mount?.remove?.();
   }
 
+  function formatCommentaryArchiveSummary(commentaryCount, toolCount) {
+    const normalizedCommentaryCount = Math.max(0, Number(commentaryCount || 0));
+    const normalizedToolCount = Math.max(0, Number(toolCount || 0));
+    return `${String(normalizedCommentaryCount)} commentary message${normalizedCommentaryCount === 1 ? "" : "s"}, ${String(normalizedToolCount)} used tool${normalizedToolCount === 1 ? "" : "s"}`;
+  }
+
   function createCommentaryArchiveNode(blocks, options = {}) {
     const archive = Array.isArray(blocks)
       ? blocks.filter((block) => {
           const tools = Array.isArray(block?.tools) ? block.tools.map((tool) => String(tool || "").trim()).filter(Boolean) : [];
-          return !!(block && (String(block.text || "").trim() || block?.plan || tools.length));
+          return !!(block && (block?.summaryOnly === true || String(block.text || "").trim() || block?.plan || tools.length));
         })
       : [];
-    const expandableArchive = archive.filter((block) => String(block?.text || "").trim() || block?.plan);
-    const toolOnlyToolCount = archive.reduce((count, block) => {
-      if (String(block?.text || "").trim() || block?.plan) return count;
+    const expandableArchive = archive.filter((block) => block?.summaryOnly !== true && (String(block?.text || "").trim() || block?.plan));
+    const totalToolCount = archive.reduce((count, block) => {
       return count + (Array.isArray(block?.tools) ? block.tools.map((tool) => String(tool || "").trim()).filter(Boolean).length : 0);
     }, 0);
     const mount = documentRef.createElement("div");
@@ -131,10 +136,10 @@ export function createChatTimelineModule(deps) {
     if (options.key) {
       try { mount.setAttribute("data-commentary-archive-key", String(options.key)); } catch {}
     }
-    if (!expandableArchive.length && toolOnlyToolCount > 0) {
+    if (!expandableArchive.length) {
       const summary = documentRef.createElement("div");
       summary.className = "commentaryArchiveSummary";
-      summary.textContent = `Used ${String(toolOnlyToolCount)} tool${toolOnlyToolCount === 1 ? "" : "s"}`;
+      summary.textContent = formatCommentaryArchiveSummary(0, totalToolCount);
       mount.appendChild(summary);
       return mount;
     }
@@ -145,7 +150,7 @@ export function createChatTimelineModule(deps) {
     toggle.setAttribute("aria-expanded", "false");
     const countLabel = documentRef.createElement("span");
     countLabel.className = "commentaryArchiveCount";
-    countLabel.textContent = `${String(expandableArchive.length)} previous message${expandableArchive.length === 1 ? "" : "s"}`;
+    countLabel.textContent = formatCommentaryArchiveSummary(expandableArchive.length, totalToolCount);
     const chevron = documentRef.createElement("span");
     chevron.className = "commentaryArchiveChevron is-collapsed";
     chevron.setAttribute("aria-hidden", "true");
@@ -208,7 +213,7 @@ export function createChatTimelineModule(deps) {
     const archive = Array.isArray(state.activeThreadCommentaryArchive)
       ? state.activeThreadCommentaryArchive.filter((block) => {
           const tools = Array.isArray(block?.tools) ? block.tools.map((tool) => String(tool || "").trim()).filter(Boolean) : [];
-          return !!(block && (String(block.text || "").trim() || block?.plan || tools.length));
+          return !!(block && (block?.summaryOnly === true || String(block.text || "").trim() || block?.plan || tools.length));
         })
       : [];
     const visible = state.activeThreadCommentaryArchiveVisible === true && archive.length > 0;
