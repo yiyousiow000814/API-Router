@@ -1174,6 +1174,7 @@
     .msg.assistant .msgHead,
     .msg.user .msgHead { display: none; }
     .msgBody { 
+      font-size: 14px;
       line-height: 1.5; 
       min-width: 0; 
       white-space: normal; 
@@ -1613,7 +1614,8 @@
     }
     .msgInlineCode {
       font-family: ui-monospace, "Cascadia Mono", "Consolas", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", monospace;
-      font-size: 12px;
+      font-size: inherit;
+      line-height: inherit;
       /* NOTE: Unlike clawdex-mobile (which uses a "pill" chip), we match Codex's subtler style:
          inline code is colored (blue) without a background box, so it doesn't look like a UI tag. */
       padding: 0;

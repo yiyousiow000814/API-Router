@@ -63,4 +63,14 @@ describe("codex-web runtime layout", () => {
     expect(textMatch?.[1] || "").toMatch(/text-overflow:\s*ellipsis/i);
     expect(source).toContain(".runtimeActivityText > *");
   });
+
+  it("keeps message body inline typography on a consistent font size", () => {
+    const bodyMatch = source.match(/\.msgBody\s*\{([^}]+)\}/s);
+    expect(bodyMatch).toBeTruthy();
+    expect(bodyMatch?.[1] || "").toMatch(/font-size:\s*14px/i);
+    const inlineCodeMatch = source.match(/^\s*\.msgInlineCode\s*\{([^}]+)\}/ms);
+    expect(inlineCodeMatch).toBeTruthy();
+    expect(inlineCodeMatch?.[1] || "").toMatch(/font-size:\s*inherit/i);
+    expect(inlineCodeMatch?.[1] || "").toMatch(/line-height:\s*inherit/i);
+  });
 });
