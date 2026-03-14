@@ -989,6 +989,54 @@ describe("composerUi", () => {
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).not.toContain("apply_patch");
   });
 
+  it("keeps command and read prefixes in runtime tool cards", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.setActiveCommands([
+      { key: "cmd-1", text: "Ran `git -C /home/yiyou/ast-tri-strategy status --short`", state: "complete", icon: "command" },
+      { key: "cmd-2", text: "Read `selflearn_fullsuite_15-03-2026.log`", state: "complete", icon: "tool" },
+    ]);
+
+    const html = chatBox.querySelector("#runtimeToolInline").innerHTML;
+    expect(html).toContain('<span class="msgToolPrefix">Ran </span>');
+    expect(html).toContain('<span class="msgToolPrefix">Read </span>');
+    expect(html).toContain('<code class="msgInlineCode">git -C /home/yiyou/ast-tri-strategy status --short</code>');
+    expect(html).toContain('<code class="msgInlineCode">selflearn_fullsuite_15-03-2026.log</code>');
+  });
+
   it("renders single-file apply_patch diff counts with colored runtime spans", () => {
     const nodes = new Map();
     const runtimeDock = makeNode();

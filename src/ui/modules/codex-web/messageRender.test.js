@@ -9,6 +9,7 @@ import {
   renderMessageAttachments,
   renderMessageBody,
   renderMessageRichHtml,
+  renderStructuredToolPreviewHtml,
   renderToolSummaryHtml,
 } from "./messageRender.js";
 
@@ -114,6 +115,7 @@ describe("messageRender", () => {
     const command = "Running `cargo test --manifest-path src-tauri/Cargo.toml web_codex_history --lib`";
     const html = renderToolSummaryHtml(command);
     expect(html).toContain('class="msgToolLine state-running icon-command mono"');
+    expect(html).toContain("Running ");
     expect(html).toContain('<code class="msgInlineCode">cargo test --manifest-path src-tauri/Cargo.toml web_codex_history --lib</code>');
     expect(html).not.toContain("<ul>");
     expect(renderMessageBody("system", command, { kind: "tool" })).toContain('msgToolLine');
@@ -122,6 +124,7 @@ describe("messageRender", () => {
   it("summarizes multiline tool commands instead of dumping the full payload", () => {
     const command = "Ran `@'\nimport { x } from \"./file.js\";\nconsole.log(x);\n'@ | node --input-type=module`";
     const html = renderToolSummaryHtml(command);
+    expect(html).toContain("Ran ");
     expect(html).toContain('<code class="msgInlineCode">import { x } from &quot;./file.js&quot;;</code>');
     expect(html).toContain('</code> <span class="msgToolMore">+3 lines</span>');
     expect(html).toContain("msgToolMore");
@@ -152,6 +155,22 @@ describe("messageRender", () => {
     const html = renderToolSummaryHtml("Agent spawn failed");
     expect(html).toContain('class="msgToolLine state-error icon-agent"');
     expect(html).toContain("Agent spawn failed");
+  });
+
+  it("renders read summaries with the read prefix intact", () => {
+    const html = renderToolSummaryHtml("Read `selflearn_fullsuite_15-03-2026.log`");
+    expect(html).toContain('class="msgToolLine state-complete icon-tool mono"');
+    expect(html).toContain("Read ");
+    expect(html).toContain('<code class="msgInlineCode">selflearn_fullsuite_15-03-2026.log</code>');
+  });
+
+  it("renders structured tool previews with a plain prefix and coded detail", () => {
+    const html = renderStructuredToolPreviewHtml("Ran `git status --short`", {
+      className: "runtimeToolItemPreview",
+      moreClassName: "runtimeToolItemMeta",
+    });
+    expect(html).toContain('<span class="msgToolPrefix">Ran </span>');
+    expect(html).toContain('<code class="msgInlineCode">git status --short</code>');
   });
 
   it("unescapes escaped backticks in plain tool-like sentences", () => {

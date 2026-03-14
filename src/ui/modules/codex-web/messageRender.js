@@ -510,6 +510,8 @@ function classifyToolSummaryText(text) {
   const source = String(text || "").trim();
   const lower = source.toLowerCase();
   if (!source) return { state: "idle", icon: "tool", text: "" };
+  if (lower.startsWith("read `")) return { state: "complete", icon: "tool", text: source, mono: true };
+  if (lower.startsWith("read failed `")) return { state: "error", icon: "tool", text: source, mono: true };
   if (lower.startsWith("running `")) return { state: "running", icon: "command", text: source, mono: true };
   if (lower.startsWith("ran `")) return { state: "complete", icon: "command", text: source, mono: true };
   if (lower.startsWith("command failed `")) return { state: "error", icon: "command", text: source, mono: true };
@@ -616,10 +618,22 @@ function summarizeToolSnippet(value, maxChars = 92) {
   };
 }
 
+function splitStructuredToolSummary(source, prefix) {
+  const detail = stripToolWrappingBackticks(String(source || "").slice(String(prefix || "").length));
+  const snippet = summarizeToolSnippet(detail);
+  return {
+    prefix: String(prefix || ""),
+    preview: snippet.preview,
+    extraLines: snippet.extraLines,
+  };
+}
+
 function parseStructuredToolSummary(text) {
   const source = String(text || "").trim();
   const lower = source.toLowerCase();
   const prefixes = [
+    { prefix: "Read ", state: "complete", icon: "tool", kind: "tool" },
+    { prefix: "Read failed ", state: "error", icon: "tool", kind: "tool" },
     { prefix: "Running ", state: "running", icon: "command", kind: "command" },
     { prefix: "Ran ", state: "complete", icon: "command", kind: "command" },
     { prefix: "Command failed ", state: "error", icon: "command", kind: "command" },
@@ -629,12 +643,12 @@ function parseStructuredToolSummary(text) {
   ];
   for (const entry of prefixes) {
     if (!lower.startsWith(entry.prefix.toLowerCase())) continue;
-    const detail = stripToolWrappingBackticks(source.slice(entry.prefix.length));
-    const snippet = summarizeToolSnippet(detail);
+    const snippet = splitStructuredToolSummary(source, entry.prefix);
     return {
       state: entry.state,
       icon: entry.icon,
       mono: true,
+      prefix: entry.prefix,
       preview: snippet.preview,
       extraLines: snippet.extraLines,
       kind: entry.kind,
@@ -659,17 +673,21 @@ export function renderToolSummaryHtml(text) {
     const safeState = escapeHtml(structured.state || "idle");
     const safeIcon = escapeHtml(structured.icon || "tool");
     const monoClass = structured.mono ? " mono" : "";
+    const prefixHtml = structured.prefix
+      ? `<span class="msgToolPrefix">${escapeHtml(structured.prefix)}</span>`
+      : "";
     const previewHtml = structured.preview
       ? `<code class="msgInlineCode">${escapeHtml(structured.preview)}</code>`
       : "";
     const moreHtml = structured.extraLines > 0
       ? `<span class="msgToolMore">+${String(structured.extraLines)} lines</span>`
       : "";
-    const moreSpacer = previewHtml && moreHtml ? " " : "";
+    const previewSpacer = prefixHtml && previewHtml ? " " : "";
+    const moreSpacer = (prefixHtml || previewHtml) && moreHtml ? " " : "";
     return (
       `<div class="msgToolLine state-${safeState} icon-${safeIcon}${monoClass}" data-tool-state="${safeState}" data-tool-icon="${safeIcon}">` +
         `<span class="msgToolLead" aria-hidden="true"></span>` +
-        `<span class="msgToolText">${previewHtml}${moreSpacer}${moreHtml}</span>` +
+        `<span class="msgToolText">${prefixHtml}${previewSpacer}${previewHtml}${moreSpacer}${moreHtml}</span>` +
         `<span class="msgToolTail" aria-hidden="true"></span>` +
       `</div>`
     );
@@ -686,6 +704,38 @@ export function renderToolSummaryHtml(text) {
       `<span class="msgToolTail" aria-hidden="true"></span>` +
     `</div>`
   );
+}
+
+export function renderStructuredToolPreviewHtml(text, options = {}) {
+  const source = String(text || "").trim();
+  const lower = source.toLowerCase();
+  const prefixes = [
+    "Read failed ",
+    "Command failed ",
+    "Running tool ",
+    "Called tool ",
+    "Tool failed ",
+    "Running ",
+    "Ran ",
+    "Read ",
+  ];
+  const prefix = prefixes.find((value) => lower.startsWith(value.toLowerCase()));
+  if (!prefix) {
+    return renderToolPreviewHtml(text, options);
+  }
+  const snippet = splitStructuredToolSummary(source, prefix);
+  const className = String(options.className || "").trim();
+  const classAttr = className ? ` class="${escapeHtml(className)}"` : "";
+  const prefixHtml = `<span class="msgToolPrefix">${escapeHtml(snippet.prefix)}</span>`;
+  const previewHtml = snippet.preview
+    ? `<code class="msgInlineCode">${escapeHtml(snippet.preview)}</code>`
+    : "";
+  const moreHtml = snippet.extraLines > 0
+    ? `<span class="${escapeHtml(String(options.moreClassName || "msgToolMore"))}">+${String(snippet.extraLines)} lines</span>`
+    : "";
+  const previewSpacer = prefixHtml && previewHtml ? " " : "";
+  const moreSpacer = (prefixHtml || previewHtml) && moreHtml ? " " : "";
+  return `<span${classAttr}>${prefixHtml}${previewSpacer}${previewHtml}${moreSpacer}${moreHtml}</span>`;
 }
 
 export function renderMessageBody(role, text, options = {}) {

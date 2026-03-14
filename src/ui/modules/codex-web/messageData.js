@@ -181,6 +181,59 @@ function readCommandFromToolLikeItem(item, maxChars) {
   );
 }
 
+function splitShellPipeline(command) {
+  return String(command || "")
+    .split(/\s+\|\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function readLikelyFilePathToken(command) {
+  const parts = String(command || "")
+    .split(/\s+/)
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const token = parts[index]
+      .replace(/^[("'`]+|[)"'`;,]+$/g, "")
+      .trim();
+    if (!token) continue;
+    if (/^\|$/.test(token)) continue;
+    if (/^-/.test(token)) continue;
+    if (/^(?:cat|tail|head|sed|awk|grep|rg|less|more)$/i.test(token)) continue;
+    if (/^(?:\d+|true|false)$/i.test(token)) continue;
+    if (/[/\\]/.test(token) || /\.[A-Za-z0-9]{1,8}$/.test(token)) return token;
+  }
+  return null;
+}
+
+function summarizeReadOnlyCommand(command) {
+  const source = String(command || "").trim();
+  if (!source) return null;
+  const pipeline = splitShellPipeline(source);
+  const first = String(pipeline[0] || "").trim();
+  if (!first) return null;
+  let filePath = null;
+  if (/^(?:cat|less|more)\s+/i.test(first)) {
+    filePath = readLikelyFilePathToken(first);
+  } else if (/^(?:tail|head)\s+/i.test(first)) {
+    filePath = readLikelyFilePathToken(first);
+  } else if (/^sed\s+/i.test(first) && pipeline.length === 1) {
+    filePath = readLikelyFilePathToken(first);
+  } else if (/^(?:grep|rg|awk)\s+/i.test(first) && pipeline.length === 1) {
+    filePath = readLikelyFilePathToken(first);
+  }
+  if (!filePath) {
+    for (const part of pipeline.slice(1)) {
+      if (!/^(?:sed|head|tail|cat|less|more|grep|rg|awk)\b/i.test(part)) continue;
+      filePath = readLikelyFilePathToken(part);
+      if (filePath) break;
+    }
+  }
+  const label = compactAttachmentLabel(filePath);
+  return label ? `Read \`${label}\`` : null;
+}
+
 function readWriteStdinPayload(item) {
   const payload =
     parseToolPayload(item?.arguments) ??
@@ -288,6 +341,14 @@ function formatSendInputTitle(item, status, compact) {
 }
 
 function formatCommandTitle(command, status, compact) {
+  const readSummary = summarizeReadOnlyCommand(command);
+  if (readSummary) {
+    if (status === "failed" || status === "error") return `Read failed ${readSummary.slice("Read ".length)}`;
+    if (compact && (status === "running" || status === "inprogress" || status === "working" || status === "started")) {
+      return readSummary;
+    }
+    return readSummary;
+  }
   if (status === "failed" || status === "error") return `Command failed \`${command}\``;
   if (compact && (status === "running" || status === "inprogress" || status === "working" || status === "started")) {
     return `Running \`${command}\``;

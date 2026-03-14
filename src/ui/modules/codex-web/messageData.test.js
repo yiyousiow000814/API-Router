@@ -177,6 +177,22 @@ describe("messageData", () => {
     ).toBe("Ran `bash -lc 'ls -la'`");
   });
 
+  it("summarizes tail-based file reads as a read action in compact mode", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "shell_command",
+          status: "completed",
+          arguments: JSON.stringify({
+            command: "tail -n 120 /tmp/selflearn_fullsuite_15-03-2026.log | sed -n '1,120p'",
+          }),
+        },
+        { compact: true }
+      )
+    ).toBe("Read `selflearn_fullsuite_15-03-2026.log`");
+  });
+
   it("hides passive write_stdin polling in compact mode", () => {
     expect(
       toolItemToMessage(

@@ -1,4 +1,4 @@
-import { renderToolPreviewHtml } from "./messageRender.js";
+import { renderStructuredToolPreviewHtml, renderToolPreviewHtml } from "./messageRender.js";
 import { extractPlanUpdate, renderPlanCardHtml } from "./runtimePlan.js";
 
 export function createComposerUiModule(deps) {
@@ -283,6 +283,9 @@ export function createComposerUiModule(deps) {
 
   function readRuntimeEntrySummary(entry) {
     const rawText = String(entry?.text || "").trim();
+    if (/^(?:Running|Ran|Read|Command failed|Read failed)\s+`/i.test(rawText)) {
+      return rawText;
+    }
     if (normalizeType(entry?.icon || "tool") === "patch" && /^Edited\s+`[^`]+`(?:\s+\(\+\d+\s+-\d+\))?$/i.test(rawText)) {
       return rawText;
     }
@@ -290,21 +293,31 @@ export function createComposerUiModule(deps) {
   }
 
   function renderCommandEntryHtml(entry) {
-    const snippet = summarizeSnippet(readRuntimeEntrySummary(entry));
+    const summaryText = readRuntimeEntrySummary(entry);
+    const snippet = summarizeSnippet(summaryText);
     const icon = escapeHtml(String(entry?.icon || "tool"));
     const stateName = escapeHtml(String(entry?.state || "complete"));
     const animationIdentity = buildRuntimeAnimationIdentity(entry) || String(entry?.key || "").trim();
     const animationKey = `${String(state.activeThreadId || "")}::${animationIdentity}`;
     const shouldAnimateEnter = animationKey && !animatedRuntimeEntryKeys.has(animationKey);
     if (shouldAnimateEnter) animatedRuntimeEntryKeys.add(animationKey);
+    const usesStructuredToolSummary = /^(?:Running|Ran|Read|Command failed|Read failed|Running tool|Called tool|Tool failed)\s+/i.test(summaryText);
     const previewHtml = snippet.preview
-      ? renderToolPreviewHtml(snippet.preview, {
-          code: entry?.presentation === "code",
-          className: "runtimeToolItemPreview",
-          diffPrefix: "runtimeToolItem",
-        })
+      ? (
+        usesStructuredToolSummary
+          ? renderStructuredToolPreviewHtml(summaryText, {
+              className: "runtimeToolItemPreview",
+              moreClassName: "runtimeToolItemMeta",
+            })
+          : renderToolPreviewHtml(snippet.preview, {
+              code: entry?.presentation === "code",
+              className: "runtimeToolItemPreview",
+              diffPrefix: "runtimeToolItem",
+            })
+      )
       : "";
     const moreHtml = snippet.extraLines > 0
+      && !usesStructuredToolSummary
       ? `<span class="runtimeToolItemMeta">+${String(snippet.extraLines)} lines</span>`
       : "";
     const moreSpacer = previewHtml && moreHtml ? " " : "";
