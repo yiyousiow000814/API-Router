@@ -81,6 +81,7 @@ export function createTurnActionsModule(deps) {
   }
 
   function resetLiveTurnStateForNewTurn() {
+    state.activeThreadLiveStateEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0)) + 1;
     state.activeThreadTransientToolText = "";
     state.activeThreadTransientThinkingText = "";
     state.activeThreadCommentaryPendingPlan = null;

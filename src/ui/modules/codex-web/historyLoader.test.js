@@ -1669,6 +1669,131 @@ describe("historyLoader", () => {
     expect(ops).not.toContain("runtime:sync");
   });
 
+  it("does not restore a commentary snapshot captured before a new pending turn reset", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "older-render",
+      activeThreadMessages: [{ role: "assistant", text: "stale", kind: "" }],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadLiveStateEpoch: 1,
+      activeThreadTransientThinkingText: "构建已完成。",
+      activeThreadCommentaryCurrent: {
+        threadId: "thread-1",
+        key: "commentary-old",
+        text: "构建已完成。",
+        tools: [],
+        toolKeys: [],
+      },
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {
+        ops.push("clear-history-dom");
+        state.activeThreadLiveStateEpoch = 2;
+        state.activeThreadPendingTurnThreadId = "thread-1";
+        state.activeThreadPendingTurnRunning = true;
+        state.activeThreadPendingUserMessage = "new live turn";
+        state.activeThreadPendingAssistantMessage = "";
+        state.activeThreadTransientThinkingText = "";
+        state.activeThreadCommentaryCurrent = null;
+        state.activeThreadCommentaryArchive = [];
+        state.activeThreadCommentaryArchiveVisible = false;
+        state.activeThreadCommentaryArchiveExpanded = false;
+      },
+      showTransientThinkingMessage(text) {
+        ops.push(`thinking:${text}`);
+      },
+      clearTransientThinkingMessages() {
+        ops.push("thinking:clear");
+      },
+      showTransientToolMessage(text) {
+        ops.push(`tool:${text}`);
+      },
+      clearTransientToolMessages() {
+        ops.push("tool:clear");
+      },
+      clearRuntimeState() {},
+      renderCommentaryArchive() {
+        ops.push(`archive:${state.activeThreadCommentaryArchiveVisible ? "visible" : "hidden"}`);
+      },
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-old",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "older user" }] },
+            { type: "assistantMessage", id: "assistant-old", phase: "final_answer", text: "older answer" },
+          ],
+        },
+      ],
+    });
+
+    expect(state.activeThreadLiveStateEpoch).toBe(2);
+    expect(state.activeThreadCommentaryCurrent).toBeNull();
+    expect(state.activeThreadTransientThinkingText).toBe("");
+    expect(ops).toContain("clear-history-dom");
+    expect(ops).toContain("thinking:clear");
+    expect(ops).not.toContain("thinking:构建已完成。");
+  });
+
   it("suppresses stale history commentary for external turns until history grows beyond the baseline turn count", async () => {
     const ops = [];
     const state = {
@@ -2227,5 +2352,95 @@ describe("historyLoader", () => {
       { role: "system", text: "commentary-summary:turn-1\nRan `npm test`", kind: "commentaryArchive" },
       { role: "assistant", text: "done", kind: "" },
     ]);
+  });
+
+  it("preserves scroll when a non-sticky history window is rebuilt for an incomplete turn", async () => {
+    const clearCalls = [];
+    const module = createHistoryLoaderModule({
+      state: {
+        activeThreadId: "thread-1",
+        activeThreadRenderSig: "older-render",
+        activeThreadMessages: [{ role: "assistant", text: "older", kind: "" }],
+        activeThreadWorkspace: "windows",
+        activeThreadPendingTurnThreadId: "",
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadStarted: true,
+        activeThreadHistoryHasMore: true,
+        activeThreadHistoryTurns: [{ id: "turn-older-1" }, { id: "turn-older-2" }],
+        activeThreadHistoryThreadId: "thread-1",
+        historyWindowEnabled: true,
+        historyWindowThreadId: "thread-1",
+        historyWindowStart: 60,
+        historyAllMessages: new Array(120).fill(null).map((_, index) => ({
+          role: index % 2 === 0 ? "user" : "assistant",
+          text: `older-${index}`,
+          kind: "",
+        })),
+        chatShouldStickToBottom: false,
+        liveDebugEvents: [],
+      },
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 5,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages(options = {}) {
+        clearCalls.push(options);
+      },
+      renderChatFull: async () => {},
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: true, hasMore: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+            { type: "assistantMessage", text: "done" },
+          ],
+        },
+      ],
+    }, { forceHistoryWindow: true });
+
+    expect(clearCalls).toContainEqual(expect.objectContaining({
+      preservePendingTurn: true,
+      preserveScroll: true,
+    }));
   });
 });

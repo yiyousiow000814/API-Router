@@ -420,6 +420,10 @@ export function createHistoryLoaderModule(deps) {
     };
   }
 
+  function readLiveStateEpoch() {
+    return Math.max(0, Number(state.activeThreadLiveStateEpoch || 0));
+  }
+
   function latestTurnContainsPendingUserEcho(thread) {
     const threadId = String(thread?.id || state.activeThreadId || "").trim();
     const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
@@ -494,6 +498,7 @@ export function createHistoryLoaderModule(deps) {
       : [];
     if (!matchesThread && !archive.length && state.activeThreadCommentaryArchiveVisible !== true) return null;
     return {
+      epoch: readLiveStateEpoch(),
       current: matchesThread ? { ...current, threadId: currentThreadId || normalizedThreadId } : null,
       archive,
       visible: state.activeThreadCommentaryArchiveVisible === true,
@@ -513,6 +518,7 @@ export function createHistoryLoaderModule(deps) {
       historySnapshot.current = null;
     }
     let effectiveSnapshot = snapshot
+      && Math.max(0, Number(snapshot.epoch || 0)) === readLiveStateEpoch()
       ? {
           current: snapshot.current ? cloneCommentaryBlock(snapshot.current) : null,
           archive: Array.isArray(snapshot.archive)
@@ -522,6 +528,14 @@ export function createHistoryLoaderModule(deps) {
           expanded: snapshot.expanded === true,
         }
       : null;
+    if (snapshot && !effectiveSnapshot) {
+      pushLiveDebugEvent("history.commentary:drop_stale_snapshot", {
+        threadId: String(thread?.id || state.activeThreadId || "").trim(),
+        snapshotEpoch: Math.max(0, Number(snapshot.epoch || 0)),
+        currentEpoch: readLiveStateEpoch(),
+        key: String(snapshot.current?.key || "").trim(),
+      });
+    }
     if (!effectiveSnapshot && historySnapshot) {
       effectiveSnapshot = historySnapshot;
     } else if (effectiveSnapshot && historySnapshot) {
@@ -933,7 +947,10 @@ export function createHistoryLoaderModule(deps) {
       const doWindowedRender = () => {
         const size = Math.max(40, Number(state.historyWindowSize || 160) | 0);
         const start = Math.max(0, messages.length - size);
-        clearChatMessages({ preservePendingTurn: true });
+        clearChatMessages({
+          preservePendingTurn: true,
+          preserveScroll: !state.chatShouldStickToBottom && prevMessages.length > 0,
+        });
         state.activeThreadInlineCommentaryArchiveCount = inlineCommentaryArchiveCount;
         state.historyWindowEnabled = true;
         state.historyWindowThreadId = threadId;

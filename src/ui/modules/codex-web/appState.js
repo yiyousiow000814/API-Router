@@ -90,6 +90,7 @@ export function createInitialState() {
     activeThreadPendingUserMessage: "",
     activeThreadPendingAssistantMessage: "",
     activeThreadPendingTurnBaselineTurnCount: 0,
+    activeThreadLiveStateEpoch: 0,
     activeThreadCommentaryPendingPlan: null,
     activeThreadCommentaryPendingTools: [],
     activeThreadCommentaryPendingToolKeys: [],

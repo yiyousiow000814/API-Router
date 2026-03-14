@@ -17,6 +17,9 @@ describe("codex-web runtime layout", () => {
     expect(source).toContain('<div class="mobileComposerMetaRow">');
     expect(source).toContain('<div id="runtimeDock" class="runtimeDock" style="display:none;">');
     expect(source).toContain(".runtimeActivityDots");
+    const dockMatch = source.match(/\.runtimeDock\s*\{([^}]+)\}/s);
+    expect(dockMatch).toBeTruthy();
+    expect(dockMatch?.[1] || "").toMatch(/margin-right:\s*4px/i);
   });
 
   it("renders thinking cards at full chat width instead of a narrow bubble width", () => {

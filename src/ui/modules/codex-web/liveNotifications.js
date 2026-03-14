@@ -997,6 +997,7 @@ export function createLiveNotificationsModule(deps) {
       state.activeThreadPendingTurnRunning = true;
       state.activeThreadPendingTurnBaselineTurnCount = activeThreadHistoryTurnCount(threadId);
       state.activeThreadPendingAssistantMessage = "";
+      state.activeThreadLiveStateEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0)) + 1;
       ensureCommentaryState();
       state.activeThreadCommentaryPendingPlan = null;
       state.activeThreadCommentaryPendingTools = [];

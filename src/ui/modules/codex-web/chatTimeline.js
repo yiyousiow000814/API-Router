@@ -390,6 +390,7 @@ export function createChatTimelineModule(deps) {
     state.activeThreadRenderSig = "";
     state.activeThreadMessages = [];
     if (!(options && options.preservePendingTurn === true)) {
+      state.activeThreadLiveStateEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0)) + 1;
       state.activeThreadPendingTurnThreadId = "";
       state.activeThreadPendingTurnRunning = false;
       state.activeThreadPendingUserMessage = "";
