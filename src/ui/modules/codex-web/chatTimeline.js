@@ -16,6 +16,7 @@ export function createChatTimelineModule(deps) {
     requestAnimationFrameRef = requestAnimationFrame,
     documentRef = document,
   } = deps;
+  let archiveViewportAdjustToken = 0;
 
   function pushLiveDebugEvent(kind, payload = {}) {
     if (!Array.isArray(state.liveDebugEvents)) state.liveDebugEvents = [];
@@ -105,6 +106,58 @@ export function createChatTimelineModule(deps) {
     const normalizedCommentaryCount = Math.max(0, Number(commentaryCount || 0));
     const normalizedToolCount = Math.max(0, Number(toolCount || 0));
     return `${String(normalizedCommentaryCount)} commentary message${normalizedCommentaryCount === 1 ? "" : "s"}, ${String(normalizedToolCount)} used tool${normalizedToolCount === 1 ? "" : "s"}`;
+  }
+
+  function getChatDistanceFromBottom(box) {
+    if (!box) return 0;
+    return Math.max(0, Number(box.scrollHeight || 0) - (Number(box.scrollTop || 0) + Number(box.clientHeight || 0)));
+  }
+
+  function getViewportTop(node) {
+    if (!node || typeof node.getBoundingClientRect !== "function") return null;
+    const rect = node.getBoundingClientRect();
+    const top = Number(rect?.top);
+    return Number.isFinite(top) ? top : null;
+  }
+
+  function prepareArchiveViewportAfterToggle(toggle) {
+    const box = byId("chatBox");
+    if (!box || !toggle) {
+      return () => updateScrollToBottomBtn();
+    }
+    const lockBottom = !!state.chatShouldStickToBottom || getChatDistanceFromBottom(box) <= 80;
+    const anchorTop = lockBottom ? null : getViewportTop(toggle);
+    return () => {
+      const token = (archiveViewportAdjustToken + 1) | 0;
+      archiveViewportAdjustToken = token;
+      const startedAt = Date.now();
+      const tick = () => {
+        if (archiveViewportAdjustToken !== token) return;
+        const liveBox = byId("chatBox");
+        if (!liveBox || !toggle.parentElement) return;
+        if (lockBottom) {
+          state.chatShouldStickToBottom = true;
+          state.chatUserScrolledAwayAt = 0;
+          scrollChatToBottom({ force: true });
+          scheduleChatLiveFollow(380);
+          updateScrollToBottomBtn();
+        } else if (anchorTop != null) {
+          const nextTop = getViewportTop(toggle);
+          if (nextTop != null) {
+            const delta = nextTop - anchorTop;
+            if (Math.abs(delta) > 0.5) {
+              state.chatProgrammaticScrollUntil = Date.now() + 180;
+              liveBox.scrollTop += delta;
+            }
+          }
+          updateScrollToBottomBtn();
+        } else {
+          updateScrollToBottomBtn();
+        }
+        if (Date.now() - startedAt < 320) requestAnimationFrameRef(tick);
+      };
+      requestAnimationFrameRef(tick);
+    };
   }
 
   function createCommentaryArchiveNode(blocks, options = {}) {
@@ -199,8 +252,10 @@ export function createChatTimelineModule(deps) {
       body.setAttribute("aria-hidden", expandedState.value ? "false" : "true");
     };
     toggle.addEventListener("click", () => {
+      const syncViewport = prepareArchiveViewportAfterToggle(toggle);
       expandedState.value = !(expandedState.value === true);
       syncExpandedUi();
+      syncViewport();
     });
     syncExpandedUi();
     return mount;
@@ -234,8 +289,10 @@ export function createChatTimelineModule(deps) {
     };
     if (toggle) {
       toggle.addEventListener("click", () => {
+        const syncViewport = prepareArchiveViewportAfterToggle(toggle);
         state.activeThreadCommentaryArchiveExpanded = !(state.activeThreadCommentaryArchiveExpanded === true);
         syncExpandedUi();
+        syncViewport();
       });
     }
     syncExpandedUi();

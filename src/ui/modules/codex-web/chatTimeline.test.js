@@ -65,6 +65,8 @@ class FakeElement {
     this.__wiredLoadOlder = false;
     this._id = "";
     this._innerHTML = "";
+    this._listeners = new Map();
+    this.clientHeight = 0;
   }
 
   set className(value) {
@@ -169,7 +171,36 @@ class FakeElement {
     return out;
   }
 
-  addEventListener() {}
+  addEventListener(type, handler) {
+    const key = String(type || "");
+    if (!this._listeners.has(key)) this._listeners.set(key, []);
+    this._listeners.get(key).push(handler);
+  }
+
+  dispatchEvent(event) {
+    const payload = event && typeof event === "object" ? event : { type: String(event || "") };
+    const type = String(payload.type || "");
+    const handlers = this._listeners.get(type) || [];
+    for (const handler of handlers) {
+      handler.call(this, {
+        ...payload,
+        currentTarget: this,
+        target: this,
+        preventDefault() {},
+        stopPropagation() {},
+      });
+    }
+    return handlers.length > 0;
+  }
+
+  click() {
+    return this.dispatchEvent({ type: "click" });
+  }
+
+  getBoundingClientRect() {
+    if (typeof this._getBoundingClientRect === "function") return this._getBoundingClientRect();
+    return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 };
+  }
 }
 
 class FakeDocument {
@@ -414,6 +445,111 @@ describe("chatTimeline", () => {
     expect(node.querySelector(".commentaryArchiveSummary")?.textContent).toBe("0 commentary messages, 0 used tools");
     expect(node.querySelector(".commentaryArchiveToggle")).toBeNull();
     expect(node.querySelector(".commentaryArchiveBody")).toBeNull();
+  });
+
+  it("keeps the chat pinned to bottom when expanding a commentary archive near the bottom", () => {
+    const rafQueue = [];
+    const scheduleChatLiveFollow = vi.fn();
+    const scrollChatToBottom = vi.fn();
+    const module = createChatTimelineModule({
+      byId: (id) => dom.documentRef.getElementById(id),
+      state: {
+        ...state,
+        chatShouldStickToBottom: false,
+      },
+      escapeHtml: (value) => String(value || ""),
+      renderMessageAttachments: () => "",
+      renderMessageBody: (_role, text) => `<span>${String(text || "")}</span>`,
+      wireMessageLinks: vi.fn(),
+      wireMessageAttachments: vi.fn(),
+      scheduleChatLiveFollow,
+      updateScrollToBottomBtn: vi.fn(),
+      scrollChatToBottom,
+      renderRuntimePanels: vi.fn(),
+      requestAnimationFrameRef: (cb) => {
+        rafQueue.push(cb);
+        return rafQueue.length;
+      },
+      documentRef: dom.documentRef,
+    });
+    dom.chatBox.clientHeight = 240;
+    dom.chatBox.scrollHeight = 900;
+    dom.chatBox.scrollTop = 640;
+
+    const node = module.buildMsgNode({
+      role: "system",
+      kind: "commentaryArchive",
+      archiveKey: "turn-bottom",
+      archiveBlocks: [
+        { key: "commentary-bottom-1", text: "thinking one", tools: ["Ran `npm test`"] },
+      ],
+    });
+    dom.chatBox.appendChild(node);
+
+    const toggle = node.querySelector(".commentaryArchiveToggle");
+    toggle.click();
+    while (rafQueue.length) rafQueue.shift()();
+
+    expect(scrollChatToBottom).toHaveBeenCalledWith({ force: true });
+    expect(scheduleChatLiveFollow).toHaveBeenCalled();
+  });
+
+  it("preserves the toggle viewport position when expanding a commentary archive away from bottom", () => {
+    const rafQueue = [];
+    const module = createChatTimelineModule({
+      byId: (id) => dom.documentRef.getElementById(id),
+      state: {
+        ...state,
+        chatShouldStickToBottom: false,
+      },
+      escapeHtml: (value) => String(value || ""),
+      renderMessageAttachments: () => "",
+      renderMessageBody: (_role, text) => `<span>${String(text || "")}</span>`,
+      wireMessageLinks: vi.fn(),
+      wireMessageAttachments: vi.fn(),
+      scheduleChatLiveFollow: vi.fn(),
+      updateScrollToBottomBtn: vi.fn(),
+      scrollChatToBottom: vi.fn(),
+      renderRuntimePanels: vi.fn(),
+      requestAnimationFrameRef: (cb) => {
+        rafQueue.push(cb);
+        return rafQueue.length;
+      },
+      documentRef: dom.documentRef,
+    });
+    dom.chatBox.clientHeight = 240;
+    dom.chatBox.scrollHeight = 1600;
+    dom.chatBox.scrollTop = 420;
+
+    const node = module.buildMsgNode({
+      role: "system",
+      kind: "commentaryArchive",
+      archiveKey: "turn-anchor",
+      archiveBlocks: [
+        { key: "commentary-anchor-1", text: "thinking one", tools: ["Ran `npm test`"] },
+      ],
+    });
+    dom.chatBox.appendChild(node);
+
+    const toggle = node.querySelector(".commentaryArchiveToggle");
+    const body = node.querySelector(".commentaryArchiveBody");
+    toggle._getBoundingClientRect = () => ({
+      top: String(body?.className || "").includes("collapsed")
+        ? 180
+        : 228 - (Number(dom.chatBox.scrollTop || 0) - 420),
+      bottom: (String(body?.className || "").includes("collapsed")
+        ? 180
+        : 228 - (Number(dom.chatBox.scrollTop || 0) - 420)) + 20,
+      left: 0,
+      right: 100,
+      width: 100,
+      height: 20,
+    });
+
+    toggle.click();
+    while (rafQueue.length) rafQueue.shift()();
+
+    expect(dom.chatBox.scrollTop).toBe(468);
   });
 
   it("opens chat overlay and resets sticky state", () => {
