@@ -304,6 +304,28 @@ describe("historyLoader", () => {
     ]);
   });
 
+  it("keeps the pending user fallback until the assistant reply is also reflected in history", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "push it",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages([{ role: "user", text: "push it", kind: "" }], state, "thread-1")
+    ).toEqual([{ role: "user", text: "push it", kind: "" }]);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingUserMessage).toBe("push it");
+
+    expect(
+      mergePendingLiveMessages([{ role: "assistant", text: "older reply", kind: "" }], state, "thread-1")
+    ).toEqual([
+      { role: "assistant", text: "older reply", kind: "" },
+      { role: "user", text: "push it", kind: "" },
+    ]);
+  });
+
   it("keeps tool-only summaries inside history commentary archives before the final assistant message", async () => {
     const module = createHistoryLoaderModule({
       state: { liveDebugEvents: [] },

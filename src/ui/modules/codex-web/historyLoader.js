@@ -269,6 +269,10 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "") {
   const pendingAssistant = String(state.activeThreadPendingAssistantMessage || "");
   const hasPendingUser = !!pendingUser.trim();
   const hasPendingAssistant = !!pendingAssistant.trim();
+  const keepPendingUserFallback =
+    hasPendingUser &&
+    !hasPendingAssistant &&
+    state.activeThreadPendingTurnRunning === true;
   const pending = [];
   if (hasPendingUser) pending.push({ role: "user", text: pendingUser, kind: "" });
   if (hasPendingAssistant) pending.push({ role: "assistant", text: pendingAssistant, kind: "" });
@@ -283,8 +287,10 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "") {
       state.activeThreadPendingTurnRunning = false;
       state.activeThreadPendingUserMessage = "";
       state.activeThreadPendingAssistantMessage = "";
-    } else {
+    } else if (!keepPendingUserFallback) {
       state.activeThreadPendingUserMessage = "";
+    } else {
+      state.activeThreadPendingUserMessage = pendingUser;
     }
     return out;
   }
