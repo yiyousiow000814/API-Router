@@ -104,6 +104,7 @@ import { createComposerUiModule } from "./modules/codex-web/composerUi.js";
 import { createAppPersistenceModule } from "./modules/codex-web/appPersistence.js";
 import { createLiveNotificationsModule } from "./modules/codex-web/liveNotifications.js";
 import { createMobileShellModule } from "./modules/codex-web/mobileShell.js";
+import { createSlashCommandsModule } from "./modules/codex-web/slashCommands.js";
 import {
   extractNotificationEventId,
   extractNotificationThreadId,
@@ -163,6 +164,9 @@ let showTransientThinkingMessage = () => {};
 let showTransientToolMessage = () => {};
 let workspaceKeyOfThread = () => "Default folder";
 let setMobileTab = () => {};
+let hideSlashCommandMenu = () => {};
+let handleSlashCommandKeyDown = () => false;
+let syncSlashCommandMenu = () => {};
 let getWorkspaceTarget = () => normalizeWorkspaceTarget(state.workspaceTarget || "windows");
 let syncActiveThreadMetaFromList = () => {};
 let refreshThreads = async () => {};
@@ -377,6 +381,9 @@ const composition = createCodexWebComposition({
   showTransientThinkingMessage: (...args) => showTransientThinkingMessage(...args),
   clearTransientThinkingMessages: (...args) => clearTransientThinkingMessages(...args),
   showTransientToolMessage: (...args) => showTransientToolMessage(...args),
+  hideSlashCommandMenu: (...args) => hideSlashCommandMenu(...args),
+  handleSlashCommandKeyDown: (...args) => handleSlashCommandKeyDown(...args),
+  syncSlashCommandMenu: (...args) => syncSlashCommandMenu(...args),
   normalizeModelOption,
   isThreadAnimDebugEnabled,
   threadAnimDebug,
@@ -600,6 +607,20 @@ renderAssistantLiveBody = (...args) => renderAssistantLiveBodyFromComposition(..
   getWorkspaceTarget: (...args) => getWorkspaceTarget(...args),
   pushThreadAnimDebug,
   renderThreads: (...args) => renderThreads(...args),
+}));
+
+({
+  hideSlashCommandMenu,
+  handleSlashCommandKeyDown,
+  syncSlashCommandMenu,
+} = createSlashCommandsModule({
+  state,
+  byId,
+  api,
+  escapeHtml,
+  updateMobileComposerState: (...args) => updateMobileComposerState(...args),
+  setStatus: (...args) => setStatus(...args),
+  windowRef: window,
 }));
 
 bootstrap();

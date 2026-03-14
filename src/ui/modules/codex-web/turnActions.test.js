@@ -45,6 +45,241 @@ describe("turnActions", () => {
     });
   });
 
+  it("executes slash commands through the slash endpoint instead of starting a turn", async () => {
+    const calls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      activeThreadNeedsResume: false,
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      ws: null,
+    };
+    let cleared = 0;
+    let hidden = 0;
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        calls.push({ path, method: options.method || "GET", body: options.body || null });
+        if (path === "/codex/slash/execute") {
+          return { ok: true, method: "status/read", result: {} };
+        }
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "/status",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => { cleared += 1; },
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      hideSlashCommandMenu: () => { hidden += 1; },
+      blockInSandbox: () => false,
+    });
+
+    await module.sendTurn();
+
+    expect(calls).toEqual([
+      {
+        path: "/codex/slash/execute",
+        method: "POST",
+        body: {
+          command: "/status",
+          threadId: "thread-1",
+        },
+      },
+    ]);
+    expect(cleared).toBe(1);
+    expect(hidden).toBe(1);
+  });
+
+  it("updates plan mode state after executing slash plan on and off", async () => {
+    const calls = [];
+    const renderCalls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      activeThreadNeedsResume: false,
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      planModeEnabled: false,
+      ws: null,
+    };
+    let currentPrompt = "/plan on";
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        calls.push({ path, method: options.method || "GET", body: options.body || null });
+        if (path === "/codex/slash/execute") {
+          return { ok: true, method: "thread/collaborationMode/set", result: {} };
+        }
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => currentPrompt,
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => { renderCalls.push(state.planModeEnabled); },
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      hideSlashCommandMenu: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.sendTurn();
+    expect(state.planModeEnabled).toBe(true);
+
+    currentPrompt = "/plan off";
+    await module.sendTurn();
+    expect(state.planModeEnabled).toBe(false);
+    expect(renderCalls).toEqual([true, false]);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("adopts a new active thread after slash new returns a thread id", async () => {
+    const state = {
+      activeThreadId: "",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      activeThreadNeedsResume: false,
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      ws: null,
+      activeThreadTokenUsage: { total: 1 },
+    };
+    const seen = [];
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path) => {
+        if (path === "/codex/slash/execute") {
+          return {
+            ok: true,
+            method: "thread/start",
+            result: {
+              threadId: "thread-new",
+              path: "C:\\repo\\.codex\\sessions\\rollout-new.jsonl",
+            },
+          };
+        }
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "/new",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => { seen.push("header"); },
+      addChat: () => {},
+      clearChatMessages: () => { seen.push("clear"); },
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => { seen.push("welcome"); },
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => { seen.push("context"); },
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: (id) => {
+        state.activeThreadId = id;
+      },
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      hideSlashCommandMenu: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.sendTurn();
+
+    expect(state.activeThreadId).toBe("thread-new");
+    expect(state.activeThreadRolloutPath).toBe("C:\\repo\\.codex\\sessions\\rollout-new.jsonl");
+    expect(state.activeThreadStarted).toBe(false);
+    expect(state.activeThreadTokenUsage).toBeNull();
+    expect(seen).toEqual(["context", "clear", "welcome", "header"]);
+  });
+
   it("resumes reopened threads before starting a turn", async () => {
     const calls = [];
     const state = {

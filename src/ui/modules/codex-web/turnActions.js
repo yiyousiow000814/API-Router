@@ -18,6 +18,24 @@ export function buildTurnPayload({
   };
 }
 
+function isSlashCommandPrompt(prompt) {
+  return /^\/\S+/.test(String(prompt || "").trim());
+}
+
+function readSlashResultThreadId(value, fallback = "") {
+  return String(
+    value?.threadId ||
+    value?.thread_id ||
+    value?.id ||
+    value?.thread?.id ||
+    value?.result?.threadId ||
+    value?.result?.thread_id ||
+    value?.result?.id ||
+    value?.result?.thread?.id ||
+    fallback
+  ).trim();
+}
+
 function buildThreadResumeUrl(threadId, options = {}) {
   const params = new URLSearchParams();
   const workspace = String(options.workspace || "").trim();
@@ -26,6 +44,13 @@ function buildThreadResumeUrl(threadId, options = {}) {
   if (rolloutPath) params.set("rolloutPath", rolloutPath);
   const query = params.toString();
   return `/codex/threads/${encodeURIComponent(threadId)}/resume${query ? `?${query}` : ""}`;
+}
+
+function readPlanModeEnabledFromCommand(prompt, fallback = false) {
+  const text = String(prompt || "").trim().toLowerCase();
+  if (text === "/plan on" || text === "/plan") return true;
+  if (text === "/plan off") return false;
+  return !!fallback;
 }
 
 export function createTurnActionsModule(deps) {
@@ -69,6 +94,7 @@ export function createTurnActionsModule(deps) {
     syncPendingTurnUi = () => {},
     clearTransientToolMessages = () => {},
     clearTransientThinkingMessages = () => {},
+    hideSlashCommandMenu = () => {},
     blockInSandbox,
     TextDecoderRef = TextDecoder,
   } = deps;
@@ -180,6 +206,7 @@ export function createTurnActionsModule(deps) {
     setActiveThread("");
     state.activeThreadStarted = false;
     state.activeThreadWorkspace = workspace;
+    state.planModeEnabled = false;
     state.activeThreadRolloutPath = "";
     state.activeThreadTokenUsage = null;
     renderComposerContextLeft();
@@ -201,6 +228,7 @@ export function createTurnActionsModule(deps) {
       setActiveThread(id);
       state.activeThreadStarted = false;
       state.activeThreadWorkspace = workspace;
+      state.planModeEnabled = false;
       state.activeThreadRolloutPath = rolloutPath;
       state.activeThreadTokenUsage = null;
       renderComposerContextLeft();
@@ -218,6 +246,68 @@ export function createTurnActionsModule(deps) {
     if (!prompt) return;
     const workspace = getWorkspaceTarget();
     const startCwd = getStartCwdForWorkspace(workspace);
+    if (isSlashCommandPrompt(prompt)) {
+      const trimmed = String(prompt || "").trim();
+      let activeThreadId = String(state.activeThreadId || "").trim();
+      if (activeThreadId && state.activeThreadNeedsResume) {
+        const resumePromise = api(
+          buildThreadResumeUrl(activeThreadId, {
+            workspace: state.activeThreadWorkspace || workspace,
+            rolloutPath: state.activeThreadRolloutPath,
+          }),
+          { method: "POST" }
+        );
+        registerPendingThreadResume(state.pendingThreadResumes, activeThreadId, resumePromise);
+        const resumed = await resumePromise;
+        activeThreadId = String(
+          resumed?.threadId || resumed?.thread_id || resumed?.id || resumed?.thread?.id || activeThreadId
+        ).trim();
+        if (activeThreadId) setActiveThread(activeThreadId);
+        state.activeThreadNeedsResume = false;
+      }
+      const response = await api("/codex/slash/execute", {
+        method: "POST",
+        body: {
+          command: trimmed,
+          threadId: activeThreadId || undefined,
+        },
+      });
+      const method = String(response?.method || "").trim();
+      const result = response?.result || null;
+      const nextThreadId = readSlashResultThreadId(result, activeThreadId);
+      const nextRolloutPath = String(
+        result?.path ||
+        result?.rolloutPath ||
+        result?.rollout_path ||
+        result?.thread?.path ||
+        ""
+      ).trim();
+      if (nextThreadId && nextThreadId !== state.activeThreadId) setActiveThread(nextThreadId);
+      if (nextThreadId) state.activeThreadNeedsResume = false;
+      if (nextRolloutPath) state.activeThreadRolloutPath = nextRolloutPath;
+      if (method === "thread/start") {
+        state.activeThreadStarted = false;
+        state.activeThreadWorkspace = workspace;
+        state.planModeEnabled = false;
+        state.activeThreadTokenUsage = null;
+        renderComposerContextLeft();
+        clearChatMessages();
+        showWelcomeCard();
+        updateHeaderUi();
+      } else if (nextThreadId) {
+        state.activeThreadWorkspace = workspace;
+      }
+      if (method === "thread/collaborationMode/set") {
+        state.planModeEnabled = readPlanModeEnabledFromCommand(trimmed, state.planModeEnabled);
+        renderComposerContextLeft();
+      }
+      clearPromptValue();
+      hideSlashCommandMenu();
+      setMainTab("chat");
+      await refreshThreads();
+      setStatus(`Executed ${trimmed}`);
+      return;
+    }
     let activeThreadId = String(state.activeThreadId || "").trim();
     const primedPendingRuntime = primePendingTurnRuntime(activeThreadId, prompt);
     try {
@@ -239,6 +329,7 @@ export function createTurnActionsModule(deps) {
         setActiveThread(activeThreadId);
         state.activeThreadWorkspace = workspace;
         state.activeThreadRolloutPath = createdRolloutPath;
+        state.planModeEnabled = false;
         state.activeThreadNeedsResume = false;
       } else if (state.activeThreadNeedsResume) {
         const resumePromise = api(

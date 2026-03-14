@@ -45,6 +45,8 @@ export function createActionBindingsModule(deps) {
     refreshPending,
     uploadAttachment,
     sendTurn,
+    syncSlashCommandMenu = () => {},
+    handleSlashCommandKeyDown = () => false,
     syncSettingsControlsFromMain = () => {},
     LIVE_INSPECTOR_ENABLED_KEY = "web_codex_live_inspector_enabled_v1",
     localStorageRef,
@@ -77,10 +79,20 @@ export function createActionBindingsModule(deps) {
     bindClick("mobileSendBtn", () =>
       sendTurn().catch((e) => setStatus(resolveActionErrorMessage(e), true))
     );
-    bindInput("mobilePromptInput", "input", () => updateMobileComposerState());
-    bindInput("mobilePromptInput", "keyup", () => updateMobileComposerState());
-    bindInput("mobilePromptInput", "change", () => updateMobileComposerState());
+    bindInput("mobilePromptInput", "input", () => {
+      updateMobileComposerState();
+      syncSlashCommandMenu();
+    });
+    bindInput("mobilePromptInput", "keyup", () => {
+      updateMobileComposerState();
+      syncSlashCommandMenu();
+    });
+    bindInput("mobilePromptInput", "change", () => {
+      updateMobileComposerState();
+      syncSlashCommandMenu();
+    });
     bindInput("mobilePromptInput", "keydown", (event) => {
+      if (handleSlashCommandKeyDown(event)) return;
       if (!shouldSubmitPromptKey(event)) return;
       event.preventDefault();
       sendTurn().catch((e) => setStatus(resolveActionErrorMessage(e), true));
@@ -266,11 +278,13 @@ export function createActionBindingsModule(deps) {
       const text = "Explain the current codebase structure";
       if (byId("mobilePromptInput")) byId("mobilePromptInput").value = text;
       updateMobileComposerState();
+      syncSlashCommandMenu();
     });
     bindClick("quickPrompt2", () => {
       const text = "Write tests for the main module";
       if (byId("mobilePromptInput")) byId("mobilePromptInput").value = text;
       updateMobileComposerState();
+      syncSlashCommandMenu();
     });
     const threadSearchInput = byId("threadSearchInput");
     if (threadSearchInput) {

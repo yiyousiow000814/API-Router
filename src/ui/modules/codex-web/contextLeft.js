@@ -103,6 +103,17 @@ export function formatContextLeftDisplay(tokenUsage) {
   };
 }
 
+function withContextAnnotation(display, annotation = "") {
+  const suffix = String(annotation || "").trim();
+  if (!suffix) return display;
+  const separator = " · ";
+  return {
+    ...display,
+    text: `${display.text}${separator}${suffix}`,
+    annotation: suffix,
+  };
+}
+
 export function contextLeftPercentDigits(value) {
   const text = String(Math.max(0, Math.min(100, Number(value || 0) | 0))).padStart(3, " ");
   return text.split("").map((ch) => (ch === " " ? " " : ch));
@@ -246,9 +257,10 @@ export function renderAnimatedComposerContextLeftPercent(node, nextDisplay, prev
   }
 }
 
-export function renderComposerContextLeft(node, tokenUsage, documentRef = document) {
+export function renderComposerContextLeft(node, tokenUsage, documentRef = document, options = {}) {
   if (!node) return;
-  const display = formatContextLeftDisplay(tokenUsage);
+  const annotation = String(options.annotation || "").trim();
+  const display = withContextAnnotation(formatContextLeftDisplay(tokenUsage), annotation);
   const prevKind = String(node.dataset.contextKind || "");
   const prevText = String(node.dataset.contextText || node.textContent || "").trim();
   const prevValue = readNumber(node.dataset.contextValue);

@@ -5,7 +5,7 @@ use crate::orchestrator::gateway::web_codex_auth::{
 use crate::orchestrator::gateway::web_codex_storage::{codex_attachments_dir, sanitize_name};
 use axum::extract::Path as AxumPath;
 use base64::Engine;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -293,10 +293,60 @@ pub(super) struct SlashRequest {
     thread_id: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SlashCommandDescriptor {
+    command: &'static str,
+    usage: &'static str,
+    insert_text: &'static str,
+    description: &'static str,
+}
+
 #[derive(Debug)]
 pub(super) struct ParsedSlash {
     method: String,
     params: Value,
+}
+
+pub(super) fn supported_slash_commands() -> &'static [SlashCommandDescriptor] {
+    &[
+        SlashCommandDescriptor {
+            command: "/help",
+            usage: "/help",
+            insert_text: "/help",
+            description: "Show slash command help from Codex.",
+        },
+        SlashCommandDescriptor {
+            command: "/compact",
+            usage: "/compact",
+            insert_text: "/compact",
+            description: "Compact the current thread context.",
+        },
+        SlashCommandDescriptor {
+            command: "/review",
+            usage: "/review",
+            insert_text: "/review",
+            description: "Enter review mode for the current thread.",
+        },
+        SlashCommandDescriptor {
+            command: "/diff",
+            usage: "/diff",
+            insert_text: "/diff",
+            description: "Show the current thread diff.",
+        },
+        SlashCommandDescriptor {
+            command: "/plan on",
+            usage: "/plan on",
+            insert_text: "/plan on",
+            description: "Enable plan mode.",
+        },
+        SlashCommandDescriptor {
+            command: "/plan off",
+            usage: "/plan off",
+            insert_text: "/plan off",
+            description: "Disable plan mode.",
+        },
+    ]
 }
 
 pub(super) fn parse_slash_command(input: &str) -> Option<ParsedSlash> {
@@ -374,6 +424,16 @@ pub(super) fn parse_slash_command(input: &str) -> Option<ParsedSlash> {
     }
 }
 
+pub(super) async fn codex_slash_commands(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(resp) = require_codex_auth(&st, &headers) {
+        return resp;
+    }
+    Json(json!({ "commands": supported_slash_commands() })).into_response()
+}
+
 pub(super) async fn codex_slash_execute(
     State(st): State<GatewayState>,
     headers: HeaderMap,
@@ -430,8 +490,8 @@ pub(super) async fn codex_rpc_proxy(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_turn_start_params, build_turn_start_response, parse_slash_command, turn_thread_id,
-        TurnStartRequest,
+        build_turn_start_params, build_turn_start_response, parse_slash_command,
+        supported_slash_commands, turn_thread_id, TurnStartRequest,
     };
     use serde_json::{json, Value};
 
@@ -512,5 +572,22 @@ mod tests {
         assert!(parse_slash_command("/model").is_none());
         assert!(parse_slash_command("/rename hello").is_some());
         assert!(parse_slash_command("/model gpt-5").is_some());
+    }
+
+    #[test]
+    fn slash_command_catalog_exposes_supported_entries() {
+        let commands = supported_slash_commands();
+        assert!(commands.iter().any(|entry| entry.command == "/help"));
+        assert!(commands.iter().any(|entry| entry.command == "/compact"));
+        assert!(commands.iter().any(|entry| entry.command == "/review"));
+        assert!(commands.iter().any(|entry| entry.command == "/diff"));
+        assert!(commands.iter().any(|entry| entry.command == "/plan on"));
+        assert!(commands.iter().any(|entry| entry.command == "/plan off"));
+        assert!(!commands.iter().any(|entry| entry.command == "/plan"));
+        assert!(!commands.iter().any(|entry| entry.command == "/new"));
+        assert!(!commands.iter().any(|entry| entry.command == "/status"));
+        assert!(!commands.iter().any(|entry| entry.command == "/model"));
+        assert!(!commands.iter().any(|entry| entry.command == "/fork"));
+        assert!(!commands.iter().any(|entry| entry.command == "/rename"));
     }
 }

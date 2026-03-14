@@ -189,6 +189,33 @@ describe("composerUi", () => {
     expect(getPromptValue()).toBe("hello");
   });
 
+  it("passes the plan mode annotation into the context-left renderer", () => {
+    const calls = [];
+    const deps = {
+      state: { activeThreadTokenUsage: null, activeMainTab: "chat", planModeEnabled: true },
+      byId(id) {
+        return id === "mobileContextLeft" ? makeNode() : id === "mobilePromptInput" ? { value: "" } : null;
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode(...args) {
+        calls.push(args);
+      },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; } },
+      windowRef: { innerHeight: 900 },
+    };
+    const { renderComposerContextLeft } = createComposerUiModule(deps);
+
+    renderComposerContextLeft();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0][3]).toEqual({ annotation: "plan mode" });
+  });
+
   it("renders runtime panels for plan, active commands, and activity", () => {
     const nodes = new Map();
     const runtimeDock = makeNode();

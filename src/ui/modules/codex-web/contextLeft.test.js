@@ -198,4 +198,24 @@ describe("contextLeft", () => {
     expect(node.dataset.contextText).toBe("900 used");
     expect(node.textContent).toBe("900 used");
   });
+
+  it("appends the plan mode annotation when requested", () => {
+    const documentRef = createFakeDocument();
+    const node = createFakeElement("div");
+
+    renderComposerContextLeft(
+      node,
+      {
+        last: { totalTokens: CONTEXT_LEFT_BASELINE_TOKENS + 2000 },
+        modelContextWindow: CONTEXT_LEFT_BASELINE_TOKENS + 10000,
+      },
+      documentRef,
+      { annotation: "plan mode" }
+    );
+
+    expect(node.dataset.contextText).toBe("80% context left · plan mode");
+    expect(node.getAttribute ? node.getAttribute("aria-label") : node.attributes["aria-label"]).toBe(
+      "80% context left · plan mode"
+    );
+  });
 });

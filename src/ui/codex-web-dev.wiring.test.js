@@ -22,6 +22,9 @@ describe("codex-web-dev wiring", () => {
       "updateWelcomeSelections: (...args) => updateWelcomeSelections(...args),"
     );
     expect(source).toContain(
+      "windowRef: window,"
+    );
+    expect(source).toContain(
       "shouldSuppressSyntheticClick,"
     );
     expect(source).toContain(

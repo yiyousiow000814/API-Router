@@ -182,4 +182,70 @@ describe("actionBindings", () => {
       globalThis.Notification = previousNotification;
     }
   });
+
+  it("syncs the slash menu when the prompt input changes", () => {
+    const handlers = new Map();
+    const promptNode = {
+      addEventListener(eventName, handler) {
+        handlers.set(`mobilePromptInput:${eventName}`, handler);
+      },
+    };
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId(id) {
+        if (id === "mobilePromptInput") return promptNode;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput(id, eventName, handler) {
+        const node = id === "mobilePromptInput" ? promptNode : null;
+        node?.addEventListener(eventName, handler);
+      },
+      setStatus() {},
+      updateMobileComposerState() {
+        deps.__updated = (deps.__updated || 0) + 1;
+      },
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSlashCommandMenu() {
+        deps.__synced = (deps.__synced || 0) + 1;
+      },
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    handlers.get("mobilePromptInput:input")?.({});
+
+    expect(deps.__updated).toBe(1);
+    expect(deps.__synced).toBe(1);
+  });
 });

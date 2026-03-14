@@ -804,7 +804,9 @@ export function createComposerUiModule(deps) {
   function renderComposerContextLeft() {
     const node = byId("mobileContextLeft");
     if (!node) return;
-    renderComposerContextLeftInNode(node, state.activeThreadTokenUsage);
+    renderComposerContextLeftInNode(node, state.activeThreadTokenUsage, doc, {
+      annotation: state.planModeEnabled === true ? "plan mode" : "",
+    });
   }
 
   function updateMobileComposerState() {

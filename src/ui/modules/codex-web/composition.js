@@ -279,6 +279,7 @@ export function createCodexWebComposition(deps) {
     },
     clearTransientToolMessages: deps.clearTransientToolMessages,
     clearTransientThinkingMessages: deps.clearTransientThinkingMessages,
+    hideSlashCommandMenu: deps.hideSlashCommandMenu,
     blockInSandbox: deps.blockInSandbox,
   });
 
@@ -316,6 +317,8 @@ export function createCodexWebComposition(deps) {
     refreshPending: connectionFlows.refreshPending,
     uploadAttachment: turnActions.uploadAttachment,
     sendTurn: turnActions.sendTurn,
+    syncSlashCommandMenu: deps.syncSlashCommandMenu,
+    handleSlashCommandKeyDown: deps.handleSlashCommandKeyDown,
     syncSettingsControlsFromMain: deps.syncSettingsControlsFromMain,
     LIVE_INSPECTOR_ENABLED_KEY: deps.LIVE_INSPECTOR_ENABLED_KEY,
     localStorageRef,

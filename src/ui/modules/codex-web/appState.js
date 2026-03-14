@@ -142,6 +142,7 @@ export function createInitialState() {
     chatShouldStickToBottom: true,
     chatProgrammaticScrollUntil: 0,
     activeThreadWorkspace: "windows",
+    planModeEnabled: false,
     modelOptions: [],
     modelOptionsLoading: true,
     modelOptionsLoadingSeq: 0,
@@ -185,6 +186,13 @@ export function createInitialState() {
     activeThreadActivity: null,
     activeThreadActiveCommands: [],
     activeThreadPlan: null,
+    slashCommands: [],
+    slashCommandsLoaded: false,
+    slashCommandsLoading: false,
+    slashCommandsError: "",
+    slashMenuItems: [],
+    slashMenuOpen: false,
+    slashMenuSelectedIndex: 0,
   };
 }
 

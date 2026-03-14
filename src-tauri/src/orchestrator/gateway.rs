@@ -447,6 +447,7 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
             post(codex_user_input_resolve),
         )
         .route("/codex/attachments/upload", post(codex_attachments_upload))
+        .route("/codex/slash/commands", get(codex_slash_commands))
         .route("/codex/slash/execute", post(codex_slash_execute))
         .route("/codex/terminal/exec", post(codex_terminal_exec))
         .route("/codex/version-info", get(codex_version_info))
@@ -509,8 +510,9 @@ mod web_codex_threads;
 mod web_codex_ws;
 include!("gateway/web_codex.rs");
 use self::web_codex_actions::{
-    codex_approval_resolve, codex_attachments_upload, codex_rpc_proxy, codex_slash_execute,
-    codex_turn_interrupt, codex_turn_start, codex_turn_stream, codex_user_input_resolve,
+    codex_approval_resolve, codex_attachments_upload, codex_rpc_proxy, codex_slash_commands,
+    codex_slash_execute, codex_turn_interrupt, codex_turn_start, codex_turn_stream,
+    codex_user_input_resolve,
 };
 use self::web_codex_assets::{
     codex_web_app_js, codex_web_favicon, codex_web_icon_svg, codex_web_index, codex_web_logo_png,

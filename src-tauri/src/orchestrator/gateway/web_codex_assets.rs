@@ -52,6 +52,8 @@ const WEB_CODEX_PROMPT_STATE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/promptState.js");
 const WEB_CODEX_RUNTIME_PLAN_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/runtimePlan.js");
+const WEB_CODEX_SLASH_COMMANDS_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/slashCommands.js");
 const WEB_CODEX_THREAD_LIST_REFRESH_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/threadListRefresh.js");
 const WEB_CODEX_THREAD_LIVE_JS: &str =
@@ -97,6 +99,7 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/pendingThreadResume.js" => Some(WEB_CODEX_PENDING_THREAD_RESUME_JS),
         "codex-web/promptState.js" => Some(WEB_CODEX_PROMPT_STATE_JS),
         "codex-web/runtimePlan.js" => Some(WEB_CODEX_RUNTIME_PLAN_JS),
+        "codex-web/slashCommands.js" => Some(WEB_CODEX_SLASH_COMMANDS_JS),
         "codex-web/threadListRefresh.js" => Some(WEB_CODEX_THREAD_LIST_REFRESH_JS),
         "codex-web/threadLive.js" => Some(WEB_CODEX_THREAD_LIVE_JS),
         "codex-web/threadMeta.js" => Some(WEB_CODEX_THREAD_META_JS),
