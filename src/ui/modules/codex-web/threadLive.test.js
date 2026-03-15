@@ -19,6 +19,7 @@ describe("threadLive", () => {
       shouldPollActiveThreadLive({
         threadId: "thread-1",
         activeMainTab: "chat",
+        activeThreadStarted: true,
         wsReadyState: 1,
         wsSubscribed: true,
         webSocketOpenValue: 1,
@@ -31,6 +32,7 @@ describe("threadLive", () => {
       shouldPollActiveThreadLive({
         threadId: "thread-1",
         activeMainTab: "chat",
+        activeThreadStarted: true,
         wsReadyState: 0,
         wsSubscribed: false,
         webSocketOpenValue: 1,
@@ -40,6 +42,7 @@ describe("threadLive", () => {
       shouldPollActiveThreadLive({
         threadId: "",
         activeMainTab: "chat",
+        activeThreadStarted: true,
         wsReadyState: 0,
         wsSubscribed: false,
         webSocketOpenValue: 1,
@@ -49,6 +52,17 @@ describe("threadLive", () => {
       shouldPollActiveThreadLive({
         threadId: "thread-1",
         activeMainTab: "settings",
+        activeThreadStarted: true,
+        wsReadyState: 0,
+        wsSubscribed: false,
+        webSocketOpenValue: 1,
+      })
+    ).toBe(false);
+    expect(
+      shouldPollActiveThreadLive({
+        threadId: "thread-1",
+        activeMainTab: "chat",
+        activeThreadStarted: false,
         wsReadyState: 0,
         wsSubscribed: false,
         webSocketOpenValue: 1,
@@ -72,6 +86,7 @@ describe("threadLive", () => {
       state: {
         activeThreadId: "thread-1",
         activeMainTab: "chat",
+        activeThreadStarted: true,
         ws: { readyState: 1 },
         wsSubscribedEvents: true,
         activeThreadLiveLastPollMs: 0,
@@ -123,6 +138,7 @@ describe("threadLive", () => {
       state: {
         activeThreadId: "thread-1",
         activeMainTab: "chat",
+        activeThreadStarted: true,
         ws: { readyState: 1 },
         wsSubscribedEvents: true,
         activeThreadHistoryIncomplete: true,
@@ -163,5 +179,46 @@ describe("threadLive", () => {
     } finally {
       Date.now = realNow;
     }
+  });
+
+  it("does not poll live history for a brand new empty chat", async () => {
+    const callbacks = [];
+    const loadCalls = [];
+    const module = createThreadLiveModule({
+      state: {
+        activeThreadId: "thread-1",
+        activeMainTab: "chat",
+        activeThreadStarted: false,
+        ws: { readyState: 0 },
+        wsSubscribedEvents: false,
+        activeThreadLiveLastPollMs: 0,
+        activeThreadLivePolling: false,
+        activeThreadWorkspace: "windows",
+        activeThreadRolloutPath: "",
+      },
+      byId() { return null; },
+      waitMs: async () => {},
+      setStatus() {},
+      refreshThreads: async () => {},
+      getWorkspaceTarget() { return "windows"; },
+      loadThreadMessages: async (...args) => { loadCalls.push(args); },
+      THREAD_PULL_REFRESH_TRIGGER_PX: 44,
+      THREAD_PULL_REFRESH_MAX_PX: 84,
+      THREAD_PULL_REFRESH_MIN_MS: 520,
+      THREAD_PULL_HINT_CLEAR_DELAY_MS: 160,
+      THREAD_AUTO_REFRESH_CONNECTED_MS: 20000,
+      THREAD_AUTO_REFRESH_DISCONNECTED_MS: 3500,
+      ACTIVE_THREAD_LIVE_POLL_MS: 1500,
+      WebSocketRef: { OPEN: 1 },
+      setIntervalRef(callback) {
+        callbacks.push(callback);
+        return 1;
+      },
+    });
+
+    module.startActiveThreadLivePollLoop();
+    await callbacks[0]();
+
+    expect(loadCalls).toHaveLength(0);
   });
 });

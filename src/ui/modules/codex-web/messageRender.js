@@ -636,6 +636,10 @@ function parseStructuredToolSummary(text) {
     { prefix: "Read failed ", state: "error", icon: "tool", kind: "tool" },
     { prefix: "Running ", state: "running", icon: "command", kind: "command" },
     { prefix: "Ran ", state: "complete", icon: "command", kind: "command" },
+    { prefix: "Searching web for ", state: "running", icon: "search", kind: "tool" },
+    { prefix: "Searched web for ", state: "complete", icon: "search", kind: "tool" },
+    { prefix: "Searching web ", state: "running", icon: "search", kind: "tool" },
+    { prefix: "Searched web ", state: "complete", icon: "search", kind: "tool" },
     { prefix: "Command failed ", state: "error", icon: "command", kind: "command" },
     { prefix: "Running tool ", state: "running", icon: "tool", kind: "tool" },
     { prefix: "Called tool ", state: "complete", icon: "tool", kind: "tool" },
@@ -710,6 +714,10 @@ export function renderStructuredToolPreviewHtml(text, options = {}) {
   const source = String(text || "").trim();
   const lower = source.toLowerCase();
   const prefixes = [
+    "Searching web for ",
+    "Searched web for ",
+    "Searching web ",
+    "Searched web ",
     "Read failed ",
     "Command failed ",
     "Running tool ",

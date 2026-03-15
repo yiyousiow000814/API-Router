@@ -281,6 +281,9 @@ export function createCodexWebComposition(deps) {
     clearTransientThinkingMessages: deps.clearTransientThinkingMessages,
     hideSlashCommandMenu: deps.hideSlashCommandMenu,
     blockInSandbox: deps.blockInSandbox,
+    localStorageRef,
+    FAST_MODE_DEVICE_DEFAULT_KEY: deps.FAST_MODE_DEVICE_DEFAULT_KEY,
+    PERMISSION_PRESET_STORAGE_KEY: deps.PERMISSION_PRESET_STORAGE_KEY,
   });
 
   const actionBindings = deps.createActionBindingsModule({
@@ -316,6 +319,7 @@ export function createCodexWebComposition(deps) {
     resolveUserInput: turnActions.resolveUserInput,
     refreshPending: connectionFlows.refreshPending,
     uploadAttachment: turnActions.uploadAttachment,
+    executeSlashCommand: turnActions.executeSlashCommand,
     sendTurn: turnActions.sendTurn,
     syncSlashCommandMenu: deps.syncSlashCommandMenu,
     handleSlashCommandKeyDown: deps.handleSlashCommandKeyDown,
@@ -420,6 +424,7 @@ export function createCodexWebComposition(deps) {
     renderComposerContextLeft: deps.renderComposerContextLeft,
     renderRuntimePanels: deps.renderRuntimePanels,
     updateMobileComposerState: deps.updateMobileComposerState,
+    refreshSlashCommandsState: deps.refreshSlashCommandsState,
     syncSettingsControlsFromMain: deps.syncSettingsControlsFromMain,
     updateWelcomeSelections: deps.updateWelcomeSelections,
     setMainTab: deps.setMainTab,
@@ -441,6 +446,9 @@ export function createCodexWebComposition(deps) {
     START_CWD_BY_WORKSPACE_KEY: deps.START_CWD_BY_WORKSPACE_KEY,
     FAVORITE_THREADS_KEY: deps.FAVORITE_THREADS_KEY,
     SELECTED_MODEL_KEY: deps.SELECTED_MODEL_KEY,
+    ACTIVE_MAIN_TAB_KEY: deps.ACTIVE_MAIN_TAB_KEY,
+    FAST_MODE_DEVICE_DEFAULT_KEY: deps.FAST_MODE_DEVICE_DEFAULT_KEY,
+    PERMISSION_PRESET_STORAGE_KEY: deps.PERMISSION_PRESET_STORAGE_KEY,
     SANDBOX_MODE: deps.SANDBOX_MODE,
     CHAT_STICKY_BOTTOM_PX: deps.CHAT_STICKY_BOTTOM_PX,
   });
@@ -526,7 +534,7 @@ export function createCodexWebComposition(deps) {
     renderPendingLists,
     setActiveHost,
   } = connectionFlows;
-  const { addHost, newThread, resolveApproval, resolveUserInput, sendTurn, uploadAttachment } =
+  const { addHost, executeSlashCommand, newThread, resolveApproval, resolveUserInput, sendTurn, uploadAttachment } =
     turnActions;
   const { wireActions } = actionBindings;
   const { installDebugAndE2E } = debugTools;
@@ -607,6 +615,7 @@ export function createCodexWebComposition(deps) {
     renderPendingLists,
     setActiveHost,
     addHost,
+    executeSlashCommand,
     newThread,
     resolveApproval,
     resolveUserInput,

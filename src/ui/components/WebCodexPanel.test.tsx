@@ -19,4 +19,11 @@ describe('WebCodexPanel', () => {
     expect(html).toContain('http://127.0.0.1:4312/codex-web')
     expect(html).toContain('<code>4312</code> (App)')
   })
+
+  it('documents Web Codex local storage scope on the access panel', () => {
+    const html = renderToStaticMarkup(<WebCodexPanel listenPort={4312} />)
+
+    expect(html).toContain('Web Codex local storage is per browser/device')
+    expect(html).toContain('do not silently write <code>config.toml</code>')
+  })
 })

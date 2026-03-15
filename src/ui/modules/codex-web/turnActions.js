@@ -6,7 +6,11 @@ export function buildTurnPayload({
   shouldSendStartCwd,
   selectedModel,
   selectedReasoningEffort,
+  planModeEnabled,
+  fastModeEnabled,
+  permissionPreset,
 }) {
+  const permission = buildPermissionRuntimeOptions(permissionPreset);
   return {
     threadId: String(activeThreadId || "").trim(),
     prompt,
@@ -15,6 +19,37 @@ export function buildTurnPayload({
     cwd: shouldSendStartCwd ? startCwd || undefined : undefined,
     model: selectedModel || undefined,
     reasoningEffort: selectedReasoningEffort || undefined,
+    collaborationMode: planModeEnabled === true ? "plan" : undefined,
+    serviceTier: fastModeEnabled === true ? "fast" : null,
+    approvalPolicy: permission.approvalPolicy,
+    sandboxPolicy: permission.sandboxPolicy,
+  };
+}
+
+function appendServiceTierQuery(params, fastModeEnabled) {
+  params.set("serviceTier", fastModeEnabled === true ? "fast" : "none");
+}
+
+export function buildPermissionRuntimeOptions(permissionPreset) {
+  const preset = String(permissionPreset || "").trim().toLowerCase();
+  if (preset === "/permission full-access") {
+    return {
+      approvalPolicy: "never",
+      sandbox: "dangerFullAccess",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    };
+  }
+  if (preset === "/permission read-only") {
+    return {
+      approvalPolicy: "unlessTrusted",
+      sandbox: "readOnly",
+      sandboxPolicy: { type: "readOnly" },
+    };
+  }
+  return {
+    approvalPolicy: "onRequest",
+    sandbox: "workspaceWrite",
+    sandboxPolicy: { type: "workspaceWrite" },
   };
 }
 
@@ -51,6 +86,18 @@ function readPlanModeEnabledFromCommand(prompt, fallback = false) {
   if (text === "/plan on" || text === "/plan") return true;
   if (text === "/plan off") return false;
   return !!fallback;
+}
+
+function readFastModeEnabledFromCommand(prompt, fallback = false) {
+  const text = String(prompt || "").trim().toLowerCase();
+  if (text === "/fast on" || text === "/fast") return true;
+  if (text === "/fast off") return false;
+  return !!fallback;
+}
+
+function requiresActiveThreadForSlashCommand(command) {
+  const text = String(command || "").trim().toLowerCase();
+  return text.startsWith("/model ");
 }
 
 export function createTurnActionsModule(deps) {
@@ -96,8 +143,21 @@ export function createTurnActionsModule(deps) {
     clearTransientThinkingMessages = () => {},
     hideSlashCommandMenu = () => {},
     blockInSandbox,
+    localStorageRef,
+    FAST_MODE_DEVICE_DEFAULT_KEY = "web_codex_fast_mode_device_default_v1",
+    PERMISSION_PRESET_STORAGE_KEY = "web_codex_permission_preset_by_workspace_v1",
     TextDecoderRef = TextDecoder,
   } = deps;
+  const storage = localStorageRef ?? globalThis.localStorage ?? { setItem() {} };
+
+  function persistPermissionPresetState() {
+    try {
+      storage.setItem(
+        PERMISSION_PRESET_STORAGE_KEY,
+        JSON.stringify(state.permissionPresetByWorkspace || { windows: "/permission auto", wsl2: "/permission auto" })
+      );
+    } catch {}
+  }
 
   function activeThreadHistoryTurnCount(threadId = state.activeThreadId) {
     const normalizedThreadId = String(threadId || state.activeThreadId || "").trim();
@@ -209,6 +269,8 @@ export function createTurnActionsModule(deps) {
     state.planModeEnabled = false;
     state.activeThreadRolloutPath = "";
     state.activeThreadTokenUsage = null;
+    clearPromptValue();
+    hideSlashCommandMenu();
     renderComposerContextLeft();
     clearChatMessages();
     showWelcomeCard();
@@ -219,6 +281,7 @@ export function createTurnActionsModule(deps) {
       body: {
         workspace,
         cwd: startCwd || undefined,
+        serviceTier: state.fastModeEnabled === true ? "fast" : null,
       },
     });
     const id = data.id || data.threadId || data?.thread?.id || "";
@@ -240,6 +303,137 @@ export function createTurnActionsModule(deps) {
     setMainTab("chat");
   }
 
+  async function executeSlashCommand(command, options = {}) {
+    const trimmed = String(command || "").trim();
+    if (!trimmed) return null;
+    const workspace = getWorkspaceTarget();
+    const startCwd = getStartCwdForWorkspace(workspace);
+    if (trimmed === "/plan on" || trimmed === "/plan off" || trimmed === "/plan") {
+      state.planModeEnabled = readPlanModeEnabledFromCommand(trimmed, state.planModeEnabled);
+      renderComposerContextLeft();
+      if (options.clearPrompt !== false) clearPromptValue();
+      if (options.hideMenu !== false) hideSlashCommandMenu();
+      if (options.switchToChat !== false) setMainTab("chat");
+      if (options.setStatus !== false) setStatus(`Executed ${trimmed}`);
+      return {
+        ok: true,
+        method: "web/planMode/set",
+        result: { mode: state.planModeEnabled === true ? "plan" : "default" },
+      };
+    }
+    let activeThreadId = String(state.activeThreadId || "").trim();
+    if (!activeThreadId && requiresActiveThreadForSlashCommand(trimmed)) {
+      const created = await api("/codex/threads", {
+        method: "POST",
+        body: {
+          workspace,
+          cwd: startCwd || undefined,
+          serviceTier: state.fastModeEnabled === true ? "fast" : null,
+        },
+      });
+      activeThreadId = String(created?.id || created?.threadId || created?.thread?.id || "").trim();
+      const createdRolloutPath = String(
+        created?.thread?.path || created?.path || created?.rolloutPath || created?.rollout_path || ""
+      ).trim();
+      if (activeThreadId) {
+        setActiveThread(activeThreadId);
+        state.activeThreadStarted = false;
+        state.activeThreadWorkspace = workspace;
+        state.activeThreadRolloutPath = createdRolloutPath;
+        state.activeThreadTokenUsage = null;
+      }
+    }
+    await waitPendingThreadResume(activeThreadId);
+    activeThreadId = String(state.activeThreadId || activeThreadId || "").trim();
+    if (activeThreadId && state.activeThreadNeedsResume) {
+      const resumePromise = api(
+        buildThreadResumeUrl(activeThreadId, {
+          workspace: state.activeThreadWorkspace || workspace,
+          rolloutPath: state.activeThreadRolloutPath,
+          fastModeEnabled: state.fastModeEnabled,
+          permissionPreset: state.permissionPresetByWorkspace?.[state.activeThreadWorkspace || workspace],
+        }),
+        { method: "POST" }
+      );
+      registerPendingThreadResume(state.pendingThreadResumes, activeThreadId, resumePromise);
+      const resumed = await resumePromise;
+      activeThreadId = String(
+        resumed?.threadId || resumed?.thread_id || resumed?.id || resumed?.thread?.id || activeThreadId
+      ).trim();
+      if (activeThreadId) setActiveThread(activeThreadId);
+      state.activeThreadNeedsResume = false;
+    }
+    const response = await api("/codex/slash/execute", {
+      method: "POST",
+      body: {
+        command: trimmed,
+        threadId: activeThreadId || undefined,
+        workspace,
+        serviceTier: state.fastModeEnabled === true ? "fast" : null,
+        ...(() => {
+          const permission = buildPermissionRuntimeOptions(state.permissionPresetByWorkspace?.[workspace]);
+          return {
+            approvalPolicy: permission.approvalPolicy,
+            sandbox: permission.sandbox,
+          };
+        })(),
+      },
+    });
+    const method = String(response?.method || "").trim();
+    const result = response?.result || null;
+    const nextThreadId = readSlashResultThreadId(result, activeThreadId);
+    const nextRolloutPath = String(
+      result?.path ||
+      result?.rolloutPath ||
+      result?.rollout_path ||
+      result?.thread?.path ||
+      ""
+    ).trim();
+    if (nextThreadId && nextThreadId !== state.activeThreadId) setActiveThread(nextThreadId);
+    if (nextThreadId) state.activeThreadNeedsResume = false;
+    if (nextRolloutPath) state.activeThreadRolloutPath = nextRolloutPath;
+    if (method === "thread/start") {
+      state.activeThreadStarted = false;
+      state.activeThreadWorkspace = workspace;
+      state.planModeEnabled = false;
+      state.activeThreadTokenUsage = null;
+      renderComposerContextLeft();
+      clearChatMessages();
+      showWelcomeCard();
+      updateHeaderUi();
+    } else if (nextThreadId) {
+      state.activeThreadWorkspace = workspace;
+    }
+    if (method === "thread/collaborationMode/set" || method === "web/planMode/set") {
+      state.planModeEnabled = readPlanModeEnabledFromCommand(trimmed, state.planModeEnabled);
+      renderComposerContextLeft();
+    }
+    if (method === "thread/fastMode/set") {
+      state.fastModeEnabled = readFastModeEnabledFromCommand(trimmed, state.fastModeEnabled);
+      try {
+        storage.setItem(FAST_MODE_DEVICE_DEFAULT_KEY, state.fastModeEnabled ? "1" : "0");
+      } catch {}
+      renderComposerContextLeft();
+      updateHeaderUi();
+    }
+    if (method === "thread/permission/set") {
+      const nextPreset = String(
+        result?.preset ? `/permission ${result.preset}` : trimmed
+      ).trim();
+      if (nextPreset.startsWith("/permission ")) {
+        state.permissionPresetByWorkspace[workspace] = nextPreset;
+        persistPermissionPresetState();
+      }
+      renderComposerContextLeft();
+    }
+    if (options.clearPrompt !== false) clearPromptValue();
+    if (options.hideMenu !== false) hideSlashCommandMenu();
+    if (options.switchToChat !== false) setMainTab("chat");
+    if (options.refreshThreads !== false) await refreshThreads();
+    if (options.setStatus !== false) setStatus(`Executed ${trimmed}`);
+    return response;
+  }
+
   async function sendTurn() {
     if (blockInSandbox("send turn")) return;
     const prompt = getPromptValue();
@@ -247,65 +441,7 @@ export function createTurnActionsModule(deps) {
     const workspace = getWorkspaceTarget();
     const startCwd = getStartCwdForWorkspace(workspace);
     if (isSlashCommandPrompt(prompt)) {
-      const trimmed = String(prompt || "").trim();
-      let activeThreadId = String(state.activeThreadId || "").trim();
-      if (activeThreadId && state.activeThreadNeedsResume) {
-        const resumePromise = api(
-          buildThreadResumeUrl(activeThreadId, {
-            workspace: state.activeThreadWorkspace || workspace,
-            rolloutPath: state.activeThreadRolloutPath,
-          }),
-          { method: "POST" }
-        );
-        registerPendingThreadResume(state.pendingThreadResumes, activeThreadId, resumePromise);
-        const resumed = await resumePromise;
-        activeThreadId = String(
-          resumed?.threadId || resumed?.thread_id || resumed?.id || resumed?.thread?.id || activeThreadId
-        ).trim();
-        if (activeThreadId) setActiveThread(activeThreadId);
-        state.activeThreadNeedsResume = false;
-      }
-      const response = await api("/codex/slash/execute", {
-        method: "POST",
-        body: {
-          command: trimmed,
-          threadId: activeThreadId || undefined,
-        },
-      });
-      const method = String(response?.method || "").trim();
-      const result = response?.result || null;
-      const nextThreadId = readSlashResultThreadId(result, activeThreadId);
-      const nextRolloutPath = String(
-        result?.path ||
-        result?.rolloutPath ||
-        result?.rollout_path ||
-        result?.thread?.path ||
-        ""
-      ).trim();
-      if (nextThreadId && nextThreadId !== state.activeThreadId) setActiveThread(nextThreadId);
-      if (nextThreadId) state.activeThreadNeedsResume = false;
-      if (nextRolloutPath) state.activeThreadRolloutPath = nextRolloutPath;
-      if (method === "thread/start") {
-        state.activeThreadStarted = false;
-        state.activeThreadWorkspace = workspace;
-        state.planModeEnabled = false;
-        state.activeThreadTokenUsage = null;
-        renderComposerContextLeft();
-        clearChatMessages();
-        showWelcomeCard();
-        updateHeaderUi();
-      } else if (nextThreadId) {
-        state.activeThreadWorkspace = workspace;
-      }
-      if (method === "thread/collaborationMode/set") {
-        state.planModeEnabled = readPlanModeEnabledFromCommand(trimmed, state.planModeEnabled);
-        renderComposerContextLeft();
-      }
-      clearPromptValue();
-      hideSlashCommandMenu();
-      setMainTab("chat");
-      await refreshThreads();
-      setStatus(`Executed ${trimmed}`);
+      await executeSlashCommand(prompt);
       return;
     }
     let activeThreadId = String(state.activeThreadId || "").trim();
@@ -319,6 +455,7 @@ export function createTurnActionsModule(deps) {
           body: {
             workspace,
             cwd: startCwd || undefined,
+            serviceTier: state.fastModeEnabled === true ? "fast" : null,
           },
         });
         const createdRolloutPath = String(
@@ -329,13 +466,14 @@ export function createTurnActionsModule(deps) {
         setActiveThread(activeThreadId);
         state.activeThreadWorkspace = workspace;
         state.activeThreadRolloutPath = createdRolloutPath;
-        state.planModeEnabled = false;
         state.activeThreadNeedsResume = false;
       } else if (state.activeThreadNeedsResume) {
         const resumePromise = api(
           buildThreadResumeUrl(activeThreadId, {
             workspace: state.activeThreadWorkspace || workspace,
             rolloutPath: state.activeThreadRolloutPath,
+            fastModeEnabled: state.fastModeEnabled,
+            permissionPreset: state.permissionPresetByWorkspace?.[state.activeThreadWorkspace || workspace],
           }),
           { method: "POST" }
         );
@@ -361,6 +499,9 @@ export function createTurnActionsModule(deps) {
       shouldSendStartCwd: false,
       selectedModel: state.selectedModel,
       selectedReasoningEffort: state.selectedReasoningEffort,
+      planModeEnabled: state.planModeEnabled,
+      fastModeEnabled: state.fastModeEnabled,
+      permissionPreset: state.permissionPresetByWorkspace?.[workspace],
     });
     const shouldAnimateWorkspaceBadge = !state.activeThreadStarted;
     state.activeThreadStarted = true;
@@ -475,6 +616,7 @@ export function createTurnActionsModule(deps) {
 
   return {
     addHost,
+    executeSlashCommand,
     newThread,
     resolveApproval,
     resolveUserInput,

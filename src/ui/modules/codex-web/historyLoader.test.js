@@ -281,6 +281,110 @@ describe("historyLoader", () => {
     expect(state.activeThreadPendingAssistantMessage).toBe("");
   });
 
+  it("drops stale history applies before they can re-render older tool state", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadHistoryReqSeq: 3,
+      activeThreadRenderSig: "current-render",
+      activeThreadMessages: [{ role: "user", text: "latest prompt", kind: "" }],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {
+        ops.push("context:render");
+      },
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat(role, text, options = {}) {
+        ops.push(`chat:${role}:${String(options.kind || "")}:${text}`);
+      },
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {
+        ops.push("chat:clear");
+      },
+      showTransientToolMessage(text) {
+        ops.push(`tool:${text}`);
+      },
+      clearTransientToolMessages() {
+        ops.push("tool:clear");
+      },
+      clearTransientThinkingMessages() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {
+        ops.push("runtime:sync");
+      },
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat(
+      {
+        id: "thread-1",
+        workspace: "windows",
+        page: { incomplete: true },
+        turns: [
+          {
+            id: "turn-old",
+            items: [
+              { type: "userMessage", content: [{ type: "input_text", text: "older user" }] },
+              {
+                type: "webSearch",
+                query: "openai codex stale history",
+              },
+            ],
+          },
+        ],
+      },
+      { historyReqSeq: 2 }
+    );
+
+    expect(ops).toEqual([]);
+    expect(state.activeThreadMessages).toEqual([{ role: "user", text: "latest prompt", kind: "" }]);
+    expect(state.liveDebugEvents.some((event) => event.kind === "history.apply:drop_stale_req")).toBe(true);
+  });
+
   it("keeps pending turn ownership after history catches up to the user message only", () => {
     const state = {
       activeThreadPendingTurnThreadId: "thread-1",

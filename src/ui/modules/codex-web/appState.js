@@ -6,6 +6,7 @@ export const WORKSPACE_TARGET_KEY = "web_codex_workspace_target_v1";
 export const START_CWD_BY_WORKSPACE_KEY = "web_codex_start_cwd_by_workspace_v1";
 export const FAVORITE_THREADS_KEY = "web_codex_favorite_threads_v1";
 export const SELECTED_MODEL_KEY = "web_codex_selected_model_v1";
+export const ACTIVE_MAIN_TAB_KEY = "web_codex_active_main_tab_v1";
 export const MODELS_CACHE_KEY = "web_codex_models_cache_v1";
 export const THREADS_CACHE_KEY = "web_codex_threads_cache_v1";
 export const REASONING_EFFORT_KEY = "web_codex_reasoning_effort_v1";
@@ -13,6 +14,8 @@ export const LAST_EVENT_ID_KEY = "web_codex_last_event_id_v1";
 export const LIVE_INSPECTOR_ENABLED_KEY = "web_codex_live_inspector_enabled_v1";
 export const MODEL_USER_SELECTED_KEY = "web_codex_model_user_selected_v1";
 export const EFFORT_USER_SELECTED_KEY = "web_codex_effort_user_selected_v1";
+export const FAST_MODE_DEVICE_DEFAULT_KEY = "web_codex_fast_mode_device_default_v1";
+export const PERMISSION_PRESET_STORAGE_KEY = "web_codex_permission_preset_by_workspace_v1";
 const WINDOW_REF = typeof window === "undefined" ? null : window;
 export const SANDBOX_MODE =
   WINDOW_REF?.__WEB_CODEX_SANDBOX__ === true ||
@@ -152,6 +155,8 @@ export function createInitialState() {
     headerModelSwapTimer: 0,
     selectedModel: "",
     selectedReasoningEffort: "",
+    fastModeEnabled: false,
+    permissionPresetByWorkspace: { windows: "/permission auto", wsl2: "/permission auto" },
     inlineEffortMenuOpen: false,
     inlineEffortMenuForModel: "",
     openingThreadReqId: 0,
@@ -190,9 +195,13 @@ export function createInitialState() {
     slashCommandsLoaded: false,
     slashCommandsLoading: false,
     slashCommandsError: "",
+    slashCommandsWorkspace: "",
+    slashCommandsContextKey: "",
     slashMenuItems: [],
     slashMenuOpen: false,
     slashMenuSelectedIndex: 0,
+    slashMenuSelectionVisible: false,
+    slashMenuContextKey: "",
   };
 }
 

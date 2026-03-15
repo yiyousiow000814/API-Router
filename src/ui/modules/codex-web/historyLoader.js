@@ -384,6 +384,26 @@ export function createHistoryLoaderModule(deps) {
     syncEventSubscription = () => {},
   } = deps;
 
+  function isSupersededHistoryApply(threadId, options = {}) {
+    const requestSeq = Math.max(0, Number(options.historyReqSeq || 0));
+    if (requestSeq > 0 && requestSeq !== Math.max(0, Number(state.activeThreadHistoryReqSeq || 0))) {
+      pushLiveDebugEvent("history.apply:drop_stale_req", {
+        threadId: String(threadId || state.activeThreadId || "").trim(),
+        requestSeq,
+        activeRequestSeq: Math.max(0, Number(state.activeThreadHistoryReqSeq || 0)),
+      });
+      return true;
+    }
+    if (threadId && state.activeThreadId && state.activeThreadId !== threadId) {
+      pushLiveDebugEvent("history.apply:drop_thread_mismatch", {
+        threadId: String(threadId || "").trim(),
+        activeThreadId: String(state.activeThreadId || "").trim(),
+      });
+      return true;
+    }
+    return false;
+  }
+
   function pushLiveDebugEvent(kind, payload = {}) {
     if (!Array.isArray(state.liveDebugEvents)) state.liveDebugEvents = [];
     state.liveDebugEvents.push({
@@ -881,8 +901,9 @@ export function createHistoryLoaderModule(deps) {
   }
 
   async function applyThreadToChat(thread, options = {}) {
+    const threadId = String(thread?.id || state.activeThreadId || "");
     pushLiveDebugEvent("history.apply", {
-      threadId: String(thread?.id || state.activeThreadId || ""),
+      threadId,
       forceRender: !!options.forceRender,
       historyItems: Array.isArray(thread?.historyItems) ? thread.historyItems.length : 0,
       turns: Array.isArray(thread?.turns) ? thread.turns.length : 0,
@@ -890,6 +911,7 @@ export function createHistoryLoaderModule(deps) {
       pendingUser: String(state.activeThreadPendingUserMessage || ""),
       pendingAssistant: String(state.activeThreadPendingAssistantMessage || ""),
     });
+    if (isSupersededHistoryApply(threadId, options)) return;
     if (options.stickToBottom) {
       state.chatShouldStickToBottom = true;
       state.chatUserScrolledAwayAt = 0;
@@ -899,7 +921,7 @@ export function createHistoryLoaderModule(deps) {
     const rawMessages = historyItems.length
       ? await mapSessionHistoryMessages(historyItems)
       : await mapThreadReadMessages(thread);
-    const threadId = String(thread?.id || state.activeThreadId || "");
+    if (isSupersededHistoryApply(threadId, options)) return;
     const historyCommentary = extractLatestCommentaryState(thread, { normalizeThreadItemText });
     const messages = mergePendingLiveMessages(rawMessages, state, threadId);
     const inlineCommentaryArchiveCount = messages.filter((message) => message?.kind === "commentaryArchive").length;
@@ -1271,7 +1293,11 @@ export function createHistoryLoaderModule(deps) {
       const thread = incomingThread ? { ...incomingThread, turns: mergedTurns, page } : null;
       if (!thread) return;
       try { windowRef.__webCodexE2E_lastHistorySource = "history"; } catch {}
-      await applyThreadToChat(thread, { ...options, forceHistoryWindow: !!page?.hasMore });
+      await applyThreadToChat(thread, {
+        ...options,
+        forceHistoryWindow: !!page?.hasMore,
+        historyReqSeq: reqSeq,
+      });
       pushLiveDebugEvent("history.load:success", {
         threadId: String(threadId || ""),
         workspace: String(options.workspace || state.activeThreadWorkspace || ""),

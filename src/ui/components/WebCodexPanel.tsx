@@ -181,6 +181,9 @@ export function WebCodexPanel({ listenPort }: Props) {
           </ol>
         </div>
 
+          </>
+        ) : null}
+
         <div className="aoCard">
           <div className="aoCardHeader">
             <div className="aoCardTitle">Notes</div>
@@ -189,10 +192,21 @@ export function WebCodexPanel({ listenPort }: Props) {
             <li>Web Codex runs independently at <code>/codex-web</code>, not inside the dashboard UI.</li>
             <li>This tab now provides entry and setup guidance only (no embedded iframe).</li>
             <li>Protocol switching is automatic: HTTP → WS, HTTPS → WSS.</li>
+            <li>Web Codex local storage is per browser/device: token, workspace, start folder, favorites, selected model, reasoning effort, current tab, fast mode, permission preset, live inspector, cached models, cached threads, last event cursor.</li>
+            <li>Web chat toggles should stay local to Web Codex; do not silently write <code>config.toml</code>.</li>
           </ul>
         </div>
-          </>
-        ) : null}
+
+        <div className="aoCard">
+          <div className="aoCardHeader">
+            <div className="aoCardTitle">State Scope</div>
+          </div>
+          <ul className="aoHint" style={{ margin: 0, paddingLeft: 18 }}>
+            <li><strong>Web Codex local</strong>: saved in this browser/device only, applies immediately after refresh reopen.</li>
+            <li><strong>Codex default</strong>: if you ever add an explicit apply-default action later, that should write <code>config.toml</code> for terminal defaults on the next Codex launch.</li>
+            <li>Do not use normal Web toggles to silently change terminal defaults.</li>
+          </ul>
+        </div>
       </div>
     </section>
   )

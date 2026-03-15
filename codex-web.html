@@ -885,6 +885,49 @@
     .settingsActions {
       margin-top: 18px;
     }
+    .settingsChoiceGroup {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .settingsChoiceLabel {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #1b2940;
+    }
+    .settingsChoiceHint {
+      color: #6e7b90;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .settingsChoiceRow {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .settingsChoiceBtn {
+      min-width: 88px;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
+      color: #243247;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+    }
+    .settingsChoiceBtn.is-active {
+      background: rgba(28, 92, 255, 0.11);
+      border-color: rgba(28, 92, 255, 0.34);
+      color: #1247c8;
+    }
+    .settingsChoiceBtn:active {
+      transform: scale(0.985);
+    }
     .welcomeCard {
       width: min(100%, 440px);
       margin: clamp(52px, 22vh, 220px) auto 6px;
@@ -1889,14 +1932,17 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
+      font-weight: 500;
+      letter-spacing: -0.01em;
     }
     .runtimeActivityText > * {
       white-space: nowrap;
     }
     .runtimeActivityText strong {
       font-size: 11px;
-      font-weight: 400;
-      color: #637188;
+      font-weight: 500;
+      color: #51627f;
     }
     .runtimeActivityDetail {
       display: none;
@@ -2060,28 +2106,33 @@
     .mobileComposerRow { display: flex; align-items: flex-end; gap: 8px; }
     .mobileComposerMetaRow {
       min-height: 14px;
-      height: 14px;
+      height: auto;
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
       gap: 8px;
       padding-inline: 4px;
       color: #637188;
       font-size: 11px;
       line-height: 1.25;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: normal;
+      overflow: visible;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
     }
     .mobileContextLeft {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      flex: 1 1 auto;
       gap: 0;
       max-width: 100%;
-      min-width: 12ch;
+      min-width: 0;
       min-height: 14px;
       line-height: 1.25;
       font-variant-numeric: tabular-nums;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      color: #51627f;
     }
     .mobileContextLeftNumberViewport {
       display: inline-flex;
@@ -2121,7 +2172,55 @@
       white-space: pre;
     }
     .mobileContextLeftSuffix {
-      white-space: nowrap;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .mobileContextLeftSuffixBase,
+    .mobileContextLeftSeparator,
+    .mobileContextLeftAnnotationToken {
+      display: inline-block;
+    }
+    .mobileContextLeftSeparator {
+      white-space: pre;
+    }
+    .mobileContextLeftAnnotationToken {
+      transition:
+        opacity 220ms cubic-bezier(.22, 1, .36, 1),
+        transform 220ms cubic-bezier(.22, 1, .36, 1),
+        filter 220ms cubic-bezier(.22, 1, .36, 1);
+      transform-origin: left center;
+    }
+    .mobileContextLeftAnnotationToken.is-annotation-transition {
+      animation: mobile-context-left-suffix-in 260ms cubic-bezier(.22, 1, .36, 1);
+    }
+    .mobileContextLeftSeparator.is-annotation-exit,
+    .mobileContextLeftAnnotationToken.is-annotation-exit {
+      pointer-events: none;
+      animation: mobile-context-left-suffix-out 260ms cubic-bezier(.4, 0, .2, 1) forwards;
+    }
+    @keyframes mobile-context-left-suffix-in {
+      from {
+        opacity: 0.24;
+        transform: translateY(3px);
+        filter: blur(1.5px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+        filter: blur(0);
+      }
+    }
+    @keyframes mobile-context-left-suffix-out {
+      from {
+        opacity: 1;
+        transform: translateY(0);
+        filter: blur(0);
+      }
+      to {
+        opacity: 0;
+        transform: translateY(-2px);
+        filter: blur(1px);
+      }
     }
     .mobilePromptWrap {
       flex: 1;
@@ -2138,17 +2237,128 @@
       bottom: calc(100% + 8px);
       display: none;
       max-height: min(320px, 48vh);
-      overflow-y: auto;
-      padding: 6px;
+      overflow: hidden;
+      padding: 0;
       border: 1px solid rgba(13, 18, 32, 0.12);
       border-radius: 16px;
       background: rgba(255, 255, 255, 0.98);
-      box-shadow: 0 18px 38px rgba(13, 18, 32, 0.12);
+      box-shadow: none;
       backdrop-filter: blur(14px);
       z-index: var(--z-composer-overlay);
     }
+    .slashCommandMenu.is-view-transition > * {
+      animation: slash-command-view-in 180ms cubic-bezier(.22, 1, .36, 1);
+      transform-origin: top center;
+    }
+    @keyframes slash-command-view-in {
+      from {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    .slashCommandScroll {
+      max-height: min(320px, 48vh);
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 6px 10px 6px 6px;
+      scrollbar-gutter: stable;
+      touch-action: pan-y;
+      -webkit-overflow-scrolling: touch;
+    }
+    .slashCommandScroll-loading {
+      min-height: 232px;
+    }
+    .slashCommandSkeletonItem {
+      display: grid;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 12px;
+    }
+    .slashCommandSkeletonLine {
+      display: block;
+      height: 10px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(13, 18, 32, 0.06), rgba(13, 18, 32, 0.12), rgba(13, 18, 32, 0.06));
+      background-size: 200% 100%;
+      animation: slash-command-skeleton 1.1s ease-in-out infinite;
+    }
+    .slashCommandSkeletonLine.short {
+      width: 38%;
+    }
+    .slashCommandSkeletonLine.long {
+      width: 72%;
+      height: 9px;
+    }
+    @keyframes slash-command-skeleton {
+      from { background-position: 200% 0; }
+      to { background-position: -200% 0; }
+    }
     .slashCommandState {
       padding: 10px 12px;
+      color: #637188;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .slashCommandHeader {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px 2px;
+    }
+    .slashCommandHeaderTitle {
+      min-width: 0;
+      color: #4c5b73;
+      font-size: 12px;
+      line-height: 1.4;
+      font-weight: 700;
+    }
+    .slashCommandBackBtn {
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      border: 1px solid rgba(13, 18, 32, 0.12);
+      background: rgba(255, 255, 255, 0.92);
+      color: #4c5b73;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      flex: 0 0 auto;
+      cursor: pointer;
+    }
+    .slashCommandBackBtn:hover {
+      background: rgba(245, 248, 252, 0.98);
+      border-color: rgba(36, 83, 143, 0.14);
+    }
+    .slashCommandSearchWrap {
+      padding: 4px 12px 8px;
+    }
+    .slashCommandSearchInput,
+    .slashCommandTextArea {
+      width: 100%;
+      border: 1px solid rgba(13, 18, 32, 0.12);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.94);
+      color: #0d1220;
+      font: inherit;
+      padding: 9px 11px;
+      box-shadow: none;
+      outline: none;
+    }
+    .slashCommandSearchInput {
+      min-height: 36px;
+    }
+    .slashCommandTextArea {
+      min-height: 88px;
+      resize: vertical;
+      line-height: 1.45;
+    }
+    .slashCommandHint {
+      padding: 0 12px 10px;
       color: #637188;
       font-size: 12px;
       line-height: 1.4;
@@ -2170,10 +2380,23 @@
       text-align: left;
       color: #0d1220;
     }
-    .slashCommandItem:hover,
     .slashCommandItem.is-selected {
       background: rgba(245, 248, 252, 0.98);
       border-color: rgba(36, 83, 143, 0.14);
+    }
+    .slashCommandItem:active {
+      background: rgba(245, 248, 252, 0.98);
+      border-color: rgba(36, 83, 143, 0.14);
+    }
+    .slashCommandItem.is-review-branch {
+      gap: 2px;
+      padding: 8px 12px;
+    }
+    .slashCommandItem.is-review-branch .slashCommandName {
+      font-size: 12px;
+      line-height: 1.3;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .slashCommandMain {
       display: flex;
@@ -2181,6 +2404,20 @@
       gap: 8px;
       min-width: 0;
       width: 100%;
+    }
+    .slashCommandSectionLabel {
+      padding: 2px 12px 8px;
+      color: #4c5b73;
+      font-size: 12px;
+      line-height: 1.3;
+      font-weight: 700;
+    }
+    .slashCommandBranchGlyph {
+      flex: 0 0 auto;
+      color: #637188;
+      font-size: 13px;
+      line-height: 1.2;
+      transform: translateY(0);
     }
     .slashCommandName {
       color: #0d1220;
@@ -2197,9 +2434,29 @@
       text-overflow: ellipsis;
     }
     .slashCommandDesc {
+      flex: 1 1 auto;
       color: #4c5b73;
       font-size: 12px;
       line-height: 1.35;
+    }
+    .slashCommandMeta {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .slashCommandCheck {
+      flex: 0 0 auto;
+      min-width: 16px;
+      color: #0d1220;
+      font-size: 13px;
+      font-weight: 700;
+      text-align: right;
+      visibility: hidden;
+    }
+    .slashCommandCheck.is-active {
+      visibility: visible;
     }
     .mobilePromptInput {
       display: block;
@@ -2217,6 +2474,8 @@
       font-size: 13px;
       font-weight: 400;
       line-height: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
+      letter-spacing: -0.01em;
       resize: none;
       overflow-y: hidden;
       white-space: pre-wrap;
@@ -3330,6 +3589,26 @@
               <div class="settingsRow">
                 <div class="muted">Codex Version (WSL2)</div>
                 <div id="wslCodexVersion" class="mono">Detecting...</div>
+              </div>
+              <div class="drawerSectionTitle" style="margin-top:14px;">Defaults</div>
+              <div class="settingsChoiceGroup">
+                <div id="settingsDefaultsWorkspace" class="settingsChoiceHint">Current workspace: Windows</div>
+                <div class="settingsChoiceLabel">
+                  <span>Full access</span>
+                  <span class="settingsChoiceHint">Current Web chat only.</span>
+                </div>
+                <div class="settingsChoiceRow">
+                  <button id="settingsFullAccessOnBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">On</button>
+                  <button id="settingsFullAccessOffBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">Off</button>
+                </div>
+                <div class="settingsChoiceLabel">
+                  <span>Fast mode</span>
+                  <span class="settingsChoiceHint">Current Web chat only.</span>
+                </div>
+                <div class="settingsChoiceRow">
+                  <button id="settingsFastOnBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">On</button>
+                  <button id="settingsFastOffBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">Off</button>
+                </div>
               </div>
               <div class="drawerSectionTitle" style="margin-top:14px;">Alerts</div>
               <div class="row wrap settingsActions">

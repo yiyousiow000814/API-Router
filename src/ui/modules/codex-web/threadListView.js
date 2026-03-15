@@ -76,6 +76,8 @@ export async function resumeThreadLiveOnOpen({
     buildThreadResumeUrl(id, {
       workspace,
       rolloutPath,
+      fastModeEnabled: state?.fastModeEnabled,
+      permissionPreset: state?.permissionPresetByWorkspace?.[workspace === "wsl2" ? "wsl2" : "windows"],
     }),
     { method: "POST" }
   );

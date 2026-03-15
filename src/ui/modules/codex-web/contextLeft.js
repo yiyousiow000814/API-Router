@@ -3,6 +3,8 @@ const CONTEXT_LEFT_DIGIT_ANIMATION_MS = 640;
 const CONTEXT_LEFT_DIGIT_STAGGER_MS = 112;
 const CONTEXT_LEFT_DIGIT_EASING = "cubic-bezier(0.16, 1, 0.3, 1)";
 const CONTEXT_LEFT_DIGIT_TRAVEL_PERCENT = 104;
+const CONTEXT_LEFT_ANNOTATION_ANIMATION_MS = 260;
+const CONTEXT_LEFT_ANNOTATION_SEPARATOR = " · ";
 
 function readNumber(value) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -15,6 +17,13 @@ function readNumber(value) {
 
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
+}
+
+function splitContextAnnotations(value) {
+  return String(value || "")
+    .split("·")
+    .map((part) => part.trim())
+    .filter(Boolean);
 }
 
 function compactTokenUsageCount(value) {
@@ -104,13 +113,23 @@ export function formatContextLeftDisplay(tokenUsage) {
 }
 
 function withContextAnnotation(display, annotation = "") {
-  const suffix = String(annotation || "").trim();
-  if (!suffix) return display;
-  const separator = " · ";
+  const annotationTokens = splitContextAnnotations(annotation);
+  if (!annotationTokens.length) {
+    return {
+      ...display,
+      annotation: "",
+      annotationTokens: [],
+      suffixBase: display.suffix,
+    };
+  }
+  const suffix = annotationTokens.join(CONTEXT_LEFT_ANNOTATION_SEPARATOR);
   return {
     ...display,
-    text: `${display.text}${separator}${suffix}`,
+    suffix: display.kind === "percent" ? `${display.suffix}${CONTEXT_LEFT_ANNOTATION_SEPARATOR}${suffix}` : display.suffix,
+    text: `${display.text}${CONTEXT_LEFT_ANNOTATION_SEPARATOR}${suffix}`,
     annotation: suffix,
+    annotationTokens,
+    suffixBase: display.suffix,
   };
 }
 
@@ -129,25 +148,120 @@ function createContextLeftDigitSlot(char, documentRef, className = "mobileContex
   return slot;
 }
 
-function createStaticContextLeftPercentMarkup(value, suffix, documentRef) {
+function readContextLeftDocument(node, fallbackDocument = null) {
+  return node?.__contextLeftDocumentRef || node?.ownerDocument || fallbackDocument || document;
+}
+
+function createContextLeftSuffixNode(display, documentRef) {
+  const suffixNode = documentRef.createElement("span");
+  suffixNode.className = "mobileContextLeftSuffix";
+  const baseNode = documentRef.createElement("span");
+  baseNode.className = "mobileContextLeftSuffixBase";
+  baseNode.textContent = String(display.suffixBase || display.suffix || "");
+  suffixNode.appendChild(baseNode);
+  for (const token of display.annotationTokens || []) {
+    const separatorNode = documentRef.createElement("span");
+    separatorNode.className = "mobileContextLeftSeparator";
+    separatorNode.textContent = CONTEXT_LEFT_ANNOTATION_SEPARATOR;
+    const tokenNode = documentRef.createElement("span");
+    tokenNode.className = "mobileContextLeftAnnotationToken";
+    tokenNode.textContent = token;
+    suffixNode.append(separatorNode, tokenNode);
+  }
+  return suffixNode;
+}
+
+function createStaticContextLeftPercentMarkup(value, display, documentRef) {
   const viewport = documentRef.createElement("span");
   viewport.className = "mobileContextLeftNumberViewport";
   for (const char of contextLeftPercentDigits(value)) {
     viewport.appendChild(createContextLeftDigitSlot(char, documentRef));
   }
-  const suffixNode = documentRef.createElement("span");
-  suffixNode.className = "mobileContextLeftSuffix";
-  suffixNode.textContent = suffix;
   const frag = documentRef.createDocumentFragment();
   frag.appendChild(viewport);
-  frag.appendChild(suffixNode);
+  frag.appendChild(createContextLeftSuffixNode(display, documentRef));
   return frag;
 }
 
+function removeClassName(node, className) {
+  if (!node || !className) return;
+  if (node.classList?.remove) {
+    node.classList.remove(className);
+    return;
+  }
+  const next = String(node.className || "")
+    .split(/\s+/)
+    .filter((part) => part && part !== className)
+    .join(" ");
+  node.className = next;
+}
+
+function addClassName(node, className) {
+  if (!node || !className) return;
+  if (node.classList?.add) {
+    node.classList.add(className);
+    return;
+  }
+  const parts = String(node.className || "").split(/\s+/).filter(Boolean);
+  if (!parts.includes(className)) parts.push(className);
+  node.className = parts.join(" ");
+}
+
+function renderContextLeftSuffixNode(suffixNode, display, documentRef) {
+  if (!suffixNode) return;
+  suffixNode.replaceChildren(...createContextLeftSuffixNode(display, documentRef).children);
+}
+
+function triggerContextLeftAnnotationAnimation(node, suffixNode, prevAnnotationTokens, nextAnnotationTokens) {
+  if (!node || !suffixNode) return;
+  if (node.__contextLeftAnnotationTimer) {
+    clearTimeout(node.__contextLeftAnnotationTimer);
+    node.__contextLeftAnnotationTimer = 0;
+  }
+  const tokens = Array.from(suffixNode.querySelectorAll(".mobileContextLeftAnnotationToken"));
+  const changedTokenNodes = tokens.filter((tokenNode, index) => prevAnnotationTokens[index] !== nextAnnotationTokens[index]);
+  const removedTokenPairs = [];
+  if (Array.isArray(prevAnnotationTokens) && prevAnnotationTokens.length > nextAnnotationTokens.length) {
+    const documentRef = readContextLeftDocument(node, suffixNode?.ownerDocument || null);
+    for (let index = nextAnnotationTokens.length; index < prevAnnotationTokens.length; index += 1) {
+      const removedToken = String(prevAnnotationTokens[index] || "").trim();
+      if (!removedToken) continue;
+      const separatorNode = documentRef?.createElement?.("span") || null;
+      const tokenNode = documentRef?.createElement?.("span") || null;
+      if (!separatorNode || !tokenNode) continue;
+      separatorNode.className = "mobileContextLeftSeparator is-annotation-exit";
+      separatorNode.textContent = CONTEXT_LEFT_ANNOTATION_SEPARATOR;
+      tokenNode.className = "mobileContextLeftAnnotationToken is-annotation-exit";
+      tokenNode.textContent = removedToken;
+      suffixNode.append(separatorNode, tokenNode);
+      removedTokenPairs.push([separatorNode, tokenNode]);
+    }
+  }
+  if (!changedTokenNodes.length && !removedTokenPairs.length) return;
+  for (const tokenNode of changedTokenNodes) {
+    removeClassName(tokenNode, "is-annotation-transition");
+    try {
+      void tokenNode.offsetWidth;
+    } catch {}
+    addClassName(tokenNode, "is-annotation-transition");
+  }
+  node.__contextLeftAnnotationTimer = setTimeout(() => {
+    for (const tokenNode of changedTokenNodes) {
+      if (!tokenNode.isConnected) continue;
+      removeClassName(tokenNode, "is-annotation-transition");
+    }
+    for (const pair of removedTokenPairs) {
+      for (const ghostNode of pair) ghostNode.remove?.();
+    }
+    node.__contextLeftAnnotationTimer = 0;
+  }, CONTEXT_LEFT_ANNOTATION_ANIMATION_MS);
+}
+
 export function renderStaticComposerContextLeft(node, display, documentRef = document) {
+  node.__contextLeftDocumentRef = documentRef;
   node.__contextLeftRenderSeq = (Number(node.__contextLeftRenderSeq || 0) + 1) | 0;
   if (display.kind === "percent") {
-    node.replaceChildren(createStaticContextLeftPercentMarkup(display.value, display.suffix, documentRef));
+    node.replaceChildren(createStaticContextLeftPercentMarkup(display.value, display, documentRef));
   } else {
     node.textContent = display.text;
   }
@@ -155,10 +269,13 @@ export function renderStaticComposerContextLeft(node, display, documentRef = doc
   node.dataset.contextKind = display.kind;
   node.dataset.contextText = display.text;
   node.dataset.contextValue = display.value === null ? "" : String(display.value);
+  node.dataset.contextAnnotation = String(display.annotation || "");
 }
 
 export function renderAnimatedComposerContextLeftPercent(node, nextDisplay, prevValue, documentRef = document) {
+  node.__contextLeftDocumentRef = documentRef;
   const viewport = node.querySelector(".mobileContextLeftNumberViewport");
+  const suffixNode = node.querySelector(".mobileContextLeftSuffix");
   if (!viewport) {
     renderStaticComposerContextLeft(node, nextDisplay, documentRef);
     return;
@@ -169,6 +286,8 @@ export function renderAnimatedComposerContextLeftPercent(node, nextDisplay, prev
   node.dataset.contextKind = "percent";
   node.dataset.contextText = nextDisplay.text;
   node.dataset.contextValue = String(nextDisplay.value);
+  node.dataset.contextAnnotation = String(nextDisplay.annotation || "");
+  if (suffixNode) renderContextLeftSuffixNode(suffixNode, nextDisplay, documentRef);
   const prevDigits = contextLeftPercentDigits(prevValue);
   const nextDigits = contextLeftPercentDigits(nextDisplay.value);
   if (typeof viewport.animate !== "function") {
@@ -263,6 +382,8 @@ export function renderComposerContextLeft(node, tokenUsage, documentRef = docume
   const display = withContextAnnotation(formatContextLeftDisplay(tokenUsage), annotation);
   const prevKind = String(node.dataset.contextKind || "");
   const prevText = String(node.dataset.contextText || node.textContent || "").trim();
+  const prevAnnotation = String(node.dataset.contextAnnotation || "").trim();
+  const prevAnnotationTokens = splitContextAnnotations(prevAnnotation);
   const prevValue = readNumber(node.dataset.contextValue);
   if (prevText === display.text && prevKind === display.kind) {
     if (!prevText) renderStaticComposerContextLeft(node, display, documentRef);
@@ -274,7 +395,23 @@ export function renderComposerContextLeft(node, tokenUsage, documentRef = docume
   }
   if (prevKind !== "percent" || prevValue === null) {
     renderStaticComposerContextLeft(node, display, documentRef);
+    if (prevAnnotation !== annotation) {
+      triggerContextLeftAnnotationAnimation(
+        node,
+        node.querySelector(".mobileContextLeftSuffix"),
+        prevAnnotationTokens,
+        display.annotationTokens || []
+      );
+    }
     return;
   }
   renderAnimatedComposerContextLeftPercent(node, display, prevValue, documentRef);
+  if (prevAnnotation !== annotation) {
+    triggerContextLeftAnnotationAnimation(
+      node,
+      node.querySelector(".mobileContextLeftSuffix"),
+      prevAnnotationTokens,
+      display.annotationTokens || []
+    );
+  }
 }

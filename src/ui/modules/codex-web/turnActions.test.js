@@ -13,6 +13,9 @@ describe("turnActions", () => {
         shouldSendStartCwd: true,
         selectedModel: "gpt-5",
         selectedReasoningEffort: "medium",
+        planModeEnabled: true,
+        fastModeEnabled: true,
+        permissionPreset: "/permission full-access",
       })
     ).toEqual({
       threadId: "",
@@ -21,6 +24,10 @@ describe("turnActions", () => {
       cwd: "C:\\repo",
       model: "gpt-5",
       reasoningEffort: "medium",
+      collaborationMode: "plan",
+      serviceTier: "fast",
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "dangerFullAccess" },
     });
   });
 
@@ -34,6 +41,9 @@ describe("turnActions", () => {
         shouldSendStartCwd: false,
         selectedModel: "",
         selectedReasoningEffort: "",
+        planModeEnabled: false,
+        fastModeEnabled: false,
+        permissionPreset: "/permission auto",
       })
     ).toEqual({
       threadId: "thread-1",
@@ -42,6 +52,10 @@ describe("turnActions", () => {
       cwd: undefined,
       model: undefined,
       reasoningEffort: undefined,
+      collaborationMode: undefined,
+      serviceTier: null,
+      approvalPolicy: "onRequest",
+      sandboxPolicy: { type: "workspaceWrite" },
     });
   });
 
@@ -58,6 +72,7 @@ describe("turnActions", () => {
       chatShouldStickToBottom: false,
       selectedModel: "",
       selectedReasoningEffort: "",
+      permissionPresetByWorkspace: { windows: "/permission auto", wsl2: "/permission auto" },
       ws: null,
     };
     let cleared = 0;
@@ -118,6 +133,10 @@ describe("turnActions", () => {
         body: {
           command: "/status",
           threadId: "thread-1",
+          workspace: "windows",
+          serviceTier: null,
+          approvalPolicy: "onRequest",
+          sandbox: "workspaceWrite",
         },
       },
     ]);
@@ -149,7 +168,7 @@ describe("turnActions", () => {
       api: async (path, options = {}) => {
         calls.push({ path, method: options.method || "GET", body: options.body || null });
         if (path === "/codex/slash/execute") {
-          return { ok: true, method: "thread/collaborationMode/set", result: {} };
+          throw new Error("plan mode should stay local");
         }
         throw new Error(`unexpected api call: ${path}`);
       },
@@ -197,7 +216,422 @@ describe("turnActions", () => {
     await module.sendTurn();
     expect(state.planModeEnabled).toBe(false);
     expect(renderCalls).toEqual([true, false]);
-    expect(calls).toHaveLength(2);
+    expect(calls).toEqual([]);
+  });
+
+  it("waits for any pending thread resume before executing slash commands that hit the backend", async () => {
+    const calls = [];
+    let releasePendingResume = null;
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+      activeThreadNeedsResume: true,
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      planModeEnabled: false,
+      permissionPresetByWorkspace: { windows: "/permission auto", wsl2: "/permission auto" },
+      ws: null,
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        calls.push({ path, method: options.method || "GET", body: options.body || null });
+        if (path === "/codex/slash/execute") {
+          return { ok: true, method: "thread/collaborationMode/set", result: {} };
+        }
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "/fast on",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async (threadId) => {
+        expect(threadId).toBe("thread-1");
+        await new Promise((resolve) => {
+          releasePendingResume = () => {
+            state.activeThreadNeedsResume = false;
+            resolve();
+          };
+        });
+      },
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: (id) => {
+        state.activeThreadId = id;
+      },
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      hideSlashCommandMenu: () => {},
+      blockInSandbox: () => false,
+    });
+
+    const sendPromise = module.sendTurn();
+    await Promise.resolve();
+
+    expect(calls).toEqual([]);
+    expect(typeof releasePendingResume).toBe("function");
+
+    releasePendingResume();
+    await sendPromise;
+
+    expect(calls).toEqual([
+      {
+        path: "/codex/slash/execute",
+        method: "POST",
+        body: {
+          command: "/fast on",
+          threadId: "thread-1",
+          workspace: "windows",
+          serviceTier: null,
+          approvalPolicy: "onRequest",
+          sandbox: "workspaceWrite",
+        },
+      },
+    ]);
+    expect(state.activeThreadNeedsResume).toBe(false);
+  });
+
+  it("does not create a thread before toggling local plan mode in a new chat", async () => {
+    const calls = [];
+    const renderCalls = [];
+    const state = {
+      activeThreadId: "",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      activeThreadNeedsResume: false,
+      activeThreadStarted: false,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      planModeEnabled: false,
+      permissionPresetByWorkspace: { windows: "/permission auto", wsl2: "/permission auto" },
+      ws: null,
+      activeThreadTokenUsage: { total: 3 },
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        calls.push({ path, method: options.method || "GET", body: options.body || null });
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "/plan on",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "C:\\repo",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => { renderCalls.push(state.planModeEnabled); },
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      hideSlashCommandMenu: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.sendTurn();
+
+    expect(state.activeThreadId).toBe("");
+    expect(state.activeThreadRolloutPath).toBe("");
+    expect(state.activeThreadTokenUsage).toEqual({ total: 3 });
+    expect(state.planModeEnabled).toBe(true);
+    expect(renderCalls).toEqual([true]);
+    expect(calls).toEqual([]);
+  });
+
+  it("updates fast mode state after executing slash fast on and off", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      activeThreadNeedsResume: false,
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "gpt-5",
+      selectedReasoningEffort: "medium",
+      fastModeEnabled: false,
+      ws: null,
+    };
+    const headerUpdates = [];
+    const contextUpdates = [];
+    const storageWrites = [];
+    let prompt = "/fast on";
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path) => {
+        if (path === "/codex/slash/execute") {
+          return { ok: true, method: "thread/fastMode/set", result: { enabled: prompt === "/fast on" } };
+        }
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => prompt,
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => { headerUpdates.push(state.fastModeEnabled); },
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => { contextUpdates.push(state.fastModeEnabled); },
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      hideSlashCommandMenu: () => {},
+      blockInSandbox: () => false,
+      localStorageRef: {
+        setItem(key, value) {
+          storageWrites.push([key, value]);
+        },
+      },
+      FAST_MODE_DEVICE_DEFAULT_KEY: "web_codex_fast_mode_device_default_v1",
+    });
+
+    await module.sendTurn();
+    expect(state.fastModeEnabled).toBe(true);
+
+    prompt = "/fast off";
+    await module.sendTurn();
+
+    expect(state.fastModeEnabled).toBe(false);
+    expect(headerUpdates).toEqual([true, false]);
+    expect(contextUpdates).toEqual([true, false]);
+    expect(storageWrites).toEqual([
+      ["web_codex_fast_mode_device_default_v1", "1"],
+      ["web_codex_fast_mode_device_default_v1", "0"],
+    ]);
+  });
+
+  it("updates permission preset state after executing a slash permission command", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "wsl2",
+      activeThreadRolloutPath: "",
+      activeThreadNeedsResume: false,
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      permissionPresetByWorkspace: { windows: "", wsl2: "" },
+      ws: null,
+    };
+    const contextUpdates = [];
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path) => {
+        if (path === "/codex/slash/execute") {
+          return {
+            ok: true,
+            method: "thread/permission/set",
+            result: { approvalPolicy: "never", sandbox: "dangerFullAccess", preset: "full-access" },
+          };
+        }
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "/permission full-access",
+      getWorkspaceTarget: () => "wsl2",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => { contextUpdates.push(state.permissionPresetByWorkspace.wsl2); },
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      hideSlashCommandMenu: () => {},
+      blockInSandbox: () => false,
+      localStorageRef: {
+        setItem(key, value) {
+          contextUpdates.push(`${key}:${value}`);
+        },
+      },
+      PERMISSION_PRESET_STORAGE_KEY: "web_codex_permission_preset_by_workspace_v1",
+    });
+
+    await module.sendTurn();
+
+    expect(state.permissionPresetByWorkspace.wsl2).toBe("/permission full-access");
+    expect(contextUpdates).toEqual([
+      "web_codex_permission_preset_by_workspace_v1:{\"windows\":\"\",\"wsl2\":\"/permission full-access\"}",
+      "/permission full-access",
+    ]);
+  });
+
+  it("clears prompt and slash menu when starting a new chat", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      activeThreadNeedsResume: false,
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      planModeEnabled: true,
+      ws: null,
+    };
+    let cleared = 0;
+    let hidden = 0;
+    const activeThreadIds = [];
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        if (path === "/codex/threads" && options.method === "POST") {
+          return { id: "thread-2", thread: { path: "rollout.jsonl" } };
+        }
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => { cleared += 1; },
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: (id) => {
+        activeThreadIds.push(id);
+        state.activeThreadId = id;
+      },
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      hideSlashCommandMenu: () => { hidden += 1; },
+      blockInSandbox: () => false,
+    });
+
+    await module.newThread();
+
+    expect(cleared).toBe(1);
+    expect(hidden).toBe(1);
+    expect(activeThreadIds).toEqual(["", "thread-2"]);
   });
 
   it("adopts a new active thread after slash new returns a thread id", async () => {
@@ -364,6 +798,9 @@ describe("turnActions", () => {
           cwd: undefined,
           model: undefined,
           reasoningEffort: undefined,
+          serviceTier: null,
+          approvalPolicy: "onRequest",
+          sandboxPolicy: { type: "workspaceWrite" },
         },
       },
     ]);
@@ -742,6 +1179,7 @@ describe("turnActions", () => {
         body: {
           workspace: "windows",
           cwd: "C:\\repo",
+          serviceTier: null,
         },
       },
       {
@@ -754,6 +1192,9 @@ describe("turnActions", () => {
           cwd: undefined,
           model: undefined,
           reasoningEffort: undefined,
+          serviceTier: null,
+          approvalPolicy: "onRequest",
+          sandboxPolicy: { type: "workspaceWrite" },
         },
       },
     ]);

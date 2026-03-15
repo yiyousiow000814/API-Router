@@ -163,7 +163,7 @@ export function createConnectionFlowsModule(deps) {
     await refreshPending();
   }
 
-  async function connect() {
+  async function connect(options = {}) {
     const inputToken = byId("tokenInput")?.value?.trim() || "";
     const managedToken = getEmbeddedToken();
     state.token = inputToken || (managedToken ? managedToken : String(state.token || "").trim());
@@ -175,7 +175,7 @@ export function createConnectionFlowsModule(deps) {
     await refreshModels().catch((e) => setStatus(e.message, true));
     await refreshCodexVersions().catch((e) => setStatus(e.message, true));
     await refreshAll();
-    setMainTab("chat");
+    if (options.switchToChat !== false) setMainTab("chat");
   }
 
   return {

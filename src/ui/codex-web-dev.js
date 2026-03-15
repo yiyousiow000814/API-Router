@@ -64,6 +64,7 @@ import { createThreadLiveModule } from "./modules/codex-web/threadLive.js";
 import { createBootstrapModule } from "./modules/codex-web/bootstrapApp.js";
 import { createCodexWebComposition } from "./modules/codex-web/composition.js";
 import {
+  ACTIVE_MAIN_TAB_KEY,
   ACTIVE_THREAD_LIVE_POLL_MS,
   ACTIVE_THREAD_REFRESH_DEBOUNCE_MS,
   CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS,
@@ -71,6 +72,7 @@ import {
   CHAT_STICKY_BOTTOM_PX,
   EFFORT_USER_SELECTED_KEY,
   FAVORITE_THREADS_KEY,
+  FAST_MODE_DEVICE_DEFAULT_KEY,
   GUIDE_DISMISSED_KEY,
   HISTORY_WINDOW_THRESHOLD,
   LAST_EVENT_ID_KEY,
@@ -79,6 +81,7 @@ import {
   MODELS_CACHE_KEY,
   MODEL_USER_SELECTED_KEY,
   REASONING_EFFORT_KEY,
+  PERMISSION_PRESET_STORAGE_KEY,
   RECENT_EVENT_ID_CACHE_SIZE,
   SANDBOX_MODE,
   SELECTED_MODEL_KEY,
@@ -167,7 +170,11 @@ let setMobileTab = () => {};
 let hideSlashCommandMenu = () => {};
 let handleSlashCommandKeyDown = () => false;
 let syncSlashCommandMenu = () => {};
+let executeSlashCommand = async () => null;
+let refreshSlashCommandsState = async () => [];
+let slashStateRefreshTimer = 0;
 let getWorkspaceTarget = () => normalizeWorkspaceTarget(state.workspaceTarget || "windows");
+let getStartCwdForWorkspace = () => "";
 let syncActiveThreadMetaFromList = () => {};
 let refreshThreads = async () => {};
 let loadThreadMessages = async () => {};
@@ -268,6 +275,8 @@ function setActiveThread(id) {
   const prev = state.activeThreadId || "";
   state.activeThreadId = id || "";
   if (prev !== state.activeThreadId) {
+    clearPromptValue();
+    hideSlashCommandMenu();
     state.activeThreadRenderSig = "";
     clearRuntimeState();
     state.activeThreadPendingTurnThreadId = "";
@@ -291,6 +300,17 @@ function setActiveThread(id) {
   const activeThreadLabel = byId("activeThreadId");
   if (activeThreadLabel) activeThreadLabel.textContent = state.activeThreadId || "(none)";
   updateHeaderUi();
+  if (slashStateRefreshTimer) clearTimeout(slashStateRefreshTimer);
+  slashStateRefreshTimer = setTimeout(() => {
+    slashStateRefreshTimer = 0;
+    refreshSlashCommandsState({ force: true, silent: true })
+      .then(() => {
+        renderComposerContextLeft();
+        syncSettingsControlsFromMain();
+        updateHeaderUi();
+      })
+      .catch(() => {});
+  }, 0);
 }
 
 const composition = createCodexWebComposition({
@@ -393,6 +413,7 @@ const composition = createCodexWebComposition({
   restoreThreadsCache: (...args) => restoreThreadsCache(...args),
   applyManagedTokenUi: (...args) => applyManagedTokenUi(...args),
   updateMobileComposerState: (...args) => updateMobileComposerState(...args),
+  refreshSlashCommandsState: (...args) => refreshSlashCommandsState(...args),
   syncSettingsControlsFromMain: (...args) => syncSettingsControlsFromMain(...args),
   updateWelcomeSelections: (...args) => updateWelcomeSelections(...args),
   GUIDE_DISMISSED_KEY,
@@ -401,6 +422,9 @@ const composition = createCodexWebComposition({
   START_CWD_BY_WORKSPACE_KEY,
   FAVORITE_THREADS_KEY,
   SELECTED_MODEL_KEY,
+  ACTIVE_MAIN_TAB_KEY,
+  FAST_MODE_DEVICE_DEFAULT_KEY,
+  PERMISSION_PRESET_STORAGE_KEY,
   SANDBOX_MODE,
   CHAT_STICKY_BOTTOM_PX,
   HISTORY_WINDOW_THRESHOLD,
@@ -448,10 +472,12 @@ const {
   appendStreamingDelta,
   bootstrap,
   createAssistantStreamingMessage,
+  executeSlashCommand: executeSlashCommandFromComposition,
   finalizeAssistantMessage,
   renderCommentaryArchive: renderCommentaryArchiveFromComposition,
   renderAssistantLiveBody: renderAssistantLiveBodyFromComposition,
   getActiveWorkspaceBadgeLabel,
+  getStartCwdForWorkspace: getStartCwdForWorkspaceFromComposition,
   getWorkspaceTarget: getWorkspaceTargetFromComposition,
   isThreadListActuallyVisible,
   loadThreadMessages: loadThreadMessagesFromComposition,
@@ -464,10 +490,18 @@ const {
 } = composition;
 
 getWorkspaceTarget = (...args) => getWorkspaceTargetFromComposition(...args);
+getStartCwdForWorkspace = (...args) => getStartCwdForWorkspaceFromComposition(...args);
 syncActiveThreadMetaFromList = (...args) => syncActiveThreadMetaFromListFromComposition(...args);
 refreshThreads = (...args) => refreshThreadsFromComposition(...args);
-loadThreadMessages = (...args) => loadThreadMessagesFromComposition(...args);
+loadThreadMessages = async (...args) => {
+  const result = await loadThreadMessagesFromComposition(...args);
+  await refreshSlashCommandsState({ force: true, silent: true }).catch(() => {});
+  renderComposerContextLeft();
+  updateHeaderUi();
+  return result;
+};
 renderThreads = (...args) => renderThreadsFromComposition(...args);
+executeSlashCommand = (...args) => executeSlashCommandFromComposition(...args);
 renderCommentaryArchive = (...args) => renderCommentaryArchiveFromComposition(...args);
 renderAssistantLiveBody = (...args) => renderAssistantLiveBodyFromComposition(...args);
 
@@ -607,19 +641,26 @@ renderAssistantLiveBody = (...args) => renderAssistantLiveBodyFromComposition(..
   getWorkspaceTarget: (...args) => getWorkspaceTarget(...args),
   pushThreadAnimDebug,
   renderThreads: (...args) => renderThreads(...args),
+  hideSlashCommandMenu: (...args) => hideSlashCommandMenu(...args),
 }));
 
 ({
   hideSlashCommandMenu,
   handleSlashCommandKeyDown,
+  refreshSlashCommands: refreshSlashCommandsState,
   syncSlashCommandMenu,
 } = createSlashCommandsModule({
   state,
   byId,
   api,
+  armSyntheticClickSuppression,
+  executeSlashCommand: (...args) => executeSlashCommand(...args),
+  getWorkspaceTarget: (...args) => getWorkspaceTarget(...args),
+  getStartCwdForWorkspace: (...args) => getStartCwdForWorkspace(...args),
   escapeHtml,
   updateMobileComposerState: (...args) => updateMobileComposerState(...args),
   setStatus: (...args) => setStatus(...args),
+  documentRef: document,
   windowRef: window,
 }));
 

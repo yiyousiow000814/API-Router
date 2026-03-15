@@ -23,6 +23,33 @@ export function restoreFavoriteThreadIds(savedFavoritesRaw) {
   return new Set();
 }
 
+function restoreMainTab(savedMainTabRaw) {
+  return String(savedMainTabRaw || "").trim().toLowerCase() === "settings" ? "settings" : "chat";
+}
+
+function restoreFastModeEnabled(savedFastModeRaw) {
+  const normalized = String(savedFastModeRaw || "").trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "on";
+}
+
+function restorePermissionPresetByWorkspace(savedPermissionRaw) {
+  try {
+    const parsed = JSON.parse(String(savedPermissionRaw || ""));
+    const normalize = (value) => {
+      const preset = String(value || "").trim().toLowerCase();
+      if (preset === "/permission read-only") return "/permission read-only";
+      if (preset === "/permission full-access") return "/permission full-access";
+      return "/permission auto";
+    };
+    return {
+      windows: normalize(parsed?.windows),
+      wsl2: normalize(parsed?.wsl2),
+    };
+  } catch {
+    return { windows: "/permission auto", wsl2: "/permission auto" };
+  }
+}
+
 export function createBootstrapModule(deps) {
   const {
     state,
@@ -49,6 +76,7 @@ export function createBootstrapModule(deps) {
     renderComposerContextLeft,
     renderRuntimePanels = () => {},
     updateMobileComposerState,
+    refreshSlashCommandsState = async () => [],
     syncSettingsControlsFromMain,
     updateWelcomeSelections,
     setMainTab,
@@ -70,6 +98,9 @@ export function createBootstrapModule(deps) {
     START_CWD_BY_WORKSPACE_KEY,
     FAVORITE_THREADS_KEY,
     SELECTED_MODEL_KEY,
+    ACTIVE_MAIN_TAB_KEY,
+    FAST_MODE_DEVICE_DEFAULT_KEY,
+    PERMISSION_PRESET_STORAGE_KEY,
     SANDBOX_MODE,
     CHAT_STICKY_BOTTOM_PX,
   } = deps;
@@ -82,6 +113,9 @@ export function createBootstrapModule(deps) {
     const savedStartCwdRaw = localStorageRef.getItem(START_CWD_BY_WORKSPACE_KEY) || "";
     const savedFavoritesRaw = localStorageRef.getItem(FAVORITE_THREADS_KEY) || "[]";
     const savedModel = String(localStorageRef.getItem(SELECTED_MODEL_KEY) || "").trim();
+    const savedMainTab = localStorageRef.getItem(ACTIVE_MAIN_TAB_KEY) || "";
+    const savedFastMode = localStorageRef.getItem(FAST_MODE_DEVICE_DEFAULT_KEY) || "";
+    const savedPermissionPreset = localStorageRef.getItem(PERMISSION_PRESET_STORAGE_KEY) || "";
 
     state.startCwdByWorkspace = restoreStartCwdState(savedStartCwdRaw, normalizeStartCwd);
     state.favoriteThreadIds = restoreFavoriteThreadIds(savedFavoritesRaw);
@@ -102,6 +136,8 @@ export function createBootstrapModule(deps) {
         : new Set();
     state.activeThreadWorkspace = state.workspaceTarget;
     if (savedModel) state.selectedModel = savedModel;
+    state.fastModeEnabled = restoreFastModeEnabled(savedFastMode);
+    state.permissionPresetByWorkspace = restorePermissionPresetByWorkspace(savedPermissionPreset);
 
     restoreModelsCache();
     restoreThreadsCache(state.workspaceTarget);
@@ -137,8 +173,15 @@ export function createBootstrapModule(deps) {
     updateMobileComposerState();
     syncSettingsControlsFromMain();
     updateWelcomeSelections();
-    setMainTab("chat");
+    setMainTab(restoreMainTab(savedMainTab));
     wireActions();
+    refreshSlashCommandsState({ force: true, silent: true })
+      .then(() => {
+        renderComposerContextLeft();
+        syncSettingsControlsFromMain();
+        updateMobileComposerState();
+      })
+      .catch(() => {});
 
     try {
       const chatBox = byId("chatBox");
@@ -230,7 +273,7 @@ export function createBootstrapModule(deps) {
     startActiveThreadLivePollLoop();
     setMobileTab("chat");
     documentRef.body.classList.add("thread-list-bootstrapped");
-    connect().catch((error) => setStatus(error.message, true));
+    connect({ switchToChat: false }).catch((error) => setStatus(error.message, true));
   }
 
   return { bootstrap };

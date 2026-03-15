@@ -10,9 +10,11 @@ export function resolveActiveThreadLivePollInterval(liveMs) {
 export function shouldPollActiveThreadLive({
   threadId,
   activeMainTab,
+  activeThreadStarted,
 }) {
   if (!String(threadId || "").trim()) return false;
   if (String(activeMainTab || "").trim() !== "chat") return false;
+  if (activeThreadStarted !== true) return false;
   return true;
 }
 
@@ -208,6 +210,7 @@ export function createThreadLiveModule(deps) {
         !shouldPollActiveThreadLive({
           threadId,
           activeMainTab: state.activeMainTab,
+          activeThreadStarted: state.activeThreadStarted,
           wsReadyState: state.ws?.readyState,
           wsSubscribed,
           webSocketOpenValue: WebSocketRef.OPEN,

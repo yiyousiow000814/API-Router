@@ -85,6 +85,7 @@ describe("composerUi", () => {
       style: {},
       innerHTML: "",
       textContent: "",
+      attributes: new Map(),
       _className: "",
       children: [],
       appendChild(node) {
@@ -101,6 +102,12 @@ describe("composerUi", () => {
       },
       querySelector(selector) {
         return findById(this, selector);
+      },
+      setAttribute(name, value) {
+        this.attributes.set(String(name || ""), String(value || ""));
+      },
+      getAttribute(name) {
+        return this.attributes.get(String(name || "")) || null;
       },
       addEventListener() {},
       removeEventListener() {},
@@ -129,6 +136,8 @@ describe("composerUi", () => {
       _className: "",
       style: {},
       innerHTML: "",
+      textContent: "",
+      attributes: new Map(),
       children: [],
       parentNode: null,
       appendChild(node) {
@@ -145,6 +154,12 @@ describe("composerUi", () => {
       },
       querySelector(selector) {
         return findById(this, selector);
+      },
+      setAttribute(name, value) {
+        this.attributes.set(String(name || ""), String(value || ""));
+      },
+      getAttribute(name) {
+        return this.attributes.get(String(name || "")) || null;
       },
       remove() {
         if (this.parentNode?.children) {
@@ -189,10 +204,18 @@ describe("composerUi", () => {
     expect(getPromptValue()).toBe("hello");
   });
 
-  it("passes the plan mode annotation into the context-left renderer", () => {
+  it("passes the combined status annotation into the context-left renderer", () => {
     const calls = [];
     const deps = {
-      state: { activeThreadTokenUsage: null, activeMainTab: "chat", planModeEnabled: true },
+      state: {
+        activeThreadTokenUsage: null,
+        activeMainTab: "chat",
+        activeThreadWorkspace: "windows",
+        workspaceTarget: "windows",
+        planModeEnabled: true,
+        fastModeEnabled: true,
+        permissionPresetByWorkspace: { windows: "/permission full-access", wsl2: "" },
+      },
       byId(id) {
         return id === "mobileContextLeft" ? makeNode() : id === "mobilePromptInput" ? { value: "" } : null;
       },
@@ -213,7 +236,103 @@ describe("composerUi", () => {
     renderComposerContextLeft();
 
     expect(calls).toHaveLength(1);
-    expect(calls[0][3]).toEqual({ annotation: "plan mode" });
+    expect(calls[0][3]).toEqual({ annotation: "full access · fast · plan mode" });
+  });
+
+  it("syncs settings default toggles from workspace state", () => {
+    const nodes = new Map();
+    for (const id of [
+      "toggleLiveInspectorBtn",
+      "liveInspectorState",
+      "settingsDefaultsWorkspace",
+      "settingsFullAccessOnBtn",
+      "settingsFullAccessOffBtn",
+      "settingsFastOnBtn",
+      "settingsFastOffBtn",
+    ]) {
+      nodes.set(id, makeNode());
+    }
+    const deps = {
+      state: {
+        activeThreadTokenUsage: null,
+        activeMainTab: "chat",
+        activeThreadWorkspace: "wsl2",
+        workspaceTarget: "windows",
+        planModeEnabled: false,
+        fastModeEnabled: true,
+        permissionPresetByWorkspace: { windows: "/permission auto", wsl2: "/permission full-access" },
+      },
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      updateHeaderUi() {},
+      localStorageRef: { getItem() { return ""; } },
+      documentRef: { querySelector() { return null; }, getElementById() { return null; } },
+      windowRef: { innerHeight: 900 },
+    };
+    const { syncSettingsControlsFromMain } = createComposerUiModule(deps);
+
+    syncSettingsControlsFromMain();
+
+    expect(nodes.get("settingsDefaultsWorkspace")?.textContent).toBe("Current workspace: WSL2");
+    expect(nodes.get("settingsFullAccessOnBtn")?.classList.contains("is-active")).toBe(true);
+    expect(nodes.get("settingsFullAccessOffBtn")?.classList.contains("is-active")).toBe(false);
+    expect(nodes.get("settingsFastOnBtn")?.classList.contains("is-active")).toBe(true);
+    expect(nodes.get("settingsFastOffBtn")?.classList.contains("is-active")).toBe(false);
+  });
+
+  it("persists the active main tab when switching views", () => {
+    const nodes = new Map();
+    const settingsTab = makeNode();
+    const settingsInfoSection = makeNode();
+    const chatBox = makeNode();
+    const composer = makeNode();
+    nodes.set("settingsTab", settingsTab);
+    nodes.set("settingsInfoSection", settingsInfoSection);
+    nodes.set("chatBox", chatBox);
+    const writes = [];
+    const state = {
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+    };
+    const { setMainTab } = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      updateHeaderUi() {},
+      localStorageRef: {
+        getItem() { return ""; },
+        setItem(key, value) { writes.push([key, value]); },
+      },
+      documentRef: {
+        querySelector(selector) {
+          return selector === ".composer" ? composer : null;
+        },
+        getElementById() { return null; },
+      },
+      windowRef: { innerHeight: 900 },
+    });
+
+    setMainTab("settings");
+    setMainTab("chat");
+
+    expect(writes).toEqual([
+      ["web_codex_active_main_tab_v1", "settings"],
+      ["web_codex_active_main_tab_v1", "chat"],
+    ]);
   });
 
   it("renders runtime panels for plan, active commands, and activity", () => {
@@ -1062,6 +1181,51 @@ describe("composerUi", () => {
     expect(html).toContain('<span class="msgToolPrefix">Read </span>');
     expect(html).toContain('<code class="msgInlineCode">git -C /home/yiyou/ast-tri-strategy status --short</code>');
     expect(html).toContain('<code class="msgInlineCode">selflearn_fullsuite_15-03-2026.log</code>');
+  });
+
+  it("keeps searched web prefixes in runtime tool cards", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.setActiveCommands([
+      { key: "search-1", text: "Searched web for `site:github.com/openai/codex slash commands review compact diff codex github`", state: "complete", icon: "search" },
+    ]);
+
+    const html = chatBox.querySelector("#runtimeToolInline").innerHTML;
+    expect(html).toContain('<span class="msgToolPrefix">Searched web for </span>');
+    expect(html).toContain('<code class="msgInlineCode">site:github.com/openai/codex slash commands review compact diff codex github</code>');
   });
 
   it("renders single-file apply_patch diff counts with colored runtime spans", () => {

@@ -98,6 +98,13 @@ function readViewportDigits(node) {
   return (viewport?.children || []).map((slot) => slot.children?.[0]?.textContent ?? "");
 }
 
+function readNodeText(node) {
+  if (!node) return "";
+  const own = String(node.textContent || "");
+  const childText = (node.children || []).map((child) => readNodeText(child)).join("");
+  return `${own}${childText}`;
+}
+
 describe("contextLeft", () => {
   it("normalizes token usage payloads from snake_case and camelCase", () => {
     expect(
@@ -217,5 +224,152 @@ describe("contextLeft", () => {
     expect(node.getAttribute ? node.getAttribute("aria-label") : node.attributes["aria-label"]).toBe(
       "80% context left · plan mode"
     );
+    const suffix = node.querySelector(".mobileContextLeftSuffix");
+    expect(readNodeText(suffix)).toBe("% context left · plan mode");
+  });
+
+  it("appends multiple status annotations in order", () => {
+    const documentRef = createFakeDocument();
+    const node = createFakeElement("div");
+
+    renderComposerContextLeft(
+      node,
+      {
+        last: { totalTokens: CONTEXT_LEFT_BASELINE_TOKENS + 2000 },
+        modelContextWindow: CONTEXT_LEFT_BASELINE_TOKENS + 10000,
+      },
+      documentRef,
+      { annotation: "full access · fast · plan mode" }
+    );
+
+    expect(node.dataset.contextText).toBe("80% context left · full access · fast · plan mode");
+    expect(node.getAttribute ? node.getAttribute("aria-label") : node.attributes["aria-label"]).toBe(
+      "80% context left · full access · fast · plan mode"
+    );
+    const suffix = node.querySelector(".mobileContextLeftSuffix");
+    expect(readNodeText(suffix)).toBe("% context left · full access · fast · plan mode");
+  });
+
+  it("updates the visible suffix during animated percent rerenders", () => {
+    const documentRef = createFakeDocument();
+    const node = createFakeElement("div");
+
+    renderComposerContextLeft(
+      node,
+      {
+        last: { totalTokens: CONTEXT_LEFT_BASELINE_TOKENS + 3900 },
+        modelContextWindow: CONTEXT_LEFT_BASELINE_TOKENS + 10000,
+      },
+      documentRef
+    );
+
+    renderComposerContextLeft(
+      node,
+      {
+        last: { totalTokens: CONTEXT_LEFT_BASELINE_TOKENS + 4000 },
+        modelContextWindow: CONTEXT_LEFT_BASELINE_TOKENS + 10000,
+      },
+      documentRef,
+      { annotation: "full access · fast" }
+    );
+
+    expect(node.dataset.contextText).toBe("60% context left · full access · fast");
+    const suffix = node.querySelector(".mobileContextLeftSuffix");
+    expect(readNodeText(suffix)).toBe("% context left · full access · fast");
+  });
+
+  it("animates only changed annotation tokens", () => {
+    const documentRef = createFakeDocument();
+    const node = createFakeElement("div");
+
+    renderComposerContextLeft(
+      node,
+      {
+        last: { totalTokens: CONTEXT_LEFT_BASELINE_TOKENS + 3900 },
+        modelContextWindow: CONTEXT_LEFT_BASELINE_TOKENS + 10000,
+      },
+      documentRef
+    );
+
+    renderComposerContextLeft(
+      node,
+      {
+        last: { totalTokens: CONTEXT_LEFT_BASELINE_TOKENS + 3900 },
+        modelContextWindow: CONTEXT_LEFT_BASELINE_TOKENS + 10000,
+      },
+      documentRef,
+      { annotation: "fast · plan mode" }
+    );
+
+    const suffix = node.querySelector(".mobileContextLeftSuffix");
+    expect(String(suffix?.className || "")).not.toContain("is-annotation-transition");
+    const tokens = node.querySelectorAll(".mobileContextLeftAnnotationToken");
+    expect(tokens).toHaveLength(2);
+    expect(readNodeText(tokens[0])).toBe("fast");
+    expect(readNodeText(tokens[1])).toBe("plan mode");
+    expect(String(tokens[0]?.className || "")).toContain("is-annotation-transition");
+    expect(String(tokens[1]?.className || "")).toContain("is-annotation-transition");
+  });
+
+  it("preserves unchanged annotation tokens without animating them again", () => {
+    const documentRef = createFakeDocument();
+    const node = createFakeElement("div");
+
+    renderComposerContextLeft(
+      node,
+      {
+        last: { totalTokens: CONTEXT_LEFT_BASELINE_TOKENS + 3900 },
+        modelContextWindow: CONTEXT_LEFT_BASELINE_TOKENS + 10000,
+      },
+      documentRef,
+      { annotation: "full access · fast" }
+    );
+
+    renderComposerContextLeft(
+      node,
+      {
+        last: { totalTokens: CONTEXT_LEFT_BASELINE_TOKENS + 3900 },
+        modelContextWindow: CONTEXT_LEFT_BASELINE_TOKENS + 10000,
+      },
+      documentRef,
+      { annotation: "full access · plan mode" }
+    );
+
+    const tokens = node.querySelectorAll(".mobileContextLeftAnnotationToken");
+    expect(tokens).toHaveLength(2);
+    expect(readNodeText(tokens[0])).toBe("full access");
+    expect(readNodeText(tokens[1])).toBe("plan mode");
+    expect(String(tokens[0]?.className || "")).not.toContain("is-annotation-transition");
+    expect(String(tokens[1]?.className || "")).toContain("is-annotation-transition");
+  });
+
+  it("animates removed trailing annotation tokens on exit", () => {
+    const documentRef = createFakeDocument();
+    const node = createFakeElement("div");
+
+    renderComposerContextLeft(
+      node,
+      {
+        last: { totalTokens: CONTEXT_LEFT_BASELINE_TOKENS + 3900 },
+        modelContextWindow: CONTEXT_LEFT_BASELINE_TOKENS + 10000,
+      },
+      documentRef,
+      { annotation: "full access · fast" }
+    );
+
+    renderComposerContextLeft(
+      node,
+      {
+        last: { totalTokens: CONTEXT_LEFT_BASELINE_TOKENS + 3900 },
+        modelContextWindow: CONTEXT_LEFT_BASELINE_TOKENS + 10000,
+      },
+      documentRef,
+      { annotation: "full access" }
+    );
+
+    const exitingTokens = node.querySelectorAll(".is-annotation-exit");
+    expect(exitingTokens).toHaveLength(2);
+    expect(readNodeText(exitingTokens[0])).toBe(" · ");
+    expect(readNodeText(exitingTokens[1])).toBe("fast");
   });
 });

@@ -23,6 +23,12 @@ pub(super) struct ThreadCreateRequest {
     title: Option<String>,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default, rename = "serviceTier")]
+    service_tier: ServiceTierOverride,
+    #[serde(default, rename = "approvalPolicy")]
+    approval_policy: Option<String>,
+    #[serde(default)]
+    sandbox: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -35,6 +41,12 @@ pub(super) struct ThreadResumeQuery {
     before: Option<String>,
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default, rename = "serviceTier")]
+    service_tier: Option<String>,
+    #[serde(default, rename = "approvalPolicy")]
+    approval_policy: Option<String>,
+    #[serde(default)]
+    sandbox: Option<String>,
 }
 
 fn normalize_requested_workspace_label(value: Option<&str>) -> String {
@@ -51,6 +63,101 @@ fn normalize_rollout_query_path(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|raw| !raw.is_empty())
         .map(str::to_string)
+}
+
+fn normalize_service_tier_query(value: Option<&str>) -> Option<Option<String>> {
+    match value.map(str::trim) {
+        Some("") | None => None,
+        Some("none") | Some("null") | Some("off") => Some(None),
+        Some(raw) => Some(Some(raw.to_ascii_lowercase())),
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(untagged)]
+enum ServiceTierOverride {
+    String(String),
+    Null(()),
+    #[default]
+    Missing,
+}
+
+fn service_tier_override_json(service_tier: &ServiceTierOverride) -> Option<Value> {
+    match service_tier {
+        ServiceTierOverride::String(value) => {
+            Some(Value::String(value.trim().to_ascii_lowercase()))
+        }
+        ServiceTierOverride::Null(_) => Some(Value::Null),
+        ServiceTierOverride::Missing => None,
+    }
+}
+
+fn build_thread_start_params(req: &ThreadCreateRequest) -> Value {
+    let mut params = serde_json::Map::from_iter([
+        ("workspace".to_string(), json!(req.workspace)),
+        ("title".to_string(), json!(req.title)),
+        ("cwd".to_string(), json!(req.cwd)),
+    ]);
+    if let Some(service_tier) = service_tier_override_json(&req.service_tier) {
+        params.insert("serviceTier".to_string(), service_tier);
+    }
+    if let Some(approval_policy) = req
+        .approval_policy
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        params.insert(
+            "approvalPolicy".to_string(),
+            Value::String(approval_policy.to_string()),
+        );
+    }
+    if let Some(sandbox) = req
+        .sandbox
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        params.insert("sandbox".to_string(), Value::String(sandbox.to_string()));
+    }
+    Value::Object(params)
+}
+
+fn build_thread_resume_params(
+    thread_id: &str,
+    service_tier: Option<Option<String>>,
+    approval_policy: Option<String>,
+    sandbox: Option<String>,
+) -> Value {
+    let mut params = serde_json::Map::from_iter([(
+        "threadId".to_string(),
+        Value::String(thread_id.to_string()),
+    )]);
+    match service_tier {
+        Some(Some(value)) => {
+            params.insert(
+                "serviceTier".to_string(),
+                Value::String(value.trim().to_ascii_lowercase()),
+            );
+        }
+        Some(None) => {
+            params.insert("serviceTier".to_string(), Value::Null);
+        }
+        None => {}
+    }
+    if let Some(approval_policy) = approval_policy
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        params.insert("approvalPolicy".to_string(), Value::String(approval_policy));
+    }
+    if let Some(sandbox) = sandbox
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        params.insert("sandbox".to_string(), Value::String(sandbox));
+    }
+    Value::Object(params)
 }
 
 pub(super) fn should_try_known_wsl_rollout_path(
@@ -155,7 +262,7 @@ pub(super) async fn codex_threads_create(
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
-    let params = json!({ "workspace": req.workspace, "title": req.title, "cwd": req.cwd });
+    let params = build_thread_start_params(&req);
     match codex_rpc_call("thread/start", params).await {
         Ok(value) => {
             crate::orchestrator::gateway::web_codex_threads::invalidate_thread_list_cache_all();
@@ -315,7 +422,13 @@ pub(super) async fn codex_thread_resume(
         }
     }
 
-    let params = json!({ "threadId": id });
+    let service_tier = normalize_service_tier_query(query.service_tier.as_deref());
+    let params = build_thread_resume_params(
+        &id,
+        service_tier,
+        query.approval_policy.clone(),
+        query.sandbox.clone(),
+    );
     match crate::codex_app_server::request_in_home(home.as_deref(), "thread/resume", params.clone())
         .await
     {
@@ -446,6 +559,17 @@ mod tests {
     }
 
     #[test]
+    fn normalize_service_tier_query_supports_fast_and_explicit_off() {
+        assert_eq!(
+            normalize_service_tier_query(Some(" FAST ")),
+            Some(Some("fast".to_string()))
+        );
+        assert_eq!(normalize_service_tier_query(Some("off")), Some(None));
+        assert_eq!(normalize_service_tier_query(Some("null")), Some(None));
+        assert_eq!(normalize_service_tier_query(None), None);
+    }
+
+    #[test]
     fn known_wsl_rollout_path_only_applies_to_wsl_with_path() {
         assert!(should_try_known_wsl_rollout_path(
             Some(WorkspaceTarget::Wsl2),
@@ -487,5 +611,49 @@ mod tests {
             thread_id_from_create_response(&next).as_deref(),
             Some("thread-1")
         );
+    }
+
+    #[test]
+    fn build_thread_start_params_preserve_explicit_service_tier_override() {
+        let params = build_thread_start_params(&ThreadCreateRequest {
+            workspace: Some("windows".to_string()),
+            title: None,
+            cwd: Some("C:\\repo".to_string()),
+            service_tier: ServiceTierOverride::String("fast".to_string()),
+            approval_policy: None,
+            sandbox: None,
+        });
+        assert_eq!(params["workspace"], "windows");
+        assert_eq!(params["cwd"], "C:\\repo");
+        assert_eq!(params["serviceTier"], "fast");
+    }
+
+    #[test]
+    fn build_thread_start_params_include_runtime_permission_overrides() {
+        let params = build_thread_start_params(&ThreadCreateRequest {
+            workspace: Some("windows".to_string()),
+            title: None,
+            cwd: Some("C:\\repo".to_string()),
+            service_tier: ServiceTierOverride::Missing,
+            approval_policy: Some("onRequest".to_string()),
+            sandbox: Some("workspaceWrite".to_string()),
+        });
+        assert_eq!(params["approvalPolicy"], "onRequest");
+        assert_eq!(params["sandbox"], "workspaceWrite");
+    }
+
+    #[test]
+    fn build_thread_resume_params_preserve_explicit_null_service_tier_override() {
+        let params = build_thread_resume_params(
+            "thread-1",
+            Some(None),
+            Some("never".to_string()),
+            Some("dangerFullAccess".to_string()),
+        );
+        assert_eq!(params["threadId"], "thread-1");
+        assert!(params.get("serviceTier").is_some());
+        assert!(params["serviceTier"].is_null());
+        assert_eq!(params["approvalPolicy"], "never");
+        assert_eq!(params["sandbox"], "dangerFullAccess");
     }
 }

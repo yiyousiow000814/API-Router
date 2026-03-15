@@ -44,6 +44,7 @@ export function createActionBindingsModule(deps) {
     resolveUserInput,
     refreshPending,
     uploadAttachment,
+    executeSlashCommand = async () => null,
     sendTurn,
     syncSlashCommandMenu = () => {},
     handleSlashCommandKeyDown = () => false,
@@ -83,7 +84,8 @@ export function createActionBindingsModule(deps) {
       updateMobileComposerState();
       syncSlashCommandMenu();
     });
-    bindInput("mobilePromptInput", "keyup", () => {
+    bindInput("mobilePromptInput", "keyup", (event) => {
+      if (String(event?.key || "") === "Escape") return;
       updateMobileComposerState();
       syncSlashCommandMenu();
     });
@@ -131,6 +133,62 @@ export function createActionBindingsModule(deps) {
         setStatus(resolveActionErrorMessage(error, "Failed to preview Updated Plan."), true);
       }
     });
+    bindClick("settingsFullAccessOnBtn", () =>
+      executeSlashCommand("/permission full-access", {
+        clearPrompt: false,
+        hideMenu: false,
+        switchToChat: false,
+        refreshThreads: false,
+        setStatus: false,
+      })
+        .then(() => {
+          syncSettingsControlsFromMain();
+          setStatus("Full access enabled for this Web chat.");
+        })
+        .catch((e) => setStatus(resolveActionErrorMessage(e, "Failed to update full access."), true))
+    );
+    bindClick("settingsFullAccessOffBtn", () =>
+      executeSlashCommand("/permission auto", {
+        clearPrompt: false,
+        hideMenu: false,
+        switchToChat: false,
+        refreshThreads: false,
+        setStatus: false,
+      })
+        .then(() => {
+          syncSettingsControlsFromMain();
+          setStatus("Full access disabled for this Web chat.");
+        })
+        .catch((e) => setStatus(resolveActionErrorMessage(e, "Failed to update full access."), true))
+    );
+    bindClick("settingsFastOnBtn", () =>
+      executeSlashCommand("/fast on", {
+        clearPrompt: false,
+        hideMenu: false,
+        switchToChat: false,
+        refreshThreads: false,
+        setStatus: false,
+      })
+        .then(() => {
+          syncSettingsControlsFromMain();
+          setStatus("Fast mode enabled for this Web chat.");
+        })
+        .catch((e) => setStatus(resolveActionErrorMessage(e, "Failed to update fast mode."), true))
+    );
+    bindClick("settingsFastOffBtn", () =>
+      executeSlashCommand("/fast off", {
+        clearPrompt: false,
+        hideMenu: false,
+        switchToChat: false,
+        refreshThreads: false,
+        setStatus: false,
+      })
+        .then(() => {
+          syncSettingsControlsFromMain();
+          setStatus("Fast mode disabled for this Web chat.");
+        })
+        .catch((e) => setStatus(resolveActionErrorMessage(e, "Failed to update fast mode."), true))
+    );
     bindClick("dismissGuideBtn", () => {
       localStorage.setItem("web_codex_guide_dismissed_v2", "1");
       if (byId("guideList")) byId("guideList").style.display = "none";
@@ -205,6 +263,7 @@ export function createActionBindingsModule(deps) {
     });
     bindClick("leftSettingsBtn", () => {
       setMainTab("settings");
+      syncSettingsControlsFromMain();
       refreshCodexVersions().catch(() => {});
       setMobileTab("chat");
     });
@@ -212,16 +271,24 @@ export function createActionBindingsModule(deps) {
       openFolderPicker().catch((e) => setStatus(resolveActionErrorMessage(e), true))
     );
     bindResponsiveClick("workspaceWindowsBtn", () =>
-      setWorkspaceTarget("windows").catch((e) => setStatus(resolveActionErrorMessage(e), true))
+      setWorkspaceTarget("windows")
+        .then(() => syncSettingsControlsFromMain())
+        .catch((e) => setStatus(resolveActionErrorMessage(e), true))
     );
     bindResponsiveClick("workspaceWslBtn", () =>
-      setWorkspaceTarget("wsl2").catch((e) => setStatus(resolveActionErrorMessage(e), true))
+      setWorkspaceTarget("wsl2")
+        .then(() => syncSettingsControlsFromMain())
+        .catch((e) => setStatus(resolveActionErrorMessage(e), true))
     );
     bindResponsiveClick("drawerWorkspaceWindowsBtn", () =>
-      setWorkspaceTarget("windows").catch((e) => setStatus(resolveActionErrorMessage(e), true))
+      setWorkspaceTarget("windows")
+        .then(() => syncSettingsControlsFromMain())
+        .catch((e) => setStatus(resolveActionErrorMessage(e), true))
     );
     bindResponsiveClick("drawerWorkspaceWslBtn", () =>
-      setWorkspaceTarget("wsl2").catch((e) => setStatus(resolveActionErrorMessage(e), true))
+      setWorkspaceTarget("wsl2")
+        .then(() => syncSettingsControlsFromMain())
+        .catch((e) => setStatus(resolveActionErrorMessage(e), true))
     );
     const headerModelPicker = byId("headerModelPicker");
     const headerModelTrigger = byId("headerModelTrigger");

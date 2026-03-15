@@ -11,9 +11,11 @@ export function createMobileShellModule(deps) {
     getWorkspaceTarget,
     pushThreadAnimDebug,
     renderThreads,
+    hideSlashCommandMenu = () => {},
   } = deps;
 
   function setMobileTab(tab) {
+    hideSlashCommandMenu();
     const wasThreadsOpen = documentRef.body.classList.contains("drawer-left-open");
     pushThreadAnimDebug("setMobileTab:start", { tab, wasThreadsOpen });
     documentRef.body.classList.remove("drawer-left-open", "drawer-right-open");

@@ -283,7 +283,7 @@ export function createComposerUiModule(deps) {
 
   function readRuntimeEntrySummary(entry) {
     const rawText = String(entry?.text || "").trim();
-    if (/^(?:Running|Ran|Read|Command failed|Read failed)\s+`/i.test(rawText)) {
+    if (/^(?:Running|Ran|Read|Command failed|Read failed|Searching web|Searched web)\s+`/i.test(rawText)) {
       return rawText;
     }
     if (normalizeType(entry?.icon || "tool") === "patch" && /^Edited\s+`[^`]+`(?:\s+\(\+\d+\s+-\d+\))?$/i.test(rawText)) {
@@ -301,7 +301,7 @@ export function createComposerUiModule(deps) {
     const animationKey = `${String(state.activeThreadId || "")}::${animationIdentity}`;
     const shouldAnimateEnter = animationKey && !animatedRuntimeEntryKeys.has(animationKey);
     if (shouldAnimateEnter) animatedRuntimeEntryKeys.add(animationKey);
-    const usesStructuredToolSummary = /^(?:Running|Ran|Read|Command failed|Read failed|Running tool|Called tool|Tool failed)\s+/i.test(summaryText);
+    const usesStructuredToolSummary = /^(?:Running|Ran|Read|Command failed|Read failed|Running tool|Called tool|Tool failed|Searching web|Searched web)\s+/i.test(summaryText);
     const previewHtml = snippet.preview
       ? (
         usesStructuredToolSummary
@@ -804,8 +804,19 @@ export function createComposerUiModule(deps) {
   function renderComposerContextLeft() {
     const node = byId("mobileContextLeft");
     if (!node) return;
+    const annotations = [];
+    const permissionPreset = String(
+      state.permissionPresetByWorkspace?.[String(state.activeThreadWorkspace || state.workspaceTarget || "windows").trim().toLowerCase() === "wsl2"
+        ? "wsl2"
+        : "windows"] || ""
+    ).trim().toLowerCase();
+    if (permissionPreset === "/permission full-access") annotations.push("full access");
+    else if (permissionPreset === "/permission auto") annotations.push("auto");
+    else if (permissionPreset === "/permission read-only") annotations.push("read only");
+    if (state.fastModeEnabled === true) annotations.push("fast");
+    if (state.planModeEnabled === true) annotations.push("plan mode");
     renderComposerContextLeftInNode(node, state.activeThreadTokenUsage, doc, {
-      annotation: state.planModeEnabled === true ? "plan mode" : "",
+      annotation: annotations.join(" · "),
     });
   }
 
@@ -825,6 +836,9 @@ export function createComposerUiModule(deps) {
 
   function setMainTab(tab) {
     state.activeMainTab = tab === "settings" ? "settings" : "chat";
+    try {
+      storage.setItem("web_codex_active_main_tab_v1", state.activeMainTab);
+    } catch {}
     const settingsTab = byId("settingsTab");
     const settingsInfoSection = byId("settingsInfoSection");
     const chatBox = byId("chatBox");
@@ -834,6 +848,7 @@ export function createComposerUiModule(deps) {
     if (settingsInfoSection) settingsInfoSection.style.display = "";
     if (chatBox) chatBox.style.display = isSideTab ? "none" : "";
     if (composer) composer.style.display = isSideTab ? "none" : "";
+    if (isSideTab) syncSettingsControlsFromMain();
     updateHeaderUi();
     renderRuntimePanels();
   }
@@ -841,13 +856,43 @@ export function createComposerUiModule(deps) {
   function syncSettingsControlsFromMain() {
     const toggleBtn = byId("toggleLiveInspectorBtn");
     const stateNode = byId("liveInspectorState");
+    const workspaceNode = byId("settingsDefaultsWorkspace");
+    const fullAccessOnBtn = byId("settingsFullAccessOnBtn");
+    const fullAccessOffBtn = byId("settingsFullAccessOffBtn");
+    const fastOnBtn = byId("settingsFastOnBtn");
+    const fastOffBtn = byId("settingsFastOffBtn");
     const open = !!doc?.getElementById?.("webCodexLiveInspector");
     let enabled = false;
     try {
       enabled = String(storage.getItem(LIVE_INSPECTOR_ENABLED_KEY) || "") === "1";
     } catch {}
+    const workspace =
+      String(state.activeThreadWorkspace || state.workspaceTarget || "windows").trim().toLowerCase() === "wsl2"
+        ? "wsl2"
+        : "windows";
+    const workspaceLabel = workspace === "wsl2" ? "WSL2" : "Windows";
+    const permissionPreset = String(state.permissionPresetByWorkspace?.[workspace] || "").trim().toLowerCase();
+    const fullAccessEnabled = permissionPreset === "/permission full-access";
+    const fastEnabled = state.fastModeEnabled === true;
     if (toggleBtn) toggleBtn.textContent = `Live inspector: ${enabled ? "On" : "Off"}`;
     if (stateNode) stateNode.textContent = open ? "Visible" : "Hidden";
+    if (workspaceNode) workspaceNode.textContent = `Current workspace: ${workspaceLabel}`;
+    if (fullAccessOnBtn) {
+      fullAccessOnBtn.classList.toggle("is-active", fullAccessEnabled);
+      fullAccessOnBtn.setAttribute("aria-pressed", fullAccessEnabled ? "true" : "false");
+    }
+    if (fullAccessOffBtn) {
+      fullAccessOffBtn.classList.toggle("is-active", !fullAccessEnabled);
+      fullAccessOffBtn.setAttribute("aria-pressed", !fullAccessEnabled ? "true" : "false");
+    }
+    if (fastOnBtn) {
+      fastOnBtn.classList.toggle("is-active", fastEnabled);
+      fastOnBtn.setAttribute("aria-pressed", fastEnabled ? "true" : "false");
+    }
+    if (fastOffBtn) {
+      fastOffBtn.classList.toggle("is-active", !fastEnabled);
+      fastOffBtn.setAttribute("aria-pressed", !fastEnabled ? "true" : "false");
+    }
   }
 
   try {
