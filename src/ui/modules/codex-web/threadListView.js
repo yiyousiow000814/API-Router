@@ -92,6 +92,20 @@ export async function resumeThreadLiveOnOpen({
   }
 }
 
+export function activateExistingThreadView({
+  threadId,
+  state,
+  setMainTab = () => {},
+  setMobileTab = () => {},
+}) {
+  const id = String(threadId || "").trim();
+  const activeThreadId = String(state?.activeThreadId || "").trim();
+  if (!id || !activeThreadId || id !== activeThreadId) return false;
+  setMainTab("chat");
+  setMobileTab("chat");
+  return true;
+}
+
 export function createThreadListViewModule(deps) {
   const {
     state,
@@ -436,7 +450,7 @@ export function createThreadListViewModule(deps) {
       }
       const openThread = async () => {
         if (!id) return;
-        if (id === state.activeThreadId && state.activeMainTab === "chat" && state.activeThreadStarted) return;
+        if (activateExistingThreadView({ threadId: id, state, setMainTab, setMobileTab })) return;
         const reqId = state.openingThreadReqId + 1;
         state.openingThreadReqId = reqId;
         if (state.openingThreadAbort) {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  activateExistingThreadView,
   buildThreadResumeUrl,
   buildWorkspaceEntries,
   filterWorkspaceSectionThreads,
@@ -52,6 +53,52 @@ describe("threadListView", () => {
     ).toBe(
       "/codex/threads/thread-1/resume?workspace=windows&rolloutPath=C%3A%5CUsers%5Cyiyou%5C.codex%5Csessions%5Crollout.jsonl"
     );
+  });
+
+  it("returns to the existing chat view without reloading when clicking the active thread", () => {
+    const calls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeMainTab: "settings",
+    };
+
+    expect(
+      activateExistingThreadView({
+        threadId: "thread-1",
+        state,
+        setMainTab(tab) {
+          calls.push(`main:${tab}`);
+        },
+        setMobileTab(tab) {
+          calls.push(`mobile:${tab}`);
+        },
+      })
+    ).toBe(true);
+
+    expect(calls).toEqual(["main:chat", "mobile:chat"]);
+  });
+
+  it("does not intercept clicks for a different thread", () => {
+    const calls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeMainTab: "chat",
+    };
+
+    expect(
+      activateExistingThreadView({
+        threadId: "thread-2",
+        state,
+        setMainTab(tab) {
+          calls.push(`main:${tab}`);
+        },
+        setMobileTab(tab) {
+          calls.push(`mobile:${tab}`);
+        },
+      })
+    ).toBe(false);
+
+    expect(calls).toEqual([]);
   });
 
   it("resumes opened threads in background to attach live updates", async () => {
