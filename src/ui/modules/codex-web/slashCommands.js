@@ -542,6 +542,8 @@ export function createSlashCommandsModule(deps) {
   function renderSlashMenu(options = {}) {
     const menu = byId("slashCommandMenu");
     if (!menu) return;
+    const previousScrollBox = menu.querySelector?.(".slashCommandScroll");
+    const previousScrollTop = Number(previousScrollBox?.scrollTop);
     installPositionListeners();
     const open = state.slashMenuOpen === true;
     const items = Array.isArray(state.slashMenuItems) ? state.slashMenuItems : [];
@@ -621,6 +623,7 @@ export function createSlashCommandsModule(deps) {
     const nextViewKey = specialMenuOpen()
       ? `special:${specialMenu.mode}:${specialMenu.query}:${specialMenu.draft}`
       : `menu:${String(context?.parent?.command || "")}:${items.map((item) => String(item?.command || "")).join("|")}`;
+    const preserveScroll = nextViewKey === lastRenderedMenuViewKey && Number.isFinite(previousScrollTop) && previousScrollTop > 0;
     const shouldAnimateView = options.animateView !== false && lastRenderedMenuViewKey && lastRenderedMenuViewKey !== nextViewKey;
     lastRenderedMenuViewKey = nextViewKey;
     if (menuViewTransitionTimer) {
@@ -646,6 +649,10 @@ export function createSlashCommandsModule(deps) {
       markMenuInteraction();
       stopMenuEvent(event);
     });
+    if (preserveScroll) {
+      const scrollBox = menu.querySelector?.(".slashCommandScroll");
+      if (scrollBox) scrollBox.scrollTop = previousScrollTop;
+    }
     if (options.revealSelection === true) {
       const selectedIndex = Number(state.slashMenuSelectedIndex || 0);
       scheduleFrame(() => {
@@ -932,6 +939,18 @@ export function createSlashCommandsModule(deps) {
       ? filteredSpecialItems()
       : (Array.isArray(state.slashMenuItems) ? state.slashMenuItems : []);
     if (!state.slashMenuOpen || !items.length) return false;
+    if (state.slashMenuSelectionVisible !== true) {
+      state.slashMenuSelectedIndex = delta >= 0 ? 0 : Math.max(0, items.length - 1);
+      state.slashMenuSelectionVisible = true;
+      renderSlashMenu({
+        revealSelection: true,
+        focusSpecialInput:
+          specialMenu.mode === "review-custom" ||
+          specialMenu.mode === "review-branches" ||
+          specialMenu.mode === "review-commits",
+      });
+      return true;
+    }
     const current = Math.max(0, Math.min(items.length - 1, Number(state.slashMenuSelectedIndex || 0)));
     const next = (current + delta + items.length) % items.length;
     state.slashMenuSelectedIndex = next;

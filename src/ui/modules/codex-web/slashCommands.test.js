@@ -208,7 +208,7 @@ describe("slashCommands", () => {
       style: {},
       innerHTML: "",
       querySelector(selector) {
-        if (selector === '[data-slash-index="1"]') {
+        if (selector === '[data-slash-index="0"]') {
           return {
             scrollIntoView() {
               menu.__scrolled = true;
@@ -251,6 +251,7 @@ describe("slashCommands", () => {
     });
 
     expect(state.slashMenuSelectionVisible).toBe(true);
+    expect(state.slashMenuSelectedIndex).toBe(0);
     expect(menu.innerHTML).toContain("is-selected");
     expect(menu.__scrolled).toBe(true);
   });
@@ -321,8 +322,100 @@ describe("slashCommands", () => {
       key: "ArrowDown",
       preventDefault() {},
     });
+    module.handleSlashCommandKeyDown({
+      key: "ArrowDown",
+      preventDefault() {},
+    });
 
     expect(scrollBox.scrollTop).toBe(72);
+    expect(menu.__fallbackScrolled).toBeUndefined();
+  });
+
+  it("preserves menu scroll position across rerenders within the same root slash view", () => {
+    const state = {
+      slashCommands: [
+        { command: "/fast", usage: "/fast", insertText: "/fast", description: "Fast", children: [] },
+        { command: "/permission", usage: "/permission", insertText: "/permission", description: "Permission", children: [] },
+        { command: "/review", usage: "/review", insertText: "/review", description: "Review", children: [] },
+        { command: "/compact", usage: "/compact", insertText: "/compact", description: "Compact", children: [] },
+        { command: "/plan", usage: "/plan", insertText: "/plan", description: "Plan", children: [] },
+        { command: "/diff", usage: "/diff", insertText: "/diff", description: "Diff", children: [] },
+      ],
+      slashCommandsLoaded: true,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+    };
+    let scrollTopValue = 96;
+    const scrollBox = {
+      get scrollTop() {
+        return scrollTopValue;
+      },
+      set scrollTop(value) {
+        scrollTopValue = Number(value);
+      },
+      clientHeight: 120,
+    };
+    const menu = {
+      style: {},
+      innerHTML: "",
+      querySelector(selector) {
+        if (selector === ".slashCommandScroll") return scrollBox;
+        if (selector === '[data-slash-index="5"]') {
+          return {
+            offsetTop: 188,
+            offsetHeight: 36,
+            scrollIntoView() {
+              menu.__fallbackScrolled = true;
+            },
+          };
+        }
+        return null;
+      },
+      querySelectorAll() { return []; },
+    };
+    const input = {
+      value: "/",
+      getBoundingClientRect() {
+        return { left: 24, top: 420, width: 320 };
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        return null;
+      },
+      api: async () => ({ commands: [] }),
+      updateMobileComposerState() {},
+      setStatus() {},
+      documentRef: { activeElement: input },
+      windowRef: {
+        innerWidth: 420,
+        addEventListener() {},
+        requestAnimationFrame(callback) {
+          callback();
+        },
+      },
+    });
+
+    module.syncSlashCommandMenu();
+    state.slashMenuSelectionVisible = true;
+    state.slashMenuSelectedIndex = 4;
+    module.renderSlashMenu();
+
+    module.handleSlashCommandKeyDown({
+      key: "ArrowDown",
+      preventDefault() {},
+    });
+
+    expect(state.slashMenuSelectedIndex).toBe(5);
+    expect(scrollTopValue).toBe(112);
     expect(menu.__fallbackScrolled).toBeUndefined();
   });
 
