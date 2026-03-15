@@ -53,6 +53,8 @@ fn resolve_codex_file_path_with_wsl_distro(
     raw: &str,
     wsl_distro: Option<&str>,
 ) -> Result<PathBuf, String> {
+    #[cfg(not(target_os = "windows"))]
+    let _ = wsl_distro;
     let path = PathBuf::from(raw);
     if path.is_absolute() {
         return Ok(path);
@@ -71,6 +73,7 @@ fn resolve_codex_file_path_with_wsl_distro(
     Err("path must be absolute".to_string())
 }
 
+#[cfg(target_os = "windows")]
 fn resolve_windows_host_path_from_wsl_mount(raw: &str) -> Option<PathBuf> {
     let normalized = crate::orchestrator::gateway::web_codex_home::normalize_wsl_linux_path(raw)?;
     let suffix = normalized.strip_prefix("/mnt/")?;
