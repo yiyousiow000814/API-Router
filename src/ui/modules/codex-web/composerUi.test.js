@@ -244,6 +244,7 @@ describe("composerUi", () => {
     for (const id of [
       "toggleLiveInspectorBtn",
       "liveInspectorState",
+      "previewUpdatedPlanBtn",
       "settingsDefaultsWorkspace",
       "settingsFullAccessOnBtn",
       "settingsFullAccessOffBtn",
@@ -274,13 +275,22 @@ describe("composerUi", () => {
       updateHeaderUi() {},
       localStorageRef: { getItem() { return ""; } },
       documentRef: { querySelector() { return null; }, getElementById() { return null; } },
-      windowRef: { innerHeight: 900 },
+      windowRef: {
+        innerHeight: 900,
+        __webCodexDebug: {
+          isPreviewUpdatedPlanActive() {
+            return true;
+          },
+        },
+        addEventListener() {},
+      },
     };
     const { syncSettingsControlsFromMain } = createComposerUiModule(deps);
 
     syncSettingsControlsFromMain();
 
-    expect(nodes.get("settingsDefaultsWorkspace")?.textContent).toBe("Current workspace: WSL2");
+    expect(nodes.get("settingsDefaultsWorkspace")?.textContent).toBe("Applies to current WSL2 chat");
+    expect(nodes.get("previewUpdatedPlanBtn")?.textContent).toBe("Plan Preview: On");
     expect(nodes.get("settingsFullAccessOnBtn")?.classList.contains("is-active")).toBe(true);
     expect(nodes.get("settingsFullAccessOffBtn")?.classList.contains("is-active")).toBe(false);
     expect(nodes.get("settingsFastOnBtn")?.classList.contains("is-active")).toBe(true);

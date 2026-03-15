@@ -131,12 +131,23 @@ export function createAppPersistenceModule(deps) {
     const winNode = byId("windowsCodexVersion");
     const wslNode = byId("wslCodexVersion");
     if (!winNode && !wslNode) return;
-    if (winNode) winNode.textContent = "Detecting...";
-    if (wslNode) wslNode.textContent = "Detecting...";
+    const animateVersionNode = (node, nextText) => {
+      if (!node) return;
+      const text = String(nextText || "");
+      if (String(node.textContent || "") === text) return;
+      node.textContent = text;
+      node.classList?.remove?.("is-text-swap");
+      try {
+        void node.offsetWidth;
+      } catch {}
+      node.classList?.add?.("is-text-swap");
+    };
+    animateVersionNode(winNode, "Detecting...");
+    animateVersionNode(wslNode, "Detecting...");
     try {
       const data = await api("/codex/version-info");
-      if (winNode) winNode.textContent = String(data?.windows || "Not detected");
-      if (wslNode) wslNode.textContent = String(data?.wsl2 || "Not detected");
+      animateVersionNode(winNode, String(data?.windows || "Not detected"));
+      animateVersionNode(wslNode, String(data?.wsl2 || "Not detected"));
       updateWorkspaceAvailability(data?.windowsInstalled, data?.wsl2Installed);
       const buildStale = !!data?.buildStale;
       if (buildStale && !state.gatewayBuildStaleWarned) {
@@ -149,13 +160,13 @@ export function createAppPersistenceModule(deps) {
       }
     } catch (error) {
       const msg = String(error?.message || "").toLowerCase();
-      const label =
-        msg.includes("unauthorized") || msg.includes("forbidden") || msg.includes("token")
-          ? "Connect first"
-          : "Gateway offline";
-      if (winNode) winNode.textContent = label;
-      if (wslNode) wslNode.textContent = label;
-    }
+        const label =
+          msg.includes("unauthorized") || msg.includes("forbidden") || msg.includes("token")
+            ? "Connect first"
+            : "Gateway offline";
+        animateVersionNode(winNode, label);
+        animateVersionNode(wslNode, label);
+      }
   }
 
   function applyManagedTokenUi() {

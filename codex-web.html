@@ -852,7 +852,7 @@
     .settingsTab {
       min-height: 0;
       overflow: auto;
-      padding: 12px;
+      padding: 14px 14px 18px;
       display: none;
       background: rgba(255, 255, 255, 0.56);
       border-top: none;
@@ -861,7 +861,37 @@
     .settingsTab.show {
       display: grid;
       align-content: start;
-      gap: 10px;
+      gap: 12px;
+    }
+    .settingsTab.show .settingsCard {
+      animation: settings-card-in 220ms cubic-bezier(.22, 1, .36, 1) both;
+    }
+    .settingsTab.show .settingsSectionCard {
+      animation: settings-section-in 220ms cubic-bezier(.22, 1, .36, 1) both;
+    }
+    .settingsTab.show .settingsSectionCard:nth-of-type(1) { animation-delay: 16ms; }
+    .settingsTab.show .settingsSectionCard:nth-of-type(2) { animation-delay: 40ms; }
+    .settingsTab.show .settingsSectionCard:nth-of-type(3) { animation-delay: 64ms; }
+    .settingsTab.show .settingsSectionCard:nth-of-type(4) { animation-delay: 88ms; }
+    @keyframes settings-card-in {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    @keyframes settings-section-in {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
     .chatPanel {
       position: relative;
@@ -871,38 +901,109 @@
       z-index: var(--z-chat-header);
     }
     .settingsCard {
-      border: none;
-      border-radius: 0;
-      background: transparent;
-      padding: 8px 10px 0;
+      border: 1px solid rgba(13, 18, 32, 0.12);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.94);
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+    }
+    #settingsInfoSection {
+      display: grid;
+      gap: 12px;
+    }
+    .settingsSectionCard {
       display: grid;
       gap: 10px;
+      padding: 12px 12px 10px;
+      border-radius: 16px;
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      background: #ffffff;
+    }
+    .settingsSectionHeader {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .settingsSectionEyebrow {
+      font-size: 10px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: #6f7f98;
+      font-weight: 700;
+    }
+    .settingsSectionNote {
+      color: #7f8da4;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .settingsVersionValue.is-text-swap {
+      animation: settings-version-text-swap 200ms ease both;
+    }
+    @keyframes settings-version-text-swap {
+      from {
+        opacity: 0;
+        transform: translateY(4px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
     .settingsRow {
       display: grid;
-      gap: 6px;
+      gap: 2px;
+      padding: 8px 10px;
+      border-radius: 12px;
+      background: #f7f9fc;
+      border: 1px solid rgba(13, 18, 32, 0.08);
+    }
+    .settingsRow .muted {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .02em;
+      color: #73839b;
+    }
+    .settingsRow .mono {
+      font-size: 13px;
+      color: #1a2740;
+      font-weight: 700;
     }
     .settingsActions {
-      margin-top: 18px;
+      margin-top: 0;
+      gap: 10px;
+      align-items: center;
+    }
+    .settingsActions.settingsActionsDebug {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: start;
+    }
+    .settingsActions.settingsActionsDebug > button {
+      width: 100%;
+    }
+    .settingsActions.settingsActionsDebug > .muted {
+      grid-column: 1 / -1;
     }
     .settingsChoiceGroup {
       display: grid;
-      gap: 8px;
-      margin-top: 10px;
+      gap: 10px;
+      margin-top: 0;
     }
     .settingsChoiceLabel {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
+      display: grid;
+      gap: 2px;
       font-size: 13px;
-      font-weight: 600;
       color: #1b2940;
     }
+    .settingsChoiceTitle {
+      font-weight: 700;
+    }
     .settingsChoiceHint {
-      color: #6e7b90;
-      font-size: 12px;
-      font-weight: 500;
+      color: #7b8aa0;
+      font-size: 11px;
+      font-weight: 600;
     }
     .settingsChoiceRow {
       display: flex;
@@ -910,20 +1011,20 @@
       flex-wrap: wrap;
     }
     .settingsChoiceBtn {
-      min-width: 88px;
+      min-width: 92px;
       border: 1px solid rgba(13, 18, 32, 0.14);
       border-radius: 999px;
-      background: rgba(255, 255, 255, 0.72);
-      color: #243247;
-      padding: 6px 12px;
+      background: #ffffff;
+      color: #40516b;
+      padding: 7px 14px;
       font-size: 12px;
-      font-weight: 600;
-      transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+      font-weight: 700;
+      transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
     }
     .settingsChoiceBtn.is-active {
-      background: rgba(28, 92, 255, 0.11);
-      border-color: rgba(28, 92, 255, 0.34);
-      color: #1247c8;
+      background: rgba(28, 92, 255, 0.1);
+      border-color: rgba(28, 92, 255, 0.32);
+      color: #1f56be;
     }
     .settingsChoiceBtn:active {
       transform: scale(0.985);
@@ -3581,51 +3682,70 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v12"></path><path d="M7.5 13.5L12 18l4.5-4.5"></path></svg>
         </button>
         <div id="settingsTab" class="settingsTab">
-          <div class="settingsCard">
-            <div id="settingsInfoSection">
-              <div class="drawerSectionTitle" style="margin-top:0;">Environment</div>
-              <div class="settingsRow">
-                <div class="muted">Codex Version (Windows)</div>
-                <div id="windowsCodexVersion" class="mono">Detecting...</div>
-              </div>
-              <div class="settingsRow">
-                <div class="muted">Codex Version (WSL2)</div>
-                <div id="wslCodexVersion" class="mono">Detecting...</div>
-              </div>
-              <div class="drawerSectionTitle" style="margin-top:14px;">Defaults</div>
-              <div class="settingsChoiceGroup">
-                <div id="settingsDefaultsWorkspace" class="settingsChoiceHint">Current workspace: Windows</div>
-                <div class="settingsChoiceLabel">
-                  <span>Full access</span>
-                  <span class="settingsChoiceHint">Current Web chat only.</span>
-                </div>
-                <div class="settingsChoiceRow">
-                  <button id="settingsFullAccessOnBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">On</button>
-                  <button id="settingsFullAccessOffBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">Off</button>
-                </div>
-                <div class="settingsChoiceLabel">
-                  <span>Fast mode</span>
-                  <span class="settingsChoiceHint">Current Web chat only.</span>
-                </div>
-                <div class="settingsChoiceRow">
-                  <button id="settingsFastOnBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">On</button>
-                  <button id="settingsFastOffBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">Off</button>
-                </div>
-              </div>
-              <div class="drawerSectionTitle" style="margin-top:14px;">Alerts</div>
-              <div class="row wrap settingsActions">
-                <button id="enableNotifBtn">Enable notifications</button>
-                <span id="notifState" class="muted">Notification: off</span>
-              </div>
-              <div class="drawerSectionTitle" style="margin-top:14px;">Debug</div>
-              <div class="row wrap settingsActions">
-                <button id="toggleLiveInspectorBtn">Live inspector: Off</button>
-                <button id="previewUpdatedPlanBtn">Preview Updated Plan</button>
-                <span id="liveInspectorState" class="muted">Hidden</span>
+            <div class="settingsCard">
+              <div id="settingsInfoSection">
+                <section class="settingsSectionCard">
+                  <div class="settingsSectionHeader">
+                    <div class="settingsSectionEyebrow">Environment</div>
+                    <div class="settingsSectionNote">Detected locally</div>
+                  </div>
+                  <div class="settingsRow">
+                    <div class="muted">Codex Version (Windows)</div>
+                    <div id="windowsCodexVersion" class="mono settingsVersionValue">Detecting...</div>
+                  </div>
+                  <div class="settingsRow">
+                    <div class="muted">Codex Version (WSL2)</div>
+                    <div id="wslCodexVersion" class="mono settingsVersionValue">Detecting...</div>
+                  </div>
+                </section>
+                <section class="settingsSectionCard">
+                  <div class="settingsSectionHeader">
+                    <div class="settingsSectionEyebrow">Current Chat</div>
+                    <div id="settingsDefaultsWorkspace" class="settingsSectionNote">Applies to current Windows chat</div>
+                  </div>
+                  <div class="settingsChoiceGroup">
+                    <div class="settingsChoiceLabel">
+                      <span class="settingsChoiceTitle">Permissions (Full Access)</span>
+                      <span class="settingsChoiceHint">Only changes this Web chat.</span>
+                    </div>
+                    <div class="settingsChoiceRow">
+                      <button id="settingsFullAccessOnBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">On</button>
+                      <button id="settingsFullAccessOffBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">Off</button>
+                    </div>
+                    <div class="settingsChoiceLabel">
+                      <span class="settingsChoiceTitle">Fast mode</span>
+                      <span class="settingsChoiceHint">Only changes this Web chat.</span>
+                    </div>
+                    <div class="settingsChoiceRow">
+                      <button id="settingsFastOnBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">On</button>
+                      <button id="settingsFastOffBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">Off</button>
+                    </div>
+                  </div>
+                </section>
+                <section class="settingsSectionCard">
+                  <div class="settingsSectionHeader">
+                    <div class="settingsSectionEyebrow">Alerts</div>
+                    <div class="settingsSectionNote">Browser notifications</div>
+                  </div>
+                  <div class="row wrap settingsActions">
+                    <button id="enableNotifBtn">Enable notifications</button>
+                    <span id="notifState" class="muted">Notification: off</span>
+                  </div>
+                </section>
+                <section class="settingsSectionCard">
+                  <div class="settingsSectionHeader">
+                    <div class="settingsSectionEyebrow">Debug</div>
+                    <div class="settingsSectionNote">Web-only diagnostics</div>
+                  </div>
+                  <div class="row wrap settingsActions settingsActionsDebug">
+                    <button id="toggleLiveInspectorBtn">Live inspector: Off</button>
+                    <button id="previewUpdatedPlanBtn">Plan Preview: Off</button>
+                    <span id="liveInspectorState" class="muted">Hidden</span>
+                  </div>
+                </section>
               </div>
             </div>
           </div>
-        </div>
         <div id="chatBox" class="messages">
           <div id="welcomeCard" class="welcomeCard">
             <div class="welcomeBrand">

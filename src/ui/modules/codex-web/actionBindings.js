@@ -128,7 +128,8 @@ export function createActionBindingsModule(deps) {
           setStatus(String(result.error), true);
           return;
         }
-        setStatus("Updated Plan preview shown.");
+        syncSettingsControlsFromMain();
+        setStatus(result?.open === false ? "Updated Plan preview hidden." : "Updated Plan preview shown.");
       } catch (error) {
         setStatus(resolveActionErrorMessage(error, "Failed to preview Updated Plan."), true);
       }

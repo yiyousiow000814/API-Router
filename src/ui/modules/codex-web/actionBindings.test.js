@@ -107,15 +107,17 @@ describe("actionBindings", () => {
     }
   });
 
-  it("triggers Updated Plan preview from settings", async () => {
+  it("toggles Updated Plan preview from settings", async () => {
     const handlers = new Map();
     const statusCalls = [];
+    let open = false;
     const windowRef = {
       addEventListener() {},
       __webCodexDebug: {
         previewUpdatedPlan() {
-          windowRef.__previewed = true;
-          return { ok: true };
+          open = !open;
+          windowRef.__previewed = open;
+          return { ok: true, open };
         },
       },
     };
@@ -173,9 +175,13 @@ describe("actionBindings", () => {
     try {
       createActionBindingsModule(deps).wireActions();
       await handlers.get("previewUpdatedPlanBtn")();
+      await handlers.get("previewUpdatedPlanBtn")();
 
-      expect(windowRef.__previewed).toBe(true);
-      expect(statusCalls).toEqual([{ message: "Updated Plan preview shown.", isError: false }]);
+      expect(windowRef.__previewed).toBe(false);
+      expect(statusCalls).toEqual([
+        { message: "Updated Plan preview shown.", isError: false },
+        { message: "Updated Plan preview hidden.", isError: false },
+      ]);
     } finally {
       globalThis.document = previousDocument;
       globalThis.window = previousWindow;

@@ -531,6 +531,17 @@ export function createDebugToolsModule(deps) {
 
   function installWebCodexDebug() {
     try {
+      const isPreviewUpdatedPlanActive = () =>
+        String(state.activeThreadPlan?.turnId || "").trim() === "debug-preview-plan";
+      const emitPreviewUpdatedPlanChanged = () => {
+        try {
+          win.dispatchEvent?.(
+            new CustomEvent("web-codex-preview-plan-changed", {
+              detail: { open: isPreviewUpdatedPlanActive() },
+            })
+          );
+        } catch {}
+      };
       const previous = win.__webCodexDebug || {};
       win.__webCodexDebug = {
         ...previous,
@@ -618,10 +629,19 @@ export function createDebugToolsModule(deps) {
             open: !!doc?.getElementById?.("webCodexLiveInspector"),
           };
         },
-        previewUpdatedPlan() {
+        isPreviewUpdatedPlanActive,
+        previewUpdatedPlan(force) {
           const threadId = String(state.activeThreadId || "").trim();
+          const shouldOpen =
+            typeof force === "boolean" ? force : !isPreviewUpdatedPlanActive();
           setMainTab("chat");
           setMobileTab("chat");
+          if (!shouldOpen) {
+            setActivePlan(null);
+            setRuntimeActivity(null);
+            emitPreviewUpdatedPlanChanged();
+            return { ok: true, threadId, open: false };
+          }
           setActiveCommands([]);
           setActivePlan({
             threadId,
@@ -641,7 +661,8 @@ export function createDebugToolsModule(deps) {
             detail: "Preview sample for runtime plan styling.",
             tone: "running",
           });
-          return { ok: true, threadId };
+          emitPreviewUpdatedPlanChanged();
+          return { ok: true, threadId, open: true };
         },
       };
     } catch {}

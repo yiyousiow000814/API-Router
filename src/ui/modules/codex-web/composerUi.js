@@ -857,6 +857,7 @@ export function createComposerUiModule(deps) {
     const toggleBtn = byId("toggleLiveInspectorBtn");
     const stateNode = byId("liveInspectorState");
     const workspaceNode = byId("settingsDefaultsWorkspace");
+    const previewPlanBtn = byId("previewUpdatedPlanBtn");
     const fullAccessOnBtn = byId("settingsFullAccessOnBtn");
     const fullAccessOffBtn = byId("settingsFullAccessOffBtn");
     const fastOnBtn = byId("settingsFastOnBtn");
@@ -874,9 +875,11 @@ export function createComposerUiModule(deps) {
     const permissionPreset = String(state.permissionPresetByWorkspace?.[workspace] || "").trim().toLowerCase();
     const fullAccessEnabled = permissionPreset === "/permission full-access";
     const fastEnabled = state.fastModeEnabled === true;
+    const previewPlanOpen = !!win.__webCodexDebug?.isPreviewUpdatedPlanActive?.();
     if (toggleBtn) toggleBtn.textContent = `Live inspector: ${enabled ? "On" : "Off"}`;
     if (stateNode) stateNode.textContent = open ? "Visible" : "Hidden";
-    if (workspaceNode) workspaceNode.textContent = `Current workspace: ${workspaceLabel}`;
+    if (workspaceNode) workspaceNode.textContent = `Applies to current ${workspaceLabel} chat`;
+    if (previewPlanBtn) previewPlanBtn.textContent = `Plan Preview: ${previewPlanOpen ? "On" : "Off"}`;
     if (fullAccessOnBtn) {
       fullAccessOnBtn.classList.toggle("is-active", fullAccessEnabled);
       fullAccessOnBtn.setAttribute("aria-pressed", fullAccessEnabled ? "true" : "false");
@@ -899,6 +902,9 @@ export function createComposerUiModule(deps) {
     if (!win.__webCodexLiveInspectorSettingsSyncInstalled) {
       win.__webCodexLiveInspectorSettingsSyncInstalled = true;
       win.addEventListener?.("web-codex-live-inspector-changed", () => {
+        syncSettingsControlsFromMain();
+      });
+      win.addEventListener?.("web-codex-preview-plan-changed", () => {
         syncSettingsControlsFromMain();
       });
     }

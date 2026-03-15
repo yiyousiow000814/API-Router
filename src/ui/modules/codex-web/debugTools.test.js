@@ -320,20 +320,22 @@ describe("debugTools", () => {
     expect(snapshot?.commentary.lastState?.action).toBe("update");
   });
 
-  it("previews an Updated Plan card through the debug hook", () => {
+  it("toggles an Updated Plan card through the debug hook", () => {
     const windowRef = {};
     const setActivePlanCalls = [];
     const setRuntimeActivityCalls = [];
     const setActiveCommandsCalls = [];
     const setMainTabCalls = [];
     const setMobileTabCalls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadPlan: null,
+      ws: { readyState: 1 },
+      liveDebugEvents: [],
+      wsSubscribedEvents: true,
+    };
     const module = createDebugToolsModule({
-      state: {
-        activeThreadId: "thread-1",
-        ws: { readyState: 1 },
-        liveDebugEvents: [],
-        wsSubscribedEvents: true,
-      },
+      state,
       byId() { return null; },
       renderInlineMessageText(value) { return String(value || ""); },
       findNextInlineCodeSpan() { return null; },
@@ -354,7 +356,10 @@ describe("debugTools", () => {
       setMainTab(value) { setMainTabCalls.push(value); },
       setMobileTab(value) { setMobileTabCalls.push(value); },
       setActiveThread() {},
-      setActivePlan(payload) { setActivePlanCalls.push(payload); },
+      setActivePlan(payload) {
+        state.activeThreadPlan = payload;
+        setActivePlanCalls.push(payload);
+      },
       setActiveCommands(payload) { setActiveCommandsCalls.push(payload); },
       setRuntimeActivity(payload) { setRuntimeActivityCalls.push(payload); },
       setChatOpening() {},
@@ -380,15 +385,19 @@ describe("debugTools", () => {
 
     module.installWebCodexDebug();
     const result = windowRef.__webCodexDebug?.previewUpdatedPlan?.();
+    const closeResult = windowRef.__webCodexDebug?.previewUpdatedPlan?.();
 
-    expect(result).toEqual({ ok: true, threadId: "thread-1" });
-    expect(setMainTabCalls).toEqual(["chat"]);
-    expect(setMobileTabCalls).toEqual(["chat"]);
+    expect(result).toEqual({ ok: true, threadId: "thread-1", open: true });
+    expect(closeResult).toEqual({ ok: true, threadId: "thread-1", open: false });
+    expect(setMainTabCalls).toEqual(["chat", "chat"]);
+    expect(setMobileTabCalls).toEqual(["chat", "chat"]);
     expect(setActiveCommandsCalls).toEqual([[]]);
     expect(setActivePlanCalls[0]?.title).toBe("Updated Plan");
     expect(setActivePlanCalls[0]?.steps?.length).toBe(3);
+    expect(setActivePlanCalls[1]).toBe(null);
     expect(setRuntimeActivityCalls[0]?.title).toBe("Updated Plan");
     expect(setRuntimeActivityCalls[0]?.tone).toBe("running");
+    expect(setRuntimeActivityCalls[1]).toBe(null);
   });
 
   it("renders live inspector with a single title and top edge resize affordance", () => {
