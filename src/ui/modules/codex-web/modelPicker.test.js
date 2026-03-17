@@ -4,6 +4,7 @@ import {
   normalizeModelOption,
   resolveSelectedModelId,
   resolveSelectedReasoningEffort,
+  sortNormalizedModelOptions,
 } from "./modelPicker.js";
 
 describe("modelPicker", () => {
@@ -48,5 +49,21 @@ describe("modelPicker", () => {
     };
     expect(resolveSelectedReasoningEffort(model, "low")).toBe("low");
     expect(resolveSelectedReasoningEffort(model, "high")).toBe("medium");
+  });
+
+  it("sorts normalized model options by version and codex tier", () => {
+    expect(
+      sortNormalizedModelOptions([
+        { id: "gpt-5.4" },
+        { id: "gpt-5.3-codex" },
+        { id: "gpt-5.4-codex-mini" },
+        { id: "gpt-5.4-codex" },
+      ]).map((item) => item.id)
+    ).toEqual([
+      "gpt-5.4-codex",
+      "gpt-5.4-codex-mini",
+      "gpt-5.4",
+      "gpt-5.3-codex",
+    ]);
   });
 });

@@ -1,3 +1,5 @@
+import { createMockCodexTransport } from "./mockTransport.js";
+
 export function ensureArrayItems(value) {
   if (Array.isArray(value)) return value;
   if (Array.isArray(value?.data)) return value.data;
@@ -104,7 +106,38 @@ export function createWsClientModule(deps) {
     WS_PING_INTERVAL_MS = 15000,
     WS_RECONNECT_BASE_MS = 800,
     WS_RECONNECT_MAX_MS = 5000,
+    transportMode = "live",
   } = deps;
+
+  async function liveApi(path, options = {}) {
+    const headers = {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    };
+    if (state.token.trim()) headers.Authorization = `Bearer ${state.token.trim()}`;
+    const res = await fetchRef(path, {
+      method: options.method || "GET",
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: options.signal,
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(resolveApiErrorMessage(payload, res.status));
+    }
+    return payload;
+  }
+
+  const mockTransport =
+    transportMode === "mock" || transportMode === "safe"
+      ? createMockCodexTransport({
+          state,
+          setStatus,
+          transportMode,
+          liveApi,
+          handleWsPayload: (payload) => handleWsPayload(payload),
+        })
+      : null;
 
   function clearWsPingTimer() {
     if (!state.wsPingTimer) return;
@@ -183,12 +216,14 @@ export function createWsClientModule(deps) {
   }
 
   function wsSend(value) {
+    if (mockTransport) return mockTransport.wsSend(value);
     if (!state.ws || state.ws.readyState !== WebSocketRef.OPEN) return false;
     state.ws.send(JSON.stringify(value));
     return true;
   }
 
   function wsCall(type, payload, expectedType) {
+    if (mockTransport) return mockTransport.wsCall(type, payload, expectedType);
     return new Promise((resolve, reject) => {
       if (!state.ws || state.ws.readyState !== WebSocketRef.OPEN) {
         reject(new Error("WS is not connected"));
@@ -217,22 +252,8 @@ export function createWsClientModule(deps) {
   }
 
   async function api(path, options = {}) {
-    const headers = {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    };
-    if (state.token.trim()) headers.Authorization = `Bearer ${state.token.trim()}`;
-    const res = await fetchRef(path, {
-      method: options.method || "GET",
-      headers,
-      body: options.body ? JSON.stringify(options.body) : undefined,
-      signal: options.signal,
-    });
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(resolveApiErrorMessage(payload, res.status));
-    }
-    return payload;
+    if (mockTransport) return mockTransport.api(path, options);
+    return liveApi(path, options);
   }
 
   function handleWsPayload(payload) {
@@ -366,6 +387,10 @@ export function createWsClientModule(deps) {
   }
 
   function connectWs() {
+    if (mockTransport) {
+      mockTransport.connectWs();
+      return;
+    }
     if (
       state.ws &&
       (state.ws.readyState === WebSocketRef.OPEN ||
@@ -429,6 +454,7 @@ export function createWsClientModule(deps) {
   }
 
   function syncEventSubscription() {
+    if (mockTransport) return mockTransport.syncEventSubscription();
     if (!state.ws || state.ws.readyState !== WebSocketRef.OPEN) return false;
     let lastEventId = 0;
     try {

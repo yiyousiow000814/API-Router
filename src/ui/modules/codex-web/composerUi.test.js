@@ -297,6 +297,200 @@ describe("composerUi", () => {
     expect(nodes.get("settingsFastOffBtn")?.classList.contains("is-active")).toBe(false);
   });
 
+  it("updates mobile composer actions for running turns", () => {
+    const nodes = new Map();
+    const wrap = makeNode();
+    const input = makeNode();
+    input.value = "help me steer";
+    const sendBtn = makeNode();
+    const menuBtn = makeNode();
+    const menu = makeNode();
+    const queuedCard = makeNode();
+    const queuedTitle = makeNode();
+    const queuedCount = makeNode();
+    const queuedToggleBtn = makeNode();
+    const queuedStatus = makeNode();
+    const queuedSummary = makeNode();
+    const queuedList = makeNode();
+    nodes.set("mobilePromptWrap", wrap);
+    nodes.set("mobilePromptInput", input);
+    nodes.set("mobileSendBtn", sendBtn);
+    nodes.set("composerActionMenuBtn", menuBtn);
+    nodes.set("composerActionMenu", menu);
+    nodes.set("queuedTurnCard", queuedCard);
+    nodes.set("queuedTurnCardTitle", queuedTitle);
+    nodes.set("queuedTurnCardCount", queuedCount);
+    nodes.set("queuedTurnToggleBtn", queuedToggleBtn);
+    nodes.set("queuedTurnCardStatus", queuedStatus);
+    nodes.set("queuedTurnCardSummary", queuedSummary);
+    nodes.set("queuedTurnCardList", queuedList);
+    const { updateMobileComposerState } = createComposerUiModule({
+      state: {
+        activeThreadTokenUsage: null,
+        activeMainTab: "chat",
+        activeThreadPendingTurnRunning: true,
+        activeThreadQueuedTurns: [],
+        composerActionMenuOpen: false,
+      },
+      byId(id) {
+        return nodes.get(id) || null;
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; } },
+      windowRef: { innerHeight: 900 },
+    });
+
+    updateMobileComposerState();
+
+    expect(sendBtn.innerHTML).toContain("sendArrowIcon");
+    expect(sendBtn.innerHTML).not.toContain("Steer");
+    expect(sendBtn.classList.contains("is-steer")).toBe(true);
+    expect(menuBtn.disabled).toBe(false);
+  });
+
+  it("renders queued draft messaging immediately after a steer or follow-up is queued", () => {
+    const nodes = new Map();
+    const wrap = makeNode();
+    const input = makeNode();
+    input.value = "";
+    const sendBtn = makeNode();
+    const menuBtn = makeNode();
+    const menu = makeNode();
+    const queuedCard = makeNode();
+    const queuedTitle = makeNode();
+    const queuedCount = makeNode();
+    const queuedToggleBtn = makeNode();
+    const queuedStatus = makeNode();
+    const queuedList = makeNode();
+    nodes.set("mobilePromptWrap", wrap);
+    nodes.set("mobilePromptInput", input);
+    nodes.set("mobileSendBtn", sendBtn);
+    nodes.set("composerActionMenuBtn", menuBtn);
+    nodes.set("composerActionMenu", menu);
+    nodes.set("queuedTurnCard", queuedCard);
+    nodes.set("queuedTurnCardTitle", queuedTitle);
+    nodes.set("queuedTurnCardCount", queuedCount);
+    nodes.set("queuedTurnToggleBtn", queuedToggleBtn);
+    nodes.set("queuedTurnCardStatus", queuedStatus);
+    nodes.set("queuedTurnCardList", queuedList);
+
+    const { updateMobileComposerState } = createComposerUiModule({
+      state: {
+        activeThreadTokenUsage: null,
+        activeMainTab: "chat",
+        activeThreadPendingTurnRunning: true,
+        activeThreadQueuedTurns: [
+          {
+            id: "queued-1",
+            threadId: "thread-1",
+            prompt: "Please change the approach",
+            mode: "steer",
+          },
+          {
+            id: "queued-2",
+            threadId: "thread-1",
+            prompt: "Then summarize the result",
+            mode: "queue",
+          },
+        ],
+        queuedTurnsExpanded: true,
+        composerActionMenuOpen: false,
+      },
+      byId(id) {
+        return nodes.get(id) || null;
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; } },
+      windowRef: { innerHeight: 900 },
+    });
+
+    updateMobileComposerState();
+
+    expect(queuedCard.style.display).toBe("block");
+    expect(queuedTitle.textContent).toBe("Queued messages");
+    expect(queuedCount.textContent).toBe("2 queued");
+    expect(queuedToggleBtn.getAttribute("aria-expanded")).toBe("true");
+    expect(queuedToggleBtn.innerHTML).toContain("queuedTurnToggleIcon");
+    expect(queuedStatus.textContent).toContain("Steer waits for the next tool call");
+    expect(queuedList.innerHTML).toContain("Please change the approach");
+    expect(queuedList.innerHTML).toContain("Then summarize the result");
+    expect(queuedList.innerHTML).toContain("data-queued-action=\"edit\"");
+    expect(queuedList.innerHTML).toContain("data-queued-action=\"remove\"");
+  });
+
+  it("collapses the remaining queue list when queuedTurnsExpanded is false", () => {
+    const nodes = new Map();
+    const wrap = makeNode();
+    const input = makeNode();
+    const sendBtn = makeNode();
+    const menuBtn = makeNode();
+    const menu = makeNode();
+    const queuedCard = makeNode();
+    const queuedTitle = makeNode();
+    const queuedCount = makeNode();
+    const queuedToggleBtn = makeNode();
+    const queuedStatus = makeNode();
+    const queuedSummary = makeNode();
+    const queuedList = makeNode();
+    nodes.set("mobilePromptWrap", wrap);
+    nodes.set("mobilePromptInput", input);
+    nodes.set("mobileSendBtn", sendBtn);
+    nodes.set("composerActionMenuBtn", menuBtn);
+    nodes.set("composerActionMenu", menu);
+    nodes.set("queuedTurnCard", queuedCard);
+    nodes.set("queuedTurnCardTitle", queuedTitle);
+    nodes.set("queuedTurnCardCount", queuedCount);
+    nodes.set("queuedTurnToggleBtn", queuedToggleBtn);
+    nodes.set("queuedTurnCardStatus", queuedStatus);
+    nodes.set("queuedTurnCardSummary", queuedSummary);
+    nodes.set("queuedTurnCardList", queuedList);
+
+    const { updateMobileComposerState } = createComposerUiModule({
+      state: {
+        activeThreadTokenUsage: null,
+        activeMainTab: "chat",
+        activeThreadPendingTurnRunning: true,
+        activeThreadQueuedTurns: [
+          { id: "queued-1", threadId: "thread-1", prompt: "First", mode: "queue" },
+          { id: "queued-2", threadId: "thread-1", prompt: "Second", mode: "queue" },
+        ],
+        queuedTurnsExpanded: false,
+        composerActionMenuOpen: false,
+      },
+      byId(id) {
+        return nodes.get(id) || null;
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; } },
+      windowRef: { innerHeight: 900 },
+    });
+
+    updateMobileComposerState();
+
+    expect(queuedToggleBtn.getAttribute("aria-expanded")).toBe("false");
+    expect(queuedList.classList.contains("is-collapsed")).toBe(true);
+    expect(queuedSummary.classList.contains("is-visible")).toBe(true);
+    expect(queuedSummary.textContent).toContain("Follow-up - First");
+  });
+
   it("persists the active main tab when switching views", () => {
     const nodes = new Map();
     const settingsTab = makeNode();

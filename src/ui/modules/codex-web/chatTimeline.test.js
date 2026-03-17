@@ -598,6 +598,30 @@ describe("chatTimeline", () => {
     expect(scheduleChatLiveFollow).toHaveBeenCalled();
   });
 
+  it("inserts commentary archive before the final assistant when no explicit anchor is provided", () => {
+    state.activeThreadCommentaryArchive = [
+      {
+        threadId: "thread-1",
+        key: "commentary-final-anchor",
+        text: "thinking one",
+        tools: ["Ran `npm test`"],
+      },
+    ];
+    state.activeThreadCommentaryArchiveVisible = true;
+    state.activeThreadCommentaryArchiveExpanded = false;
+    state.activeThreadInlineCommentaryArchiveCount = 0;
+
+    module.addChat("assistant", "done", { animate: false, scroll: false });
+    module.renderCommentaryArchive();
+
+    const archiveNode = dom.chatBox.children.find((child) => child.id === "commentaryArchiveMount");
+    const assistantNode = dom.chatBox.children.find((child) => String(child.className || "").includes("msg assistant"));
+
+    expect(archiveNode).toBeTruthy();
+    expect(assistantNode).toBeTruthy();
+    expect(dom.chatBox.children.indexOf(archiveNode)).toBeLessThan(dom.chatBox.children.indexOf(assistantNode));
+  });
+
   it("preserves the toggle viewport position when expanding a commentary archive away from bottom", () => {
     const rafQueue = [];
     const module = createChatTimelineModule({

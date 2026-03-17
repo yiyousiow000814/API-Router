@@ -44,6 +44,8 @@ const WEB_CODEX_MESSAGE_DATA_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/messageData.js");
 const WEB_CODEX_MOBILE_SHELL_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/mobileShell.js");
+const WEB_CODEX_MOCK_TRANSPORT_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/mockTransport.js");
 const WEB_CODEX_MODEL_PICKER_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/modelPicker.js");
 const WEB_CODEX_NOTIFICATION_ROUTING_JS: &str =
@@ -62,6 +64,8 @@ const WEB_CODEX_THREAD_META_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/threadMeta.js");
 const WEB_CODEX_THREAD_LIST_VIEW_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/threadListView.js");
+const WEB_CODEX_TRANSPORT_MODE_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/transportMode.js");
 const WEB_CODEX_TURN_ACTIONS_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/turnActions.js");
 const WEB_CODEX_UI_HELPERS_JS: &str =
@@ -92,6 +96,7 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/imageViewer.js" => Some(WEB_CODEX_IMAGE_VIEWER_JS),
         "codex-web/liveNotifications.js" => Some(WEB_CODEX_LIVE_NOTIFICATIONS_JS),
         "codex-web/messageData.js" => Some(WEB_CODEX_MESSAGE_DATA_JS),
+        "codex-web/mockTransport.js" => Some(WEB_CODEX_MOCK_TRANSPORT_JS),
         "codex-web/messageRender.js" => Some(WEB_CODEX_MESSAGE_RENDER_JS),
         "codex-web/mobileShell.js" => Some(WEB_CODEX_MOBILE_SHELL_JS),
         "codex-web/modelPicker.js" => Some(WEB_CODEX_MODEL_PICKER_JS),
@@ -104,6 +109,7 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/threadLive.js" => Some(WEB_CODEX_THREAD_LIVE_JS),
         "codex-web/threadMeta.js" => Some(WEB_CODEX_THREAD_META_JS),
         "codex-web/threadListView.js" => Some(WEB_CODEX_THREAD_LIST_VIEW_JS),
+        "codex-web/transportMode.js" => Some(WEB_CODEX_TRANSPORT_MODE_JS),
         "codex-web/turnActions.js" => Some(WEB_CODEX_TURN_ACTIONS_JS),
         "codex-web/uiHelpers.js" => Some(WEB_CODEX_UI_HELPERS_JS),
         "codex-web/workspaceUi.js" => Some(WEB_CODEX_WORKSPACE_UI_JS),
@@ -211,6 +217,7 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/imageViewer.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/liveNotifications.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/messageData.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/mockTransport.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/modelPicker.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/mobileShell.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/notificationRouting.js").is_some());
@@ -219,6 +226,7 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/threadLive.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadMeta.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadListView.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/transportMode.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/turnActions.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/uiHelpers.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/workspaceUi.js").is_some());

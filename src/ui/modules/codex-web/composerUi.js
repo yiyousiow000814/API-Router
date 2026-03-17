@@ -45,6 +45,30 @@ export function createComposerUiModule(deps) {
     return value == null ? "" : String(value).trim();
   }
 
+  function readQueuedTurns() {
+    if (Array.isArray(state.activeThreadQueuedTurns)) {
+      return state.activeThreadQueuedTurns.filter((item) => item && typeof item === "object");
+    }
+    if (state.activeThreadQueuedTurn && typeof state.activeThreadQueuedTurn === "object") {
+      return [state.activeThreadQueuedTurn];
+    }
+    return [];
+  }
+
+  function queuedModeLabel(mode) {
+    const normalized = String(mode || "").trim().toLowerCase();
+    if (normalized === "steer") return "Steer";
+    if (normalized === "send-now") return "Send now";
+    return "Follow-up";
+  }
+
+  function queuedModeDescription(mode) {
+    const normalized = String(mode || "").trim().toLowerCase();
+    if (normalized === "steer") return "After next tool call";
+    if (normalized === "send-now") return "Interrupt and send now";
+    return "After current turn";
+  }
+
   function readCommandFromPayload(value) {
     if (!value) return "";
     if (typeof value === "string") {
@@ -331,6 +355,56 @@ export function createComposerUiModule(deps) {
     );
   }
 
+  function renderQueuedTurnItemHtml(item, options = {}) {
+    const queuedId = escapeHtml(String(item?.id || ""));
+    const modeLabel = escapeHtml(queuedModeLabel(item?.mode));
+    const description = escapeHtml(queuedModeDescription(item?.mode));
+    const preview = escapeHtml(String(item?.prompt || ""));
+    const isEditing = options.isEditing === true;
+    const positionLabel = options.index === 0 ? "Next" : `#${String(options.index + 1)}`;
+    const editingDraft = escapeHtml(String(options.editingDraft || ""));
+    const canSendNow = options.canSendNow === true && !isEditing;
+    const modeName = escapeHtml(String(item?.mode || "queue").trim().toLowerCase() || "queue");
+    const actions = isEditing
+      ? (
+        `<button class="queuedTurnItemBtn primary" type="button" data-queued-action="save" data-queued-id="${queuedId}"><span class="queuedTurnItemBtnLabel">Save</span></button>` +
+        `<button class="queuedTurnItemBtn" type="button" data-queued-action="cancel" data-queued-id="${queuedId}"><span class="queuedTurnItemBtnLabel">Cancel</span></button>`
+      )
+      : (
+        `<button class="queuedTurnItemBtn" type="button" data-queued-action="edit" data-queued-id="${queuedId}"><span class="queuedTurnItemBtnLabel">Edit</span></button>` +
+        (canSendNow
+          ? `<button class="queuedTurnItemBtn" type="button" data-queued-action="send-now" data-queued-id="${queuedId}"><span class="queuedTurnItemBtnLabel">Send now</span></button>`
+          : "") +
+        `<button class="queuedTurnItemBtn icon" type="button" aria-label="Remove queued message" data-queued-action="remove" data-queued-id="${queuedId}">` +
+          `<svg class="queuedTurnItemBtnCloseIcon" viewBox="0 0 12 12" focusable="false" aria-hidden="true">` +
+            `<path d="M3 3 9 9M9 3 3 9"></path>` +
+          `</svg>` +
+        `</button>`
+      );
+    const body = isEditing
+      ? (
+        `<div class="queuedTurnItemEditorWrap">` +
+          `<textarea class="queuedTurnItemEditor" rows="3" data-queued-editor="${queuedId}" placeholder="Edit queued message">${editingDraft}</textarea>` +
+        `</div>`
+      )
+      : (
+        `<div class="queuedTurnItemPromptShell"><div class="queuedTurnItemPrompt">${preview}</div></div>`
+      );
+    return (
+      `<div class="queuedTurnItem${isEditing ? " is-editing" : ""}" data-queued-id="${queuedId}" data-queued-mode="${modeName}">` +
+        `<div class="queuedTurnItemTopRow">` +
+          `<div class="queuedTurnItemMeta">` +
+            `<span class="queuedTurnItemChip">${escapeHtml(positionLabel)}</span>` +
+            `<span class="queuedTurnItemMode" data-mode="${modeName}">${modeLabel}</span>` +
+            `<span class="queuedTurnItemDesc">${description}</span>` +
+          `</div>` +
+          `<div class="queuedTurnItemActions">${actions}</div>` +
+        `</div>` +
+        `<div class="queuedTurnItemBody">${body}</div>` +
+      `</div>`
+    );
+  }
+
   function renderPlanHtml(plan) {
     if (!plan) return "";
     const planAnimationKey = `${String(state.activeThreadId || "")}::runtime-plan`;
@@ -503,6 +577,7 @@ export function createComposerUiModule(deps) {
       }
     }
     dock.style.display = inChat && activity ? "" : "none";
+    updateMobileComposerState();
   }
 
   function clearRuntimeState() {
@@ -821,9 +896,28 @@ export function createComposerUiModule(deps) {
   }
 
   function updateMobileComposerState() {
+    const row = byId("mobileComposerRow");
     const wrap = byId("mobilePromptWrap");
     const input = byId("mobilePromptInput");
-    if (!wrap || !input) return;
+    const sendBtn = byId("mobileSendBtn");
+    const menuBtn = byId("composerActionMenuBtn");
+      const menu = byId("composerActionMenu");
+      const queuedCard = byId("queuedTurnCard");
+      const queuedTitle = byId("queuedTurnCardTitle");
+      const queuedCount = byId("queuedTurnCardCount");
+      const queuedToggleBtn = byId("queuedTurnToggleBtn");
+      const queuedStatus = byId("queuedTurnCardStatus");
+      const queuedList = byId("queuedTurnCardList");
+      const queuedSummary = byId("queuedTurnCardSummary");
+      if (!wrap || !input) return;
+    const promptText = String(input.value || "").trim();
+    const hasText = !!promptText;
+    const running = state.activeThreadPendingTurnRunning === true;
+      const queuedTurns = readQueuedTurns();
+      const queuedTurn = queuedTurns.length ? queuedTurns[0] : null;
+      const queuedPrompt = String(queuedTurn?.prompt || "").trim();
+      const hasQueuedTurn = !!queuedPrompt;
+    const canOpenMenu = running && hasText && !/^\/\S+/.test(promptText);
     input.style.height = "auto";
     const layout = resolveMobilePromptLayout(
       input.scrollHeight,
@@ -831,7 +925,148 @@ export function createComposerUiModule(deps) {
     );
     input.style.height = `${layout.heightPx}px`;
     input.style.overflowY = layout.overflowY;
-    wrap.classList.toggle("has-text", !!String(input.value || "").trim());
+    if (row) row.classList.toggle("has-text", hasText);
+    wrap.classList.toggle("has-text", hasText);
+    wrap.classList.toggle("is-running", running);
+    wrap.classList.toggle("has-queued-turn", hasQueuedTurn);
+    if (sendBtn) {
+      if (running && !hasText) {
+        sendBtn.innerHTML =
+          `<svg class="sendStopIcon" viewBox="0 0 20 20" focusable="false" aria-hidden="true">` +
+          `<rect x="7" y="7" width="6" height="6" rx="1"></rect>` +
+          `</svg>`;
+        sendBtn.classList.add("is-stop");
+        sendBtn.classList.remove("is-steer");
+        sendBtn.setAttribute("aria-label", "Stop current turn");
+      } else if (running && hasText) {
+        sendBtn.innerHTML =
+          `<svg class="sendArrowIcon" viewBox="0 0 20 20" focusable="false" aria-hidden="true">` +
+          `<path d="M10 15V5m0 0-4 4m4-4 4 4"></path>` +
+          `</svg>`;
+        sendBtn.classList.add("is-steer");
+        sendBtn.classList.remove("is-stop");
+        sendBtn.setAttribute("aria-label", "Steer after the next tool call");
+      } else {
+        sendBtn.innerHTML =
+          `<svg class="sendArrowIcon" viewBox="0 0 20 20" focusable="false" aria-hidden="true">` +
+          `<path d="M10 15V5m0 0-4 4m4-4 4 4"></path>` +
+          `</svg>`;
+        sendBtn.classList.remove("is-textual", "is-stop", "is-steer");
+        sendBtn.setAttribute("aria-label", "Send message");
+      }
+    }
+    if (!canOpenMenu) state.composerActionMenuOpen = false;
+    if (menuBtn) {
+      menuBtn.disabled = !canOpenMenu;
+      menuBtn.classList.toggle("is-hidden", !canOpenMenu);
+      menuBtn.setAttribute("aria-hidden", canOpenMenu ? "false" : "true");
+      menuBtn.setAttribute("aria-expanded", state.composerActionMenuOpen === true ? "true" : "false");
+    }
+    if (menu) {
+      if (menu.__closeTimer) {
+        clearTimeout(menu.__closeTimer);
+        menu.__closeTimer = 0;
+      }
+      if (state.composerActionMenuOpen === true && canOpenMenu) {
+        menu.classList.add("open");
+        menu.classList.remove("closing");
+      } else if (menu.classList.contains("open")) {
+        menu.classList.remove("open");
+        menu.classList.add("closing");
+        menu.__closeTimer = setTimeout(() => {
+          menu.classList.remove("closing");
+          menu.__closeTimer = 0;
+        }, 180);
+      } else if (!canOpenMenu) {
+        menu.classList.remove("open", "closing");
+      }
+    }
+      if (queuedCard && queuedTitle && queuedList) {
+        const mode = String(queuedTurn?.mode || "").trim().toLowerCase();
+        queuedTitle.textContent = "Queued messages";
+        if (queuedCount) {
+          const total = queuedTurns.length;
+          queuedCount.textContent = total > 1 ? `${String(total)} queued` : "1 queued";
+          queuedCount.style.display = hasQueuedTurn ? "" : "none";
+        }
+        if (queuedStatus) {
+          queuedStatus.textContent = "Steer waits for the next tool call. Follow-up waits for the current turn.";
+        }
+        if (queuedCard.__hideTimer) {
+          clearTimeout(queuedCard.__hideTimer);
+          queuedCard.__hideTimer = 0;
+        }
+        if (hasQueuedTurn) {
+          queuedCard.style.display = "block";
+          queuedCard.classList.remove("is-closing");
+          scheduleFrame(() => queuedCard.classList.add("is-visible"));
+        } else if (queuedCard.classList.contains("is-visible")) {
+          queuedCard.classList.remove("is-visible");
+          queuedCard.classList.add("is-closing");
+          queuedCard.__hideTimer = setTimeout(() => {
+            queuedCard.classList.remove("is-closing");
+            queuedCard.style.display = "none";
+            queuedCard.__hideTimer = 0;
+          }, 220);
+        } else {
+          queuedCard.classList.remove("is-visible", "is-closing");
+          queuedCard.style.display = "none";
+        }
+        if (queuedToggleBtn) {
+          queuedToggleBtn.style.display = hasQueuedTurn ? "inline-flex" : "none";
+          const expanded = state.queuedTurnsExpanded !== false;
+          queuedToggleBtn.setAttribute("aria-label", expanded ? "Collapse queued messages" : "Expand queued messages");
+          queuedToggleBtn.setAttribute("title", expanded ? "Collapse queued messages" : "Expand queued messages");
+          queuedToggleBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+          queuedToggleBtn.innerHTML =
+            `<span class="queuedTurnToggleChevron" aria-hidden="true">` +
+              `<svg class="queuedTurnToggleIcon${expanded ? " is-expanded" : ""}" viewBox="0 0 16 16" focusable="false" aria-hidden="true">` +
+                `<path d="M4.5 6.2l3.5 3.6 3.5-3.6"></path>` +
+              `</svg>` +
+            `</span>`;
+        }
+        const collapsed = state.queuedTurnsExpanded === false;
+        queuedCard.classList.toggle("is-collapsed", collapsed);
+        if (queuedStatus) queuedStatus.classList.toggle("is-collapsed", collapsed);
+        if (queuedList) queuedList.classList.toggle("is-collapsed", collapsed);
+        if (queuedSummary) {
+          queuedSummary.classList.toggle("is-visible", collapsed && hasQueuedTurn);
+          queuedSummary.textContent = hasQueuedTurn
+            ? `${queuedModeLabel(queuedTurn?.mode)} - ${String(queuedTurn?.prompt || "").replace(/\s+/g, " ").trim()}`
+            : "";
+        }
+        const visibleQueue = queuedTurns;
+        const editingId = String(state.queuedTurnEditingId || "").trim();
+        queuedList.innerHTML = visibleQueue
+          .map((item, index) => renderQueuedTurnItemHtml(item, {
+            index,
+            isEditing: editingId === String(item?.id || "").trim(),
+            editingDraft:
+              editingId === String(item?.id || "").trim()
+                ? state.queuedTurnEditingDraft
+                : "",
+            canSendNow: index === 0 && running,
+          }))
+          .join("");
+        if (editingId) {
+          const focusEditor = () => {
+            const editor = queuedList.querySelector?.(`[data-queued-editor="${editingId}"]`);
+            if (!editor || doc?.activeElement === editor) return;
+            editor.focus?.();
+            try {
+              const length = String(editor.value || "").length;
+              editor.setSelectionRange?.(length, length);
+            } catch {}
+          };
+          scheduleFrame(focusEditor);
+          if (typeof setTimeout === "function") setTimeout(focusEditor, 0);
+        }
+      }
+  }
+
+  function setComposerActionMenuOpen(open) {
+    state.composerActionMenuOpen = open === true;
+    updateMobileComposerState();
   }
 
   function setMainTab(tab) {
@@ -924,6 +1159,7 @@ export function createComposerUiModule(deps) {
     renderComposerContextLeft,
     setActiveCommands,
     setActivePlan,
+    setComposerActionMenuOpen,
     setRuntimeActivity,
     setMainTab,
     showWelcomeCard,

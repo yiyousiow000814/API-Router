@@ -1,6 +1,6 @@
 ﻿import { describe, expect, it } from "vitest";
 
-import { classifyStatusBadge, compactModelLabel, parseModelRankParts, pickLatestModelId } from "./headerUi.js";
+import { classifyStatusBadge, compactModelLabel, compareModelRank, parseModelRankParts, pickLatestModelId } from "./headerUi.js";
 
 describe("headerUi", () => {
   it("compacts gpt prefixes", () => {
@@ -16,6 +16,21 @@ describe("headerUi", () => {
         { id: "gpt-5.3-2026-01-01" },
       ])
     ).toBe("gpt-5.3-codex");
+  });
+
+  it("orders codex variants ahead of plain models within the same version", () => {
+    const ids = [
+      "gpt-5.4",
+      "gpt-5.4-codex-mini",
+      "gpt-5.4-codex",
+      "gpt-5.4-codex-max",
+    ];
+    expect(ids.slice().sort(compareModelRank)).toEqual([
+      "gpt-5.4-codex-max",
+      "gpt-5.4-codex",
+      "gpt-5.4-codex-mini",
+      "gpt-5.4",
+    ]);
   });
 
   it("parses dated model ranks", () => {

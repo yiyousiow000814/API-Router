@@ -2,6 +2,20 @@ export function shouldSubmitPromptKey(event) {
   return (
     String(event?.key || "") === "Enter" &&
     !event?.shiftKey &&
+    !event?.ctrlKey &&
+    !event?.altKey &&
+    !event?.metaKey &&
+    !event?.isComposing
+  );
+}
+
+export function shouldSteerPromptKey(event) {
+  return (
+    String(event?.key || "") === "Tab" &&
+    !event?.shiftKey &&
+    !event?.ctrlKey &&
+    !event?.altKey &&
+    !event?.metaKey &&
     !event?.isComposing
   );
 }
@@ -45,10 +59,21 @@ export function createActionBindingsModule(deps) {
     refreshPending,
     uploadAttachment,
     executeSlashCommand = async () => null,
+    cancelQueuedTurnEditing = () => {},
+    clearQueuedTurn = () => {},
+    editQueuedTurn = async () => false,
+    maybeRestoreDeferredQueuedTurnEdit = () => false,
+    queueFollowUpTurn = async () => null,
+    saveQueuedTurnEdit = () => false,
+    sendNowTurn = async () => null,
+    sendQueuedTurnNow = async () => null,
     sendTurn,
+    steerTurn = async () => null,
+    setComposerActionMenuOpen = () => {},
     syncSlashCommandMenu = () => {},
     handleSlashCommandKeyDown = () => false,
     syncSettingsControlsFromMain = () => {},
+    updateQueuedTurnEditingDraft = () => false,
     LIVE_INSPECTOR_ENABLED_KEY = "web_codex_live_inspector_enabled_v1",
     localStorageRef,
     windowRef,
@@ -77,11 +102,50 @@ export function createActionBindingsModule(deps) {
       );
     });
     bindClick("mobileAttachBtn", () => byId("attachInput")?.click());
-    bindClick("mobileSendBtn", () =>
-      sendTurn().catch((e) => setStatus(resolveActionErrorMessage(e), true))
-    );
+    bindResponsiveClick("mobileSendBtn", () => {
+      const promptValue = String(byId("mobilePromptInput")?.value || "").trim();
+      const running = state.activeThreadPendingTurnRunning === true;
+      const hasQueuedTurn = Array.isArray(state.activeThreadQueuedTurns)
+        ? state.activeThreadQueuedTurns.some((item) => !!String(item?.prompt || "").trim())
+        : !!String(state.activeThreadQueuedTurn?.prompt || "").trim();
+      const action = running && promptValue ? steerTurn : sendTurn;
+      if (!running && !promptValue && hasQueuedTurn) {
+        sendQueuedTurnNow().catch((e) => setStatus(resolveActionErrorMessage(e), true));
+        return;
+      }
+      action().catch((e) => setStatus(resolveActionErrorMessage(e), true));
+    });
+    bindResponsiveClick("composerActionMenuBtn", (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      const menu = byId("composerActionMenu");
+      const isOpen = !!menu?.classList?.contains("open");
+      setComposerActionMenuOpen(!isOpen);
+    });
+    bindClick("composerMenuFollowUpBtn", (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      queueFollowUpTurn()
+        .then(() => setComposerActionMenuOpen(false))
+        .catch((e) => setStatus(resolveActionErrorMessage(e), true));
+    });
+    bindClick("composerMenuSendNowBtn", (event) => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      sendNowTurn()
+        .then(() => setComposerActionMenuOpen(false))
+        .catch((e) => setStatus(resolveActionErrorMessage(e), true));
+    });
+    bindResponsiveClick("queuedTurnToggleBtn", (event) => {
+      if (event && String(event.type || "") === "pointerdown") {
+        armSyntheticClickSuppression(420);
+      }
+      state.queuedTurnsExpanded = state.queuedTurnsExpanded === false;
+      updateMobileComposerState();
+    });
     bindInput("mobilePromptInput", "input", () => {
       updateMobileComposerState();
+      maybeRestoreDeferredQueuedTurnEdit();
       syncSlashCommandMenu();
     });
     bindInput("mobilePromptInput", "keyup", (event) => {
@@ -91,10 +155,58 @@ export function createActionBindingsModule(deps) {
     });
     bindInput("mobilePromptInput", "change", () => {
       updateMobileComposerState();
+      maybeRestoreDeferredQueuedTurnEdit();
       syncSlashCommandMenu();
     });
+    bindInput("queuedTurnCard", "input", (event) => {
+      const target = event?.target;
+      const queuedId = String(target?.dataset?.queuedEditor || "").trim();
+      if (!queuedId) return;
+      updateQueuedTurnEditingDraft(target?.value || "");
+    });
+    {
+      const queuedCard = byId("queuedTurnCard");
+      if (queuedCard && !queuedCard.__wiredQueuedActions) {
+        queuedCard.__wiredQueuedActions = true;
+        queuedCard.addEventListener("click", (event) => {
+          if (shouldSuppressSyntheticClick(event)) return;
+          const button = event?.target?.closest?.("[data-queued-action]");
+          if (!button) return;
+          event?.preventDefault?.();
+          event?.stopPropagation?.();
+          const action = String(button.dataset?.queuedAction || "").trim();
+          const queuedId = String(button.dataset?.queuedId || "").trim();
+          if (!queuedId) return;
+          const actions = {
+            edit: () => editQueuedTurn(queuedId),
+            cancel: () => Promise.resolve(cancelQueuedTurnEditing()),
+            save: () => {
+              const editor = byId("queuedTurnCard")?.querySelector?.(`[data-queued-editor="${queuedId}"]`);
+              return Promise.resolve(saveQueuedTurnEdit(queuedId, editor?.value || ""));
+            },
+            remove: () => Promise.resolve(clearQueuedTurn(queuedId)),
+            "send-now": () => sendQueuedTurnNow(queuedId),
+          };
+          const runner = actions[action];
+          if (!runner) return;
+          Promise.resolve(runner())
+            .then(() => setComposerActionMenuOpen(false))
+            .catch((e) => setStatus(resolveActionErrorMessage(e), true));
+        });
+      }
+    }
     bindInput("mobilePromptInput", "keydown", (event) => {
       if (handleSlashCommandKeyDown(event)) return;
+      const promptValue = String(byId("mobilePromptInput")?.value || "").trim();
+      const canSteer =
+        state.activeThreadPendingTurnRunning === true &&
+        !!promptValue &&
+        !/^\/\S+/.test(promptValue);
+      if (canSteer && shouldSteerPromptKey(event)) {
+        event.preventDefault();
+        steerTurn().catch((e) => setStatus(resolveActionErrorMessage(e), true));
+        return;
+      }
       if (!shouldSubmitPromptKey(event)) return;
       event.preventDefault();
       sendTurn().catch((e) => setStatus(resolveActionErrorMessage(e), true));
@@ -341,6 +453,14 @@ export function createActionBindingsModule(deps) {
         setHeaderModelMenuOpen(false);
         closeInlineEffortOverlay();
       }
+    });
+    doc.addEventListener("click", (event) => {
+      const target = event.target;
+      const menu = byId("composerActionMenu");
+      const menuBtn = byId("composerActionMenuBtn");
+      if (!(target instanceof Node)) return;
+      if (menu?.contains(target) || menuBtn?.contains(target)) return;
+      setComposerActionMenuOpen(false);
     });
     bindClick("quickPrompt1", () => {
       const text = "Explain the current codebase structure";

@@ -39,6 +39,7 @@ export function createCodexWebComposition(deps) {
     applyPendingPayloads: (...args) => applyPendingPayloads(...args),
     addChat: (...args) => addChat(...args),
     LAST_EVENT_ID_KEY: deps.LAST_EVENT_ID_KEY,
+    transportMode: deps.transportMode,
   });
 
   const workspaceUi = deps.createWorkspaceUiModule({
@@ -192,6 +193,10 @@ export function createCodexWebComposition(deps) {
     connectWs,
     syncEventSubscription,
     registerPendingThreadResume: deps.registerPendingThreadResume,
+    onPendingTurnStateChange: () => {
+      deps.updateMobileComposerState();
+      deps.renderRuntimePanels();
+    },
     setStatus: deps.setStatus,
     scheduleThreadRefresh: deps.scheduleThreadRefresh,
     scrollToBottomReliable: chatViewport.scrollToBottomReliable,
@@ -277,6 +282,8 @@ export function createCodexWebComposition(deps) {
       chatTimeline.renderCommentaryArchive();
       deps.renderRuntimePanels();
     },
+    setComposerActionMenuOpen: deps.setComposerActionMenuOpen,
+    updateMobileComposerState: deps.updateMobileComposerState,
     clearTransientToolMessages: deps.clearTransientToolMessages,
     clearTransientThinkingMessages: deps.clearTransientThinkingMessages,
     hideSlashCommandMenu: deps.hideSlashCommandMenu,
@@ -319,12 +326,23 @@ export function createCodexWebComposition(deps) {
     resolveUserInput: turnActions.resolveUserInput,
     refreshPending: connectionFlows.refreshPending,
     uploadAttachment: turnActions.uploadAttachment,
-    executeSlashCommand: turnActions.executeSlashCommand,
-    sendTurn: turnActions.sendTurn,
-    syncSlashCommandMenu: deps.syncSlashCommandMenu,
-    handleSlashCommandKeyDown: deps.handleSlashCommandKeyDown,
-    syncSettingsControlsFromMain: deps.syncSettingsControlsFromMain,
-    LIVE_INSPECTOR_ENABLED_KEY: deps.LIVE_INSPECTOR_ENABLED_KEY,
+      executeSlashCommand: turnActions.executeSlashCommand,
+      cancelQueuedTurnEditing: turnActions.cancelQueuedTurnEditing,
+      clearQueuedTurn: turnActions.clearQueuedTurn,
+      editQueuedTurn: turnActions.editQueuedTurn,
+      maybeRestoreDeferredQueuedTurnEdit: turnActions.maybeRestoreDeferredQueuedTurnEdit,
+      queueFollowUpTurn: turnActions.queueFollowUpTurn,
+      saveQueuedTurnEdit: turnActions.saveQueuedTurnEdit,
+      sendNowTurn: turnActions.sendNowTurn,
+      sendQueuedTurnNow: turnActions.sendQueuedTurnNow,
+      sendTurn: turnActions.sendTurn,
+      steerTurn: turnActions.steerTurn,
+      setComposerActionMenuOpen: deps.setComposerActionMenuOpen,
+      syncSlashCommandMenu: deps.syncSlashCommandMenu,
+      handleSlashCommandKeyDown: deps.handleSlashCommandKeyDown,
+      syncSettingsControlsFromMain: deps.syncSettingsControlsFromMain,
+      updateQueuedTurnEditingDraft: turnActions.updateQueuedTurnEditingDraft,
+      LIVE_INSPECTOR_ENABLED_KEY: deps.LIVE_INSPECTOR_ENABLED_KEY,
     localStorageRef,
     windowRef,
     documentRef,
@@ -440,6 +458,7 @@ export function createCodexWebComposition(deps) {
     startActiveThreadLivePollLoop,
     setMobileTab: deps.setMobileTab,
     connect: connectionFlows.connect,
+    transportMode: deps.transportMode,
     GUIDE_DISMISSED_KEY: deps.GUIDE_DISMISSED_KEY,
     TOKEN_STORAGE_KEY: deps.TOKEN_STORAGE_KEY,
     WORKSPACE_TARGET_KEY: deps.WORKSPACE_TARGET_KEY,
@@ -534,7 +553,7 @@ export function createCodexWebComposition(deps) {
     renderPendingLists,
     setActiveHost,
   } = connectionFlows;
-  const { addHost, executeSlashCommand, newThread, resolveApproval, resolveUserInput, sendTurn, uploadAttachment } =
+  const { addHost, clearQueuedTurn, editQueuedTurn, executeSlashCommand, flushQueuedTurn, interruptTurn, newThread, queueFollowUpTurn, resolveApproval, resolveUserInput, sendNowTurn, sendQueuedTurnNow, sendTurn, steerTurn, uploadAttachment } =
     turnActions;
   const { wireActions } = actionBindings;
   const { installDebugAndE2E } = debugTools;
@@ -615,11 +634,19 @@ export function createCodexWebComposition(deps) {
     renderPendingLists,
     setActiveHost,
     addHost,
+    clearQueuedTurn,
+    editQueuedTurn,
     executeSlashCommand,
+    flushQueuedTurn,
+    interruptTurn,
     newThread,
+    queueFollowUpTurn,
     resolveApproval,
     resolveUserInput,
+    sendNowTurn,
+    sendQueuedTurnNow,
     sendTurn,
+    steerTurn,
     uploadAttachment,
     wireActions,
     installDebugAndE2E,

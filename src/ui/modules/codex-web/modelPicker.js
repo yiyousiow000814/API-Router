@@ -1,3 +1,5 @@
+import { compareModelRank } from "./headerUi.js";
+
 export function normalizeModelOption(item, ensureArrayItems) {
   if (!item || typeof item !== "object") return null;
   const id = String(item.id || item.model || item.name || "").trim();
@@ -38,6 +40,11 @@ export function resolveSelectedReasoningEffort(model, persistedEffort) {
   return String(model?.defaultReasoningEffort || supported[0]?.effort || "").trim();
 }
 
+export function sortNormalizedModelOptions(options) {
+  const items = Array.isArray(options) ? options.filter(Boolean) : [];
+  return items.slice().sort(compareModelRank);
+}
+
 export function createModelPickerModule(deps) {
   const {
     state,
@@ -67,8 +74,24 @@ export function createModelPickerModule(deps) {
     const picker = byId("headerModelPicker");
     const trigger = byId("headerModelTrigger");
     if (!picker || !trigger) return;
+    if (picker.__headerModelCloseTimer) {
+      clearTimeout(picker.__headerModelCloseTimer);
+      picker.__headerModelCloseTimer = 0;
+    }
     if (open && state.modelOptionsLoading) return;
-    picker.classList.toggle("open", !!open);
+    if (open) {
+      picker.classList.add("open");
+      picker.classList.remove("closing");
+    } else if (picker.classList.contains("open")) {
+      picker.classList.remove("open");
+      picker.classList.add("closing");
+      picker.__headerModelCloseTimer = setTimeout(() => {
+        picker.classList.remove("closing");
+        picker.__headerModelCloseTimer = 0;
+      }, 190);
+    } else {
+      picker.classList.remove("closing");
+    }
     trigger.setAttribute("aria-expanded", open ? "true" : "false");
     if (!open) {
       state.inlineEffortMenuOpen = false;
@@ -197,7 +220,7 @@ export function createModelPickerModule(deps) {
   function renderHeaderModelMenu() {
     const menu = byId("headerModelMenu");
     if (!menu) return;
-    const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+    const options = sortNormalizedModelOptions(state.modelOptions);
     menu.innerHTML = "";
     if (!options.length) {
       const muted = documentRef.createElement("div");
@@ -372,7 +395,7 @@ export function createModelPickerModule(deps) {
         const normalized = normalizeModelOption(item, ensureArrayItems);
         if (normalized) mapped.push(normalized);
       }
-      state.modelOptions = mapped;
+      state.modelOptions = sortNormalizedModelOptions(mapped);
       persistModelsCache();
       syncHeaderModelPicker();
     } finally {

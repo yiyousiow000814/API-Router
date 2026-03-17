@@ -54,6 +54,7 @@ export async function resumeThreadLiveOnOpen({
   connectWs = () => {},
   syncEventSubscription = () => {},
   registerPendingThreadResume = () => {},
+  onPendingTurnStateChange = () => {},
 }) {
   const id = String(threadId || "").trim();
   if (!id) return null;
@@ -84,7 +85,24 @@ export async function resumeThreadLiveOnOpen({
   registerPendingThreadResume(state?.pendingThreadResumes, id, resumePromise);
   try {
     const resumed = await resumePromise;
-    if (state) state.activeThreadNeedsResume = false;
+    if (state) {
+      const resumedTurnId = String(
+        resumed?.turnId ||
+        resumed?.turn_id ||
+        resumed?.turn?.id ||
+        resumed?.result?.turnId ||
+        resumed?.result?.turn_id ||
+        resumed?.result?.turn?.id ||
+        ""
+      ).trim();
+      state.activeThreadNeedsResume = false;
+      if (resumedTurnId) {
+        state.activeThreadPendingTurnThreadId = id;
+        state.activeThreadPendingTurnId = resumedTurnId;
+        state.activeThreadPendingTurnRunning = true;
+        onPendingTurnStateChange();
+      }
+    }
     return resumed;
   } catch {
     if (state) state.activeThreadNeedsResume = true;
@@ -130,6 +148,7 @@ export function createThreadListViewModule(deps) {
     connectWs = () => {},
     syncEventSubscription = () => {},
     registerPendingThreadResume = () => {},
+    onPendingTurnStateChange = () => {},
     setStatus,
     scheduleThreadRefresh,
     scrollToBottomReliable,
@@ -492,6 +511,7 @@ export function createThreadListViewModule(deps) {
             connectWs,
             syncEventSubscription,
             registerPendingThreadResume,
+            onPendingTurnStateChange,
           }).catch(() => null);
           if (state.openingThreadReqId === reqId) scheduleThreadRefresh();
           if (state.openingThreadReqId === reqId) {

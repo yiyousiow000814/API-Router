@@ -92,6 +92,7 @@ export function createBootstrapModule(deps) {
     startActiveThreadLivePollLoop,
     setMobileTab,
     connect,
+    transportMode = "live",
     GUIDE_DISMISSED_KEY,
     TOKEN_STORAGE_KEY,
     WORKSPACE_TARGET_KEY,
@@ -273,6 +274,16 @@ export function createBootstrapModule(deps) {
     startActiveThreadLivePollLoop();
     setMobileTab("chat");
     documentRef.body.classList.add("thread-list-bootstrapped");
+    if (transportMode === "mock") {
+      setStatus("Mock preview mode: local-only simulation on this device.");
+      connect({ switchToChat: false }).catch((error) => setStatus(error.message, true));
+      return;
+    }
+    if (transportMode === "safe") {
+      setStatus("Preview mode: live reads with sandboxed turns on this device.");
+      connect({ switchToChat: false }).catch((error) => setStatus(error.message, true));
+      return;
+    }
     connect({ switchToChat: false }).catch((error) => setStatus(error.message, true));
   }
 

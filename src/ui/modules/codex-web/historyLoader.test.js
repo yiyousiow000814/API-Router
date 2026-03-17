@@ -253,6 +253,183 @@ describe("historyLoader", () => {
     ]);
   });
 
+  it("adopts pending turn control state from incomplete history for an opened running thread", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientToolMessage() {},
+      clearTransientToolMessages() {},
+      clearTransientThinkingMessages() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-live",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+          ],
+        },
+      ],
+    });
+
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnId).toBe("turn-live");
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+  });
+
+  it("restores pending turn running when incomplete history arrives while a partial assistant snapshot already exists", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-live",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "partial reply",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientToolMessage() {},
+      clearTransientToolMessages() {},
+      clearTransientThinkingMessages() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-live",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+          ],
+        },
+      ],
+    });
+
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingTurnId).toBe("turn-live");
+  });
+
   it("clears pending turn state once history catches up", () => {
     const state = {
       activeThreadPendingTurnThreadId: "thread-1",
@@ -279,6 +456,34 @@ describe("historyLoader", () => {
     expect(state.activeThreadPendingTurnRunning).toBe(false);
     expect(state.activeThreadPendingUserMessage).toBe("");
     expect(state.activeThreadPendingAssistantMessage).toBe("");
+  });
+
+  it("keeps pending turn running while incomplete history only catches up to a streamed assistant snapshot", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "partial reply",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [
+          { role: "user", text: "hello", kind: "" },
+          { role: "assistant", text: "partial reply", kind: "" },
+        ],
+        state,
+        "thread-1",
+        { historyIncomplete: true }
+      )
+    ).toEqual([
+      { role: "user", text: "hello", kind: "" },
+      { role: "assistant", text: "partial reply", kind: "" },
+    ]);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingUserMessage).toBe("");
+    expect(state.activeThreadPendingAssistantMessage).toBe("partial reply");
   });
 
   it("drops stale history applies before they can re-render older tool state", async () => {
@@ -603,7 +808,7 @@ describe("historyLoader", () => {
     ).toBe("");
   });
 
-  it("shows transient tool messages only while history page is incomplete", async () => {
+  it("clears transient tool messages when incomplete history is already represented in runtime state", async () => {
     const shown = [];
     const cleared = [];
     const module = createHistoryLoaderModule({
@@ -679,13 +884,12 @@ describe("historyLoader", () => {
           items: [
             { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
             { type: "commandExecution", command: "npm test", status: "running" },
-            { type: "assistantMessage", text: "done" },
           ],
         },
       ],
     });
 
-    expect(shown[0]).toContain("npm test");
+    expect(shown).toEqual(["Running `npm test`"]);
 
     await module.applyThreadToChat({
       id: "thread-1",
@@ -702,8 +906,6 @@ describe("historyLoader", () => {
         },
       ],
     });
-
-    expect(cleared.length).toBeGreaterThan(0);
   });
 
   it("re-applies the incomplete transient tool bubble after a full history re-render", async () => {

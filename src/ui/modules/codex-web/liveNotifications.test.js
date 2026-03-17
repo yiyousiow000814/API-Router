@@ -374,6 +374,107 @@ describe("liveNotifications", () => {
     expect(state.activeThreadMessages).toEqual([{ role: "assistant", text: "live reply", kind: "" }]);
   });
 
+  it("dedupes duplicate final assistant snapshots from mixed live notification formats", () => {
+    const appended = [];
+    const finalized = [];
+    const chatBox = {
+      appendChild(node) {
+        this.lastElementChild = node;
+      },
+      querySelector() {
+        return null;
+      },
+      lastElementChild: null,
+    };
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+      activeThreadLiveStateEpoch: 3,
+      activeThreadLastFinalAssistantThreadId: "",
+      activeThreadLastFinalAssistantText: "",
+      activeThreadLastFinalAssistantAt: 0,
+      activeThreadLastFinalAssistantEpoch: 0,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(
+          notification?.params?.threadId ||
+          notification?.params?.item?.thread_id ||
+          notification?.params?.payload?.thread_id ||
+          ""
+        );
+      },
+      hideWelcomeCard() {},
+      createAssistantStreamingMessage() {
+        return { msg: { setAttribute() {} }, body: {} };
+      },
+      appendStreamingDelta(body, text) {
+        appended.push({ body, text });
+      },
+      finalizeAssistantMessage(msg, body, text) {
+        finalized.push({ msg, body, text });
+      },
+      finalizeRuntimeState() {},
+    });
+
+    module.renderLiveNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thread-1",
+        item: {
+          type: "agent_message",
+          thread_id: "thread-1",
+          phase: "final_answer",
+          text: "行",
+        },
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "codex/event/agent_message",
+      params: {
+        payload: {
+          type: "agent_message",
+          thread_id: "thread-1",
+          phase: "final_answer",
+          message: "行",
+        },
+      },
+    });
+
+    expect(appended.map((item) => item.text)).toEqual(["行"]);
+    expect(finalized).toHaveLength(1);
+    expect(finalized[0].text).toBe("行");
+    expect(state.activeThreadMessages).toEqual([{ role: "assistant", text: "行", kind: "" }]);
+    expect(state.liveDebugEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "live.skip:assistant_final_duplicate",
+          threadId: "thread-1",
+        }),
+      ])
+    );
+  });
+
   it("persists live assistant text into pending turn state so stale history cannot wipe it", () => {
     const chatBox = {
       appendChild(node) {
@@ -1589,6 +1690,44 @@ describe("liveNotifications", () => {
     ]);
   });
 
+  it("captures the running turn id when a turn starts", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      renderCommentaryArchive() {},
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-123",
+      },
+    });
+
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnId).toBe("turn-123");
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+  });
+
   it("switches runtime activity back to thinking when commentary resumes after a plan update", () => {
     const runtimeActivity = [];
     const state = {
@@ -1837,5 +1976,47 @@ describe("liveNotifications", () => {
     expect(appended).toEqual(["live", " reply"]);
     expect(finalized).toEqual(["live reply"]);
     expect(state.activeThreadMessages).toEqual([{ role: "assistant", text: "live reply", kind: "" }]);
+  });
+
+  it("flushes a queued turn after a terminal turn event", () => {
+    const flushed = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadMessages: [],
+      activeThreadCommentaryCurrent: null,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      flushQueuedTurn(threadId) {
+        flushed.push(threadId);
+      },
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn.completed",
+      params: { threadId: "thread-1" },
+    });
+
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingTurnId).toBe("");
+    expect(flushed).toEqual(["thread-1"]);
   });
 });

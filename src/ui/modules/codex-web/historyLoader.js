@@ -260,7 +260,7 @@ function messageMatches(a, b) {
   return !!a && !!b && a.role === b.role && a.kind === b.kind && a.text === b.text;
 }
 
-export function mergePendingLiveMessages(messages, state = {}, threadId = "") {
+export function mergePendingLiveMessages(messages, state = {}, threadId = "", options = {}) {
   const out = Array.isArray(messages) ? messages.slice() : [];
   const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
   if (!pendingThreadId || !threadId || pendingThreadId !== threadId) return out;
@@ -269,6 +269,9 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "") {
   const pendingAssistant = String(state.activeThreadPendingAssistantMessage || "");
   const hasPendingUser = !!pendingUser.trim();
   const hasPendingAssistant = !!pendingAssistant.trim();
+  const historyIncomplete =
+    options.historyIncomplete === true ||
+    (options.historyIncomplete == null && state.activeThreadHistoryIncomplete === true);
   const keepPendingUserFallback =
     hasPendingUser &&
     !hasPendingAssistant &&
@@ -282,7 +285,7 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "") {
     pending.length <= out.length &&
     pending.every((msg, index) => messageMatches(out[out.length - pending.length + index], msg));
   if (endsWithPending) {
-    if (hasPendingAssistant || !hasPendingUser) {
+    if ((hasPendingAssistant && !historyIncomplete) || !hasPendingUser) {
       state.activeThreadPendingTurnThreadId = "";
       state.activeThreadPendingTurnRunning = false;
       state.activeThreadPendingUserMessage = "";
@@ -340,6 +343,34 @@ export function findLatestIncompleteToolMessage(thread, normalizeThreadItemText)
     if (text) return text;
   }
   return "";
+}
+
+function syncPendingTurnStateFromIncompleteHistory(thread, state = {}) {
+  const threadId = String(thread?.id || state.activeThreadId || "").trim();
+  const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+  const pendingUser = String(state.activeThreadPendingUserMessage || "").trim();
+  const pendingAssistant = String(state.activeThreadPendingAssistantMessage || "").trim();
+  const pageIncomplete = !!thread?.page?.incomplete;
+  if (!threadId) return;
+  if (!pageIncomplete) {
+    if (pendingThreadId && pendingThreadId === threadId && !pendingUser && !pendingAssistant) {
+      state.activeThreadPendingTurnThreadId = "";
+      state.activeThreadPendingTurnId = "";
+      state.activeThreadPendingTurnRunning = false;
+    }
+    return;
+  }
+  if (pendingThreadId && pendingThreadId !== threadId) return;
+  if (pendingThreadId === threadId && (pendingUser || pendingAssistant)) {
+    state.activeThreadPendingTurnRunning = true;
+    return;
+  }
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  const lastTurn = turns.length ? turns[turns.length - 1] : null;
+  const lastTurnId = String(lastTurn?.id || "").trim();
+  state.activeThreadPendingTurnThreadId = threadId;
+  state.activeThreadPendingTurnId = lastTurnId;
+  state.activeThreadPendingTurnRunning = true;
 }
 
 export function createHistoryLoaderModule(deps) {
@@ -426,6 +457,7 @@ export function createHistoryLoaderModule(deps) {
       });
       return;
     }
+    syncPendingTurnStateFromIncompleteHistory(thread, state);
     syncRuntimeStateFromHistory(thread);
     if (
       (Array.isArray(state.activeThreadActiveCommands) && state.activeThreadActiveCommands.length > 0) ||
@@ -655,7 +687,7 @@ export function createHistoryLoaderModule(deps) {
       clearTransientThinkingMessages();
     }
     const box = byId("chatBox");
-    const assistantNodes = Array.from(box?.querySelectorAll?.(".msg.assistant") || []);
+    const assistantNodes = Array.from(box?.querySelectorAll?.(".assistant") || []);
     const anchorNode = assistantNodes.length ? assistantNodes[assistantNodes.length - 1] : null;
     renderCommentaryArchive(anchorNode ? { anchorNode } : {});
     syncIncompleteToolMessage(thread);
@@ -923,7 +955,9 @@ export function createHistoryLoaderModule(deps) {
       : await mapThreadReadMessages(thread);
     if (isSupersededHistoryApply(threadId, options)) return;
     const historyCommentary = extractLatestCommentaryState(thread, { normalizeThreadItemText });
-    const messages = mergePendingLiveMessages(rawMessages, state, threadId);
+    const messages = mergePendingLiveMessages(rawMessages, state, threadId, {
+      historyIncomplete: thread?.page?.incomplete === true,
+    });
     const inlineCommentaryArchiveCount = messages.filter((message) => message?.kind === "commentaryArchive").length;
     state.activeThreadInlineCommentaryArchiveCount = inlineCommentaryArchiveCount;
     const liveCommentarySnapshot = captureLiveCommentarySnapshot(threadId);

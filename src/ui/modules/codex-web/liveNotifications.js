@@ -211,6 +211,7 @@ export function createLiveNotificationsModule(deps) {
     applyPlanDeltaUpdate = () => {},
     applyPlanSnapshotUpdate = () => {},
     finalizeRuntimeState = () => {},
+    flushQueuedTurn = async () => false,
     renderCommentaryArchive = () => {},
     normalizeType,
     normalizeInline,
@@ -647,6 +648,28 @@ export function createLiveNotificationsModule(deps) {
     state.activeThreadLiveAssistantText = "";
   }
 
+  function rememberFinalAssistant(threadId, text) {
+    state.activeThreadLastFinalAssistantThreadId = String(threadId || "").trim();
+    state.activeThreadLastFinalAssistantText = String(text || "");
+    state.activeThreadLastFinalAssistantAt = Date.now();
+    state.activeThreadLastFinalAssistantEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0));
+  }
+
+  function isRecentFinalAssistantDuplicate(threadId, text) {
+    const normalizedThreadId = String(threadId || "").trim();
+    const nextText = String(text || "");
+    if (!normalizedThreadId || !nextText) return false;
+    const lastThreadId = String(state.activeThreadLastFinalAssistantThreadId || "").trim();
+    const lastText = String(state.activeThreadLastFinalAssistantText || "");
+    const lastAt = Math.max(0, Number(state.activeThreadLastFinalAssistantAt || 0));
+    const lastEpoch = Math.max(0, Number(state.activeThreadLastFinalAssistantEpoch || 0));
+    const currentEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0));
+    if (!lastThreadId || lastThreadId !== normalizedThreadId) return false;
+    if (!lastText || lastText !== nextText) return false;
+    if (!lastAt || Date.now() - lastAt > 1500) return false;
+    return lastEpoch === currentEpoch;
+  }
+
   function syncPendingAssistantState(threadId, text) {
     const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
     if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return;
@@ -656,6 +679,7 @@ export function createLiveNotificationsModule(deps) {
   function finishPendingTurnRun(threadId) {
     const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
     if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return;
+    state.activeThreadPendingTurnId = "";
     state.activeThreadPendingTurnRunning = false;
     state.activeThreadPendingTurnBaselineTurnCount = 0;
   }
@@ -808,6 +832,14 @@ export function createLiveNotificationsModule(deps) {
       });
       return;
     }
+    if (options.final === true && isRecentFinalAssistantDuplicate(threadId, nextText)) {
+      pushLiveDebugEvent("live.skip:assistant_final_duplicate", {
+        threadId: String(threadId || ""),
+        final: true,
+        chars: nextText.length,
+      });
+      return;
+    }
     if (
       options.final === true &&
       !state.activeThreadLiveAssistantMsgNode &&
@@ -825,6 +857,7 @@ export function createLiveNotificationsModule(deps) {
           threadId: String(threadId || ""),
           final: !!options.final,
         });
+        rememberFinalAssistant(threadId, nextText);
         return;
       }
     }
@@ -878,6 +911,7 @@ export function createLiveNotificationsModule(deps) {
     const text = String(state.activeThreadLiveAssistantText || "");
     finalizeCommentaryArchive(msg || null);
     if (msg && body) finalizeAssistantMessage(msg, body, text);
+    rememberFinalAssistant(threadId, text);
     clearActiveAssistantLiveState();
     pushLiveDebugEvent("live.render:assistant_finalize", {
       threadId: String(threadId || ""),
@@ -1001,10 +1035,17 @@ export function createLiveNotificationsModule(deps) {
 
     if (method.includes("turn/started")) {
       state.activeThreadPendingTurnThreadId = String(threadId || state.activeThreadId || "").trim();
+      state.activeThreadPendingTurnId = String(
+        params?.turnId || params?.turn_id || params?.turn?.id || params?.id || ""
+      ).trim();
       state.activeThreadPendingTurnRunning = true;
       state.activeThreadPendingTurnBaselineTurnCount = activeThreadHistoryTurnCount(threadId);
       state.activeThreadPendingAssistantMessage = "";
       state.activeThreadLiveStateEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0)) + 1;
+      state.activeThreadLastFinalAssistantThreadId = "";
+      state.activeThreadLastFinalAssistantText = "";
+      state.activeThreadLastFinalAssistantAt = 0;
+      state.activeThreadLastFinalAssistantEpoch = 0;
       ensureCommentaryState();
       state.activeThreadCommentaryPendingPlan = null;
       state.activeThreadCommentaryPendingTools = [];
@@ -1153,6 +1194,7 @@ export function createLiveNotificationsModule(deps) {
       clearTransientToolMessages();
       clearTransientThinkingMessages();
       finalizeRuntimeState(threadId);
+      void flushQueuedTurn(threadId);
     }
   }
 

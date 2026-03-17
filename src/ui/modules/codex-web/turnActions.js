@@ -139,6 +139,7 @@ export function createTurnActionsModule(deps) {
     setMobileTab,
     setChatOpening,
     syncPendingTurnUi = () => {},
+    updateMobileComposerState = () => {},
     clearTransientToolMessages = () => {},
     clearTransientThinkingMessages = () => {},
     hideSlashCommandMenu = () => {},
@@ -188,6 +189,7 @@ export function createTurnActionsModule(deps) {
     clearTransientToolMessages();
     clearTransientThinkingMessages();
     syncPendingTurnUi();
+    updateMobileComposerState();
   }
 
   function primePendingTurnRuntime(threadId, prompt = "") {
@@ -211,11 +213,353 @@ export function createTurnActionsModule(deps) {
       if (String(state.activeThreadPendingAssistantMessage || "").trim()) return;
     }
     state.activeThreadPendingTurnThreadId = "";
+    state.activeThreadPendingTurnId = "";
     state.activeThreadPendingTurnRunning = false;
     state.activeThreadPendingUserMessage = "";
     state.activeThreadPendingAssistantMessage = "";
     state.activeThreadPendingTurnBaselineTurnCount = 0;
     syncPendingTurnUi();
+    updateMobileComposerState();
+  }
+
+  function readQueuedTurns() {
+    if (Array.isArray(state.activeThreadQueuedTurns)) return state.activeThreadQueuedTurns.slice();
+    const legacy = state.activeThreadQueuedTurn;
+    if (legacy && typeof legacy === "object") return [{ ...legacy }];
+    return [];
+  }
+
+  function writeQueuedTurns(nextTurns) {
+    state.activeThreadQueuedTurns = Array.isArray(nextTurns) ? nextTurns.slice() : [];
+    if ("activeThreadQueuedTurn" in state) delete state.activeThreadQueuedTurn;
+    updateMobileComposerState();
+  }
+
+  function pulseComposerRestore() {
+    const wrap = byId("mobilePromptWrap");
+    if (!wrap?.classList) return;
+    wrap.classList.remove("is-queue-restoring");
+    void wrap.offsetWidth;
+    wrap.classList.add("is-queue-restoring");
+    if (wrap.__queueRestoreTimer) clearTimeout(wrap.__queueRestoreTimer);
+    wrap.__queueRestoreTimer = setTimeout(() => {
+      wrap.classList.remove("is-queue-restoring");
+      wrap.__queueRestoreTimer = 0;
+    }, 320);
+  }
+
+  function restoreQueuedTurnToComposer(queuedTurn) {
+    if (!queuedTurn || typeof queuedTurn !== "object") return false;
+    const prompt = String(state.queuedTurnEditingDraft || queuedTurn.prompt || "").trim();
+    if (!prompt) return false;
+    const input = byId("mobilePromptInput");
+    if (!input) return false;
+    input.value = prompt;
+    input.focus?.();
+    try {
+      const length = String(input.value || "").length;
+      input.setSelectionRange?.(length, length);
+    } catch {}
+    state.queuedTurnEditingId = "";
+    state.queuedTurnEditingDraft = "";
+    state.queuedTurnDeferredComposerRestoreId = "";
+    pulseComposerRestore();
+    updateMobileComposerState();
+    return true;
+  }
+
+  function maybePromoteSingleEditingQueuedTurnToComposer(options = {}) {
+    const queue = readQueuedTurns();
+    if (queue.length !== 1) return false;
+    const editingId = String(state.queuedTurnEditingId || "").trim();
+    const onlyItem = queue[0];
+    const onlyId = String(onlyItem?.id || "").trim();
+    if (!editingId || editingId !== onlyId) return false;
+    const input = byId("mobilePromptInput");
+    const currentPrompt = String(input?.value || "").trim();
+    if (currentPrompt && options.force !== true) {
+      state.queuedTurnDeferredComposerRestoreId = editingId;
+      updateMobileComposerState();
+      return false;
+    }
+    writeQueuedTurns([]);
+    return restoreQueuedTurnToComposer(onlyItem);
+  }
+
+  function maybeRestoreDeferredQueuedTurnEdit() {
+    const deferredId = String(state.queuedTurnDeferredComposerRestoreId || "").trim();
+    if (!deferredId) return false;
+    const input = byId("mobilePromptInput");
+    const currentPrompt = String(input?.value || "").trim();
+    if (currentPrompt) return false;
+    const queue = readQueuedTurns();
+    const queued = queue.find((item) => String(item?.id || "").trim() === deferredId);
+    if (!queued) {
+      state.queuedTurnDeferredComposerRestoreId = "";
+      return false;
+    }
+    if (queue.length !== 1 || String(state.queuedTurnEditingId || "").trim() !== deferredId) {
+      return false;
+    }
+    writeQueuedTurns([]);
+    return restoreQueuedTurnToComposer(queued);
+  }
+
+  function createQueuedTurn(prompt, mode = "queue", threadId = state.activeThreadId) {
+    const normalizedPrompt = String(prompt || "").trim();
+    const normalizedThreadId = String(
+      threadId || state.activeThreadId || state.activeThreadPendingTurnThreadId || ""
+    ).trim();
+    if (!normalizedPrompt || !normalizedThreadId) return null;
+    return {
+      id: `queued_${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
+      threadId: normalizedThreadId,
+      prompt: normalizedPrompt,
+      mode: mode === "steer" || mode === "send-now" ? mode : "queue",
+    };
+  }
+
+  function queuePendingTurn(prompt, mode = "queue", threadId = state.activeThreadId) {
+    const nextQueuedTurn = createQueuedTurn(prompt, mode, threadId);
+    if (!nextQueuedTurn) return false;
+    const nextQueue = readQueuedTurns();
+    const priority = nextQueuedTurn.mode === "send-now" ? 0 : nextQueuedTurn.mode === "steer" ? 1 : 2;
+    const insertAt = nextQueue.findIndex((item) => {
+      const itemPriority =
+        item?.mode === "send-now" ? 0 : item?.mode === "steer" ? 1 : 2;
+      return itemPriority > priority;
+    });
+    if (insertAt < 0) nextQueue.push(nextQueuedTurn);
+    else nextQueue.splice(insertAt, 0, nextQueuedTurn);
+    writeQueuedTurns(nextQueue);
+    clearPromptValue();
+    return true;
+  }
+
+  function removeQueuedTurnById(queuedTurnId = "") {
+    const normalizedId = String(queuedTurnId || "").trim();
+    const queue = readQueuedTurns();
+    if (!queue.length) return null;
+    const index = normalizedId
+      ? queue.findIndex((item) => String(item?.id || "").trim() === normalizedId)
+      : 0;
+    if (index < 0) return null;
+    const [removed] = queue.splice(index, 1);
+    writeQueuedTurns(queue);
+    if (String(state.queuedTurnEditingId || "").trim() === String(removed?.id || "").trim()) {
+      state.queuedTurnEditingId = "";
+      state.queuedTurnEditingDraft = "";
+      state.queuedTurnDeferredComposerRestoreId = "";
+      updateMobileComposerState();
+    }
+    maybePromoteSingleEditingQueuedTurnToComposer();
+    return removed || null;
+  }
+
+  function beginEditQueuedTurn(queuedTurnId = "") {
+    const normalizedId = String(queuedTurnId || "").trim();
+    if (!normalizedId) return false;
+    const queue = readQueuedTurns();
+    const queued = queue.find((item) => String(item?.id || "").trim() === normalizedId);
+    if (!queued) return false;
+    const currentPrompt = String(byId("mobilePromptInput")?.value || "").trim();
+    if (queue.length === 1) {
+      if (!currentPrompt && restoreQueuedTurnToComposer(queued)) {
+        writeQueuedTurns([]);
+        return true;
+      }
+      if (currentPrompt) state.queuedTurnDeferredComposerRestoreId = normalizedId;
+    }
+    state.queuedTurnEditingId = normalizedId;
+    state.queuedTurnEditingDraft = String(queued.prompt || "");
+    state.queuedTurnDeferredComposerRestoreId = "";
+    updateMobileComposerState();
+    return true;
+  }
+
+  function updateQueuedTurnEditingDraft(value = "") {
+    if (!String(state.queuedTurnEditingId || "").trim()) return false;
+    state.queuedTurnEditingDraft = String(value || "");
+    return true;
+  }
+
+  function cancelQueuedTurnEditing() {
+    if (!String(state.queuedTurnEditingId || "").trim() && !String(state.queuedTurnEditingDraft || "").trim()) {
+      return false;
+    }
+    state.queuedTurnEditingId = "";
+    state.queuedTurnEditingDraft = "";
+    state.queuedTurnDeferredComposerRestoreId = "";
+    updateMobileComposerState();
+    return true;
+  }
+
+  function saveQueuedTurnEdit(queuedTurnId = "", prompt = "") {
+    const normalizedId = String(queuedTurnId || state.queuedTurnEditingId || "").trim();
+    const normalizedPrompt = String(prompt || state.queuedTurnEditingDraft || "").trim();
+    if (!normalizedId || !normalizedPrompt) return false;
+    const queue = readQueuedTurns();
+    const index = queue.findIndex((item) => String(item?.id || "").trim() === normalizedId);
+    if (index < 0) return false;
+    queue[index] = {
+      ...queue[index],
+      prompt: normalizedPrompt,
+    };
+    writeQueuedTurns(queue);
+    state.queuedTurnEditingId = "";
+    state.queuedTurnEditingDraft = "";
+    state.queuedTurnDeferredComposerRestoreId = "";
+    updateMobileComposerState();
+    return true;
+  }
+
+  function findNextQueuedTurnIndex(threadId = "", options = {}) {
+    const targetThreadId = String(threadId || state.activeThreadId || "").trim();
+    if (!targetThreadId) return -1;
+    const skipEditingId =
+      options.skipEditing !== false ? String(state.queuedTurnEditingId || "").trim() : "";
+    const queue = readQueuedTurns();
+    return queue.findIndex((item) => {
+      const itemThreadId = String(item?.threadId || "").trim();
+      const itemId = String(item?.id || "").trim();
+      if (!itemThreadId || itemThreadId !== targetThreadId) return false;
+      if (skipEditingId && itemId === skipEditingId) return false;
+      return !!String(item?.prompt || "").trim();
+    });
+  }
+
+  async function interruptTurn(options = {}) {
+    const threadId = String(state.activeThreadPendingTurnThreadId || state.activeThreadId || "").trim();
+    const turnId = String(state.activeThreadPendingTurnId || "").trim();
+    if (!threadId || !turnId) throw new Error("No running turn to stop.");
+    const result = await api(`/codex/turns/${encodeURIComponent(turnId)}/interrupt`, {
+      method: "POST",
+    });
+    if (options.setStatus !== false) setStatus("Stopping current turn...");
+    updateMobileComposerState();
+    return result;
+  }
+
+  async function steerTurn() {
+    const prompt = String(getPromptValue() || "").trim();
+    if (!prompt) return interruptTurn();
+    if (isSlashCommandPrompt(prompt)) {
+      throw new Error("Steering does not support slash commands.");
+    }
+    if (state.activeThreadPendingTurnRunning !== true) {
+      return sendTurn();
+    }
+    const threadId = String(state.activeThreadPendingTurnThreadId || state.activeThreadId || "").trim();
+    if (!threadId) throw new Error("No active thread to steer.");
+    const input = byId("mobilePromptInput");
+    queuePendingTurn(prompt, "steer", threadId);
+    try {
+      await interruptTurn({ setStatus: false });
+      setStatus("Steering current turn...");
+    } catch (error) {
+      const queue = readQueuedTurns();
+      queue.pop();
+      writeQueuedTurns(queue);
+      if (input) input.value = prompt;
+      throw error;
+    }
+  }
+
+  async function queueFollowUpTurn() {
+    const prompt = String(getPromptValue() || "").trim();
+    if (!prompt) return;
+    if (isSlashCommandPrompt(prompt)) {
+      throw new Error("Follow-up queue does not support slash commands.");
+    }
+    if (state.activeThreadPendingTurnRunning !== true) {
+      return sendTurn();
+    }
+    const threadId = String(state.activeThreadPendingTurnThreadId || state.activeThreadId || "").trim();
+    if (!threadId) throw new Error("No active thread to queue.");
+    queuePendingTurn(prompt, "queue", threadId);
+    setStatus("Queued follow-up after the current turn.");
+  }
+
+  async function sendNowTurn() {
+    const prompt = String(getPromptValue() || "").trim();
+    if (!prompt) return interruptTurn();
+    if (isSlashCommandPrompt(prompt)) {
+      if (state.activeThreadPendingTurnRunning === true) {
+        throw new Error("Wait for the current turn to finish before using slash commands.");
+      }
+      return sendTurn();
+    }
+    if (state.activeThreadPendingTurnRunning !== true) {
+      return sendTurn();
+    }
+    const threadId = String(state.activeThreadPendingTurnThreadId || state.activeThreadId || "").trim();
+    if (!threadId) throw new Error("No active thread to send now.");
+    queuePendingTurn(prompt, "send-now", threadId);
+    await interruptTurn({ setStatus: false });
+    setStatus("Interrupting current turn to send now...");
+  }
+
+  async function editQueuedTurn(queuedTurnId = "") {
+    return beginEditQueuedTurn(queuedTurnId);
+  }
+
+  function clearQueuedTurn(queuedTurnId = "") {
+    removeQueuedTurnById(queuedTurnId);
+  }
+
+  async function sendQueuedTurnNow(queuedTurnId = "") {
+    const queued = removeQueuedTurnById(queuedTurnId);
+    if (!queued || typeof queued !== "object") return false;
+    const prompt = String(queued.prompt || "").trim();
+    if (!prompt) return false;
+    if (state.activeThreadPendingTurnRunning === true) {
+      const threadId = String(queued.threadId || state.activeThreadId || "").trim();
+      if (!threadId) throw new Error("No active thread to send now.");
+      const queue = readQueuedTurns();
+      queue.unshift({
+        ...queued,
+        threadId,
+        prompt,
+        mode: "send-now",
+      });
+      writeQueuedTurns(queue);
+      await interruptTurn({ setStatus: false });
+      setStatus("Interrupting current turn to send now...");
+      return true;
+    }
+    await sendTurn(prompt, { fromQueuedTurn: true });
+    return true;
+  }
+
+  async function flushQueuedTurn(threadId = "") {
+    const targetThreadId = String(threadId || state.activeThreadId || "").trim();
+    const queuedIndex = findNextQueuedTurnIndex(targetThreadId);
+    if (queuedIndex < 0) return false;
+    const queue = readQueuedTurns();
+    const [queued] = queue.splice(queuedIndex, 1);
+    const queuedThreadId = String(queued?.threadId || "").trim();
+    if (!queued || typeof queued !== "object") return false;
+    if (!queuedThreadId || !targetThreadId || queuedThreadId !== targetThreadId) return false;
+    if (state.activeThreadPendingTurnRunning === true) return false;
+    writeQueuedTurns(queue);
+    try {
+      await sendTurn(String(queued.prompt || "").trim(), { fromQueuedTurn: true });
+      maybePromoteSingleEditingQueuedTurnToComposer();
+      setStatus(
+        queued.mode === "steer"
+          ? "Steering message sent."
+          : queued.mode === "send-now"
+            ? "Message sent after interrupt."
+            : "Queued follow-up sent."
+      );
+      return true;
+    } catch (error) {
+      const rollbackQueue = readQueuedTurns();
+      rollbackQueue.splice(Math.min(queuedIndex, rollbackQueue.length), 0, queued);
+      writeQueuedTurns(rollbackQueue);
+      setStatus(error?.message || "Failed to send queued message.", true);
+      return false;
+    }
   }
 
   function syncPendingAssistantMessage(text) {
@@ -269,6 +613,8 @@ export function createTurnActionsModule(deps) {
     state.planModeEnabled = false;
     state.activeThreadRolloutPath = "";
     state.activeThreadTokenUsage = null;
+    state.activeThreadPendingTurnId = "";
+    writeQueuedTurns([]);
     clearPromptValue();
     hideSlashCommandMenu();
     renderComposerContextLeft();
@@ -434,12 +780,29 @@ export function createTurnActionsModule(deps) {
     return response;
   }
 
-  async function sendTurn() {
+  async function sendTurn(promptOverride, options = {}) {
     if (blockInSandbox("send turn")) return;
-    const prompt = getPromptValue();
-    if (!prompt) return;
+    const prompt = String(promptOverride == null ? getPromptValue() : promptOverride).trim();
+    const preservedDraftValue =
+      options.fromQueuedTurn === true ? String(byId("mobilePromptInput")?.value || "") : "";
+    if (!prompt) {
+      if (state.activeThreadPendingTurnRunning === true && promptOverride == null) {
+        return interruptTurn();
+      }
+      return;
+    }
     const workspace = getWorkspaceTarget();
     const startCwd = getStartCwdForWorkspace(workspace);
+    if (state.activeThreadPendingTurnRunning === true && options.fromQueuedTurn !== true) {
+      if (isSlashCommandPrompt(prompt)) {
+        throw new Error("Wait for the current turn to finish before using slash commands.");
+      }
+      const queued = queuePendingTurn(prompt, "queue");
+      if (queued) {
+        setStatus("Queued after the current turn.");
+        return;
+      }
+    }
     if (isSlashCommandPrompt(prompt)) {
       await executeSlashCommand(prompt);
       return;
@@ -507,6 +870,7 @@ export function createTurnActionsModule(deps) {
     state.activeThreadStarted = true;
     state.activeThreadWorkspace = workspace;
     state.activeThreadPendingTurnThreadId = activeThreadId;
+    state.activeThreadPendingTurnId = "";
     state.activeThreadPendingTurnRunning = true;
     state.activeThreadPendingUserMessage = prompt;
     state.activeThreadPendingAssistantMessage = "";
@@ -521,6 +885,10 @@ export function createTurnActionsModule(deps) {
     scrollToBottomReliable();
     setMainTab("chat");
     clearPromptValue();
+    if (options.fromQueuedTurn === true && preservedDraftValue) {
+      const input = byId("mobilePromptInput");
+      if (input) input.value = preservedDraftValue;
+    }
     connectWs();
     syncEventSubscription();
     pushLiveDebugEvent("turn.send", {
@@ -542,6 +910,9 @@ export function createTurnActionsModule(deps) {
     if (startedThreadId) {
       setActiveThread(startedThreadId);
       state.activeThreadPendingTurnThreadId = startedThreadId;
+      state.activeThreadPendingTurnId = String(
+        started?.turnId || started?.turn_id || started?.result?.turn?.id || ""
+      ).trim();
       state.activeThreadPendingTurnRunning = true;
       state.activeThreadPendingTurnBaselineTurnCount = activeThreadHistoryTurnCount(startedThreadId);
       state.activeThreadNeedsResume = false;
@@ -549,9 +920,10 @@ export function createTurnActionsModule(deps) {
     if (startedRolloutPath) state.activeThreadRolloutPath = startedRolloutPath;
     pushLiveDebugEvent("turn.start.ack", {
       threadId: startedThreadId,
-      turnId: String(started?.turnId || started?.turn_id || started?.result?.turn?.id || "").trim(),
+      turnId: state.activeThreadPendingTurnId,
     });
     await refreshThreads();
+    updateMobileComposerState();
   }
 
   async function uploadAttachment(file) {
@@ -616,11 +988,24 @@ export function createTurnActionsModule(deps) {
 
   return {
     addHost,
+    beginEditQueuedTurn,
+    cancelQueuedTurnEditing,
+    clearQueuedTurn,
+    editQueuedTurn,
     executeSlashCommand,
+    flushQueuedTurn,
+    interruptTurn,
+    maybeRestoreDeferredQueuedTurnEdit,
     newThread,
+    queueFollowUpTurn,
     resolveApproval,
     resolveUserInput,
+    saveQueuedTurnEdit,
+    sendNowTurn,
+    sendQueuedTurnNow,
     sendTurn,
+    steerTurn,
     uploadAttachment,
+    updateQueuedTurnEditingDraft,
   };
-}
+  }

@@ -6,65 +6,51 @@ export function compactModelLabel(raw) {
 
 export function parseModelRankParts(modelId) {
   const id = String(modelId || "").trim();
-  if (!id) return { major: 0, minor: 0, date: 0, isCodex: 0, text: "" };
+  if (!id) return { major: 0, minor: 0, patch: 0, date: 0, family: 0, isCodex: 0, text: "" };
   const isCodex = /\bcodex\b/i.test(id) ? 1 : 0;
-  const ver = /\bgpt-(\d+)(?:\.(\d+))?/i.exec(id);
+  const ver = /\bgpt-(\d+)(?:\.(\d+))?(?:\.(\d+))?/i.exec(id);
   const major = ver ? Number(ver[1] || 0) : 0;
   const minor = ver ? Number(ver[2] || 0) : 0;
+  const patch = ver ? Number(ver[3] || 0) : 0;
   const dm = /-(\d{4})-(\d{2})-(\d{2})(?:\b|_)/.exec(id);
   const date = dm ? Number(`${dm[1]}${dm[2]}${dm[3]}`) : 0;
+  const hasCodex = /\bcodex\b/i.test(id);
+  const hasMax = /\bmax\b/i.test(id);
+  const hasMini = /\bmini\b/i.test(id);
+  const family = hasCodex
+    ? hasMax
+      ? 4
+      : hasMini
+        ? 2
+        : 3
+    : 1;
   return {
     major: Number.isFinite(major) ? major : 0,
     minor: Number.isFinite(minor) ? minor : 0,
+    patch: Number.isFinite(patch) ? patch : 0,
     date,
+    family,
     isCodex,
     text: id,
   };
 }
 
+export function compareModelRank(a, b) {
+  const left = parseModelRankParts(a?.id || a);
+  const right = parseModelRankParts(b?.id || b);
+  if (left.major !== right.major) return right.major - left.major;
+  if (left.minor !== right.minor) return right.minor - left.minor;
+  if (left.patch !== right.patch) return right.patch - left.patch;
+  if (left.family !== right.family) return right.family - left.family;
+  if (left.date !== right.date) return right.date - left.date;
+  return String(right.text).localeCompare(String(left.text));
+}
+
 export function pickLatestModelId(options) {
   const list = Array.isArray(options) ? options.filter(Boolean) : [];
   if (!list.length) return "";
-  const codexOnly = list.filter((item) => /\bcodex\b/i.test(String(item?.id || "")));
-  const pool = codexOnly.length ? codexOnly : list;
-  let best = pool[0];
-  let bestKey = parseModelRankParts(best?.id);
-  for (const item of pool) {
-    const key = parseModelRankParts(item?.id);
-    if (key.major !== bestKey.major) {
-      if (key.major > bestKey.major) {
-        best = item;
-        bestKey = key;
-      }
-      continue;
-    }
-    if (key.minor !== bestKey.minor) {
-      if (key.minor > bestKey.minor) {
-        best = item;
-        bestKey = key;
-      }
-      continue;
-    }
-    if (key.date !== bestKey.date) {
-      if (key.date > bestKey.date) {
-        best = item;
-        bestKey = key;
-      }
-      continue;
-    }
-    if (key.isCodex !== bestKey.isCodex) {
-      if (key.isCodex > bestKey.isCodex) {
-        best = item;
-        bestKey = key;
-      }
-      continue;
-    }
-    if (String(key.text) > String(bestKey.text)) {
-      best = item;
-      bestKey = key;
-    }
-  }
-  return String(best?.id || "").trim();
+  const sorted = list.slice().sort(compareModelRank);
+  return String(sorted[0]?.id || "").trim();
 }
 
 export function classifyStatusBadge(message, isWarn = false) {

@@ -47,6 +47,7 @@ import {
   nextFrame,
   nextReqId,
 } from "./modules/codex-web/wsClient.js";
+import { resolveCodexWebTransportMode } from "./modules/codex-web/transportMode.js";
 import { createWorkspaceUiModule } from "./modules/codex-web/workspaceUi.js";
 import { createChatViewportModule } from "./modules/codex-web/chatViewport.js";
 import { createImageViewerModule } from "./modules/codex-web/imageViewer.js";
@@ -144,6 +145,7 @@ let applyPlanDeltaUpdate = () => {};
 let applyPlanSnapshotUpdate = () => {};
 let finalizeRuntimeState = () => {};
 let updateMobileComposerState = () => {};
+let setComposerActionMenuOpen = () => {};
 let setMainTab = () => {};
 let syncSettingsControlsFromMain = () => {};
 let updateWelcomeSelections = () => {};
@@ -279,6 +281,11 @@ function setActiveThread(id) {
     hideSlashCommandMenu();
     state.activeThreadRenderSig = "";
     clearRuntimeState();
+    state.activeThreadQueuedTurns = [];
+    state.queuedTurnsExpanded = true;
+    state.queuedTurnEditingId = "";
+    state.queuedTurnEditingDraft = "";
+    state.queuedTurnDeferredComposerRestoreId = "";
     state.activeThreadPendingTurnThreadId = "";
     state.activeThreadPendingTurnRunning = false;
     state.activeThreadPendingUserMessage = "";
@@ -314,6 +321,10 @@ function setActiveThread(id) {
 }
 
 const composition = createCodexWebComposition({
+  transportMode: resolveCodexWebTransportMode({
+    importMetaEnv: import.meta.env,
+    windowRef: window,
+  }),
   state,
   byId,
   setStatus: (...args) => setStatus(...args),
@@ -413,6 +424,7 @@ const composition = createCodexWebComposition({
   restoreThreadsCache: (...args) => restoreThreadsCache(...args),
   applyManagedTokenUi: (...args) => applyManagedTokenUi(...args),
   updateMobileComposerState: (...args) => updateMobileComposerState(...args),
+  setComposerActionMenuOpen: (...args) => setComposerActionMenuOpen(...args),
   refreshSlashCommandsState: (...args) => refreshSlashCommandsState(...args),
   syncSettingsControlsFromMain: (...args) => syncSettingsControlsFromMain(...args),
   updateWelcomeSelections: (...args) => updateWelcomeSelections(...args),
@@ -474,6 +486,7 @@ const {
   createAssistantStreamingMessage,
   executeSlashCommand: executeSlashCommandFromComposition,
   finalizeAssistantMessage,
+  flushQueuedTurn,
   renderCommentaryArchive: renderCommentaryArchiveFromComposition,
   renderAssistantLiveBody: renderAssistantLiveBodyFromComposition,
   getActiveWorkspaceBadgeLabel,
@@ -545,6 +558,7 @@ renderAssistantLiveBody = (...args) => renderAssistantLiveBodyFromComposition(..
   applyPlanSnapshotUpdate,
   finalizeRuntimeState,
   setMainTab,
+  setComposerActionMenuOpen,
   showWelcomeCard,
   syncSettingsControlsFromMain,
   updateMobileComposerState,
@@ -623,6 +637,7 @@ renderAssistantLiveBody = (...args) => renderAssistantLiveBodyFromComposition(..
   applyPlanDeltaUpdate: (...args) => applyPlanDeltaUpdate(...args),
   applyPlanSnapshotUpdate: (...args) => applyPlanSnapshotUpdate(...args),
   finalizeRuntimeState: (...args) => finalizeRuntimeState(...args),
+  flushQueuedTurn: (...args) => flushQueuedTurn(...args),
   renderCommentaryArchive: (...args) => renderCommentaryArchive(...args),
   normalizeType,
   normalizeInline,

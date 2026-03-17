@@ -297,8 +297,13 @@ export function createChatTimelineModule(deps) {
     }
     syncExpandedUi();
 
+    const fallbackAssistantAnchor = (() => {
+      const assistantNodes = Array.from(box.querySelectorAll(".assistant"));
+      return assistantNodes.length ? assistantNodes[assistantNodes.length - 1] : null;
+    })();
     const anchorNode =
       (options.anchorNode && options.anchorNode.parentElement === box ? options.anchorNode : null) ||
+      fallbackAssistantAnchor ||
       box.querySelector("#runtimeChatPanels") ||
       null;
     if (anchorNode) box.insertBefore(mount, anchorNode);

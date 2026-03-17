@@ -105,11 +105,15 @@ describe("threadListView", () => {
     const calls = [];
     const state = {
       activeThreadNeedsResume: true,
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
       pendingThreadResumes: new Map(),
     };
+    const ui = [];
     const api = async (path, options = {}) => {
       calls.push({ path, method: options.method || "GET" });
-      return { ok: true };
+      return { ok: true, turnId: "turn-123" };
     };
     const ws = [];
 
@@ -128,6 +132,13 @@ describe("threadListView", () => {
       registerPendingThreadResume(map, threadId, promise) {
         map.set(threadId, promise);
       },
+      onPendingTurnStateChange() {
+        ui.push({
+          threadId: state.activeThreadPendingTurnThreadId,
+          turnId: state.activeThreadPendingTurnId,
+          running: state.activeThreadPendingTurnRunning,
+        });
+      },
     });
 
     expect(ws).toEqual(["connect", "sync"]);
@@ -138,6 +149,16 @@ describe("threadListView", () => {
       },
     ]);
     expect(state.activeThreadNeedsResume).toBe(false);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnId).toBe("turn-123");
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(ui).toEqual([
+      {
+        threadId: "thread-1",
+        turnId: "turn-123",
+        running: true,
+      },
+    ]);
   });
 
   it("does not resume completed threads after history load", async () => {

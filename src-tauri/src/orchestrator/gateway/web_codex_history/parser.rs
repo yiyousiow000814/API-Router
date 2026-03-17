@@ -346,7 +346,10 @@ impl HistoryTurnBuilder {
                     .and_then(|value| value.get("exit_code"))
                     .and_then(Value::as_i64);
                 if let Some(item) = self.turn_item_object_mut(pending.index) {
-                    item.insert("status".to_string(), json!("completed"));
+                    item.insert(
+                        "status".to_string(),
+                        json!(command_completion_status(exit_code, &parsed)),
+                    );
                     if let Some(value) = output {
                         item.insert("output".to_string(), Value::String(value));
                     }
@@ -357,7 +360,7 @@ impl HistoryTurnBuilder {
             }
             PendingToolKind::ToolCall => {
                 if let Some(item) = self.turn_item_object_mut(pending.index) {
-                    item.insert("status".to_string(), json!("completed"));
+                    item.insert("status".to_string(), json!(tool_completion_status(&parsed)));
                     if !parsed.is_null() {
                         if let Some(value) = extract_tool_text_value(&parsed) {
                             item.insert("result".to_string(), value);
@@ -613,6 +616,59 @@ fn extract_tool_text_value(value: &Value) -> Option<Value> {
     }
 }
 
+fn value_has_failure_marker(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(flag) => !*flag,
+        Value::String(text) => {
+            let trimmed = text.trim().to_ascii_lowercase();
+            !trimmed.is_empty()
+                && (trimmed.contains("failed")
+                    || trimmed.contains("error")
+                    || trimmed.contains("denied")
+                    || trimmed.contains("timeout"))
+        }
+        Value::Array(items) => items.iter().any(value_has_failure_marker),
+        Value::Object(map) => {
+            map.get("success").and_then(Value::as_bool) == Some(false)
+                || map.get("ok").and_then(Value::as_bool) == Some(false)
+                || map.get("error").is_some_and(|error| {
+                    !matches!(error, Value::Null) && value_has_failure_marker(error)
+                })
+                || map
+                    .get("stderr")
+                    .and_then(extract_tool_text)
+                    .is_some_and(|text| !text.trim().is_empty())
+                || map
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .is_some_and(|status| {
+                        matches!(
+                            status.trim().to_ascii_lowercase().as_str(),
+                            "failed" | "error" | "denied" | "cancelled" | "timeout"
+                        )
+                    })
+        }
+        _ => false,
+    }
+}
+
+fn command_completion_status(exit_code: Option<i64>, parsed: &Value) -> &'static str {
+    if exit_code.unwrap_or(0) != 0 || value_has_failure_marker(parsed) {
+        "failed"
+    } else {
+        "completed"
+    }
+}
+
+fn tool_completion_status(parsed: &Value) -> &'static str {
+    if value_has_failure_marker(parsed) {
+        "failed"
+    } else {
+        "completed"
+    }
+}
+
 fn read_command_from_tool_arguments(arguments: Option<&Value>) -> Option<String> {
     let parsed = parse_embedded_json_value(arguments)?;
     let command = parsed
@@ -679,14 +735,21 @@ fn canonicalize_history_tool_item(item: &Value) -> Option<Value> {
                 })
             })
         }
-        "commandexecution" => Some(json!({
-            "type": "commandExecution",
-            "id": item_id,
-            "command": item.get("command").and_then(Value::as_str),
-            "status": item.get("status").and_then(Value::as_str),
-            "output": extract_tool_text_value(item.get("output").unwrap_or(&Value::Null)),
-            "exitCode": item.get("exitCode").and_then(Value::as_i64).or_else(|| item.get("exit_code").and_then(Value::as_i64)),
-        })),
+        "commandexecution" => {
+            let exit_code = item
+                .get("exitCode")
+                .and_then(Value::as_i64)
+                .or_else(|| item.get("exit_code").and_then(Value::as_i64));
+            let parsed_output = item.get("output").cloned().unwrap_or(Value::Null);
+            Some(json!({
+                "type": "commandExecution",
+                "id": item_id,
+                "command": item.get("command").and_then(Value::as_str),
+                "status": command_completion_status(exit_code, &parsed_output),
+                "output": extract_tool_text_value(item.get("output").unwrap_or(&Value::Null)),
+                "exitCode": exit_code,
+            }))
+        }
         "mcptoolcall" | "toolcall" => {
             let tool = item
                 .get("tool")
@@ -708,6 +771,11 @@ fn canonicalize_history_tool_item(item: &Value) -> Option<Value> {
                     "exitCode": item.get("exitCode").and_then(Value::as_i64).or_else(|| item.get("exit_code").and_then(Value::as_i64)),
                 }))
             } else {
+                let parsed_result = item
+                    .get("result")
+                    .cloned()
+                    .or_else(|| item.get("output").cloned())
+                    .unwrap_or(Value::Null);
                 Some(json!({
                     "type": "toolCall",
                     "id": item_id,
@@ -715,7 +783,7 @@ fn canonicalize_history_tool_item(item: &Value) -> Option<Value> {
                     "server": item.get("server").and_then(Value::as_str),
                     "arguments": item.get("arguments").cloned().unwrap_or(Value::Null),
                     "input": item.get("input").cloned().unwrap_or(Value::Null),
-                    "status": item.get("status").and_then(Value::as_str),
+                    "status": tool_completion_status(&parsed_result),
                     "result": item.get("result").cloned().or_else(|| extract_tool_text_value(item.get("output").unwrap_or(&Value::Null))),
                     "error": item.get("error").cloned().unwrap_or(Value::Null),
                 }))
@@ -899,5 +967,23 @@ mod tests {
         assert_eq!(items[1]["command"].as_str(), Some("bash -lc 'ls -la'"));
         assert_eq!(items[1]["output"].as_str(), Some("ok"));
         assert_eq!(items[1]["exitCode"].as_i64(), Some(0));
+    }
+
+    #[test]
+    fn parser_marks_non_zero_exit_code_command_as_failed() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-exec-failed"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"inspect","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-1","arguments":"{\"cmd\":\"npm test\"}"}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"{\"output\":\"boom\",\"metadata\":{\"exit_code\":1}}"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#,
+        ]);
+
+        let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
+        let items = &parsed.turns[0].items;
+        assert_eq!(items[1]["type"].as_str(), Some("commandExecution"));
+        assert_eq!(items[1]["status"].as_str(), Some("failed"));
+        assert_eq!(items[1]["exitCode"].as_i64(), Some(1));
     }
 }

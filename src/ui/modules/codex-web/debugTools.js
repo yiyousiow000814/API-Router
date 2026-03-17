@@ -1137,8 +1137,10 @@ export function createDebugToolsModule(deps) {
         },
         async refreshThreadsWithMock(target = "windows", items = []) {
           const workspace = normalizeWorkspaceTarget(String(target || "windows"));
-          const origFetch = windowRef.fetch;
-          windowRef.fetch = async (input, init) => {
+          const fetchHost = win && typeof win.fetch === "function" ? win : globalThis;
+          const origFetch = typeof fetchHost.fetch === "function" ? fetchHost.fetch.bind(fetchHost) : null;
+          if (!origFetch) return { ok: false, error: "fetch unavailable" };
+          fetchHost.fetch = async (input, init) => {
             const url = typeof input === "string" ? input : input?.url || "";
             if (typeof url === "string" && url.startsWith("/codex/threads")) {
               const body = JSON.stringify({
@@ -1155,7 +1157,7 @@ export function createDebugToolsModule(deps) {
             await refreshThreads(workspace, { force: true });
             return { ok: true };
           } finally {
-            windowRef.fetch = origFetch;
+            fetchHost.fetch = origFetch;
           }
         },
       };
