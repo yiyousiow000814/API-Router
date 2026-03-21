@@ -1,4 +1,5 @@
 use super::*;
+use crate::orchestrator::gateway::web_codex_rollout_path::rollout_path_is_already_in_codex_home;
 use std::path::{Path, PathBuf};
 
 pub(super) fn codex_home_dir_for_override(codex_home: Option<&str>) -> Result<PathBuf, String> {
@@ -189,16 +190,19 @@ fn import_wsl_rollout_from_known_path(thread_id: &str, rollout_path: &str) -> Re
     if !cfg!(target_os = "windows") || !is_safe_thread_id(thread_id) {
         return Ok(false);
     }
+    let codex_home =
+        crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(Some(
+            WorkspaceTarget::Wsl2,
+        ));
+    if rollout_path_is_already_in_codex_home(codex_home.as_deref(), rollout_path) {
+        return Ok(false);
+    }
     let trimmed = rollout_path.trim();
     if trimmed.is_empty() {
         return Ok(false);
     }
     let src_path =
         linux_wsl_path_to_windows_path(trimmed).unwrap_or_else(|| PathBuf::from(trimmed));
-    let codex_home =
-        crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(Some(
-            WorkspaceTarget::Wsl2,
-        ));
     import_rollout_file_into_codex_home(codex_home.as_deref(), thread_id, src_path.as_path())
 }
 
@@ -208,6 +212,9 @@ pub(super) fn import_rollout_from_known_path(
     workspace_hint: Option<WorkspaceTarget>,
     rollout_path: &str,
 ) -> Result<bool, String> {
+    if rollout_path_is_already_in_codex_home(codex_home, rollout_path) {
+        return Ok(false);
+    }
     match workspace_hint {
         Some(WorkspaceTarget::Wsl2) => import_wsl_rollout_from_known_path(thread_id, rollout_path),
         _ => import_rollout_file_into_codex_home(codex_home, thread_id, Path::new(rollout_path)),
@@ -224,8 +231,8 @@ pub(super) fn resume_import_order(workspace_hint: Option<WorkspaceTarget>) -> Ve
 #[cfg(test)]
 mod tests {
     use super::{
-        codex_home_dir_for_override, import_rollout_file_into_codex_home, resume_import_order,
-        WorkspaceTarget,
+        codex_home_dir_for_override, import_rollout_file_into_codex_home,
+        import_rollout_from_known_path, resume_import_order, WorkspaceTarget,
     };
     use std::path::Path;
 
@@ -277,5 +284,39 @@ mod tests {
             assert!(resolved_str.contains("wsl.localhost") || resolved_str.contains("wsl$"));
             assert!(resolved_str.contains(".codex"));
         }
+    }
+
+    #[test]
+    fn import_rollout_from_known_path_skips_copy_when_rollout_is_already_in_same_home() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join(".codex");
+        let rollout = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("03")
+            .join("20")
+            .join("rollout-thread-1.jsonl");
+        std::fs::create_dir_all(rollout.parent().expect("rollout parent"))
+            .expect("create rollout parent");
+        std::fs::write(
+            &rollout,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\"}}\n",
+        )
+        .expect("write rollout");
+
+        let imported = import_rollout_from_known_path(
+            Some(codex_home.to_string_lossy().as_ref()),
+            "thread-1",
+            Some(WorkspaceTarget::Windows),
+            rollout.to_string_lossy().as_ref(),
+        )
+        .expect("import");
+
+        assert!(!imported);
+        assert!(!codex_home
+            .join("sessions")
+            .join("imported")
+            .join("thread-1.jsonl")
+            .exists());
     }
 }

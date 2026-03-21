@@ -1,7 +1,9 @@
 //! Windows Terminal integrations.
 //!
-//! Currently this module supports inferring `WT_SESSION` for a request by mapping the loopback TCP
-//! connection to the owning process PID, then reading the process environment.
+//! This module infers a stable terminal-session marker for Codex requests by mapping the loopback
+//! TCP connection to the owning process PID, then reading the process environment. When
+//! `WT_SESSION` is unavailable, it falls back to a `pid:<pid>` marker so ordinary Windows console
+//! hosts can still participate in runtime session sync.
 
 #[cfg(windows)]
 use std::io::BufRead;
@@ -18,6 +20,10 @@ use std::time::{Duration, SystemTime};
 pub struct InferredWtSession {
     pub wt_session: String,
     pub pid: u32,
+    pub linux_pid: Option<u32>,
+    pub wsl_distro: Option<String>,
+    pub cwd: Option<String>,
+    pub rollout_path: Option<String>,
     pub codex_session_id: Option<String>,
     pub reported_model_provider: Option<String>,
     pub reported_base_url: Option<String>,
@@ -31,6 +37,17 @@ pub struct InferredWtSession {
 pub struct SessionDiscoverySnapshot {
     pub items: Vec<InferredWtSession>,
     pub fresh: bool,
+}
+
+pub(crate) fn terminal_session_marker(wt_session: Option<&str>, pid: u32) -> Option<String> {
+    let explicit = wt_session
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if explicit.is_some() {
+        return explicit;
+    }
+    (pid > 0).then(|| format!("pid:{pid}"))
 }
 
 #[cfg(windows)]
@@ -609,10 +626,11 @@ pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWt
     {
         let pid =
             crate::platform::windows_loopback_peer::infer_loopback_peer_pid(peer, server_port)?;
-        let wt = crate::platform::windows_loopback_peer::read_process_env_var(pid, "WT_SESSION")?;
-        if wt.trim().is_empty() {
-            return None;
-        }
+        let wt = terminal_session_marker(
+            crate::platform::windows_loopback_peer::read_process_env_var(pid, "WT_SESSION")
+                .as_deref(),
+            pid,
+        )?;
         let codex_session_id =
             crate::platform::windows_loopback_peer::read_process_command_line(pid)
                 .as_deref()
@@ -620,6 +638,11 @@ pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWt
         Some(InferredWtSession {
             wt_session: wt,
             pid,
+            linux_pid: None,
+            wsl_distro: None,
+            cwd: crate::platform::windows_loopback_peer::read_process_cwd(pid)
+                .map(|path| path.to_string_lossy().to_string()),
+            rollout_path: None,
             codex_session_id,
             reported_model_provider: None,
             reported_base_url: None,
@@ -694,6 +717,16 @@ pub fn discover_sessions_using_router_snapshot(
                 items: cached_items,
                 fresh: true,
             };
+        }
+
+        if cached_items.is_empty() {
+            let token = expected_gateway_token.map(|s| s.to_string());
+            let items = discover_sessions_using_router_uncached(server_port, token.as_deref());
+            if let Ok(mut guard) = cache.lock() {
+                guard.updated_at_unix_ms = now;
+                guard.items = items.clone();
+            }
+            return SessionDiscoverySnapshot { items, fresh: true };
         }
 
         // Stale-while-revalidate: return stale cache immediately and refresh in background.

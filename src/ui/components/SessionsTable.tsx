@@ -115,7 +115,6 @@ export function arrangeSessionRowsByMainParent(
       childRowsByMainSessionId.set(parentMainSessionId, rowsForMainSession)
       continue
     }
-    if (isAgentOrReview) continue
     rootRows.push(row)
   }
 
@@ -236,7 +235,7 @@ export function SessionsTable({
       ]
         .join(' ')
         .trim()
-      const childRoleLabel = isChildRow
+      const childRoleLabel = isAgent
         ? s.is_review === true
           ? 'REVIEW'
           : 'AGENT'
@@ -250,7 +249,7 @@ export function SessionsTable({
             {codexSession ? (
               <div className={sessionIdClass} title={title}>
                 {!isChildRow && <span className={originBadgeClass}>{originLabel}</span>}
-                {isChildRow && childRoleLabel && (
+                {childRoleLabel && (
                   <span className="aoSessionChildRoleBadge">{childRoleLabel}</span>
                 )}
                 {codexSession}
@@ -272,22 +271,24 @@ export function SessionsTable({
           <td className="aoSessionsMono">{modelName}</td>
           <td className="aoSessionsMono" title={currentReason}>{currentProvider}</td>
           <td>
-            <select
-              className="aoSelect aoSessionsPreferredSelect"
-              value={s.preferred_provider ?? ''}
-              disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession || isAgent}
-              onChange={(e) => {
-                const v = e.target.value
-                onSetPreferred(s.id, v ? v : null)
-              }}
-            >
-              <option value="">{sessionPreferredPlaceholderLabel(globalPreferred, routeMode)}</option>
-              {providers.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
+            <div className="aoSessionsActions">
+              <select
+                className="aoSelect aoSessionsPreferredSelect"
+                value={s.preferred_provider ?? ''}
+                disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession || isAgent}
+                onChange={(e) => {
+                  const v = e.target.value
+                  onSetPreferred(s.id, v ? v : null)
+                }}
+              >
+                <option value="">{sessionPreferredPlaceholderLabel(globalPreferred, routeMode)}</option>
+                {providers.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
           </td>
         </tr>
       )

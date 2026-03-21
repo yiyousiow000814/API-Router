@@ -620,25 +620,20 @@ fn value_has_failure_marker(value: &Value) -> bool {
     match value {
         Value::Null => false,
         Value::Bool(flag) => !*flag,
-        Value::String(text) => {
-            let trimmed = text.trim().to_ascii_lowercase();
-            !trimmed.is_empty()
-                && (trimmed.contains("failed")
-                    || trimmed.contains("error")
-                    || trimmed.contains("denied")
-                    || trimmed.contains("timeout"))
-        }
+        Value::String(_) => false,
         Value::Array(items) => items.iter().any(value_has_failure_marker),
         Value::Object(map) => {
             map.get("success").and_then(Value::as_bool) == Some(false)
                 || map.get("ok").and_then(Value::as_bool) == Some(false)
                 || map.get("error").is_some_and(|error| {
-                    !matches!(error, Value::Null) && value_has_failure_marker(error)
+                    if matches!(error, Value::Null) {
+                        return false;
+                    }
+                    if let Some(text) = error.as_str() {
+                        return !text.trim().is_empty();
+                    }
+                    error_object_has_failure_marker(error)
                 })
-                || map
-                    .get("stderr")
-                    .and_then(extract_tool_text)
-                    .is_some_and(|text| !text.trim().is_empty())
                 || map
                     .get("status")
                     .and_then(Value::as_str)
@@ -650,6 +645,18 @@ fn value_has_failure_marker(value: &Value) -> bool {
                     })
         }
         _ => false,
+    }
+}
+
+fn error_object_has_failure_marker(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            map.get("message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| !message.trim().is_empty())
+                || value_has_failure_marker(value)
+        }
+        _ => value_has_failure_marker(value),
     }
 }
 
@@ -667,6 +674,14 @@ fn tool_completion_status(parsed: &Value) -> &'static str {
     } else {
         "completed"
     }
+}
+
+fn explicit_tool_status(item: &Value) -> Option<String> {
+    item.get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
 }
 
 fn read_command_from_tool_arguments(arguments: Option<&Value>) -> Option<String> {
@@ -741,11 +756,14 @@ fn canonicalize_history_tool_item(item: &Value) -> Option<Value> {
                 .and_then(Value::as_i64)
                 .or_else(|| item.get("exit_code").and_then(Value::as_i64));
             let parsed_output = item.get("output").cloned().unwrap_or(Value::Null);
+            let status = explicit_tool_status(item).unwrap_or_else(|| {
+                command_completion_status(exit_code, &parsed_output).to_string()
+            });
             Some(json!({
                 "type": "commandExecution",
                 "id": item_id,
                 "command": item.get("command").and_then(Value::as_str),
-                "status": command_completion_status(exit_code, &parsed_output),
+                "status": status,
                 "output": extract_tool_text_value(item.get("output").unwrap_or(&Value::Null)),
                 "exitCode": exit_code,
             }))
@@ -776,6 +794,8 @@ fn canonicalize_history_tool_item(item: &Value) -> Option<Value> {
                     .cloned()
                     .or_else(|| item.get("output").cloned())
                     .unwrap_or(Value::Null);
+                let status = explicit_tool_status(item)
+                    .unwrap_or_else(|| tool_completion_status(&parsed_result).to_string());
                 Some(json!({
                     "type": "toolCall",
                     "id": item_id,
@@ -783,7 +803,7 @@ fn canonicalize_history_tool_item(item: &Value) -> Option<Value> {
                     "server": item.get("server").and_then(Value::as_str),
                     "arguments": item.get("arguments").cloned().unwrap_or(Value::Null),
                     "input": item.get("input").cloned().unwrap_or(Value::Null),
-                    "status": tool_completion_status(&parsed_result),
+                    "status": status,
                     "result": item.get("result").cloned().or_else(|| extract_tool_text_value(item.get("output").unwrap_or(&Value::Null))),
                     "error": item.get("error").cloned().unwrap_or(Value::Null),
                 }))
@@ -985,5 +1005,86 @@ mod tests {
         assert_eq!(items[1]["type"].as_str(), Some("commandExecution"));
         assert_eq!(items[1]["status"].as_str(), Some("failed"));
         assert_eq!(items[1]["exitCode"].as_i64(), Some(1));
+    }
+
+    #[test]
+    fn parser_keeps_zero_exit_code_command_completed_with_stderr_warning() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-exec-warning"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"inspect","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-1","arguments":"{\"cmd\":\"Get-Content file.txt\"}"}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"{\"output\":\"ok\",\"stderr\":\"warning only\",\"metadata\":{\"exit_code\":0}}"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#,
+        ]);
+
+        let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
+        let items = &parsed.turns[0].items;
+        assert_eq!(items[1]["type"].as_str(), Some("commandExecution"));
+        assert_eq!(items[1]["status"].as_str(), Some("completed"));
+        assert_eq!(items[1]["exitCode"].as_i64(), Some(0));
+    }
+
+    #[test]
+    fn parser_keeps_zero_exit_code_command_completed_when_output_mentions_failed() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-exec-failure-word"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"inspect","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-1","arguments":"{\"cmd\":\"Get-Content file.txt\"}"}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"{\"output\":\"const label = \\\"command failed\\\";\",\"metadata\":{\"exit_code\":0}}"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#,
+        ]);
+
+        let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
+        let items = &parsed.turns[0].items;
+        assert_eq!(items[1]["type"].as_str(), Some("commandExecution"));
+        assert_eq!(items[1]["status"].as_str(), Some("completed"));
+        assert_eq!(items[1]["exitCode"].as_i64(), Some(0));
+    }
+
+    #[test]
+    fn parser_keeps_tool_completed_when_plain_text_mentions_failure() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-tool-failure-word"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"inspect","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"call-1","name":"search_docs","input":{"query":"failure words"}}}"#,
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-1","output":"{\"result\":\"This snippet contains failed and error words but is not an error.\"}"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#,
+        ]);
+
+        let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
+        let items = &parsed.turns[0].items;
+        assert_eq!(items[1]["type"].as_str(), Some("toolCall"));
+        assert_eq!(items[1]["status"].as_str(), Some("completed"));
+    }
+
+    #[test]
+    fn parser_preserves_running_status_from_item_completed_command_updates() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-running-command"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"commandExecution","id":"cmd-1","command":"cargo test","status":"running"}}}"#,
+        ]);
+
+        let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
+        let items = &parsed.turns[0].items;
+        assert_eq!(items[0]["type"].as_str(), Some("commandExecution"));
+        assert_eq!(items[0]["status"].as_str(), Some("running"));
+    }
+
+    #[test]
+    fn parser_preserves_failed_status_from_item_completed_tool_updates() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-failed-tool"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"toolCall","id":"tool-1","tool":"search_query","status":"failed","error":{"message":"backend denied request"}}}}"#,
+        ]);
+
+        let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
+        let items = &parsed.turns[0].items;
+        assert_eq!(items[0]["type"].as_str(), Some("toolCall"));
+        assert_eq!(items[0]["status"].as_str(), Some("failed"));
     }
 }

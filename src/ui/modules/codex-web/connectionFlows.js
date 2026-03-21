@@ -4,6 +4,18 @@ export function pickPendingDefaults(approvals, userInputs) {
   return { approvalId, userInputId };
 }
 
+export function normalizePendingSelection(items, selectedId, fallbackId = "") {
+  const normalizedSelectedId = String(selectedId || "").trim();
+  if (
+    normalizedSelectedId &&
+    Array.isArray(items) &&
+    items.some((item) => String(item?.id || "").trim() === normalizedSelectedId)
+  ) {
+    return normalizedSelectedId;
+  }
+  return String(fallbackId || "").trim();
+}
+
 export function createConnectionFlowsModule(deps) {
   const {
     state,
@@ -20,6 +32,7 @@ export function createConnectionFlowsModule(deps) {
     refreshModels,
     refreshCodexVersions,
     refreshThreads,
+    refreshWorkspaceRuntimeState = async () => null,
     getWorkspaceTarget,
     isWorkspaceAvailable,
     setStatus,
@@ -27,6 +40,13 @@ export function createConnectionFlowsModule(deps) {
     setMobileTab,
     addChat,
   } = deps;
+
+  function syncPendingSelectionInputs() {
+    const approvalIdInput = byId("approvalIdInput");
+    const userInputIdInput = byId("userInputIdInput");
+    if (approvalIdInput) approvalIdInput.value = String(state.selectedPendingApprovalId || "").trim();
+    if (userInputIdInput) userInputIdInput.value = String(state.selectedPendingUserInputId || "").trim();
+  }
 
   function setActiveHost(id) {
     state.activeHostId = id || "";
@@ -75,7 +95,8 @@ export function createConnectionFlowsModule(deps) {
         item?.prompt || item?.title || item?.message || ""
       )}</div>`;
       card.onclick = () => {
-        byId("approvalIdInput").value = id;
+        state.selectedPendingApprovalId = id;
+        syncPendingSelectionInputs();
         setStatus(`Selected approval ${id}`);
       };
       approvalList.appendChild(card);
@@ -97,7 +118,8 @@ export function createConnectionFlowsModule(deps) {
         item?.prompt || item?.title || item?.question || ""
       )}</div>`;
       card.onclick = () => {
-        byId("userInputIdInput").value = id;
+        state.selectedPendingUserInputId = id;
+        syncPendingSelectionInputs();
         setStatus(`Selected user_input ${id}`);
       };
       userInputList.appendChild(card);
@@ -110,11 +132,18 @@ export function createConnectionFlowsModule(deps) {
   function applyPendingPayloads(approvals, userInputs) {
     state.pendingApprovals = ensureArrayItems(approvals);
     state.pendingUserInputs = ensureArrayItems(userInputs);
-    const approvalIdInput = byId("approvalIdInput");
-    const userInputIdInput = byId("userInputIdInput");
     const defaults = pickPendingDefaults(state.pendingApprovals, state.pendingUserInputs);
-    if (defaults.approvalId && approvalIdInput) approvalIdInput.value = defaults.approvalId;
-    if (defaults.userInputId && userInputIdInput) userInputIdInput.value = defaults.userInputId;
+    state.selectedPendingApprovalId = normalizePendingSelection(
+      state.pendingApprovals,
+      state.selectedPendingApprovalId,
+      defaults.approvalId
+    );
+    state.selectedPendingUserInputId = normalizePendingSelection(
+      state.pendingUserInputs,
+      state.selectedPendingUserInputId,
+      defaults.userInputId
+    );
+    syncPendingSelectionInputs();
     renderPendingLists();
   }
 
@@ -155,9 +184,11 @@ export function createConnectionFlowsModule(deps) {
     const tasks = [
       refreshThreads(currentTarget, { force: false, silent: false }),
       refreshHosts(),
+      refreshWorkspaceRuntimeState(currentTarget, { silent: true }),
     ];
     if (isWorkspaceAvailable(otherTarget)) {
       tasks.push(refreshThreads(otherTarget, { force: false, silent: true }).catch(() => null));
+      tasks.push(refreshWorkspaceRuntimeState(otherTarget, { silent: true }).catch(() => null));
     }
     await Promise.all(tasks);
     await refreshPending();

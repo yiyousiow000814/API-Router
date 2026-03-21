@@ -1,4 +1,5 @@
 import { createMockCodexTransport } from "./mockTransport.js";
+import { synthesizeProvisionalThreadItem } from "./notificationRouting.js";
 
 export function ensureArrayItems(value) {
   if (Array.isArray(value)) return value;
@@ -26,6 +27,41 @@ export function normalizeLiveWorkspaceTarget(value, fallback = "windows") {
   if (text === "windows" || text === "wsl2") return text;
   const base = String(fallback || "").trim().toLowerCase();
   return base === "wsl2" ? "wsl2" : "windows";
+}
+
+export function resolveLiveWorkspaceSubscription(state) {
+  const availability = state?.workspaceAvailability || {};
+  const targets = [];
+  if (availability.windowsInstalled === true) targets.push("windows");
+  if (availability.wsl2Installed === true) targets.push("wsl2");
+  if (!targets.length) {
+    targets.push(
+      normalizeLiveWorkspaceTarget(
+        state?.activeThreadWorkspace || state?.workspaceTarget || "windows",
+        "windows"
+      )
+    );
+  }
+  const uniqueTargets = Array.from(new Set(targets));
+  if (uniqueTargets.length > 1) {
+    return {
+      workspace: "all",
+      workspaces: uniqueTargets,
+    };
+  }
+  return {
+    workspace: uniqueTargets[0] || "windows",
+    workspaces: uniqueTargets,
+  };
+}
+
+export function subscriptionIncludesWorkspace(subscription, target) {
+  const normalizedTarget = normalizeLiveWorkspaceTarget(target, "windows");
+  const items = Array.isArray(subscription)
+    ? subscription
+    : [String(subscription || "").trim().toLowerCase()];
+  if (items.includes("all")) return true;
+  return items.map((value) => normalizeLiveWorkspaceTarget(value, "windows")).includes(normalizedTarget);
 }
 
 export function resolveApiErrorMessage(payload, status) {
@@ -94,6 +130,7 @@ export function createWsClientModule(deps) {
     renderLiveNotification,
     applyPendingPayloads,
     addChat,
+    upsertProvisionalThreadItem = () => false,
     LAST_EVENT_ID_KEY,
     windowRef = window,
     WebSocketRef = WebSocket,
@@ -185,22 +222,35 @@ export function createWsClientModule(deps) {
     }, WS_PING_INTERVAL_MS);
   }
 
-  function currentLiveWorkspace() {
-    return normalizeLiveWorkspaceTarget(
-      state.activeThreadWorkspace || state.workspaceTarget || "windows",
-      "windows"
-    );
-  }
-
   function subscribePayload(lastEventId = null) {
+    const subscription = resolveLiveWorkspaceSubscription(state);
     const payload = {
       events: true,
-      workspace: currentLiveWorkspace(),
+      workspace: subscription.workspace,
     };
+    if (subscription.workspaces.length > 1) payload.workspaces = subscription.workspaces;
     if (typeof lastEventId === "number" && Number.isFinite(lastEventId) && lastEventId >= 0) {
       payload.lastEventId = lastEventId;
     }
     return payload;
+  }
+
+  function sendSubscribeEvents(lastEventId = null) {
+    const payload = subscribePayload(lastEventId);
+    state.wsSubscribedEvents = false;
+    state.wsRequestedWorkspaceTarget = String(payload.workspace || "windows").trim().toLowerCase();
+    state.wsRequestedWorkspaceTargets = Array.isArray(payload.workspaces)
+      ? payload.workspaces.slice()
+      : [normalizeLiveWorkspaceTarget(payload.workspace, "windows")];
+    pushLiveDebugEvent("ws.subscribe:send", {
+      workspace: state.wsRequestedWorkspaceTarget,
+      workspaces: state.wsRequestedWorkspaceTargets.slice(),
+      lastEventId:
+        typeof lastEventId === "number" && Number.isFinite(lastEventId) && lastEventId >= 0
+          ? lastEventId
+          : null,
+    });
+    wsSend({ type: "subscribe.events", reqId: nextReqId(), payload });
   }
 
   function pushLiveDebugEvent(kind, payload = {}) {
@@ -256,6 +306,23 @@ export function createWsClientModule(deps) {
     return liveApi(path, options);
   }
 
+  function currentLiveWorkspace() {
+    return normalizeLiveWorkspaceTarget(
+      state.activeThreadWorkspace || state.workspaceTarget || "windows",
+      "windows"
+    );
+  }
+
+  function maybeUpsertProvisionalThread(notification, workspaceHint = "windows") {
+    const item = synthesizeProvisionalThreadItem(
+      notification,
+      normalizeLiveWorkspaceTarget(workspaceHint, currentLiveWorkspace()),
+      Date.now()
+    );
+    if (!item) return false;
+    return upsertProvisionalThreadItem(item) === true;
+  }
+
   function handleWsPayload(payload) {
     if (!payload || typeof payload !== "object") {
       pushLiveDebugEvent("ws.drop:invalid_payload", {});
@@ -308,6 +375,7 @@ export function createWsClientModule(deps) {
           localStorageRef.setItem(LAST_EVENT_ID_KEY, String(state.wsLastEventId));
         } catch {}
       }
+      maybeUpsertProvisionalThread(liveNotification, currentLiveWorkspace());
       if (conversationId && liveMethod && shouldRefreshThreadsFromNotification(liveMethod)) {
         scheduleThreadRefresh(120);
       }
@@ -368,6 +436,10 @@ export function createWsClientModule(deps) {
         } catch {}
       }
       const threadId = extractNotificationThreadId(record);
+      maybeUpsertProvisionalThread(
+        notification,
+        state.wsSubscribedWorkspaceTarget || state.wsRequestedWorkspaceTarget || currentLiveWorkspace()
+      );
       if (shouldRefreshThreadsFromNotification(method)) scheduleThreadRefresh();
       if (threadId && shouldRefreshActiveThreadFromNotification(method)) {
         scheduleActiveThreadRefresh(threadId);
@@ -377,11 +449,27 @@ export function createWsClientModule(deps) {
     }
     if (payload.type === "events.reset") {
       resetEventReplayState();
+      scheduleThreadRefresh();
+      if (state.activeThreadId) scheduleActiveThreadRefresh(state.activeThreadId);
       setStatus("Live event stream resynced.");
       return;
     }
     if (payload.type === "subscribed") {
       state.wsSubscribedEvents = true;
+      state.wsSubscribedWorkspaceTarget = String(
+        payload?.payload?.workspace || state.wsRequestedWorkspaceTarget || currentLiveWorkspace()
+      )
+        .trim()
+        .toLowerCase() || "windows";
+      state.wsSubscribedWorkspaceTargets = Array.isArray(payload?.payload?.workspaces)
+        ? payload.payload.workspaces.map((value) => normalizeLiveWorkspaceTarget(value, "windows"))
+        : Array.isArray(state.wsRequestedWorkspaceTargets)
+          ? state.wsRequestedWorkspaceTargets.slice()
+          : [normalizeLiveWorkspaceTarget(state.wsRequestedWorkspaceTarget, "windows")];
+      scheduleThreadRefresh(0);
+      if (state.activeThreadId) {
+        scheduleActiveThreadRefresh(state.activeThreadId, 0);
+      }
       setStatus("Live updates connected.");
     }
   }
@@ -417,12 +505,14 @@ export function createWsClientModule(deps) {
       try {
         lastEventId = Number(localStorageRef.getItem(LAST_EVENT_ID_KEY) || 0) || 0;
       } catch {}
-      wsSend({ type: "subscribe.events", reqId: nextReqId(), payload: subscribePayload(lastEventId) });
+      sendSubscribeEvents(lastEventId);
     };
     ws.onerror = () => {
       if (state.ws !== ws || connectSeq !== state.wsConnectSeq) return;
       pushLiveDebugEvent("ws.error", {});
       state.wsSubscribedEvents = false;
+      state.wsSubscribedWorkspaceTarget = "";
+      state.wsSubscribedWorkspaceTargets = [];
       setStatus("WS error; fallback to HTTP.", true);
     };
     ws.onclose = (event) => {
@@ -435,6 +525,8 @@ export function createWsClientModule(deps) {
       });
       pushLiveDebugEvent("ws.close", {});
       state.wsSubscribedEvents = false;
+      state.wsSubscribedWorkspaceTarget = "";
+      state.wsSubscribedWorkspaceTargets = [];
       setStatus("WS closed; fallback to HTTP.", true);
       scheduleReconnect(String(event?.reason || `code:${Number(event?.code ?? 0) || 0}`));
     };
@@ -460,12 +552,7 @@ export function createWsClientModule(deps) {
     try {
       lastEventId = Number(localStorageRef.getItem(LAST_EVENT_ID_KEY) || 0) || 0;
     } catch {}
-    state.wsSubscribedEvents = false;
-    wsSend({
-      type: "subscribe.events",
-      reqId: nextReqId(),
-      payload: subscribePayload(lastEventId),
-    });
+    sendSubscribeEvents(lastEventId);
     return true;
   }
 

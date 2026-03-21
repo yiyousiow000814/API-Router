@@ -2,20 +2,49 @@ export function resolveThreadAutoRefreshInterval(wsOpen, wsSubscribed, connected
   return wsOpen && wsSubscribed ? connectedMs : disconnectedMs;
 }
 
-export function resolveActiveThreadLivePollInterval(liveMs) {
+export function resolveThreadAutoRefreshTargets(currentTarget, availability = {}) {
+  const normalizedCurrent =
+    String(currentTarget || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+  const targets = [normalizedCurrent];
+  const windowsAvailable = availability.windowsInstalled !== false;
+  const wslAvailable = availability.wsl2Installed !== false;
+  if (normalizedCurrent !== "windows" && windowsAvailable) targets.push("windows");
+  if (normalizedCurrent !== "wsl2" && wslAvailable) targets.push("wsl2");
+  return targets;
+}
+
+export function resolveActiveThreadLivePollInterval(
+  liveMs,
+  wsFallbackMs = 0,
+  wsOpen = false,
+  wsSubscribed = false
+) {
   const normalized = Number(liveMs || 0);
-  return Number.isFinite(normalized) && normalized > 0 ? normalized : 0;
+  if (!Number.isFinite(normalized) || normalized <= 0) return 0;
+  if (!wsOpen || !wsSubscribed) return normalized;
+  const fallback = Number(wsFallbackMs || 0);
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
 }
 
 export function shouldPollActiveThreadLive({
   threadId,
   activeMainTab,
   activeThreadStarted,
+  activeThreadHistoryIncomplete,
+  activeThreadPendingTurnRunning,
+  activeThreadPendingUserMessage,
+  activeThreadPendingAssistantMessage,
+  activeThreadNeedsResume,
 }) {
   if (!String(threadId || "").trim()) return false;
   if (String(activeMainTab || "").trim() !== "chat") return false;
-  if (activeThreadStarted !== true) return false;
-  return true;
+  if (activeThreadHistoryIncomplete === true) return true;
+  if (activeThreadPendingTurnRunning === true) return true;
+  if (String(activeThreadPendingUserMessage || "").trim()) return true;
+  if (String(activeThreadPendingAssistantMessage || "").trim()) return true;
+  if (activeThreadNeedsResume === true) return true;
+  if (activeThreadStarted === true) return true;
+  return false;
 }
 
 export function createThreadLiveModule(deps) {
@@ -25,6 +54,7 @@ export function createThreadLiveModule(deps) {
     waitMs,
     setStatus,
     refreshThreads,
+    refreshCodexVersions = async () => {},
     getWorkspaceTarget,
     loadThreadMessages,
     THREAD_PULL_REFRESH_TRIGGER_PX,
@@ -34,9 +64,29 @@ export function createThreadLiveModule(deps) {
     THREAD_AUTO_REFRESH_CONNECTED_MS,
     THREAD_AUTO_REFRESH_DISCONNECTED_MS,
     ACTIVE_THREAD_LIVE_POLL_MS,
+    ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS = 0,
     WebSocketRef = WebSocket,
     setIntervalRef = setInterval,
   } = deps;
+
+  function shouldRecoverWorkspaceAvailability() {
+    const availability = state.workspaceAvailability || {};
+    return !availability.windowsInstalled || !availability.wsl2Installed;
+  }
+
+  function maybeRefreshCodexVersions(now, minInterval) {
+    if (!shouldRecoverWorkspaceAvailability()) return;
+    if (state.codexVersionRefreshInFlight) return;
+    const lastMs = Number(state.codexVersionRefreshLastMs || 0);
+    if (now - lastMs < minInterval) return;
+    state.codexVersionRefreshLastMs = now;
+    state.codexVersionRefreshInFlight = true;
+    refreshCodexVersions()
+      .catch(() => null)
+      .finally(() => {
+        state.codexVersionRefreshInFlight = false;
+      });
+  }
 
   async function refreshThreadsFromPullGesture() {
     if (state.threadPullRefreshing) return;
@@ -178,8 +228,10 @@ export function createThreadLiveModule(deps) {
   function startThreadAutoRefreshLoop() {
     setIntervalRef(() => {
       if (state.threadAutoRefreshInFlight) return;
-      const target = getWorkspaceTarget();
-      if (state.threadRefreshAbortByWorkspace?.[target]) return;
+      const refreshTargets = resolveThreadAutoRefreshTargets(
+        getWorkspaceTarget(),
+        state.workspaceAvailability || {}
+      );
       const wsOpen = !!(state.ws && state.ws.readyState === WebSocketRef.OPEN);
       const wsSubscribed = !!(wsOpen && state.wsSubscribedEvents);
       const minInterval = resolveThreadAutoRefreshInterval(
@@ -189,12 +241,22 @@ export function createThreadLiveModule(deps) {
         THREAD_AUTO_REFRESH_DISCONNECTED_MS
       );
       const now = Date.now();
-      const lastMs = state.threadAutoRefreshLastMsByWorkspace?.[target] || 0;
-      if (now - lastMs < minInterval) return;
-      state.threadAutoRefreshLastMsByWorkspace[target] = now;
+      const dueTargets = refreshTargets.filter((target) => {
+        if (state.threadRefreshAbortByWorkspace?.[target]) return false;
+        const lastMs = state.threadAutoRefreshLastMsByWorkspace?.[target] || 0;
+        return now - lastMs >= minInterval;
+      });
+      if (!dueTargets.length) return;
+      for (const target of dueTargets) {
+        state.threadAutoRefreshLastMsByWorkspace[target] = now;
+      }
+      maybeRefreshCodexVersions(now, minInterval);
       state.threadAutoRefreshInFlight = true;
-      refreshThreads(target, { force: false, silent: true })
-        .catch(() => null)
+      Promise.all(
+        dueTargets.map((target) =>
+          refreshThreads(target, { force: false, silent: true }).catch(() => null)
+        )
+      )
         .finally(() => {
           state.threadAutoRefreshInFlight = false;
         });
@@ -211,14 +273,22 @@ export function createThreadLiveModule(deps) {
           threadId,
           activeMainTab: state.activeMainTab,
           activeThreadStarted: state.activeThreadStarted,
-          wsReadyState: state.ws?.readyState,
-          wsSubscribed,
-          webSocketOpenValue: WebSocketRef.OPEN,
+          activeThreadHistoryIncomplete: state.activeThreadHistoryIncomplete,
+          activeThreadPendingTurnRunning: state.activeThreadPendingTurnRunning,
+          activeThreadPendingUserMessage: state.activeThreadPendingUserMessage,
+          activeThreadPendingAssistantMessage: state.activeThreadPendingAssistantMessage,
+          activeThreadNeedsResume: state.activeThreadNeedsResume,
         })
       ) return;
       const now = Date.now();
       const last = Number(state.activeThreadLiveLastPollMs || 0);
-      const minInterval = resolveActiveThreadLivePollInterval(ACTIVE_THREAD_LIVE_POLL_MS);
+      const minInterval = resolveActiveThreadLivePollInterval(
+        ACTIVE_THREAD_LIVE_POLL_MS,
+        ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS,
+        wsOpen,
+        wsSubscribed
+      );
+      if (minInterval <= 0) return;
       if (now - last < minInterval) return;
       state.activeThreadLiveLastPollMs = now;
       if (state.activeThreadLivePolling) return;

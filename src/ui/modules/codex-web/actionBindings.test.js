@@ -196,6 +196,77 @@ describe("actionBindings", () => {
     }
   });
 
+  it("opens a managed terminal from the header workspace badge", async () => {
+    const handlers = new Map();
+    const statusCalls = [];
+    let opened = 0;
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId() { return null; },
+      bindClick(id, handler) {
+        handlers.set(id, handler);
+      },
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus(message, isError = false) {
+        statusCalls.push({ message, isError });
+      },
+      updateMobileComposerState() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      openManagedTerminalSurface: async () => {
+        opened += 1;
+      },
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+    const previousDocument = globalThis.document;
+    const previousWindow = globalThis.window;
+    const previousNotification = globalThis.Notification;
+    globalThis.document = { addEventListener() {} };
+    globalThis.window = deps.windowRef;
+    globalThis.Notification = deps.NotificationRef;
+
+    try {
+      createActionBindingsModule(deps).wireActions();
+      await handlers.get("headerWorkspaceBadge")?.();
+
+      expect(opened).toBe(1);
+      expect(statusCalls).toEqual([]);
+    } finally {
+      globalThis.document = previousDocument;
+      globalThis.window = previousWindow;
+      globalThis.Notification = previousNotification;
+    }
+  });
+
   it("updates real default toggles from settings without changing the prompt", async () => {
     const handlers = new Map();
     const statusCalls = [];

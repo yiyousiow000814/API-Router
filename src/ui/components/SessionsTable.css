@@ -19,6 +19,13 @@
   max-width: 100%;
 }
 
+.aoSessionsActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .aoSessionsIdWindows {
   color: rgba(23, 91, 145, 0.9);
 }

@@ -1,3 +1,5 @@
+import { resetTurnPresentationState, syncPendingTurnRuntime } from "./runtimeState.js";
+
 export function readDebugMessageNode(node, index) {
   const body = node?.querySelector?.(".msgBody") || null;
   const inline = body
@@ -51,6 +53,7 @@ export function createDebugToolsModule(deps) {
     renderInlineMessageText,
     findNextInlineCodeSpan,
     normalizeWorkspaceTarget,
+    detectThreadWorkspaceTarget = () => "unknown",
     normalizeModelOption,
     ensureArrayItems,
     pickLatestModelId,
@@ -64,6 +67,7 @@ export function createDebugToolsModule(deps) {
     showWelcomeCard,
     updateHeaderUi,
     getWorkspaceTarget,
+    getStartCwdForWorkspace = () => "",
     parseUserMessageParts,
     renderMessageAttachments,
     setMainTab,
@@ -90,6 +94,8 @@ export function createDebugToolsModule(deps) {
     documentRef,
     windowRef,
     performanceRef,
+    setWorkspaceTarget = () => {},
+    setStartCwdForWorkspace = () => {},
   } = deps;
   const storage = localStorageRef ?? globalThis.localStorage ?? { getItem() { return ""; }, setItem() {} };
   const doc = documentRef ?? globalThis.document;
@@ -562,6 +568,26 @@ export function createDebugToolsModule(deps) {
         },
         getActiveState,
         getLivePipelineSnapshot,
+        getThreadListSnapshot(limit = 200) {
+          const max = Math.max(1, Number(limit || 200) | 0);
+          const workspaceTarget = normalizeWorkspaceTarget(getWorkspaceTarget());
+          const startCwd = String(getStartCwdForWorkspace(workspaceTarget) || "").trim();
+          const allItems = Array.isArray(state.threadItemsAll) ? state.threadItemsAll : [];
+          const visibleItems = Array.isArray(state.threadItems) ? state.threadItems : [];
+          return {
+            ok: true,
+            workspaceTarget,
+            startCwd,
+            allCount: allItems.length,
+            visibleCount: visibleItems.length,
+            visibleItems: visibleItems.slice(0, max).map((item) => ({
+              id: String(item?.id || item?.threadId || "").trim(),
+              title: String(item?.title || item?.name || item?.preview || "").trim(),
+              cwd: String(item?.cwd || item?.project || item?.directory || item?.path || "").trim(),
+              workspace: String(item?.workspace || item?.__workspaceQueryTarget || "").trim(),
+            })),
+          };
+        },
         dumpMessages(limit = 8) {
           const max = Math.max(1, Number(limit || 8) | 0);
           const nodes = Array.from(doc?.querySelectorAll?.("#chatBox .msg") || []);
@@ -740,10 +766,12 @@ export function createDebugToolsModule(deps) {
   function installDebugAndE2E() {
     try {
       installWebCodexDebug();
-      installLiveTraceBackgroundSync();
       const debugLiveEnabled =
         hasQueryFlag(win.location?.search || "", "debuglive") ||
         String(storage.getItem(LIVE_INSPECTOR_ENABLED_KEY) || "").trim() === "1";
+      if (debugLiveEnabled) {
+        installLiveTraceBackgroundSync();
+      }
       if (debugLiveEnabled) {
         installLiveInspector();
       }
@@ -765,6 +793,37 @@ export function createDebugToolsModule(deps) {
       }
       if (params.get("e2e") !== "1" || win.__webCodexE2E) return;
       const historyByThreadId = new Map();
+      const resolveThreadMetadata = (threadId) => {
+        const id = String(threadId || "").trim();
+        if (!id) {
+          return {
+            thread: null,
+            workspace: normalizeWorkspaceTarget(state.activeThreadWorkspace || getWorkspaceTarget()),
+            rolloutPath: String(state.activeThreadRolloutPath || "").trim(),
+          };
+        }
+        const workspaceBuckets =
+          state.threadItemsByWorkspace && typeof state.threadItemsByWorkspace === "object"
+            ? Object.values(state.threadItemsByWorkspace)
+            : [];
+        const searchSets = [
+          Array.isArray(state.threadItemsAll) ? state.threadItemsAll : [],
+          ...workspaceBuckets.map((items) => (Array.isArray(items) ? items : [])),
+          Array.isArray(state.threadItems) ? state.threadItems : [],
+        ];
+        let thread = null;
+        for (const items of searchSets) {
+          thread = items.find((item) => String(item?.id || item?.threadId || "").trim() === id) || null;
+          if (thread) break;
+        }
+        const detectedWorkspace = detectThreadWorkspaceTarget(thread);
+        const workspace =
+          detectedWorkspace === "unknown"
+            ? normalizeWorkspaceTarget(thread?.workspace || thread?.__workspaceQueryTarget || state.activeThreadWorkspace || getWorkspaceTarget())
+            : detectedWorkspace;
+        const rolloutPath = String(thread?.path || "").trim();
+        return { thread, workspace, rolloutPath };
+      };
       win.__webCodexE2E = {
         _activeThreadId: "",
         setModelLoading(loading = true) {
@@ -910,24 +969,13 @@ export function createDebugToolsModule(deps) {
           setActiveThread(threadId);
           setChatOpening(false);
           state.activeThreadStarted = true;
-          state.activeThreadPendingTurnThreadId = threadId;
-          state.activeThreadPendingTurnRunning = true;
-          state.activeThreadPendingUserMessage = prompt;
-          state.activeThreadPendingAssistantMessage = "";
-          state.activeThreadTransientToolText = "";
-          state.activeThreadTransientThinkingText = "";
-          state.activeThreadCommentaryCurrent = null;
-          state.activeThreadCommentaryArchive = [];
-          state.activeThreadCommentaryArchiveVisible = false;
-          state.activeThreadCommentaryArchiveExpanded = false;
-          state.activeThreadActivity = null;
-          state.activeThreadActiveCommands = [];
-          state.activeThreadPlan = null;
-          state.activeThreadLiveAssistantThreadId = "";
-          state.activeThreadLiveAssistantIndex = -1;
-          state.activeThreadLiveAssistantMsgNode = null;
-          state.activeThreadLiveAssistantBodyNode = null;
-          state.activeThreadLiveAssistantText = "";
+          syncPendingTurnRuntime(state, threadId, {
+            turnId: "",
+            running: true,
+            userMessage: prompt,
+            assistantMessage: "",
+          });
+          resetTurnPresentationState(state);
           renderCommentaryArchive();
           renderRuntimePanels();
           if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
@@ -1011,31 +1059,46 @@ export function createDebugToolsModule(deps) {
         async openThread(threadId) {
           const id = String(threadId || "").trim();
           if (!id) return { ok: false, error: "missing threadId" };
+          const meta = resolveThreadMetadata(id);
           this._activeThreadId = id;
           setMainTab("chat");
           setMobileTab("chat");
           setActiveThread(id);
           state.activeThreadNeedsResume = true;
+          state.activeThreadWorkspace = meta.workspace;
+          state.activeThreadRolloutPath = meta.rolloutPath;
           setChatOpening(false);
           await loadThreadMessages(id, {
             animateBadge: true,
             forceRender: true,
             stickToBottom: true,
-            workspace: state.activeThreadWorkspace,
-            rolloutPath: state.activeThreadRolloutPath,
+            workspace: meta.workspace,
+            rolloutPath: meta.rolloutPath,
           });
-          return { ok: true };
+          return {
+            ok: true,
+            workspace: meta.workspace,
+            rolloutPath: meta.rolloutPath,
+          };
         },
         async refreshActiveThread() {
           const id = String(state.activeThreadId || this._activeThreadId || "").trim();
           if (!id) return { ok: false, error: "missing active thread" };
+          const meta = resolveThreadMetadata(id);
+          state.activeThreadWorkspace = meta.workspace;
+          state.activeThreadRolloutPath = meta.rolloutPath;
           await loadThreadMessages(id, {
             animateBadge: false,
             forceRender: true,
-            workspace: state.activeThreadWorkspace,
-            rolloutPath: state.activeThreadRolloutPath,
+            workspace: meta.workspace,
+            rolloutPath: meta.rolloutPath,
           });
-          return { ok: true, threadId: id };
+          return {
+            ok: true,
+            threadId: id,
+            workspace: meta.workspace,
+            rolloutPath: meta.rolloutPath,
+          };
         },
         installMockTurnStream(config = {}) {
           const threadId = String(config.threadId || this._activeThreadId || state.activeThreadId || "").trim();
@@ -1128,8 +1191,32 @@ export function createDebugToolsModule(deps) {
           return { ok: true };
         },
         async setWorkspaceTarget(target = "windows") {
-          await deps.setWorkspaceTarget(target);
-          return { ok: true, target: normalizeWorkspaceTarget(target) };
+          const workspace = normalizeWorkspaceTarget(target);
+          try {
+            await refreshThreads(workspace, { force: true, silent: true });
+          } catch {}
+          await setWorkspaceTarget(workspace);
+          let activeTarget = normalizeWorkspaceTarget(getWorkspaceTarget());
+          if (activeTarget !== workspace) {
+            try {
+              await refreshThreads(workspace, { force: true, silent: true });
+            } catch {}
+            await setWorkspaceTarget(workspace);
+            activeTarget = normalizeWorkspaceTarget(getWorkspaceTarget());
+          }
+          if (activeTarget !== workspace) {
+            return {
+              ok: false,
+              error: `workspace target did not switch to ${workspace}`,
+              target: activeTarget,
+            };
+          }
+          return { ok: true, target: activeTarget };
+        },
+        async setStartCwdForWorkspace(target = "windows", cwd = "") {
+          const workspace = normalizeWorkspaceTarget(target);
+          await Promise.resolve(setStartCwdForWorkspace(workspace, String(cwd || "")));
+          return win.__webCodexDebug?.getThreadListSnapshot?.() || { ok: true };
         },
         setMobileTabForE2E(tab = "chat") {
           setMobileTab(String(tab || "chat"));

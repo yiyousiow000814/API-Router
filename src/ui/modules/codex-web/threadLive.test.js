@@ -4,6 +4,7 @@ import {
   createThreadLiveModule,
   resolveActiveThreadLivePollInterval,
   resolveThreadAutoRefreshInterval,
+  resolveThreadAutoRefreshTargets,
   shouldPollActiveThreadLive,
 } from "./threadLive.js";
 
@@ -14,28 +15,53 @@ describe("threadLive", () => {
     expect(resolveThreadAutoRefreshInterval(false, true, 20000, 3500)).toBe(3500);
   });
 
-  it("keeps polling active thread history while ws live updates are subscribed", () => {
+  it("refreshes both workspace buckets when available", () => {
+    expect(
+      resolveThreadAutoRefreshTargets("windows", {
+        windowsInstalled: true,
+        wsl2Installed: true,
+      })
+    ).toEqual(["windows", "wsl2"]);
+    expect(
+      resolveThreadAutoRefreshTargets("wsl2", {
+        windowsInstalled: true,
+        wsl2Installed: true,
+      })
+    ).toEqual(["wsl2", "windows"]);
+    expect(
+      resolveThreadAutoRefreshTargets("windows", {
+        windowsInstalled: true,
+        wsl2Installed: false,
+      })
+    ).toEqual(["windows"]);
+  });
+
+  it("keeps polling an opened active thread so external terminal turns can appear without refresh", () => {
     expect(
       shouldPollActiveThreadLive({
         threadId: "thread-1",
         activeMainTab: "chat",
         activeThreadStarted: true,
-        wsReadyState: 1,
-        wsSubscribed: true,
-        webSocketOpenValue: 1,
+        activeThreadHistoryIncomplete: false,
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadNeedsResume: false,
       })
     ).toBe(true);
   });
 
-  it("polls active thread history only when chat is active and ws live updates are unavailable", () => {
+  it("polls active thread history only when chat is active and runtime is still unfinished", () => {
     expect(
       shouldPollActiveThreadLive({
         threadId: "thread-1",
         activeMainTab: "chat",
         activeThreadStarted: true,
-        wsReadyState: 0,
-        wsSubscribed: false,
-        webSocketOpenValue: 1,
+        activeThreadHistoryIncomplete: true,
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadNeedsResume: false,
       })
     ).toBe(true);
     expect(
@@ -43,9 +69,11 @@ describe("threadLive", () => {
         threadId: "",
         activeMainTab: "chat",
         activeThreadStarted: true,
-        wsReadyState: 0,
-        wsSubscribed: false,
-        webSocketOpenValue: 1,
+        activeThreadHistoryIncomplete: true,
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadNeedsResume: false,
       })
     ).toBe(false);
     expect(
@@ -53,9 +81,11 @@ describe("threadLive", () => {
         threadId: "thread-1",
         activeMainTab: "settings",
         activeThreadStarted: true,
-        wsReadyState: 0,
-        wsSubscribed: false,
-        webSocketOpenValue: 1,
+        activeThreadHistoryIncomplete: true,
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadNeedsResume: false,
       })
     ).toBe(false);
     expect(
@@ -63,20 +93,24 @@ describe("threadLive", () => {
         threadId: "thread-1",
         activeMainTab: "chat",
         activeThreadStarted: false,
-        wsReadyState: 0,
-        wsSubscribed: false,
-        webSocketOpenValue: 1,
+        activeThreadHistoryIncomplete: true,
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadNeedsResume: false,
       })
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  it("keeps the fast live poll interval for active threads even when ws is subscribed", () => {
-    expect(resolveActiveThreadLivePollInterval(1500)).toBe(1500);
-    expect(resolveActiveThreadLivePollInterval(800)).toBe(800);
-    expect(resolveActiveThreadLivePollInterval(0)).toBe(0);
+  it("uses a slower fallback interval when ws is already subscribed", () => {
+    expect(resolveActiveThreadLivePollInterval(1500, 3000, false, false)).toBe(1500);
+    expect(resolveActiveThreadLivePollInterval(1500, 3000, true, false)).toBe(1500);
+    expect(resolveActiveThreadLivePollInterval(1500, 3000, true, true)).toBe(3000);
+    expect(resolveActiveThreadLivePollInterval(1500, 0, true, true)).toBe(0);
+    expect(resolveActiveThreadLivePollInterval(0, 3000, true, true)).toBe(0);
   });
 
-  it("does not slow active-thread polling just because ws is subscribed", async () => {
+  it("polls an opened active thread even after completion so terminal-only follow-ups surface", async () => {
     const callbacks = [];
     const loadCalls = [];
     let now = 10_000;
@@ -89,6 +123,11 @@ describe("threadLive", () => {
         activeThreadStarted: true,
         ws: { readyState: 1 },
         wsSubscribedEvents: true,
+        activeThreadHistoryIncomplete: false,
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadNeedsResume: false,
         activeThreadLiveLastPollMs: 0,
         activeThreadLivePolling: false,
         activeThreadWorkspace: "windows",
@@ -122,13 +161,17 @@ describe("threadLive", () => {
 
       now += 2_000;
       await callbacks[0]();
+      expect(loadCalls).toHaveLength(1);
+
+      now += 1_001;
+      await callbacks[0]();
       expect(loadCalls).toHaveLength(2);
     } finally {
       Date.now = realNow;
     }
   });
 
-  it("does not slow incomplete active-thread polling just because ws is subscribed", async () => {
+  it("slows incomplete active-thread polling when ws is already subscribed", async () => {
     const callbacks = [];
     const loadCalls = [];
     let now = 10_000;
@@ -142,6 +185,10 @@ describe("threadLive", () => {
         ws: { readyState: 1 },
         wsSubscribedEvents: true,
         activeThreadHistoryIncomplete: true,
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadNeedsResume: false,
         activeThreadLiveLastPollMs: 0,
         activeThreadLivePolling: false,
         activeThreadWorkspace: "windows",
@@ -174,6 +221,10 @@ describe("threadLive", () => {
       expect(loadCalls).toHaveLength(1);
 
       now += 2_000;
+      await callbacks[0]();
+      expect(loadCalls).toHaveLength(1);
+
+      now += 1_001;
       await callbacks[0]();
       expect(loadCalls).toHaveLength(2);
     } finally {
@@ -191,6 +242,11 @@ describe("threadLive", () => {
         activeThreadStarted: false,
         ws: { readyState: 0 },
         wsSubscribedEvents: false,
+        activeThreadHistoryIncomplete: false,
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadNeedsResume: false,
         activeThreadLiveLastPollMs: 0,
         activeThreadLivePolling: false,
         activeThreadWorkspace: "windows",
@@ -220,5 +276,133 @@ describe("threadLive", () => {
     await callbacks[0]();
 
     expect(loadCalls).toHaveLength(0);
+  });
+
+  it("retries codex version detection during auto refresh when a workspace is unavailable", async () => {
+    const callbacks = [];
+    const refreshVersionCalls = [];
+    const refreshThreadCalls = [];
+    let now = 10_000;
+    const realNow = Date.now;
+    Date.now = () => now;
+    const module = createThreadLiveModule({
+      state: {
+        workspaceAvailability: { windowsInstalled: true, wsl2Installed: false },
+        codexVersionRefreshLastMs: 0,
+        codexVersionRefreshInFlight: false,
+        threadAutoRefreshInFlight: false,
+        threadRefreshAbortByWorkspace: { windows: null, wsl2: null },
+        threadAutoRefreshLastMsByWorkspace: { windows: 0, wsl2: 0 },
+        ws: { readyState: 1 },
+        wsSubscribedEvents: true,
+      },
+      byId() {
+        return null;
+      },
+      waitMs: async () => {},
+      setStatus() {},
+      refreshThreads: async (...args) => {
+        refreshThreadCalls.push(args);
+      },
+      refreshCodexVersions: async () => {
+        refreshVersionCalls.push(Date.now());
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      loadThreadMessages: async () => {},
+      THREAD_PULL_REFRESH_TRIGGER_PX: 44,
+      THREAD_PULL_REFRESH_MAX_PX: 84,
+      THREAD_PULL_REFRESH_MIN_MS: 520,
+      THREAD_PULL_HINT_CLEAR_DELAY_MS: 160,
+      THREAD_AUTO_REFRESH_CONNECTED_MS: 20000,
+      THREAD_AUTO_REFRESH_DISCONNECTED_MS: 3500,
+      ACTIVE_THREAD_LIVE_POLL_MS: 1500,
+      WebSocketRef: { OPEN: 1 },
+      setIntervalRef(callback) {
+        callbacks.push(callback);
+        return 1;
+      },
+    });
+
+    try {
+      module.startThreadAutoRefreshLoop();
+      await callbacks[0]();
+      expect(refreshVersionCalls).toHaveLength(0);
+      expect(refreshThreadCalls).toHaveLength(0);
+
+      now += 20_001;
+      await callbacks[0]();
+      expect(refreshVersionCalls).toHaveLength(1);
+      expect(refreshThreadCalls).toHaveLength(1);
+
+      now += 1_000;
+      await callbacks[0]();
+      expect(refreshVersionCalls).toHaveLength(1);
+      expect(refreshThreadCalls).toHaveLength(1);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it("auto refreshes both windows and wsl thread lists when both are available", async () => {
+    const callbacks = [];
+    const refreshThreadCalls = [];
+    let now = 10_000;
+    const realNow = Date.now;
+    Date.now = () => now;
+    const module = createThreadLiveModule({
+      state: {
+        workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+        codexVersionRefreshLastMs: 0,
+        codexVersionRefreshInFlight: false,
+        threadAutoRefreshInFlight: false,
+        threadRefreshAbortByWorkspace: { windows: null, wsl2: null },
+        threadAutoRefreshLastMsByWorkspace: { windows: 0, wsl2: 0 },
+        ws: { readyState: 1 },
+        wsSubscribedEvents: true,
+      },
+      byId() {
+        return null;
+      },
+      waitMs: async () => {},
+      setStatus() {},
+      refreshThreads: async (...args) => {
+        refreshThreadCalls.push(args);
+      },
+      refreshCodexVersions: async () => {},
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      loadThreadMessages: async () => {},
+      THREAD_PULL_REFRESH_TRIGGER_PX: 44,
+      THREAD_PULL_REFRESH_MAX_PX: 84,
+      THREAD_PULL_REFRESH_MIN_MS: 520,
+      THREAD_PULL_HINT_CLEAR_DELAY_MS: 160,
+      THREAD_AUTO_REFRESH_CONNECTED_MS: 20000,
+      THREAD_AUTO_REFRESH_DISCONNECTED_MS: 3500,
+      ACTIVE_THREAD_LIVE_POLL_MS: 1500,
+      WebSocketRef: { OPEN: 1 },
+      setIntervalRef(callback) {
+        callbacks.push(callback);
+        return 1;
+      },
+    });
+
+    try {
+      module.startThreadAutoRefreshLoop();
+      await callbacks[0]();
+      expect(refreshThreadCalls).toHaveLength(0);
+
+      now += 20_001;
+      await callbacks[0]();
+      expect(refreshThreadCalls).toHaveLength(2);
+      expect(refreshThreadCalls.map((call) => call[0])).toEqual([
+        "windows",
+        "wsl2",
+      ]);
+    } finally {
+      Date.now = realNow;
+    }
   });
 });

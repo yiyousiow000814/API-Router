@@ -1,19 +1,33 @@
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
 
+#[cfg(target_os = "windows")]
+use crate::orchestrator::gateway::web_codex_home::{
+    linux_path_to_unc, normalize_wsl_linux_path, parse_wsl_unc_to_linux_path, resolve_wsl_identity,
+};
+
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const NOTIFICATION_QUEUE_CAP: usize = 2048;
 const DEBUG_EVENT_CAP: usize = 160;
+const ROLLOUT_LIVE_SYNC_POLL_BYTES: u64 = 64 * 1024;
+const ROLLOUT_LIVE_SYNC_MAX_TRACKED_FILES: usize = 64;
+const ROLLOUT_LIVE_SYNC_MAX_FILE_AGE: Duration = Duration::from_secs(60 * 60 * 24 * 2);
+const ROLLOUT_LIVE_SYNC_DEDUP_CAPACITY: usize = 8_192;
+const ROLLOUT_LIVE_SYNC_DISCOVERY_INTERVAL: Duration = Duration::from_millis(1_500);
+const ROLLOUT_LIVE_SYNC_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 // Keyed by CODEX_HOME override ("" means inherit parent env / default process CODEX_HOME).
 // Value is per-home server mutex so different homes can run concurrently without global lock blocking.
@@ -21,6 +35,7 @@ static APP_SERVERS: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<AppServe
     OnceLock::new();
 static NOTIFICATION_STATE: OnceLock<Mutex<HashMap<String, NotificationState>>> = OnceLock::new();
 static DEBUG_EVENTS: OnceLock<Mutex<VecDeque<Value>>> = OnceLock::new();
+static ROLLOUT_LIVE_SYNC: OnceLock<Mutex<HashMap<String, RolloutLiveSyncState>>> = OnceLock::new();
 
 #[cfg(test)]
 static TEST_REQUEST_HANDLER: OnceLock<
@@ -32,6 +47,20 @@ static TEST_REQUEST_HANDLER: OnceLock<
         >,
     >,
 > = OnceLock::new();
+
+#[cfg(test)]
+static TEST_GLOBAL_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn lock_test_globals() -> std::sync::MutexGuard<'static, ()> {
+    match TEST_GLOBAL_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+    {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    }
+}
 
 #[cfg(test)]
 pub async fn _set_test_request_handler(
@@ -70,6 +99,38 @@ impl Default for NotificationState {
             items: VecDeque::new(),
         }
     }
+}
+
+#[derive(Default)]
+struct RolloutLiveSyncState {
+    files: HashMap<PathBuf, RolloutTrackedFile>,
+    last_discovery_at: Option<Instant>,
+    last_poll_at: Option<Instant>,
+}
+
+struct RolloutTrackedFile {
+    path: PathBuf,
+    offset: u64,
+    partial_line: String,
+    drop_first_partial_line: bool,
+    thread_id: Option<String>,
+    cwd: Option<String>,
+    pending_calls: HashMap<String, RolloutPendingCall>,
+    last_seen: Instant,
+    recent_line_hashes: VecDeque<u64>,
+    recent_line_hash_set: HashSet<u64>,
+}
+
+#[derive(Clone)]
+struct RolloutPendingCall {
+    item: Value,
+    kind: RolloutPendingCallKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RolloutPendingCallKind {
+    CommandExecution,
+    ToolCall,
 }
 
 fn normalize_home_key(codex_home: Option<&str>) -> Cow<'static, str> {
@@ -202,6 +263,465 @@ pub async fn debug_snapshot() -> Value {
     })
 }
 
+impl RolloutTrackedFile {
+    fn new(path: PathBuf) -> Result<Self, String> {
+        let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+        let offset = metadata.len().saturating_sub(ROLLOUT_LIVE_SYNC_POLL_BYTES);
+        Ok(Self {
+            path,
+            offset,
+            partial_line: String::new(),
+            drop_first_partial_line: offset > 0,
+            thread_id: None,
+            cwd: None,
+            pending_calls: HashMap::new(),
+            last_seen: Instant::now(),
+            recent_line_hashes: VecDeque::new(),
+            recent_line_hash_set: HashSet::new(),
+        })
+    }
+
+    fn remember_line_hash(&mut self, line_hash: u64) -> bool {
+        if self.recent_line_hash_set.contains(&line_hash) {
+            return false;
+        }
+        self.recent_line_hash_set.insert(line_hash);
+        self.recent_line_hashes.push_back(line_hash);
+        while self.recent_line_hashes.len() > ROLLOUT_LIVE_SYNC_DEDUP_CAPACITY {
+            if let Some(oldest) = self.recent_line_hashes.pop_front() {
+                self.recent_line_hash_set.remove(&oldest);
+            }
+        }
+        true
+    }
+
+    fn poll_notifications(&mut self) -> Result<Vec<Value>, String> {
+        let mut file = std::fs::File::open(&self.path).map_err(|error| error.to_string())?;
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        let len = metadata.len();
+        if len < self.offset {
+            self.offset = 0;
+            self.partial_line.clear();
+            self.drop_first_partial_line = false;
+            self.cwd = None;
+            self.pending_calls.clear();
+            self.recent_line_hashes.clear();
+            self.recent_line_hash_set.clear();
+        }
+        if len == self.offset {
+            return Ok(Vec::new());
+        }
+        use std::io::{Read, Seek, SeekFrom};
+        file.seek(SeekFrom::Start(self.offset))
+            .map_err(|error| error.to_string())?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        self.offset = len;
+        self.last_seen = Instant::now();
+        if bytes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let chunk = String::from_utf8_lossy(&bytes);
+        let mut combined = String::with_capacity(self.partial_line.len() + chunk.len());
+        combined.push_str(&self.partial_line);
+        combined.push_str(&chunk);
+        self.partial_line.clear();
+
+        if self.drop_first_partial_line {
+            if let Some(index) = combined.find('\n') {
+                combined = combined[(index + 1)..].to_string();
+                self.drop_first_partial_line = false;
+            } else {
+                self.partial_line = combined;
+                return Ok(Vec::new());
+            }
+        }
+
+        let has_trailing_newline = combined.ends_with('\n');
+        let mut lines = combined.split('\n').map(str::to_string).collect::<Vec<_>>();
+        if !has_trailing_newline {
+            self.partial_line = lines.pop().unwrap_or_default();
+        }
+
+        let mut notifications = Vec::new();
+        for line in lines {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let line_hash = hash_rollout_line(trimmed);
+            if !self.remember_line_hash(line_hash) {
+                continue;
+            }
+            notifications.extend(self.line_to_notifications(trimmed));
+        }
+        Ok(notifications)
+    }
+
+    fn line_to_notifications(&mut self, line: &str) -> Vec<Value> {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            return Vec::new();
+        };
+        let Some(object) = value.as_object() else {
+            return Vec::new();
+        };
+        let record_type = object
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let Some(payload) = object.get("payload").and_then(Value::as_object) else {
+            return Vec::new();
+        };
+        match record_type {
+            "session_meta" => {
+                self.thread_id = payload
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                self.cwd = payload
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .or_else(|| payload.get("working_directory").and_then(Value::as_str))
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                Vec::new()
+            }
+            "event_msg" => self.map_event_msg(payload),
+            "response_item" => self.map_response_item(payload),
+            _ => Vec::new(),
+        }
+    }
+
+    fn enrich_rollout_notification(&self, notification: &mut Value) {
+        let Some(root) = notification.as_object_mut() else {
+            return;
+        };
+        let params = if let Some(params) = root.get_mut("params").and_then(Value::as_object_mut) {
+            Some(params)
+        } else {
+            root.get_mut("payload").and_then(Value::as_object_mut)
+        };
+        let Some(params) = params else {
+            return;
+        };
+        let rollout_path = self.path.to_string_lossy().to_string();
+        params
+            .entry("rolloutPath".to_string())
+            .or_insert_with(|| Value::String(rollout_path.clone()));
+        params
+            .entry("rollout_path".to_string())
+            .or_insert_with(|| Value::String(rollout_path.clone()));
+        params
+            .entry("path".to_string())
+            .or_insert_with(|| Value::String(rollout_path));
+        if let Some(cwd) = self.cwd.as_deref() {
+            params
+                .entry("cwd".to_string())
+                .or_insert_with(|| Value::String(cwd.to_string()));
+        }
+    }
+
+    fn map_event_msg(&mut self, payload: &serde_json::Map<String, Value>) -> Vec<Value> {
+        let event_type = payload
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let thread_id = payload
+            .get("thread_id")
+            .and_then(Value::as_str)
+            .or(self.thread_id.as_deref())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if thread_id.is_empty() {
+            return Vec::new();
+        }
+        self.thread_id = Some(thread_id.clone());
+        let mut out = Vec::new();
+        match event_type.to_ascii_lowercase().as_str() {
+            "turn_started" | "task_started" | "taskstarted" => {
+                out.push(rollout_turn_notification(
+                    "turn/started",
+                    &thread_id,
+                    payload,
+                ));
+                out.push(rollout_status_notification(&thread_id, "running"));
+            }
+            "turn_complete" | "task_complete" | "taskcomplete" => {
+                out.push(rollout_turn_notification(
+                    "turn/completed",
+                    &thread_id,
+                    payload,
+                ));
+                out.push(rollout_status_notification(&thread_id, "completed"));
+            }
+            "turn_failed" | "task_failed" | "taskfailed" => {
+                out.push(rollout_turn_notification(
+                    "turn/failed",
+                    &thread_id,
+                    payload,
+                ));
+                out.push(rollout_status_notification(&thread_id, "failed"));
+            }
+            "turn_aborted" | "task_interrupted" | "taskinterrupted" => {
+                out.push(rollout_turn_notification(
+                    "turn/cancelled",
+                    &thread_id,
+                    payload,
+                ));
+                out.push(rollout_status_notification(&thread_id, "interrupted"));
+            }
+            _ => {
+                let mut normalized_payload = payload.clone();
+                normalize_rollout_item_thread(&mut normalized_payload, &thread_id);
+                if let Some(notification) = normalize_stdout_notification(&serde_json::json!({
+                    "type": "event_msg",
+                    "payload": Value::Object(normalized_payload),
+                })) {
+                    out.push(notification);
+                }
+            }
+        }
+        for notification in &mut out {
+            self.enrich_rollout_notification(notification);
+        }
+        out
+    }
+
+    fn map_response_item(&mut self, payload: &serde_json::Map<String, Value>) -> Vec<Value> {
+        let item_type = payload
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let thread_id = payload
+            .get("thread_id")
+            .and_then(Value::as_str)
+            .or(self.thread_id.as_deref())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if thread_id.is_empty() {
+            return Vec::new();
+        }
+        self.thread_id = Some(thread_id.clone());
+        let mut out = match item_type {
+            "function_call" => self.map_function_call(payload, &thread_id),
+            "function_call_output" => self.map_function_call_output(payload, &thread_id),
+            "custom_tool_call" => self.map_custom_tool_call(payload, &thread_id),
+            "custom_tool_call_output" => self.map_function_call_output(payload, &thread_id),
+            "web_search_call" => self.map_web_search_call(payload, &thread_id),
+            "message" => {
+                let mut normalized_payload = payload.clone();
+                normalize_rollout_item_thread(&mut normalized_payload, &thread_id);
+                normalize_stdout_notification(&serde_json::json!({
+                    "type": "response_item",
+                    "payload": Value::Object(normalized_payload),
+                }))
+                .into_iter()
+                .collect()
+            }
+            _ => Vec::new(),
+        };
+        for notification in &mut out {
+            self.enrich_rollout_notification(notification);
+        }
+        out
+    }
+
+    fn map_function_call(
+        &mut self,
+        payload: &serde_json::Map<String, Value>,
+        thread_id: &str,
+    ) -> Vec<Value> {
+        let name = payload
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let call_id = payload
+            .get("call_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        let item = if is_shell_like_tool_name(name) {
+            serde_json::json!({
+                "type": "commandExecution",
+                "id": empty_to_none(&call_id),
+                "callId": empty_to_none(&call_id),
+                "threadId": thread_id,
+                "thread_id": thread_id,
+                "command": read_command_from_tool_arguments(payload.get("arguments")),
+                "status": "running",
+            })
+        } else {
+            serde_json::json!({
+                "type": "toolCall",
+                "id": empty_to_none(&call_id),
+                "callId": empty_to_none(&call_id),
+                "threadId": thread_id,
+                "thread_id": thread_id,
+                "tool": empty_to_none(name),
+                "arguments": payload.get("arguments").cloned().unwrap_or(Value::Null),
+                "status": "running",
+            })
+        };
+        if !call_id.is_empty() {
+            self.pending_calls.insert(
+                call_id.clone(),
+                RolloutPendingCall {
+                    item: item.clone(),
+                    kind: if is_shell_like_tool_name(name) {
+                        RolloutPendingCallKind::CommandExecution
+                    } else {
+                        RolloutPendingCallKind::ToolCall
+                    },
+                },
+            );
+        }
+        vec![serde_json::json!({
+            "method": "item/started",
+            "params": {
+                "threadId": thread_id,
+                "thread_id": thread_id,
+                "item": item,
+            }
+        })]
+    }
+
+    fn map_custom_tool_call(
+        &mut self,
+        payload: &serde_json::Map<String, Value>,
+        thread_id: &str,
+    ) -> Vec<Value> {
+        let call_id = payload
+            .get("call_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        let item = serde_json::json!({
+            "type": "toolCall",
+            "id": empty_to_none(&call_id),
+            "callId": empty_to_none(&call_id),
+            "threadId": thread_id,
+            "thread_id": thread_id,
+            "tool": payload.get("name").and_then(Value::as_str),
+            "input": payload.get("input").cloned().unwrap_or(Value::Null),
+            "status": "running",
+        });
+        if !call_id.is_empty() {
+            self.pending_calls.insert(
+                call_id.clone(),
+                RolloutPendingCall {
+                    item: item.clone(),
+                    kind: RolloutPendingCallKind::ToolCall,
+                },
+            );
+        }
+        vec![serde_json::json!({
+            "method": "item/started",
+            "params": {
+                "threadId": thread_id,
+                "thread_id": thread_id,
+                "item": item,
+            }
+        })]
+    }
+
+    fn map_function_call_output(
+        &mut self,
+        payload: &serde_json::Map<String, Value>,
+        thread_id: &str,
+    ) -> Vec<Value> {
+        let call_id = payload
+            .get("call_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let Some(mut pending) = self.pending_calls.remove(call_id) else {
+            return Vec::new();
+        };
+        let parsed = parse_embedded_json_value(payload.get("output")).unwrap_or(Value::Null);
+        let Some(item) = pending.item.as_object_mut() else {
+            return Vec::new();
+        };
+        match pending.kind {
+            RolloutPendingCallKind::CommandExecution => {
+                let output = extract_tool_text(&parsed);
+                let exit_code = parsed
+                    .get("metadata")
+                    .and_then(Value::as_object)
+                    .and_then(|value| value.get("exit_code"))
+                    .and_then(Value::as_i64);
+                item.insert(
+                    "status".to_string(),
+                    Value::String(command_completion_status(exit_code, &parsed).to_string()),
+                );
+                if let Some(value) = output {
+                    item.insert("output".to_string(), Value::String(value));
+                }
+                if let Some(value) = exit_code {
+                    item.insert("exitCode".to_string(), Value::from(value));
+                }
+            }
+            RolloutPendingCallKind::ToolCall => {
+                item.insert(
+                    "status".to_string(),
+                    Value::String(tool_completion_status(&parsed).to_string()),
+                );
+                if let Some(result) = extract_tool_text_value(&parsed) {
+                    item.insert("result".to_string(), result);
+                }
+            }
+        }
+        vec![serde_json::json!({
+            "method": "item/completed",
+            "params": {
+                "threadId": thread_id,
+                "thread_id": thread_id,
+                "item": Value::Object(item.clone()),
+            }
+        })]
+    }
+
+    fn map_web_search_call(
+        &mut self,
+        payload: &serde_json::Map<String, Value>,
+        thread_id: &str,
+    ) -> Vec<Value> {
+        let action = payload.get("action").cloned().unwrap_or(Value::Null);
+        let query = action
+            .get("query")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let item = serde_json::json!({
+            "type": "webSearch",
+            "threadId": thread_id,
+            "thread_id": thread_id,
+            "status": payload.get("status").and_then(Value::as_str).unwrap_or("completed"),
+            "query": query,
+            "action": action,
+        });
+        vec![serde_json::json!({
+            "method": "item/completed",
+            "params": {
+                "threadId": thread_id,
+                "thread_id": thread_id,
+                "item": item,
+            }
+        })]
+    }
+}
+
 fn extract_thread_id_for_debug(value: &Value) -> Option<String> {
     let params = value
         .get("params")
@@ -252,6 +772,306 @@ fn normalize_stdout_notification(value: &Value) -> Option<Value> {
             },
         })),
         _ => None,
+    }
+}
+
+fn rollout_live_sync_map() -> &'static Mutex<HashMap<String, RolloutLiveSyncState>> {
+    ROLLOUT_LIVE_SYNC.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn value_has_failure_marker(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(flag) => !*flag,
+        Value::String(_) => false,
+        Value::Array(items) => items.iter().any(value_has_failure_marker),
+        Value::Object(map) => {
+            map.get("success").and_then(Value::as_bool) == Some(false)
+                || map.get("ok").and_then(Value::as_bool) == Some(false)
+                || map.get("error").is_some_and(|error| {
+                    if matches!(error, Value::Null) {
+                        return false;
+                    }
+                    if let Some(text) = error.as_str() {
+                        return !text.trim().is_empty();
+                    }
+                    error_object_has_failure_marker(error)
+                })
+                || map
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .is_some_and(|status| {
+                        matches!(
+                            status.trim().to_ascii_lowercase().as_str(),
+                            "failed" | "error" | "denied" | "cancelled" | "timeout"
+                        )
+                    })
+        }
+        _ => false,
+    }
+}
+
+fn error_object_has_failure_marker(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            map.get("message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| !message.trim().is_empty())
+                || value_has_failure_marker(value)
+        }
+        _ => value_has_failure_marker(value),
+    }
+}
+
+fn command_completion_status(exit_code: Option<i64>, parsed: &Value) -> &'static str {
+    if exit_code.unwrap_or(0) != 0 || value_has_failure_marker(parsed) {
+        "failed"
+    } else {
+        "completed"
+    }
+}
+
+fn tool_completion_status(parsed: &Value) -> &'static str {
+    if value_has_failure_marker(parsed) {
+        "failed"
+    } else {
+        "completed"
+    }
+}
+
+fn parse_embedded_json_value(value: Option<&Value>) -> Option<Value> {
+    let raw = value?;
+    match raw {
+        Value::String(text) => serde_json::from_str::<Value>(text).ok(),
+        Value::Object(_) | Value::Array(_) => Some(raw.clone()),
+        _ => None,
+    }
+}
+
+fn extract_tool_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Object(map) => map
+            .get("output")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| map.get("text").and_then(Value::as_str).map(str::to_string))
+            .or_else(|| {
+                map.get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .or_else(|| {
+                map.get("result")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
+        _ => None,
+    }
+}
+
+fn extract_tool_text_value(value: &Value) -> Option<Value> {
+    extract_tool_text(value).map(Value::String).or_else(|| {
+        if value.is_null() {
+            None
+        } else {
+            Some(value.clone())
+        }
+    })
+}
+
+fn empty_to_none(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn normalize_tool_name(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace(['-', '_'], "")
+}
+
+fn is_shell_like_tool_name(value: &str) -> bool {
+    matches!(
+        normalize_tool_name(value).as_str(),
+        "execcommand" | "shell" | "shellcommand" | "commandexecution"
+    )
+}
+
+fn read_command_from_tool_arguments(arguments: Option<&Value>) -> Option<String> {
+    let parsed = parse_embedded_json_value(arguments)?;
+    let object = parsed.as_object()?;
+    [
+        "cmd",
+        "command",
+        "shell_command",
+        "shellCommand",
+        "raw_command",
+    ]
+    .iter()
+    .find_map(|key| object.get(*key).and_then(Value::as_str))
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_string)
+}
+
+fn normalize_rollout_item_thread(item: &mut serde_json::Map<String, Value>, thread_id: &str) {
+    item.entry("threadId".to_string())
+        .or_insert_with(|| Value::String(thread_id.to_string()));
+    item.entry("thread_id".to_string())
+        .or_insert_with(|| Value::String(thread_id.to_string()));
+}
+
+fn rollout_status_notification(thread_id: &str, status: &str) -> Value {
+    serde_json::json!({
+        "method": "thread/status/changed",
+        "params": {
+            "threadId": thread_id,
+            "thread_id": thread_id,
+            "status": status,
+            "source": "rollout_live_sync",
+        }
+    })
+}
+
+fn rollout_turn_notification(
+    method: &str,
+    thread_id: &str,
+    payload: &serde_json::Map<String, Value>,
+) -> Value {
+    let mut params = payload.clone();
+    normalize_rollout_item_thread(&mut params, thread_id);
+    serde_json::json!({
+        "method": method,
+        "params": Value::Object(params),
+    })
+}
+
+fn resolve_default_codex_home() -> Option<PathBuf> {
+    std::env::var("CODEX_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| {
+            std::env::var("USERPROFILE")
+                .ok()
+                .map(|value| PathBuf::from(value).join(".codex"))
+        })
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|value| PathBuf::from(value).join(".codex"))
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_windows_accessible_codex_home(codex_home: Option<&str>) -> Option<PathBuf> {
+    let raw = codex_home?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if parse_wsl_unc_codex_home(raw).is_some() {
+        return Some(PathBuf::from(raw));
+    }
+    let linux_home = normalize_wsl_linux_path(raw)
+        .or_else(|| parse_wsl_unc_to_linux_path(raw))
+        .filter(|value| value != "/")?;
+    let (distro, _) = resolve_wsl_identity().ok()?;
+    Some(linux_path_to_unc(&linux_home, &distro))
+}
+
+fn resolve_rollout_sessions_root(codex_home: Option<&str>) -> Option<PathBuf> {
+    let root = {
+        #[cfg(target_os = "windows")]
+        {
+            resolve_windows_accessible_codex_home(codex_home)
+                .or_else(|| {
+                    codex_home
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(PathBuf::from)
+                })
+                .or_else(resolve_default_codex_home)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            codex_home
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .or_else(resolve_default_codex_home)
+        }
+    }?;
+    let sessions = root.join("sessions");
+    if sessions.is_dir() {
+        Some(sessions)
+    } else {
+        None
+    }
+}
+
+fn is_rollout_file_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+}
+
+fn file_modified_at(metadata: &std::fs::Metadata) -> Option<SystemTime> {
+    metadata.modified().ok()
+}
+
+fn discover_recent_rollout_files(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    let now = SystemTime::now();
+    while let Some(dir) = dirs.pop() {
+        let Ok(read_dir) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if !metadata.is_file() || !is_rollout_file_path(&path) {
+                continue;
+            }
+            let recent_enough = file_modified_at(&metadata)
+                .and_then(|modified| now.duration_since(modified).ok())
+                .map(|age| age <= ROLLOUT_LIVE_SYNC_MAX_FILE_AGE)
+                .unwrap_or(true);
+            if recent_enough {
+                found.push(path);
+            }
+        }
+    }
+    found.sort_by(|a, b| b.cmp(a));
+    if found.len() > ROLLOUT_LIVE_SYNC_MAX_TRACKED_FILES {
+        found.truncate(ROLLOUT_LIVE_SYNC_MAX_TRACKED_FILES);
+    }
+    found
+}
+
+fn hash_rollout_line(line: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    line.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn should_run_live_sync_pass(
+    last_run_at: Option<Instant>,
+    now: Instant,
+    min_interval: Duration,
+) -> bool {
+    match last_run_at {
+        None => true,
+        Some(previous) => now.duration_since(previous) >= min_interval,
     }
 }
 
@@ -306,6 +1126,91 @@ async fn push_notification(codex_home: Option<&str>, value: Value) {
     .await;
 }
 
+async fn poll_rollout_live_sync_in_home(codex_home: Option<&str>, force_poll: bool) {
+    let Some(sessions_root) = resolve_rollout_sessions_root(codex_home) else {
+        return;
+    };
+    let key = normalize_home_key(codex_home).to_string();
+    let now = Instant::now();
+    let (run_discovery, run_poll) = {
+        let mut guard = rollout_live_sync_map().lock().await;
+        let state = guard.entry(key.clone()).or_default();
+        let run_discovery = should_run_live_sync_pass(
+            state.last_discovery_at,
+            now,
+            ROLLOUT_LIVE_SYNC_DISCOVERY_INTERVAL,
+        );
+        if run_discovery {
+            state.last_discovery_at = Some(now);
+        }
+        let run_poll = force_poll
+            || run_discovery
+            || should_run_live_sync_pass(state.last_poll_at, now, ROLLOUT_LIVE_SYNC_POLL_INTERVAL);
+        if run_poll {
+            state.last_poll_at = Some(now);
+        }
+        (run_discovery, run_poll)
+    };
+    if !run_poll {
+        return;
+    }
+
+    let discovered = if run_discovery {
+        discover_recent_rollout_files(&sessions_root)
+    } else {
+        Vec::new()
+    };
+    let mut drained = Vec::new();
+    let mut debug_errors = Vec::new();
+    {
+        let mut guard = rollout_live_sync_map().lock().await;
+        let state = guard.entry(key.clone()).or_default();
+        if run_discovery {
+            let discovered_set = discovered.iter().cloned().collect::<HashSet<_>>();
+            for path in discovered {
+                if !state.files.contains_key(&path) {
+                    match RolloutTrackedFile::new(path.clone()) {
+                        Ok(tracked) => {
+                            state.files.insert(path.clone(), tracked);
+                        }
+                        Err(error) => {
+                            debug_errors.push(("rollout.live_sync.track_error", path, error));
+                        }
+                    }
+                }
+            }
+            state.files.retain(|path, tracked| {
+                discovered_set.contains(path)
+                    || tracked.last_seen.elapsed() < ROLLOUT_LIVE_SYNC_MAX_FILE_AGE
+            });
+        }
+        let tracked_paths = state.files.keys().cloned().collect::<Vec<_>>();
+        for path in tracked_paths {
+            let Some(tracked) = state.files.get_mut(&path) else {
+                continue;
+            };
+            match tracked.poll_notifications() {
+                Ok(notifications) => drained.extend(notifications),
+                Err(error) => debug_errors.push(("rollout.live_sync.poll_error", path, error)),
+            }
+        }
+    }
+    for (kind, path, error) in debug_errors {
+        push_debug_event(
+            kind,
+            serde_json::json!({
+                "home": key,
+                "path": path,
+                "message": error,
+            }),
+        )
+        .await;
+    }
+    for notification in drained {
+        push_notification(codex_home, notification).await;
+    }
+}
+
 fn with_event_id(mut value: Value, event_id: u64) -> Value {
     // Prefer preserving the original notification shape (method/params/etc) and attach eventId.
     if let Value::Object(map) = &mut value {
@@ -325,27 +1230,31 @@ pub async fn replay_notifications_since_in_home(
     since_event_id: u64,
     max: usize,
 ) -> (Vec<Value>, Option<u64>, Option<u64>, bool) {
-    if let Some(result) = crate::codex_wsl_bridge::try_replay_notifications_since_in_home(
-        codex_home,
-        since_event_id,
-        max,
-    )
-    .await
-    {
-        push_debug_event(
-            "app.notification.replay.bridge",
-            serde_json::json!({
-                "home": normalize_home_key(codex_home).as_ref(),
-                "sinceEventId": since_event_id,
-                "max": max,
-                "count": result.0.len(),
-                "firstEventId": result.1,
-                "lastEventId": result.2,
-                "gap": result.3,
-            }),
+    let has_local_rollout_root = resolve_rollout_sessions_root(codex_home).is_some();
+    poll_rollout_live_sync_in_home(codex_home, true).await;
+    if !has_local_rollout_root {
+        if let Some(result) = crate::codex_wsl_bridge::try_replay_notifications_since_in_home(
+            codex_home,
+            since_event_id,
+            max,
         )
-        .await;
-        return result;
+        .await
+        {
+            push_debug_event(
+                "app.notification.replay.bridge",
+                serde_json::json!({
+                    "home": normalize_home_key(codex_home).as_ref(),
+                    "sinceEventId": since_event_id,
+                    "max": max,
+                    "count": result.0.len(),
+                    "firstEventId": result.1,
+                    "lastEventId": result.2,
+                    "gap": result.3,
+                }),
+            )
+            .await;
+            return result;
+        }
     }
     let cap = max.clamp(1, NOTIFICATION_QUEUE_CAP);
     let key = normalize_home_key(codex_home);
@@ -598,8 +1507,16 @@ pub async fn _clear_notifications_for_test() {
     let mut guard = map.lock().await;
     guard.clear();
     drop(guard);
+    let mut live_sync = rollout_live_sync_map().lock().await;
+    live_sync.clear();
+    drop(live_sync);
     let mut debug = debug_event_queue().lock().await;
     debug.clear();
+}
+
+#[cfg(test)]
+pub async fn _push_notification_for_test(codex_home: Option<&str>, value: Value) {
+    push_notification(codex_home, value).await;
 }
 
 async fn write_json_line(
@@ -864,22 +1781,48 @@ impl AppServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::OnceLock;
     use tokio::io::AsyncWriteExt;
 
     // codex_app_server uses global singletons (notification ring buffer + event id counter).
     // These tests must run serially to avoid cross-test interference.
-    static TEST_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
     fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap()
+        lock_test_globals()
+    }
+
+    struct TestCodexHomeGuard {
+        previous: Option<String>,
+    }
+
+    impl Drop for TestCodexHomeGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                unsafe {
+                    std::env::set_var("CODEX_HOME", previous);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var("CODEX_HOME");
+                }
+            }
+        }
+    }
+
+    fn isolate_default_codex_home() -> TestCodexHomeGuard {
+        let previous = std::env::var("CODEX_HOME").ok();
+        let temp = tempfile::tempdir().expect("temp codex home");
+        let temp_path = temp.keep();
+        let sessions = temp_path.join("sessions");
+        std::fs::create_dir_all(&sessions).expect("sessions dir");
+        unsafe {
+            std::env::set_var("CODEX_HOME", &temp_path);
+        }
+        TestCodexHomeGuard { previous }
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn stdout_router_captures_notifications_and_delivers_responses() {
         let _guard = lock_tests();
+        let _home = isolate_default_codex_home();
         _clear_notifications_for_test().await;
 
         let (mut w, r) = tokio::io::duplex(8 * 1024);
@@ -999,6 +1942,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn replay_notifications_since_includes_event_ids_and_gaps() {
         let _guard = lock_tests();
+        let _home = isolate_default_codex_home();
         _clear_notifications_for_test().await;
         push_notification(None, serde_json::json!({"method":"a","params":{}})).await;
         push_notification(None, serde_json::json!({"method":"b","params":{}})).await;
@@ -1029,6 +1973,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn replay_gap_flag_when_since_is_older_than_ring_buffer() {
         let _guard = lock_tests();
+        let _home = isolate_default_codex_home();
         _clear_notifications_for_test().await;
         // Fill beyond the cap so the oldest events are dropped.
         for i in 0..(NOTIFICATION_QUEUE_CAP + 2) {
@@ -1049,6 +1994,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn notification_overflow_emits_debug_event() {
         let _guard = lock_tests();
+        let _home = isolate_default_codex_home();
         _clear_notifications_for_test().await;
 
         for i in 0..(NOTIFICATION_QUEUE_CAP + 1) {
@@ -1206,6 +2152,362 @@ mod tests {
         assert_eq!(items[0].get("eventId").and_then(Value::as_u64), Some(1));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_notifications_tail_rollout_turn_status_and_reasoning() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp.path().join(".codex");
+        let sessions = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("03")
+            .join("17");
+        std::fs::create_dir_all(&sessions).expect("sessions dir");
+        let rollout = sessions.join("rollout-2026-03-17T12-00-00-thread-live.jsonl");
+        std::fs::write(
+            &rollout,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-live\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_started\",\"thread_id\":\"thread-live\",\"turn_id\":\"turn-1\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_reasoning\",\"thread_id\":\"thread-live\",\"text\":\"thinking live\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_complete\",\"thread_id\":\"thread-live\",\"turn_id\":\"turn-1\"}}\n"
+            ),
+        )
+        .expect("write rollout");
+
+        let (items, first, last, gap) =
+            replay_notifications_since_in_home(Some(codex_home.to_string_lossy().as_ref()), 0, 16)
+                .await;
+
+        assert!(!gap);
+        assert_eq!(first, Some(1));
+        assert_eq!(last, Some(5));
+        assert_eq!(items.len(), 5);
+        assert_eq!(
+            items[0].get("method").and_then(Value::as_str),
+            Some("turn/started")
+        );
+        assert_eq!(
+            items[1].get("method").and_then(Value::as_str),
+            Some("thread/status/changed")
+        );
+        assert_eq!(
+            items[2].get("method").and_then(Value::as_str),
+            Some("codex/event/agent_reasoning")
+        );
+        assert_eq!(
+            items[3].get("method").and_then(Value::as_str),
+            Some("turn/completed")
+        );
+        assert_eq!(
+            items[4].get("method").and_then(Value::as_str),
+            Some("thread/status/changed")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_notifications_tail_rollout_command_begin_and_failure() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp.path().join(".codex");
+        let sessions = codex_home.join("sessions");
+        std::fs::create_dir_all(&sessions).expect("sessions dir");
+        let rollout = sessions.join("rollout-2026-03-17T12-10-00-thread-cmd.jsonl");
+        std::fs::write(
+            &rollout,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-cmd\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"thread_id\":\"thread-cmd\",\"name\":\"exec_command\",\"call_id\":\"call-1\",\"arguments\":\"{\\\"cmd\\\":\\\"npm test\\\"}\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"thread_id\":\"thread-cmd\",\"call_id\":\"call-1\",\"output\":\"{\\\"output\\\":\\\"boom\\\",\\\"metadata\\\":{\\\"exit_code\\\":1}}\"}}\n"
+            ),
+        )
+        .expect("write rollout");
+
+        let (items, _first, _last, _gap) =
+            replay_notifications_since_in_home(Some(codex_home.to_string_lossy().as_ref()), 0, 16)
+                .await;
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].get("method").and_then(Value::as_str),
+            Some("item/started")
+        );
+        assert_eq!(
+            items[0]
+                .get("params")
+                .and_then(|value| value.get("item"))
+                .and_then(|value| value.get("type"))
+                .and_then(Value::as_str),
+            Some("commandExecution")
+        );
+        assert_eq!(
+            items[1].get("method").and_then(Value::as_str),
+            Some("item/completed")
+        );
+        assert_eq!(
+            items[1]
+                .get("params")
+                .and_then(|value| value.get("item"))
+                .and_then(|value| value.get("status"))
+                .and_then(Value::as_str),
+            Some("failed")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_notifications_tail_rollout_command_keeps_success_with_stderr_warning() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp.path().join(".codex");
+        let sessions = codex_home.join("sessions");
+        std::fs::create_dir_all(&sessions).expect("sessions dir");
+        let rollout = sessions.join("rollout-2026-03-17T12-12-00-thread-warn.jsonl");
+        std::fs::write(
+            &rollout,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-warn\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"thread_id\":\"thread-warn\",\"name\":\"exec_command\",\"call_id\":\"call-1\",\"arguments\":\"{\\\"cmd\\\":\\\"Get-Content file.txt\\\"}\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"thread_id\":\"thread-warn\",\"call_id\":\"call-1\",\"output\":\"{\\\"output\\\":\\\"ok\\\",\\\"stderr\\\":\\\"warning only\\\",\\\"metadata\\\":{\\\"exit_code\\\":0}}\"}}\n"
+            ),
+        )
+        .expect("write rollout");
+
+        let (items, _first, _last, _gap) =
+            replay_notifications_since_in_home(Some(codex_home.to_string_lossy().as_ref()), 0, 16)
+                .await;
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[1]
+                .get("params")
+                .and_then(|value| value.get("item"))
+                .and_then(|value| value.get("status"))
+                .and_then(Value::as_str),
+            Some("completed")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_notifications_tail_rollout_incrementally_in_terminal_order() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp.path().join(".codex");
+        let sessions = codex_home.join("sessions");
+        std::fs::create_dir_all(&sessions).expect("sessions dir");
+        let rollout = sessions.join("rollout-2026-03-17T12-30-00-thread-seq.jsonl");
+        std::fs::write(
+            &rollout,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-seq\"}}\n",
+        )
+        .expect("write rollout");
+
+        let mut cursor = 0;
+
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&rollout)
+                .expect("append rollout");
+            use std::io::Write;
+            writeln!(
+                file,
+                "{}",
+                r#"{"type":"event_msg","payload":{"type":"turn_started","thread_id":"thread-seq","turn_id":"turn-1"}}"#
+            )
+            .expect("append turn started");
+        }
+        let (batch1, _, _, _) = replay_notifications_since_in_home(
+            Some(codex_home.to_string_lossy().as_ref()),
+            cursor,
+            16,
+        )
+        .await;
+        assert_eq!(
+            batch1
+                .iter()
+                .map(|item| item
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec!["turn/started", "thread/status/changed"]
+        );
+        cursor = batch1
+            .last()
+            .and_then(|item| item.get("eventId"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&rollout)
+                .expect("append rollout");
+            use std::io::Write;
+            writeln!(
+                file,
+                "{}",
+                r#"{"type":"event_msg","payload":{"type":"agent_reasoning","thread_id":"thread-seq","text":"thinking step"}}"#
+            )
+            .expect("append reasoning");
+            writeln!(
+                file,
+                "{}",
+                r#"{"type":"response_item","payload":{"type":"function_call","thread_id":"thread-seq","name":"exec_command","call_id":"call-1","arguments":"{\"cmd\":\"npm test\"}"}}"#
+            )
+            .expect("append command start");
+        }
+        let (batch2, _, _, _) = replay_notifications_since_in_home(
+            Some(codex_home.to_string_lossy().as_ref()),
+            cursor,
+            16,
+        )
+        .await;
+        assert_eq!(
+            batch2
+                .iter()
+                .map(|item| item
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec!["codex/event/agent_reasoning", "item/started"]
+        );
+        cursor = batch2
+            .last()
+            .and_then(|item| item.get("eventId"))
+            .and_then(Value::as_u64)
+            .unwrap_or(cursor);
+
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&rollout)
+                .expect("append rollout");
+            use std::io::Write;
+            writeln!(
+                file,
+                "{}",
+                r#"{"type":"response_item","payload":{"type":"message","role":"assistant","thread_id":"thread-seq","phase":"final_answer","content":[{"type":"output_text","text":"final from terminal"}]}}"#
+            )
+            .expect("append final");
+            writeln!(
+                file,
+                "{}",
+                r#"{"type":"response_item","payload":{"type":"function_call_output","thread_id":"thread-seq","call_id":"call-1","output":"{\"output\":\"ok\",\"metadata\":{\"exit_code\":0}}"}}"#
+            )
+            .expect("append command end");
+            writeln!(
+                file,
+                "{}",
+                r#"{"type":"event_msg","payload":{"type":"turn_complete","thread_id":"thread-seq","turn_id":"turn-1"}}"#
+            )
+            .expect("append turn complete");
+        }
+        let (batch3, _, _, _) = replay_notifications_since_in_home(
+            Some(codex_home.to_string_lossy().as_ref()),
+            cursor,
+            16,
+        )
+        .await;
+        assert_eq!(
+            batch3
+                .iter()
+                .map(|item| item
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec![
+                "codex/event/response_item",
+                "item/completed",
+                "turn/completed",
+                "thread/status/changed"
+            ]
+        );
+    }
+
+    #[test]
+    fn live_sync_pass_runs_immediately_then_waits_for_interval() {
+        let now = Instant::now();
+        assert!(should_run_live_sync_pass(
+            None,
+            now,
+            Duration::from_millis(250)
+        ));
+        assert!(!should_run_live_sync_pass(
+            Some(now),
+            now + Duration::from_millis(249),
+            Duration::from_millis(250)
+        ));
+        assert!(should_run_live_sync_pass(
+            Some(now),
+            now + Duration::from_millis(250),
+            Duration::from_millis(250)
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_notifications_live_sync_throttles_directory_rescans() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp.path().join(".codex");
+        let sessions = codex_home.join("sessions");
+        std::fs::create_dir_all(&sessions).expect("sessions dir");
+        let first_rollout = sessions.join("rollout-2026-03-18T00-00-00-thread-a.jsonl");
+        std::fs::write(
+            &first_rollout,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-a\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_started\",\"thread_id\":\"thread-a\",\"turn_id\":\"turn-a-1\"}}\n"
+            ),
+        )
+        .expect("write first rollout");
+
+        let home_text = codex_home.to_string_lossy().to_string();
+        let (initial_items, _, initial_last, _) =
+            replay_notifications_since_in_home(Some(home_text.as_str()), 0, 16).await;
+        assert_eq!(initial_items.len(), 2);
+        let cursor = initial_last.expect("initial cursor");
+
+        let second_rollout = sessions.join("rollout-2026-03-18T00-00-01-thread-b.jsonl");
+        std::fs::write(
+            &second_rollout,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-b\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_started\",\"thread_id\":\"thread-b\",\"turn_id\":\"turn-b-1\"}}\n"
+            ),
+        )
+        .expect("write second rollout");
+
+        let (throttled_items, _, _, _) =
+            replay_notifications_since_in_home(Some(home_text.as_str()), cursor, 16).await;
+        assert!(throttled_items.is_empty());
+
+        tokio::time::sleep(ROLLOUT_LIVE_SYNC_DISCOVERY_INTERVAL + Duration::from_millis(50)).await;
+
+        let (rescanned_items, _, _, _) =
+            replay_notifications_since_in_home(Some(home_text.as_str()), cursor, 16).await;
+        assert_eq!(rescanned_items.len(), 2);
+        assert_eq!(
+            rescanned_items[0]
+                .get("params")
+                .and_then(|value| value.get("threadId"))
+                .and_then(Value::as_str),
+            Some("thread-b")
+        );
+    }
+
     #[test]
     fn resolves_native_launcher_for_windows_home() {
         let spec = resolve_launch_spec(Some(r"C:\Users\yiyou\.codex"));
@@ -1247,6 +2549,60 @@ mod tests {
                 codex_home: Some("/home/yiyou/.codex".to_string())
             }
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolves_windows_accessible_wsl_codex_home_from_linux_path() {
+        let _guard = lock_tests();
+        let mut cache = crate::orchestrator::gateway::web_codex_home::lock_wsl_identity_cache();
+        let previous = cache.clone();
+        *cache = Some(
+            crate::orchestrator::gateway::web_codex_home::WslIdentityCache {
+                distro: "Ubuntu".to_string(),
+                home: "/home/yiyou".to_string(),
+                updated_at_unix_secs: i64::MAX,
+            },
+        );
+        drop(cache);
+
+        let mapped = resolve_windows_accessible_codex_home(Some("/home/yiyou/.codex"))
+            .expect("mapped unc home");
+
+        let mut cache = crate::orchestrator::gateway::web_codex_home::lock_wsl_identity_cache();
+        *cache = previous;
+        drop(cache);
+
+        assert_eq!(
+            mapped,
+            PathBuf::from(r"\\wsl.localhost\Ubuntu\home\yiyou\.codex")
+        );
+    }
+
+    #[test]
+    fn command_completion_status_ignores_failure_words_in_successful_output() {
+        let parsed = serde_json::json!({
+            "output": "const note = \"command failed\";",
+            "metadata": {
+                "exit_code": 0
+            }
+        });
+        assert_eq!(command_completion_status(Some(0), &parsed), "completed");
+    }
+
+    #[test]
+    fn tool_completion_status_uses_structured_error_fields_only() {
+        let parsed = serde_json::json!({
+            "result": "search failed keyword appears in a document snippet"
+        });
+        assert_eq!(tool_completion_status(&parsed), "completed");
+
+        let failed = serde_json::json!({
+            "error": {
+                "message": "backend denied request"
+            }
+        });
+        assert_eq!(tool_completion_status(&failed), "failed");
     }
 }
 

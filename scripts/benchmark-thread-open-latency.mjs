@@ -157,8 +157,12 @@ async function runWorkspaceBenchmark(config, auth, workspace) {
     return {
       workspace,
       total: summarize([]),
+      visible: summarize([]),
+      history: summarize([]),
       resume: summarize([]),
       read: summarize([]),
+      historyHitCount: 0,
+      readFallbackCount: 0,
       failures: 0,
       samples: 0,
     };

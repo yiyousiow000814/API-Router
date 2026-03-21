@@ -69,6 +69,75 @@ describe("debugTools", () => {
     ]);
   });
 
+  it("exposes thread list snapshot in debug hooks", () => {
+    const windowRef = {};
+    const state = {
+      threadItemsAll: [
+        { id: "t1", title: "One", cwd: "C:\\Users\\yiyou\\API-Router", workspace: "windows" },
+        { id: "t2", title: "Two", cwd: "C:\\Users\\yiyou\\XAUUSD-Calendar-Agent", workspace: "windows" },
+      ],
+      threadItems: [
+        { id: "t2", title: "Two", cwd: "C:\\Users\\yiyou\\XAUUSD-Calendar-Agent", workspace: "windows" },
+      ],
+    };
+    const module = createDebugToolsModule({
+      state,
+      byId() { return null; },
+      renderInlineMessageText(value) { return String(value || ""); },
+      findNextInlineCodeSpan() { return null; },
+      normalizeWorkspaceTarget(value) { return value === "wsl2" ? "wsl2" : "windows"; },
+      normalizeModelOption(value) { return value; },
+      ensureArrayItems(value) { return Array.isArray(value) ? value : []; },
+      pickLatestModelId() { return ""; },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) { return value; },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() { return "windows"; },
+      getStartCwdForWorkspace() { return ""; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      renderMessageAttachments() { return ""; },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      loadThreadMessages: async () => {},
+      refreshThreads: async () => {},
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() { return { msg: null, body: null }; },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() { return false; },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        querySelectorAll() { return []; },
+        getElementById() { return { textContent: "" }; },
+      },
+      windowRef,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installWebCodexDebug();
+    const before = windowRef.__webCodexDebug?.getThreadListSnapshot();
+    expect(before).toMatchObject({
+      workspaceTarget: "windows",
+      startCwd: "",
+      allCount: 2,
+      visibleCount: 1,
+    });
+    expect(before?.visibleItems?.[0]).toMatchObject({
+      id: "t2",
+      cwd: "C:\\Users\\yiyou\\XAUUSD-Calendar-Agent",
+    });
+  });
+
   it("uses history fallback events for live pipeline snapshot when rpc notifications are missing", () => {
     const windowRef = {};
     const state = {
@@ -398,6 +467,266 @@ describe("debugTools", () => {
     expect(setRuntimeActivityCalls[0]?.title).toBe("Updated Plan");
     expect(setRuntimeActivityCalls[0]?.tone).toBe("running");
     expect(setRuntimeActivityCalls[1]).toBe(null);
+  });
+
+  it("opens e2e threads with resolved workspace metadata instead of stale active state", async () => {
+    const windowRef = {
+      location: { search: "?e2e=1" },
+      setInterval() { return 1; },
+      clearInterval() {},
+      addEventListener() {},
+    };
+    const loadCalls = [];
+    const state = {
+      activeThreadId: "win-thread",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "C:\\sessions\\win.jsonl",
+      threadItemsAll: [
+        {
+          id: "wsl-thread",
+          title: "WSL thread",
+          cwd: "/home/yiyou/project",
+          workspace: "wsl2",
+          path: "/home/yiyou/.codex/sessions/wsl-thread.jsonl",
+        },
+      ],
+      threadItemsByWorkspace: {
+        windows: [],
+        wsl2: [
+          {
+            id: "wsl-thread",
+            cwd: "/home/yiyou/project",
+            workspace: "wsl2",
+            path: "/home/yiyou/.codex/sessions/wsl-thread.jsonl",
+          },
+        ],
+      },
+      ws: { readyState: 1 },
+      liveDebugEvents: [],
+      wsSubscribedEvents: true,
+    };
+    const module = createDebugToolsModule({
+      state,
+      byId() { return null; },
+      renderInlineMessageText(value) { return String(value || ""); },
+      findNextInlineCodeSpan() { return null; },
+      normalizeWorkspaceTarget(value) { return value === "wsl2" ? "wsl2" : "windows"; },
+      detectThreadWorkspaceTarget(thread) {
+        return String(thread?.workspace || "").trim() === "wsl2" ? "wsl2" : "windows";
+      },
+      normalizeModelOption(value) { return value; },
+      ensureArrayItems(value) { return Array.isArray(value) ? value : []; },
+      pickLatestModelId() { return ""; },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) { return value; },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() { return "windows"; },
+      getStartCwdForWorkspace() { return ""; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      renderMessageAttachments() { return ""; },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread(value) { state.activeThreadId = value; },
+      setChatOpening() {},
+      loadThreadMessages: async (threadId, options) => {
+        loadCalls.push({ threadId, options });
+      },
+      refreshThreads: async () => {},
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() { return { msg: null, body: null }; },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() { return false; },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        querySelectorAll() { return []; },
+        getElementById() { return { textContent: "" }; },
+      },
+      windowRef,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installDebugAndE2E();
+    const result = await windowRef.__webCodexE2E.openThread("wsl-thread");
+
+    expect(result).toEqual({
+      ok: true,
+      workspace: "wsl2",
+      rolloutPath: "/home/yiyou/.codex/sessions/wsl-thread.jsonl",
+    });
+    expect(state.activeThreadWorkspace).toBe("wsl2");
+    expect(state.activeThreadRolloutPath).toBe("/home/yiyou/.codex/sessions/wsl-thread.jsonl");
+    expect(loadCalls).toEqual([
+      {
+        threadId: "wsl-thread",
+        options: expect.objectContaining({
+          workspace: "wsl2",
+          rolloutPath: "/home/yiyou/.codex/sessions/wsl-thread.jsonl",
+          forceRender: true,
+        }),
+      },
+    ]);
+  });
+
+  it("refreshes e2e workspace target after hydrating availability", async () => {
+    const windowRef = {
+      location: { search: "?e2e=1" },
+      setInterval() { return 1; },
+      clearInterval() {},
+      addEventListener() {},
+    };
+    const refreshCalls = [];
+    const setWorkspaceTargetCalls = [];
+    const state = {
+      workspaceTarget: "windows",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: false },
+      threadItemsByWorkspace: { windows: [], wsl2: [] },
+      ws: { readyState: 1 },
+      liveDebugEvents: [],
+      wsSubscribedEvents: true,
+    };
+    const module = createDebugToolsModule({
+      state,
+      byId() { return null; },
+      renderInlineMessageText(value) { return String(value || ""); },
+      findNextInlineCodeSpan() { return null; },
+      normalizeWorkspaceTarget(value) { return value === "wsl2" ? "wsl2" : "windows"; },
+      normalizeModelOption(value) { return value; },
+      ensureArrayItems(value) { return Array.isArray(value) ? value : []; },
+      pickLatestModelId() { return ""; },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) { return value; },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() { return state.workspaceTarget; },
+      getStartCwdForWorkspace() { return ""; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      renderMessageAttachments() { return ""; },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      loadThreadMessages: async () => {},
+      refreshThreads: async (target, options) => {
+        refreshCalls.push({ target, options });
+        state.workspaceAvailability.wsl2Installed = true;
+      },
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() { return { msg: null, body: null }; },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() { return false; },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        querySelectorAll() { return []; },
+        getElementById() { return { textContent: "" }; },
+      },
+      windowRef,
+      performanceRef: { now: () => 0 },
+      setWorkspaceTarget: async (target) => {
+        setWorkspaceTargetCalls.push(target);
+        if (state.workspaceAvailability.wsl2Installed) state.workspaceTarget = target;
+      },
+    });
+
+    module.installDebugAndE2E();
+    const result = await windowRef.__webCodexE2E.setWorkspaceTarget("wsl2");
+
+    expect(result).toEqual({ ok: true, target: "wsl2" });
+    expect(refreshCalls).toEqual([
+      { target: "wsl2", options: { force: true, silent: true } },
+    ]);
+    expect(setWorkspaceTargetCalls).toEqual(["wsl2"]);
+    expect(state.workspaceTarget).toBe("wsl2");
+  });
+
+  it("does not install live trace background sync unless debug live mode is enabled", () => {
+    let intervalCalls = 0;
+    const windowRef = {
+      fetch: async () => ({
+        ok: true,
+        json: async () => ({ backend: { recent: [] }, app: { homes: [], recent: [] } }),
+      }),
+      setInterval() {
+        intervalCalls += 1;
+        return intervalCalls;
+      },
+      clearInterval() {},
+      addEventListener() {},
+      location: { search: "" },
+      __webCodexDebug: null,
+      __webCodexE2E: null,
+    };
+    const storage = {
+      getItem() { return ""; },
+      setItem() {},
+      removeItem() {},
+    };
+    const module = createDebugToolsModule({
+      state: { liveDebugEvents: [] },
+      byId() { return null; },
+      renderInlineMessageText(value) { return String(value || ""); },
+      findNextInlineCodeSpan() { return null; },
+      normalizeWorkspaceTarget(value) { return value === "wsl2" ? "wsl2" : "windows"; },
+      normalizeModelOption(value) { return value; },
+      ensureArrayItems(value) { return Array.isArray(value) ? value : []; },
+      pickLatestModelId() { return ""; },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) { return value; },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() { return "windows"; },
+      getStartCwdForWorkspace() { return ""; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      renderMessageAttachments() { return ""; },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      loadThreadMessages: async () => {},
+      refreshThreads: async () => {},
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() { return { msg: null, body: null }; },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() { return false; },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        body: { appendChild() {} },
+        querySelectorAll() { return []; },
+        getElementById() { return null; },
+      },
+      windowRef,
+      localStorageRef: storage,
+      storage,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installDebugAndE2E();
+
+    expect(intervalCalls).toBe(0);
   });
 
   it("renders live inspector with a single title and top edge resize affordance", () => {

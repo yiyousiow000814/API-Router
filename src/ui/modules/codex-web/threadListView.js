@@ -1,3 +1,5 @@
+import { syncPendingTurnRuntime } from "./runtimeState.js";
+
 export function buildWorkspaceEntries(sourceItems, workspaceKeyOfThread) {
   const groups = new Map();
   const groupLabels = new Map();
@@ -35,6 +37,12 @@ export function filterWorkspaceSectionThreads(threads, favoriteSet, query, works
   });
 }
 
+export function shouldStaggerThreadGroupEnter(entries, collapsedKeys) {
+  const groups = Array.isArray(entries) ? entries : [];
+  const collapsed = collapsedKeys instanceof Set ? collapsedKeys : new Set();
+  return !groups.some(([, items, key]) => Array.isArray(items) && items.length > 0 && !collapsed.has(key));
+}
+
 export function buildThreadResumeUrl(threadId, options = {}) {
   const params = new URLSearchParams();
   const workspace = String(options.workspace || "").trim();
@@ -45,34 +53,125 @@ export function buildThreadResumeUrl(threadId, options = {}) {
   return `/codex/threads/${encodeURIComponent(threadId)}/resume${query ? `?${query}` : ""}`;
 }
 
+export function buildThreadTransportUrl(threadId, options = {}) {
+  const params = new URLSearchParams();
+  const workspace = String(options.workspace || "").trim();
+  if (workspace === "windows" || workspace === "wsl2") params.set("workspace", workspace);
+  const query = params.toString();
+  return `/codex/threads/${encodeURIComponent(threadId)}/transport${query ? `?${query}` : ""}`;
+}
+
+function normalizeThreadStatusType(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+export function shouldResumeThreadOnOpen({
+  threadId,
+  threadStatusType = "",
+  historyThreadId = "",
+  historyIncomplete = false,
+  historyStatusType = "",
+  pendingTurnRunning = false,
+  pendingThreadId = "",
+} = {}) {
+  const id = String(threadId || "").trim();
+  if (!id) return false;
+  const status = normalizeThreadStatusType(threadStatusType);
+  const historyStatus = normalizeThreadStatusType(historyStatusType);
+  const historyId = String(historyThreadId || "").trim();
+  const pendingId = String(pendingThreadId || "").trim();
+  const hasPendingForThread = pendingTurnRunning === true && (!pendingId || pendingId === id);
+
+  if (hasPendingForThread) return true;
+  if (historyId === id) {
+    if (historyIncomplete === true) return true;
+    if (historyStatus === "running" || historyStatus === "queued" || historyStatus === "pending") {
+      return true;
+    }
+    return false;
+  }
+  if (status === "running" || status === "queued" || status === "pending") return true;
+  return false;
+}
+
+function attachedLiveThreadTransport(response) {
+  if (response?.attached === true) {
+    return String(response?.transport || "terminal-session").trim();
+  }
+  const transport = String(response?.transport || "").trim();
+  return transport === "terminal-session" ? transport : "";
+}
+
+function setThreadAttachTransport(state, threadId, transport) {
+  const id = String(threadId || "").trim();
+  const normalizedTransport = String(transport || "").trim();
+  if (!state || !id) return;
+  if (!(state.threadAttachTransportById instanceof Map)) {
+    state.threadAttachTransportById = new Map();
+  }
+  if (normalizedTransport) state.threadAttachTransportById.set(id, normalizedTransport);
+  else state.threadAttachTransportById.delete(id);
+}
+
+async function syncThreadAttachTransport({
+  threadId,
+  workspace,
+  state,
+  api,
+}) {
+  const id = String(threadId || "").trim();
+  if (!id) return null;
+  let attachTransport = "";
+  try {
+    const response = await api(buildThreadTransportUrl(id, { workspace }));
+    attachTransport = attachedLiveThreadTransport(response);
+  } catch {
+    attachTransport = "";
+  }
+  if (state) {
+    state.activeThreadAttachTransport = attachTransport;
+    setThreadAttachTransport(state, id, attachTransport);
+  }
+  return attachTransport || null;
+}
+
 export async function resumeThreadLiveOnOpen({
   threadId,
   workspace,
   rolloutPath,
+  threadStatusType = "",
   state,
   api,
   connectWs = () => {},
   syncEventSubscription = () => {},
   registerPendingThreadResume = () => {},
   onPendingTurnStateChange = () => {},
+  refreshWorkspaceRuntimeState = async () => null,
+  skipSubscription = false,
 }) {
   const id = String(threadId || "").trim();
   if (!id) return null;
-  const historyThreadId = String(state?.activeThreadHistoryThreadId || "").trim();
-  const pendingThreadId = String(state?.activeThreadPendingTurnThreadId || "").trim();
-  const pendingRunningForThread =
-    state?.activeThreadPendingTurnRunning === true &&
-    (!pendingThreadId || pendingThreadId === id);
-  const historyLoadedAsCompleted =
-    historyThreadId === id &&
-    state?.activeThreadHistoryIncomplete === false &&
-    !pendingRunningForThread;
-  if (historyLoadedAsCompleted) {
+  const needsResume = shouldResumeThreadOnOpen({
+    threadId: id,
+    threadStatusType,
+    historyThreadId: state?.activeThreadHistoryThreadId,
+    historyIncomplete: state?.activeThreadHistoryIncomplete === true,
+    historyStatusType: state?.activeThreadHistoryStatusType,
+    pendingTurnRunning: state?.activeThreadPendingTurnRunning === true,
+    pendingThreadId: state?.activeThreadPendingTurnThreadId,
+  });
+  if (!needsResume) {
     if (state) state.activeThreadNeedsResume = false;
+    await syncThreadAttachTransport({ threadId: id, workspace, state, api });
+    if (workspace === "windows" || workspace === "wsl2") {
+      await refreshWorkspaceRuntimeState(workspace, { silent: true, updateHeader: true }).catch(() => null);
+    }
     return null;
   }
-  connectWs();
-  syncEventSubscription();
+  if (skipSubscription !== true) {
+    connectWs();
+    syncEventSubscription();
+  }
   const resumePromise = api(
     buildThreadResumeUrl(id, {
       workspace,
@@ -86,6 +185,7 @@ export async function resumeThreadLiveOnOpen({
   try {
     const resumed = await resumePromise;
     if (state) {
+      const attachTransport = attachedLiveThreadTransport(resumed);
       const resumedTurnId = String(
         resumed?.turnId ||
         resumed?.turn_id ||
@@ -96,12 +196,21 @@ export async function resumeThreadLiveOnOpen({
         ""
       ).trim();
       state.activeThreadNeedsResume = false;
+      state.activeThreadAttachTransport = attachTransport;
+      setThreadAttachTransport(state, id, attachTransport);
+      if (!attachTransport) {
+        await syncThreadAttachTransport({ threadId: id, workspace, state, api });
+      }
       if (resumedTurnId) {
-        state.activeThreadPendingTurnThreadId = id;
-        state.activeThreadPendingTurnId = resumedTurnId;
-        state.activeThreadPendingTurnRunning = true;
+        syncPendingTurnRuntime(state, id, {
+          turnId: resumedTurnId,
+          running: true,
+        });
         onPendingTurnStateChange();
       }
+    }
+    if (workspace === "windows" || workspace === "wsl2") {
+      await refreshWorkspaceRuntimeState(workspace, { silent: true, updateHeader: true }).catch(() => null);
     }
     return resumed;
   } catch {
@@ -122,6 +231,42 @@ export function activateExistingThreadView({
   setMainTab("chat");
   setMobileTab("chat");
   return true;
+}
+
+export function primeOpeningThreadState({
+  thread,
+  state,
+  setActiveThread = () => {},
+  detectThreadWorkspaceTarget = () => "unknown",
+}) {
+  const threadId = String(thread?.id || thread?.threadId || "").trim();
+  if (!threadId) return { threadId: "", workspace: "unknown", rolloutPath: "" };
+  const workspace = detectThreadWorkspaceTarget(thread);
+  const rolloutPath = String(thread?.path || "").trim();
+  const threadStatusType = String(thread?.status?.type || "").trim();
+  setActiveThread(threadId);
+  state.activeThreadNeedsResume = shouldResumeThreadOnOpen({
+    threadId,
+    threadStatusType,
+    historyThreadId: state?.activeThreadHistoryThreadId,
+    historyIncomplete: state?.activeThreadHistoryIncomplete === true,
+    historyStatusType: state?.activeThreadHistoryStatusType,
+    pendingTurnRunning: state?.activeThreadPendingTurnRunning === true,
+    pendingThreadId: state?.activeThreadPendingTurnThreadId,
+  });
+  if (workspace === "windows" || workspace === "wsl2") {
+    state.activeThreadWorkspace = workspace;
+  }
+  state.activeThreadRolloutPath = rolloutPath;
+  return { threadId, workspace, rolloutPath, threadStatusType };
+}
+
+function resolvedOpenThreadWorkspace(state, workspaceHint = "") {
+  const activeWorkspace = String(state?.activeThreadWorkspace || "").trim().toLowerCase();
+  if (activeWorkspace === "windows" || activeWorkspace === "wsl2") return activeWorkspace;
+  const hint = String(workspaceHint || "").trim().toLowerCase();
+  if (hint === "windows" || hint === "wsl2") return hint;
+  return "";
 }
 
 export function createThreadListViewModule(deps) {
@@ -149,6 +294,8 @@ export function createThreadListViewModule(deps) {
     syncEventSubscription = () => {},
     registerPendingThreadResume = () => {},
     onPendingTurnStateChange = () => {},
+    refreshWorkspaceRuntimeState = async () => null,
+    updateHeaderUi = () => {},
     setStatus,
     scheduleThreadRefresh,
     scrollToBottomReliable,
@@ -302,11 +449,6 @@ export function createThreadListViewModule(deps) {
       renderThreads(state.threadItems);
     };
 
-    let threadEnterIndex = 0;
-    let groupEnterIndex = 0;
-    const nextThreadEnterDelayMs = () => Math.min(420, threadEnterIndex++ * 28);
-    const nextGroupEnterDelayMs = () => Math.min(640, groupEnterIndex++ * 120);
-
     const animateStateTextSwap = (node, nextLabel) => {
       if (!node) return;
       const text = String(nextLabel || "");
@@ -378,6 +520,12 @@ export function createThreadListViewModule(deps) {
 
     const query = state.threadSearchQuery.trim().toLowerCase();
     const entries = buildWorkspaceEntries(sourceItems, workspaceKeyOfThread);
+    const staggerGroupEnter = shouldStaggerThreadGroupEnter(entries, state.collapsedWorkspaceKeys);
+    let threadEnterIndex = 0;
+    let groupEnterIndex = 0;
+    const nextThreadEnterDelayMs = () => Math.min(420, threadEnterIndex++ * 28);
+    const nextGroupEnterDelayMs = () =>
+      (staggerGroupEnter ? Math.min(640, groupEnterIndex++ * 120) : 0);
     if (!entries.length) {
       if (state.threadListLoading && (!state.threadListLoadingTarget || state.threadListLoadingTarget === getWorkspaceTarget())) {
         renderThreadListState("Loading chats...", "spinner");
@@ -481,13 +629,16 @@ export function createThreadListViewModule(deps) {
         state.openingThreadAbort = controller;
         setMainTab("chat");
         setMobileTab("chat");
-        setActiveThread(id);
-        state.activeThreadNeedsResume = true;
-        const rolloutPath = String(thread?.path || "").trim();
-        state.activeThreadRolloutPath = rolloutPath;
+        const selection = primeOpeningThreadState({
+          thread,
+          state,
+          setActiveThread,
+          detectThreadWorkspaceTarget,
+        });
+        const workspaceHint = selection.workspace;
+        const rolloutPath = selection.rolloutPath;
         setChatOpening(true);
         try {
-          const workspaceHint = detectThreadWorkspaceTarget(thread);
           const label =
             workspaceHint === "wsl2" ? "WSL2" : workspaceHint === "windows" ? "WIN" : "AUTO";
           const historyStartMs = performanceRef.now();
@@ -502,17 +653,31 @@ export function createThreadListViewModule(deps) {
           if (state.openingThreadReqId === reqId) {
             setStatus(`Opened ${label} ${truncateLabel(id, 12)} history ${historyLatencyMs}ms`);
           }
-          resumeThreadLiveOnOpen({
-            threadId: id,
-            workspace: workspaceHint === "unknown" ? "" : workspaceHint,
-            rolloutPath,
-            state,
-            api,
-            connectWs,
-            syncEventSubscription,
-            registerPendingThreadResume,
-            onPendingTurnStateChange,
-          }).catch(() => null);
+          const runtimeWorkspace = resolvedOpenThreadWorkspace(state, workspaceHint);
+          connectWs();
+          if (runtimeWorkspace === "windows" || runtimeWorkspace === "wsl2") {
+            syncEventSubscription();
+            refreshWorkspaceRuntimeState(runtimeWorkspace, {
+              silent: true,
+              updateHeader: true,
+            }).catch(() => null);
+          }
+            resumeThreadLiveOnOpen({
+              threadId: id,
+              workspace: runtimeWorkspace,
+              rolloutPath,
+              threadStatusType: selection.threadStatusType,
+              state,
+              api,
+              connectWs,
+              syncEventSubscription,
+              registerPendingThreadResume,
+              onPendingTurnStateChange,
+              refreshWorkspaceRuntimeState,
+              skipSubscription: true,
+            })
+              .then(() => updateHeaderUi())
+              .catch(() => null);
           if (state.openingThreadReqId === reqId) scheduleThreadRefresh();
           if (state.openingThreadReqId === reqId) {
             setChatOpening(false);

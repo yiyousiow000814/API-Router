@@ -68,6 +68,30 @@ describe("liveNotifications", () => {
     ).toEqual({ message: "Running git commit...", isWarn: false });
   });
 
+  it("derives live status from web search and file change failures", () => {
+    expect(
+      deriveLiveStatusFromToolItem(
+        { type: "webSearch", query: "codex live sync", status: "failed" },
+        {
+          normalizeType(value) { return String(value || "").toLowerCase(); },
+          normalizeInline(value) { return value == null ? null : String(value); },
+          toRecord(value) { return value && typeof value === "object" ? value : null; },
+        }
+      )
+    ).toEqual({ message: "Web search failed: codex live sync", isWarn: true });
+
+    expect(
+      deriveLiveStatusFromToolItem(
+        { type: "fileChange", changes: [{ path: "a.txt" }], status: "running" },
+        {
+          normalizeType(value) { return String(value || "").toLowerCase(); },
+          normalizeInline(value) { return value == null ? null : String(value); },
+          toRecord(value) { return value && typeof value === "object" ? value : null; },
+        }
+      )
+    ).toEqual({ message: "Applying file changes...", isWarn: false });
+  });
+
   it("derives live status from turn notifications", () => {
     expect(
       deriveLiveStatusFromNotification(
@@ -475,7 +499,7 @@ describe("liveNotifications", () => {
     );
   });
 
-  it("persists live assistant text into pending turn state so stale history cannot wipe it", () => {
+  it("persists the finalized assistant snapshot into pending turn state until history catches up", () => {
     const chatBox = {
       appendChild(node) {
         this.lastElementChild = node;
@@ -1728,6 +1752,320 @@ describe("liveNotifications", () => {
     expect(state.activeThreadPendingTurnRunning).toBe(true);
   });
 
+  it("replays an opened chat through running, reasoning, tool, and final states in order", () => {
+    const statuses = [];
+    const runtimeActivity = [];
+    const runtimeUpdates = [];
+    const finalizedRuntime = [];
+    const finalized = [];
+    const chatBox = {
+      appendChild(node) {
+        this.lastElementChild = node;
+      },
+      querySelectorAll() {
+        return [];
+      },
+      querySelector() {
+        return null;
+      },
+      lastElementChild: null,
+    };
+    const state = {
+      activeThreadId: "thread-seq",
+      activeThreadMessages: [],
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingAssistantMessage: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadTransientThinkingText: "",
+      activeThreadTransientToolText: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadLiveStateEpoch: 0,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      hideWelcomeCard() {},
+      createAssistantStreamingMessage() {
+        return { msg: { setAttribute() {} }, body: {} };
+      },
+      finalizeAssistantMessage(msg, body, text) {
+        finalized.push({ msg, body, text });
+      },
+      setRuntimeActivity(payload) {
+        runtimeActivity.push(payload);
+      },
+      applyToolItemRuntimeUpdate(item, options) {
+        runtimeUpdates.push({ item, options });
+        state.activeThreadActiveCommands = [
+          {
+            key: String(item?.id || ""),
+            type: item?.type,
+            command: item?.command,
+            status: item?.status,
+          },
+        ];
+      },
+      finalizeRuntimeState(threadId) {
+        finalizedRuntime.push(threadId);
+        state.activeThreadActiveCommands = [];
+        state.activeThreadPlan = null;
+      },
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.payload?.thread_id || notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thread-seq",
+        turnId: "turn-seq-1",
+      },
+    });
+    module.renderLiveNotification({
+      method: "codex/event/agent_reasoning",
+      params: {
+        payload: {
+          id: "reasoning-1",
+          type: "message",
+          role: "assistant",
+          thread_id: "thread-seq",
+          phase: "commentary",
+          content: [{ type: "output_text", text: "Inspecting workspace state" }],
+        },
+      },
+    });
+    module.renderLiveNotification({
+      method: "item/started",
+      params: {
+        threadId: "thread-seq",
+        item: {
+          id: "cmd-1",
+          type: "commandExecution",
+          command: "pwd",
+          status: "running",
+        },
+      },
+    });
+    module.renderLiveNotification({
+      method: "codex/event/response_item",
+      params: {
+        payload: {
+          id: "final-1",
+          type: "message",
+          role: "assistant",
+          thread_id: "thread-seq",
+          phase: "final_answer",
+          content: [{ type: "output_text", text: "Done." }],
+        },
+      },
+    });
+    module.renderLiveNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thread-seq",
+        item: {
+          id: "cmd-1",
+          type: "commandExecution",
+          command: "pwd",
+          status: "completed",
+          exitCode: 0,
+        },
+      },
+    });
+    module.renderLiveNotification({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-seq",
+        turnId: "turn-seq-1",
+      },
+    });
+
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-seq");
+    expect(state.activeThreadPendingTurnId).toBe("");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(runtimeActivity).toEqual([
+      expect.objectContaining({
+        threadId: "thread-seq",
+        title: "Thinking",
+        detail: "",
+        tone: "running",
+      }),
+      expect.objectContaining({
+        threadId: "thread-seq",
+        title: "Thinking",
+        detail: "Inspecting workspace state",
+        tone: "running",
+      }),
+    ]);
+    expect(runtimeUpdates).toEqual([
+      expect.objectContaining({
+        item: expect.objectContaining({
+          id: "cmd-1",
+          type: "commandExecution",
+          command: "pwd",
+          status: "running",
+        }),
+        options: expect.objectContaining({
+          threadId: "thread-seq",
+          method: "item/started",
+        }),
+      }),
+      expect.objectContaining({
+        item: expect.objectContaining({
+          id: "cmd-1",
+          status: "completed",
+          exitCode: 0,
+        }),
+        options: expect.objectContaining({
+          threadId: "thread-seq",
+          method: "item/completed",
+        }),
+      }),
+    ]);
+    expect(state.activeThreadMessages).toEqual([
+      { role: "assistant", text: "Done.", kind: "" },
+    ]);
+    expect(finalized).toHaveLength(1);
+    expect(finalized[0].text).toBe("Done.");
+    expect(finalizedRuntime).toEqual(["thread-seq", "thread-seq"]);
+    expect(state.activeThreadCommentaryArchiveVisible).toBe(true);
+    expect(state.activeThreadCommentaryArchive).toEqual([
+      expect.objectContaining({
+        key: "reasoning-1",
+        text: "Inspecting workspace state",
+      }),
+    ]);
+    expect(statuses.map((entry) => entry.message)).toEqual([
+      "Running...",
+      "Running pwd...",
+      "Turn completed.",
+      "Command completed: pwd",
+      "Turn completed.",
+    ]);
+  });
+
+  it("keeps pending turn placeholders when a final assistant snapshot arrives without turn completed", () => {
+    const statuses = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [{ role: "user", text: "hello", kind: "" }],
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadTransientThinkingText: "",
+      activeThreadTransientToolText: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadLiveStateEpoch: 0,
+    };
+    const chatBox = {
+      appendChild(node) {
+        this.lastElementChild = node;
+      },
+      querySelectorAll() {
+        return [];
+      },
+      querySelector() {
+        return null;
+      },
+      lastElementChild: null,
+    };
+    const finalized = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      hideWelcomeCard() {},
+      createAssistantStreamingMessage() {
+        return { msg: { setAttribute() {} }, body: {} };
+      },
+      finalizeAssistantMessage(msg, body, text) {
+        finalized.push({ msg, body, text });
+      },
+      setRuntimeActivity() {},
+      applyToolItemRuntimeUpdate() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.payload?.thread_id || notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "codex/event/response_item",
+      params: {
+        payload: {
+          id: "final-1",
+          type: "message",
+          role: "assistant",
+          thread_id: "thread-1",
+          phase: "final_answer",
+          content: [{ type: "output_text", text: "Done." }],
+        },
+      },
+    });
+
+    expect(finalized).toHaveLength(1);
+    expect(finalized[0].text).toBe("Done.");
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnId).toBe("");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingUserMessage).toBe("hello");
+    expect(state.activeThreadPendingAssistantMessage).toBe("Done.");
+    expect(statuses.at(-1)).toEqual({ message: "Turn completed.", isWarn: false });
+  });
+
   it("switches runtime activity back to thinking when commentary resumes after a plan update", () => {
     const runtimeActivity = [];
     const state = {
@@ -2018,5 +2356,85 @@ describe("liveNotifications", () => {
     expect(state.activeThreadPendingTurnRunning).toBe(false);
     expect(state.activeThreadPendingTurnId).toBe("");
     expect(flushed).toEqual(["thread-1"]);
+  });
+
+  it("keeps pending placeholders after turn completion until history catches up", () => {
+    const chatBox = {
+      appendChild(node) {
+        this.lastElementChild = node;
+      },
+      querySelector() {
+        return null;
+      },
+      lastElementChild: null,
+    };
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [{ role: "user", text: "hello", kind: "" }],
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadLiveStateEpoch: 1,
+      activeThreadLastFinalAssistantThreadId: "",
+      activeThreadLastFinalAssistantText: "",
+      activeThreadLastFinalAssistantAt: 0,
+      activeThreadLastFinalAssistantEpoch: 0,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      hideWelcomeCard() {},
+      createAssistantStreamingMessage() {
+        return { msg: { setAttribute() {}, removeAttribute() {} }, body: { removeAttribute() {} } };
+      },
+      appendStreamingDelta() {},
+      finalizeAssistantMessage() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || notification?.params?.item?.thread_id || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "item.completed",
+      params: {
+        item: {
+          type: "agent_message",
+          thread_id: "thread-1",
+          phase: "final_answer",
+          text: "done",
+        },
+      },
+    });
+    module.renderLiveNotification({
+      method: "turn/completed",
+      params: { threadId: "thread-1" },
+    });
+
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnId).toBe("");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingUserMessage).toBe("hello");
+    expect(state.activeThreadPendingAssistantMessage).toBe("done");
   });
 });

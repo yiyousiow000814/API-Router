@@ -1,3 +1,5 @@
+import { upsertThreadItem } from "./threadMeta.js";
+
 export function createThreadListRefreshModule(deps) {
   const {
     state,
@@ -8,6 +10,7 @@ export function createThreadListRefreshModule(deps) {
     ensureArrayItems,
     normalizeWorkspaceTarget,
     getWorkspaceTarget,
+    getStartCwdForWorkspace,
     sortThreadsByNewest,
     filterThreadsForWorkspace,
     hasDualWorkspaceTargets,
@@ -86,10 +89,12 @@ export function createThreadListRefreshModule(deps) {
   }
 
   function applyThreadFilter() {
+    const currentTarget = getWorkspaceTarget();
     state.threadItems = sortThreadsByNewest(
       filterThreadsForWorkspace(state.threadItemsAll, {
         hasDualWorkspaceTargets: hasDualWorkspaceTargets(),
-        currentTarget: getWorkspaceTarget(),
+        currentTarget,
+        startCwd: getStartCwdForWorkspace(currentTarget),
       })
     );
     renderThreads(state.threadItems);
@@ -108,6 +113,33 @@ export function createThreadListRefreshModule(deps) {
     };
     applyWorkspaceUi();
     if (state.threadItemsAll.length && options.applyFilter !== false) applyThreadFilter();
+  }
+
+  function upsertProvisionalThreadItem(item) {
+    const threadId = String(item?.id || item?.threadId || "").trim();
+    if (!threadId) return false;
+    const target = normalizeWorkspaceTarget(
+      String(item?.__workspaceQueryTarget || item?.workspace || getWorkspaceTarget()).trim()
+    );
+    const previousItems = Array.isArray(state.threadItemsByWorkspace[target])
+      ? state.threadItemsByWorkspace[target]
+      : [];
+    const nextItems = upsertThreadItem(previousItems, {
+      ...item,
+      __workspaceQueryTarget: target,
+    });
+    state.threadItemsByWorkspace[target] = nextItems;
+    state.threadWorkspaceHydratedByWorkspace[target] = true;
+    state.threadListRenderSigByWorkspace[target] = buildThreadRenderSig(nextItems);
+    persistThreadsCache();
+    updateWorkspaceAvailabilityFromThreads(nextItems);
+    if (getWorkspaceTarget() === target) {
+      state.threadItemsAll = nextItems;
+      syncActiveThreadMetaFromList();
+      applyThreadFilter();
+      updateHeaderUi();
+    }
+    return true;
   }
 
   async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = {}) {
@@ -298,6 +330,7 @@ export function createThreadListRefreshModule(deps) {
     refreshThreads,
     scheduleThreadListDeferredRender,
     scheduleThreadListVisibleAnimationRender,
+    upsertProvisionalThreadItem,
     updateWorkspaceAvailability,
     updateWorkspaceAvailabilityFromThreads,
   };

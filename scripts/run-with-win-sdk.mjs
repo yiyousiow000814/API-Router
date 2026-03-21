@@ -40,6 +40,26 @@ async function findRcDir() {
   return null;
 }
 
+async function findWinSdkTool(toolName) {
+  const pf86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const kitsBin = join(pf86, "Windows Kits", "10", "bin");
+  const preferredVersion = "10.0.26100.0";
+  const preferred = join(kitsBin, preferredVersion, "x64", toolName);
+  if (await exists(preferred)) return preferred;
+
+  const candidates = [
+    "10.0.26100.0",
+    "10.0.22621.0",
+    "10.0.22000.0",
+    "10.0.19041.0",
+  ];
+  for (const version of candidates) {
+    const candidate = join(kitsBin, version, "x64", toolName);
+    if (await exists(candidate)) return candidate;
+  }
+  return null;
+}
+
 async function main() {
   const [command, ...commandArgs] = args;
   const env = { ...process.env };
@@ -52,6 +72,10 @@ async function main() {
         env.PATH = `${rcDir};${env.PATH || ""}`;
       }
     }
+    const rcExe = await findWinSdkTool("rc.exe");
+    const mtExe = await findWinSdkTool("mt.exe");
+    if (rcExe && !env.RC) env.RC = rcExe;
+    if (mtExe && !env.MT) env.MT = mtExe;
   }
 
   const launch = (cmd) =>

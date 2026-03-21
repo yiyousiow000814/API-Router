@@ -1,5 +1,14 @@
 import { toolItemToMessage } from "./messageData.js";
 import { clonePlanState, extractPlanUpdate } from "./runtimePlan.js";
+import {
+  clearActiveAssistantLiveState as clearActiveAssistantLiveStateRuntime,
+  finishPendingTurnRun as finishPendingTurnRunRuntime,
+  rememberFinalAssistant as rememberFinalAssistantRuntime,
+  resetTurnPresentationState as resetTurnPresentationStateRuntime,
+  setPendingTurnRunning as setPendingTurnRunningRuntime,
+  syncPendingTurnRuntime as syncPendingTurnRuntimeState,
+  syncPendingAssistantState as syncPendingAssistantStateRuntime,
+} from "./runtimeState.js";
 
 export function workspaceKeyOfThread(thread) {
   const raw = thread.cwd || thread.workspace || thread.project || thread.directory || thread.path || "";
@@ -68,13 +77,21 @@ export function deriveLiveStatusFromToolItem(item, helpers) {
 
   if (itemType === "websearch") {
     const query = normalizeInline(item?.query, 120);
-    return { message: query ? `Searching web: ${query}` : "Searching web...", isWarn: false };
+    const status = normalizeType(item?.status);
+    if (isFailedLiveStatus(status)) {
+      return { message: query ? `Web search failed: ${query}` : "Web search failed.", isWarn: true };
+    }
+    if (isRunningLiveStatus(status)) {
+      return { message: query ? `Searching web: ${query}` : "Searching web...", isWarn: false };
+    }
+    return { message: query ? `Searched web: ${query}` : "Searched web.", isWarn: false };
   }
 
   if (itemType === "filechange") {
     const status = normalizeType(item?.status);
     const changeCount = Array.isArray(item?.changes) ? item.changes.length : 0;
     if (isFailedLiveStatus(status)) return { message: "File changes failed.", isWarn: true };
+    if (isRunningLiveStatus(status)) return { message: "Applying file changes...", isWarn: false };
     return {
       message: changeCount > 0 ? `Applied ${String(changeCount)} file change(s).` : "Applied file changes.",
       isWarn: false,
@@ -641,18 +658,11 @@ export function createLiveNotificationsModule(deps) {
   }
 
   function clearActiveAssistantLiveState() {
-    state.activeThreadLiveAssistantThreadId = "";
-    state.activeThreadLiveAssistantIndex = -1;
-    state.activeThreadLiveAssistantMsgNode = null;
-    state.activeThreadLiveAssistantBodyNode = null;
-    state.activeThreadLiveAssistantText = "";
+    clearActiveAssistantLiveStateRuntime(state);
   }
 
   function rememberFinalAssistant(threadId, text) {
-    state.activeThreadLastFinalAssistantThreadId = String(threadId || "").trim();
-    state.activeThreadLastFinalAssistantText = String(text || "");
-    state.activeThreadLastFinalAssistantAt = Date.now();
-    state.activeThreadLastFinalAssistantEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0));
+    rememberFinalAssistantRuntime(state, threadId, text);
   }
 
   function isRecentFinalAssistantDuplicate(threadId, text) {
@@ -671,17 +681,23 @@ export function createLiveNotificationsModule(deps) {
   }
 
   function syncPendingAssistantState(threadId, text) {
-    const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
-    if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return;
-    state.activeThreadPendingAssistantMessage = String(text || "");
+    syncPendingAssistantStateRuntime(state, threadId, text);
   }
 
   function finishPendingTurnRun(threadId) {
-    const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
-    if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return;
-    state.activeThreadPendingTurnId = "";
-    state.activeThreadPendingTurnRunning = false;
-    state.activeThreadPendingTurnBaselineTurnCount = 0;
+    finishPendingTurnRunRuntime(state, threadId);
+  }
+
+  function syncPendingTurnRuntime(threadId, options = {}) {
+    syncPendingTurnRuntimeState(state, threadId, options);
+  }
+
+  function resetTurnPresentationState(options = {}) {
+    resetTurnPresentationStateRuntime(state, options);
+  }
+
+  function setPendingTurnRunning(threadId, running, options = {}) {
+    setPendingTurnRunningRuntime(state, threadId, running, options);
   }
 
   function findAssistantLiveStream(box, threadId) {
@@ -889,6 +905,12 @@ export function createLiveNotificationsModule(deps) {
       });
       finishPendingTurnRun(threadId);
       finalizeAssistantLive(threadId);
+      if (
+        (!Array.isArray(state.activeThreadActiveCommands) || state.activeThreadActiveCommands.length === 0) &&
+        !state.activeThreadPlan
+      ) {
+        setStatus("Turn completed.", false);
+      }
       return;
     }
     pushLiveDebugEvent("live.render:assistant_snapshot", {
@@ -1034,26 +1056,14 @@ export function createLiveNotificationsModule(deps) {
     }
 
     if (method.includes("turn/started")) {
-      state.activeThreadPendingTurnThreadId = String(threadId || state.activeThreadId || "").trim();
-      state.activeThreadPendingTurnId = String(
-        params?.turnId || params?.turn_id || params?.turn?.id || params?.id || ""
-      ).trim();
-      state.activeThreadPendingTurnRunning = true;
-      state.activeThreadPendingTurnBaselineTurnCount = activeThreadHistoryTurnCount(threadId);
-      state.activeThreadPendingAssistantMessage = "";
-      state.activeThreadLiveStateEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0)) + 1;
-      state.activeThreadLastFinalAssistantThreadId = "";
-      state.activeThreadLastFinalAssistantText = "";
-      state.activeThreadLastFinalAssistantAt = 0;
-      state.activeThreadLastFinalAssistantEpoch = 0;
+      syncPendingTurnRuntime(threadId, {
+        turnId: params?.turnId || params?.turn_id || params?.turn?.id || params?.id || "",
+        running: true,
+        assistantMessage: "",
+        baselineTurnCount: activeThreadHistoryTurnCount(threadId),
+      });
+      resetTurnPresentationState({ bumpLiveEpoch: true });
       ensureCommentaryState();
-      state.activeThreadCommentaryPendingPlan = null;
-      state.activeThreadCommentaryPendingTools = [];
-      state.activeThreadCommentaryPendingToolKeys = [];
-      state.activeThreadCommentaryCurrent = null;
-      state.activeThreadCommentaryArchive = [];
-      state.activeThreadCommentaryArchiveVisible = false;
-      state.activeThreadCommentaryArchiveExpanded = false;
       pushCommentaryStateDebug("reset", {
         threadId: String(threadId || ""),
         key: "",
@@ -1174,7 +1184,7 @@ export function createLiveNotificationsModule(deps) {
       normalizeType(params?.status) || normalizeType(params?.turn?.status) || normalizeType(params?.thread?.status);
     const isRunning = /running|inprogress|working|queued/.test(status || "") || method.includes("turn/started");
     if (isRunning) {
-      state.activeThreadPendingTurnRunning = true;
+      setPendingTurnRunning(threadId, true);
       setRuntimeActivity({ threadId, title: "Thinking", detail: "", tone: "running" });
       return;
     }
@@ -1191,6 +1201,12 @@ export function createLiveNotificationsModule(deps) {
         finalizeCommentaryArchive(null);
       }
       finalizeAssistantLive(threadId);
+      const finalizedAssistantThreadId = String(state.activeThreadLastFinalAssistantThreadId || "").trim();
+      if (method.includes("turn/failed") || method.includes("turn/cancelled")) {
+        syncPendingAssistantState(threadId, "");
+      } else if (finalizedAssistantThreadId === String(threadId || "").trim()) {
+        syncPendingAssistantState(threadId, String(state.activeThreadLastFinalAssistantText || ""));
+      }
       clearTransientToolMessages();
       clearTransientThinkingMessages();
       finalizeRuntimeState(threadId);

@@ -1,3 +1,11 @@
+import {
+  activeThreadHistoryTurnCount,
+  clearPendingTurnRuntimePlaceholder as clearPendingTurnRuntimePlaceholderState,
+  primePendingTurnRuntime as primePendingTurnRuntimeState,
+  resetTurnPresentationState,
+  syncPendingTurnRuntime,
+} from "./runtimeState.js";
+
 export function buildTurnPayload({
   activeThreadId,
   prompt,
@@ -41,16 +49,36 @@ export function buildPermissionRuntimeOptions(permissionPreset) {
   }
   if (preset === "/permission read-only") {
     return {
-      approvalPolicy: "unlessTrusted",
+      approvalPolicy: "untrusted",
       sandbox: "readOnly",
       sandboxPolicy: { type: "readOnly" },
     };
   }
   return {
-    approvalPolicy: "onRequest",
+    approvalPolicy: "on-request",
     sandbox: "workspaceWrite",
     sandboxPolicy: { type: "workspaceWrite" },
   };
+}
+
+export function buildThreadCreatePayload({
+  workspace,
+  startCwd,
+  fastModeEnabled,
+  permissionPreset,
+}) {
+  const permission = buildPermissionRuntimeOptions(permissionPreset);
+  return {
+    workspace,
+    cwd: startCwd || undefined,
+    serviceTier: fastModeEnabled === true ? "fast" : null,
+    approvalPolicy: permission.approvalPolicy,
+    sandbox: permission.sandbox,
+  };
+}
+
+export function buildManagedTerminalUrl(threadId) {
+  return `/codex/threads/${encodeURIComponent(threadId)}/managed-terminal`;
 }
 
 function isSlashCommandPrompt(prompt) {
@@ -100,6 +128,33 @@ function requiresActiveThreadForSlashCommand(command) {
   return text.startsWith("/model ");
 }
 
+function attachedLiveThread(response) {
+  return response?.attached === true || String(response?.transport || "").trim() === "terminal-session";
+}
+
+function attachedLiveThreadTransport(response) {
+  if (response?.attached === true) {
+    return String(response?.transport || "terminal-session").trim();
+  }
+  const transport = String(response?.transport || "").trim();
+  return transport === "terminal-session" ? transport : "";
+}
+
+function setThreadAttachTransport(state, threadId, transport) {
+  const id = String(threadId || "").trim();
+  const normalizedTransport = String(transport || "").trim();
+  if (!state || !id) return;
+  if (!(state.threadAttachTransportById instanceof Map)) {
+    state.threadAttachTransportById = new Map();
+  }
+  if (normalizedTransport) state.threadAttachTransportById.set(id, normalizedTransport);
+  else state.threadAttachTransportById.delete(id);
+}
+
+function activeThreadAttachPending(state) {
+  return Number(state?.activeThreadAttachPendingUntil || 0) > Date.now();
+}
+
 export function createTurnActionsModule(deps) {
   const {
     state,
@@ -115,6 +170,7 @@ export function createTurnActionsModule(deps) {
     getStartCwdForWorkspace,
     waitPendingThreadResume,
     registerPendingThreadResume = () => {},
+    refreshWorkspaceRuntimeState = async () => null,
     updateHeaderUi,
     addChat,
     clearChatMessages,
@@ -151,6 +207,70 @@ export function createTurnActionsModule(deps) {
   } = deps;
   const storage = localStorageRef ?? globalThis.localStorage ?? { setItem() {} };
 
+  function setAttachPending(active = false) {
+    state.activeThreadAttachPendingUntil = active ? Date.now() + 2400 : 0;
+    updateHeaderUi();
+  }
+
+  function resolveManagedTerminalCwd(workspace = getWorkspaceTarget()) {
+    const activeThreadId = String(state.activeThreadId || "").trim();
+    const workspaceKey = String(workspace || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+    const threadItem = Array.isArray(state.threadItemsAll)
+      ? state.threadItemsAll.find((item) => String(item?.id || item?.threadId || "").trim() === activeThreadId)
+      : null;
+    const threadCwd = String(threadItem?.cwd || "").trim();
+    if (threadCwd) return threadCwd;
+    return String(getStartCwdForWorkspace(workspaceKey) || "").trim();
+  }
+
+  async function openManagedTerminalSurface(options = {}) {
+    if (blockInSandbox("open linked terminal")) return null;
+    const threadId = String(options.threadId || state.activeThreadId || "").trim();
+    if (!threadId) throw new Error("No active chat to link.");
+    if (activeThreadAttachPending(state)) return null;
+    if (String(state.activeThreadAttachTransport || "").trim().toLowerCase() === "terminal-session") {
+      setStatus("Terminal already linked to this chat.");
+      return null;
+    }
+    const workspace = String(
+      options.workspace || state.activeThreadWorkspace || getWorkspaceTarget() || "windows"
+    )
+      .trim()
+      .toLowerCase() === "wsl2"
+      ? "wsl2"
+      : "windows";
+    const cwd = String(options.cwd || resolveManagedTerminalCwd(workspace) || "").trim();
+    setAttachPending(true);
+    setStatus("Opening linked terminal...");
+    try {
+      const response = await api(buildManagedTerminalUrl(threadId), {
+        method: "POST",
+        body: {
+          workspace,
+          cwd: cwd || undefined,
+        },
+      });
+      const attachTransport = attachedLiveThreadTransport(response);
+      state.activeThreadAttachTransport = attachTransport;
+      setThreadAttachTransport(state, threadId, attachTransport);
+      if (String(response?.path || "").trim()) {
+        state.activeThreadRolloutPath = String(response.path).trim();
+      }
+      setAttachPending(false);
+      await refreshRuntimeForWorkspace(workspace);
+      updateHeaderUi();
+      setStatus(
+        attachTransport
+          ? "Terminal linked to this chat."
+          : "Linked terminal launched for this chat."
+      );
+      return response;
+    } catch (error) {
+      setAttachPending(false);
+      throw error;
+    }
+  }
+
   function persistPermissionPresetState() {
     try {
       storage.setItem(
@@ -160,32 +280,15 @@ export function createTurnActionsModule(deps) {
     } catch {}
   }
 
-  function activeThreadHistoryTurnCount(threadId = state.activeThreadId) {
-    const normalizedThreadId = String(threadId || state.activeThreadId || "").trim();
-    if (!normalizedThreadId) return 0;
-    if (String(state.activeThreadHistoryThreadId || "").trim() !== normalizedThreadId) return 0;
-    return Array.isArray(state.activeThreadHistoryTurns) ? state.activeThreadHistoryTurns.length : 0;
+  function refreshRuntimeForWorkspace(workspace = getWorkspaceTarget()) {
+    const target = String(workspace || "").trim().toLowerCase();
+    if (target !== "windows" && target !== "wsl2") return Promise.resolve(null);
+    return refreshWorkspaceRuntimeState(target, { silent: true, updateHeader: true }).catch(() => null);
   }
 
   function resetLiveTurnStateForNewTurn() {
-    state.activeThreadLiveStateEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0)) + 1;
-    state.activeThreadTransientToolText = "";
-    state.activeThreadTransientThinkingText = "";
-    state.activeThreadCommentaryPendingPlan = null;
-    state.activeThreadCommentaryPendingTools = [];
-    state.activeThreadCommentaryPendingToolKeys = [];
-    state.activeThreadCommentaryCurrent = null;
-    state.activeThreadCommentaryArchive = [];
-    state.activeThreadCommentaryArchiveVisible = false;
-    state.activeThreadCommentaryArchiveExpanded = false;
-    state.activeThreadActivity = null;
-    state.activeThreadActiveCommands = [];
-    state.activeThreadPlan = null;
-    state.activeThreadLiveAssistantThreadId = "";
-    state.activeThreadLiveAssistantIndex = -1;
-    state.activeThreadLiveAssistantMsgNode = null;
-    state.activeThreadLiveAssistantBodyNode = null;
-    state.activeThreadLiveAssistantText = "";
+    state.activeThreadHistoryReqSeq = Math.max(0, Number(state.activeThreadHistoryReqSeq || 0)) + 1;
+    resetTurnPresentationState(state, { bumpLiveEpoch: true });
     clearTransientToolMessages();
     clearTransientThinkingMessages();
     syncPendingTurnUi();
@@ -193,32 +296,50 @@ export function createTurnActionsModule(deps) {
   }
 
   function primePendingTurnRuntime(threadId, prompt = "") {
-    const normalizedThreadId = String(threadId || state.activeThreadId || "").trim();
-    if (!normalizedThreadId) return false;
-    state.activeThreadPendingTurnThreadId = normalizedThreadId;
-    state.activeThreadPendingTurnRunning = true;
-    state.activeThreadPendingUserMessage = String(prompt || "");
-    state.activeThreadPendingAssistantMessage = "";
-    state.activeThreadPendingTurnBaselineTurnCount = activeThreadHistoryTurnCount(normalizedThreadId);
+    const primed = primePendingTurnRuntimeState(state, threadId, prompt);
+    if (!primed) return false;
     resetLiveTurnStateForNewTurn();
     return true;
   }
 
   function clearPendingTurnRuntimePlaceholder(threadId, options = {}) {
-    const normalizedThreadId = String(threadId || state.activeThreadId || "").trim();
-    const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
-    if (!normalizedThreadId || !pendingThreadId || pendingThreadId !== normalizedThreadId) return;
-    if (options.force !== true) {
-      if (String(state.activeThreadPendingUserMessage || "").trim()) return;
-      if (String(state.activeThreadPendingAssistantMessage || "").trim()) return;
-    }
-    state.activeThreadPendingTurnThreadId = "";
-    state.activeThreadPendingTurnId = "";
-    state.activeThreadPendingTurnRunning = false;
-    state.activeThreadPendingUserMessage = "";
-    state.activeThreadPendingAssistantMessage = "";
-    state.activeThreadPendingTurnBaselineTurnCount = 0;
+    if (!clearPendingTurnRuntimePlaceholderState(state, threadId, options)) return;
     syncPendingTurnUi();
+    updateMobileComposerState();
+  }
+
+  function rollbackOptimisticPendingTurn(prompt = "", options = {}) {
+    const normalizedPrompt = String(prompt || "");
+    clearPendingTurnRuntimePlaceholder(state.activeThreadPendingTurnThreadId || state.activeThreadId, {
+      force: true,
+    });
+    if (Array.isArray(state.activeThreadMessages) && state.activeThreadMessages.length > 0) {
+      const last = state.activeThreadMessages[state.activeThreadMessages.length - 1];
+      if (
+        last &&
+        last.role === "user" &&
+        !String(last.kind || "").trim() &&
+        String(last.text || "") === normalizedPrompt
+      ) {
+        state.activeThreadMessages = state.activeThreadMessages.slice(0, -1);
+      }
+    }
+    const box = byId("chatBox");
+    const userNodes = Array.from(box?.querySelectorAll?.(".msg.user") || []);
+    const lastUserNode = userNodes.length ? userNodes[userNodes.length - 1] : null;
+    const lastUserText = String(lastUserNode?.__webCodexRawText || lastUserNode?.textContent || "").trim();
+    if (lastUserNode && lastUserText === normalizedPrompt) {
+      lastUserNode.remove();
+    }
+    if (!state.activeThreadMessages.length) {
+      showWelcomeCard();
+    }
+    if (options.restorePrompt === true) {
+      const input = byId("mobilePromptInput");
+      if (input && !String(input.value || "").trim()) {
+        input.value = normalizedPrompt;
+      }
+    }
     updateMobileComposerState();
   }
 
@@ -431,10 +552,20 @@ export function createTurnActionsModule(deps) {
   async function interruptTurn(options = {}) {
     const threadId = String(state.activeThreadPendingTurnThreadId || state.activeThreadId || "").trim();
     const turnId = String(state.activeThreadPendingTurnId || "").trim();
-    if (!threadId || !turnId) throw new Error("No running turn to stop.");
-    const result = await api(`/codex/turns/${encodeURIComponent(turnId)}/interrupt`, {
-      method: "POST",
-    });
+    if (!threadId) throw new Error("No running turn to stop.");
+    const workspace = String(state.activeThreadWorkspace || state.workspaceTarget || "").trim();
+    const result = turnId
+      ? await api(`/codex/turns/${encodeURIComponent(turnId)}/interrupt`, {
+          method: "POST",
+        })
+      : await api(
+          `/codex/threads/${encodeURIComponent(threadId)}/interrupt${
+            workspace === "windows" || workspace === "wsl2"
+              ? `?workspace=${encodeURIComponent(workspace)}`
+              : ""
+          }`,
+          { method: "POST" }
+        );
     if (options.setStatus !== false) setStatus("Stopping current turn...");
     updateMobileComposerState();
     return result;
@@ -605,13 +736,14 @@ export function createTurnActionsModule(deps) {
   async function newThread() {
     if (blockInSandbox("new thread")) return;
     const workspace = getWorkspaceTarget();
-    const startCwd = getStartCwdForWorkspace(workspace);
     setChatOpening(false);
     setActiveThread("");
     state.activeThreadStarted = false;
     state.activeThreadWorkspace = workspace;
     state.planModeEnabled = false;
     state.activeThreadRolloutPath = "";
+    state.activeThreadAttachTransport = "";
+    state.activeThreadNeedsResume = false;
     state.activeThreadTokenUsage = null;
     state.activeThreadPendingTurnId = "";
     writeQueuedTurns([]);
@@ -621,31 +753,6 @@ export function createTurnActionsModule(deps) {
     clearChatMessages();
     showWelcomeCard();
     updateHeaderUi();
-
-    const data = await api("/codex/threads", {
-      method: "POST",
-      body: {
-        workspace,
-        cwd: startCwd || undefined,
-        serviceTier: state.fastModeEnabled === true ? "fast" : null,
-      },
-    });
-    const id = data.id || data.threadId || data?.thread?.id || "";
-    const rolloutPath =
-      String(data?.thread?.path || data?.path || data?.rolloutPath || data?.rollout_path || "").trim();
-    if (id) {
-      setActiveThread(id);
-      state.activeThreadStarted = false;
-      state.activeThreadWorkspace = workspace;
-      state.planModeEnabled = false;
-      state.activeThreadRolloutPath = rolloutPath;
-      state.activeThreadTokenUsage = null;
-      renderComposerContextLeft();
-      clearChatMessages();
-      showWelcomeCard();
-      updateHeaderUi();
-    }
-    await refreshThreads();
     setMainTab("chat");
   }
 
@@ -671,23 +778,30 @@ export function createTurnActionsModule(deps) {
     if (!activeThreadId && requiresActiveThreadForSlashCommand(trimmed)) {
       const created = await api("/codex/threads", {
         method: "POST",
-        body: {
+        body: buildThreadCreatePayload({
           workspace,
-          cwd: startCwd || undefined,
-          serviceTier: state.fastModeEnabled === true ? "fast" : null,
-        },
+          startCwd,
+          fastModeEnabled: state.fastModeEnabled,
+          permissionPreset: state.permissionPresetByWorkspace?.[workspace],
+        }),
       });
+      const attached = attachedLiveThread(created);
       activeThreadId = String(created?.id || created?.threadId || created?.thread?.id || "").trim();
       const createdRolloutPath = String(
         created?.thread?.path || created?.path || created?.rolloutPath || created?.rollout_path || ""
       ).trim();
       if (activeThreadId) {
         setActiveThread(activeThreadId);
+        const attachTransport = attachedLiveThreadTransport(created);
         state.activeThreadStarted = false;
         state.activeThreadWorkspace = workspace;
         state.activeThreadRolloutPath = createdRolloutPath;
         state.activeThreadTokenUsage = null;
+        state.activeThreadNeedsResume = attached;
+        state.activeThreadAttachTransport = attachTransport;
+        setThreadAttachTransport(state, activeThreadId, attachTransport);
       }
+      refreshRuntimeForWorkspace(workspace);
     }
     await waitPendingThreadResume(activeThreadId);
     activeThreadId = String(state.activeThreadId || activeThreadId || "").trim();
@@ -708,6 +822,7 @@ export function createTurnActionsModule(deps) {
       ).trim();
       if (activeThreadId) setActiveThread(activeThreadId);
       state.activeThreadNeedsResume = false;
+      refreshRuntimeForWorkspace(state.activeThreadWorkspace || workspace);
     }
     const response = await api("/codex/slash/execute", {
       method: "POST",
@@ -739,7 +854,11 @@ export function createTurnActionsModule(deps) {
     if (nextThreadId) state.activeThreadNeedsResume = false;
     if (nextRolloutPath) state.activeThreadRolloutPath = nextRolloutPath;
     if (method === "thread/start") {
+      const attachTransport = attachedLiveThreadTransport(result);
       state.activeThreadStarted = false;
+      state.activeThreadNeedsResume = attachedLiveThread(result);
+      state.activeThreadAttachTransport = attachTransport;
+      setThreadAttachTransport(state, nextThreadId, attachTransport);
       state.activeThreadWorkspace = workspace;
       state.planModeEnabled = false;
       state.activeThreadTokenUsage = null;
@@ -747,8 +866,10 @@ export function createTurnActionsModule(deps) {
       clearChatMessages();
       showWelcomeCard();
       updateHeaderUi();
+      refreshRuntimeForWorkspace(workspace);
     } else if (nextThreadId) {
       state.activeThreadWorkspace = workspace;
+      refreshRuntimeForWorkspace(workspace);
     }
     if (method === "thread/collaborationMode/set" || method === "web/planMode/set") {
       state.planModeEnabled = readPlanModeEnabledFromCommand(trimmed, state.planModeEnabled);
@@ -815,21 +936,27 @@ export function createTurnActionsModule(deps) {
       if (!activeThreadId) {
         const created = await api("/codex/threads", {
           method: "POST",
-          body: {
+          body: buildThreadCreatePayload({
             workspace,
-            cwd: startCwd || undefined,
-            serviceTier: state.fastModeEnabled === true ? "fast" : null,
-          },
+            startCwd,
+            fastModeEnabled: state.fastModeEnabled,
+            permissionPreset: state.permissionPresetByWorkspace?.[workspace],
+          }),
         });
+        const attached = attachedLiveThread(created);
         const createdRolloutPath = String(
           created?.thread?.path || created?.path || created?.rolloutPath || created?.rollout_path || ""
         ).trim();
         activeThreadId = String(created?.id || created?.threadId || created?.thread?.id || "").trim();
         if (!activeThreadId) throw new Error("turn start failed: missing threadId");
         setActiveThread(activeThreadId);
+        const attachTransport = attachedLiveThreadTransport(created);
         state.activeThreadWorkspace = workspace;
         state.activeThreadRolloutPath = createdRolloutPath;
-        state.activeThreadNeedsResume = false;
+        state.activeThreadNeedsResume = attached;
+        state.activeThreadAttachTransport = attachTransport;
+        setThreadAttachTransport(state, activeThreadId, attachTransport);
+        refreshRuntimeForWorkspace(workspace);
       } else if (state.activeThreadNeedsResume) {
         const resumePromise = api(
           buildThreadResumeUrl(activeThreadId, {
@@ -849,6 +976,7 @@ export function createTurnActionsModule(deps) {
         activeThreadId = resumedThreadId;
         if (state.activeThreadId !== resumedThreadId) setActiveThread(resumedThreadId);
         state.activeThreadNeedsResume = false;
+        refreshRuntimeForWorkspace(state.activeThreadWorkspace || workspace);
       }
     } catch (error) {
       if (primedPendingRuntime) clearPendingTurnRuntimePlaceholder(activeThreadId, { force: true });
@@ -869,12 +997,13 @@ export function createTurnActionsModule(deps) {
     const shouldAnimateWorkspaceBadge = !state.activeThreadStarted;
     state.activeThreadStarted = true;
     state.activeThreadWorkspace = workspace;
-    state.activeThreadPendingTurnThreadId = activeThreadId;
-    state.activeThreadPendingTurnId = "";
-    state.activeThreadPendingTurnRunning = true;
-    state.activeThreadPendingUserMessage = prompt;
-    state.activeThreadPendingAssistantMessage = "";
-    state.activeThreadPendingTurnBaselineTurnCount = activeThreadHistoryTurnCount(activeThreadId);
+    syncPendingTurnRuntime(state, activeThreadId, {
+      turnId: "",
+      running: true,
+      userMessage: prompt,
+      assistantMessage: "",
+      baselineTurnCount: activeThreadHistoryTurnCount(activeThreadId),
+    });
     resetLiveTurnStateForNewTurn();
     updateHeaderUi(shouldAnimateWorkspaceBadge);
     hideWelcomeCard();
@@ -896,7 +1025,15 @@ export function createTurnActionsModule(deps) {
       usedWs: !!(state.ws && state.ws.readyState === WebSocket.OPEN),
       promptChars: prompt.length,
     });
-    const started = await api("/codex/turns/start", { method: "POST", body: payload });
+    let started;
+    try {
+      started = await api("/codex/turns/start", { method: "POST", body: payload });
+    } catch (error) {
+      rollbackOptimisticPendingTurn(prompt, {
+        restorePrompt: options.fromQueuedTurn !== true,
+      });
+      throw error;
+    }
     const startedThreadId = String(started?.threadId || started?.thread_id || activeThreadId).trim();
     const startedRolloutPath = String(
       started?.thread?.path ||
@@ -909,15 +1046,17 @@ export function createTurnActionsModule(deps) {
     ).trim();
     if (startedThreadId) {
       setActiveThread(startedThreadId);
-      state.activeThreadPendingTurnThreadId = startedThreadId;
-      state.activeThreadPendingTurnId = String(
-        started?.turnId || started?.turn_id || started?.result?.turn?.id || ""
-      ).trim();
-      state.activeThreadPendingTurnRunning = true;
-      state.activeThreadPendingTurnBaselineTurnCount = activeThreadHistoryTurnCount(startedThreadId);
+      syncPendingTurnRuntime(state, startedThreadId, {
+        turnId: started?.turnId || started?.turn_id || started?.result?.turn?.id || "",
+        running: true,
+        userMessage: prompt,
+        assistantMessage: "",
+        baselineTurnCount: activeThreadHistoryTurnCount(startedThreadId),
+      });
       state.activeThreadNeedsResume = false;
     }
     if (startedRolloutPath) state.activeThreadRolloutPath = startedRolloutPath;
+    refreshRuntimeForWorkspace(workspace);
     pushLiveDebugEvent("turn.start.ack", {
       threadId: startedThreadId,
       turnId: state.activeThreadPendingTurnId,
@@ -948,7 +1087,7 @@ export function createTurnActionsModule(deps) {
 
   async function resolveApproval() {
     if (blockInSandbox("approval resolve")) return;
-    const id = byId("approvalIdInput").value.trim();
+    const id = String(state.selectedPendingApprovalId || byId("approvalIdInput").value || "").trim();
     const decision = byId("approvalDecisionSelect").value;
     if (!id) throw new Error("approval id required");
     connectWs();
@@ -967,7 +1106,7 @@ export function createTurnActionsModule(deps) {
 
   async function resolveUserInput() {
     if (blockInSandbox("user input resolve")) return;
-    const id = byId("userInputIdInput").value.trim();
+    const id = String(state.selectedPendingUserInputId || byId("userInputIdInput").value || "").trim();
     const answerKey = byId("userInputAnswerKeyInput").value.trim();
     const answerValue = byId("userInputAnswerValueInput").value.trim();
     if (!id || !answerKey) throw new Error("user_input id and answer key required");
@@ -997,6 +1136,7 @@ export function createTurnActionsModule(deps) {
     interruptTurn,
     maybeRestoreDeferredQueuedTurnEdit,
     newThread,
+    openManagedTerminalSurface,
     queueFollowUpTurn,
     resolveApproval,
     resolveUserInput,

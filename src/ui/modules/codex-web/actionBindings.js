@@ -63,6 +63,7 @@ export function createActionBindingsModule(deps) {
     clearQueuedTurn = () => {},
     editQueuedTurn = async () => false,
     maybeRestoreDeferredQueuedTurnEdit = () => false,
+    openManagedTerminalSurface = async () => null,
     queueFollowUpTurn = async () => null,
     saveQueuedTurnEdit = () => false,
     sendNowTurn = async () => null,
@@ -102,6 +103,11 @@ export function createActionBindingsModule(deps) {
       );
     });
     bindClick("mobileAttachBtn", () => byId("attachInput")?.click());
+    bindClick("headerWorkspaceBadge", () =>
+      openManagedTerminalSurface().catch((e) =>
+        setStatus(resolveActionErrorMessage(e, "Failed to open linked terminal."), true)
+      )
+    );
     bindResponsiveClick("mobileSendBtn", () => {
       const promptValue = String(byId("mobilePromptInput")?.value || "").trim();
       const running = state.activeThreadPendingTurnRunning === true;

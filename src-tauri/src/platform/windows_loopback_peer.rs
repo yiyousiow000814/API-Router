@@ -35,6 +35,12 @@ pub fn read_process_cwd(_pid: u32) -> Option<std::path::PathBuf> {
     None
 }
 
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn duplicate_process_stdin_write_handle(_pid: u32) -> Option<isize> {
+    None
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
@@ -43,14 +49,17 @@ mod windows_impl {
     use std::os::windows::ffi::OsStringExt;
     use std::ptr::null_mut;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE,
+    };
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, TCP_TABLE_OWNER_PID_ALL,
     };
     use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
     use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
     use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+        GetCurrentProcess, GetExitCodeProcess, OpenProcess, PROCESS_DUP_HANDLE,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
     };
 
     #[repr(C)]
@@ -162,6 +171,22 @@ mod windows_impl {
                 return None;
             }
             let out = read_process_cwd_handle(h);
+            let _ = CloseHandle(h);
+            out
+        }
+    }
+
+    pub fn duplicate_process_stdin_write_handle(pid: u32) -> Option<isize> {
+        unsafe {
+            let h = OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ | PROCESS_DUP_HANDLE,
+                0,
+                pid,
+            );
+            if h == 0 {
+                return None;
+            }
+            let out = duplicate_process_stdin_write_handle_impl(h);
             let _ = CloseHandle(h);
             out
         }
@@ -485,12 +510,38 @@ mod windows_impl {
         }
         None
     }
+
+    fn duplicate_process_stdin_write_handle_impl(h: HANDLE) -> Option<isize> {
+        let peb_addr = peb_base_address(h)?;
+        let peb: Peb = read_struct::<Peb>(h, peb_addr)?;
+        let params: RtlUserProcessParameters =
+            read_struct::<RtlUserProcessParameters>(h, peb.process_parameters)?;
+        if params.standard_input == 0 {
+            return None;
+        }
+        let mut duplicated: HANDLE = 0;
+        let ok = unsafe {
+            DuplicateHandle(
+                h,
+                params.standard_input as HANDLE,
+                GetCurrentProcess(),
+                &mut duplicated as *mut HANDLE,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if ok == 0 || duplicated == 0 {
+            return None;
+        }
+        Some(duplicated)
+    }
 }
 
 #[cfg(windows)]
 pub use windows_impl::{
-    infer_loopback_peer_pid, is_pid_alive, read_process_command_line, read_process_cwd,
-    read_process_env_var,
+    duplicate_process_stdin_write_handle, infer_loopback_peer_pid, is_pid_alive,
+    read_process_command_line, read_process_cwd, read_process_env_var,
 };
 
 #[cfg(all(test, windows))]

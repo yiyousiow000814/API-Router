@@ -5,7 +5,9 @@ import {
   createWsClientModule,
   ensureArrayItems,
   normalizeLiveWorkspaceTarget,
+  resolveLiveWorkspaceSubscription,
   resolveApiErrorMessage,
+  subscriptionIncludesWorkspace,
 } from "./wsClient.js";
 
 describe("wsClient", () => {
@@ -25,6 +27,30 @@ describe("wsClient", () => {
     expect(normalizeLiveWorkspaceTarget("wsl2")).toBe("wsl2");
     expect(normalizeLiveWorkspaceTarget("windows")).toBe("windows");
     expect(normalizeLiveWorkspaceTarget("")).toBe("windows");
+  });
+
+  it("builds dual-workspace live subscriptions only when both targets are available", () => {
+    expect(
+      resolveLiveWorkspaceSubscription({
+        workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+        workspaceTarget: "windows",
+      })
+    ).toEqual({
+      workspace: "all",
+      workspaces: ["windows", "wsl2"],
+    });
+    expect(
+      resolveLiveWorkspaceSubscription({
+        workspaceAvailability: { windowsInstalled: false, wsl2Installed: false },
+        activeThreadWorkspace: "wsl2",
+        workspaceTarget: "windows",
+      })
+    ).toEqual({
+      workspace: "wsl2",
+      workspaces: ["wsl2"],
+    });
+    expect(subscriptionIncludesWorkspace(["windows", "wsl2"], "wsl2")).toBe(true);
+    expect(subscriptionIncludesWorkspace("all", "windows")).toBe(true);
   });
 
   it("prefers structured api errors", () => {
@@ -177,6 +203,8 @@ describe("wsClient", () => {
   it("surfaces approval and subscription status updates", () => {
     const statuses = [];
     const chats = [];
+    const threadRefreshes = [];
+    const activeRefreshes = [];
     const module = createWsClientModule({
       state: {
         token: "",
@@ -184,6 +212,7 @@ describe("wsClient", () => {
         wsReqHandlers: new Map(),
         pendingApprovals: [],
         pendingUserInputs: [],
+        activeThreadId: "thread-live",
         wsLastEventId: 0,
         wsRecentEventIds: new Set(),
         wsSubscribedEvents: false,
@@ -216,8 +245,12 @@ describe("wsClient", () => {
       shouldRefreshActiveThreadFromNotification() {
         return false;
       },
-      scheduleThreadRefresh() {},
-      scheduleActiveThreadRefresh() {},
+      scheduleThreadRefresh(delay) {
+        threadRefreshes.push(delay ?? null);
+      },
+      scheduleActiveThreadRefresh(threadId, delay) {
+        activeRefreshes.push({ threadId, delay: delay ?? null });
+      },
       renderLiveNotification() {},
       applyPendingPayloads() {},
       addChat(role, text) {
@@ -235,11 +268,12 @@ describe("wsClient", () => {
 
     expect(statuses).toEqual(["Approval requested.", "Live updates connected."]);
     expect(chats).toEqual([]);
+    expect(threadRefreshes).toEqual([0]);
+    expect(activeRefreshes).toEqual([{ threadId: "thread-live", delay: 0 }]);
   });
 
-  it("resets replay cursor when backend asks for resync", () => {
-    const statuses = [];
-    let resetCalls = 0;
+  it("schedules active-thread refresh for ui activity notifications", () => {
+    const activeRefreshes = [];
     const module = createWsClientModule({
       state: {
         token: "",
@@ -247,6 +281,76 @@ describe("wsClient", () => {
         wsReqHandlers: new Map(),
         pendingApprovals: [],
         pendingUserInputs: [],
+        wsLastEventId: 0,
+        wsRecentEventIds: new Set(),
+        wsSubscribedEvents: false,
+      },
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification(method) {
+        return method === "thread/status";
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh(threadId, delay) {
+        activeRefreshes.push({ threadId, delay: delay ?? null });
+      },
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: class {},
+      fetchRef: async () => ({ ok: true, json: async () => ({}) }),
+    });
+
+    module.handleWsPayload({
+      type: "ui.event",
+      payload: {
+        kind: "activity",
+        conversationId: "thread-live",
+        status: "running",
+        message: "Running...",
+      },
+    });
+
+    expect(activeRefreshes).toEqual([{ threadId: "thread-live", delay: 90 }]);
+  });
+
+  it("resets replay cursor when backend asks for resync", () => {
+    const statuses = [];
+    let resetCalls = 0;
+    const threadRefreshes = [];
+    const activeRefreshes = [];
+    const module = createWsClientModule({
+      state: {
+        token: "",
+        ws: null,
+        wsReqHandlers: new Map(),
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        activeThreadId: "thread-1",
         wsLastEventId: 14549,
         wsRecentEventIds: new Set([14549]),
         wsSubscribedEvents: true,
@@ -281,8 +385,12 @@ describe("wsClient", () => {
       shouldRefreshActiveThreadFromNotification() {
         return false;
       },
-      scheduleThreadRefresh() {},
-      scheduleActiveThreadRefresh() {},
+      scheduleThreadRefresh(delay) {
+        threadRefreshes.push(delay ?? null);
+      },
+      scheduleActiveThreadRefresh(threadId) {
+        activeRefreshes.push(threadId);
+      },
       renderLiveNotification() {},
       applyPendingPayloads() {},
       addChat() {},
@@ -300,6 +408,8 @@ describe("wsClient", () => {
 
     expect(resetCalls).toBe(1);
     expect(statuses).toEqual(["Live event stream resynced."]);
+    expect(threadRefreshes).toEqual([null]);
+    expect(activeRefreshes).toEqual(["thread-1"]);
   });
 
   it("subscribes websocket events with active workspace", () => {
@@ -325,6 +435,7 @@ describe("wsClient", () => {
       wsSubscribedEvents: false,
       activeThreadWorkspace: "wsl2",
       workspaceTarget: "windows",
+      workspaceAvailability: { windowsInstalled: false, wsl2Installed: false },
     };
     const module = createWsClientModule({
       state,
@@ -375,6 +486,102 @@ describe("wsClient", () => {
       type: "subscribe.events",
       payload: { events: true, lastEventId: 7, workspace: "wsl2" },
     });
+    expect(state.wsRequestedWorkspaceTarget).toBe("wsl2");
+
+    module.handleWsPayload({
+      type: "subscribed",
+      payload: { events: true, workspace: "wsl2" },
+    });
+
+    expect(state.wsSubscribedEvents).toBe(true);
+    expect(state.wsSubscribedWorkspaceTarget).toBe("wsl2");
+  });
+
+  it("subscribes websocket events for both workspaces when both are available", () => {
+    const sent = [];
+    class FakeWebSocket {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      constructor() {
+        this.readyState = FakeWebSocket.CONNECTING;
+      }
+      send(value) {
+        sent.push(JSON.parse(value));
+      }
+    }
+    const state = {
+      token: "",
+      ws: null,
+      wsReqHandlers: new Map(),
+      pendingApprovals: [],
+      pendingUserInputs: [],
+      wsLastEventId: 0,
+      wsRecentEventIds: new Set(),
+      wsSubscribedEvents: false,
+      activeThreadWorkspace: "windows",
+      workspaceTarget: "windows",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+    };
+    const module = createWsClientModule({
+      state,
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "11"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: FakeWebSocket,
+      fetchRef: async () => ({ ok: true, json: async () => ({}) }),
+    });
+
+    module.connectWs();
+    state.ws.readyState = FakeWebSocket.OPEN;
+    state.ws.onopen();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: "subscribe.events",
+      payload: { events: true, lastEventId: 11, workspace: "all", workspaces: ["windows", "wsl2"] },
+    });
+    expect(state.wsRequestedWorkspaceTarget).toBe("all");
+    expect(state.wsRequestedWorkspaceTargets).toEqual(["windows", "wsl2"]);
+
+    module.handleWsPayload({
+      type: "subscribed",
+      payload: { events: true, workspace: "all", workspaces: ["windows", "wsl2"] },
+    });
+
+    expect(state.wsSubscribedEvents).toBe(true);
+    expect(state.wsSubscribedWorkspaceTarget).toBe("all");
+    expect(state.wsSubscribedWorkspaceTargets).toEqual(["windows", "wsl2"]);
   });
 
   it("reconnects and resubscribes after websocket close", () => {
@@ -653,5 +860,157 @@ describe("wsClient", () => {
 
     expect(notifications).toHaveLength(2);
     expect(activeRefreshes).toEqual(["thread-1"]);
+  });
+
+  it("schedules active-thread refresh for codex response-item snapshots", () => {
+    const activeRefreshes = [];
+    const module = createWsClientModule({
+      state: {
+        token: "",
+        ws: null,
+        wsReqHandlers: new Map(),
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        wsLastEventId: 0,
+        wsRecentEventIds: new Set(),
+        wsSubscribedEvents: false,
+      },
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "thread-1";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return true;
+      },
+      shouldRefreshActiveThreadFromNotification(method) {
+        return method === "codex/event/response_item";
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh(threadId) {
+        activeRefreshes.push(threadId);
+      },
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: class {},
+      fetchRef: async () => ({ ok: true, json: async () => ({}) }),
+    });
+
+    module.handleWsPayload({
+      type: "rpc.notification",
+      payload: {
+        method: "codex/event/response_item",
+        params: {
+          payload: {
+            type: "message",
+            role: "assistant",
+            thread_id: "thread-1",
+            phase: "final_answer",
+            content: [{ type: "output_text", text: "live final" }],
+          },
+        },
+      },
+    });
+
+    expect(activeRefreshes).toEqual(["thread-1"]);
+  });
+
+  it("upserts provisional thread items from rpc notifications before refresh", () => {
+    const provisionalItems = [];
+    const module = createWsClientModule({
+      state: {
+        token: "",
+        ws: null,
+        wsReqHandlers: new Map(),
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        wsLastEventId: 0,
+        wsRecentEventIds: new Set(),
+        wsSubscribedEvents: true,
+        wsSubscribedWorkspaceTarget: "wsl2",
+      },
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "thread-live";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return true;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      upsertProvisionalThreadItem(item) {
+        provisionalItems.push(item);
+        return true;
+      },
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: class {},
+      fetchRef: async () => ({ ok: true, json: async () => ({}) }),
+    });
+
+    module.handleWsPayload({
+      type: "rpc.notification",
+      payload: {
+        method: "codex/event/response_item",
+        params: {
+          payload: {
+            type: "message",
+            role: "user",
+            thread_id: "thread-live",
+            content: [{ type: "input_text", text: "queued prompt" }],
+          },
+        },
+      },
+    });
+
+    expect(provisionalItems).toHaveLength(1);
+    expect(provisionalItems[0]).toMatchObject({
+      id: "thread-live",
+      workspace: "wsl2",
+      preview: "queued prompt",
+      provisional: true,
+    });
   });
 });

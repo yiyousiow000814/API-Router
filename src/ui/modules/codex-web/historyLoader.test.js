@@ -37,6 +37,101 @@ describe("historyLoader", () => {
     );
   });
 
+  it("refreshes activeThreadRolloutPath from loaded thread history", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "wsl2",
+      activeThreadRolloutPath: "/old/rollout.jsonl",
+      activeThreadHistoryStatusType: "",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: false,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "wsl2"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      clearChatMessages() {},
+      buildMsgNode() { return { dataset: {} }; },
+      ensureLoadOlderControl() { return null; },
+      syncEventSubscription() {},
+      captureLiveCommentarySnapshot() { return null; },
+      extractLatestCommentaryState,
+      clearCommentaryArchiveState() {},
+      clearCommentaryDraft() {},
+      clearIncompleteToolMessage() {},
+      restoreCommentaryArchiveState() {},
+      syncIncompleteToolMessage() {},
+      renderCommentaryArchive() {},
+      renderActiveCommentary() {},
+      syncRuntimeStateFromHistory() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      path: "/new/rollout.jsonl",
+      workspace: "wsl2",
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", text: "latest" }],
+        },
+      ],
+      status: { type: "running" },
+      page: { incomplete: false },
+    });
+
+    expect(state.activeThreadRolloutPath).toBe("/new/rollout.jsonl");
+    expect(state.activeThreadHistoryStatusType).toBe("running");
+  });
+
   it("merges history turns without duplicates", () => {
     expect(
       mergeHistoryTurns(
@@ -77,6 +172,185 @@ describe("historyLoader", () => {
         ],
       },
     ]);
+  });
+
+  it("dedupes adjacent identical assistant history messages when a repeated final reply leaks into turns", async () => {
+    const added = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat(role, text, options = {}) {
+        added.push({ role, text, kind: options.kind || "" });
+      },
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientToolMessage() {},
+      showTransientThinkingMessage() {},
+      clearTransientToolMessages() {},
+      clearTransientThinkingMessages() {},
+      clearRuntimeState() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: false },
+      historyItems: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
+        { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "same final" }] },
+        { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "same final" }] },
+        { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "same final" }] },
+      ],
+    });
+
+    expect(state.activeThreadMessages).toEqual([
+      { role: "user", text: "hello", kind: "", images: [] },
+      { role: "assistant", text: "same final", kind: "" },
+    ]);
+    expect(added).toEqual([
+      { role: "user", text: "hello", kind: "" },
+      { role: "assistant", text: "same final", kind: "" },
+    ]);
+  });
+
+  it("resubscribes live events when the active thread workspace differs from the current ws subscription", async () => {
+    let syncCalls = 0;
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "wsl2",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: false,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      wsSubscribedEvents: true,
+      wsSubscribedWorkspaceTarget: "windows",
+      wsRequestedWorkspaceTarget: "windows",
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "wsl2"; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      buildImageBlocks() { return []; },
+      addChat() {},
+      clearChatMessages() {},
+      renderChatFull: async () => {},
+      updateLoadOlderControl() {},
+      clearTransientToolMessages() {},
+      clearTransientThinkingMessages() {},
+      clearRuntimeState() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {
+        syncCalls += 1;
+      },
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "wsl2",
+      page: { incomplete: false },
+      turns: [],
+    });
+
+    expect(syncCalls).toBe(1);
+    expect(state.activeThreadWorkspace).toBe("wsl2");
   });
 
   it("normalizes assistant text blocks from session history", () => {
@@ -251,6 +525,38 @@ describe("historyLoader", () => {
       { role: "user", text: "hello", kind: "" },
       { role: "assistant", text: "world", kind: "" },
     ]);
+  });
+
+  it("clears pending turn state when incomplete history already ends with the exact pending user and assistant pair", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "OK",
+      activeThreadLastFinalAssistantThreadId: "thread-1",
+      activeThreadLastFinalAssistantText: "OK",
+      activeThreadHistoryIncomplete: true,
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [
+          { role: "user", text: "hello", kind: "" },
+          { role: "assistant", text: "OK", kind: "" },
+        ],
+        state,
+        "thread-1",
+        { historyIncomplete: true }
+      )
+    ).toEqual([
+      { role: "user", text: "hello", kind: "" },
+      { role: "assistant", text: "OK", kind: "" },
+    ]);
+
+    expect(state.activeThreadPendingTurnThreadId).toBe("");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingUserMessage).toBe("");
+    expect(state.activeThreadPendingAssistantMessage).toBe("");
   });
 
   it("adopts pending turn control state from incomplete history for an opened running thread", async () => {
@@ -428,6 +734,119 @@ describe("historyLoader", () => {
 
     expect(state.activeThreadPendingTurnRunning).toBe(true);
     expect(state.activeThreadPendingTurnId).toBe("turn-live");
+  });
+
+  it("does not resurrect runtime from stale incomplete history after a final live assistant snapshot", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [
+        { role: "user", text: "hello", kind: "" },
+        { role: "assistant", text: "done", kind: "" },
+      ],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-live",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "done",
+      activeThreadLastFinalAssistantThreadId: "thread-1",
+      activeThreadLastFinalAssistantText: "done",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadActivity: null,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      clearTransientToolMessages() {
+        ops.push("tool:clear");
+      },
+      clearTransientThinkingMessages() {},
+      clearRuntimeState() {
+        ops.push("runtime:clear");
+        state.activeThreadActiveCommands = [];
+        state.activeThreadPlan = null;
+        state.activeThreadActivity = null;
+      },
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {
+        ops.push("runtime:sync");
+        state.activeThreadActiveCommands = [{ key: "cmd-1" }];
+        state.activeThreadActivity = { threadId: "thread-1", title: "Working" };
+      },
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-live",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+            { type: "commandExecution", command: "npm test", status: "running" },
+          ],
+        },
+      ],
+    });
+
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingTurnId).toBe("turn-live");
+    expect(state.activeThreadActivity).toBeNull();
+    expect(state.activeThreadActiveCommands).toEqual([]);
+    expect(ops).toContain("runtime:clear");
+    expect(ops).not.toContain("runtime:sync");
   });
 
   it("clears pending turn state once history catches up", () => {
@@ -633,6 +1052,23 @@ describe("historyLoader", () => {
       { role: "assistant", text: "older reply", kind: "" },
       { role: "user", text: "push it", kind: "" },
     ]);
+  });
+
+  it("keeps finalized pending placeholders visible while history is still stale", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "done",
+    };
+
+    expect(mergePendingLiveMessages([], state, "thread-1")).toEqual([
+      { role: "user", text: "hello", kind: "" },
+      { role: "assistant", text: "done", kind: "" },
+    ]);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingUserMessage).toBe("hello");
+    expect(state.activeThreadPendingAssistantMessage).toBe("done");
   });
 
   it("keeps tool-only summaries inside history commentary archives before the final assistant message", async () => {
@@ -2869,5 +3305,192 @@ describe("historyLoader", () => {
       preservePendingTurn: true,
       preserveScroll: true,
     }));
+  });
+
+  it("restores scrollTop after rebuilding a non-sticky history window", async () => {
+    const elementById = new Map();
+    const createFakeElement = (tagName = "div") => {
+      const node = {
+        tagName: String(tagName || "div").toUpperCase(),
+        children: [],
+        parentElement: null,
+        className: "",
+        textContent: "",
+        disabled: false,
+        __wiredLoadOlder: false,
+        appendChild(child) {
+          if (!child) return child;
+          child.parentElement = this;
+          this.children.push(child);
+          return child;
+        },
+        remove() {
+          if (!this.parentElement || !Array.isArray(this.parentElement.children)) return;
+          this.parentElement.children = this.parentElement.children.filter((item) => item !== this);
+          this.parentElement = null;
+        },
+        addEventListener() {},
+        querySelector(selector) {
+          if (selector === "#loadOlderBtn") return elementById.get("loadOlderBtn") || null;
+          return null;
+        },
+      };
+      Object.defineProperty(node, "id", {
+        configurable: true,
+        get() {
+          return this._id || "";
+        },
+        set(value) {
+          this._id = String(value || "");
+          if (this._id) elementById.set(this._id, this);
+        },
+      });
+      Object.defineProperty(node, "innerHTML", {
+        configurable: true,
+        get() {
+          return this._innerHTML || "";
+        },
+        set(value) {
+          this._innerHTML = String(value || "");
+          if (this._innerHTML.includes("loadOlderBtn")) {
+            const btn = createFakeElement("button");
+            btn.id = "loadOlderBtn";
+            btn.className = "loadOlderBtn";
+            this.children = [btn];
+            btn.parentElement = this;
+          } else {
+            this.children = [];
+          }
+        },
+      });
+      return node;
+    };
+    const chatBox = {
+      childNodes: [],
+      clientHeight: 320,
+      scrollTop: 420,
+      appendChild(node) {
+        if (Array.isArray(node?.children)) {
+          this.childNodes.push(...node.children);
+          return node;
+        }
+        this.childNodes.push(node);
+        return node;
+      },
+      insertBefore(node) {
+        return this.appendChild(node);
+      },
+      querySelector() {
+        return this.childNodes.length ? this.childNodes[0] : null;
+      },
+      querySelectorAll() {
+        return [];
+      },
+      get scrollHeight() {
+        return Math.max(1200, this.childNodes.length * 28);
+      },
+    };
+
+    const module = createHistoryLoaderModule({
+      state: {
+        activeThreadId: "thread-1",
+        activeThreadRenderSig: "older-render",
+        activeThreadMessages: [{ role: "assistant", text: "older", kind: "" }],
+        activeThreadWorkspace: "windows",
+        activeThreadPendingTurnThreadId: "",
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadStarted: true,
+        activeThreadHistoryHasMore: false,
+        activeThreadHistoryTurns: [{ id: "turn-older-1" }, { id: "turn-older-2" }],
+        activeThreadHistoryThreadId: "thread-1",
+        historyWindowEnabled: true,
+        historyWindowThreadId: "thread-1",
+        historyWindowStart: 60,
+        historyAllMessages: new Array(120).fill(null).map((_, index) => ({
+          role: index % 2 === 0 ? "user" : "assistant",
+          text: `older-${index}`,
+          kind: "",
+        })),
+        chatShouldStickToBottom: false,
+        liveDebugEvents: [],
+        historyWindowSize: 120,
+      },
+      byId(id) {
+        if (id === "chatBox") return chatBox;
+        return elementById.get(String(id || "")) || null;
+      },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: {
+        createDocumentFragment() {
+          return {
+            children: [],
+            appendChild(node) {
+              this.children.push(node);
+              return node;
+            },
+          };
+        },
+        createElement(tagName) {
+          return createFakeElement(tagName);
+        },
+      },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 5,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat(role, text) { chatBox.appendChild({ role, text }); },
+      buildMsgNode(msg) {
+        return { role: String(msg?.role || ""), text: String(msg?.text || "") };
+      },
+      clearChatMessages(options = {}) {
+        chatBox.childNodes = [];
+        chatBox.scrollTop = 0;
+      },
+      renderChatFull: async () => {},
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: true, hasMore: false },
+      turns: new Array(90).fill(null).map((_, index) => ({
+        id: `turn-${index + 1}`,
+        items: [
+          { type: "userMessage", content: [{ type: "input_text", text: `hello-${index}` }] },
+          { type: "assistantMessage", text: `done-${index}` },
+        ],
+      })),
+    }, { forceHistoryWindow: true });
+
+    expect(chatBox.scrollTop).toBe(420);
   });
 });

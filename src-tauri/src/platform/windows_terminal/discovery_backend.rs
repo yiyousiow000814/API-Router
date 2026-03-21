@@ -559,6 +559,26 @@ fn discover_sessions_using_router_uncached(
             None
         }
 
+        fn wsl_read_cwd_from_proc(distro: &str, pid: u32) -> Option<String> {
+            let out = hidden_wsl_command()
+                .args([
+                    "-d",
+                    distro,
+                    "--",
+                    "sh",
+                    "-lc",
+                    &format!("readlink /proc/{pid}/cwd 2>/dev/null || true"),
+                ])
+                .output()
+                .ok()?;
+            let cwd = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if cwd.is_empty() {
+                None
+            } else {
+                Some(cwd)
+            }
+        }
+
         fn wsl_read_env_bundle(
             distro: &str,
             pid: u32,
@@ -710,7 +730,7 @@ fn discover_sessions_using_router_uncached(
 
             let codex_home_linux =
                 codex_home_raw.or_else(|| home.clone().map(|h| format!("{h}/.codex")));
-            let cwd_linux = parse_cwd_from_cmdline(&cmd);
+            let cwd_linux = parse_cwd_from_cmdline(&cmd).or_else(|| wsl_read_cwd_from_proc(distro, pid));
             let codex_home_unc = codex_home_linux
                 .as_deref()
                 .and_then(|p| wsl_path_to_unc(distro, p));
@@ -835,6 +855,13 @@ fn discover_sessions_using_router_uncached(
                 wt_session: format!("wsl:{wt}"),
                 // Linux PID is not valid for Windows liveness checks.
                 pid: 0,
+                linux_pid: Some(pid),
+                wsl_distro: Some(distro.to_string()),
+                cwd: cwd_linux.clone(),
+                rollout_path: codex_home_unc.as_deref().and_then(|home| {
+                    latest_rollout_for_session(home, &codex_session_id)
+                        .map(|path| path.to_string_lossy().to_string())
+                }),
                 codex_session_id: Some(codex_session_id.clone()),
                 // Unverified provider hint policy:
                 // - only sessions started while app is running can show provider from config
@@ -948,9 +975,13 @@ fn discover_sessions_using_router_uncached(
             let is_new_since_app_started = app_started_unix_ms > 0
                 && pid_created_unix_ms >= app_started_unix_ms.saturating_sub(5_000);
 
-            // Must be inside Windows Terminal so we can map to a stable tab identity.
-            let wt =
-                crate::platform::windows_loopback_peer::read_process_env_var(pid, "WT_SESSION");
+            // Prefer WT_SESSION when present, but keep ordinary console-hosted Codex sessions in
+            // the same discovery path via a stable pid marker.
+            let wt = crate::platform::windows_terminal::terminal_session_marker(
+                crate::platform::windows_loopback_peer::read_process_env_var(pid, "WT_SESSION")
+                    .as_deref(),
+                pid,
+            );
             if let Some(wt) = wt {
                 let cmd = crate::platform::windows_loopback_peer::read_process_command_line(pid);
                 let _cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid)
@@ -1020,6 +1051,14 @@ fn discover_sessions_using_router_uncached(
                 out.push(InferredWtSession {
                     wt_session: wt,
                     pid,
+                    linux_pid: None,
+                    wsl_distro: None,
+                    cwd: crate::platform::windows_loopback_peer::read_process_cwd(pid)
+                        .map(|path| path.to_string_lossy().to_string()),
+                    rollout_path: codex_home.as_deref().and_then(|home| {
+                        latest_rollout_for_session(home, &codex_session_id)
+                            .map(|path| path.to_string_lossy().to_string())
+                    }),
                     reported_model_provider: rollout_meta
                         .as_ref()
                         .and_then(|m| m.model_provider.clone())

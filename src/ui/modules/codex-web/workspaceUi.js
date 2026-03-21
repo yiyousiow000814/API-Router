@@ -26,10 +26,63 @@ export function folderDisplayName(path, target = "windows") {
   return parts[parts.length - 1] || normalized;
 }
 
+export function normalizeRuntimeWorkspaceTarget(value, fallback = "windows") {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "wsl2") return "wsl2";
+  if (text === "windows") return "windows";
+  return String(fallback || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+}
+
+export function buildRuntimeStateUrl(target = "windows") {
+  const workspace = normalizeRuntimeWorkspaceTarget(target, "windows");
+  return `/codex/runtime/state?workspace=${encodeURIComponent(workspace)}`;
+}
+
+export function normalizeRuntimeStatePayload(payload, fallbackWorkspace = "windows") {
+  const workspace = normalizeRuntimeWorkspaceTarget(payload?.workspace, fallbackWorkspace);
+  const readFinite = (...values) => {
+    for (const value of values) {
+      const number = Number(value);
+      if (Number.isFinite(number)) return number;
+    }
+    return null;
+  };
+  return {
+    workspace,
+    homeOverride: String(payload?.homeOverride || payload?.home_override || "").trim(),
+    connected: payload?.connected === true,
+    connectedAtUnixSecs: readFinite(payload?.connectedAtUnixSecs, payload?.connected_at_unix_secs),
+    lastReplayCursor: readFinite(payload?.lastReplayCursor, payload?.last_replay_cursor) || 0,
+    lastReplayLastEventId: readFinite(
+      payload?.lastReplayLastEventId,
+      payload?.last_replay_last_event_id
+    ),
+    lastReplayAtUnixSecs: readFinite(payload?.lastReplayAtUnixSecs, payload?.last_replay_at_unix_secs),
+    loaded: true,
+    loading: false,
+  };
+}
+
+function createFallbackRuntimeState(target = "windows") {
+  const workspace = normalizeRuntimeWorkspaceTarget(target, "windows");
+  return {
+    workspace,
+    homeOverride: "",
+    connected: false,
+    connectedAtUnixSecs: null,
+    lastReplayCursor: 0,
+    lastReplayLastEventId: null,
+    lastReplayAtUnixSecs: null,
+    loaded: false,
+    loading: false,
+  };
+}
+
 export function createWorkspaceUiModule(deps) {
   const {
     state,
     byId,
+    api,
     normalizeWorkspaceTarget,
     localStorageRef = localStorage,
     WORKSPACE_TARGET_KEY,
@@ -43,10 +96,29 @@ export function createWorkspaceUiModule(deps) {
     buildThreadRenderSig,
     applyThreadFilter,
     refreshThreads,
+    syncEventSubscription = () => false,
   } = deps;
+
+  function ensureWorkspaceRuntimeState(target = "windows") {
+    const workspace = normalizeRuntimeWorkspaceTarget(target, "windows");
+    if (!state.workspaceRuntimeByTarget || typeof state.workspaceRuntimeByTarget !== "object") {
+      state.workspaceRuntimeByTarget = {
+        windows: createFallbackRuntimeState("windows"),
+        wsl2: createFallbackRuntimeState("wsl2"),
+      };
+    }
+    if (!state.workspaceRuntimeByTarget[workspace]) {
+      state.workspaceRuntimeByTarget[workspace] = createFallbackRuntimeState(workspace);
+    }
+    return state.workspaceRuntimeByTarget[workspace];
+  }
 
   function getWorkspaceTarget() {
     return normalizeWorkspaceTarget(state.workspaceTarget || "windows");
+  }
+
+  function getWorkspaceRuntimeState(target = getWorkspaceTarget()) {
+    return ensureWorkspaceRuntimeState(target);
   }
 
   function getStartCwdForWorkspace(target = getWorkspaceTarget()) {
@@ -66,9 +138,19 @@ export function createWorkspaceUiModule(deps) {
 
   function setStartCwdForWorkspace(target, value) {
     const workspace = normalizeWorkspaceTarget(target);
-    state.startCwdByWorkspace[workspace] = normalizeStartCwd(value, workspace);
+    const nextValue = normalizeStartCwd(value, workspace);
+    if (state.startCwdByWorkspace[workspace] === nextValue) {
+      applyWorkspaceUi();
+      if (getWorkspaceTarget() === workspace) applyThreadFilter();
+      return;
+    }
+    state.startCwdByWorkspace[workspace] = nextValue;
     persistStartCwdByWorkspace();
     applyWorkspaceUi();
+    if (getWorkspaceTarget() === workspace) {
+      applyThreadFilter();
+      refreshThreads(workspace, { force: false, silent: true }).catch(() => {});
+    }
   }
 
   function getWorkspaceLabel() {
@@ -92,6 +174,49 @@ export function createWorkspaceUiModule(deps) {
     if (target !== "unknown") state.activeThreadWorkspace = target;
     const rolloutPath = String(thread?.path || "").trim();
     if (rolloutPath) state.activeThreadRolloutPath = rolloutPath;
+    const attachTransport = String(state.threadAttachTransportById?.get?.(String(threadId || "")) || "").trim();
+    state.activeThreadAttachTransport = attachTransport;
+  }
+
+  async function refreshWorkspaceRuntimeState(target = getWorkspaceTarget(), options = {}) {
+    if (typeof api !== "function") return null;
+    const workspace = normalizeRuntimeWorkspaceTarget(target, getWorkspaceTarget());
+    const current = ensureWorkspaceRuntimeState(workspace);
+    if (!state.workspaceRuntimeRefreshReqSeqByWorkspace || typeof state.workspaceRuntimeRefreshReqSeqByWorkspace !== "object") {
+      state.workspaceRuntimeRefreshReqSeqByWorkspace = { windows: 0, wsl2: 0 };
+    }
+    const reqSeq = (Number(state.workspaceRuntimeRefreshReqSeqByWorkspace[workspace] || 0) || 0) + 1;
+    state.workspaceRuntimeRefreshReqSeqByWorkspace[workspace] = reqSeq;
+    current.loading = true;
+    try {
+      const payload = await api(buildRuntimeStateUrl(workspace));
+      if (state.workspaceRuntimeRefreshReqSeqByWorkspace[workspace] !== reqSeq) return null;
+      const normalized = normalizeRuntimeStatePayload(payload, workspace);
+      state.workspaceRuntimeByTarget[workspace] = normalized;
+      if (options.updateHeader !== false && state.activeThreadWorkspace === workspace) {
+        updateHeaderUi();
+      }
+      return normalized;
+    } catch (error) {
+      if (state.workspaceRuntimeRefreshReqSeqByWorkspace[workspace] !== reqSeq) return null;
+      state.workspaceRuntimeByTarget[workspace] = {
+        ...current,
+        workspace,
+        loaded: true,
+        loading: false,
+      };
+      if (options.silent !== true && error?.message) {
+        setStatus(error.message, true);
+      }
+      if (options.updateHeader !== false && state.activeThreadWorkspace === workspace) {
+        updateHeaderUi();
+      }
+      return null;
+    } finally {
+      if (state.workspaceRuntimeRefreshReqSeqByWorkspace[workspace] === reqSeq) {
+        ensureWorkspaceRuntimeState(workspace).loading = false;
+      }
+    }
   }
 
   function hasDualWorkspaceTargets() {
@@ -149,6 +274,8 @@ export function createWorkspaceUiModule(deps) {
     localStorageRef.setItem(WORKSPACE_TARGET_KEY, target);
     applyWorkspaceUi();
     setStatus(`Workspace target: ${target.toUpperCase()}`);
+    syncEventSubscription();
+    refreshWorkspaceRuntimeState(target, { silent: true, updateHeader: true }).catch(() => null);
     const cached = Array.isArray(state.threadItemsByWorkspace[target])
       ? state.threadItemsByWorkspace[target]
       : [];
@@ -200,8 +327,10 @@ export function createWorkspaceUiModule(deps) {
     hasDualWorkspaceTargets,
     isWorkspaceAvailable,
     persistStartCwdByWorkspace,
+    refreshWorkspaceRuntimeState,
     setStartCwdForWorkspace,
     setWorkspaceTarget,
+    getWorkspaceRuntimeState,
     syncActiveThreadMetaFromList,
   };
 }

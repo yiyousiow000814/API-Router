@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 const MAX_FOLDER_LIST_ITEMS: usize = 1200;
 const WSL_IDENTITY_CACHE_SECS: i64 = 600;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum WorkspaceTarget {
     Windows,
     Wsl2,
@@ -93,10 +93,10 @@ pub(super) fn list_local_subdirectories(path: &Path) -> Result<Vec<FolderListIte
 }
 
 #[derive(Clone)]
-pub(super) struct WslIdentityCache {
-    pub(super) distro: String,
-    pub(super) home: String,
-    pub(super) updated_at_unix_secs: i64,
+pub(crate) struct WslIdentityCache {
+    pub(crate) distro: String,
+    pub(crate) home: String,
+    pub(crate) updated_at_unix_secs: i64,
 }
 
 fn current_unix_secs() -> i64 {
@@ -112,7 +112,7 @@ fn wsl_identity_cache() -> &'static std::sync::Mutex<Option<WslIdentityCache>> {
     CACHE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-pub(super) fn lock_wsl_identity_cache() -> std::sync::MutexGuard<'static, Option<WslIdentityCache>>
+pub(crate) fn lock_wsl_identity_cache() -> std::sync::MutexGuard<'static, Option<WslIdentityCache>>
 {
     match wsl_identity_cache().lock() {
         Ok(v) => v,
@@ -120,7 +120,7 @@ pub(super) fn lock_wsl_identity_cache() -> std::sync::MutexGuard<'static, Option
     }
 }
 
-pub(super) fn normalize_wsl_linux_path(value: &str) -> Option<String> {
+pub(crate) fn normalize_wsl_linux_path(value: &str) -> Option<String> {
     let raw = value.trim();
     if raw.is_empty() {
         return None;
@@ -176,7 +176,7 @@ pub(super) fn linux_path_join(base: &str, name: &str) -> String {
     }
 }
 
-pub(super) fn linux_path_to_unc(path: &str, distro: &str) -> PathBuf {
+pub(crate) fn linux_path_to_unc(path: &str, distro: &str) -> PathBuf {
     let normalized = normalize_wsl_linux_path(path).unwrap_or_else(|| "/".to_string());
     let rel = normalized.trim_start_matches('/');
     if rel.is_empty() {
@@ -189,7 +189,7 @@ pub(super) fn linux_path_to_unc(path: &str, distro: &str) -> PathBuf {
     }
 }
 
-pub(super) fn parse_wsl_unc_to_linux_path(value: &str) -> Option<String> {
+pub(crate) fn parse_wsl_unc_to_linux_path(value: &str) -> Option<String> {
     let mut text = value.trim().replace('/', "\\");
     if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
         text = format!(r"\\{stripped}");
@@ -236,7 +236,7 @@ fn detect_wsl_identity_uncached() -> Result<(String, String), String> {
     Ok((distro, home))
 }
 
-pub(super) fn resolve_wsl_identity() -> Result<(String, String), String> {
+pub(crate) fn resolve_wsl_identity() -> Result<(String, String), String> {
     let now = current_unix_secs();
     if let Some(cached) = lock_wsl_identity_cache().clone() {
         if now.saturating_sub(cached.updated_at_unix_secs) < WSL_IDENTITY_CACHE_SECS {

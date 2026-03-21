@@ -264,6 +264,35 @@ function hasFailedStatusText(value) {
   return text === "failed" || text === "error" || text === "cancelled" || text === "timeout" || text === "denied";
 }
 
+function hasRunningStatusText(value) {
+  const text = normalizeType(value);
+  return text === "running" || text === "inprogress" || text === "working" || text === "queued" || text === "started" || text === "streaming" || text === "updating";
+}
+
+function normalizeToolPresentationStatus(item, options = {}) {
+  const explicitStatus = item?.status ?? item?.state ?? "";
+  if (hasFailedStatusText(explicitStatus)) return "failed";
+  if (hasRunningStatusText(explicitStatus)) return "running";
+  if (normalizeType(explicitStatus)) return "completed";
+
+  const exitCode = Number.isFinite(Number(item?.exitCode))
+    ? Number(item.exitCode)
+    : (Number.isFinite(Number(item?.exit_code)) ? Number(item.exit_code) : null);
+  if (exitCode !== null && exitCode !== 0) return "failed";
+
+  const method = normalizeType(options?.method);
+  if (method.endsWith("itemstarted") || method.endsWith("itemupdated") || method.endsWith("turnstarted")) {
+    return "running";
+  }
+  if (method.endsWith("itemcompleted") || method.endsWith("turncompleted") || method.endsWith("turnfinished")) {
+    return "completed";
+  }
+  if (method.endsWith("turnfailed") || method.endsWith("turncancelled")) {
+    return "failed";
+  }
+  return "";
+}
+
 function isConservativeFailureText(toolName, value) {
   const normalizedTool = normalizeType(toolName);
   const text = String(value || "").toLowerCase().trim();
@@ -508,7 +537,7 @@ export function toolItemToMessage(item, options = {}) {
 
   if (itemType === "commandexecution") {
     const command = normalizeInline(item?.command, 240) ?? "command";
-    const status = normalizeType(item?.status);
+    const status = normalizeToolPresentationStatus(item, options);
     const output =
       normalizeMultiline(item?.aggregatedOutput, 2400) ??
       normalizeMultiline(item?.aggregated_output, 2400) ??
@@ -528,7 +557,7 @@ export function toolItemToMessage(item, options = {}) {
     const rawTool =
       normalizeInline(item?.tool, 120) ??
       normalizeInline(item?.name, 120);
-    const status = normalizeType(item?.status);
+    const status = normalizeToolPresentationStatus(item, options);
     const command = isShellLikeToolName(rawTool)
       ? readCommandFromToolLikeItem(item, 240)
       : null;
@@ -596,6 +625,7 @@ export function toolItemToMessage(item, options = {}) {
     const query =
       normalizeInline(item?.query, 180) ??
       normalizeInline(item?.action?.query, 180);
+    const status = normalizeToolPresentationStatus(item, options);
     const actionType = normalizeType(item?.action?.type);
     let detail = query;
     if (actionType === "openpage") {
@@ -605,15 +635,26 @@ export function toolItemToMessage(item, options = {}) {
       const pattern = normalizeInline(item?.action?.pattern, 120);
       detail = [url, pattern ? `pattern: ${pattern}` : null].filter(Boolean).join(" | ") || detail;
     }
-    const title = query ? `Searched web for \`${query}\`` : "Searched web";
+    const title =
+      status === "failed" || status === "error"
+        ? (query ? `Web search failed for \`${query}\`` : "Web search failed")
+        : status === "running" || status === "inprogress" || status === "working" || status === "started"
+          ? (query ? `Searching web for \`${query}\`` : "Searching web")
+          : (query ? `Searched web for \`${query}\`` : "Searched web");
     if (compact) return title;
     return detail && detail !== query ? `${title}\n  - ${detail}` : title;
   }
 
   if (itemType === "filechange") {
-    const status = normalizeType(item?.status);
+    const status = normalizeToolPresentationStatus(item, options);
     const changeCount = Array.isArray(item?.changes) ? item.changes.length : 0;
-    const title = status === "failed" || status === "error" ? "- File changes failed" : "- Applied file changes";
+    const isRunning = status === "running" || status === "inprogress" || status === "working" || status === "started";
+    const title = status === "failed" || status === "error"
+      ? "File changes failed"
+      : isRunning
+        ? "Applying file changes"
+        : "Applied file changes";
+    if (compact) return title;
     return changeCount > 0 ? `${title}\n  - ${String(changeCount)} file(s) changed` : title;
   }
 

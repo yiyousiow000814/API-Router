@@ -180,7 +180,7 @@ describe("composerUi", () => {
   }
 
   function expectWorkingActivityBarHtml(html) {
-    expect(html).toContain("Working");
+    expect(String(html || "")).toContain("working");
     expect(html).toContain("runtimeActivityDots");
   }
 
@@ -603,7 +603,54 @@ describe("composerUi", () => {
     expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
   });
 
-  it("renders the activity bar as a compact generic Working hint without runtime detail text", () => {
+  it("marks runtime tool entries as error when the enclosing turn fails", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.applyToolItemRuntimeUpdate({
+      id: "cmd-turn-failed",
+      type: "commandExecution",
+      command: "cargo test",
+      text: "Ran `cargo test`",
+    }, { threadId: "thread-1", method: "turn/failed", timestamp: 100 });
+
+    expect(state.activeThreadActiveCommands[0].state).toBe("error");
+    expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("state-error");
+  });
+
+  it("renders the activity bar as a compact generic working hint without runtime detail text", () => {
     const nodes = new Map();
     const runtimeDock = makeNode();
     const runtimeActivityBar = makeNode();
@@ -652,7 +699,7 @@ describe("composerUi", () => {
     module.renderRuntimePanels();
 
     expect(nodes.get("runtimeDock").style.display).toBe("");
-    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("Working");
+    expect(nodes.get("runtimeActivityBar").innerHTML).toContain("working");
     expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
     expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("npm test");
     expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("Updated Plan");

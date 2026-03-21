@@ -1,7 +1,16 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 
+type TopPage =
+  | 'dashboard'
+  | 'usage_statistics'
+  | 'usage_requests'
+  | 'provider_switchboard'
+  | 'event_log'
+  | 'web_codex'
+
 type UseAppPollingOptions = {
+  activePage: TopPage
   isDevPreview: boolean
   codexSwapDir1: string
   codexSwapDir2: string
@@ -14,7 +23,14 @@ type UseAppPollingOptions = {
   onDevPreviewTick: () => void
 }
 
+export function statusPollIntervalMs(activePage: TopPage, isDocumentVisible: boolean): number {
+  if (!isDocumentVisible) return 15_000
+  if (activePage === 'dashboard' || activePage === 'provider_switchboard') return 1_500
+  return 5_000
+}
+
 export function useAppPolling({
+  activePage,
   isDevPreview,
   codexSwapDir1,
   codexSwapDir2,
@@ -31,12 +47,27 @@ export function useAppPolling({
   const refreshProviderSwitchStatusRef = useRef(refreshProviderSwitchStatus)
   const providerSwitchRefreshTimerRef = useRef<number | null>(null)
   const providerSwitchDirWatcherPrimedRef = useRef<boolean>(false)
+  const [isDocumentVisible, setIsDocumentVisible] = useState<boolean>(
+    typeof document === 'undefined' || document.visibilityState !== 'hidden',
+  )
 
   useEffect(() => {
     refreshStatusRef.current = refreshStatus
     refreshConfigRef.current = refreshConfig
     refreshProviderSwitchStatusRef.current = refreshProviderSwitchStatus
   }, [refreshConfig, refreshProviderSwitchStatus, refreshStatus])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const handleVisibilityChange = () => {
+      setIsDocumentVisible(document.visibilityState !== 'hidden')
+    }
+    handleVisibilityChange()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [])
 
   useEffect(() => {
     if (isDevPreview) {
@@ -46,8 +77,10 @@ export function useAppPolling({
       return () => window.clearInterval(timer)
     }
     void refreshStatusRef.current()
-    void refreshConfigRef.current()
-    const t = setInterval(() => void refreshStatusRef.current(), 1500)
+    const t = setInterval(
+      () => void refreshStatusRef.current(),
+      statusPollIntervalMs(activePage, isDocumentVisible),
+    )
     const codexRefresh = window.setInterval(() => {
       invoke('codex_account_refresh').catch((e) => {
         console.warn('Codex refresh failed', e)
@@ -57,7 +90,12 @@ export function useAppPolling({
       clearInterval(t)
       window.clearInterval(codexRefresh)
     }
-  }, [isDevPreview, onDevPreviewBootstrap, onDevPreviewTick])
+  }, [activePage, isDevPreview, isDocumentVisible, onDevPreviewBootstrap, onDevPreviewTick])
+
+  useEffect(() => {
+    if (isDevPreview) return
+    void refreshConfigRef.current()
+  }, [isDevPreview])
 
   useEffect(() => {
     if (!providerSwitchDirWatcherPrimedRef.current) {

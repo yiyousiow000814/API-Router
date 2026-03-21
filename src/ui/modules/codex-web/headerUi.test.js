@@ -1,6 +1,14 @@
 ﻿import { describe, expect, it } from "vitest";
 
-import { classifyStatusBadge, compactModelLabel, compareModelRank, parseModelRankParts, pickLatestModelId } from "./headerUi.js";
+import {
+  classifyStatusBadge,
+  compactModelLabel,
+  compareModelRank,
+  describeAttachBadge,
+  describeWorkspaceConnection,
+  parseModelRankParts,
+  pickLatestModelId,
+} from "./headerUi.js";
 
 describe("headerUi", () => {
   it("compacts gpt prefixes", () => {
@@ -56,6 +64,42 @@ describe("headerUi", () => {
     expect(classifyStatusBadge("Command failed: git commit", true)).toEqual({
       label: "Attention",
       warn: true,
+    });
+  });
+
+  it("describes terminal attach success badge", () => {
+    expect(describeAttachBadge({ activeThreadAttachTransport: "terminal-session" })).toEqual({
+      visible: true,
+      label: "Terminal linked",
+      title: "A live terminal session is also linked to this chat.",
+    });
+    expect(describeAttachBadge({ activeThreadAttachTransport: "" })).toEqual({
+      visible: false,
+      label: "",
+      title: "",
+    });
+  });
+
+  it("describes workspace connection from canonical runtime state", () => {
+    expect(
+      describeWorkspaceConnection({
+        workspaceRuntimeByTarget: {
+          windows: { connected: true, loaded: true, loading: false },
+        },
+      }, "windows")
+    ).toEqual({
+      connected: true,
+      title: "Connected",
+    });
+    expect(
+      describeWorkspaceConnection({
+        workspaceRuntimeByTarget: {
+          windows: { connected: false, loaded: true, loading: false },
+        },
+      }, "windows")
+    ).toEqual({
+      connected: false,
+      title: "Waiting for runtime",
     });
   });
 });

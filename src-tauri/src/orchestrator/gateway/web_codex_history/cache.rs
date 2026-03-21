@@ -74,7 +74,7 @@ fn load_cached_rollout(
         state.access_seq = state.access_seq.saturating_add(1);
         let access_seq = state.access_seq;
         if let Some(entry) = state.by_path.get_mut(&path_key) {
-            if entry.file_key == file_key {
+            if entry.file_key == file_key && !entry.parsed.incomplete {
                 entry.access_seq = access_seq;
                 return Ok(entry.parsed.clone());
             }
@@ -86,6 +86,10 @@ fn load_cached_rollout(
         Ok(guard) => guard,
         Err(err) => err.into_inner(),
     };
+    if parsed.incomplete {
+        state.by_path.remove(&path_key);
+        return Ok(parsed);
+    }
     state.access_seq = state.access_seq.saturating_add(1);
     let access_seq = state.access_seq;
     state.by_path.insert(

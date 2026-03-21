@@ -4,13 +4,15 @@ use crate::orchestrator::gateway::web_codex_home::{
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{Child, Output, Stdio};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const WSL_HISTORY_INDEX_SCRIPT: &str = include_str!("wsl_history_index.py");
 const WSL_HISTORY_PREWARM_ITEMS: usize = 3;
+const WSL_HISTORY_BUILD_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[cfg(test)]
 type TestWslHistoryLoader = std::sync::Arc<
@@ -89,8 +91,10 @@ pub(super) fn load_wsl_history_page(
         spawn_wsl_history_build(linux_rollout_path.to_string());
     }
     log_wsl_history_meta(value.get("meta"), raw_rollout_path);
+    let mut thread = value.get("thread").cloned().unwrap_or(Value::Null);
+    super::ensure_history_thread_path(&mut thread);
     Ok(ThreadHistoryPage {
-        thread: value.get("thread").cloned().unwrap_or(Value::Null),
+        thread,
         page: value.get("page").cloned().unwrap_or(Value::Null),
     })
 }
@@ -146,6 +150,7 @@ fn run_wsl_history_page_script(
             cache_root.to_string(),
         ],
         "reader",
+        None,
     )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -167,6 +172,7 @@ fn run_wsl_history_build_script(linux_rollout_path: &str, cache_root: &str) -> R
             cache_root.to_string(),
         ],
         "index builder",
+        Some(WSL_HISTORY_BUILD_TIMEOUT),
     )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -179,7 +185,58 @@ fn run_wsl_history_build_script(linux_rollout_path: &str, cache_root: &str) -> R
     Ok(())
 }
 
-fn run_wsl_history_python(extra: &[String], label: &str) -> Result<std::process::Output, String> {
+fn collect_child_output(
+    child: &mut Child,
+    status: std::process::ExitStatus,
+    label: &str,
+) -> Result<Output, String> {
+    let mut stdout = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_end(&mut stdout)
+            .map_err(|e| format!("failed to read WSL history {label} stdout: {e}"))?;
+    }
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_end(&mut stderr)
+            .map_err(|e| format!("failed to read WSL history {label} stderr: {e}"))?;
+    }
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn wait_for_child_output(
+    mut child: Child,
+    label: &str,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    let start = Instant::now();
+    loop {
+        match child
+            .try_wait()
+            .map_err(|e| format!("failed to poll WSL history {label}: {e}"))?
+        {
+            Some(status) => return collect_child_output(&mut child, status, label),
+            None if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "WSL history {label} timed out after {}s",
+                    timeout.as_secs()
+                ));
+            }
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+}
+
+fn run_wsl_history_python(
+    extra: &[String],
+    label: &str,
+    timeout: Option<Duration>,
+) -> Result<std::process::Output, String> {
     let args = build_wsl_history_python_args(extra);
     let mut cmd = std::process::Command::new("wsl.exe");
     cmd.args(&args)
@@ -203,9 +260,12 @@ fn run_wsl_history_python(extra: &[String], label: &str) -> Result<std::process:
             .write_all(WSL_HISTORY_INDEX_SCRIPT.as_bytes())
             .map_err(|e| format!("failed to stream WSL history {label} script: {e}"))?;
     }
-    child
-        .wait_with_output()
-        .map_err(|e| format!("failed to wait for WSL history {label}: {e}"))
+    match timeout {
+        Some(timeout) => wait_for_child_output(child, label, timeout),
+        None => child
+            .wait_with_output()
+            .map_err(|e| format!("failed to wait for WSL history {label}: {e}")),
+    }
 }
 
 fn spawn_wsl_history_build(linux_rollout_path: String) {
@@ -218,7 +278,9 @@ fn spawn_wsl_history_build(linux_rollout_path: String) {
     };
     std::thread::spawn(move || {
         let _guard = _guard;
-        let _ = run_wsl_history_build_script(&linux_rollout_path, &cache_root);
+        if let Err(err) = run_wsl_history_build_script(&linux_rollout_path, &cache_root) {
+            log::warn!("wsl history background index build failed for {linux_rollout_path}: {err}");
+        }
     });
 }
 
@@ -359,11 +421,12 @@ fn log_wsl_history_meta(meta: Option<&Value>, raw_rollout_path: &str) {
 mod tests {
     use super::{
         build_wsl_history_python_args, estimate_wsl_launch_len, should_wait_for_wsl_history_build,
-        wsl_history_cache_root, wsl_history_prewarm_paths,
+        wait_for_child_output, wsl_history_cache_root, wsl_history_prewarm_paths,
     };
     use serde_json::json;
     use std::path::PathBuf;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
 
     struct EnvGuard {
         key: &'static str,
@@ -465,6 +528,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn wsl_history_result_normalizes_thread_path_from_rollout_path() {
+        let mut thread = json!({
+            "id": "thread-wsl",
+            "rolloutPath": "/home/test/.codex/sessions/2026/03/20/rollout-thread-wsl.jsonl",
+        });
+        super::super::ensure_history_thread_path(&mut thread);
+        assert_eq!(
+            thread.get("path").and_then(serde_json::Value::as_str),
+            Some("/home/test/.codex/sessions/2026/03/20/rollout-thread-wsl.jsonl")
+        );
+    }
+
     fn run_wsl_history_python_self_test() -> Result<std::process::Output, String> {
         let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src")
@@ -508,5 +584,29 @@ mod tests {
             stdout.contains("\"ok\":true"),
             "unexpected WSL history python self-test stdout: {stdout}"
         );
+    }
+
+    #[test]
+    fn wait_for_child_output_times_out_and_kills_stuck_process() {
+        let mut command = if cfg!(windows) {
+            let mut cmd = Command::new("cmd.exe");
+            cmd.args(["/C", "ping -n 6 127.0.0.1 > nul"]);
+            cmd
+        } else {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-lc", "sleep 5"]);
+            cmd
+        };
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let child = command.spawn().expect("spawn stuck process");
+        let started = Instant::now();
+        let err = wait_for_child_output(child, "test timeout", Duration::from_millis(100))
+            .expect_err("timeout");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "timeout helper took too long: {:?}",
+            started.elapsed()
+        );
+        assert!(err.contains("timed out"), "unexpected timeout error: {err}");
     }
 }

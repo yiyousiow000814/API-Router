@@ -68,6 +68,60 @@ export function classifyStatusBadge(message, isWarn = false) {
   return { label: "Disconnected", warn: true };
 }
 
+export function describeAttachBadge(state) {
+  const transport = String(state?.activeThreadAttachTransport || "").trim().toLowerCase();
+  if (!transport) return { visible: false, label: "", title: "" };
+  if (transport === "terminal-session") {
+    return {
+      visible: true,
+      label: "Terminal linked",
+      title: "A live terminal session is also linked to this chat.",
+    };
+  }
+  return {
+    visible: true,
+    label: "Linked runtime",
+    title: `An additional runtime surface is linked via ${transport}.`,
+  };
+}
+
+export function describeWorkspaceConnection(state, workspace = "windows") {
+  const normalizedWorkspace = String(workspace || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+  const runtime = state?.workspaceRuntimeByTarget?.[normalizedWorkspace] || null;
+  if (runtime?.connected === true) {
+    return {
+      connected: true,
+      title: "Connected",
+    };
+  }
+  if (runtime?.loading === true) {
+    return {
+      connected: false,
+      title: "Checking runtime",
+    };
+  }
+  if (runtime?.loaded === true) {
+    return {
+      connected: false,
+      title: "Waiting for runtime",
+    };
+  }
+  return {
+    connected: false,
+    title: "Checking runtime",
+  };
+}
+
+function canLaunchManagedTerminalFromHeader(state, workspace, inSettings = false) {
+  if (inSettings) return false;
+  const threadId = String(state?.activeThreadId || "").trim();
+  if (!threadId || state?.activeThreadStarted !== true) return false;
+  const runtime = describeWorkspaceConnection(state, workspace);
+  if (runtime.connected !== true) return false;
+  if (Number(state?.activeThreadAttachPendingUntil || 0) > Date.now()) return false;
+  return String(state?.activeThreadAttachTransport || "").trim().toLowerCase() !== "terminal-session";
+}
+
 export function createHeaderUiModule(deps) {
   const {
     state,
@@ -105,6 +159,7 @@ export function createHeaderUiModule(deps) {
     const modelPicker = byId("headerModelPicker");
     const modelLabel = byId("headerModelLabel");
     const headerEffort = byId("headerReasoningEffort");
+    const headerAttachBadge = byId("headerAttachBadge");
     const headerChevron = modelPicker ? modelPicker.querySelector(".headerModelChevron") : null;
     const inSettings = state.activeMainTab === "settings";
     const showBadge = !inSettings && state.activeThreadStarted;
@@ -236,18 +291,58 @@ export function createHeaderUiModule(deps) {
       headerSwitch.style.visibility = "visible";
       headerSwitch.style.pointerEvents = "auto";
     }
+    const attachBadge = describeAttachBadge(state);
+    if (headerAttachBadge) {
+      headerAttachBadge.textContent = "";
+      headerAttachBadge.title = "";
+      headerAttachBadge.classList.remove("show");
+    }
     if (!headerBadge) return;
     if (!showBadge) {
-      headerBadge.classList.remove("show", "enter", "is-win", "is-wsl2");
+      headerBadge.classList.remove(
+        "show",
+        "enter",
+        "is-win",
+        "is-wsl2",
+        "is-connected",
+        "is-runtime-pending",
+        "is-attached",
+      );
+      headerBadge.title = "";
       headerBadge.textContent = "";
       return;
     }
 
     const badgeLabel = getActiveWorkspaceBadgeLabel();
+    const workspaceTarget = badgeLabel === "WSL2" ? "wsl2" : "windows";
+    const connection = describeWorkspaceConnection(state, workspaceTarget);
+    const attachPending = Number(state.activeThreadAttachPendingUntil || 0) > Date.now();
+    const effectiveConnected = connection.connected === true || attachPending;
     headerBadge.textContent = badgeLabel;
     headerBadge.classList.add("show");
     headerBadge.classList.toggle("is-win", badgeLabel === "WIN");
     headerBadge.classList.toggle("is-wsl2", badgeLabel === "WSL2");
+    headerBadge.classList.toggle("is-connected", effectiveConnected);
+    headerBadge.classList.toggle("is-runtime-pending", !effectiveConnected);
+    headerBadge.classList.toggle("is-linking", attachPending);
+    const attachLinked = attachBadge.visible && !inSettings;
+    const canLaunchManagedTerminal = canLaunchManagedTerminalFromHeader(
+      state,
+      workspaceTarget,
+      inSettings
+    );
+    headerBadge.classList.toggle("is-attached", attachLinked);
+    headerBadge.classList.toggle("is-actionable", canLaunchManagedTerminal);
+    headerBadge.setAttribute("role", canLaunchManagedTerminal ? "button" : "status");
+    headerBadge.setAttribute("tabindex", canLaunchManagedTerminal ? "0" : "-1");
+    headerBadge.setAttribute("aria-disabled", canLaunchManagedTerminal ? "false" : "true");
+    headerBadge.title = attachPending
+      ? `${badgeLabel} - Opening linked terminal`
+      : attachBadge.visible
+        ? `${badgeLabel} - ${connection.title} - ${attachBadge.label}`
+        : canLaunchManagedTerminal
+          ? `${badgeLabel} - ${connection.title} - Open linked terminal`
+          : `${badgeLabel} - ${connection.title}`;
     if (animateBadge) {
       headerBadge.classList.remove("enter");
       void headerBadge.offsetWidth;

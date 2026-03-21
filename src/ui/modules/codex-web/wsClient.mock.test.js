@@ -108,12 +108,99 @@ describe("wsClient mock transport", () => {
 
     expect(notifications.some((item) => item?.method === "turn/started")).toBe(true);
     expect(notifications.some((item) => item?.method === "turn/assistant/delta")).toBe(true);
+    expect(
+      notifications.some(
+        (item) =>
+          item?.method === "item/started" &&
+          item?.params?.item?.type === "web_search" &&
+          item?.params?.item?.status === "running"
+      )
+    ).toBe(true);
+    expect(
+      notifications.some(
+        (item) =>
+          item?.method === "item/completed" &&
+          item?.params?.item?.type === "web_search" &&
+          item?.params?.item?.status === "completed"
+      )
+    ).toBe(true);
+    expect(
+      notifications.some(
+        (item) =>
+          item?.method === "item/started" &&
+          item?.params?.item?.type === "command_execution" &&
+          item?.params?.item?.status === "running"
+      )
+    ).toBe(true);
+    expect(
+      notifications.some(
+        (item) =>
+          item?.method === "item/completed" &&
+          item?.params?.item?.type === "command_execution" &&
+          item?.params?.item?.status === "completed"
+      )
+    ).toBe(true);
     expect(notifications.some((item) => item?.method === "turn/completed")).toBe(true);
 
     const history = await module.api(`/codex/threads/${created.threadId}/history?workspace=windows`);
     const latestTurn = history.turns[history.turns.length - 1];
     expect(latestTurn.items[0].type).toBe("userMessage");
-    expect(latestTurn.items[1].type).toBe("assistantMessage");
+    expect(latestTurn.items[1]).toEqual(
+      expect.objectContaining({ type: "agentMessage", phase: "commentary" })
+    );
+    expect(latestTurn.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "web_search", status: "completed" }),
+        expect.objectContaining({ type: "command_execution", status: "completed" }),
+        expect.objectContaining({ type: "assistantMessage", phase: "final_answer" }),
+      ])
+    );
+  });
+
+  it("persists failed mock tool runs into history and completion notifications", async () => {
+    vi.useFakeTimers();
+    const state = createState();
+    const notifications = [];
+    const module = createModule(state, notifications, vi.fn());
+
+    const created = await module.api("/codex/threads", {
+      method: "POST",
+      body: { workspace: "windows" },
+    });
+
+    await module.api("/codex/turns/start", {
+      method: "POST",
+      body: {
+        threadId: created.threadId,
+        prompt: "Reproduce the websocket failure",
+        workspace: "windows",
+        mockScenario: "failed-command",
+      },
+    });
+
+    await vi.runAllTimersAsync();
+
+    const failedNotification = notifications.find(
+      (item) =>
+        item?.method === "item/completed" &&
+        item?.params?.item?.id === "mock-command-2"
+    );
+    expect(failedNotification?.params?.item).toEqual(
+      expect.objectContaining({ status: "failed", exitCode: 1 })
+    );
+
+    const history = await module.api(`/codex/threads/${created.threadId}/history?workspace=windows`);
+    const latestTurn = history.turns[history.turns.length - 1];
+    expect(latestTurn.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "mock-command-2",
+          type: "command_execution",
+          status: "failed",
+          exitCode: 1,
+        }),
+      ])
+    );
   });
 
   it("keeps an interrupted mock turn pending briefly so queued actions stay visible", async () => {
@@ -172,12 +259,15 @@ describe("wsClient mock transport", () => {
     await expect(module.api("/codex/models")).resolves.toEqual({
       items: [{ id: "real-model", name: "Real Model" }],
     });
-    await expect(module.api("/codex/threads?workspace=windows")).resolves.toEqual({
-      items: {
-        data: [{ id: "real-thread-1", title: "Real thread", workspace: "windows" }],
-        nextCursor: null,
-      },
-    });
+    await expect(module.api("/codex/threads?workspace=windows")).resolves.toEqual(
+      expect.objectContaining({
+        items: expect.objectContaining({
+          data: expect.arrayContaining([
+            expect.objectContaining({ id: "real-thread-1", title: "Real thread", workspace: "windows" }),
+          ]),
+        }),
+      })
+    );
 
     const started = await module.api("/codex/turns/start", {
       method: "POST",
@@ -190,5 +280,103 @@ describe("wsClient mock transport", () => {
 
     expect(started.turnId).toMatch(/^mock-turn-/);
     expect(fetchRef).toHaveBeenCalledTimes(2);
+  });
+
+  it("merges sandbox-created threads into safe thread list reads", async () => {
+    const state = createState();
+    const notifications = [];
+    const fetchRef = vi.fn(async (path) => {
+      if (String(path).startsWith("/codex/threads?workspace=windows")) {
+        return {
+          ok: true,
+          json: async () => ({
+            items: {
+              data: [{ id: "real-thread-1", title: "Real thread", workspace: "windows", updatedAt: "2026-03-18T00:00:00.000Z" }],
+              nextCursor: null,
+            },
+          }),
+        };
+      }
+      throw new Error(`unexpected fetch ${path}`);
+    });
+    const module = createModule(state, notifications, fetchRef, "safe");
+
+    const created = await module.api("/codex/threads", {
+      method: "POST",
+      body: { workspace: "windows" },
+    });
+    const list = await module.api("/codex/threads?workspace=windows");
+    const items = Array.isArray(list?.items?.data) ? list.items.data : [];
+
+    expect(items.some((item) => item.id === "real-thread-1")).toBe(true);
+    expect(items.some((item) => item.id === created.threadId)).toBe(true);
+  });
+
+  it("merges live history payload shape with sandbox turns in safe mode", async () => {
+    vi.useFakeTimers();
+    const state = createState();
+    const notifications = [];
+    const fetchRef = vi.fn(async (path) => {
+      if (String(path).startsWith("/codex/threads/real-thread-1/history")) {
+        return {
+          ok: true,
+          json: async () => ({
+            thread: {
+              id: "real-thread-1",
+              workspace: "windows",
+              path: "C:\\real\\rollout.jsonl",
+              turns: [
+                {
+                  id: "real-turn-1",
+                  items: [{ type: "assistantMessage", text: "Existing real answer" }],
+                },
+              ],
+            },
+            page: { incomplete: false, totalTurns: 1, hasMore: false },
+          }),
+        };
+      }
+      throw new Error(`unexpected fetch ${path}`);
+    });
+    const module = createModule(state, notifications, fetchRef, "safe");
+
+    await module.api("/codex/turns/start", {
+      method: "POST",
+      body: {
+        threadId: "real-thread-1",
+        prompt: "Sandbox follow-up",
+        workspace: "windows",
+      },
+    });
+
+    const history = await module.api("/codex/threads/real-thread-1/history?workspace=windows");
+    expect(history?.thread?.turns?.[0]?.id).toBe("real-turn-1");
+    expect(
+      history?.thread?.turns?.some((turn) =>
+        Array.isArray(turn?.items) &&
+        turn.items.some((item) => item?.type === "userMessage")
+      )
+    ).toBe(true);
+    expect(history?.page?.incomplete).toBe(true);
+  });
+
+  it("returns wrapped mock history when safe mode live history read fails for mock-only threads", async () => {
+    const state = createState();
+    const notifications = [];
+    const fetchRef = vi.fn(async (path) => {
+      if (String(path).startsWith("/codex/threads/mock-thread-1/history")) {
+        throw new Error("history 502");
+      }
+      throw new Error(`unexpected fetch ${path}`);
+    });
+    const module = createModule(state, notifications, fetchRef, "safe");
+
+    const history = await module.api("/codex/threads/mock-thread-1/history?workspace=windows");
+
+    expect(fetchRef).not.toHaveBeenCalled();
+    expect(history?.thread?.id).toBe("mock-thread-1");
+    expect(Array.isArray(history?.thread?.turns)).toBe(true);
+    expect(history?.page?.totalTurns).toBe(history?.thread?.turns?.length);
+    expect(history?.page?.hasMore).toBe(false);
   });
 });

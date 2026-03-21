@@ -24,6 +24,29 @@ pub(super) struct ThreadHistoryPage {
     pub(super) page: Value,
 }
 
+fn ensure_history_thread_path(thread: &mut Value) {
+    let Some(thread_obj) = thread.as_object_mut() else {
+        return;
+    };
+    let has_path = thread_obj
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    if has_path {
+        return;
+    }
+    let Some(rollout_path) = thread_obj
+        .get("rolloutPath")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    thread_obj.insert("path".to_string(), Value::String(rollout_path.to_string()));
+}
+
 struct BuildThreadHistoryPageInput<'a> {
     thread_id: &'a str,
     workspace_value: Option<&'a str>,
@@ -69,8 +92,30 @@ pub(super) fn _set_test_history_loader(loader: Option<TestHistoryLoader>) {
     }
 }
 
+#[cfg(test)]
+fn should_use_test_history_loader(thread_id: &str, rollout_path: Option<&str>) -> bool {
+    thread_id == "test-thread"
+        && rollout_path
+            .map(str::trim)
+            .is_some_and(|value| value.eq_ignore_ascii_case(r"C:\temp\test.jsonl"))
+}
+
 pub(super) fn default_history_page_limit() -> usize {
     DEFAULT_HISTORY_PAGE_LIMIT
+}
+
+pub(super) fn clamp_history_page_limit(limit: usize) -> usize {
+    limit.clamp(1, MAX_HISTORY_PAGE_LIMIT)
+}
+
+fn should_prefer_wsl_linux_loader(
+    workspace: Option<WorkspaceTarget>,
+    linux_rollout_path: Option<&str>,
+) -> bool {
+    matches!(workspace, Some(WorkspaceTarget::Wsl2))
+        && linux_rollout_path
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
 }
 
 pub(super) fn spawn_wsl_history_prewarm(items: &[Value]) {
@@ -85,17 +130,19 @@ pub(super) fn load_thread_history_page(
     limit: usize,
 ) -> Result<ThreadHistoryPage, String> {
     #[cfg(test)]
-    if let Some(loader) = match test_history_loader().lock() {
-        Ok(guard) => guard.clone(),
-        Err(err) => err.into_inner().clone(),
-    } {
-        return loader(
-            thread_id.to_string(),
-            workspace,
-            rollout_path.map(str::to_string),
-            before.map(str::to_string),
-            limit,
-        );
+    if should_use_test_history_loader(thread_id, rollout_path) {
+        if let Some(loader) = match test_history_loader().lock() {
+            Ok(guard) => guard.clone(),
+            Err(err) => err.into_inner().clone(),
+        } {
+            return loader(
+                thread_id.to_string(),
+                workspace,
+                rollout_path.map(str::to_string),
+                before.map(str::to_string),
+                limit,
+            );
+        }
     }
     load_thread_history_page_impl(thread_id, workspace, rollout_path, before, limit)
 }
@@ -112,13 +159,13 @@ fn load_thread_history_page_impl(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "missing rollout path".to_string())?;
     let resolved = resolve_rollout_path(workspace, raw_rollout_path)?;
-    let normalized_limit = limit.clamp(1, MAX_HISTORY_PAGE_LIMIT);
+    let normalized_limit = clamp_history_page_limit(limit);
     let workspace_value = match workspace {
         Some(WorkspaceTarget::Windows) => Some("windows"),
         Some(WorkspaceTarget::Wsl2) => Some("wsl2"),
         None => None,
     };
-    if matches!(workspace, Some(WorkspaceTarget::Wsl2)) {
+    if should_prefer_wsl_linux_loader(workspace, resolved.linux_path.as_deref()) {
         if let Some(linux_rollout_path) = resolved.linux_path.as_deref() {
             return load_wsl_history_page(
                 thread_id,
@@ -130,6 +177,20 @@ fn load_thread_history_page_impl(
                 normalized_limit,
             );
         }
+    }
+    if matches!(workspace, Some(WorkspaceTarget::Wsl2)) && resolved.local_path.exists() {
+        let parsed = load_cached_rollout_history(&resolved.local_path)?;
+        let page = build_thread_history_page(BuildThreadHistoryPageInput {
+            thread_id,
+            workspace_value,
+            rollout_path: raw_rollout_path,
+            turns: parsed.turns.as_slice(),
+            token_usage: parsed.token_usage.as_ref(),
+            incomplete: parsed.incomplete,
+            before,
+            normalized_limit,
+        })?;
+        return Ok(page);
     }
     let parsed = load_cached_rollout_history(&resolved.local_path)?;
     let page = build_thread_history_page(BuildThreadHistoryPageInput {
@@ -184,14 +245,17 @@ fn build_thread_history_page(
     } else {
         Value::Null
     };
+    let mut thread = json!({
+        "id": thread_id,
+        "workspace": workspace_value,
+        "path": rollout_path,
+        "rolloutPath": rollout_path,
+        "turns": page_turns,
+        "tokenUsage": token_usage.cloned().unwrap_or(Value::Null),
+    });
+    ensure_history_thread_path(&mut thread);
     Ok(ThreadHistoryPage {
-        thread: json!({
-            "id": thread_id,
-            "workspace": workspace_value,
-            "rolloutPath": rollout_path,
-            "turns": page_turns,
-            "tokenUsage": token_usage.cloned().unwrap_or(Value::Null),
-        }),
+        thread,
         page: json!({
             "hasMore": start > 0,
             "beforeCursor": before_cursor,
@@ -213,8 +277,15 @@ fn resolve_rollout_path(
     match workspace {
         Some(WorkspaceTarget::Wsl2) => {
             if let Some(linux_path) = parse_wsl_unc_to_linux_path(trimmed) {
+                #[cfg(target_os = "windows")]
+                let local_path = {
+                    let (distro, _) = resolve_wsl_identity()?;
+                    linux_path_to_unc(&linux_path, &distro)
+                };
+                #[cfg(not(target_os = "windows"))]
+                let local_path = Path::new(trimmed).to_path_buf();
                 return Ok(ResolvedRolloutPath {
-                    local_path: Path::new(trimmed).to_path_buf(),
+                    local_path,
                     linux_path: Some(linux_path),
                 });
             }
@@ -244,7 +315,9 @@ mod tests {
     use super::load_thread_history_page;
     use super::resolve_rollout_path;
     use super::wsl_index::_set_test_wsl_history_loader;
-    use super::{history_parse_count_for_path, reset_history_parse_counter};
+    use super::{
+        history_parse_count_for_path, reset_history_parse_counter, should_prefer_wsl_linux_loader,
+    };
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
     use std::io::Write;
 
@@ -311,6 +384,29 @@ mod tests {
             "compaction must not erase earlier assistant turns"
         );
         assert_eq!(result.page["hasMore"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn history_page_sets_thread_path_to_live_rollout_path() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-path"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hello","images":[],"local_images":[],"text_elements":[]}}"#,
+        ]);
+        let rollout_path = rollout.path().to_string_lossy().to_string();
+        let result = load_thread_history_page(
+            "thread-path",
+            Some(WorkspaceTarget::Windows),
+            Some(&rollout_path),
+            None,
+            10,
+        )
+        .expect("history page");
+
+        assert_eq!(
+            result.thread["rolloutPath"].as_str(),
+            Some(rollout_path.as_str())
+        );
+        assert_eq!(result.thread["path"].as_str(), Some(rollout_path.as_str()));
     }
 
     #[test]
@@ -404,13 +500,19 @@ mod tests {
         reset_history_parse_counter();
         let rollout = write_rollout(&[
             r#"{"type":"session_meta","payload":{"id":"thread-cache"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
             r#"{"type":"event_msg","payload":{"type":"user_message","message":"one","images":[],"local_images":[],"text_elements":[]}}"#,
             r#"{"type":"event_msg","payload":{"type":"agent_message","message":"reply one"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}"#,
             r#"{"type":"event_msg","payload":{"type":"user_message","message":"two","images":[],"local_images":[],"text_elements":[]}}"#,
             r#"{"type":"event_msg","payload":{"type":"agent_message","message":"reply two"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
             r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1024,"cached_input_tokens":0,"output_tokens":32,"reasoning_output_tokens":16,"total_tokens":1056},"last_token_usage":{"input_tokens":32,"cached_input_tokens":0,"output_tokens":8,"reasoning_output_tokens":4,"total_tokens":40},"model_context_window":8192}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-3"}}"#,
             r#"{"type":"event_msg","payload":{"type":"user_message","message":"three","images":[],"local_images":[],"text_elements":[]}}"#,
             r#"{"type":"event_msg","payload":{"type":"agent_message","message":"reply three"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
         ]);
         let first = load_thread_history_page(
             "thread-cache",
@@ -453,6 +555,90 @@ mod tests {
             older_turns[0]["items"][0]["content"][0]["text"].as_str(),
             Some("two")
         );
+    }
+
+    #[test]
+    fn history_page_reparses_incomplete_rollout_even_when_file_key_is_unchanged() {
+        _clear_history_turns_cache_for_test();
+        reset_history_parse_counter();
+        let rollout = tempfile::NamedTempFile::new().expect("temp rollout");
+        let initial = [
+            r#"{"type":"session_meta","payload":{"id":"thread-live-cache"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"keep reparsing incomplete cache state please","images":[],"local_images":[],"text_elements":[]}}"#,
+        ]
+        .join("\n");
+        let completed = [
+            r#"{"type":"session_meta","payload":{"id":"thread-live-cache"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"ok","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"done"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
+        ]
+        .join("\n");
+        let target_len = initial.len().max(completed.len()) + 1;
+        let initial_body = format!("{initial}\n{}", " ".repeat(target_len - initial.len() - 1));
+        let completed_body = format!(
+            "{completed}\n{}",
+            " ".repeat(target_len - completed.len() - 1)
+        );
+        std::fs::write(rollout.path(), initial_body).expect("write initial rollout");
+        let modified = std::fs::metadata(rollout.path())
+            .expect("initial metadata")
+            .modified()
+            .expect("initial modified time");
+
+        let first = load_thread_history_page(
+            "thread-live-cache",
+            Some(WorkspaceTarget::Windows),
+            Some(&rollout.path().to_string_lossy()),
+            None,
+            10,
+        )
+        .expect("first page");
+        assert_eq!(
+            first.page["incomplete"].as_bool(),
+            Some(true),
+            "initial read should reflect the incomplete active turn"
+        );
+        assert_eq!(
+            history_parse_count_for_path(rollout.path()),
+            1,
+            "first read should parse rollout once"
+        );
+
+        std::fs::write(rollout.path(), completed_body).expect("write completed rollout");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(rollout.path())
+            .expect("open rewritten rollout")
+            .set_modified(modified)
+            .expect("restore modified time");
+
+        let second = load_thread_history_page(
+            "thread-live-cache",
+            Some(WorkspaceTarget::Windows),
+            Some(&rollout.path().to_string_lossy()),
+            None,
+            10,
+        )
+        .expect("second page");
+        assert_eq!(
+            history_parse_count_for_path(rollout.path()),
+            2,
+            "incomplete rollouts must be reparsed even if the file key looks unchanged"
+        );
+        assert_eq!(second.page["incomplete"].as_bool(), Some(false));
+        let turns = second.thread["turns"].as_array().expect("turns array");
+        let items = turns[0]["items"].as_array().expect("items array");
+        assert!(
+            matches!(
+                items[1]["type"].as_str(),
+                Some("agentMessage") | Some("assistantMessage")
+            ),
+            "expected final assistant content after reparsing the completed rollout"
+        );
+        assert_eq!(items[1]["text"].as_str(), Some("done"));
     }
 
     #[test]
@@ -677,6 +863,13 @@ mod tests {
             r"\\wsl.localhost\Ubuntu\home\test\.codex\sessions\2026\03\07\rollout.jsonl",
         )
         .expect("resolve unc rollout path");
+        let text = path.local_path.to_string_lossy().replace('/', "\\");
+        #[cfg(target_os = "windows")]
+        assert!(
+            text.starts_with("\\\\wsl.localhost\\") || text.starts_with("\\\\wsl$\\"),
+            "expected normalized UNC path, got {text}"
+        );
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(
             path.local_path,
             std::path::PathBuf::from(
@@ -690,7 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn wsl_history_uses_linux_loader_instead_of_unc_file_reads() {
+    fn wsl_history_falls_back_to_linux_loader_when_local_path_is_missing() {
         let _home = EnvGuard::set("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
         let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
         let seen_clone = seen.clone();
@@ -739,5 +932,21 @@ mod tests {
             Some("/home/test/.codex/sessions/2026/03/07/rollout.jsonl")
         );
         assert_eq!(result.thread["workspace"].as_str(), Some("wsl2"));
+    }
+
+    #[test]
+    fn wsl_history_prefers_linux_loader_when_linux_path_is_known() {
+        assert!(should_prefer_wsl_linux_loader(
+            Some(WorkspaceTarget::Wsl2),
+            Some("/home/test/.codex/sessions/rollout.jsonl")
+        ));
+        assert!(!should_prefer_wsl_linux_loader(
+            Some(WorkspaceTarget::Windows),
+            Some("/home/test/.codex/sessions/rollout.jsonl")
+        ));
+        assert!(!should_prefer_wsl_linux_loader(
+            Some(WorkspaceTarget::Wsl2),
+            None
+        ));
     }
 }

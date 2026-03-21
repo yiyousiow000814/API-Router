@@ -21,8 +21,14 @@ describe("threadListRefresh", () => {
       ensureArrayItems: (value) => (Array.isArray(value) ? value : []),
       normalizeWorkspaceTarget: (value) => (value === "wsl2" ? "wsl2" : "windows"),
       getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "C:\\repo\\a",
       sortThreadsByNewest: (items) => [...items].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))),
-      filterThreadsForWorkspace: (items) => items.filter((item) => String(item.cwd || "").startsWith("C:\\")),
+      filterThreadsForWorkspace: (items, options) =>
+        items.filter(
+          (item) =>
+            String(item.cwd || "").startsWith("C:\\") &&
+            String(item.cwd || "").startsWith(String(options?.startCwd || ""))
+        ),
       hasDualWorkspaceTargets: () => true,
       detectWorkspaceAvailabilityFromThreads: vi.fn(),
       buildThreadRenderSig: vi.fn(),
@@ -38,8 +44,8 @@ describe("threadListRefresh", () => {
 
     module.applyThreadFilter();
 
-    expect(state.threadItems.map((item) => item.id)).toEqual(["a", "b"]);
-    expect(rendered).toEqual([["a", "b"]]);
+    expect(state.threadItems.map((item) => item.id)).toEqual(["a"]);
+    expect(rendered).toEqual([["a"]]);
   });
 
   it("updates workspace availability from discovered thread paths", () => {
@@ -59,6 +65,7 @@ describe("threadListRefresh", () => {
       ensureArrayItems: (value) => (Array.isArray(value) ? value : []),
       normalizeWorkspaceTarget: (value) => value,
       getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
       sortThreadsByNewest: (items) => items,
       filterThreadsForWorkspace: (items) => items,
       hasDualWorkspaceTargets: () => true,
@@ -83,5 +90,62 @@ describe("threadListRefresh", () => {
       windowsInstalled: true,
       wsl2Installed: true,
     });
+  });
+
+  it("upserts provisional live thread items into the active workspace cache", () => {
+    const rendered = [];
+    const persisted = vi.fn();
+    const state = {
+      threadItemsAll: [],
+      threadItems: [],
+      threadItemsByWorkspace: { windows: [], wsl2: [] },
+      threadWorkspaceHydratedByWorkspace: { windows: false, wsl2: false },
+      threadListRenderSigByWorkspace: { windows: "", wsl2: "" },
+      workspaceAvailability: { windowsInstalled: false, wsl2Installed: false },
+    };
+    const module = createThreadListRefreshModule({
+      state,
+      byId: () => null,
+      windowRef: { getComputedStyle: () => ({ display: "block", visibility: "visible" }), innerWidth: 1280, innerHeight: 720 },
+      documentRef: { documentElement: { clientWidth: 1280, clientHeight: 720 }, body: { classList: { contains: () => false } } },
+      api: vi.fn(),
+      ensureArrayItems: (value) => (Array.isArray(value) ? value : []),
+      normalizeWorkspaceTarget: (value) => (value === "wsl2" ? "wsl2" : "windows"),
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      sortThreadsByNewest: (items) => [...items].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)),
+      filterThreadsForWorkspace: (items) => items,
+      hasDualWorkspaceTargets: () => true,
+      detectWorkspaceAvailabilityFromThreads: () => ({
+        windowsInstalled: true,
+        wsl2Installed: false,
+      }),
+      buildThreadRenderSig: (items) => items.map((item) => item.id).join("|"),
+      persistThreadsCache: persisted,
+      syncActiveThreadMetaFromList: vi.fn(),
+      updateHeaderUi: vi.fn(),
+      pushThreadAnimDebug: vi.fn(),
+      renderThreads: (items) => rendered.push(items.map((entry) => entry.id)),
+      applyWorkspaceUi: vi.fn(),
+      setStatus: vi.fn(),
+      THREAD_FORCE_REFRESH_MIN_INTERVAL_MS: 1800,
+    });
+
+    expect(
+      module.upsertProvisionalThreadItem({
+        id: "thread-live",
+        workspace: "windows",
+        __workspaceQueryTarget: "windows",
+        preview: "build exe",
+        updatedAt: 1742340000000,
+        provisional: true,
+      })
+    ).toBe(true);
+
+    expect(state.threadItemsByWorkspace.windows.map((item) => item.id)).toEqual(["thread-live"]);
+    expect(state.threadItemsAll.map((item) => item.id)).toEqual(["thread-live"]);
+    expect(state.workspaceAvailability.windowsInstalled).toBe(true);
+    expect(rendered).toEqual([["thread-live"]]);
+    expect(persisted).toHaveBeenCalledTimes(1);
   });
 });

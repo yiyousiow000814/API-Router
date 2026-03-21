@@ -90,6 +90,20 @@ mod tests {
     }
 
     #[test]
+    fn terminal_session_marker_falls_back_to_pid_for_non_wt_processes() {
+        assert_eq!(
+            terminal_session_marker(Some("wt-session-1"), 42).as_deref(),
+            Some("wt-session-1")
+        );
+        assert_eq!(
+            terminal_session_marker(Some("   "), 42).as_deref(),
+            Some("pid:42")
+        );
+        assert_eq!(terminal_session_marker(None, 42).as_deref(), Some("pid:42"));
+        assert!(terminal_session_marker(None, 0).is_none());
+    }
+
+    #[test]
     fn wt_session_ids_equal_accepts_wsl_prefix() {
         assert!(wt_session_ids_equal(
             "7c757b99-7a1f-455a-b301-3e0271e7f615",

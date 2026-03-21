@@ -153,11 +153,12 @@ export function createComposerUiModule(deps) {
     if (
       method.endsWith("itemcompleted") ||
       method.endsWith("turncompleted") ||
-      method.endsWith("turnfinished") ||
-      method.endsWith("turnfailed") ||
-      method.endsWith("turncancelled")
+      method.endsWith("turnfinished")
     ) {
       return "complete";
+    }
+    if (method.endsWith("turnfailed") || method.endsWith("turncancelled")) {
+      return "error";
     }
     return "complete";
   }
@@ -167,7 +168,7 @@ export function createComposerUiModule(deps) {
     if (!itemType || itemType === "plan" || itemType === "usermessage" || itemType === "assistantmessage" || itemType === "agentmessage") {
       return null;
     }
-    const compactMessage = toolItemToMessage(item, { compact: true });
+    const compactMessage = toolItemToMessage(item, { compact: true, method: options.method });
     const compactText = readText(compactMessage);
     const status = deriveToolRuntimeState(item, options);
     const toolName = readText(item?.tool || item?.name);
@@ -285,12 +286,11 @@ export function createComposerUiModule(deps) {
 
   function renderActivityHtml(activity) {
     if (!activity) return "";
-    const title = "Working";
-    const dots = '<span class="runtimeActivityDots"><span></span><span></span><span></span></span>';
+    const dots = '<span class="runtimeActivityDots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>';
     const enterClass = state.chatOpening === true ? "" : " runtimeActivityEnter";
     return (
       `<div class="runtimeActivity${enterClass}" data-activity-tone="running">` +
-        `<span class="runtimeActivityText"><strong>${title}</strong></span>` +
+        `<span class="runtimeActivityText"><strong>working</strong></span>` +
         `${dots}` +
       `</div>`
     );

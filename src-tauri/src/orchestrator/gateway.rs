@@ -415,6 +415,7 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route("/ao-icon.png", get(codex_web_logo_png))
         .route("/codex/health", get(codex_health))
         .route("/codex/ws", get(codex_ws))
+        .route("/codex/app-server/ws", get(codex_app_server_ws))
         .route("/codex/auth/verify", post(codex_auth_verify))
         .route("/codex/debug/live", get(codex_live_debug))
         .route("/codex/debug/live/client", post(codex_live_debug_client))
@@ -437,6 +438,12 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
             get(codex_threads_list).post(codex_threads_create),
         )
         .route("/codex/threads/:id/history", get(codex_thread_history))
+        .route("/codex/threads/:id/transport", get(codex_thread_transport))
+        .route(
+            "/codex/threads/:id/managed-terminal",
+            post(codex_thread_open_managed_terminal),
+        )
+        .route("/codex/threads/:id/interrupt", post(codex_thread_interrupt))
         .route("/codex/threads/:id/resume", post(codex_thread_resume))
         .route("/codex/turns/start", post(codex_turn_start))
         .route("/codex/turns/stream", post(codex_turn_stream))
@@ -458,6 +465,7 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         )
         .route("/codex/slash/execute", post(codex_slash_execute))
         .route("/codex/terminal/exec", post(codex_terminal_exec))
+        .route("/codex/runtime/state", get(codex_runtime_state))
         .route("/codex/version-info", get(codex_version_info))
         .route("/codex/rpc", post(codex_rpc_proxy))
         .layer(DefaultBodyLimit::max(max_body_bytes))
@@ -507,12 +515,16 @@ mod web_codex_actions;
 mod web_codex_assets;
 mod web_codex_auth;
 mod web_codex_history;
-mod web_codex_home;
+pub(crate) mod web_codex_home;
 mod web_codex_hosts;
 mod web_codex_meta;
 mod web_codex_rollout_import;
+mod web_codex_rollout_path;
 mod web_codex_runtime;
+mod web_codex_session_manager;
+mod web_codex_session_runtime;
 pub(crate) mod web_codex_storage;
+mod web_codex_thread_options;
 mod web_codex_thread_routes;
 mod web_codex_threads;
 mod web_codex_ws;
@@ -520,6 +532,7 @@ include!("gateway/web_codex.rs");
 use self::web_codex_actions::{
     codex_approval_resolve, codex_attachments_upload, codex_rpc_proxy, codex_slash_commands,
     codex_slash_execute, codex_slash_review_branches, codex_slash_review_commits,
+    codex_thread_interrupt, codex_thread_open_managed_terminal, codex_thread_transport,
     codex_turn_interrupt, codex_turn_start, codex_turn_stream, codex_user_input_resolve,
 };
 use self::web_codex_assets::{
@@ -533,13 +546,15 @@ use self::web_codex_meta::{
     codex_cli_config, codex_file, codex_folders_list, codex_health, codex_models,
     codex_pending_approvals, codex_pending_user_inputs,
 };
-use self::web_codex_runtime::{codex_terminal_exec, codex_version_info};
+use self::web_codex_runtime::{codex_runtime_state, codex_terminal_exec, codex_version_info};
 #[cfg(test)]
 use self::web_codex_thread_routes::codex_test_block_history;
 use self::web_codex_thread_routes::{
     codex_thread_history, codex_thread_resume, codex_threads_create, codex_threads_list,
 };
-use self::web_codex_ws::{codex_auth_verify, codex_live_debug, codex_live_debug_client, codex_ws};
+use self::web_codex_ws::{
+    codex_app_server_ws, codex_auth_verify, codex_live_debug, codex_live_debug_client, codex_ws,
+};
 const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
 
 #[cfg(test)]

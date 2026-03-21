@@ -1,12 +1,42 @@
 use super::*;
+use axum::extract::Query;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
+
+use crate::orchestrator::gateway::web_codex_home::{
+    parse_workspace_target, web_codex_rpc_home_override_for_target,
+};
+use crate::orchestrator::gateway::web_codex_session_runtime::{
+    workspace_runtime_snapshot, workspace_thread_runtime_count, WorkspaceRuntimeSnapshot,
+};
 
 #[derive(Deserialize)]
 pub(super) struct TerminalExecRequest {
     pub(super) command: String,
     #[serde(default)]
     pub(super) cwd: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RuntimeStateQuery {
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(default)]
+    home: Option<String>,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CodexRuntimeStatePayload {
+    workspace: String,
+    home_override: Option<String>,
+    connected: bool,
+    connected_at_unix_secs: Option<i64>,
+    last_replay_cursor: u64,
+    last_replay_last_event_id: Option<u64>,
+    last_replay_at_unix_secs: Option<i64>,
+    active_thread_count: usize,
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq, Eq)]
@@ -17,6 +47,14 @@ pub(super) struct CodexVersionInfo {
     windows_installed: bool,
     #[serde(rename = "wsl2Installed")]
     wsl2_installed: bool,
+    #[serde(rename = "windowsAppServerSupported")]
+    windows_app_server_supported: bool,
+    #[serde(rename = "wsl2AppServerSupported")]
+    wsl2_app_server_supported: bool,
+    #[serde(rename = "windowsRemoteTuiSupported")]
+    windows_remote_tui_supported: bool,
+    #[serde(rename = "wsl2RemoteTuiSupported")]
+    wsl2_remote_tui_supported: bool,
     #[serde(rename = "appVersion")]
     app_version: String,
     #[serde(rename = "buildGitSha")]
@@ -35,6 +73,14 @@ pub(super) struct CodexVersionInfo {
 struct CodexVersionInfoCache {
     value: CodexVersionInfo,
     updated_at_unix_secs: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DetectedCodexRuntime {
+    version: String,
+    installed: bool,
+    app_server_supported: bool,
+    remote_tui_supported: bool,
 }
 
 fn codex_version_info_cache() -> &'static std::sync::Mutex<Option<CodexVersionInfoCache>> {
@@ -59,7 +105,7 @@ pub(super) fn truncate_output(value: &[u8]) -> (String, bool) {
     (String::from_utf8_lossy(head).to_string(), true)
 }
 
-async fn run_version_cmd(mut cmd: Command) -> Option<String> {
+async fn run_stdout_cmd(mut cmd: Command) -> Option<String> {
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::null());
     #[cfg(target_os = "windows")]
@@ -74,41 +120,121 @@ async fn run_version_cmd(mut cmd: Command) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn first_nonempty_line(value: &str) -> Option<String> {
+    value
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
         .map(|line| line.to_string())
 }
 
-async fn detect_windows_codex_version() -> String {
-    let mut cmd = Command::new("cmd.exe");
-    cmd.arg("/C").arg("codex --version");
-    if let Some(found) = run_version_cmd(cmd).await {
-        return found;
-    }
+fn help_text_supports_app_server(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("app-server")
+}
 
+fn help_text_supports_remote_tui(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("--remote")
+}
+
+async fn run_windows_shell_stdout(command: &str) -> Option<String> {
+    let mut cmd = Command::new("cmd.exe");
+    cmd.arg("/C").arg(command);
+    run_stdout_cmd(cmd).await
+}
+
+async fn run_wsl_shell_stdout(command: &str) -> Option<String> {
+    let mut cmd = Command::new("wsl.exe");
+    cmd.arg("-e").arg("bash").arg("-lc").arg(command);
+    run_stdout_cmd(cmd).await
+}
+
+fn windows_codex_shell_candidates(subcommand: &str) -> Vec<String> {
+    let mut candidates = vec![format!("codex {subcommand}")];
     if let Ok(appdata) = std::env::var("APPDATA") {
         let candidate = PathBuf::from(appdata).join("npm").join("codex.cmd");
         if candidate.exists() {
-            let mut cmd = Command::new("cmd.exe");
-            cmd.arg("/C").arg(candidate).arg("--version");
-            if let Some(found) = run_version_cmd(cmd).await {
-                return found;
+            candidates.push(format!("\"{}\" {subcommand}", candidate.display()));
+        }
+    }
+    candidates
+}
+
+async fn detect_windows_codex_runtime() -> DetectedCodexRuntime {
+    let mut version = "Not installed".to_string();
+    let mut app_server_supported = false;
+    let mut remote_tui_supported = false;
+    for candidate in windows_codex_shell_candidates("--version") {
+        if let Some(found) = run_windows_shell_stdout(&candidate).await {
+            if let Some(line) = first_nonempty_line(&found) {
+                version = line;
+                break;
             }
         }
     }
-    "Not installed".to_string()
+    let installed = version != "Not installed";
+    if installed {
+        for candidate in windows_codex_shell_candidates("--help") {
+            if let Some(help) = run_windows_shell_stdout(&candidate).await {
+                remote_tui_supported = help_text_supports_remote_tui(&help);
+                if remote_tui_supported {
+                    break;
+                }
+            }
+        }
+        for candidate in windows_codex_shell_candidates("app-server --help") {
+            if let Some(help) = run_windows_shell_stdout(&candidate).await {
+                app_server_supported = help_text_supports_app_server(&help);
+                if app_server_supported {
+                    break;
+                }
+            }
+        }
+    }
+    DetectedCodexRuntime {
+        version,
+        installed,
+        app_server_supported,
+        remote_tui_supported,
+    }
 }
 
-async fn detect_wsl_codex_version() -> String {
-    let mut cmd = Command::new("wsl.exe");
-    cmd.arg("-e").arg("bash").arg("-lc").arg("codex --version");
-    if let Some(found) = run_version_cmd(cmd).await {
-        return found;
+async fn detect_wsl_codex_runtime() -> DetectedCodexRuntime {
+    let version = run_wsl_shell_stdout("codex --version")
+        .await
+        .and_then(|found| first_nonempty_line(&found))
+        .unwrap_or_else(|| "Not installed".to_string());
+    let installed = version != "Not installed";
+    let remote_tui_supported = if installed {
+        run_wsl_shell_stdout("codex --help")
+            .await
+            .is_some_and(|help| help_text_supports_remote_tui(&help))
+    } else {
+        false
+    };
+    let app_server_supported = if installed {
+        run_wsl_shell_stdout("codex app-server --help")
+            .await
+            .is_some_and(|help| help_text_supports_app_server(&help))
+    } else {
+        false
+    };
+    DetectedCodexRuntime {
+        version,
+        installed,
+        app_server_supported,
+        remote_tui_supported,
     }
-    "Not installed".to_string()
 }
 
 fn resolve_repo_root_for_git() -> Option<PathBuf> {
@@ -160,8 +286,8 @@ fn short_git_sha(value: Option<&str>) -> Option<String> {
 }
 
 fn build_version_payload(
-    windows: String,
-    wsl2: String,
+    windows: DetectedCodexRuntime,
+    wsl2: DetectedCodexRuntime,
     build_git_sha: String,
     build_git_short_sha: String,
     repo_git_sha: Option<String>,
@@ -171,10 +297,14 @@ fn build_version_payload(
         .as_deref()
         .is_some_and(|repo| !build_git_sha.eq_ignore_ascii_case(repo));
     CodexVersionInfo {
-        windows_installed: windows != "Not installed",
-        wsl2_installed: wsl2 != "Not installed",
-        windows,
-        wsl2,
+        windows_installed: windows.installed,
+        wsl2_installed: wsl2.installed,
+        windows_app_server_supported: windows.app_server_supported,
+        wsl2_app_server_supported: wsl2.app_server_supported,
+        windows_remote_tui_supported: windows.remote_tui_supported,
+        wsl2_remote_tui_supported: wsl2.remote_tui_supported,
+        windows: windows.version,
+        wsl2: wsl2.version,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         build_git_sha,
         build_git_short_sha,
@@ -182,6 +312,45 @@ fn build_version_payload(
         repo_git_short_sha,
         build_stale,
     }
+}
+
+fn normalize_runtime_home_override(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn build_runtime_state_payload(snapshot: WorkspaceRuntimeSnapshot) -> CodexRuntimeStatePayload {
+    let active_thread_count = workspace_thread_runtime_count(
+        snapshot.workspace_target,
+        snapshot.home_override.as_deref(),
+    );
+    CodexRuntimeStatePayload {
+        workspace: snapshot.workspace_label,
+        home_override: snapshot.home_override,
+        connected: snapshot.connected,
+        connected_at_unix_secs: snapshot.connected_at_unix_secs,
+        last_replay_cursor: snapshot.last_replay_cursor,
+        last_replay_last_event_id: snapshot.last_replay_last_event_id,
+        last_replay_at_unix_secs: snapshot.last_replay_at_unix_secs,
+        active_thread_count,
+    }
+}
+
+pub(super) async fn codex_runtime_state(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+    Query(query): Query<RuntimeStateQuery>,
+) -> Response {
+    if let Some(resp) = require_codex_auth(&st, &headers) {
+        return resp;
+    }
+    let workspace_target = query.workspace.as_deref().and_then(parse_workspace_target);
+    let home_override = normalize_runtime_home_override(query.home.as_deref())
+        .or_else(|| web_codex_rpc_home_override_for_target(workspace_target));
+    let snapshot = workspace_runtime_snapshot(workspace_target, home_override.as_deref());
+    Json(build_runtime_state_payload(snapshot)).into_response()
 }
 
 pub(super) async fn codex_version_info(
@@ -198,7 +367,7 @@ pub(super) async fn codex_version_info(
         }
     }
 
-    let (windows, wsl2) = tokio::join!(detect_windows_codex_version(), detect_wsl_codex_version());
+    let (windows, wsl2) = tokio::join!(detect_windows_codex_runtime(), detect_wsl_codex_runtime());
     let build_git_sha = option_env!("API_ROUTER_BUILD_GIT_SHA")
         .unwrap_or("unknown")
         .to_string();
@@ -307,6 +476,11 @@ pub(super) async fn codex_terminal_exec(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
+    use crate::orchestrator::gateway::web_codex_session_runtime::{
+        _clear_workspace_runtime_registry_for_test, mark_workspace_runtime_connected,
+        mark_workspace_runtime_replay, upsert_workspace_thread_runtime,
+    };
 
     #[test]
     fn short_git_sha_truncates_only_when_needed() {
@@ -321,15 +495,106 @@ mod tests {
     #[test]
     fn build_version_payload_marks_installation_and_staleness() {
         let payload = build_version_payload(
-            "codex 1.0.0".to_string(),
-            "Not installed".to_string(),
+            DetectedCodexRuntime {
+                version: "codex 1.0.0".to_string(),
+                installed: true,
+                app_server_supported: true,
+                remote_tui_supported: true,
+            },
+            DetectedCodexRuntime {
+                version: "Not installed".to_string(),
+                installed: false,
+                app_server_supported: false,
+                remote_tui_supported: false,
+            },
             "abc12345".to_string(),
             "abc12345".to_string(),
             Some("fff00000".to_string()),
         );
         assert!(payload.windows_installed);
         assert!(!payload.wsl2_installed);
+        assert!(payload.windows_app_server_supported);
+        assert!(payload.windows_remote_tui_supported);
+        assert!(!payload.wsl2_app_server_supported);
+        assert!(!payload.wsl2_remote_tui_supported);
         assert_eq!(payload.repo_git_short_sha, Some("fff00000".to_string()));
         assert!(payload.build_stale);
+    }
+
+    #[test]
+    fn help_text_support_flags_are_detected() {
+        let help = "Usage: codex [OPTIONS]\nCommands:\n  app-server\nOptions:\n  --remote <ADDR>\n";
+        assert!(help_text_supports_app_server(help));
+        assert!(help_text_supports_remote_tui(help));
+        assert!(!help_text_supports_remote_tui("Usage: codex [OPTIONS]"));
+    }
+
+    #[test]
+    fn build_runtime_state_payload_maps_snapshot_fields() {
+        let payload = build_runtime_state_payload(WorkspaceRuntimeSnapshot {
+            workspace_target: Some(WorkspaceTarget::Windows),
+            workspace_label: "windows".to_string(),
+            home_override: Some(r"C:\Users\yiyou\.codex".to_string()),
+            connected: true,
+            connected_at_unix_secs: Some(123),
+            last_replay_cursor: 45,
+            last_replay_last_event_id: Some(67),
+            last_replay_at_unix_secs: Some(89),
+        });
+        assert_eq!(payload.workspace, "windows");
+        assert_eq!(
+            payload.home_override.as_deref(),
+            Some(r"C:\Users\yiyou\.codex")
+        );
+        assert!(payload.connected);
+        assert_eq!(payload.connected_at_unix_secs, Some(123));
+        assert_eq!(payload.last_replay_cursor, 45);
+        assert_eq!(payload.last_replay_last_event_id, Some(67));
+        assert_eq!(payload.last_replay_at_unix_secs, Some(89));
+        assert_eq!(payload.active_thread_count, 0);
+    }
+
+    #[test]
+    fn normalize_runtime_home_override_trims_and_drops_empty() {
+        assert_eq!(
+            normalize_runtime_home_override(Some(r"  C:\Users\yiyou\.codex  ")).as_deref(),
+            Some(r"C:\Users\yiyou\.codex")
+        );
+        assert_eq!(normalize_runtime_home_override(Some("   ")), None);
+        assert_eq!(normalize_runtime_home_override(None), None);
+    }
+
+    #[test]
+    fn runtime_state_payload_uses_registered_workspace_snapshot() {
+        _clear_workspace_runtime_registry_for_test();
+        mark_workspace_runtime_connected(Some(WorkspaceTarget::Wsl2), Some("/home/yiyou/.codex"));
+        mark_workspace_runtime_replay(
+            Some(WorkspaceTarget::Wsl2),
+            Some("/home/yiyou/.codex"),
+            12,
+            Some(34),
+        );
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Wsl2),
+            Some("/home/yiyou/.codex"),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some("/home/yiyou/repo"),
+                rollout_path: Some("/home/yiyou/.codex/sessions/rollout-thread-1.jsonl"),
+                status: Some("running"),
+                last_event_id: Some(34),
+                last_turn_id: Some("turn-1"),
+            },
+        );
+        let payload = build_runtime_state_payload(workspace_runtime_snapshot(
+            Some(WorkspaceTarget::Wsl2),
+            Some("/home/yiyou/.codex"),
+        ));
+        assert_eq!(payload.workspace, "wsl2");
+        assert_eq!(payload.home_override.as_deref(), Some("/home/yiyou/.codex"));
+        assert!(payload.connected);
+        assert_eq!(payload.last_replay_cursor, 12);
+        assert_eq!(payload.last_replay_last_event_id, Some(34));
+        assert_eq!(payload.active_thread_count, 1);
     }
 }

@@ -40,6 +40,7 @@ import {
   stripCodexImageBlocks,
   toStructuredPreview,
 } from "./modules/codex-web/messageData.js";
+import { resetPendingTurnRuntime, resetTurnPresentationState } from "./modules/codex-web/runtimeState.js";
 import { normalizeStartCwd } from "./modules/codex-web/workspaceUi.js";
 import {
   createWsClientModule,
@@ -67,6 +68,7 @@ import { createCodexWebComposition } from "./modules/codex-web/composition.js";
 import {
   ACTIVE_MAIN_TAB_KEY,
   ACTIVE_THREAD_LIVE_POLL_MS,
+  ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS,
   ACTIVE_THREAD_REFRESH_DEBOUNCE_MS,
   CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS,
   CHAT_LIVE_FOLLOW_MAX_STEP_PX,
@@ -276,6 +278,10 @@ function normalizeWorkspaceTarget(value) {
 function setActiveThread(id) {
   const prev = state.activeThreadId || "";
   state.activeThreadId = id || "";
+  try {
+    if (state.activeThreadAttachPendingTimer) clearTimeout(state.activeThreadAttachPendingTimer);
+  } catch {}
+  state.activeThreadAttachPendingTimer = 0;
   if (prev !== state.activeThreadId) {
     clearPromptValue();
     hideSlashCommandMenu();
@@ -286,23 +292,25 @@ function setActiveThread(id) {
     state.queuedTurnEditingId = "";
     state.queuedTurnEditingDraft = "";
     state.queuedTurnDeferredComposerRestoreId = "";
-    state.activeThreadPendingTurnThreadId = "";
-    state.activeThreadPendingTurnRunning = false;
-    state.activeThreadPendingUserMessage = "";
-    state.activeThreadPendingAssistantMessage = "";
-    state.activeThreadTransientToolText = "";
-    state.activeThreadTransientThinkingText = "";
-    state.activeThreadCommentaryCurrent = null;
-    state.activeThreadCommentaryArchive = [];
-    state.activeThreadCommentaryArchiveVisible = false;
-    state.activeThreadCommentaryArchiveExpanded = false;
-    state.activeThreadInlineCommentaryArchiveCount = 0;
+    resetPendingTurnRuntime(state);
+    resetTurnPresentationState(state);
   }
   if (!state.activeThreadId) {
     state.activeThreadStarted = false;
     state.activeThreadWorkspace = getWorkspaceTarget();
+    state.activeThreadAttachTransport = "";
+    state.activeThreadAttachPendingUntil = 0;
   } else {
+    state.activeThreadAttachPendingUntil = Date.now() + 2000;
     syncActiveThreadMetaFromList(state.activeThreadId);
+    state.activeThreadAttachTransport = String(
+      state.threadAttachTransportById?.get?.(state.activeThreadId) || ""
+    ).trim();
+    state.activeThreadAttachPendingTimer = setTimeout(() => {
+      state.activeThreadAttachPendingTimer = 0;
+      if (!state.activeThreadId) return;
+      updateHeaderUi();
+    }, 2050);
   }
   const activeThreadLabel = byId("activeThreadId");
   if (activeThreadLabel) activeThreadLabel.textContent = state.activeThreadId || "(none)";
@@ -454,6 +462,7 @@ const composition = createCodexWebComposition({
   THREAD_AUTO_REFRESH_CONNECTED_MS,
   THREAD_AUTO_REFRESH_DISCONNECTED_MS,
   ACTIVE_THREAD_LIVE_POLL_MS,
+  ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS,
   LAST_EVENT_ID_KEY,
   LIVE_INSPECTOR_ENABLED_KEY,
   createWsClientModule,

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractNotificationEventId,
   extractNotificationThreadId,
+  synthesizeProvisionalThreadItem,
   shouldRefreshActiveThreadFromNotification,
   shouldRefreshThreadsFromNotification,
 } from "./notificationRouting.js";
@@ -53,13 +54,52 @@ describe("notificationRouting", () => {
     expect(shouldRefreshThreadsFromNotification("item_completed")).toBe(true);
     expect(shouldRefreshThreadsFromNotification("thread/status")).toBe(true);
     expect(shouldRefreshThreadsFromNotification("noop")).toBe(false);
+    expect(shouldRefreshActiveThreadFromNotification("turn/started")).toBe(true);
     expect(shouldRefreshActiveThreadFromNotification("turn/completed")).toBe(true);
     expect(shouldRefreshActiveThreadFromNotification("turn.failed")).toBe(true);
+    expect(shouldRefreshActiveThreadFromNotification("thread/status")).toBe(true);
     expect(shouldRefreshActiveThreadFromNotification("thread/status/changed")).toBe(true);
     expect(shouldRefreshActiveThreadFromNotification("thread.status.changed")).toBe(true);
+    expect(shouldRefreshActiveThreadFromNotification("item.started")).toBe(true);
+    expect(shouldRefreshActiveThreadFromNotification("item_completed")).toBe(true);
+    expect(shouldRefreshActiveThreadFromNotification("codex/event/response_item")).toBe(true);
+    expect(shouldRefreshActiveThreadFromNotification("codex/event/agent_message")).toBe(true);
     expect(shouldRefreshActiveThreadFromNotification("turn/assistant/delta")).toBe(false);
     expect(shouldRefreshActiveThreadFromNotification("item.updated")).toBe(false);
-    expect(shouldRefreshActiveThreadFromNotification("item_completed")).toBe(false);
     expect(shouldRefreshActiveThreadFromNotification("codex/event/agent_message_content_delta")).toBe(false);
+    expect(shouldRefreshActiveThreadFromNotification("codex/event/agent_reasoning")).toBe(false);
+  });
+
+  it("synthesizes provisional thread items from live notifications", () => {
+    const item = synthesizeProvisionalThreadItem(
+      {
+        method: "codex/event/response_item",
+        params: {
+          workspace: "wsl2",
+          rolloutPath: "/home/yiyou/.codex/sessions/rollout.jsonl",
+          payload: {
+            type: "message",
+            role: "user",
+            thread_id: "thread-1",
+            content: [{ type: "input_text", text: "build exe" }],
+          },
+        },
+      },
+      "windows",
+      1742340000000
+    );
+
+    expect(item).toEqual({
+      id: "thread-1",
+      threadId: "thread-1",
+      workspace: "wsl2",
+      __workspaceQueryTarget: "wsl2",
+      source: "live-provisional",
+      provisional: true,
+      updatedAt: 1742340000000,
+      path: "/home/yiyou/.codex/sessions/rollout.jsonl",
+      preview: "build exe",
+      title: "build exe",
+    });
   });
 });

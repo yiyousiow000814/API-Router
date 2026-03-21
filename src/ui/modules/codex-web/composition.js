@@ -1,5 +1,6 @@
 export function createCodexWebComposition(deps) {
   let renderThreads = () => {};
+  let upsertProvisionalThreadItem = () => false;
   let wireThreadPullToRefresh = () => {};
   let startThreadAutoRefreshLoop = () => {};
   let startActiveThreadLivePollLoop = () => {};
@@ -38,6 +39,7 @@ export function createCodexWebComposition(deps) {
     renderLiveNotification: (...args) => deps.renderLiveNotification(...args),
     applyPendingPayloads: (...args) => applyPendingPayloads(...args),
     addChat: (...args) => addChat(...args),
+    upsertProvisionalThreadItem: (...args) => upsertProvisionalThreadItem(...args),
     LAST_EVENT_ID_KEY: deps.LAST_EVENT_ID_KEY,
     transportMode: deps.transportMode,
   });
@@ -45,6 +47,7 @@ export function createCodexWebComposition(deps) {
   const workspaceUi = deps.createWorkspaceUiModule({
     state: deps.state,
     byId: deps.byId,
+    api,
     normalizeWorkspaceTarget: deps.normalizeWorkspaceTargetInModule,
     WORKSPACE_TARGET_KEY: deps.WORKSPACE_TARGET_KEY,
     START_CWD_BY_WORKSPACE_KEY: deps.START_CWD_BY_WORKSPACE_KEY,
@@ -54,11 +57,12 @@ export function createCodexWebComposition(deps) {
     setStatus: deps.setStatus,
     pushThreadAnimDebug: deps.pushThreadAnimDebug,
     isThreadListActuallyVisible: (...args) => isThreadListActuallyVisible(...args),
-    buildThreadRenderSig: deps.buildThreadRenderSig,
-    applyThreadFilter: (...args) => applyThreadFilter(...args),
-    refreshThreads: (...args) => refreshThreads(...args),
-    renderThreads: (...args) => renderThreads(...args),
-  });
+      buildThreadRenderSig: deps.buildThreadRenderSig,
+      applyThreadFilter: (...args) => applyThreadFilter(...args),
+      refreshThreads: (...args) => refreshThreads(...args),
+      syncEventSubscription,
+      renderThreads: (...args) => renderThreads(...args),
+    });
 
   const chatViewport = deps.createChatViewportModule({
     state: deps.state,
@@ -155,6 +159,7 @@ export function createCodexWebComposition(deps) {
     ensureArrayItems: deps.ensureArrayItems,
     normalizeWorkspaceTarget: deps.normalizeWorkspaceTarget,
     getWorkspaceTarget: workspaceUi.getWorkspaceTarget,
+    getStartCwdForWorkspace: workspaceUi.getStartCwdForWorkspace,
     sortThreadsByNewest: deps.sortThreadsByNewest,
     filterThreadsForWorkspace: deps.filterThreadsForWorkspace,
     hasDualWorkspaceTargets: workspaceUi.hasDualWorkspaceTargets,
@@ -169,6 +174,7 @@ export function createCodexWebComposition(deps) {
     setStatus: deps.setStatus,
     THREAD_FORCE_REFRESH_MIN_INTERVAL_MS: deps.THREAD_FORCE_REFRESH_MIN_INTERVAL_MS,
   });
+  ({ upsertProvisionalThreadItem } = threadListRefresh);
 
   ({ renderThreads } = deps.createThreadListViewModule({
     state: deps.state,
@@ -197,6 +203,8 @@ export function createCodexWebComposition(deps) {
       deps.updateMobileComposerState();
       deps.renderRuntimePanels();
     },
+    refreshWorkspaceRuntimeState: workspaceUi.refreshWorkspaceRuntimeState,
+    updateHeaderUi: deps.updateHeaderUi,
     setStatus: deps.setStatus,
     scheduleThreadRefresh: deps.scheduleThreadRefresh,
     scrollToBottomReliable: chatViewport.scrollToBottomReliable,
@@ -232,6 +240,7 @@ export function createCodexWebComposition(deps) {
     getEmbeddedToken: deps.getEmbeddedToken,
     refreshModels: modelPicker.refreshModels,
     refreshCodexVersions: deps.refreshCodexVersions,
+    refreshWorkspaceRuntimeState: workspaceUi.refreshWorkspaceRuntimeState,
     refreshThreads: (...args) => refreshThreads(...args),
     getWorkspaceTarget: workspaceUi.getWorkspaceTarget,
     isWorkspaceAvailable: workspaceUi.isWorkspaceAvailable,
@@ -255,6 +264,7 @@ export function createCodexWebComposition(deps) {
     getStartCwdForWorkspace: workspaceUi.getStartCwdForWorkspace,
     waitPendingThreadResume: deps.waitPendingThreadResume,
     registerPendingThreadResume: deps.registerPendingThreadResume,
+    refreshWorkspaceRuntimeState: workspaceUi.refreshWorkspaceRuntimeState,
     updateHeaderUi: deps.updateHeaderUi,
     addChat: chatTimeline.addChat,
     clearChatMessages: chatTimeline.clearChatMessages,
@@ -331,6 +341,7 @@ export function createCodexWebComposition(deps) {
       clearQueuedTurn: turnActions.clearQueuedTurn,
       editQueuedTurn: turnActions.editQueuedTurn,
       maybeRestoreDeferredQueuedTurnEdit: turnActions.maybeRestoreDeferredQueuedTurnEdit,
+      openManagedTerminalSurface: turnActions.openManagedTerminalSurface,
       queueFollowUpTurn: turnActions.queueFollowUpTurn,
       saveQueuedTurnEdit: turnActions.saveQueuedTurnEdit,
       sendNowTurn: turnActions.sendNowTurn,
@@ -355,6 +366,7 @@ export function createCodexWebComposition(deps) {
     renderInlineMessageText: deps.renderInlineMessageText,
     findNextInlineCodeSpan: deps.findNextInlineCodeSpan,
     normalizeWorkspaceTarget: deps.normalizeWorkspaceTarget,
+    detectThreadWorkspaceTarget: deps.detectThreadWorkspaceTarget,
     normalizeModelOption: deps.normalizeModelOption,
     ensureArrayItems: deps.ensureArrayItems,
     pickLatestModelId: deps.pickLatestModelId,
@@ -368,6 +380,7 @@ export function createCodexWebComposition(deps) {
     showWelcomeCard: deps.showWelcomeCard,
     updateHeaderUi: deps.updateHeaderUi,
     getWorkspaceTarget: workspaceUi.getWorkspaceTarget,
+    getStartCwdForWorkspace: workspaceUi.getStartCwdForWorkspace,
     parseUserMessageParts: deps.parseUserMessageParts,
     renderMessageAttachments: deps.renderMessageAttachments,
     setMainTab: deps.setMainTab,
@@ -394,6 +407,7 @@ export function createCodexWebComposition(deps) {
     setHeaderModelMenuOpen: modelPicker.setHeaderModelMenuOpen,
     renderHeaderModelMenu: modelPicker.renderHeaderModelMenu,
     setWorkspaceTarget: workspaceUi.setWorkspaceTarget,
+    setStartCwdForWorkspace: workspaceUi.setStartCwdForWorkspace,
   });
 
   ({
@@ -406,6 +420,7 @@ export function createCodexWebComposition(deps) {
     waitMs: deps.waitMs,
     setStatus: deps.setStatus,
     refreshThreads: (...args) => refreshThreads(...args),
+    refreshCodexVersions: deps.refreshCodexVersions,
     getWorkspaceTarget: workspaceUi.getWorkspaceTarget,
     loadThreadMessages: historyLoader.loadThreadMessages,
     THREAD_PULL_REFRESH_TRIGGER_PX: deps.THREAD_PULL_REFRESH_TRIGGER_PX,
@@ -415,6 +430,7 @@ export function createCodexWebComposition(deps) {
     THREAD_AUTO_REFRESH_CONNECTED_MS: deps.THREAD_AUTO_REFRESH_CONNECTED_MS,
     THREAD_AUTO_REFRESH_DISCONNECTED_MS: deps.THREAD_AUTO_REFRESH_DISCONNECTED_MS,
     ACTIVE_THREAD_LIVE_POLL_MS: deps.ACTIVE_THREAD_LIVE_POLL_MS,
+    ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS: deps.ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS,
   }));
 
   const bootstrapApp = deps.createBootstrapModule({
@@ -480,7 +496,9 @@ export function createCodexWebComposition(deps) {
     getWorkspaceTarget,
     hasDualWorkspaceTargets,
     isWorkspaceAvailable,
+    getWorkspaceRuntimeState,
     persistStartCwdByWorkspace,
+    refreshWorkspaceRuntimeState,
     setStartCwdForWorkspace,
     setWorkspaceTarget,
     syncActiveThreadMetaFromList,
@@ -572,7 +590,9 @@ export function createCodexWebComposition(deps) {
     getWorkspaceTarget,
     hasDualWorkspaceTargets,
     isWorkspaceAvailable,
+    getWorkspaceRuntimeState,
     persistStartCwdByWorkspace,
+    refreshWorkspaceRuntimeState,
     setStartCwdForWorkspace,
     setWorkspaceTarget,
     syncActiveThreadMetaFromList,

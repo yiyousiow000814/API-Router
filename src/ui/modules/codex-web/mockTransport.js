@@ -8,6 +8,13 @@ function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
+function listDataArray(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.items)) return payload.items;
+  return [];
+}
+
 function readQuery(path) {
   const [, search = ""] = String(path || "").split("?");
   return new URLSearchParams(search);
@@ -63,6 +70,94 @@ function buildMockChunks(text) {
   return (
     normalized.match(/.{1,18}(?:\s+|$)/g)?.map((chunk) => chunk.trim()).filter(Boolean) || [normalized]
   );
+}
+
+function buildMockCommentaryText(payload, prompt) {
+  const userPrompt = String(prompt || "").trim() || "your request";
+  if (payload?.collaborationMode === "plan") {
+    return `Inspecting the workspace and breaking down "${userPrompt}" into a concrete plan.`;
+  }
+  if (payload?.serviceTier === "fast") {
+    return `Fast mode is on, so I am quickly scanning context for "${userPrompt}" before responding.`;
+  }
+  return `Inspecting local context for "${userPrompt}" before I answer.`;
+}
+
+function buildMockToolSteps(payload) {
+  const failedCommand = String(payload?.mockScenario || "").trim().toLowerCase() === "failed-command";
+  return [
+    {
+      startAt: 420,
+      completeAt: 1500,
+      running: {
+        id: "mock-web-search-1",
+        type: "web_search",
+        query: "local mock transport",
+        status: "running",
+      },
+      completed: {
+        id: "mock-web-search-1",
+        type: "web_search",
+        query: "local mock transport",
+        status: "completed",
+      },
+    },
+    {
+      startAt: 2400,
+      completeAt: 3600,
+      running: {
+        id: "mock-command-1",
+        type: "command_execution",
+        command: "Get-ChildItem -Recurse -Filter *.js",
+        status: "running",
+      },
+      completed: {
+        id: "mock-command-1",
+        type: "command_execution",
+        command: "Get-ChildItem -Recurse -Filter *.js",
+        status: "completed",
+        output: "src/ui/modules/codex-web/wsClient.js\nsrc/ui/modules/codex-web/mockTransport.js",
+        exitCode: 0,
+      },
+    },
+    failedCommand
+      ? {
+          startAt: 4700,
+          completeAt: 5900,
+          running: {
+            id: "mock-command-2",
+            type: "command_execution",
+            command: "node scripts/run-with-win-sdk.mjs cargo test --manifest-path src-tauri/Cargo.toml web_codex_ws --lib",
+            status: "running",
+          },
+          completed: {
+            id: "mock-command-2",
+            type: "command_execution",
+            command: "node scripts/run-with-win-sdk.mjs cargo test --manifest-path src-tauri/Cargo.toml web_codex_ws --lib",
+            status: "failed",
+            output: "test failed: mock websocket timeout",
+            exitCode: 1,
+          },
+        }
+      : {
+          startAt: 4700,
+          completeAt: 5900,
+          running: {
+            id: "mock-command-2",
+            type: "command_execution",
+            command: "Get-Content src/ui/modules/codex-web/actionBindings.js",
+            status: "running",
+          },
+          completed: {
+            id: "mock-command-2",
+            type: "command_execution",
+            command: "Get-Content src/ui/modules/codex-web/actionBindings.js",
+            status: "completed",
+            output: "export function createActionBindingsModule(deps) { ... }",
+            exitCode: 0,
+          },
+        },
+  ];
 }
 
 function buildSlashCatalog(state) {
@@ -243,22 +338,6 @@ export function createMockCodexTransport(deps) {
       ],
       tokenUsage: { usedPct: 18, display: "82% context left" },
     });
-    seedThread({
-      id: "mock-thread-3",
-      workspace: "wsl2",
-      title: "WSL smoke test",
-      updatedAt: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
-      cwd: "/home/yiyou/project",
-      history: [
-        {
-          id: "turn-1",
-          items: [
-            { type: "userMessage", content: [{ type: "text", text: "List the changed files." }] },
-            { type: "assistantMessage", text: "Changed files are ready for review." },
-          ],
-        },
-      ],
-    });
   }
 
   function getThread(threadId) {
@@ -319,6 +398,7 @@ export function createMockCodexTransport(deps) {
       .map((thread) => ({
         id: thread.id,
         title: thread.title,
+        preview: thread.title,
         updatedAt: thread.updatedAt,
         createdAt: thread.createdAt,
         workspace: thread.workspace,
@@ -326,19 +406,55 @@ export function createMockCodexTransport(deps) {
         path: thread.rolloutPath,
         project: thread.cwd,
         pinned: false,
+        status: { type: thread.runningTurnId ? "running" : "idle" },
       }));
+  }
+
+  function mergeSafeThreadList(livePayload, workspace) {
+    const payload = clone(livePayload) || {};
+    const liveItems = listDataArray(payload?.items);
+    const merged = new Map();
+    for (const item of liveItems) {
+      const id = String(item?.id || item?.threadId || "").trim();
+      if (!id) continue;
+      merged.set(id, clone(item));
+    }
+    for (const item of listThreads(workspace)) {
+      const id = String(item?.id || "").trim();
+      if (!id) continue;
+      const existing = merged.get(id);
+      merged.set(id, existing ? { ...existing, ...item, status: item.status || existing.status } : item);
+    }
+    const data = Array.from(merged.values()).sort((a, b) => {
+      const left = Date.parse(String(a?.updatedAt || "")) || 0;
+      const right = Date.parse(String(b?.updatedAt || "")) || 0;
+      return right - left;
+    });
+    return {
+      ...payload,
+      items: {
+        ...(payload?.items && typeof payload.items === "object" ? payload.items : {}),
+        data,
+        nextCursor: payload?.items?.nextCursor ?? null,
+      },
+    };
   }
 
   function historyPayload(thread) {
     const running = !!String(thread.runningTurnId || "").trim();
     const turns = clone(thread.history);
     if (running && thread.pendingPrompt) {
-      turns.push({
-        id: `pending-${thread.runningTurnId}`,
-        items: [
-          { type: "userMessage", content: [{ type: "text", text: thread.pendingPrompt }] },
-        ],
-      });
+      const record = mockState.turns.get(String(thread.runningTurnId || "").trim());
+      if (record?.historyTurn?.items?.length) {
+        turns.push(clone(record.historyTurn));
+      } else {
+        turns.push({
+          id: `pending-${thread.runningTurnId}`,
+          items: [
+            { type: "userMessage", content: [{ type: "text", text: thread.pendingPrompt }] },
+          ],
+        });
+      }
     }
     return {
       id: thread.id,
@@ -353,6 +469,73 @@ export function createMockCodexTransport(deps) {
       incomplete: running,
       tokenUsage: thread.tokenUsage || null,
     };
+  }
+
+  function historyResponsePayload(thread) {
+    const payload = historyPayload(thread);
+    return {
+      thread: payload,
+      page: {
+        hasMore: payload.hasMore,
+        totalTurns: payload.totalTurns,
+        beforeCursor: payload.beforeCursor,
+        incomplete: payload.incomplete,
+      },
+    };
+  }
+
+  function isMockOnlyThread(threadId) {
+    return /^mock-thread-\d+$/.test(String(threadId || "").trim());
+  }
+
+  function mergeSafeHistoryPayload(livePayload, thread) {
+    const payload = clone(livePayload) || {};
+    const liveThread =
+      payload?.thread && typeof payload.thread === "object"
+        ? payload.thread
+        : payload;
+    const liveTurns = Array.isArray(liveThread?.turns) ? liveThread.turns : [];
+    const mockTurns = Array.isArray(thread?.history) ? clone(thread.history) : [];
+    if (thread?.runningTurnId && thread?.pendingPrompt) {
+      const record = mockState.turns.get(String(thread.runningTurnId || "").trim());
+      if (record?.historyTurn?.items?.length) {
+        mockTurns.push(clone(record.historyTurn));
+      } else {
+        mockTurns.push({
+          id: `pending-${thread.runningTurnId}`,
+          items: [{ type: "userMessage", content: [{ type: "text", text: thread.pendingPrompt }] }],
+        });
+      }
+    }
+    const mergedTurns = liveTurns.concat(mockTurns);
+    const mergedThread = {
+      ...liveThread,
+      id: String(liveThread?.id || thread?.id || ""),
+      path: String(liveThread?.path || liveThread?.rolloutPath || thread?.rolloutPath || ""),
+      rolloutPath: String(liveThread?.rolloutPath || liveThread?.path || thread?.rolloutPath || ""),
+      cwd: String(liveThread?.cwd || thread?.cwd || ""),
+      workspace: String(liveThread?.workspace || thread?.workspace || ""),
+      turns: mergedTurns,
+      tokenUsage: liveThread?.tokenUsage || thread?.tokenUsage || null,
+    };
+    return payload?.thread && typeof payload.thread === "object"
+      ? {
+          ...payload,
+          thread: mergedThread,
+          page: {
+            ...(payload?.page && typeof payload.page === "object" ? payload.page : {}),
+            totalTurns: mergedTurns.length,
+            incomplete:
+              payload?.page?.incomplete === true || !!String(thread?.runningTurnId || "").trim(),
+          },
+        }
+      : {
+          ...payload,
+          ...mergedThread,
+          incomplete:
+            payload?.incomplete === true || !!String(thread?.runningTurnId || "").trim(),
+          totalTurns: Number(payload?.totalTurns || mergedTurns.length) || mergedTurns.length,
+        };
   }
 
   function emitNotification(method, threadId, params = {}) {
@@ -375,6 +558,15 @@ export function createMockCodexTransport(deps) {
     record.timers = [];
   }
 
+  function pushHistoryItem(record, item) {
+    if (!record || !item || typeof item !== "object") return;
+    if (!record.historyTurn || typeof record.historyTurn !== "object") {
+      record.historyTurn = { id: record.turnId, items: [] };
+    }
+    if (!Array.isArray(record.historyTurn.items)) record.historyTurn.items = [];
+    record.historyTurn.items.push(clone(item));
+  }
+
   function finalizeTurn(record, outcome = "completed") {
     if (!record) return;
     clearTurnTimers(record);
@@ -385,13 +577,8 @@ export function createMockCodexTransport(deps) {
     thread.assistantDraft = "";
     if (outcome === "completed") {
       const finalText = String(record.finalText || "Done.").trim() || "Done.";
-      thread.history.push({
-        id: record.turnId,
-        items: [
-          { type: "userMessage", content: [{ type: "text", text: record.prompt }] },
-          { type: "assistantMessage", text: finalText, phase: "final_answer" },
-        ],
-      });
+      pushHistoryItem(record, { type: "assistantMessage", text: finalText, phase: "final_answer" });
+      thread.history.push(clone(record.historyTurn));
       thread.title = threadTitleFromPrompt(record.prompt, thread.title);
       thread.tokenUsage = {
         usedPct: Math.min(92, Math.max(8, (thread.history.length * 13) % 100)),
@@ -421,6 +608,8 @@ export function createMockCodexTransport(deps) {
     const turnId = nextTurnId();
     const prompt = String(payload?.prompt || "").trim();
     const responseText = buildMockResponseText(payload, prompt);
+    const commentaryText = buildMockCommentaryText(payload, prompt);
+    const toolSteps = buildMockToolSteps(payload);
     const chunks = buildMockChunks(responseText);
     const chunkDelayMs = 760;
     const streamStartDelayMs = 900;
@@ -431,6 +620,12 @@ export function createMockCodexTransport(deps) {
       finalText: responseText,
       cancelRequested: false,
       timers: [],
+      historyTurn: {
+        id: turnId,
+        items: [
+          { type: "userMessage", content: [{ type: "text", text: prompt }] },
+        ],
+      },
     };
     mockState.turns.set(turnId, record);
     thread.runningTurnId = turnId;
@@ -450,30 +645,33 @@ export function createMockCodexTransport(deps) {
     record.timers.push(setTimeout(() => {
       emitNotification("item/updated", thread.id, {
         item: {
-          type: "web_search",
-          query: "local mock transport",
-          status: "running",
+          id: `commentary-${turnId}`,
+          type: "agent_message",
+          phase: "commentary",
+          text: commentaryText,
         },
       });
     }, 420));
-    record.timers.push(setTimeout(() => {
-      emitNotification("item/updated", thread.id, {
-        item: {
-          type: "command_execution",
-          command: "Get-ChildItem -Recurse -Filter *.js",
-          status: "running",
-        },
-      });
-    }, 2400));
-    record.timers.push(setTimeout(() => {
-      emitNotification("item/updated", thread.id, {
-        item: {
-          type: "command_execution",
-          command: "Get-Content src/ui/modules/codex-web/actionBindings.js",
-          status: "running",
-        },
-      });
-    }, 4700));
+    pushHistoryItem(record, {
+      id: `commentary-${turnId}`,
+      type: "agentMessage",
+      phase: "commentary",
+      text: commentaryText,
+    });
+    for (const step of toolSteps) {
+      record.timers.push(setTimeout(() => {
+        emitNotification("item/started", thread.id, { item: clone(step.running) });
+        pushHistoryItem(record, step.running);
+      }, step.startAt));
+      record.timers.push(setTimeout(() => {
+        emitNotification("item/completed", thread.id, { item: clone(step.completed) });
+        const items = Array.isArray(record.historyTurn?.items) ? record.historyTurn.items : [];
+        const itemId = String(step.completed?.id || "").trim();
+        const existingIndex = items.findIndex((item) => String(item?.id || "").trim() === itemId);
+        if (existingIndex >= 0) items[existingIndex] = clone(step.completed);
+        else pushHistoryItem(record, step.completed);
+      }, step.completeAt));
+    }
     chunks.forEach((chunk, index) => {
       record.timers.push(setTimeout(() => {
         const current = mockState.turns.get(turnId);
@@ -513,11 +711,20 @@ export function createMockCodexTransport(deps) {
     const method = String(options.method || "GET").trim().toUpperCase();
     const url = String(path || "");
     const query = readQuery(url);
-    const liveRead = await maybeLiveRead(path, options).catch(() => null);
+    const historyMatch = url.match(/^\/codex\/threads\/([^/]+)\/history(?:\?|$)/);
+    const historyThreadId = historyMatch ? decodeURIComponent(historyMatch[1] || "") : "";
+    const skipLiveReadForMockHistory =
+      safeModeEnabled && method === "GET" && historyThreadId && isMockOnlyThread(historyThreadId);
+    const liveRead = skipLiveReadForMockHistory
+      ? null
+      : await maybeLiveRead(path, options).catch(() => null);
 
     if (liveRead && url === "/codex/models") return liveRead;
     if (liveRead && url === "/codex/version-info") return liveRead;
-    if (liveRead && url.startsWith("/codex/threads?") && method === "GET") return liveRead;
+    if (liveRead && url.startsWith("/codex/threads?") && method === "GET") {
+      const workspace = normalizeWorkspace(query.get("workspace") || state.workspaceTarget || "windows");
+      return mergeSafeThreadList(liveRead, workspace);
+    }
     if (liveRead && url.startsWith("/codex/slash/commands?") && method === "GET") return liveRead;
     if (liveRead && url.startsWith("/codex/slash/review/branches?") && method === "GET") return liveRead;
     if (liveRead && url.startsWith("/codex/slash/review/commits?") && method === "GET") return liveRead;
@@ -526,6 +733,7 @@ export function createMockCodexTransport(deps) {
     if (liveRead && url === "/codex/approvals/pending" && method === "GET") return liveRead;
     if (liveRead && url === "/codex/user-input/pending" && method === "GET") return liveRead;
     if (liveRead && /^\/codex\/threads\/[^/]+\/resume(?:\?|$)/.test(url) && method === "POST") return liveRead;
+    if (liveRead && /^\/codex\/threads\/[^/]+\/transport(?:\?|$)/.test(url) && method === "GET") return liveRead;
 
     if (liveRead && url === "/codex/auth/verify" && method === "POST") {
       return { ...liveRead, mode: "safe" };
@@ -578,35 +786,43 @@ export function createMockCodexTransport(deps) {
       updateThreadOrder(thread);
       return { id: thread.id, threadId: thread.id, thread: { id: thread.id, path: thread.rolloutPath } };
     }
-    const historyMatch = url.match(/^\/codex\/threads\/([^/]+)\/history(?:\?|$)/);
     if (historyMatch && method === "GET") {
-      const threadId = decodeURIComponent(historyMatch[1] || "");
+      const threadId = historyThreadId;
       const thread = getThread(threadId);
+      if (safeModeEnabled && thread && isMockOnlyThread(threadId)) {
+        return historyResponsePayload(thread);
+      }
       if (safeModeEnabled && liveRead) {
         if (!thread) return liveRead;
-        const payload = clone(liveRead) || {};
-        const liveTurns = Array.isArray(payload.turns) ? payload.turns.slice() : [];
-        const mockTurns = Array.isArray(thread.history) ? clone(thread.history) : [];
-        if (thread.runningTurnId && thread.pendingPrompt) {
-          mockTurns.push({
-            id: `pending-${thread.runningTurnId}`,
-            items: [{ type: "userMessage", content: [{ type: "text", text: thread.pendingPrompt }] }],
-          });
-        }
-        return {
-          ...payload,
-          turns: liveTurns.concat(mockTurns),
-          incomplete: payload.incomplete === true || !!String(thread.runningTurnId || "").trim(),
-        };
+        return mergeSafeHistoryPayload(liveRead, thread);
       }
       if (!thread) throw new Error("Mock thread not found");
-      return historyPayload(thread);
+      return safeModeEnabled ? historyResponsePayload(thread) : historyPayload(thread);
     }
     const resumeMatch = url.match(/^\/codex\/threads\/([^/]+)\/resume(?:\?|$)/);
     if (resumeMatch && method === "POST") {
       const thread = getThread(decodeURIComponent(resumeMatch[1] || ""));
       if (!thread) throw new Error("Mock thread not found");
       return { threadId: thread.id, id: thread.id, thread: { id: thread.id, path: thread.rolloutPath } };
+    }
+    const transportMatch = url.match(/^\/codex\/threads\/([^/]+)\/transport(?:\?|$)/);
+    if (transportMatch && method === "GET") {
+      const thread = getThread(decodeURIComponent(transportMatch[1] || ""));
+      if (!thread) throw new Error("Mock thread not found");
+      return { ok: true, threadId: thread.id, attached: false, transport: null };
+    }
+    const managedTerminalMatch = url.match(/^\/codex\/threads\/([^/]+)\/managed-terminal$/);
+    if (managedTerminalMatch && method === "POST") {
+      const thread = getThread(decodeURIComponent(managedTerminalMatch[1] || ""));
+      if (!thread) throw new Error("Mock thread not found");
+      return {
+        ok: true,
+        threadId: thread.id,
+        attached: true,
+        transport: "terminal-session",
+        cwd: thread.cwd,
+        path: thread.rolloutPath,
+      };
     }
     if (url.startsWith("/codex/slash/commands?") && method === "GET") return buildSlashCatalog(state);
     if (url.startsWith("/codex/slash/review/branches?") && method === "GET") return buildReviewItems("branches");

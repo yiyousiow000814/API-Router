@@ -2,6 +2,32 @@ export function normalizeWorkspaceTarget(value) {
   return value === "wsl2" ? "wsl2" : "windows";
 }
 
+export function normalizeThreadCwdForMatch(value, workspace = "windows") {
+  const target = normalizeWorkspaceTarget(workspace);
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const normalized = text.replace(/[\\/]+$/, "");
+  if (!normalized) return target === "wsl2" ? "/" : "";
+  if (target === "wsl2") {
+    return normalized.startsWith("/") ? normalized : "";
+  }
+  return normalized.replace(/\\/g, "/").toLowerCase();
+}
+
+export function threadMatchesStartCwd(thread, startCwd = "", workspace = "windows") {
+  const target = normalizeWorkspaceTarget(workspace);
+  const selected = normalizeThreadCwdForMatch(startCwd, target);
+  if (!selected) return true;
+  const threadCwd = normalizeThreadCwdForMatch(
+    thread?.cwd || thread?.project || thread?.directory || thread?.path || "",
+    target
+  );
+  if (!threadCwd) return false;
+  if (threadCwd === selected) return true;
+  const separator = target === "wsl2" ? "/" : "/";
+  return threadCwd.startsWith(`${selected}${separator}`);
+}
+
 export function detectThreadWorkspaceTarget(thread) {
   const pathLikeRaw = String(
     thread?.cwd || thread?.project || thread?.directory || thread?.path || ""
@@ -40,6 +66,24 @@ export function pickThreadTimestamp(thread) {
   return thread?.updatedAt ?? thread?.createdAt ?? thread?.statusUpdatedAt ?? "";
 }
 
+export function readThreadItemId(thread) {
+  return String(thread?.id || thread?.threadId || "").trim();
+}
+
+function preferIncomingValue(existing, incoming) {
+  if (incoming == null) return existing;
+  if (typeof incoming === "string") {
+    return incoming.trim() ? incoming : existing;
+  }
+  if (Array.isArray(incoming)) {
+    return incoming.length ? incoming.slice() : existing;
+  }
+  if (typeof incoming === "object") {
+    return Object.keys(incoming).length ? incoming : existing;
+  }
+  return incoming;
+}
+
 export function threadSortTimestampMs(thread) {
   const raw = pickThreadTimestamp(thread);
   if (typeof raw === "number" && Number.isFinite(raw)) return raw > 1e12 ? raw : raw * 1000;
@@ -68,6 +112,51 @@ export function sortThreadsByNewest(items) {
   });
 }
 
+export function mergeThreadItem(existing, incoming) {
+  const base = existing && typeof existing === "object" ? { ...existing } : {};
+  const next = incoming && typeof incoming === "object" ? { ...incoming } : {};
+  const merged = { ...base, ...next };
+  for (const key of [
+    "workspace",
+    "__workspaceQueryTarget",
+    "path",
+    "cwd",
+    "preview",
+    "title",
+    "name",
+    "source",
+  ]) {
+    merged[key] = preferIncomingValue(base[key], next[key]);
+  }
+  const baseUpdatedAt = threadSortTimestampMs(base);
+  const nextUpdatedAt = threadSortTimestampMs(next);
+  if (baseUpdatedAt > nextUpdatedAt && base.updatedAt != null) {
+    merged.updatedAt = base.updatedAt;
+  }
+  if (base.createdAt != null && next.createdAt == null) {
+    merged.createdAt = base.createdAt;
+  }
+  if (base.status && !next.status) {
+    merged.status = base.status;
+  }
+  if (next.provisional === false) merged.provisional = false;
+  else if (base.provisional === true && next.provisional == null) merged.provisional = true;
+  return merged;
+}
+
+export function upsertThreadItem(items, incoming) {
+  const id = readThreadItemId(incoming);
+  if (!id) return Array.isArray(items) ? items.slice() : [];
+  const sourceItems = Array.isArray(items) ? items.slice() : [];
+  const index = sourceItems.findIndex((item) => readThreadItemId(item) === id);
+  if (index >= 0) {
+    sourceItems[index] = mergeThreadItem(sourceItems[index], incoming);
+  } else {
+    sourceItems.push(mergeThreadItem(null, incoming));
+  }
+  return sortThreadsByNewest(sourceItems);
+}
+
 function ensureArrayItems(value) {
   if (Array.isArray(value)) return value;
   if (Array.isArray(value?.data)) return value.data;
@@ -90,12 +179,17 @@ export function buildThreadRenderSig(items) {
 export function filterThreadsForWorkspace(items, options = {}) {
   const sourceItems = Array.isArray(items) ? items : [];
   const hasDualWorkspaceTargets = !!options.hasDualWorkspaceTargets;
-  const currentTarget = String(options.currentTarget || "").trim();
-  if (!hasDualWorkspaceTargets) return sourceItems;
+  const currentTarget = normalizeWorkspaceTarget(String(options.currentTarget || "").trim());
+  const startCwd = String(options.startCwd || "").trim();
   return sourceItems.filter((thread) => {
     const target = detectThreadWorkspaceTarget(thread);
+    if (hasDualWorkspaceTargets && target !== "unknown" && target !== currentTarget) return false;
+    const matchTarget = target === "unknown" ? currentTarget : target;
+    if (!startCwd) return true;
     if (target === "unknown") return true;
-    return target === currentTarget;
+    if (hasDualWorkspaceTargets && target !== currentTarget) return false;
+    if (!hasDualWorkspaceTargets && target !== "unknown" && target !== currentTarget) return false;
+    return threadMatchesStartCwd(thread, startCwd, matchTarget);
   });
 }
 

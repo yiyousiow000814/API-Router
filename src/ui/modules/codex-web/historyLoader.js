@@ -1,4 +1,13 @@
 import { buildPlanSignature, clonePlanState, extractPlanUpdate } from "./runtimePlan.js";
+import {
+  clearPendingTurnRuntimePlaceholder,
+  clearPendingUserFallback,
+  resetPendingTurnRuntime,
+  restorePendingUserFallback,
+  setPendingTurnRunning,
+  syncPendingTurnRuntime,
+} from "./runtimeState.js";
+import { subscriptionIncludesWorkspace } from "./wsClient.js";
 
 export function buildThreadHistoryUrl(threadId, options = {}, fallbackWorkspace = "") {
   const params = new URLSearchParams();
@@ -73,6 +82,22 @@ export function shouldUseHistoryWindow(messages, options = {}, state = {}) {
   if (options.forceHistoryWindow || state.activeThreadHistoryHasMore) return true;
   if (messages.length < Number(state.HISTORY_WINDOW_THRESHOLD || 0)) return false;
   return true;
+}
+
+function pushHistoryMessage(messages, nextMessage) {
+  if (!Array.isArray(messages) || !nextMessage || typeof nextMessage !== "object") return;
+  const role = String(nextMessage.role || "").trim();
+  const kind = String(nextMessage.kind || "").trim();
+  const text = String(nextMessage.text || "");
+  const last = messages.length ? messages[messages.length - 1] : null;
+  const shouldSkipAdjacentDuplicate =
+    !!last &&
+    last.role === role &&
+    String(last.kind || "").trim() === kind &&
+    String(last.text || "") === text &&
+    (role === "assistant" || kind === "commentaryArchive");
+  if (shouldSkipAdjacentDuplicate) return;
+  messages.push(nextMessage);
 }
 
 function cloneArchiveBlock(block) {
@@ -269,6 +294,9 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
   const pendingAssistant = String(state.activeThreadPendingAssistantMessage || "");
   const hasPendingUser = !!pendingUser.trim();
   const hasPendingAssistant = !!pendingAssistant.trim();
+  const finalAssistantThreadId = String(state.activeThreadLastFinalAssistantThreadId || "").trim();
+  const finalAssistantText = String(state.activeThreadLastFinalAssistantText || "").trim();
+  const hasFinalAssistantSnapshot = finalAssistantThreadId === threadId && !!finalAssistantText;
   const historyIncomplete =
     options.historyIncomplete === true ||
     (options.historyIncomplete == null && state.activeThreadHistoryIncomplete === true);
@@ -285,15 +313,12 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
     pending.length <= out.length &&
     pending.every((msg, index) => messageMatches(out[out.length - pending.length + index], msg));
   if (endsWithPending) {
-    if ((hasPendingAssistant && !historyIncomplete) || !hasPendingUser) {
-      state.activeThreadPendingTurnThreadId = "";
-      state.activeThreadPendingTurnRunning = false;
-      state.activeThreadPendingUserMessage = "";
-      state.activeThreadPendingAssistantMessage = "";
+    if ((hasPendingAssistant && (!historyIncomplete || hasFinalAssistantSnapshot)) || !hasPendingUser) {
+      clearPendingTurnRuntimePlaceholder(state, threadId, { force: true });
     } else if (!keepPendingUserFallback) {
-      state.activeThreadPendingUserMessage = "";
+      clearPendingUserFallback(state, threadId);
     } else {
-      state.activeThreadPendingUserMessage = pendingUser;
+      restorePendingUserFallback(state, threadId, pendingUser);
     }
     return out;
   }
@@ -348,29 +373,40 @@ export function findLatestIncompleteToolMessage(thread, normalizeThreadItemText)
 function syncPendingTurnStateFromIncompleteHistory(thread, state = {}) {
   const threadId = String(thread?.id || state.activeThreadId || "").trim();
   const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+  const pendingRunning = state.activeThreadPendingTurnRunning === true;
   const pendingUser = String(state.activeThreadPendingUserMessage || "").trim();
   const pendingAssistant = String(state.activeThreadPendingAssistantMessage || "").trim();
+  const finalAssistantThreadId = String(state.activeThreadLastFinalAssistantThreadId || "").trim();
+  const finalAssistantText = String(state.activeThreadLastFinalAssistantText || "").trim();
+  const hasFinalAssistantSnapshot = finalAssistantThreadId === threadId && !!finalAssistantText;
   const pageIncomplete = !!thread?.page?.incomplete;
   if (!threadId) return;
   if (!pageIncomplete) {
     if (pendingThreadId && pendingThreadId === threadId && !pendingUser && !pendingAssistant) {
-      state.activeThreadPendingTurnThreadId = "";
-      state.activeThreadPendingTurnId = "";
-      state.activeThreadPendingTurnRunning = false;
+      setPendingTurnRunning(state, threadId, false);
+      resetPendingTurnRuntime(state, {
+        preserveThreadId: true,
+        preserveMessages: true,
+        preserveTurnId: false,
+        preserveBaselineTurnCount: false,
+      });
+      clearPendingTurnRuntimePlaceholder(state, threadId, { force: true });
     }
     return;
   }
   if (pendingThreadId && pendingThreadId !== threadId) return;
   if (pendingThreadId === threadId && (pendingUser || pendingAssistant)) {
-    state.activeThreadPendingTurnRunning = true;
+    if (hasFinalAssistantSnapshot && !pendingRunning) return;
+    setPendingTurnRunning(state, threadId, true);
     return;
   }
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
   const lastTurn = turns.length ? turns[turns.length - 1] : null;
   const lastTurnId = String(lastTurn?.id || "").trim();
-  state.activeThreadPendingTurnThreadId = threadId;
-  state.activeThreadPendingTurnId = lastTurnId;
-  state.activeThreadPendingTurnRunning = true;
+  syncPendingTurnRuntime(state, threadId, {
+    turnId: lastTurnId,
+    running: true,
+  });
 }
 
 export function createHistoryLoaderModule(deps) {
@@ -510,7 +546,12 @@ export function createHistoryLoaderModule(deps) {
     const threadId = String(thread?.id || state.activeThreadId || "").trim();
     const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
     const pendingRunning = state.activeThreadPendingTurnRunning === true;
-    if (!pendingRunning || !threadId || !pendingThreadId || pendingThreadId !== threadId) return false;
+    const finalAssistantThreadId = String(state.activeThreadLastFinalAssistantThreadId || "").trim();
+    const finalAssistantText = String(state.activeThreadLastFinalAssistantText || "").trim();
+    const hasFinalAssistantSnapshot = finalAssistantThreadId === threadId && !!finalAssistantText;
+    if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return false;
+    if (hasFinalAssistantSnapshot && !pendingRunning) return true;
+    if (!pendingRunning) return false;
     if (latestTurnContainsPendingUserEcho(thread) === true) return false;
     const pendingPrompt = String(state.activeThreadPendingUserMessage || "").trim();
     if (pendingPrompt) return true;
@@ -718,7 +759,7 @@ export function createHistoryLoaderModule(deps) {
           const text = parsed.text;
           if (text && isBootstrapAgentsPrompt(text)) continue;
           if (text || parsed.images.length) {
-            messages.push({ role: "user", text, kind: "", images: parsed.images });
+            pushHistoryMessage(messages, { role: "user", text, kind: "", images: parsed.images });
           }
           continue;
         }
@@ -771,12 +812,12 @@ export function createHistoryLoaderModule(deps) {
             turn?.id,
             finalizeArchiveBlocks(commentaryBlocks, trailingPlanOnlyBlock || currentCommentaryBlock, true)
           );
-          if (archiveMessage) messages.push(archiveMessage);
+          if (archiveMessage) pushHistoryMessage(messages, archiveMessage);
           commentaryBlocks = [];
           currentCommentaryBlock = null;
           pendingPlan = null;
           if (!isVisibleAssistantHistoryPhase(item?.phase)) continue;
-          messages.push({ role: "assistant", text, kind: "" });
+          pushHistoryMessage(messages, { role: "assistant", text, kind: "" });
           continue;
         }
         const toolText = String(normalizeThreadItemText(item, { compact: true }) || "").trim();
@@ -816,7 +857,7 @@ export function createHistoryLoaderModule(deps) {
         const text = parsed.text;
         if (text && isBootstrapAgentsPrompt(text)) continue;
         if (text || parsed.images.length) {
-          messages.push({ role: "user", text, kind: "", images: parsed.images });
+          pushHistoryMessage(messages, { role: "user", text, kind: "", images: parsed.images });
         }
         continue;
       }
@@ -826,7 +867,7 @@ export function createHistoryLoaderModule(deps) {
           normalizeType,
           stripCodexImageBlocks,
         });
-        if (text) messages.push({ role: "assistant", text, kind: "" });
+        if (text) pushHistoryMessage(messages, { role: "assistant", text, kind: "" });
       }
     }
     return messages;
@@ -903,6 +944,8 @@ export function createHistoryLoaderModule(deps) {
   async function renderChatFull(messages, options = {}) {
     const box = byId("chatBox");
     if (!box) return;
+    const preservedScrollTop =
+      options && options.preserveScroll === true ? Math.max(0, Number(box.scrollTop || 0)) : null;
 
     state.chatRenderToken = (Number(state.chatRenderToken || 0) + 1) | 0;
     const token = state.chatRenderToken;
@@ -926,6 +969,9 @@ export function createHistoryLoaderModule(deps) {
       const recentGesture = now - Number(state.chatLastUserGestureAt || 0) <= 250;
       if (state.chatShouldStickToBottom && !recentGesture) {
         scrollChatToBottom({ force: true });
+      } else if (preservedScrollTop !== null) {
+        const maxTop = Math.max(0, Number(box.scrollHeight || 0) - Number(box.clientHeight || 0));
+        box.scrollTop = Math.min(preservedScrollTop, maxTop);
       }
       await nextFrame();
       if (slowYield) await waitMs(12);
@@ -978,17 +1024,25 @@ export function createHistoryLoaderModule(deps) {
       messages
     );
     state.activeThreadStarted = messages.length > 0 || turns.length > 0 || historyItems.length > 0;
+    state.activeThreadHistoryStatusType = String(thread?.status?.type || "").trim().toLowerCase();
     const detectedTarget = detectThreadWorkspaceTarget(thread);
     const target = detectedTarget !== "unknown"
       ? detectedTarget
       : ((options.workspace === "windows" || options.workspace === "wsl2") ? options.workspace : "unknown");
-    const previousWorkspace = String(state.activeThreadWorkspace || "").trim();
     if (target !== "unknown") state.activeThreadWorkspace = target;
-    if (
-      target !== "unknown" &&
-      target !== previousWorkspace &&
-      state.activeThreadId === threadId
-    ) {
+    const resolvedRolloutPath = String(thread?.path || options.rolloutPath || "").trim();
+    if (resolvedRolloutPath) state.activeThreadRolloutPath = resolvedRolloutPath;
+    const subscribedWorkspaces =
+      Array.isArray(state.wsSubscribedWorkspaceTargets) && state.wsSubscribedWorkspaceTargets.length
+        ? state.wsSubscribedWorkspaceTargets
+        : (
+          Array.isArray(state.wsRequestedWorkspaceTargets) && state.wsRequestedWorkspaceTargets.length
+            ? state.wsRequestedWorkspaceTargets
+            : [String(state.wsSubscribedWorkspaceTarget || state.wsRequestedWorkspaceTarget || "").trim().toLowerCase()]
+        );
+    if (target !== "unknown" && state.activeThreadId === threadId && (
+      state.wsSubscribedEvents !== true || !subscriptionIncludesWorkspace(subscribedWorkspaces, target)
+    )) {
       syncEventSubscription();
     }
     if (!options.forceRender && state.activeThreadRenderSig === renderSig) {
@@ -1008,6 +1062,10 @@ export function createHistoryLoaderModule(deps) {
 
     const box = byId("chatBox");
     const prevMessages = Array.isArray(state.activeThreadMessages) ? state.activeThreadMessages : [];
+    const preservedScrollTop =
+      !state.chatShouldStickToBottom && box && prevMessages.length > 0
+        ? Math.max(0, Number(box.scrollTop || 0))
+        : null;
 
     if (shouldUseHistoryWindow(messages, options, { activeThreadHistoryHasMore: state.activeThreadHistoryHasMore, HISTORY_WINDOW_THRESHOLD })) {
       const prevAll = Array.isArray(state.historyAllMessages) ? state.historyAllMessages : [];
@@ -1032,6 +1090,11 @@ export function createHistoryLoaderModule(deps) {
         if (box2) {
           if (start > 0 || state.activeThreadHistoryHasMore) ensureLoadOlderControl(box2);
           box2.appendChild(frag);
+          if (preservedScrollTop !== null) {
+            const maxTop =
+              Math.max(0, Number(box2.scrollHeight || 0) - Number(box2.clientHeight || 0));
+            box2.scrollTop = Math.min(preservedScrollTop, maxTop);
+          }
         }
         state.activeThreadMessages = slice;
         state.activeThreadRenderSig = renderSig;
@@ -1239,6 +1302,10 @@ export function createHistoryLoaderModule(deps) {
             archiveKey: msg.archiveKey || "",
           });
         }
+        if (preservedScrollTop !== null && box) {
+          const maxTop = Math.max(0, Number(box.scrollHeight || 0) - Number(box.clientHeight || 0));
+          box.scrollTop = Math.min(preservedScrollTop, maxTop);
+        }
       }
       state.activeThreadMessages = messages;
       state.activeThreadRenderSig = renderSig;
@@ -1322,6 +1389,7 @@ export function createHistoryLoaderModule(deps) {
       state.activeThreadHistoryThreadId = threadId;
       state.activeThreadHistoryHasMore = !!page?.hasMore;
       state.activeThreadHistoryIncomplete = !!page?.incomplete;
+      state.activeThreadHistoryStatusType = String(incomingThread?.status?.type || "").trim().toLowerCase();
       state.activeThreadHistoryBeforeCursor = String(page?.beforeCursor || "").trim();
       state.activeThreadHistoryTotalTurns = Number(page?.totalTurns || incomingTurns.length || 0) || incomingTurns.length || 0;
       const thread = incomingThread ? { ...incomingThread, turns: mergedTurns, page } : null;
@@ -1394,6 +1462,7 @@ export function createHistoryLoaderModule(deps) {
           state.activeThreadHistoryThreadId = state.activeThreadId;
           state.activeThreadHistoryHasMore = !!pageMeta?.hasMore;
           state.activeThreadHistoryIncomplete = !!pageMeta?.incomplete;
+          state.activeThreadHistoryStatusType = String(page?.thread?.status?.type || "").trim().toLowerCase();
           state.activeThreadHistoryBeforeCursor = String(pageMeta?.beforeCursor || "").trim();
           state.activeThreadHistoryTotalTurns = Number(pageMeta?.totalTurns || mergedTurns.length || 0) || mergedTurns.length || 0;
           await applyThreadToChat({

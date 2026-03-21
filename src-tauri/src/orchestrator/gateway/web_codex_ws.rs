@@ -3,6 +3,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::Query;
 use futures_util::StreamExt;
 use parking_lot::Mutex;
+use serde::Deserialize;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -11,17 +12,10 @@ use self::web_codex_actions::{
     build_turn_start_params, build_turn_start_response, turn_thread_id, TurnStartRequest,
 };
 use self::web_codex_auth::{api_error, is_codex_ws_authorized, require_codex_auth, WsQuery};
-use self::web_codex_home::{
-    parse_workspace_target, web_codex_rpc_home_override_for_target, WorkspaceTarget,
-};
+use self::web_codex_home::{parse_workspace_target, WorkspaceTarget};
+use self::web_codex_session_manager::CodexSessionManager;
 
 const BACKEND_LIVE_DEBUG_MAX_EVENTS: usize = 160;
-
-fn is_all_candidate_rpc_methods_unsupported(error: &str) -> bool {
-    error
-        .trim()
-        .eq_ignore_ascii_case("all candidate rpc methods are marked unsupported")
-}
 
 fn format_ws_read_error(error: &axum::Error) -> String {
     let text = error.to_string().trim().replace('\n', " ");
@@ -93,13 +87,33 @@ fn backend_live_debug_connection_close(client_id: u64, subscribed: bool) {
     );
 }
 
-fn backend_live_debug_subscribe(client_id: u64, last_event_id: u64) {
+fn workspace_target_label(target: WorkspaceTarget) -> &'static str {
+    match target {
+        WorkspaceTarget::Windows => "windows",
+        WorkspaceTarget::Wsl2 => "wsl2",
+    }
+}
+
+fn backend_live_debug_subscribe(
+    client_id: u64,
+    last_event_id: u64,
+    workspace_targets: &[WorkspaceTarget],
+) {
     let mut guard = backend_live_debug_state().lock();
     guard.subscribed_connections = guard.subscribed_connections.saturating_add(1);
     drop(guard);
+    let workspaces = workspace_targets
+        .iter()
+        .map(|target| workspace_target_label(*target))
+        .collect::<Vec<_>>();
     backend_live_debug_push(
         "backend.ws.subscribe",
-        json!({ "clientId": client_id, "lastEventId": last_event_id }),
+        json!({
+            "clientId": client_id,
+            "lastEventId": last_event_id,
+            "workspace": if workspaces.len() > 1 { "all" } else { workspaces.first().copied().unwrap_or("windows") },
+            "workspaces": workspaces,
+        }),
     );
 }
 
@@ -204,31 +218,66 @@ fn backend_live_debug_snapshot_value() -> Value {
     })
 }
 
-fn workspace_target_from_ws_payload(value: &Value) -> Option<WorkspaceTarget> {
-    value
-        .get("payload")
-        .and_then(|payload| payload.get("workspace"))
-        .and_then(Value::as_str)
-        .and_then(parse_workspace_target)
+fn workspace_targets_from_ws_payload(value: &Value) -> Vec<WorkspaceTarget> {
+    let Some(payload) = value.get("payload") else {
+        return vec![WorkspaceTarget::Windows];
+    };
+    if let Some(items) = payload.get("workspaces").and_then(Value::as_array) {
+        let mut targets = Vec::new();
+        for item in items {
+            if let Some(target) = item.as_str().and_then(parse_workspace_target) {
+                if !targets.contains(&target) {
+                    targets.push(target);
+                }
+            }
+        }
+        if !targets.is_empty() {
+            return targets;
+        }
+    }
+    match payload.get("workspace").and_then(Value::as_str) {
+        Some(raw) if raw.eq_ignore_ascii_case("all") => {
+            vec![WorkspaceTarget::Windows, WorkspaceTarget::Wsl2]
+        }
+        Some(raw) => parse_workspace_target(raw)
+            .map(|target| vec![target])
+            .unwrap_or_else(|| vec![WorkspaceTarget::Windows]),
+        None => vec![WorkspaceTarget::Windows],
+    }
 }
 
-fn should_reset_notification_cursor(
-    since_event_id: u64,
-    first_event_id: Option<u64>,
-    last_event_id: Option<u64>,
-    gap: bool,
-) -> bool {
-    if gap {
-        return true;
-    }
-    if since_event_id == 0 {
-        return false;
-    }
-    match (first_event_id, last_event_id) {
-        (None, None) => true,
-        (_, Some(last)) => since_event_id > last,
-        (Some(first), None) => since_event_id < first,
-    }
+#[derive(Deserialize)]
+pub(super) struct AppServerWsQuery {
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(default)]
+    home: Option<String>,
+}
+
+fn app_server_initialize_result() -> Value {
+    json!({
+        "userAgent": format!("api-router/{}", env!("CARGO_PKG_VERSION")),
+        "platformFamily": std::env::consts::FAMILY,
+        "platformOs": std::env::consts::OS,
+    })
+}
+
+fn jsonrpc_error_payload(message: &str) -> Value {
+    json!({
+        "code": -32000,
+        "message": message,
+    })
+}
+
+fn strip_notification_event_id(value: &Value) -> Value {
+    let Some(obj) = value.as_object() else {
+        return value.clone();
+    };
+    let mut next = obj.clone();
+    next.remove("eventId");
+    Value::Object(next)
 }
 
 pub(super) async fn codex_ws(
@@ -241,6 +290,149 @@ pub(super) async fn codex_ws(
         return api_error(StatusCode::UNAUTHORIZED, "invalid token");
     }
     ws.on_upgrade(codex_ws_loop)
+}
+
+pub(super) async fn codex_app_server_ws(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+    Query(query): Query<AppServerWsQuery>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if !is_codex_ws_authorized(
+        &st,
+        &headers,
+        &WsQuery {
+            token: query.token.clone(),
+        },
+    ) {
+        return api_error(StatusCode::UNAUTHORIZED, "invalid token");
+    }
+    let workspace_target = query.workspace.as_deref().and_then(parse_workspace_target);
+    let home_override = query
+        .home
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    ws.on_upgrade(move |socket| codex_app_server_ws_loop(socket, workspace_target, home_override))
+}
+
+async fn codex_app_server_ws_loop(
+    mut socket: WebSocket,
+    workspace_target: Option<WorkspaceTarget>,
+    home_override: Option<String>,
+) {
+    let manager = CodexSessionManager::new(workspace_target).with_home_override(home_override);
+    let mut initialized = false;
+    let mut notif_cursor = 0_u64;
+    let mut poll_tick = tokio::time::interval(std::time::Duration::from_millis(200));
+
+    loop {
+        tokio::select! {
+            _ = poll_tick.tick(), if initialized => {
+                let batch = manager.replay_notification_batch(notif_cursor, 64, false).await;
+                notif_cursor = batch.next_cursor;
+                if batch.reset {
+                    continue;
+                }
+                for notif in batch.items {
+                    let payload = strip_notification_event_id(&notif);
+                    if !send_ws_json(&mut socket, &payload).await {
+                        return;
+                    }
+                }
+            }
+            incoming = socket.next() => {
+                let Some(incoming) = incoming else {
+                    return;
+                };
+                let Ok(message) = incoming else {
+                    return;
+                };
+                match message {
+                    Message::Text(text) => {
+                        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                            let _ = send_ws_json(&mut socket, &json!({
+                                "id": Value::Null,
+                                "error": jsonrpc_error_payload("invalid json message"),
+                            })).await;
+                            continue;
+                        };
+                        let method = value.get("method").and_then(Value::as_str).unwrap_or_default();
+                        let id = value.get("id").cloned();
+                        match method {
+                            "initialize" => {
+                                if let Some(id) = id {
+                                    let _ = send_ws_json(&mut socket, &json!({
+                                        "id": id,
+                                        "result": app_server_initialize_result(),
+                                    })).await;
+                                }
+                            }
+                            "initialized" => {
+                                initialized = true;
+                                let _ = manager.ensure_server().await;
+                            }
+                            "shutdown" => {
+                                if let Some(id) = id {
+                                    let _ = send_ws_json(&mut socket, &json!({
+                                        "id": id,
+                                        "result": {},
+                                    })).await;
+                                }
+                            }
+                            "thread/unsubscribe" => {
+                                if let Some(id) = id {
+                                    let _ = send_ws_json(&mut socket, &json!({
+                                        "id": id,
+                                        "result": {},
+                                    })).await;
+                                }
+                            }
+                            _ => {
+                                if !initialized {
+                                    if let Some(id) = id {
+                                        let _ = send_ws_json(&mut socket, &json!({
+                                            "id": id,
+                                            "error": jsonrpc_error_payload("Not initialized"),
+                                        })).await;
+                                    }
+                                    continue;
+                                }
+                                let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
+                                let Some(id) = id else {
+                                    continue;
+                                };
+                                match manager.request(method, params).await {
+                                    Ok(result) => {
+                                        if !send_ws_json(&mut socket, &json!({ "id": id, "result": result })).await {
+                                            return;
+                                        }
+                                    }
+                                    Err(error) => {
+                                        if !send_ws_json(&mut socket, &json!({
+                                            "id": id,
+                                            "error": jsonrpc_error_payload(&error),
+                                        })).await {
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Message::Binary(_) => {}
+                    Message::Close(_) => return,
+                    Message::Ping(payload) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            return;
+                        }
+                    }
+                    Message::Pong(_) => {}
+                }
+            }
+        }
+    }
 }
 
 async fn send_ws_json(socket: &mut WebSocket, value: &Value) -> bool {
@@ -272,13 +464,12 @@ async fn codex_ws_stream_turn(
         .workspace
         .as_deref()
         .and_then(parse_workspace_target);
-    let home = web_codex_rpc_home_override_for_target(workspace_target);
-    let result =
-        crate::codex_app_server::request_in_home(home.as_deref(), "turn/start", params).await?;
+    let manager = CodexSessionManager::new(workspace_target);
+    let outcome = manager.turn_start(&thread_id, params).await?;
     let completed = json!({
         "type": "completed",
         "reqId": req_id,
-        "payload": build_turn_start_response(&thread_id, result)
+        "payload": build_turn_start_response(&thread_id, outcome.result, outcome.rollout_path.as_deref())
     });
     if !send_ws_json(socket, &completed).await {
         return Err("ws closed".to_string());
@@ -291,46 +482,34 @@ async fn codex_ws_emit_event_snapshot(
     req_id: &str,
     approvals_sig: &mut String,
     user_input_sig: &mut String,
+    workspace_targets: &[WorkspaceTarget],
 ) -> bool {
-    let approvals = super::codex_try_request_with_fallback(
-        &["bridge/approvals/list", "approvals/list"],
-        Value::Null,
-    )
-    .await
-    .unwrap_or_else(|error| {
-        if is_all_candidate_rpc_methods_unsupported(&error) {
-            json!([])
-        } else {
-            Value::Null
-        }
-    });
-    let user_inputs = super::codex_try_request_with_fallback(
-        &[
-            "bridge/userInput/list",
-            "userInput/list",
-            "request_user_input/list",
-        ],
-        Value::Null,
-    )
-    .await
-    .unwrap_or_else(|error| {
-        if is_all_candidate_rpc_methods_unsupported(&error) {
-            json!([])
-        } else {
-            Value::Null
-        }
-    });
-
-    *approvals_sig = approvals.to_string();
-    *user_input_sig = user_inputs.to_string();
+    let targets = if workspace_targets.is_empty() {
+        vec![WorkspaceTarget::Windows]
+    } else {
+        workspace_targets.to_vec()
+    };
+    let mut approvals = Vec::new();
+    let mut user_inputs = Vec::new();
+    for target in targets {
+        let snapshot = CodexSessionManager::new(Some(target))
+            .pending_events_snapshot()
+            .await;
+        approvals.extend(snapshot.approvals.as_array().cloned().unwrap_or_default());
+        user_inputs.extend(snapshot.user_inputs.as_array().cloned().unwrap_or_default());
+    }
+    let approvals_payload = Value::Array(approvals);
+    let user_inputs_payload = Value::Array(user_inputs);
+    *approvals_sig = approvals_payload.to_string();
+    *user_input_sig = user_inputs_payload.to_string();
     send_ws_json(
         socket,
         &json!({
             "type": "events.snapshot",
             "reqId": req_id,
             "payload": {
-                "approvals": approvals,
-                "userInputs": user_inputs
+                "approvals": approvals_payload,
+                "userInputs": user_inputs_payload
             }
         }),
     )
@@ -341,186 +520,113 @@ async fn codex_ws_poll_pending_events(
     socket: &mut WebSocket,
     approvals_sig: &mut String,
     user_input_sig: &mut String,
-    notif_cursor: &mut u64,
+    notif_cursors: &mut std::collections::HashMap<WorkspaceTarget, u64>,
     client_id: u64,
-    workspace_target: Option<WorkspaceTarget>,
+    workspace_targets: &[WorkspaceTarget],
 ) -> bool {
-    let approvals = super::codex_try_request_with_fallback(
-        &["bridge/approvals/list", "approvals/list"],
-        Value::Null,
-    )
-    .await;
-    if let Ok(payload) = approvals {
-        let sig = payload.to_string();
-        if *approvals_sig != sig {
-            *approvals_sig = sig;
-            if !send_ws_json(
-                socket,
-                &json!({
-                    "type": "approval.requested",
-                    "payload": payload
-                }),
-            )
-            .await
-            {
-                return false;
-            }
-        }
-    } else if approvals
-        .as_ref()
-        .err()
-        .is_some_and(|error| is_all_candidate_rpc_methods_unsupported(error))
-    {
-        let payload = json!([]);
-        let sig = payload.to_string();
-        if *approvals_sig != sig {
-            *approvals_sig = sig;
-            if !send_ws_json(
-                socket,
-                &json!({
-                    "type": "approval.requested",
-                    "payload": payload
-                }),
-            )
-            .await
-            {
-                return false;
-            }
-        }
+    let targets = if workspace_targets.is_empty() {
+        vec![WorkspaceTarget::Windows]
+    } else {
+        workspace_targets.to_vec()
+    };
+    let mut approvals_items = Vec::new();
+    let mut user_inputs_items = Vec::new();
+    for target in &targets {
+        let snapshot = CodexSessionManager::new(Some(*target))
+            .pending_events_snapshot()
+            .await;
+        approvals_items.extend(snapshot.approvals.as_array().cloned().unwrap_or_default());
+        user_inputs_items.extend(snapshot.user_inputs.as_array().cloned().unwrap_or_default());
     }
-
-    let user_inputs = super::codex_try_request_with_fallback(
-        &[
-            "bridge/userInput/list",
-            "userInput/list",
-            "request_user_input/list",
-        ],
-        Value::Null,
-    )
-    .await;
-    if let Ok(payload) = user_inputs {
-        let sig = payload.to_string();
-        if *user_input_sig != sig {
-            *user_input_sig = sig;
-            if !send_ws_json(
-                socket,
-                &json!({
-                    "type": "user_input.requested",
-                    "payload": payload
-                }),
-            )
-            .await
-            {
-                return false;
-            }
-        }
-    } else if user_inputs
-        .as_ref()
-        .err()
-        .is_some_and(|error| is_all_candidate_rpc_methods_unsupported(error))
-    {
-        let payload = json!([]);
-        let sig = payload.to_string();
-        if *user_input_sig != sig {
-            *user_input_sig = sig;
-            if !send_ws_json(
-                socket,
-                &json!({
-                    "type": "user_input.requested",
-                    "payload": payload
-                }),
-            )
-            .await
-            {
-                return false;
-            }
-        }
-    }
-
-    let home = web_codex_rpc_home_override_for_target(workspace_target);
-    if let Err(error) = crate::codex_app_server::ensure_server_in_home(home.as_deref()).await {
-        backend_live_debug_push(
-            "backend.ws.ensure_home_error",
-            json!({
-                "clientId": client_id,
-                "workspace": match workspace_target {
-                    Some(WorkspaceTarget::Wsl2) => "wsl2",
-                    Some(WorkspaceTarget::Windows) => "windows",
-                    None => "",
-                },
-                "home": home,
-                "message": error,
-            }),
-        );
-    }
-    let (mut items, first, last, gap) =
-        crate::codex_app_server::replay_notifications_since_in_home(
-            home.as_deref(),
-            *notif_cursor,
-            64,
-        )
-        .await;
-    if gap || !items.is_empty() {
-        backend_live_debug_push(
-            "backend.ws.poll",
-            json!({
-                "clientId": client_id,
-                "cursor": *notif_cursor,
-                "workspace": match workspace_target {
-                    Some(WorkspaceTarget::Wsl2) => "wsl2",
-                    Some(WorkspaceTarget::Windows) => "windows",
-                    None => "",
-                },
-                "home": home,
-                "count": items.len(),
-                "firstEventId": first,
-                "lastEventId": last,
-                "gap": gap,
-            }),
-        );
-    }
-    if should_reset_notification_cursor(*notif_cursor, first, last, gap) {
-        let _ = send_ws_json(
+    let approvals_payload = Value::Array(approvals_items);
+    let approvals_next_sig = approvals_payload.to_string();
+    if *approvals_sig != approvals_next_sig {
+        *approvals_sig = approvals_next_sig;
+        if !send_ws_json(
             socket,
             &json!({
-                "type": "events.reset",
-                "payload": {
-                    "requestedSince": *notif_cursor,
-                    "firstEventId": first,
-                    "lastEventId": last
-                }
+                "type": "approval.requested",
+                "payload": approvals_payload
             }),
         )
-        .await;
-        let requested_since = *notif_cursor;
-        *notif_cursor = 0;
-        let (replayed, _f2, _l2, _gap2) =
-            crate::codex_app_server::replay_notifications_since_in_home(home.as_deref(), 0, 64)
-                .await;
-        items = replayed;
-        backend_live_debug_push(
-            "backend.ws.events_reset",
-            json!({
-                "clientId": client_id,
-                "requestedSince": requested_since,
-                "firstEventId": first,
-                "lastEventId": last,
-                "replayedCount": items.len(),
-            }),
-        );
-    }
-    for notif in items {
-        if let Some(id) = notif.get("eventId").and_then(|v| v.as_u64()) {
-            *notif_cursor = (*notif_cursor).max(id);
-        }
-        let delivered = send_ws_json(
-            socket,
-            &json!({ "type": "rpc.notification", "payload": notif }),
-        )
-        .await;
-        backend_live_debug_push_send(client_id, &notif, delivered);
-        if !delivered {
+        .await
+        {
             return false;
+        }
+    }
+    let user_inputs_payload = Value::Array(user_inputs_items);
+    let user_inputs_next_sig = user_inputs_payload.to_string();
+    if *user_input_sig != user_inputs_next_sig {
+        *user_input_sig = user_inputs_next_sig;
+        if !send_ws_json(
+            socket,
+            &json!({
+                "type": "user_input.requested",
+                "payload": user_inputs_payload
+            }),
+        )
+        .await
+        {
+            return false;
+        }
+    }
+    for target in targets {
+        let manager = CodexSessionManager::new(Some(target));
+        let cursor = notif_cursors.entry(target).or_insert(0);
+        let home = manager.home_override().map(str::to_string);
+        let batch = manager.replay_notification_batch(*cursor, 64, true).await;
+        if batch.reset || !batch.items.is_empty() {
+            backend_live_debug_push(
+                "backend.ws.poll",
+                json!({
+                    "clientId": client_id,
+                    "cursor": *cursor,
+                    "workspace": workspace_target_label(target),
+                    "home": home,
+                    "count": batch.items.len(),
+                    "firstEventId": batch.first_event_id,
+                    "lastEventId": batch.last_event_id,
+                    "gap": batch.gap,
+                }),
+            );
+        }
+        if batch.reset {
+            let _ = send_ws_json(
+                socket,
+                &json!({
+                    "type": "events.reset",
+                    "payload": {
+                        "workspace": workspace_target_label(target),
+                        "requestedSince": *cursor,
+                        "firstEventId": batch.first_event_id,
+                        "lastEventId": batch.last_event_id
+                    }
+                }),
+            )
+            .await;
+            backend_live_debug_push(
+                "backend.ws.events_reset",
+                json!({
+                    "clientId": client_id,
+                    "workspace": workspace_target_label(target),
+                    "requestedSince": batch.requested_cursor,
+                    "firstEventId": batch.first_event_id,
+                    "lastEventId": batch.last_event_id,
+                    "replayedCount": batch.items.len(),
+                }),
+            );
+        }
+        *cursor = batch.next_cursor;
+        for notif in batch.items {
+            let delivered = send_ws_json(
+                socket,
+                &json!({ "type": "rpc.notification", "payload": notif }),
+            )
+            .await;
+            backend_live_debug_push_send(client_id, &notif, delivered);
+            if !delivered {
+                return false;
+            }
         }
     }
     true
@@ -532,8 +638,9 @@ async fn codex_ws_loop(mut socket: WebSocket) {
     let mut subscribe_events = false;
     let mut approvals_sig = String::new();
     let mut user_input_sig = String::new();
-    let mut notif_cursor: u64 = 0;
-    let mut notif_workspace_target: Option<WorkspaceTarget> = None;
+    let mut notif_cursors: std::collections::HashMap<WorkspaceTarget, u64> =
+        std::collections::HashMap::new();
+    let mut notif_workspace_targets = vec![WorkspaceTarget::Windows];
     let mut poll_tick = tokio::time::interval(std::time::Duration::from_millis(250));
     let close_reason = loop {
         tokio::select! {
@@ -543,9 +650,9 @@ async fn codex_ws_loop(mut socket: WebSocket) {
                         &mut socket,
                         &mut approvals_sig,
                         &mut user_input_sig,
-                        &mut notif_cursor,
+                        &mut notif_cursors,
                         client_id,
-                        notif_workspace_target,
+                        &notif_workspace_targets,
                     ).await
                 {
                     break "poll_send_failed".to_string();
@@ -586,50 +693,57 @@ async fn codex_ws_loop(mut socket: WebSocket) {
                             }
                             "subscribe.events" => {
                                 subscribe_events = true;
-                                notif_workspace_target = workspace_target_from_ws_payload(&v);
-                                notif_cursor = v
+                                notif_workspace_targets = workspace_targets_from_ws_payload(&v);
+                                let last_event_id = v
                                     .get("payload")
                                     .and_then(|p| p.get("lastEventId"))
                                     .and_then(|x| x.as_u64())
                                     .unwrap_or(0);
-                                backend_live_debug_subscribe(client_id, notif_cursor);
-                                let _ = codex_ws_poll_pending_events(
-                                    &mut socket,
-                                    &mut approvals_sig,
-                                    &mut user_input_sig,
-                                    &mut notif_cursor,
+                                notif_cursors.clear();
+                                for target in &notif_workspace_targets {
+                                    notif_cursors.insert(*target, last_event_id);
+                                }
+                                backend_live_debug_subscribe(
                                     client_id,
-                                    notif_workspace_target,
-                                )
-                                .await;
-                                let _ = codex_ws_emit_event_snapshot(
-                                    &mut socket,
-                                    &req_id,
-                                    &mut approvals_sig,
-                                    &mut user_input_sig,
-                                )
-                                .await;
+                                    last_event_id,
+                                    &notif_workspace_targets,
+                                );
                                 let _ = send_ws_json(&mut socket, &json!({
                                     "type": "subscribed",
                                     "reqId": req_id,
                                     "payload": {
                                         "events": true,
-                                        "workspace": match notif_workspace_target {
-                                            Some(WorkspaceTarget::Wsl2) => "wsl2",
-                                            _ => "windows",
-                                        }
+                                        "workspace": if notif_workspace_targets.len() > 1 { "all" } else { workspace_target_label(*notif_workspace_targets.first().unwrap_or(&WorkspaceTarget::Windows)) },
+                                        "workspaces": notif_workspace_targets.iter().map(|target| workspace_target_label(*target)).collect::<Vec<_>>()
                                     }
                                 }))
                                 .await;
-                            }
-                            "events.refresh" => {
-                                notif_workspace_target =
-                                    workspace_target_from_ws_payload(&v).or(notif_workspace_target);
+                                let _ = codex_ws_poll_pending_events(
+                                    &mut socket,
+                                    &mut approvals_sig,
+                                    &mut user_input_sig,
+                                    &mut notif_cursors,
+                                    client_id,
+                                    &notif_workspace_targets,
+                                )
+                                .await;
                                 let _ = codex_ws_emit_event_snapshot(
                                     &mut socket,
                                     &req_id,
                                     &mut approvals_sig,
                                     &mut user_input_sig,
+                                    &notif_workspace_targets,
+                                )
+                                .await;
+                            }
+                            "events.refresh" => {
+                                notif_workspace_targets = workspace_targets_from_ws_payload(&v);
+                                let _ = codex_ws_emit_event_snapshot(
+                                    &mut socket,
+                                    &req_id,
+                                    &mut approvals_sig,
+                                    &mut user_input_sig,
+                                    &notif_workspace_targets,
                                 )
                                 .await;
                             }
@@ -650,13 +764,8 @@ async fn codex_ws_loop(mut socket: WebSocket) {
                                     .and_then(|x| x.as_str())
                                     .unwrap_or_default()
                                     .to_string();
-                                let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
-                                let result = crate::codex_app_server::request_in_home(
-                                    home.as_deref(),
-                                    "turn/interrupt",
-                                    json!({ "turnId": turn_id }),
-                                )
-                                .await;
+                                let manager = CodexSessionManager::new(None);
+                                let result = manager.interrupt_turn(&turn_id).await;
                                 match result {
                                     Ok(ok) => {
                                         let _ = send_ws_json(
@@ -694,9 +803,8 @@ async fn codex_ws_loop(mut socket: WebSocket) {
                                     .await;
                                     continue;
                                 }
-                                let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override();
-                                let result =
-                                    crate::codex_app_server::request_in_home(home.as_deref(), &method, params).await;
+                                let manager = CodexSessionManager::new(None);
+                                let result = manager.request(&method, params).await;
                                 match result {
                                     Ok(ok) => {
                                         let _ = send_ws_json(
@@ -890,6 +998,92 @@ pub(super) async fn codex_live_debug_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codex_home_env::CodexHomeEnvGuard;
+    use crate::orchestrator::config::AppConfig;
+    use crate::orchestrator::router::RouterState;
+    use crate::orchestrator::secrets::SecretStore;
+    use crate::orchestrator::store::unix_ms;
+    use crate::orchestrator::upstream::UpstreamClient;
+    use futures_util::SinkExt;
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::io::Write;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
+    use tokio::net::TcpListener;
+    use tokio::time::{Duration, Instant};
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    fn build_test_gateway_state(tmp: &tempfile::TempDir) -> GatewayState {
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets
+            .set_gateway_token("test-token")
+            .expect("set gateway token");
+        let cfg = AppConfig::default_config();
+        let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+        GatewayState {
+            cfg: Arc::new(RwLock::new(cfg)),
+            router,
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn append_rollout_line(path: &std::path::Path, value: Value) {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("open rollout");
+        writeln!(file, "{value}").expect("append rollout line");
+        file.flush().expect("flush rollout");
+    }
+
+    async fn recv_ws_json(
+        socket: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> Value {
+        loop {
+            let next = tokio::time::timeout(Duration::from_secs(5), socket.next())
+                .await
+                .expect("ws receive timeout")
+                .expect("ws closed")
+                .expect("ws message");
+            match next {
+                WsMessage::Text(text) => {
+                    return serde_json::from_str(&text).expect("valid ws json");
+                }
+                WsMessage::Binary(bytes) => {
+                    return serde_json::from_slice(&bytes).expect("valid ws binary json");
+                }
+                WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
+                WsMessage::Close(frame) => panic!("unexpected websocket close: {frame:?}"),
+                other => panic!("unexpected websocket message: {other:?}"),
+            }
+        }
+    }
+
+    async fn recv_matching_ws_json(
+        socket: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        expected_id: serde_json::Value,
+    ) -> Value {
+        loop {
+            let value = recv_ws_json(socket).await;
+            if value.get("id") == Some(&expected_id) {
+                return value;
+            }
+        }
+    }
 
     #[test]
     fn backend_live_debug_keeps_recent_events_bounded() {
@@ -920,23 +1114,252 @@ mod tests {
     }
 
     #[test]
-    fn workspace_target_from_ws_payload_reads_workspace_hint() {
+    fn workspace_targets_from_ws_payload_reads_workspace_hints() {
         assert_eq!(
-            workspace_target_from_ws_payload(&json!({
+            workspace_targets_from_ws_payload(&json!({
                 "payload": { "workspace": "wsl2" }
             })),
-            Some(WorkspaceTarget::Wsl2)
+            vec![WorkspaceTarget::Wsl2]
         );
         assert_eq!(
-            workspace_target_from_ws_payload(&json!({
+            workspace_targets_from_ws_payload(&json!({
                 "payload": { "workspace": "windows" }
             })),
-            Some(WorkspaceTarget::Windows)
+            vec![WorkspaceTarget::Windows]
         );
         assert_eq!(
-            workspace_target_from_ws_payload(&json!({ "payload": {} })),
-            None
+            workspace_targets_from_ws_payload(&json!({
+                "payload": { "workspace": "all" }
+            })),
+            vec![WorkspaceTarget::Windows, WorkspaceTarget::Wsl2]
         );
+        assert_eq!(
+            workspace_targets_from_ws_payload(&json!({
+                "payload": { "workspaces": ["wsl2", "windows", "wsl2"] }
+            })),
+            vec![WorkspaceTarget::Wsl2, WorkspaceTarget::Windows]
+        );
+        assert_eq!(
+            workspace_targets_from_ws_payload(&json!({ "payload": {} })),
+            vec![WorkspaceTarget::Windows]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn websocket_subscription_replays_dual_workspace_notifications() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            |_home, method, _params| match method {
+                "bridge/approvals/list"
+                | "approvals/list"
+                | "bridge/userInput/list"
+                | "userInput/list"
+                | "request_user_input/list" => Ok(json!([])),
+                other => Err(format!("unsupported test rpc method: {other}")),
+            },
+        )))
+        .await;
+        crate::codex_wsl_bridge::_set_test_replay_handler(Some(Arc::new(
+            |_codex_home, since_event_id, max| {
+                let mut items = Vec::new();
+                if since_event_id < 1 {
+                    items.push(json!({
+                        "eventId": 1,
+                        "method": "turn/started",
+                        "params": { "threadId": "thread-wsl-dual" }
+                    }));
+                }
+                if since_event_id < 2 {
+                    items.push(json!({
+                        "eventId": 2,
+                        "method": "codex/event/response_item",
+                        "params": {
+                            "payload": {
+                                "type": "message",
+                                "thread_id": "thread-wsl-dual",
+                                "phase": "final_answer",
+                                "content": [{ "type": "output_text", "text": "wsl dual final" }]
+                            }
+                        }
+                    }));
+                }
+                if since_event_id < 3 {
+                    items.push(json!({
+                        "eventId": 3,
+                        "method": "turn/completed",
+                        "params": { "threadId": "thread-wsl-dual" }
+                    }));
+                }
+                items.truncate(max);
+                let first = items
+                    .first()
+                    .and_then(|value| value.get("eventId"))
+                    .and_then(Value::as_u64);
+                let last = items
+                    .last()
+                    .and_then(|value| value.get("eventId"))
+                    .and_then(Value::as_u64);
+                (items, first, last, false)
+            },
+        )))
+        .await;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let win_home = tmp.path().join("codex-home");
+        let sessions_dir = win_home.join("sessions").join("2026").join("03").join("20");
+        std::fs::create_dir_all(&sessions_dir).expect("create windows sessions dir");
+        let rollout_path = sessions_dir.join("rollout-2026-03-20T00-00-00-thread-dual.jsonl");
+        std::fs::write(
+            &rollout_path,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-win-dual\",\"cwd\":\"C:/repo\"}}\n"
+            ),
+        )
+        .expect("seed windows rollout");
+        let prev_win_home = std::env::var("API_ROUTER_WEB_CODEX_CODEX_HOME").ok();
+        let prev_wsl_home = std::env::var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME").ok();
+        unsafe {
+            std::env::set_var("API_ROUTER_WEB_CODEX_CODEX_HOME", &win_home);
+            std::env::set_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
+        }
+
+        let state = build_test_gateway_state(&tmp);
+        let app = build_router(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let test_result = tokio::time::timeout(Duration::from_secs(10), async {
+            let ws_url = format!("ws://127.0.0.1:{}/codex/ws?token=test-token", addr.port());
+            let (mut socket, _) = connect_async(&ws_url).await.expect("connect ws");
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "type": "subscribe.events",
+                        "reqId": "sub-dual",
+                        "payload": {
+                            "workspace": "all",
+                            "workspaces": ["windows", "wsl2"],
+                            "lastEventId": 0
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send subscribe");
+
+            let mut saw_subscribed = false;
+            let subscribe_deadline = Instant::now() + Duration::from_secs(5);
+            while !saw_subscribed && Instant::now() < subscribe_deadline {
+                let value = recv_ws_json(&mut socket).await;
+                match value.get("type").and_then(Value::as_str) {
+                    Some("subscribed") => {
+                        saw_subscribed = true;
+                        assert_eq!(
+                            value
+                                .get("payload")
+                                .and_then(|payload| payload.get("workspace"))
+                                .and_then(Value::as_str),
+                            Some("all")
+                        );
+                    }
+                    Some("events.snapshot")
+                    | Some("rpc.notification")
+                    | Some("approval.requested")
+                    | Some("user_input.requested") => {}
+                    other => panic!("unexpected subscribe ws message: {other:?}"),
+                }
+            }
+            assert!(saw_subscribed, "expected dual subscribed ack");
+
+            append_rollout_line(
+                &rollout_path,
+                json!({
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "turn_started",
+                        "thread_id": "thread-win-dual",
+                        "turn_id": "turn-win-dual-1"
+                    }
+                }),
+            );
+            append_rollout_line(
+                &rollout_path,
+                json!({
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": "final-win-dual-1",
+                        "role": "assistant",
+                        "thread_id": "thread-win-dual",
+                        "phase": "final_answer",
+                        "content": [
+                            { "type": "output_text", "text": "windows dual final" }
+                        ]
+                    }
+                }),
+            );
+            append_rollout_line(
+                &rollout_path,
+                json!({
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "turn_complete",
+                        "thread_id": "thread-win-dual",
+                        "turn_id": "turn-win-dual-1"
+                    }
+                }),
+            );
+
+            let deadline = Instant::now() + Duration::from_secs(6);
+            let mut payloads = Vec::new();
+            while payloads.len() < 6 && Instant::now() < deadline {
+                let value = recv_ws_json(&mut socket).await;
+                if value.get("type").and_then(Value::as_str) != Some("rpc.notification") {
+                    continue;
+                }
+                payloads.push(value.get("payload").cloned().unwrap_or(Value::Null));
+            }
+
+            let payload_text = serde_json::to_string(&payloads).expect("serialize payloads");
+            assert!(payload_text.contains("thread-win-dual"));
+            assert!(payload_text.contains("thread-wsl-dual"));
+            assert!(payload_text.contains("\"workspace\":\"windows\""));
+            assert!(payload_text.contains("\"workspace\":\"wsl2\""));
+
+            drop(socket);
+        })
+        .await;
+
+        server.abort();
+        crate::codex_app_server::_set_test_request_handler(None).await;
+        crate::codex_wsl_bridge::_set_test_replay_handler(None).await;
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        if let Some(prev) = prev_win_home {
+            unsafe {
+                std::env::set_var("API_ROUTER_WEB_CODEX_CODEX_HOME", prev);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+            }
+        }
+        if let Some(prev) = prev_wsl_home {
+            unsafe {
+                std::env::set_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", prev);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME");
+            }
+        }
+        test_result.expect("dual workspace websocket integration timed out");
     }
 
     #[test]
@@ -957,24 +1380,572 @@ mod tests {
 
     #[test]
     fn reset_notification_cursor_when_client_cursor_is_ahead_of_backend_queue() {
-        assert!(should_reset_notification_cursor(
+        assert!(crate::orchestrator::gateway::web_codex_session_manager::should_reset_notification_cursor(
             14_549,
             Some(1),
             Some(108),
             false
         ));
-        assert!(should_reset_notification_cursor(14_549, None, None, false));
-        assert!(!should_reset_notification_cursor(
+        assert!(crate::orchestrator::gateway::web_codex_session_manager::should_reset_notification_cursor(14_549, None, None, false));
+        assert!(!crate::orchestrator::gateway::web_codex_session_manager::should_reset_notification_cursor(
             7,
             Some(1),
             Some(108),
             false
         ));
-        assert!(should_reset_notification_cursor(
+        assert!(crate::orchestrator::gateway::web_codex_session_manager::should_reset_notification_cursor(
             7,
             Some(20),
             Some(108),
             true
         ));
+    }
+
+    #[tokio::test]
+    #[ignore = "process-global Codex home and ws rollout integration"]
+    async fn websocket_subscription_replays_external_rollout_notifications_in_terminal_order() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            |_home, method, _params| match method {
+                "bridge/approvals/list"
+                | "approvals/list"
+                | "bridge/userInput/list"
+                | "userInput/list"
+                | "request_user_input/list" => Ok(json!([])),
+                other => Err(format!("unsupported test rpc method: {other}")),
+            },
+        )))
+        .await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _codex_home = CodexHomeEnvGuard::set(tmp.path());
+        let prev_web_home = std::env::var("API_ROUTER_WEB_CODEX_CODEX_HOME").ok();
+        std::env::set_var("API_ROUTER_WEB_CODEX_CODEX_HOME", tmp.path());
+        let sessions_dir = tmp
+            .path()
+            .join("sessions")
+            .join("2026")
+            .join("03")
+            .join("17");
+        std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
+        let rollout_path = sessions_dir.join("rollout-2026-03-17T00-00-00-thread-seq.jsonl");
+        std::fs::write(
+            &rollout_path,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-seq\",\"cwd\":\"C:/repo\"}}\n"
+            ),
+        )
+        .expect("seed rollout");
+
+        let state = build_test_gateway_state(&tmp);
+        let app = build_router(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let test_result = tokio::time::timeout(Duration::from_secs(20), async {
+            let ws_url = format!("ws://127.0.0.1:{}/codex/ws?token=test-token", addr.port());
+            let (mut socket, _) = connect_async(&ws_url).await.expect("connect ws");
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "type": "subscribe.events",
+                        "reqId": "sub-1",
+                        "payload": {
+                            "workspace": "windows",
+                            "lastEventId": 0
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send subscribe");
+
+            let mut saw_snapshot = false;
+            let mut saw_subscribed = false;
+            let subscribe_deadline = Instant::now() + Duration::from_secs(5);
+            while !(saw_snapshot && saw_subscribed) && Instant::now() < subscribe_deadline {
+                let value = recv_ws_json(&mut socket).await;
+                match value.get("type").and_then(Value::as_str) {
+                    Some("events.snapshot") => saw_snapshot = true,
+                    Some("subscribed") => saw_subscribed = true,
+                    Some("approval.requested") | Some("user_input.requested") => {}
+                    other => panic!("unexpected pre-notification ws message: {other:?}"),
+                }
+            }
+            assert!(saw_snapshot, "expected initial events.snapshot");
+            assert!(saw_subscribed, "expected subscribed ack");
+
+            append_rollout_line(
+                &rollout_path,
+                json!({
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "turn_started",
+                        "thread_id": "thread-seq",
+                        "turn_id": "turn-seq-1"
+                    }
+                }),
+            );
+            append_rollout_line(
+                &rollout_path,
+                json!({
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": "reasoning-1",
+                        "role": "assistant",
+                        "thread_id": "thread-seq",
+                        "phase": "commentary",
+                        "content": [
+                            { "type": "output_text", "text": "Inspecting workspace state" }
+                        ]
+                    }
+                }),
+            );
+            append_rollout_line(
+                &rollout_path,
+                json!({
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call",
+                        "call_id": "call-1",
+                        "thread_id": "thread-seq",
+                        "name": "shell_command",
+                        "arguments": "{\"command\":\"pwd\"}"
+                    }
+                }),
+            );
+            append_rollout_line(
+                &rollout_path,
+                json!({
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": "final-1",
+                        "role": "assistant",
+                        "thread_id": "thread-seq",
+                        "phase": "final_answer",
+                        "content": [
+                            { "type": "output_text", "text": "Done." }
+                        ]
+                    }
+                }),
+            );
+            append_rollout_line(
+                &rollout_path,
+                json!({
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call_output",
+                        "thread_id": "thread-seq",
+                        "call_id": "call-1",
+                        "output": "{\"output\":\"C:/repo\",\"metadata\":{\"exit_code\":0}}"
+                    }
+                }),
+            );
+            append_rollout_line(
+                &rollout_path,
+                json!({
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "turn_complete",
+                        "thread_id": "thread-seq",
+                        "turn_id": "turn-seq-1"
+                    }
+                }),
+            );
+
+            let deadline = Instant::now() + Duration::from_secs(6);
+            let mut methods = Vec::new();
+            let mut payloads = Vec::new();
+            while methods.len() < 8 && Instant::now() < deadline {
+                let value = recv_ws_json(&mut socket).await;
+                if value.get("type").and_then(Value::as_str) != Some("rpc.notification") {
+                    continue;
+                }
+                let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+                let method = payload
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                methods.push(method);
+                payloads.push(payload);
+            }
+
+            assert_eq!(
+                methods,
+                vec![
+                    "turn/started",
+                    "thread/status/changed",
+                    "codex/event/response_item",
+                    "item/started",
+                    "codex/event/response_item",
+                    "item/completed",
+                    "turn/completed",
+                    "thread/status/changed",
+                ]
+            );
+            assert_eq!(
+                payloads[0]
+                    .get("params")
+                    .and_then(|value| value.get("thread_id"))
+                    .and_then(Value::as_str),
+                Some("thread-seq")
+            );
+            assert_eq!(
+                payloads[2]
+                    .get("params")
+                    .and_then(|value| value.get("payload"))
+                    .and_then(|value| value.get("phase"))
+                    .and_then(Value::as_str),
+                Some("commentary")
+            );
+            assert_eq!(
+                payloads[3]
+                    .get("params")
+                    .and_then(|value| value.get("item"))
+                    .and_then(|value| value.get("command"))
+                    .and_then(Value::as_str),
+                Some("pwd")
+            );
+            assert_eq!(
+                payloads[4]
+                    .get("params")
+                    .and_then(|value| value.get("payload"))
+                    .and_then(|value| value.get("phase"))
+                    .and_then(Value::as_str),
+                Some("final_answer")
+            );
+            assert_eq!(
+                payloads[5]
+                    .get("params")
+                    .and_then(|value| value.get("item"))
+                    .and_then(|value| value.get("status"))
+                    .and_then(Value::as_str),
+                Some("completed")
+            );
+
+            drop(socket);
+        })
+        .await;
+
+        server.abort();
+        crate::codex_app_server::_set_test_request_handler(None).await;
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        if let Some(prev) = prev_web_home {
+            std::env::set_var("API_ROUTER_WEB_CODEX_CODEX_HOME", prev);
+        } else {
+            std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+        }
+        test_result.expect("websocket rollout integration timed out");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    #[ignore = "requires local WSL filesystem and ws rollout integration"]
+    async fn websocket_subscription_replays_wsl_rollout_notifications_from_linux_home() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            |_home, method, _params| match method {
+                "bridge/approvals/list"
+                | "approvals/list"
+                | "bridge/userInput/list"
+                | "userInput/list"
+                | "request_user_input/list" => Ok(json!([])),
+                other => Err(format!("unsupported test rpc method: {other}")),
+            },
+        )))
+        .await;
+
+        let (distro, linux_home) =
+            crate::orchestrator::gateway::web_codex_home::resolve_wsl_identity()
+                .expect("resolve wsl identity");
+        let prev_wsl_home = std::env::var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME").ok();
+        unsafe {
+            std::env::set_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", &linux_home);
+        }
+        let sessions_dir = crate::orchestrator::gateway::web_codex_home::linux_path_to_unc(
+            &format!("{linux_home}/sessions/2026/03/18"),
+            &distro,
+        );
+        std::fs::create_dir_all(&sessions_dir).expect("create wsl sessions dir");
+        let rollout_path = sessions_dir.join(format!(
+            "rollout-2026-03-18T00-00-00-wsl-live-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(
+            &rollout_path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-wsl-seq\",\"cwd\":\"/home/yiyou/project\"}}\n",
+        )
+        .expect("seed wsl rollout");
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = build_test_gateway_state(&tmp);
+        let app = build_router(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let test_result = tokio::time::timeout(Duration::from_secs(20), async {
+            let ws_url = format!("ws://127.0.0.1:{}/codex/ws?token=test-token", addr.port());
+            let (mut socket, _) = connect_async(&ws_url).await.expect("connect ws");
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "type": "subscribe.events",
+                        "reqId": "sub-wsl",
+                        "payload": {
+                            "workspace": "wsl2",
+                            "lastEventId": 0
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send subscribe");
+
+            let mut saw_snapshot = false;
+            let mut saw_subscribed = false;
+            let subscribe_deadline = Instant::now() + Duration::from_secs(5);
+            while !(saw_snapshot && saw_subscribed) && Instant::now() < subscribe_deadline {
+                let value = recv_ws_json(&mut socket).await;
+                match value.get("type").and_then(Value::as_str) {
+                    Some("events.snapshot") => saw_snapshot = true,
+                    Some("subscribed") => {
+                        saw_subscribed = true;
+                        assert_eq!(
+                            value
+                                .get("payload")
+                                .and_then(|payload| payload.get("workspace"))
+                                .and_then(Value::as_str),
+                            Some("wsl2")
+                        );
+                    }
+                    Some("rpc.notification") => {}
+                    Some("approval.requested") | Some("user_input.requested") => {}
+                    other => panic!("unexpected pre-notification ws message: {other:?}"),
+                }
+            }
+            assert!(saw_snapshot, "expected initial events.snapshot");
+            assert!(saw_subscribed, "expected subscribed ack");
+
+            append_rollout_line(
+                &rollout_path,
+                json!({
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "turn_started",
+                        "thread_id": "thread-wsl-seq",
+                        "turn_id": "turn-wsl-1"
+                    }
+                }),
+            );
+            append_rollout_line(
+                &rollout_path,
+                json!({
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": "final-wsl-1",
+                        "role": "assistant",
+                        "thread_id": "thread-wsl-seq",
+                        "phase": "final_answer",
+                        "content": [
+                            { "type": "output_text", "text": "wsl live final" }
+                        ]
+                    }
+                }),
+            );
+            append_rollout_line(
+                &rollout_path,
+                json!({
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "turn_complete",
+                        "thread_id": "thread-wsl-seq",
+                        "turn_id": "turn-wsl-1"
+                    }
+                }),
+            );
+
+            let deadline = Instant::now() + Duration::from_secs(6);
+            let mut methods = Vec::new();
+            while methods.len() < 5 && Instant::now() < deadline {
+                let value = recv_ws_json(&mut socket).await;
+                if value.get("type").and_then(Value::as_str) != Some("rpc.notification") {
+                    continue;
+                }
+                let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+                methods.push(
+                    payload
+                        .get("method")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                );
+            }
+
+            assert_eq!(
+                methods,
+                vec![
+                    "turn/started",
+                    "thread/status/changed",
+                    "codex/event/response_item",
+                    "turn/completed",
+                    "thread/status/changed",
+                ]
+            );
+        })
+        .await;
+
+        server.abort();
+        let _ = std::fs::remove_file(&rollout_path);
+        crate::codex_app_server::_set_test_request_handler(None).await;
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        if let Some(prev) = prev_wsl_home {
+            unsafe {
+                std::env::set_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", prev);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME");
+            }
+        }
+        test_result.expect("wsl websocket rollout integration timed out");
+    }
+
+    #[tokio::test]
+    async fn app_server_websocket_proxy_forwards_requests_and_replays_notifications() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("codex-home");
+        std::fs::create_dir_all(&home).expect("create codex home");
+        let home_text = home.to_string_lossy().to_string();
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new({
+            let home_text = home_text.clone();
+            move |codex_home, method, params| match method {
+                "thread/read" => {
+                    assert_eq!(codex_home, Some(home_text.as_str()));
+                    assert_eq!(params.get("id").and_then(Value::as_str), Some("thread-1"));
+                    Ok(json!({ "thread": { "id": "thread-1" } }))
+                }
+                other => Err(format!("unsupported test rpc method: {other}")),
+            }
+        })))
+        .await;
+        let state = build_test_gateway_state(&tmp);
+        let app = build_router(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let test_result = tokio::time::timeout(Duration::from_secs(10), async {
+            let home_query = urlencoding::encode(&home_text);
+            let ws_url = format!(
+                "ws://127.0.0.1:{}/codex/app-server/ws?token=test-token&home={}",
+                addr.port(),
+                home_query
+            );
+            let (mut socket, _) = connect_async(&ws_url).await.expect("connect ws");
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {
+                                "name": "codex-tui",
+                                "version": "test"
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send initialize");
+            let init = recv_matching_ws_json(&mut socket, json!(1)).await;
+            assert_eq!(
+                init.get("result")
+                    .and_then(|value| value.get("platformOs"))
+                    .and_then(Value::as_str),
+                Some(std::env::consts::OS)
+            );
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "method": "initialized",
+                        "params": {}
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send initialized");
+
+            crate::codex_app_server::_push_notification_for_test(
+                Some(&home_text),
+                json!({
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "thread-1"
+                    }
+                }),
+            )
+            .await;
+            let notif = recv_ws_json(&mut socket).await;
+            assert_eq!(
+                notif.get("method").and_then(Value::as_str),
+                Some("turn/started")
+            );
+            assert!(notif.get("eventId").is_none());
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "id": 2,
+                        "method": "thread/read",
+                        "params": {
+                            "id": "thread-1"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send thread/read");
+            let response = recv_matching_ws_json(&mut socket, json!(2)).await;
+            assert_eq!(
+                response
+                    .get("result")
+                    .and_then(|value| value.get("thread"))
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str),
+                Some("thread-1")
+            );
+
+            drop(socket);
+        })
+        .await;
+
+        server.abort();
+        crate::codex_app_server::_set_test_request_handler(None).await;
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        test_result.expect("app-server websocket proxy timed out");
     }
 }

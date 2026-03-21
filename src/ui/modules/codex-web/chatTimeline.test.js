@@ -291,6 +291,7 @@ describe("chatTimeline", () => {
     expect(dom.documentRef.getElementById("welcomeCard")).not.toBeNull();
     expect(dom.documentRef.getElementById("chatOpeningOverlay")).not.toBeNull();
     expect(state.activeThreadRenderSig).toBe("");
+    expect(state.activeThreadPendingTurnId).toBe("");
     expect(state.historyWindowEnabled).toBe(false);
     expect(state.activeThreadHistoryTurns).toEqual([]);
     expect(state.activeThreadHistoryPendingRefresh).toBeNull();
@@ -300,6 +301,7 @@ describe("chatTimeline", () => {
     state.activeThreadLiveStateEpoch = 7;
     state.activeThreadLiveRuntimeEpoch = 7;
     state.activeThreadPendingTurnThreadId = "thread-1";
+    state.activeThreadPendingTurnId = "turn-2";
     state.activeThreadPendingTurnRunning = true;
     state.activeThreadPendingUserMessage = "rerender";
     state.activeThreadPendingAssistantMessage = "working";
@@ -352,6 +354,7 @@ describe("chatTimeline", () => {
     expect(state.activeThreadLiveStateEpoch).toBe(7);
     expect(state.activeThreadLiveRuntimeEpoch).toBe(7);
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnId).toBe("turn-2");
     expect(state.activeThreadPendingTurnRunning).toBe(true);
     expect(state.activeThreadPendingUserMessage).toBe("rerender");
     expect(state.activeThreadPendingAssistantMessage).toBe("working");

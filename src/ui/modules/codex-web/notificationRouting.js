@@ -133,11 +133,141 @@ export function shouldRefreshThreadsFromNotification(method) {
 export function shouldRefreshActiveThreadFromNotification(method) {
   const normalized = normalizeLiveMethod(method);
   if (!normalized) return false;
-  if (normalized === "thread/name/updated" || normalized === "thread/status/changed") return true;
-  return (
+  if (
+    normalized === "thread/name/updated" ||
+    normalized === "thread/status" ||
+    normalized === "thread/status/changed"
+  ) return true;
+  if (
+    normalized === "turn/started" ||
     normalized === "turn/completed" ||
     normalized === "turn/finished" ||
     normalized === "turn/failed" ||
-    normalized === "turn/cancelled"
+    normalized === "turn/cancelled" ||
+    normalized === "item/started" ||
+    normalized === "item/completed"
+  ) {
+    return true;
+  }
+  return (
+    normalized === "codex/event/response_item" ||
+    normalized === "codex/event/agent_message" ||
+    normalized === "codex/event/task_complete" ||
+    normalized === "codex/event/turn_complete" ||
+    normalized === "codex/event/task_failed" ||
+    normalized === "codex/event/turn_failed" ||
+    normalized === "codex/event/task_aborted" ||
+    normalized === "codex/event/turn_aborted"
   );
+}
+
+function extractNotificationParams(notification) {
+  const record = toRecord(notification);
+  return toRecord(record?.params) || toRecord(record?.payload) || null;
+}
+
+function readNotificationStatus(notification) {
+  const record = toRecord(notification);
+  const method = normalizeLiveMethod(readString(record?.method) || "");
+  const params = extractNotificationParams(notification);
+  const thread = toRecord(params?.thread);
+  const status =
+    readString(params?.status) ||
+    readString(thread?.status?.type) ||
+    readString(thread?.status) ||
+    "";
+  if (status) return status;
+  if (method.includes("turn/started")) return "running";
+  if (method.includes("turn/completed") || method.includes("turn/finished")) return "completed";
+  if (method.includes("turn/failed")) return "failed";
+  if (method.includes("turn/cancelled")) return "interrupted";
+  return "";
+}
+
+function readNotificationRolloutPath(notification) {
+  const params = extractNotificationParams(notification);
+  const thread = toRecord(params?.thread);
+  const item = toRecord(params?.item) || toRecord(params?.payload);
+  return (
+    readString(params?.rolloutPath) ||
+    readString(params?.rollout_path) ||
+    readString(params?.path) ||
+    readString(thread?.rolloutPath) ||
+    readString(thread?.rollout_path) ||
+    readString(thread?.path) ||
+    readString(item?.rolloutPath) ||
+    readString(item?.rollout_path) ||
+    readString(item?.path) ||
+    ""
+  );
+}
+
+function readNotificationWorkspace(notification, fallbackWorkspace = "windows") {
+  const params = extractNotificationParams(notification);
+  const thread = toRecord(params?.thread);
+  const payload = toRecord(params?.payload);
+  const raw =
+    readString(params?.workspace) ||
+    readString(thread?.workspace) ||
+    readString(payload?.workspace) ||
+    String(fallbackWorkspace || "").trim();
+  return raw.toLowerCase() === "wsl2" ? "wsl2" : "windows";
+}
+
+function extractNotificationTextPreview(value) {
+  const record = toRecord(value);
+  if (!record) return "";
+  const direct =
+    readString(record?.message) || readString(record?.text) || readString(record?.delta) || "";
+  if (direct) return direct.replace(/\s+/g, " ").trim();
+  const content = Array.isArray(record?.content) ? record.content : [];
+  for (const part of content) {
+    const text = readString(part?.text);
+    if (text) return text.replace(/\s+/g, " ").trim();
+  }
+  return "";
+}
+
+export function synthesizeProvisionalThreadItem(
+  notification,
+  fallbackWorkspace = "windows",
+  nowMs = Date.now()
+) {
+  const record = toRecord(notification);
+  const threadId = extractNotificationThreadId(record);
+  if (!threadId) return null;
+  const params = extractNotificationParams(record);
+  const item = toRecord(params?.item) || toRecord(params?.payload);
+  const thread = toRecord(params?.thread);
+  const workspace = readNotificationWorkspace(record, fallbackWorkspace);
+  const rolloutPath = readNotificationRolloutPath(record);
+  const cwd =
+    readString(params?.cwd) ||
+    readString(thread?.cwd) ||
+    readString(item?.cwd) ||
+    "";
+  const preview =
+    extractNotificationTextPreview(item) ||
+    extractNotificationTextPreview(thread) ||
+    extractNotificationTextPreview(params) ||
+    "";
+  const status = readNotificationStatus(record);
+  const updatedAt = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const nextItem = {
+    id: threadId,
+    threadId,
+    workspace,
+    __workspaceQueryTarget: workspace,
+    source: "live-provisional",
+    provisional: true,
+    updatedAt,
+  };
+  if (rolloutPath) nextItem.path = rolloutPath;
+  if (cwd) nextItem.cwd = cwd;
+  if (preview) {
+    nextItem.preview = preview;
+    nextItem.title = preview;
+  }
+  if (status) nextItem.status = { type: status };
+  return nextItem;
 }

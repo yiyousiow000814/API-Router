@@ -31,6 +31,7 @@ export const THREAD_AUTO_REFRESH_CONNECTED_MS = 20000;
 export const THREAD_AUTO_REFRESH_DISCONNECTED_MS = 3500;
 export const ACTIVE_THREAD_REFRESH_DEBOUNCE_MS = 380;
 export const ACTIVE_THREAD_LIVE_POLL_MS = 800;
+export const ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS = 3000;
 export const MODEL_LOADING_MIN_MS = 1000;
 export const RECENT_EVENT_ID_CACHE_SIZE = 2048;
 export const CHAT_LIVE_FOLLOW_MAX_STEP_PX = 64;
@@ -38,12 +39,29 @@ export const CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS = 66;
 export const CHAT_STICKY_BOTTOM_PX = 12;
 export const HISTORY_WINDOW_THRESHOLD = 180;
 
+function createWorkspaceRuntimeState(workspace) {
+  return {
+    workspace,
+    homeOverride: "",
+    connected: false,
+    connectedAtUnixSecs: null,
+    lastReplayCursor: 0,
+    lastReplayLastEventId: null,
+    lastReplayAtUnixSecs: null,
+    loaded: false,
+    loading: false,
+  };
+}
+
 export function createInitialState() {
   return {
     token: "",
     activeHostId: "",
     activeThreadId: "",
     activeThreadRolloutPath: "",
+    activeThreadAttachTransport: "",
+    activeThreadAttachPendingUntil: 0,
+    activeThreadAttachPendingTimer: 0,
     openingThreadAbort: null,
     ws: null,
     wsPingTimer: null,
@@ -53,9 +71,12 @@ export function createInitialState() {
     wsReqHandlers: new Map(),
     pendingApprovals: [],
     pendingUserInputs: [],
+    selectedPendingApprovalId: "",
+    selectedPendingUserInputId: "",
     threadItemsAll: [],
     threadItems: [],
     threadItemsByWorkspace: { windows: [], wsl2: [] },
+    threadAttachTransportById: new Map(),
     threadWorkspaceHydratedByWorkspace: { windows: false, wsl2: false },
     threadListRenderSigByWorkspace: { windows: "", wsl2: "" },
     threadListLoading: false,
@@ -116,6 +137,10 @@ export function createInitialState() {
     wsRecentEventIds: new Set(),
     wsRecentEventIdQueue: [],
     wsSubscribedEvents: false,
+    wsSubscribedWorkspaceTarget: "",
+    wsSubscribedWorkspaceTargets: [],
+    wsRequestedWorkspaceTarget: "",
+    wsRequestedWorkspaceTargets: [],
     collapsedWorkspaceKeys: new Set(),
     collapsedWorkspaceKeysByWorkspace: { windows: new Set(), wsl2: new Set() },
     threadGroupCollapseInitializedByWorkspace: { windows: false, wsl2: false },
@@ -124,7 +149,14 @@ export function createInitialState() {
     activeMainTab: "chat",
     workspaceTarget: "windows",
     workspaceAvailability: { windowsInstalled: false, wsl2Installed: false },
+    workspaceRuntimeByTarget: {
+      windows: createWorkspaceRuntimeState("windows"),
+      wsl2: createWorkspaceRuntimeState("wsl2"),
+    },
+    workspaceRuntimeRefreshReqSeqByWorkspace: { windows: 0, wsl2: 0 },
     gatewayBuildStaleWarned: false,
+    codexVersionRefreshLastMs: 0,
+    codexVersionRefreshInFlight: false,
     startCwdByWorkspace: { windows: "", wsl2: "" },
     folderPickerOpen: false,
     folderPickerWorkspace: "windows",
@@ -184,6 +216,7 @@ export function createInitialState() {
     activeThreadHistoryThreadId: "",
     activeThreadHistoryHasMore: false,
     activeThreadHistoryIncomplete: false,
+    activeThreadHistoryStatusType: "",
     activeThreadHistoryBeforeCursor: "",
     activeThreadHistoryTotalTurns: 0,
     activeThreadHistoryReqSeq: 0,

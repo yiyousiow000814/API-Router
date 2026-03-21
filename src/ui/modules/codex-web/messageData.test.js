@@ -149,6 +149,78 @@ describe("messageData", () => {
     ).toBe("Searched web for `openai codex previous messages animation final message divider`");
   });
 
+  it("formats running web search summaries with an explicit searching prefix", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "webSearch",
+          query: "openai codex",
+          status: "running",
+        },
+        { compact: true }
+      )
+    ).toBe("Searching web for `openai codex`");
+  });
+
+  it("formats failed web search summaries with an explicit failure prefix", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "webSearch",
+          query: "openai codex",
+          status: "failed",
+        },
+        { compact: true }
+      )
+    ).toBe("Web search failed for `openai codex`");
+  });
+
+  it("formats running and failed web search summaries with status-aware prefixes", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "webSearch",
+          query: "codex web running search state",
+          status: "running",
+        },
+        { compact: true }
+      )
+    ).toBe("Searching web for `codex web running search state`");
+
+    expect(
+      toolItemToMessage(
+        {
+          type: "webSearch",
+          query: "codex web failed search state",
+          status: "failed",
+        },
+        { compact: true }
+      )
+    ).toBe("Web search failed for `codex web failed search state`");
+  });
+
+  it("formats file change summaries with running and failed statuses", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "fileChange",
+          status: "running",
+        },
+        { compact: true }
+      )
+    ).toBe("Applying file changes");
+
+    expect(
+      toolItemToMessage(
+        {
+          type: "fileChange",
+          status: "failed",
+        },
+        { compact: true }
+      )
+    ).toBe("File changes failed");
+  });
+
   it("formats context compaction summaries without a leading bullet", () => {
     expect(
       toolItemToMessage(
@@ -175,6 +247,33 @@ describe("messageData", () => {
         { compact: true }
       )
     ).toBe("Ran `bash -lc 'ls -la'`");
+  });
+
+  it("keeps command executions running for item updates without an explicit status", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "commandExecution",
+          command: "Get-ChildItem -Recurse -Filter *.js",
+        },
+        { compact: true, method: "item/updated" }
+      )
+    ).toBe("Running `Get-ChildItem -Recurse -Filter *.js`");
+  });
+
+  it("does not mark successful command output as failed just because the output mentions failure words", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "commandExecution",
+          command: "Get-Content scripts/codex-web-e2e-send-turn-live.mjs",
+          status: "completed",
+          output: "const note = \"command failed\";",
+          exitCode: 0,
+        },
+        { compact: true }
+      )
+    ).toBe("Ran `Get-Content scripts/codex-web-e2e-send-turn-live.mjs`");
   });
 
   it("summarizes tail-based file reads as a read action in compact mode", () => {

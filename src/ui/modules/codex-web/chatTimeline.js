@@ -1,5 +1,7 @@
 import { renderPlanCardHtml } from "./runtimePlan.js";
 
+import { resetPendingTurnRuntime, resetTurnPresentationState } from "./runtimeState.js";
+
 export function createChatTimelineModule(deps) {
   const {
     byId,
@@ -458,18 +460,9 @@ export function createChatTimelineModule(deps) {
     state.activeThreadRenderSig = "";
     state.activeThreadMessages = [];
     if (!preservePendingTurn) {
-      state.activeThreadLiveStateEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0)) + 1;
-      state.activeThreadLiveRuntimeEpoch = 0;
-      state.activeThreadPendingTurnThreadId = "";
-      state.activeThreadPendingTurnRunning = false;
-      state.activeThreadPendingUserMessage = "";
-      state.activeThreadPendingAssistantMessage = "";
+      resetTurnPresentationState(state, { bumpLiveEpoch: true, resetLiveRuntimeEpoch: true });
+      resetPendingTurnRuntime(state);
     }
-    state.activeThreadLiveAssistantThreadId = "";
-    state.activeThreadLiveAssistantIndex = -1;
-    state.activeThreadLiveAssistantMsgNode = null;
-    state.activeThreadLiveAssistantBodyNode = null;
-    state.activeThreadLiveAssistantText = "";
     state.historyWindowEnabled = false;
     state.historyWindowThreadId = "";
     state.historyWindowStart = 0;
@@ -479,25 +472,13 @@ export function createChatTimelineModule(deps) {
     state.activeThreadHistoryThreadId = "";
     state.activeThreadHistoryHasMore = false;
     state.activeThreadHistoryIncomplete = false;
+    state.activeThreadHistoryStatusType = "";
     state.activeThreadHistoryBeforeCursor = "";
     state.activeThreadHistoryTotalTurns = 0;
     state.activeThreadHistoryReqSeq = 0;
     state.activeThreadHistoryInFlightPromise = null;
     state.activeThreadHistoryInFlightThreadId = "";
     state.activeThreadHistoryPendingRefresh = null;
-    if (!preservePendingTurn) state.activeThreadTransientToolText = "";
-    if (!preservePendingTurn) state.activeThreadTransientThinkingText = "";
-    if (!preservePendingTurn) state.activeThreadCommentaryPendingPlan = null;
-    if (!preservePendingTurn) state.activeThreadCommentaryPendingTools = [];
-    if (!preservePendingTurn) state.activeThreadCommentaryPendingToolKeys = [];
-    if (!preservePendingTurn) state.activeThreadCommentaryCurrent = null;
-    if (!preservePendingTurn) state.activeThreadCommentaryArchive = [];
-    if (!preservePendingTurn) state.activeThreadCommentaryArchiveVisible = false;
-    if (!preservePendingTurn) state.activeThreadCommentaryArchiveExpanded = false;
-    if (!preservePendingTurn) state.activeThreadInlineCommentaryArchiveCount = 0;
-    if (!preservePendingTurn) state.activeThreadActivity = null;
-    if (!preservePendingTurn) state.activeThreadActiveCommands = [];
-    if (!preservePendingTurn) state.activeThreadPlan = null;
     renderRuntimePanels();
   }
 

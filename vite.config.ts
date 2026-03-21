@@ -4,6 +4,23 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const gatewayProxyTarget = process.env.VITE_GATEWAY_PROXY_TARGET || 'http://127.0.0.1:4000'
+const devWatchIgnored = [
+  '**/.git/**',
+  '**/node_modules/**',
+  '**/dist/**',
+  '**/artifacts/**',
+  '**/tmp/**',
+  '**/.tmp/**',
+  '**/.tmp-*/**',
+  '**/.tmp-codex-*/**',
+  '**/src-tauri/target/**',
+  '**/src-tauri/target-*/**',
+  '**/user-data/tmp/**',
+  '**/*.exe',
+  '**/*.msi',
+  '**/*.pdb',
+  '**/*.zip',
+]
 
 function resolveGatewayTokenFromSecrets(): string {
   try {
@@ -86,6 +103,9 @@ export default defineConfig({
     },
   ],
   server: {
+    watch: {
+      ignored: devWatchIgnored,
+    },
     proxy: {
       '/codex': {
         target: gatewayProxyTarget,

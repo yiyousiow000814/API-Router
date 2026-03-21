@@ -33,6 +33,8 @@ const BRIDGE_PORT_CANDIDATES: usize = 4;
 #[cfg(target_os = "windows")]
 const BRIDGE_HEALTH_MARKER: &str = "api-router-wsl-codex-bridge";
 #[cfg(any(test, target_os = "windows"))]
+const BRIDGE_SCRIPT_VERSION: u32 = 3;
+#[cfg(any(test, target_os = "windows"))]
 const BRIDGE_LOG_PATH: &str = "/tmp/api-router-wsl-codex-bridge.log";
 
 #[cfg(target_os = "windows")]
@@ -162,7 +164,8 @@ fn default_bridge_key(target: &BridgeTarget) -> Cow<'_, str> {
 #[cfg(any(test, target_os = "windows"))]
 fn stable_bridge_port(key: &str, slot: usize) -> u16 {
     let mut hash = 2166136261u32;
-    for byte in key.as_bytes() {
+    let scoped_key = format!("{key}::v{BRIDGE_SCRIPT_VERSION}");
+    for byte in scoped_key.as_bytes() {
         hash ^= u32::from(*byte);
         hash = hash.wrapping_mul(16777619);
     }
@@ -187,6 +190,7 @@ import os
 import queue
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -196,10 +200,111 @@ servers = {}
 servers_lock = threading.Lock()
 notifications = {}
 notifications_lock = threading.Lock()
+rollout_state = {}
+rollout_state_lock = threading.Lock()
 
 def normalize_home(value):
     text = (value or "").strip()
     return text or ""
+
+def parse_embedded_json(value):
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return None
+    if isinstance(value, (dict, list)):
+        return value
+    return None
+
+def extract_text_value(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("output", "text", "message", "result"):
+            raw = value.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return raw
+    return None
+
+    def has_failure_marker(value):
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return not value
+    if isinstance(value, str):
+        return False
+    if isinstance(value, list):
+        return any(has_failure_marker(item) for item in value)
+        if isinstance(value, dict):
+            if value.get("success") is False or value.get("ok") is False:
+                return True
+            if value.get("error") not in (None, ""):
+                error = value.get("error")
+                if isinstance(error, str):
+                    return bool(error.strip())
+                if error_object_has_failure_marker(error):
+                    return True
+            status = str(value.get("status") or "").strip().lower()
+            if status in ("failed", "error", "denied", "cancelled", "timeout"):
+                return True
+            return False
+        return False
+
+    def error_object_has_failure_marker(value):
+        if isinstance(value, dict):
+            message = value.get("message")
+            if isinstance(message, str) and message.strip():
+                return True
+        return has_failure_marker(value)
+
+def is_shell_like_tool_name(name):
+    normalized = str(name or "").strip().lower().replace("-", "").replace("_", "")
+    return normalized in ("execcommand", "shell", "shellcommand", "commandexecution")
+
+def read_command_from_arguments(arguments):
+    parsed = parse_embedded_json(arguments)
+    if not isinstance(parsed, dict):
+        return None
+    for key in ("cmd", "command", "shell_command", "shellCommand", "raw_command"):
+        value = parsed.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+def sessions_root_for_home(home):
+    normalized = normalize_home(home)
+    if normalized:
+        root = os.path.join(normalized, "sessions")
+        if os.path.isdir(root):
+            return root
+    env_home = (os.environ.get("CODEX_HOME") or "").strip()
+    if env_home:
+        root = os.path.join(env_home, "sessions")
+        if os.path.isdir(root):
+            return root
+    fallback = os.path.expanduser("~/.codex/sessions")
+    if os.path.isdir(fallback):
+        return fallback
+    return None
+
+def discover_recent_rollout_files(root):
+    matches = []
+    now = time.time()
+    max_age = 60 * 60 * 24 * 2
+    for dirpath, _, filenames in os.walk(root):
+        for name in filenames:
+            if not (name.startswith("rollout-") and name.endswith(".jsonl")):
+                continue
+            path = os.path.join(dirpath, name)
+            try:
+                age = max(0, now - os.path.getmtime(path))
+            except OSError:
+                continue
+            if age <= max_age:
+                matches.append(path)
+    matches.sort(reverse=True)
+    return matches[:64]
 
 def push_notification(home, payload):
     key = normalize_home(home)
@@ -242,7 +347,246 @@ def normalize_notification(payload):
         }
     return None
 
+def rollout_status_notification(thread_id, status):
+    return {
+        "method": "thread/status/changed",
+        "params": {
+            "threadId": thread_id,
+            "thread_id": thread_id,
+            "status": status,
+            "source": "rollout_live_sync",
+        },
+    }
+
+def rollout_turn_notification(method, thread_id, payload):
+    params = dict(payload or {})
+    params.setdefault("threadId", thread_id)
+    params.setdefault("thread_id", thread_id)
+    return {
+        "method": method,
+        "params": params,
+    }
+
+def map_rollout_event_msg(thread_id, payload):
+    event_type = str((payload or {}).get("type") or "").strip().lower()
+    if event_type in ("turn_started", "task_started", "taskstarted"):
+        return [
+            rollout_turn_notification("turn/started", thread_id, payload),
+            rollout_status_notification(thread_id, "running"),
+        ]
+    if event_type in ("turn_complete", "task_complete", "taskcomplete"):
+        return [
+            rollout_turn_notification("turn/completed", thread_id, payload),
+            rollout_status_notification(thread_id, "completed"),
+        ]
+    if event_type in ("turn_failed", "task_failed", "taskfailed"):
+        return [
+            rollout_turn_notification("turn/failed", thread_id, payload),
+            rollout_status_notification(thread_id, "failed"),
+        ]
+    if event_type in ("turn_aborted", "task_interrupted", "taskinterrupted"):
+        return [
+            rollout_turn_notification("turn/cancelled", thread_id, payload),
+            rollout_status_notification(thread_id, "interrupted"),
+        ]
+    next_payload = dict(payload or {})
+    next_payload.setdefault("threadId", thread_id)
+    next_payload.setdefault("thread_id", thread_id)
+    normalized = normalize_notification({"type": "event_msg", "payload": next_payload})
+    return [normalized] if normalized is not None else []
+
+def map_rollout_response_item(tracked, thread_id, payload):
+    item_type = str((payload or {}).get("type") or "").strip()
+    if item_type == "message":
+        next_payload = dict(payload or {})
+        next_payload.setdefault("threadId", thread_id)
+        next_payload.setdefault("thread_id", thread_id)
+        normalized = normalize_notification({"type": "response_item", "payload": next_payload})
+        return [normalized] if normalized is not None else []
+    if item_type == "web_search_call":
+        item = {
+            "type": "webSearch",
+            "threadId": thread_id,
+            "thread_id": thread_id,
+            "status": str((payload or {}).get("status") or "completed"),
+            "query": ((payload or {}).get("action") or {}).get("query") if isinstance((payload or {}).get("action"), dict) else None,
+            "action": (payload or {}).get("action"),
+        }
+        return [{
+            "method": "item/completed",
+            "params": {"threadId": thread_id, "thread_id": thread_id, "item": item},
+        }]
+    if item_type in ("function_call", "custom_tool_call"):
+        name = str((payload or {}).get("name") or "").strip()
+        call_id = str((payload or {}).get("call_id") or "").strip()
+        if item_type == "custom_tool_call":
+            item = {
+                "type": "toolCall",
+                "id": call_id or None,
+                "callId": call_id or None,
+                "threadId": thread_id,
+                "thread_id": thread_id,
+                "tool": name or None,
+                "input": (payload or {}).get("input"),
+                "status": "running",
+            }
+            kind = "tool"
+        elif is_shell_like_tool_name(name):
+            item = {
+                "type": "commandExecution",
+                "id": call_id or None,
+                "callId": call_id or None,
+                "threadId": thread_id,
+                "thread_id": thread_id,
+                "command": read_command_from_arguments((payload or {}).get("arguments")),
+                "status": "running",
+            }
+            kind = "command"
+        else:
+            item = {
+                "type": "toolCall",
+                "id": call_id or None,
+                "callId": call_id or None,
+                "threadId": thread_id,
+                "thread_id": thread_id,
+                "tool": name or None,
+                "arguments": (payload or {}).get("arguments"),
+                "status": "running",
+            }
+            kind = "tool"
+        if call_id:
+            tracked["pending_calls"][call_id] = {"item": item, "kind": kind}
+        return [{
+            "method": "item/started",
+            "params": {"threadId": thread_id, "thread_id": thread_id, "item": item},
+        }]
+    if item_type in ("function_call_output", "custom_tool_call_output"):
+        call_id = str((payload or {}).get("call_id") or "").strip()
+        pending = tracked["pending_calls"].pop(call_id, None)
+        if not pending:
+            return []
+        parsed = parse_embedded_json((payload or {}).get("output"))
+        item = dict(pending["item"])
+        if pending["kind"] == "command":
+            exit_code = None
+            if isinstance(parsed, dict):
+                metadata = parsed.get("metadata")
+                if isinstance(metadata, dict):
+                    try:
+                        exit_code = int(metadata.get("exit_code"))
+                    except Exception:
+                        exit_code = None
+            item["status"] = "failed" if (exit_code not in (None, 0) or has_failure_marker(parsed)) else "completed"
+            output = extract_text_value(parsed)
+            if output:
+                item["output"] = output
+            if exit_code is not None:
+                item["exitCode"] = exit_code
+        else:
+            item["status"] = "failed" if has_failure_marker(parsed) else "completed"
+            if parsed is not None:
+                item["result"] = extract_text_value(parsed) or parsed
+        return [{
+            "method": "item/completed",
+            "params": {"threadId": thread_id, "thread_id": thread_id, "item": item},
+        }]
+    return []
+
+def poll_rollout_notifications(home):
+    root = sessions_root_for_home(home)
+    if not root:
+        return
+    key = normalize_home(home)
+    discovered = discover_recent_rollout_files(root)
+    with rollout_state_lock:
+        state = rollout_state.setdefault(key, {"files": {}})
+        files = state["files"]
+        discovered_set = set(discovered)
+        for path in discovered:
+            if path in files:
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            files[path] = {
+                "offset": max(0, size - 65536),
+                "partial": "",
+                "drop_first_partial": size > 65536,
+                "thread_id": None,
+                "pending_calls": {},
+            }
+        stale = [path for path in list(files.keys()) if path not in discovered_set]
+        for path in stale:
+            files.pop(path, None)
+        tracked_items = list(files.items())
+    for path, tracked in tracked_items:
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                end = fh.tell()
+                if end < tracked["offset"]:
+                    tracked["offset"] = 0
+                    tracked["partial"] = ""
+                    tracked["drop_first_partial"] = False
+                    tracked["pending_calls"] = {}
+                if end == tracked["offset"]:
+                    continue
+                fh.seek(tracked["offset"])
+                chunk = fh.read()
+                tracked["offset"] = end
+        except OSError:
+            continue
+        if not chunk:
+            continue
+        text = tracked["partial"] + chunk.decode("utf-8", errors="ignore")
+        tracked["partial"] = ""
+        if tracked["drop_first_partial"]:
+            idx = text.find("\n")
+            if idx < 0:
+                tracked["partial"] = text
+                continue
+            text = text[idx + 1 :]
+            tracked["drop_first_partial"] = False
+        lines = text.split("\n")
+        if text and not text.endswith("\n"):
+            tracked["partial"] = lines.pop()
+        notifications_to_push = []
+        for line in lines:
+            trimmed = line.strip()
+            if not trimmed:
+                continue
+            try:
+                record = json.loads(trimmed)
+            except Exception:
+                continue
+            if not isinstance(record, dict):
+                continue
+            record_type = str(record.get("type") or "").strip()
+            payload = record.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if record_type == "session_meta":
+                thread_id = str(payload.get("id") or "").strip()
+                if thread_id:
+                    tracked["thread_id"] = thread_id
+                continue
+            thread_id = str(payload.get("thread_id") or tracked.get("thread_id") or "").strip()
+            if not thread_id:
+                continue
+            tracked["thread_id"] = thread_id
+            if record_type == "event_msg":
+                notifications_to_push.extend(map_rollout_event_msg(thread_id, payload))
+            elif record_type == "response_item":
+                notifications_to_push.extend(map_rollout_response_item(tracked, thread_id, payload))
+        with rollout_state_lock:
+            if key in rollout_state and path in rollout_state[key]["files"]:
+                rollout_state[key]["files"][path] = tracked
+        for item in notifications_to_push:
+            push_notification(home, item)
+
 def replay_notifications(home, since_event_id, max_items):
+    poll_rollout_notifications(home)
     key = normalize_home(home)
     cap = max(1, min(int(max_items or 1), NOTIFICATION_QUEUE_CAP))
     with notifications_lock:
@@ -394,7 +738,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/health":
-            self._send(200, {"ok": True, "bridge": "api-router-wsl-codex-bridge", "version": 1})
+            self._send(200, {"ok": True, "bridge": "api-router-wsl-codex-bridge", "version": 3})
             return
         if parsed.path != "/notifications":
             self._send(404, {"error": "not found"})
@@ -452,6 +796,13 @@ if __name__ == "__main__":
 }
 
 #[cfg(any(test, target_os = "windows"))]
+fn bridge_health_payload_ok(payload: &Value) -> bool {
+    payload.get("bridge").and_then(|v| v.as_str()) == Some(BRIDGE_HEALTH_MARKER)
+        && payload.get("ok").and_then(|v| v.as_bool()) == Some(true)
+        && payload.get("version").and_then(|v| v.as_u64()) == Some(BRIDGE_SCRIPT_VERSION as u64)
+}
+
+#[cfg(any(test, target_os = "windows"))]
 fn build_launch_script(target: &BridgeTarget, port: u16) -> String {
     let encoded = {
         use base64::engine::general_purpose::STANDARD;
@@ -470,7 +821,7 @@ fn build_launch_script(target: &BridgeTarget, port: u16) -> String {
         "exec >>{log} 2>&1; \
 {prefix}PYTHON_BIN=\"$(command -v python3 || command -v python || true)\"; \
 if [ -z \"$PYTHON_BIN\" ]; then echo 'python3 not found in WSL' >&2; exit 127; fi; \
-export API_ROUTER_WSL_BRIDGE_HOST='127.0.0.1'; \
+export API_ROUTER_WSL_BRIDGE_HOST='0.0.0.0'; \
 export API_ROUTER_WSL_BRIDGE_PORT={port}; \
 exec \"$PYTHON_BIN\" -u -c \"import base64; exec(base64.b64decode('{encoded}').decode('utf-8'))\"",
         prefix = prefix,
@@ -564,10 +915,7 @@ async fn healthcheck(base_url: &str, client: &Client) -> Result<bool, String> {
         return Ok(false);
     }
     let payload = response.json::<Value>().await.map_err(|e| e.to_string())?;
-    Ok(
-        payload.get("bridge").and_then(|v| v.as_str()) == Some(BRIDGE_HEALTH_MARKER)
-            && payload.get("ok").and_then(|v| v.as_bool()) == Some(true),
-    )
+    Ok(bridge_health_payload_ok(&payload))
 }
 
 #[cfg(target_os = "windows")]
@@ -845,7 +1193,21 @@ mod tests {
         assert!(script.contains("exec >>"));
         assert!(script.contains("exec \"$PYTHON_BIN\" -u -c"));
         assert!(!script.contains("nohup "));
-        assert!(script.contains("API_ROUTER_WSL_BRIDGE_HOST='127.0.0.1'"));
+        assert!(script.contains("API_ROUTER_WSL_BRIDGE_HOST='0.0.0.0'"));
         assert!(script.contains(BRIDGE_LOG_PATH));
+    }
+
+    #[test]
+    fn health_payload_requires_current_script_version() {
+        assert!(bridge_health_payload_ok(&serde_json::json!({
+            "ok": true,
+            "bridge": BRIDGE_HEALTH_MARKER,
+            "version": BRIDGE_SCRIPT_VERSION,
+        })));
+        assert!(!bridge_health_payload_ok(&serde_json::json!({
+            "ok": true,
+            "bridge": BRIDGE_HEALTH_MARKER,
+            "version": BRIDGE_SCRIPT_VERSION - 1,
+        })));
     }
 }
