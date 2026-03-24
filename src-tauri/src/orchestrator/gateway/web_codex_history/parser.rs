@@ -690,23 +690,126 @@ fn read_command_from_tool_arguments(arguments: Option<&Value>) -> Option<String>
         .get("command")
         .or_else(|| parsed.get("cmd"))
         .or_else(|| parsed.get("args"))?;
-    match command {
-        Value::String(text) => {
-            let trimmed = text.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        }
+    let raw = match command {
+        Value::String(text) => Some(text.trim().to_string()),
         Value::Array(parts) => {
-            let joined = parts
+            let values = parts
                 .iter()
                 .filter_map(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ");
-            (!joined.is_empty()).then_some(joined)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if values.is_empty() {
+                None
+            } else if let Some(unwrapped) = unwrap_shell_wrapper_parts(&values) {
+                Some(unwrapped)
+            } else {
+                Some(values.join(" "))
+            }
         }
         other => serde_json::to_string(other).ok(),
+    }?;
+    normalize_wrapped_command_string(&raw).or_else(|| {
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+fn normalize_wrapped_command_string(raw: &str) -> Option<String> {
+    let mut text = raw.trim();
+    if text.is_empty() {
+        return None;
     }
+    if (text.starts_with('"') && text.ends_with('"'))
+        || (text.starts_with('\'') && text.ends_with('\''))
+    {
+        text = text[1..text.len() - 1].trim();
+    }
+    extract_wrapped_command_body(text).or_else(|| Some(text.to_string()))
+}
+
+fn unwrap_shell_wrapper_parts(parts: &[String]) -> Option<String> {
+    let first = parts.first()?;
+    let exe = command_basename(first);
+    let flags = if matches!(
+        exe.as_str(),
+        "powershell.exe" | "powershell" | "pwsh.exe" | "pwsh"
+    ) {
+        &["-command", "-c"][..]
+    } else if matches!(exe.as_str(), "cmd.exe" | "cmd") {
+        &["/c"][..]
+    } else {
+        return None;
+    };
+    for index in 1..parts.len().saturating_sub(1) {
+        let lower = parts[index].trim().to_ascii_lowercase();
+        if flags.iter().any(|flag| lower == *flag) {
+            let candidate = parts[index + 1].trim();
+            if candidate.is_empty() {
+                continue;
+            }
+            return normalize_wrapped_command_string(candidate)
+                .or_else(|| Some(candidate.to_string()));
+        }
+    }
+    None
+}
+
+fn command_basename(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches(|ch| ch == '"' || ch == '\'')
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn extract_wrapped_command_body(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+    if !(lowered.contains("powershell")
+        || lowered.contains("pwsh")
+        || lowered.contains("cmd.exe")
+        || lowered.contains("cmd "))
+    {
+        return None;
+    }
+    extract_flag_argument(trimmed, &["-command", "-c"])
+        .or_else(|| extract_flag_argument(trimmed, &["/c"]))
+}
+
+fn extract_flag_argument(text: &str, flags: &[&str]) -> Option<String> {
+    let lowered = text.to_ascii_lowercase();
+    for flag in flags {
+        let marker = format!(" {flag} ");
+        let start = if let Some(index) = lowered.find(&marker) {
+            index + marker.len()
+        } else if lowered.starts_with(&format!("{flag} ")) {
+            flag.len() + 1
+        } else {
+            continue;
+        };
+        let candidate = text[start..].trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        let normalized = candidate
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .or_else(|| {
+                candidate
+                    .strip_prefix('\'')
+                    .and_then(|value| value.strip_suffix('\''))
+            })
+            .unwrap_or(candidate)
+            .trim();
+        if !normalized.is_empty() {
+            return Some(normalized.to_string());
+        }
+    }
+    None
 }
 
 fn is_shell_like_tool_name(name: &str) -> bool {
@@ -987,6 +1090,40 @@ mod tests {
         assert_eq!(items[1]["command"].as_str(), Some("bash -lc 'ls -la'"));
         assert_eq!(items[1]["output"].as_str(), Some("ok"));
         assert_eq!(items[1]["exitCode"].as_i64(), Some(0));
+    }
+
+    #[test]
+    fn parser_unwraps_windows_shell_wrapper_arrays_to_inner_command() {
+        let wrapped_arguments = serde_json::to_string(&serde_json::json!({
+            "command": [
+                "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "-Command",
+                "git status --short"
+            ]
+        }))
+        .expect("wrapped arguments");
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-shell-wrapper"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"inspect","images":[],"local_images":[],"text_elements":[]}}"#,
+            &serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "shell_command",
+                    "call_id": "call-1",
+                    "arguments": wrapped_arguments
+                }
+            })
+            .to_string(),
+            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"{\"output\":\"M file.txt\",\"metadata\":{\"exit_code\":0}}"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_complete"}}"#,
+        ]);
+
+        let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
+        let items = &parsed.turns[0].items;
+        assert_eq!(items[1]["type"].as_str(), Some("commandExecution"));
+        assert_eq!(items[1]["command"].as_str(), Some("git status --short"));
     }
 
     #[test]

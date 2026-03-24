@@ -903,7 +903,7 @@ fn is_shell_like_tool_name(value: &str) -> bool {
 fn read_command_from_tool_arguments(arguments: Option<&Value>) -> Option<String> {
     let parsed = parse_embedded_json_value(arguments)?;
     let object = parsed.as_object()?;
-    [
+    let command = [
         "cmd",
         "command",
         "shell_command",
@@ -911,10 +911,127 @@ fn read_command_from_tool_arguments(arguments: Option<&Value>) -> Option<String>
         "raw_command",
     ]
     .iter()
-    .find_map(|key| object.get(*key).and_then(Value::as_str))
-    .map(str::trim)
-    .filter(|value| !value.is_empty())
-    .map(str::to_string)
+    .find_map(|key| object.get(*key))?;
+    let raw = match command {
+        Value::String(text) => Some(text.trim().to_string()),
+        Value::Array(parts) => {
+            let values = parts
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if values.is_empty() {
+                None
+            } else if let Some(unwrapped) = unwrap_shell_wrapper_parts(&values) {
+                Some(unwrapped)
+            } else {
+                Some(values.join(" "))
+            }
+        }
+        other => serde_json::to_string(other).ok(),
+    }?;
+    normalize_wrapped_command_string(&raw).or_else(|| {
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+fn normalize_wrapped_command_string(raw: &str) -> Option<String> {
+    let mut text = raw.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if (text.starts_with('"') && text.ends_with('"'))
+        || (text.starts_with('\'') && text.ends_with('\''))
+    {
+        text = text[1..text.len() - 1].trim();
+    }
+    extract_wrapped_command_body(text).or_else(|| Some(text.to_string()))
+}
+
+fn unwrap_shell_wrapper_parts(parts: &[String]) -> Option<String> {
+    let first = parts.first()?;
+    let exe = command_basename(first);
+    let flags = if matches!(
+        exe.as_str(),
+        "powershell.exe" | "powershell" | "pwsh.exe" | "pwsh"
+    ) {
+        &["-command", "-c"][..]
+    } else if matches!(exe.as_str(), "cmd.exe" | "cmd") {
+        &["/c"][..]
+    } else {
+        return None;
+    };
+    for index in 1..parts.len().saturating_sub(1) {
+        let lower = parts[index].trim().to_ascii_lowercase();
+        if flags.iter().any(|flag| lower == *flag) {
+            let candidate = parts[index + 1].trim();
+            if candidate.is_empty() {
+                continue;
+            }
+            return normalize_wrapped_command_string(candidate)
+                .or_else(|| Some(candidate.to_string()));
+        }
+    }
+    None
+}
+
+fn command_basename(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches(|ch| ch == '"' || ch == '\'')
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+fn extract_wrapped_command_body(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+    if !(lowered.contains("powershell")
+        || lowered.contains("pwsh")
+        || lowered.contains("cmd.exe")
+        || lowered.contains("cmd "))
+    {
+        return None;
+    }
+    extract_flag_argument(trimmed, &["-command", "-c"])
+        .or_else(|| extract_flag_argument(trimmed, &["/c"]))
+}
+
+fn extract_flag_argument(text: &str, flags: &[&str]) -> Option<String> {
+    let lowered = text.to_ascii_lowercase();
+    for flag in flags {
+        let marker = format!(" {flag} ");
+        let start = if let Some(index) = lowered.find(&marker) {
+            index + marker.len()
+        } else if lowered.starts_with(&format!("{flag} ")) {
+            flag.len() + 1
+        } else {
+            continue;
+        };
+        let candidate = text[start..].trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        let normalized = candidate
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .or_else(|| {
+                candidate
+                    .strip_prefix('\'')
+                    .and_then(|value| value.strip_suffix('\''))
+            })
+            .unwrap_or(candidate)
+            .trim();
+        if !normalized.is_empty() {
+            return Some(normalized.to_string());
+        }
+    }
+    None
 }
 
 fn normalize_rollout_item_thread(item: &mut serde_json::Map<String, Value>, thread_id: &str) {
@@ -2131,11 +2248,13 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn notification_home_state_starts_event_ids_at_one() {
         let _guard = lock_tests();
+        let _home = isolate_default_codex_home();
         _clear_notifications_for_test().await;
 
-        ensure_notification_home_state(Some(r"C:\Users\yiyou\.codex")).await;
+        let codex_home = std::env::var("CODEX_HOME").expect("isolated codex home");
+        ensure_notification_home_state(Some(codex_home.as_str())).await;
         push_notification(
-            Some(r"C:\Users\yiyou\.codex"),
+            Some(codex_home.as_str()),
             serde_json::json!({
                 "method": "thread/status/changed",
                 "params": { "threadId": "thread-1" }
@@ -2144,7 +2263,7 @@ mod tests {
         .await;
 
         let (items, first, last, gap) =
-            replay_notifications_since_in_home(Some(r"C:\Users\yiyou\.codex"), 0, 8).await;
+            replay_notifications_since_in_home(Some(codex_home.as_str()), 0, 8).await;
         assert!(!gap);
         assert_eq!(first, Some(1));
         assert_eq!(last, Some(1));
@@ -2290,6 +2409,71 @@ mod tests {
                 .and_then(|value| value.get("status"))
                 .and_then(Value::as_str),
             Some("completed")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_notifications_tail_rollout_unwraps_windows_shell_wrapper_arrays() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp.path().join(".codex");
+        let sessions = codex_home.join("sessions");
+        std::fs::create_dir_all(&sessions).expect("sessions dir");
+        let rollout = sessions.join("rollout-2026-03-17T12-13-00-thread-wrapper.jsonl");
+        let wrapped_arguments = serde_json::to_string(&serde_json::json!({
+            "command": [
+                "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "-Command",
+                "git status --short"
+            ]
+        }))
+        .expect("wrapped arguments");
+        std::fs::write(
+            &rollout,
+            format!(
+                "{}\n",
+                [
+                r#"{"type":"session_meta","payload":{"id":"thread-wrapper"}}"#.to_string(),
+                serde_json::json!({
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call",
+                        "thread_id": "thread-wrapper",
+                        "name": "shell_command",
+                        "call_id": "call-1",
+                        "arguments": wrapped_arguments
+                    }
+                })
+                .to_string(),
+                r#"{"type":"response_item","payload":{"type":"function_call_output","thread_id":"thread-wrapper","call_id":"call-1","output":"{\"output\":\"M file.txt\",\"metadata\":{\"exit_code\":0}}"}}"#.to_string(),
+            ]
+            .join("\n")
+            ),
+        )
+        .expect("write rollout");
+
+        let (items, _first, _last, _gap) =
+            replay_notifications_since_in_home(Some(codex_home.to_string_lossy().as_ref()), 0, 16)
+                .await;
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0]
+                .get("params")
+                .and_then(|value| value.get("item"))
+                .and_then(|value| value.get("command"))
+                .and_then(Value::as_str),
+            Some("git status --short")
+        );
+        assert_eq!(
+            items[1]
+                .get("params")
+                .and_then(|value| value.get("item"))
+                .and_then(|value| value.get("command"))
+                .and_then(Value::as_str),
+            Some("git status --short")
         );
     }
 

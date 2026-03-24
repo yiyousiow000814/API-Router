@@ -165,17 +165,97 @@ def read_command_from_tool_arguments(arguments):
     if command is None:
         command = parsed.get("args")
     if isinstance(command, str):
-        text = command.strip()
+        text = normalize_wrapped_command_string(command)
         return text or None
     if isinstance(command, list):
         parts = [str(part).strip() for part in command if str(part).strip()]
-        return " ".join(parts) if parts else None
+        if not parts:
+            return None
+        wrapped = unwrap_shell_wrapper_parts(parts)
+        if wrapped:
+            return wrapped
+        return normalize_wrapped_command_string(" ".join(parts))
     if command is None:
         return None
     try:
         return json.dumps(command, ensure_ascii=False)
     except Exception:
         return str(command)
+
+
+def normalize_wrapped_command_string(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
+        text = text[1:-1].strip()
+    return extract_wrapped_command_body(text) or text or None
+
+
+def unwrap_shell_wrapper_parts(parts):
+    if not isinstance(parts, list) or not parts:
+        return None
+    exe = command_basename(parts[0])
+    if exe in ("powershell.exe", "powershell", "pwsh.exe", "pwsh"):
+        flags = ("-command", "-c")
+    elif exe in ("cmd.exe", "cmd"):
+        flags = ("/c",)
+    else:
+        return None
+    lowered = [str(part or "").strip().lower() for part in parts]
+    for index in range(1, len(parts) - 1):
+        if lowered[index] in flags:
+            candidate = normalize_wrapped_command_string(parts[index + 1])
+            if candidate:
+                return candidate
+    return None
+
+
+def command_basename(value):
+    text = str(value or "").strip().strip("\"'")
+    if not text:
+        return ""
+    parts = [part for part in re.split(r"[\\/]+", text) if part]
+    return str(parts[-1] if parts else text).lower()
+
+
+def extract_wrapped_command_body(text):
+    lowered = str(text or "").strip().lower()
+    if not (
+        "powershell" in lowered
+        or "pwsh" in lowered
+        or "cmd.exe" in lowered
+        or "cmd " in lowered
+    ):
+        return None
+    return (
+        extract_flag_argument(text, ("-command", "-c"))
+        or extract_flag_argument(text, ("/c",))
+    )
+
+
+def extract_flag_argument(text, flags):
+    original = str(text or "").strip()
+    lowered = original.lower()
+    for flag in flags:
+        marker = f" {flag} "
+        start = -1
+        if marker in lowered:
+            start = lowered.index(marker) + len(marker)
+        elif lowered.startswith(f"{flag} "):
+            start = len(flag) + 1
+        if start < 0:
+            continue
+        candidate = original[start:].strip()
+        if not candidate:
+            continue
+        if (candidate.startswith('"') and candidate.endswith('"')) or (
+            candidate.startswith("'") and candidate.endswith("'")
+        ):
+            candidate = candidate[1:-1].strip()
+        if candidate:
+            return candidate
+    return None
 
 
 def extract_response_message_text(content):

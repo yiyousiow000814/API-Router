@@ -136,7 +136,7 @@ function parseToolPayload(value) {
 
 function joinCommandParts(parts) {
   if (!Array.isArray(parts)) return null;
-  const joined = parts
+  const normalizedParts = parts
     .map((part) => {
       if (typeof part === "string") return part.trim();
       if (part == null) return "";
@@ -146,9 +146,77 @@ function joinCommandParts(parts) {
         return String(part);
       }
     })
-    .filter(Boolean)
-    .join(" ");
-  return joined || null;
+    .filter(Boolean);
+  const unwrapped = unwrapShellWrapperParts(normalizedParts);
+  if (unwrapped) return unwrapped;
+  const joined = normalizedParts.join(" ");
+  return normalizeWrappedCommandString(joined) || joined || null;
+}
+
+function commandBasename(value) {
+  const text = String(value || "").trim().replace(/^["']|["']$/g, "");
+  if (!text) return "";
+  const parts = text.split(/[\\/]/).filter(Boolean);
+  return String(parts[parts.length - 1] || text).toLowerCase();
+}
+
+function unwrapWrappedCommandText(value) {
+  let text = String(value || "").trim();
+  if (!text) return "";
+  if ((text.startsWith("\"") && text.endsWith("\"")) || (text.startsWith("'") && text.endsWith("'"))) {
+    text = text.slice(1, -1).trim();
+  }
+  if (/\\\\|\\\"/.test(text)) {
+    try {
+      const reparsed = JSON.parse(`"${text.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`);
+      if (typeof reparsed === "string" && reparsed.trim()) text = reparsed.trim();
+    } catch {}
+  }
+  return text;
+}
+
+function unwrapShellWrapperParts(parts) {
+  if (!Array.isArray(parts) || !parts.length) return null;
+  const exe = commandBasename(parts[0]);
+  const lower = parts.map((part) => String(part || "").trim().toLowerCase());
+  const findNext = (flags) => {
+    for (let index = 1; index < lower.length - 1; index += 1) {
+      if (flags.includes(lower[index])) {
+        const candidate = normalizeWrappedCommandString(parts[index + 1]) || String(parts[index + 1] || "").trim();
+        if (candidate) return candidate;
+      }
+    }
+    return null;
+  };
+  if (exe === "powershell.exe" || exe === "powershell" || exe === "pwsh.exe" || exe === "pwsh") {
+    return findNext(["-command", "-c"]);
+  }
+  if (exe === "cmd.exe" || exe === "cmd") {
+    return findNext(["/c"]);
+  }
+  return null;
+}
+
+function normalizeWrappedCommandString(value) {
+  const text = unwrapWrappedCommandText(value);
+  if (!text) return null;
+  const shellMatch = text.match(
+    /^(?:"?[^"' ]*(?:powershell|pwsh|cmd)(?:\.exe)?"?)\s+(.+)$/i
+  );
+  const body = shellMatch ? shellMatch[1].trim() : "";
+  if (!body) return text;
+  const extract = (pattern) => {
+    const match = body.match(pattern);
+    const candidate = match?.[1] || match?.[2] || match?.[3] || "";
+    return candidate.trim() || null;
+  };
+  if (/(?:^|\s)(?:-command|-c)\s/i.test(body)) {
+    return extract(/(?:^|\s)(?:-command|-c)\s+(?:"([^"]+)"|'([^']+)'|(.+))$/i) || text;
+  }
+  if (/(?:^|\s)\/c\s/i.test(body)) {
+    return extract(/(?:^|\s)\/c\s+(?:"([^"]+)"|'([^']+)'|(.+))$/i) || text;
+  }
+  return text;
 }
 
 function isShellLikeToolName(name) {
@@ -165,7 +233,7 @@ function readCommandFromToolPayload(value) {
   const payload = parseToolPayload(value);
   if (!payload) return null;
   const command = payload.command ?? payload.cmd ?? payload.args;
-  if (typeof command === "string") return command.trim() || null;
+  if (typeof command === "string") return normalizeWrappedCommandString(command) || command.trim() || null;
   return joinCommandParts(command);
 }
 

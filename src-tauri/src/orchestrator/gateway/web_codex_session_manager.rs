@@ -1061,6 +1061,35 @@ mod tests {
         Arc,
     };
 
+    struct TestWebCodexHomeGuard {
+        previous: Option<String>,
+    }
+
+    impl Drop for TestWebCodexHomeGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                unsafe {
+                    std::env::set_var("API_ROUTER_WEB_CODEX_CODEX_HOME", previous);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+                }
+            }
+        }
+    }
+
+    fn isolate_windows_web_codex_home() -> TestWebCodexHomeGuard {
+        let previous = std::env::var("API_ROUTER_WEB_CODEX_CODEX_HOME").ok();
+        let temp = tempfile::tempdir().expect("temp web codex home");
+        let temp_path = temp.keep();
+        std::fs::create_dir_all(temp_path.join("sessions")).expect("sessions dir");
+        unsafe {
+            std::env::set_var("API_ROUTER_WEB_CODEX_CODEX_HOME", &temp_path);
+        }
+        TestWebCodexHomeGuard { previous }
+    }
+
     #[test]
     fn session_manager_resolves_workspace_home_override() {
         _clear_workspace_runtime_registry_for_test();
@@ -1139,10 +1168,13 @@ mod tests {
     #[tokio::test]
     async fn replay_notifications_updates_workspace_runtime_registry() {
         let _guard = crate::codex_app_server::lock_test_globals();
+        let _home = isolate_windows_web_codex_home();
         _clear_workspace_runtime_registry_for_test();
         crate::codex_app_server::_clear_notifications_for_test().await;
+        let home = web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows))
+            .expect("isolated windows home");
         crate::codex_app_server::_push_notification_for_test(
-            Some(r"C:\Users\yiyou\.codex"),
+            Some(home.as_str()),
             json!({"method":"turn/started","params":{"thread_id":"thread-1"}}),
         )
         .await;
@@ -1161,9 +1193,13 @@ mod tests {
     #[tokio::test]
     async fn replay_notification_batch_resets_cursor_and_injects_workspace() {
         let _guard = crate::codex_app_server::lock_test_globals();
+        let _home = isolate_windows_web_codex_home();
+        _clear_workspace_runtime_registry_for_test();
         crate::codex_app_server::_clear_notifications_for_test().await;
+        let home = web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows))
+            .expect("isolated windows home");
         crate::codex_app_server::_push_notification_for_test(
-            Some(r"C:\Users\yiyou\.codex"),
+            Some(home.as_str()),
             json!({
                 "eventId": 5,
                 "method": "turn/started",

@@ -730,10 +730,7 @@ mod tests {
         assert_eq!(turns.len(), 1);
         let items = turns[0]["items"].as_array().expect("items");
         assert_eq!(items[1]["type"].as_str(), Some("commandExecution"));
-        assert_eq!(
-            items[1]["command"].as_str(),
-            Some("powershell.exe -Command git status --short")
-        );
+        assert_eq!(items[1]["command"].as_str(), Some("git status --short"));
         assert_eq!(items[1]["exitCode"].as_i64(), Some(0));
         assert_eq!(
             items[1]["output"].as_str(),

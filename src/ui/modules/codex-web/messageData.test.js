@@ -249,6 +249,42 @@ describe("messageData", () => {
     ).toBe("Ran `bash -lc 'ls -la'`");
   });
 
+  it("unwraps wrapped shell_command arrays back to the inner command in compact mode", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "shell_command",
+          status: "completed",
+          arguments: JSON.stringify({
+            command: [
+              "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+              "-Command",
+              "git rev-parse HEAD; git branch --show-current",
+            ],
+          }),
+        },
+        { compact: true }
+      )
+    ).toBe("Ran `git rev-parse HEAD; git branch --show-current`");
+  });
+
+  it("unwraps wrapped shell_command strings back to the inner command in compact mode", () => {
+    expect(
+      toolItemToMessage(
+        {
+          type: "toolCall",
+          tool: "shell_command",
+          status: "completed",
+          arguments: JSON.stringify({
+            command: "\"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -Command 'git status --short'",
+          }),
+        },
+        { compact: true }
+      )
+    ).toBe("Ran `git status --short`");
+  });
+
   it("keeps command executions running for item updates without an explicit status", () => {
     expect(
       toolItemToMessage(
