@@ -13,6 +13,7 @@ import {
 describe("headerUi", () => {
   it("compacts gpt prefixes", () => {
     expect(compactModelLabel("gpt-5.3-codex")).toBe("5.3-codex");
+    expect(compactModelLabel("GPT-5.4-Mini")).toBe("5.4-Mini");
     expect(compactModelLabel("claude")).toBe("claude");
   });
 

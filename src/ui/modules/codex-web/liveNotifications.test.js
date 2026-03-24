@@ -2066,6 +2066,138 @@ describe("liveNotifications", () => {
     expect(statuses.at(-1)).toEqual({ message: "Turn completed.", isWarn: false });
   });
 
+  it("clears live runtime panels as soon as final answer becomes visible before turn completion", () => {
+    const runtimeUpdates = [];
+    const finalizedRuntime = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadLiveAssistantIndex: -1,
+      activeThreadLiveAssistantMsgNode: null,
+      activeThreadLiveAssistantBodyNode: null,
+      activeThreadLiveAssistantText: "",
+      activeThreadTransientThinkingText: "",
+      activeThreadTransientToolText: "Running `pwd`",
+      activeThreadCommentaryCurrent: {
+        threadId: "thread-1",
+        key: "commentary-1",
+        text: "Inspecting workspace state",
+        tools: ["Running `pwd`"],
+        toolKeys: ["cmd-1"],
+      },
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadActiveCommands: [{ key: "cmd-1", label: "pwd", text: "Running `pwd`", state: "running" }],
+      activeThreadPlan: null,
+    };
+    const chatBox = {
+      appendChild(node) {
+        this.lastElementChild = node;
+      },
+      querySelectorAll() {
+        return [];
+      },
+      querySelector() {
+        return null;
+      },
+      lastElementChild: null,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId(id) {
+        return id === "chatBox" ? chatBox : null;
+      },
+      addChat() {},
+      scheduleChatLiveFollow() {},
+      hideWelcomeCard() {},
+      createAssistantStreamingMessage() {
+        return { msg: { setAttribute() {} }, body: {} };
+      },
+      finalizeAssistantMessage() {},
+      applyToolItemRuntimeUpdate(item, options) {
+        runtimeUpdates.push({ item, options });
+      },
+      finalizeRuntimeState(threadId) {
+        finalizedRuntime.push(threadId);
+      },
+      renderCommentaryArchive() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.payload?.thread_id || notification?.params?.threadId || notification?.params?.item?.thread_id || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "codex/event/response_item",
+      params: {
+        payload: {
+          id: "final-1",
+          type: "message",
+          role: "assistant",
+          thread_id: "thread-1",
+          phase: "final_answer",
+          content: [{ type: "output_text", text: "Done." }],
+        },
+      },
+    });
+
+    expect(finalizedRuntime).toEqual(["thread-1"]);
+    expect(state.activeThreadTransientToolText).toBe("");
+    expect(state.activeThreadTransientThinkingText).toBe("");
+    expect(state.activeThreadCommentaryCurrent).toBeNull();
+    expect(state.activeThreadCommentaryArchiveVisible).toBe(true);
+    expect(state.activeThreadCommentaryArchive).toEqual([
+      expect.objectContaining({
+        key: "commentary-1",
+        text: "Inspecting workspace state",
+        tools: ["Running `pwd`"],
+      }),
+    ]);
+
+    module.renderLiveNotification({
+      method: "item/completed",
+      params: {
+        threadId: "thread-1",
+        item: {
+          id: "cmd-1",
+          type: "commandExecution",
+          command: "pwd",
+          status: "completed",
+          exitCode: 0,
+        },
+      },
+    });
+
+    expect(runtimeUpdates).toEqual([
+      expect.objectContaining({
+        item: expect.objectContaining({
+          id: "cmd-1",
+          type: "commandExecution",
+          status: "completed",
+        }),
+        options: expect.objectContaining({
+          threadId: "thread-1",
+          method: "item/completed",
+        }),
+      }),
+    ]);
+    expect(finalizedRuntime).toEqual(["thread-1"]);
+  });
+
   it("switches runtime activity back to thinking when commentary resumes after a plan update", () => {
     const runtimeActivity = [];
     const state = {

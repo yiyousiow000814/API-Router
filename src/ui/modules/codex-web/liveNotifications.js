@@ -944,6 +944,13 @@ export function createLiveNotificationsModule(deps) {
     scheduleChatLiveFollow(800);
   }
 
+  function collapseLiveRuntimeBeforeVisibleAssistant(threadId, anchorNode = null) {
+    finalizeCommentaryArchive(anchorNode);
+    clearTransientToolMessages();
+    clearTransientThinkingMessages();
+    finalizeRuntimeState(threadId);
+  }
+
   function renderLiveNotification(notification) {
     const record = toRecord(notification);
     const method = normalizeLiveMethod(record?.method);
@@ -1096,17 +1103,16 @@ export function createLiveNotificationsModule(deps) {
         scheduleChatLiveFollow(700);
         return;
       }
-      clearTransientThinkingMessages();
+      collapseLiveRuntimeBeforeVisibleAssistant(
+        threadId,
+        state.activeThreadLiveAssistantMsgNode || null
+      );
       const toolStatus = normalizeType(toolItem?.status);
       const isFinalAssistantUpdate =
         assistantUpdate.mode === "snapshot" &&
         (method.includes("completed") ||
           method.includes("finished") ||
           (!isRunningLiveStatus(toolStatus) && toolStatus !== "updating"));
-      if (isFinalAssistantUpdate) {
-        finalizeCommentaryArchive(state.activeThreadLiveAssistantMsgNode || null);
-        finalizeRuntimeState(threadId);
-      }
       pushLiveDebugEvent("live.match:assistant_update", {
         method,
         threadId: String(threadId || ""),

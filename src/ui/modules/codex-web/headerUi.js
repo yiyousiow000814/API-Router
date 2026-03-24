@@ -1,7 +1,7 @@
 export function compactModelLabel(raw) {
   const text = String(raw || "").trim();
   if (!text) return "";
-  return text.startsWith("gpt-") ? text.slice(4) : text;
+  return /^gpt-/i.test(text) ? text.slice(4) : text;
 }
 
 export function parseModelRankParts(modelId) {
