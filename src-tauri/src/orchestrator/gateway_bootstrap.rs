@@ -1,5 +1,7 @@
 use std::io::ErrorKind;
-use std::net::{IpAddr, SocketAddr};
+#[cfg(windows)]
+use std::net::IpAddr;
+use std::net::SocketAddr;
 
 use serde_json::json;
 
