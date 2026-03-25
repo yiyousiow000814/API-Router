@@ -1,64 +1,29 @@
 import { invoke } from '@tauri-apps/api/core'
-import { useEffect, useMemo, useState } from 'react'
-import { devTailscaleStatus } from '../devMockData'
-import { normalizeGatewayPort } from '../utils/gatewayUrl'
+import { useEffect, useState } from 'react'
 import { WebCodexQrMorph } from './WebCodexQrMorph'
+import {
+  buildDevPreviewTailscaleStatus,
+  deriveWebCodexAccessState,
+  isDevPreviewRuntime,
+  type TailscaleStatus,
+} from './webCodexAccessModel'
 import './WebCodexPanel.css'
-
-type TailscaleStatus = {
-  installed: boolean
-  connected: boolean
-  dnsName: string | null
-  ipv4: string[]
-  downloadUrl: string
-}
 
 type Props = {
   listenPort?: number | null
-}
-
-function isDevPreviewRuntime() {
-  if (!import.meta.env.DEV) return false
-  if (typeof window === 'undefined') return false
-  const w = window as unknown as { __TAURI__?: { core?: { invoke?: unknown } } }
-  return !Boolean(w.__TAURI__?.core?.invoke)
-}
-
-function shortenHost(host: string) {
-  if (host.length <= 34) return host
-  return `${host.slice(0, 18)}...${host.slice(-12)}`
 }
 
 export function WebCodexPanel({ listenPort }: Props) {
   const qrSize = 132
   const [tailscale, setTailscale] = useState<TailscaleStatus | null>(null)
   const [tailscaleLoading, setTailscaleLoading] = useState<boolean>(true)
-  const devPreview = useMemo(() => isDevPreviewRuntime(), [])
-  const devFlags = useMemo(
-    () => (typeof window === 'undefined' ? new URLSearchParams() : new URLSearchParams(window.location.search)),
-    [],
-  )
-  const initialDevState = devFlags.get('tailscale') === 'off' ? 'off' : 'on'
+  const devPreview = isDevPreviewRuntime()
+  const initialDevState =
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('tailscale') === 'off'
+      ? 'off'
+      : 'on'
   const [devPreviewTailscaleState, setDevPreviewTailscaleState] = useState<'on' | 'off'>(initialDevState)
-  const gatewayPort = String(normalizeGatewayPort(listenPort))
-  const localUrl = useMemo(() => `http://127.0.0.1:${gatewayPort}/codex-web`, [gatewayPort])
-  const previewUrl = useMemo(() => 'http://127.0.0.1:5173/codex-web', [])
-  const devPreviewStatus = useMemo<TailscaleStatus | null>(() => {
-    if (!devPreview) return null
-    if (devPreviewTailscaleState === 'on') {
-      return {
-        ...devTailscaleStatus,
-        ipv4: [...devTailscaleStatus.ipv4],
-      }
-    }
-    return {
-      installed: false,
-      connected: false,
-      dnsName: null,
-      ipv4: [],
-      downloadUrl: 'https://tailscale.com/download',
-    }
-  }, [devPreview, devPreviewTailscaleState])
+  const devPreviewStatus = devPreview ? buildDevPreviewTailscaleStatus(devPreviewTailscaleState) : null
 
   useEffect(() => {
     let cancelled = false
@@ -77,6 +42,9 @@ export function WebCodexPanel({ listenPort }: Props) {
           connected: false,
           dnsName: null,
           ipv4: [],
+          reachableIpv4: [],
+          gatewayReachable: false,
+          needsGatewayRestart: false,
           downloadUrl: 'https://tailscale.com/download',
         })
       })
@@ -92,26 +60,11 @@ export function WebCodexPanel({ listenPort }: Props) {
 
   const effectiveTailscale = devPreview ? devPreviewStatus : tailscale
   const effectiveTailscaleLoading = devPreview ? false : tailscaleLoading
-
-  const tailscaleHost = useMemo(() => {
-    if (!effectiveTailscale) return ''
-    if (effectiveTailscale.dnsName?.trim()) return effectiveTailscale.dnsName.trim()
-    if (effectiveTailscale.ipv4?.length) return effectiveTailscale.ipv4[0]
-    return ''
-  }, [effectiveTailscale])
-  const tailscaleIp = useMemo(() => effectiveTailscale?.ipv4?.[0] || '', [effectiveTailscale])
-  const phoneDnsUrl = useMemo(() => {
-    if (!tailscaleHost) return ''
-    return `http://${tailscaleHost}:${gatewayPort}/codex-web`
-  }, [tailscaleHost, gatewayPort])
-  const phoneIpUrl = useMemo(() => {
-    if (!tailscaleIp) return ''
-    return `http://${tailscaleIp}:${gatewayPort}/codex-web`
-  }, [tailscaleIp, gatewayPort])
-  const phoneUrl = phoneIpUrl || phoneDnsUrl
-  const phoneQrValue = phoneUrl || localUrl
-  const phoneReady = !!(!effectiveTailscaleLoading && effectiveTailscale?.installed && effectiveTailscale?.connected && phoneUrl)
-  const phoneStateClass = phoneReady ? 'is-ready' : 'is-setup'
+  const accessState = deriveWebCodexAccessState({
+    listenPort,
+    tailscale: effectiveTailscale,
+    tailscaleLoading: effectiveTailscaleLoading,
+  })
 
   return (
     <section className="aoPanel webCodexAccess">
@@ -144,14 +97,19 @@ export function WebCodexPanel({ listenPort }: Props) {
           <div className="webCodexDesktopCard">
             <div className="webCodexDesktopMain">
               <div className="webCodexCardLabel">Desktop</div>
-              <code className="webCodexPrimaryUrl">{localUrl}</code>
-              <a className="webCodexCta webCodexDesktopAction" href={localUrl} target="_blank" rel="noreferrer">
+              <code className="webCodexPrimaryUrl">{accessState.localUrl}</code>
+              <a
+                className="webCodexCta webCodexDesktopAction"
+                href={accessState.localUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
                 <span className="webCodexButtonLabel">Open in browser</span>
               </a>
             </div>
             <div className="webCodexDesktopFoot">
               <span className="webCodexDesktopPreviewLabel">Preview</span>
-              <code className="webCodexDesktopPreviewUrl">{previewUrl}</code>
+              <code className="webCodexDesktopPreviewUrl">{accessState.previewUrl}</code>
             </div>
           </div>
 
@@ -161,38 +119,40 @@ export function WebCodexPanel({ listenPort }: Props) {
                 <div className="webCodexCardLabel">Phone</div>
                 <div className="webCodexCardTitle">Scan to open</div>
               </div>
-              <div className={`webCodexStatePill${phoneReady ? ' is-visible' : ''}`}>Tailscale ready</div>
+              <div className={`webCodexStatePill${accessState.phoneReady ? ' is-visible' : ''}`}>Tailscale ready</div>
             </div>
 
-            <div className={`webCodexPhoneShell ${phoneStateClass}`}>
-              <div className={`webCodexQrFrame${phoneReady ? '' : ' is-ambient'}`}>
-                <WebCodexQrMorph ready={phoneReady} value={phoneQrValue} size={qrSize} />
+            <div className={`webCodexPhoneShell ${accessState.phoneStateClass}`}>
+              <div className={`webCodexQrFrame${accessState.phoneReady ? '' : ' is-ambient'}`}>
+                <WebCodexQrMorph ready={accessState.phoneReady} value={accessState.phoneQrValue} size={qrSize} />
               </div>
-              <div className={`webCodexPhoneInfo ${phoneStateClass}`}>
+              <div className={`webCodexPhoneInfo ${accessState.phoneStateClass}`}>
                 <div className="webCodexPhoneInfoStage">
                   <div className="webCodexPhoneCopy webCodexPhoneCopyReady">
-                    <div className="webCodexPhoneHost">{tailscaleIp || shortenHost(tailscaleHost) || 'Phone'}</div>
-                    <code className="webCodexPhoneUrl">{phoneUrl || localUrl}</code>
-                    {phoneDnsUrl && phoneIpUrl ? <div className="webCodexPhoneFallback">DNS {phoneDnsUrl}</div> : null}
+                    <div className="webCodexPhoneHost">{accessState.phoneHostLabel}</div>
+                    <code className="webCodexPhoneUrl">{accessState.phoneUrl || accessState.localUrl}</code>
+                    {accessState.phoneDnsUrl && accessState.phoneIpUrl ? (
+                      <div className="webCodexPhoneFallback">DNS {accessState.phoneDnsUrl}</div>
+                    ) : null}
                   </div>
                   <div className="webCodexPhoneCopy webCodexPhoneCopySetup">
                     <div className="webCodexPhoneHost">Phone</div>
-                    <div className="webCodexPhoneSetupText">
-                      Install Tailscale on this computer and your phone, then join the same tailnet.
-                    </div>
+                    <div className="webCodexPhoneSetupText">{accessState.setupText}</div>
                   </div>
                 </div>
                 <div className="webCodexPhoneActionsStage">
-                  <div className="webCodexPhoneActionsReady" aria-hidden={!phoneReady} />
+                  <div className="webCodexPhoneActionsReady" aria-hidden={!accessState.phoneReady} />
                   <div className="webCodexPhoneSetupActions">
-                    <a
-                      className="webCodexCta webCodexInstallBtn"
-                      href={effectiveTailscale?.downloadUrl || 'https://tailscale.com/download'}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      <span className="webCodexButtonLabel">Install Tailscale</span>
-                    </a>
+                    {accessState.showInstallAction ? (
+                      <a
+                        className="webCodexCta webCodexInstallBtn"
+                        href={effectiveTailscale?.downloadUrl || 'https://tailscale.com/download'}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <span className="webCodexButtonLabel">Install Tailscale</span>
+                      </a>
+                    ) : null}
                   </div>
                 </div>
               </div>

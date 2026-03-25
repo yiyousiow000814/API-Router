@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import fs from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { WebCodexPanel } from './WebCodexPanel'
+import { deriveWebCodexAccessState, normalizeTailscaleStatus } from './webCodexAccessModel'
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async () => ({
@@ -103,6 +104,58 @@ describe('WebCodexPanel', () => {
 
     expect(source).toContain("const effectiveTailscaleLoading = devPreview ? false : tailscaleLoading")
     expect(source).toContain("if (devPreview) return () => { cancelled = true }")
+  })
+
+  it('only marks phone ready when the gateway is actually reachable on tailscale', () => {
+    const connectedButUnreachable = deriveWebCodexAccessState({
+      listenPort: 4312,
+      tailscale: normalizeTailscaleStatus({
+        installed: true,
+        connected: true,
+        dnsName: 'desktop.tail.ts.net',
+        ipv4: ['100.64.0.4'],
+        reachableIpv4: [],
+        gatewayReachable: false,
+      }),
+      tailscaleLoading: false,
+    })
+
+    const reachable = deriveWebCodexAccessState({
+      listenPort: 4312,
+      tailscale: normalizeTailscaleStatus({
+        installed: true,
+        connected: true,
+        dnsName: 'desktop.tail.ts.net',
+        ipv4: ['100.64.0.4'],
+        reachableIpv4: ['100.64.0.8'],
+        gatewayReachable: true,
+      }),
+      tailscaleLoading: false,
+    })
+
+    expect(connectedButUnreachable.phoneReady).toBe(false)
+    expect(connectedButUnreachable.phoneUrl).toBe('')
+    expect(reachable.phoneReady).toBe(true)
+    expect(reachable.phoneUrl).toBe('http://100.64.0.8:4312/codex-web')
+  })
+
+  it('shows a restart hint instead of pretending the phone path is ready when tailscale came up late', () => {
+    const state = deriveWebCodexAccessState({
+      listenPort: 4312,
+      tailscale: normalizeTailscaleStatus({
+        installed: true,
+        connected: true,
+        dnsName: 'desktop.tail.ts.net',
+        ipv4: ['100.64.0.4'],
+        gatewayReachable: false,
+        needsGatewayRestart: true,
+      }),
+      tailscaleLoading: false,
+    })
+
+    expect(state.phoneReady).toBe(false)
+    expect(state.setupText).toContain('API Router started before the Tailscale listener was ready.')
+    expect(state.setupText).toContain('Restart API Router once, then scan again.')
   })
 
   it('remaps qr particles across value changes instead of rebuilding from scratch', () => {
