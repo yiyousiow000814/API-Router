@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { DashboardPanel } from './DashboardPanel'
 import type { EventLogFocusRequest } from './EventLogPanel'
+import { LoadingSurface } from './LoadingSurface'
 import type { LastErrorJump } from './ProvidersTable'
 
 const EventLogPanel = lazy(async () => {
@@ -108,7 +109,14 @@ export function AppMainContent(props: Props) {
     switchboardProps,
     usageStatistics,
   } = props
-  const pageFallback = <div className="aoHint">Loading...</div>
+  const pageFallback = (
+    <LoadingSurface
+      compact
+      eyebrow="API Router"
+      title="Loading this view"
+      detail="Fetching the data and modules needed for this page."
+    />
+  )
   if (activePage === 'usage_statistics') {
     return (
       <Suspense fallback={pageFallback}>
@@ -155,7 +163,14 @@ export function AppMainContent(props: Props) {
   }
 
   if (!status) {
-    return <div className="aoHint">Loading...</div>
+    return (
+      <LoadingSurface
+        compact
+        eyebrow="Dashboard"
+        title="Preparing live status"
+        detail="Restoring the last known snapshot and syncing the latest gateway state."
+      />
+    )
   }
 
   return (

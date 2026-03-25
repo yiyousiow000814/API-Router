@@ -2,6 +2,8 @@ use std::io::ErrorKind;
 #[cfg(windows)]
 use std::net::IpAddr;
 use std::net::SocketAddr;
+#[cfg(windows)]
+use std::process::Command;
 
 use serde_json::json;
 
@@ -21,6 +23,7 @@ fn push_unique_addr(addrs: &mut Vec<SocketAddr>, addr: SocketAddr) {
 fn gateway_listen_addrs_with_overlays(
     listen_host: &str,
     listen_port: u16,
+    wsl_host: &str,
     extra_ips: &[IpAddr],
 ) -> anyhow::Result<Vec<SocketAddr>> {
     let primary: SocketAddr = format!("{listen_host}:{listen_port}").parse()?;
@@ -28,7 +31,6 @@ fn gateway_listen_addrs_with_overlays(
 
     let primary_ip = primary.ip().to_string();
     if primary_ip == crate::constants::GATEWAY_WINDOWS_HOST {
-        let wsl_host = crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(None);
         let parsed_wsl_ip: std::net::IpAddr = wsl_host.parse()?;
         if parsed_wsl_ip != primary.ip() {
             push_unique_addr(&mut addrs, SocketAddr::new(parsed_wsl_ip, listen_port));
@@ -43,6 +45,33 @@ fn gateway_listen_addrs_with_overlays(
     Ok(addrs)
 }
 
+#[cfg(windows)]
+fn tailscale_hidden_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x08000000);
+    cmd
+}
+
+#[cfg(windows)]
+fn detected_tailscale_ipv4_addrs() -> Vec<IpAddr> {
+    let output = tailscale_hidden_command("tailscale")
+        .args(["ip", "-4"])
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| line.parse::<IpAddr>().ok())
+        .collect()
+}
+
 #[cfg(not(windows))]
 fn gateway_listen_addrs_with_overlays(
     listen_host: &str,
@@ -55,8 +84,11 @@ fn gateway_listen_addrs_with_overlays(
 fn gateway_listen_addrs(listen_host: &str, listen_port: u16) -> anyhow::Result<Vec<SocketAddr>> {
     #[cfg(windows)]
     {
-        let extra_ips = crate::commands::detected_tailscale_ipv4_addrs();
-        gateway_listen_addrs_with_overlays(listen_host, listen_port, &extra_ips)
+        let wsl_host = crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(None);
+        // Keep startup cheap, but still bind the current Tailscale IPv4 overlay when it is already
+        // available so Web Codex QR access works immediately without a manual restart.
+        let extra_ips = detected_tailscale_ipv4_addrs();
+        gateway_listen_addrs_with_overlays(listen_host, listen_port, &wsl_host, &extra_ips)
     }
     #[cfg(not(windows))]
     {
@@ -180,12 +212,28 @@ mod tests {
     #[test]
     fn local_bind_adds_tailscale_overlay_listener() {
         let overlays = vec!["100.64.208.117".parse().unwrap()];
-        let addrs = gateway_listen_addrs_with_overlays("127.0.0.1", 4000, &overlays).unwrap();
+        let addrs =
+            gateway_listen_addrs_with_overlays("127.0.0.1", 4000, "172.26.144.1", &overlays)
+                .unwrap();
         assert!(addrs
             .iter()
             .any(|addr| addr.to_string() == "127.0.0.1:4000"));
         assert!(addrs
             .iter()
             .any(|addr| addr.to_string() == "100.64.208.117:4000"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tailscale_ip_output_parser_ignores_empty_rows() {
+        let parsed = String::from("100.64.208.117\r\n\r\n100.118.0.115\n")
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .filter_map(|line| line.parse::<std::net::IpAddr>().ok())
+            .collect::<Vec<_>>();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].to_string(), "100.64.208.117");
+        assert_eq!(parsed[1].to_string(), "100.118.0.115");
     }
 }

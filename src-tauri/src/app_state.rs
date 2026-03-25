@@ -62,6 +62,21 @@ pub fn run_startup_gateway_token_sync(state: &AppState) {
     }
 }
 
+pub fn run_startup_usage_key_ref_backfill(state: &AppState) -> usize {
+    let mut key_refs: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for provider_name in state.gateway.cfg.read().providers.keys() {
+        let key_ref = state
+            .secrets
+            .get_provider_key(provider_name)
+            .as_deref()
+            .map(mask_key_preview)
+            .unwrap_or_else(|| "-".to_string());
+        key_refs.insert(provider_name.clone(), key_ref);
+    }
+    state.gateway.store.backfill_api_key_ref_fields(&key_refs)
+}
+
 pub fn load_or_init_config(path: &PathBuf) -> anyhow::Result<AppConfig> {
     if path.exists() {
         let txt = std::fs::read_to_string(path)?;
@@ -158,19 +173,6 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
         client_sessions: Arc::new(RwLock::new(HashMap::new())),
     };
-    {
-        let mut key_refs: std::collections::BTreeMap<String, String> =
-            std::collections::BTreeMap::new();
-        for provider_name in gateway.cfg.read().providers.keys() {
-            let key_ref = secrets
-                .get_provider_key(provider_name)
-                .as_deref()
-                .map(mask_key_preview)
-                .unwrap_or_else(|| "-".to_string());
-            key_refs.insert(provider_name.clone(), key_ref);
-        }
-        let _ = gateway.store.backfill_api_key_ref_fields(&key_refs);
-    }
     let app_state = AppState {
         config_path,
         gateway,

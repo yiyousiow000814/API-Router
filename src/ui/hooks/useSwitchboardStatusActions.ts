@@ -4,6 +4,7 @@ import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status } from 
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
 import { normalizePathForCompare } from '../utils/path'
 import { resolveCliHomes } from '../utils/switchboard'
+import { recordStartupStage } from '../startupTrace'
 
 type UseSwitchboardStatusActionsOptions = {
   isDevPreview: boolean
@@ -150,6 +151,9 @@ export function useSwitchboardStatusActions({
   const [providerSwitchBusy, setProviderSwitchBusy] = useState<boolean>(false)
   const providerSwitchBusyRef = useRef<boolean>(false)
   const providerSwitchStatusRef = useRef<ProviderSwitchboardStatus | null>(providerSwitchStatus)
+  const startupStatusRefreshTracedRef = useRef(false)
+  const startupConfigRefreshTracedRef = useRef(false)
+  const startupSwitchboardRefreshTracedRef = useRef(false)
   providerSwitchStatusRef.current = providerSwitchStatus
 
   function tryEnterProviderSwitchBusy(): boolean {
@@ -210,10 +214,25 @@ export function useSwitchboardStatusActions({
       })
       return
     }
+    const shouldTraceStartup = !startupSwitchboardRefreshTracedRef.current
+    const startedAt =
+      shouldTraceStartup && typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : 0
+    if (shouldTraceStartup) {
+      startupSwitchboardRefreshTracedRef.current = true
+      recordStartupStage('frontend_switchboard_status_requested', homes.join(' | '))
+    }
     try {
       const res = await invoke<ProviderSwitchboardStatus>('provider_switchboard_status', {
         cliHomes: homes,
       })
+      if (shouldTraceStartup) {
+        recordStartupStage(
+          'frontend_switchboard_status_resolved',
+          `elapsed=${Math.round(performance.now() - startedAt)}ms dirs=${res.dirs?.length ?? 0}`,
+        )
+      }
       const allEnabledHomes = resolveCliHomes(
         codexSwapDir1Ref.current,
         codexSwapDir2Ref.current,
@@ -225,6 +244,9 @@ export function useSwitchboardStatusActions({
       setProviderSwitchStatus(
         applyProviderSwitchStatusResult(providerSwitchStatusRef.current, res, isPartialRefresh),
       )
+      if (shouldTraceStartup) {
+        recordStartupStage('frontend_switchboard_status_applied')
+      }
     } catch (e) {
       flashToast(String(e), 'error')
     }
@@ -239,9 +261,27 @@ export function useSwitchboardStatusActions({
       }
       return
     }
+    const shouldTraceStartup = !startupStatusRefreshTracedRef.current
+    const startedAt =
+      shouldTraceStartup && typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : 0
+    if (shouldTraceStartup) {
+      startupStatusRefreshTracedRef.current = true
+      recordStartupStage('frontend_status_refresh_requested')
+    }
     try {
       const s = await invoke<Status>('get_status')
+      if (shouldTraceStartup) {
+        recordStartupStage(
+          'frontend_status_refresh_resolved',
+          `elapsed=${Math.round(performance.now() - startedAt)}ms providers=${Object.keys(s.providers ?? {}).length} sessions=${s.client_sessions?.length ?? 0}`,
+        )
+      }
       setStatus(s)
+      if (shouldTraceStartup) {
+        recordStartupStage('frontend_status_state_applied')
+      }
       if (!overrideDirtyRef.current) setOverride(s.manual_override ?? '')
       if (shouldRefreshSwapStatus) {
         void refreshCodexSwapStatus()
@@ -262,12 +302,33 @@ export function useSwitchboardStatusActions({
       }
       return
     }
+    const shouldTraceStartup = !startupConfigRefreshTracedRef.current
+    const startedAt =
+      shouldTraceStartup && typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : 0
+    if (shouldTraceStartup) {
+      startupConfigRefreshTracedRef.current = true
+      recordStartupStage('frontend_config_refresh_requested')
+    }
     try {
       const c = await invoke<Config>('get_config')
+      if (shouldTraceStartup) {
+        recordStartupStage(
+          'frontend_config_refresh_resolved',
+          `elapsed=${Math.round(performance.now() - startedAt)}ms providers=${Object.keys(c.providers ?? {}).length}`,
+        )
+      }
       setConfig(c)
+      if (shouldTraceStartup) {
+        recordStartupStage('frontend_config_state_applied')
+      }
       setBaselineBaseUrls(Object.fromEntries(Object.entries(c.providers).map(([name, p]) => [name, p.base_url])))
       const p = await invoke<string>('get_gateway_token_preview')
       setGatewayTokenPreview(p)
+      if (shouldTraceStartup) {
+        recordStartupStage('frontend_gateway_token_preview_resolved')
+      }
       const homes = resolveCliHomes(
         codexSwapDir1Ref.current,
         codexSwapDir2Ref.current,

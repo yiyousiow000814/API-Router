@@ -18,6 +18,7 @@ use crate::orchestrator::store::unix_ms;
 use chrono::{Duration as ChronoDuration, Local};
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 fn normalize_profile_name(raw: &str) -> String {
     let trimmed = raw.trim().to_ascii_lowercase();
@@ -123,6 +124,68 @@ fn resolve_codex_home(user_data_dir: &Path, _is_ui_tauri: bool, _app_profile: &s
 
     // Keep app auth/session isolated by default so login state is stable inside API Router.
     isolated
+}
+
+fn app_startup_diag_path() -> Option<PathBuf> {
+    let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
+    let trimmed = user_data_dir.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(trimmed).join("app-startup.json"))
+}
+
+fn reset_app_startup_diag() {
+    let Some(path) = app_startup_diag_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let payload = json!({
+        "updatedAtUnixMs": unix_ms(),
+        "stages": [],
+    });
+    let _ = std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
+}
+
+fn write_app_startup_diag(stage: &str, elapsed_ms: u128, detail: Option<&str>) {
+    let Some(path) = app_startup_diag_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut payload = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .unwrap_or_else(|| json!({ "stages": [] }));
+    if let Some(stages) = payload
+        .get_mut("stages")
+        .and_then(|value| value.as_array_mut())
+    {
+        stages.push(json!({
+            "stage": stage,
+            "elapsedMs": elapsed_ms,
+            "detail": detail,
+            "updatedAtUnixMs": unix_ms(),
+        }));
+    } else {
+        payload["stages"] = json!([{
+            "stage": stage,
+            "elapsedMs": elapsed_ms,
+            "detail": detail,
+            "updatedAtUnixMs": unix_ms(),
+        }]);
+    }
+    payload["updatedAtUnixMs"] = json!(unix_ms());
+    let _ = std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
 }
 
 fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
@@ -380,36 +443,74 @@ pub fn run() {
                 std::env::set_var("CODEX_HOME", &codex_home);
             }
             std::env::set_var("API_ROUTER_USER_DATA_DIR", &user_data_dir);
+            reset_app_startup_diag();
 
+            let build_state_started = Instant::now();
             let state = build_state(
                 user_data_dir.join("config.toml"),
                 user_data_dir.join("data"),
             )?;
+            write_app_startup_diag(
+                "build_state",
+                build_state_started.elapsed().as_millis(),
+                None,
+            );
             if should_seed_mock_data(&app_profile, is_ui_tauri) {
                 if let Err(e) = seed_test_profile_data(&state) {
                     eprintln!("failed to seed test profile mock data: {e}");
                 }
             }
-            let prepared_gateway = if !is_ui_tauri {
-                Some(prepare_gateway_listeners(&state)?)
-            } else {
-                None
-            };
             app.manage(state);
             if !is_ui_tauri {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let st = app_handle.state::<app_state::AppState>();
-                    app_state::run_startup_gateway_token_sync(&st);
+                    let started = Instant::now();
+                    let updated = app_state::run_startup_usage_key_ref_backfill(&st);
+                    let detail = format!("updated_rows={updated}");
+                    write_app_startup_diag(
+                        "usage_key_ref_backfill",
+                        started.elapsed().as_millis(),
+                        Some(&detail),
+                    );
                 });
             }
 
             if !is_ui_tauri {
-                // Spawn the local OpenAI-compatible gateway.
-                let st = app.state::<app_state::AppState>();
-                let gateway = st.gateway.clone();
-                let prepared_gateway = prepared_gateway.expect("gateway listeners prepared");
+                // Spawn the local OpenAI-compatible gateway without blocking Tauri setup.
+                let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
+                    let (gateway, prepared_gateway) = {
+                        let st = app_handle.state::<app_state::AppState>();
+                        let prepare_started = Instant::now();
+                        let prepared_gateway = match prepare_gateway_listeners(&st) {
+                            Ok(prepared) => prepared,
+                            Err(err) => {
+                                let detail = err.to_string();
+                                write_app_startup_diag(
+                                    "prepare_gateway_listeners_failed",
+                                    prepare_started.elapsed().as_millis(),
+                                    Some(&detail),
+                                );
+                                log::error!("prepare gateway listeners failed: {detail}");
+                                return;
+                            }
+                        };
+                        write_app_startup_diag(
+                            "prepare_gateway_listeners",
+                            prepare_started.elapsed().as_millis(),
+                            Some(&format!("listen_port={}", prepared_gateway.listen_port)),
+                        );
+
+                        let token_sync_started = Instant::now();
+                        app_state::run_startup_gateway_token_sync(&st);
+                        write_app_startup_diag(
+                            "startup_gateway_token_sync",
+                            token_sync_started.elapsed().as_millis(),
+                            None,
+                        );
+                        (st.gateway.clone(), prepared_gateway)
+                    };
                     if let Err(e) = serve_in_background(gateway, prepared_gateway).await {
                         log::error!("gateway exited: {e:?}");
                     }
@@ -488,6 +589,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
+            commands::record_app_startup_stage,
             commands::get_event_log_entries,
             commands::get_event_log_years,
             commands::get_event_log_daily_stats,

@@ -159,8 +159,6 @@ export function WebCodexPanel({ listenPort }: Props) {
             </div>
           </div>
         </div>
-
-        {effectiveTailscaleLoading ? <div className="aoHint">Checking Tailscale status...</div> : null}
       </div>
     </section>
   )

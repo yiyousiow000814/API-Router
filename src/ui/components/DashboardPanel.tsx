@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react'
 import { HeroCodexCard, HeroRoutingCard, HeroStatusCard } from './HeroCards'
 import { DashboardProvidersSection } from './DashboardProvidersSection'
 import { DashboardSessionsSection } from './DashboardSessionsSection'
+import { LoadingSurface } from './LoadingSurface'
 import type { LastErrorJump } from './ProvidersTable'
 import type { Config, Status, UsageStatistics } from '../types'
 import './DashboardPanel.css'
@@ -70,6 +72,35 @@ export function DashboardPanel({
   updatingSessionPref,
   onSetSessionPreferred,
 }: Props) {
+  const [showDeferredSections, setShowDeferredSections] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    let timeoutId: number | null = null
+    let idleId: number | null = null
+    const rafId = window.requestAnimationFrame(() => {
+      const reveal = () => {
+        if (cancelled) return
+        setShowDeferredSections(true)
+      }
+      if (typeof window.requestIdleCallback === 'function') {
+        idleId = window.requestIdleCallback(reveal, { timeout: 900 })
+        return
+      }
+      timeoutId = window.setTimeout(reveal, 90)
+    })
+    return () => {
+      cancelled = true
+      window.cancelAnimationFrame(rafId)
+      if (idleId != null && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleId)
+      }
+      if (timeoutId != null) {
+        window.clearTimeout(timeoutId)
+      }
+    }
+  }, [])
+
   return (
     <>
       <div className='aoHero'>
@@ -104,26 +135,37 @@ export function DashboardPanel({
         />
       </div>
 
-      <DashboardProvidersSection
-        providers={providers}
-        status={status}
-        config={config}
-        refreshingProviders={refreshingProviders}
-        onRefreshQuota={onRefreshQuota}
-        onOpenConfigModal={onOpenConfigModal}
-        onOpenLastErrorInEventLog={onOpenLastErrorInEventLog}
-        usageStatistics={usageStatistics ?? null}
-      />
+      {showDeferredSections ? (
+        <>
+          <DashboardProvidersSection
+            providers={providers}
+            status={status}
+            config={config}
+            refreshingProviders={refreshingProviders}
+            onRefreshQuota={onRefreshQuota}
+            onOpenConfigModal={onOpenConfigModal}
+            onOpenLastErrorInEventLog={onOpenLastErrorInEventLog}
+            usageStatistics={usageStatistics ?? null}
+          />
 
-      <DashboardSessionsSection
-        clientSessions={clientSessions}
-        providers={providers}
-        globalPreferred={status.preferred_provider}
-        routeMode={routeMode}
-        wslGatewayHost={status.wsl_gateway_host}
-        updatingSessionPref={updatingSessionPref}
-        onSetSessionPreferred={onSetSessionPreferred}
-      />
+          <DashboardSessionsSection
+            clientSessions={clientSessions}
+            providers={providers}
+            globalPreferred={status.preferred_provider}
+            routeMode={routeMode}
+            wslGatewayHost={status.wsl_gateway_host}
+            updatingSessionPref={updatingSessionPref}
+            onSetSessionPreferred={onSetSessionPreferred}
+          />
+        </>
+      ) : (
+        <LoadingSurface
+          compact
+          eyebrow="Dashboard"
+          title="Finishing the control surface"
+          detail="Provider tables and session routing controls are loading in the background."
+        />
+      )}
     </>
   )
 }

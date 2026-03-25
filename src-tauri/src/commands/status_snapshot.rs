@@ -1,8 +1,46 @@
+fn app_startup_diag_path() -> Option<std::path::PathBuf> {
+    let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
+    let trimmed = user_data_dir.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(trimmed).join("app-startup.json"))
+}
+
+fn append_app_startup_stage(stage: &str, elapsed_ms: Option<u64>, detail: Option<&str>) {
+    let Some(path) = app_startup_diag_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut payload = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .unwrap_or_else(|| serde_json::json!({ "stages": [] }));
+    let entry = serde_json::json!({
+        "stage": stage,
+        "elapsedMs": elapsed_ms,
+        "detail": detail,
+        "updatedAtUnixMs": unix_ms(),
+    });
+    if let Some(stages) = payload.get_mut("stages").and_then(|value| value.as_array_mut()) {
+        stages.push(entry);
+    } else {
+        payload["stages"] = serde_json::json!([entry]);
+    }
+    payload["updatedAtUnixMs"] = serde_json::json!(unix_ms());
+    let _ = std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
+}
+
 #[tauri::command]
 pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value {
     let cfg = state.gateway.cfg.read().clone();
     let wsl_gateway_host =
-        crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(&state.config_path));
+        crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(Some(&state.config_path));
     let now = unix_ms();
     state.gateway.router.sync_with_config(&cfg, now);
     let providers = state.gateway.router.snapshot(now);
@@ -286,6 +324,19 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
       "codex_account": codex_account,
       "client_sessions": client_sessions
     })
+}
+
+#[tauri::command]
+pub(crate) fn record_app_startup_stage(
+    stage: String,
+    elapsed_ms: Option<u64>,
+    detail: Option<String>,
+) {
+    let stage = stage.trim();
+    if stage.is_empty() {
+        return;
+    }
+    append_app_startup_stage(stage, elapsed_ms, detail.as_deref());
 }
 
 fn merge_discovered_model_provider(

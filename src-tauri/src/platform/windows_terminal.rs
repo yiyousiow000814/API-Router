@@ -721,13 +721,26 @@ pub fn discover_sessions_using_router_snapshot(
         }
 
         if cached_items.is_empty() {
-            let token = expected_gateway_token.map(|s| s.to_string());
-            let items = discover_sessions_using_router_uncached(server_port, token.as_deref());
-            if let Ok(mut guard) = cache.lock() {
-                guard.updated_at_unix_ms = now;
-                guard.items = items.clone();
+            if refreshing
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                let token = expected_gateway_token.map(|s| s.to_string());
+                std::thread::spawn(move || {
+                    let items =
+                        discover_sessions_using_router_uncached(server_port, token.as_deref());
+                    let now = now_unix_ms();
+                    if let Ok(mut guard) = cache.lock() {
+                        guard.updated_at_unix_ms = now;
+                        guard.items = items;
+                    }
+                    refreshing.store(false, Ordering::Release);
+                });
             }
-            return SessionDiscoverySnapshot { items, fresh: true };
+            return SessionDiscoverySnapshot {
+                items: Vec::new(),
+                fresh: false,
+            };
         }
 
         // Stale-while-revalidate: return stale cache immediately and refresh in background.

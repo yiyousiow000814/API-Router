@@ -2,6 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import './components/AppShared.css'
+import { recordStartupStage } from './startupTrace'
 import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status, UsageStatistics } from './types'
 import { fmtAmount, fmtPct, fmtUsd, pctOf } from './utils/format'
 import {
@@ -86,7 +87,36 @@ const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.wsl2.v1'
 const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
 const EVENT_LOG_PRELOAD_REFRESH_MS = 15_000
 const EVENT_LOG_PRELOAD_LIMIT = 5000
+const STATUS_CACHE_STORAGE_KEY = 'ao.startup.status.v1'
+const CONFIG_CACHE_STORAGE_KEY = 'ao.startup.config.v1'
+const TOKEN_CACHE_STORAGE_KEY = 'ao.startup.gatewayTokenPreview.v1'
+
+recordStartupStage('frontend_app_module_loaded')
+
+function readStartupCache<T>(key: string): T | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return null
+    return JSON.parse(raw) as T
+  } catch {
+    return null
+  }
+}
+
+function writeStartupCache(key: string, value: unknown) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // Ignore cache write failures; startup cache is best-effort only.
+  }
+}
+
 export default function App() {
+  useEffect(() => {
+    recordStartupStage('frontend_app_component_mounted')
+  }, [])
   const isDevPreview = useMemo(() => {
     if (!import.meta.env.DEV) return false
     if (typeof window === 'undefined') return false
@@ -100,8 +130,8 @@ export default function App() {
   const devMockHistoryEnabled = useMemo(() => parseDevFlag(devFlags.get('mockHistory')), [devFlags])
   const devAutoOpenHistory = useMemo(() => parseDevFlag(devFlags.get('openHistory')), [devFlags])
   const rawConfigTestMode = useMemo(() => parseDevFlag(devFlags.get('test')), [devFlags])
-  const [status, setStatus] = useState<Status | null>(null)
-  const [config, setConfig] = useState<Config | null>(null)
+  const [status, setStatus] = useState<Status | null>(() => readStartupCache<Status>(STATUS_CACHE_STORAGE_KEY))
+  const [config, setConfig] = useState<Config | null>(() => readStartupCache<Config>(CONFIG_CACHE_STORAGE_KEY))
   const [, setBaselineBaseUrls] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<string>('')
   const [override, setOverride] = useState<string>('') // '' => auto
@@ -154,7 +184,9 @@ export default function App() {
     value: '',
   })
   const overrideDirtyRef = useRef<boolean>(false)
-  const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>('')
+  const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>(
+    () => readStartupCache<string>(TOKEN_CACHE_STORAGE_KEY) ?? '',
+  )
   const [gatewayTokenReveal, setGatewayTokenReveal] = useState<string>('')
   const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
   const [configModalOpen, setConfigModalOpen] = useState<boolean>(false)
@@ -381,6 +413,18 @@ export default function App() {
       else delete w.__ui_check__.primeRequestsPrefetchCache
     }
   }, [eventLogSeedEvents, handleOpenLastErrorInEventLog])
+  useEffect(() => {
+    if (!status) return
+    writeStartupCache(STATUS_CACHE_STORAGE_KEY, status)
+  }, [status])
+  useEffect(() => {
+    if (!config) return
+    writeStartupCache(CONFIG_CACHE_STORAGE_KEY, config)
+  }, [config])
+  useEffect(() => {
+    if (!gatewayTokenPreview.trim()) return
+    writeStartupCache(TOKEN_CACHE_STORAGE_KEY, gatewayTokenPreview)
+  }, [gatewayTokenPreview])
   useEffect(() => {
     if (activePage !== 'event_log') return
     let cancelled = false

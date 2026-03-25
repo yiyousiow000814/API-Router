@@ -94,7 +94,30 @@ export function useAppPolling({
 
   useEffect(() => {
     if (isDevPreview) return
-    void refreshConfigRef.current()
+    let cancelled = false
+    let timeoutId: number | null = null
+    let idleId: number | null = null
+    const rafId = window.requestAnimationFrame(() => {
+      const runRefreshConfig = () => {
+        if (cancelled) return
+        void refreshConfigRef.current()
+      }
+      if (typeof window.requestIdleCallback === 'function') {
+        idleId = window.requestIdleCallback(runRefreshConfig, { timeout: 1200 })
+        return
+      }
+      timeoutId = window.setTimeout(runRefreshConfig, 120)
+    })
+    return () => {
+      cancelled = true
+      window.cancelAnimationFrame(rafId)
+      if (idleId != null && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleId)
+      }
+      if (timeoutId != null) {
+        window.clearTimeout(timeoutId)
+      }
+    }
   }, [isDevPreview])
 
   useEffect(() => {

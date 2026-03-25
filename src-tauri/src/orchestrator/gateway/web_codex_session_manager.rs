@@ -1050,6 +1050,7 @@ mod tests {
     };
 
     struct TestWebCodexHomeGuard {
+        key: &'static str,
         previous: Option<String>,
     }
 
@@ -1057,29 +1058,46 @@ mod tests {
         fn drop(&mut self) {
             if let Some(previous) = self.previous.take() {
                 unsafe {
-                    std::env::set_var("API_ROUTER_WEB_CODEX_CODEX_HOME", previous);
+                    std::env::set_var(self.key, previous);
                 }
             } else {
                 unsafe {
-                    std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+                    std::env::remove_var(self.key);
                 }
             }
         }
     }
 
     fn isolate_windows_web_codex_home() -> TestWebCodexHomeGuard {
-        let previous = std::env::var("API_ROUTER_WEB_CODEX_CODEX_HOME").ok();
-        let temp = tempfile::tempdir().expect("temp web codex home");
-        let temp_path = temp.keep();
-        std::fs::create_dir_all(temp_path.join("sessions")).expect("sessions dir");
+        isolate_web_codex_home(
+            "API_ROUTER_WEB_CODEX_CODEX_HOME",
+            std::env::temp_dir().join("api-router-web-codex-home-win"),
+        )
+    }
+
+    fn isolate_wsl_web_codex_home() -> TestWebCodexHomeGuard {
+        isolate_web_codex_home(
+            "API_ROUTER_WEB_CODEX_WSL_CODEX_HOME",
+            std::env::temp_dir().join("api-router-web-codex-home-wsl"),
+        )
+    }
+
+    fn isolate_web_codex_home(
+        key: &'static str,
+        path: std::path::PathBuf,
+    ) -> TestWebCodexHomeGuard {
+        let previous = std::env::var(key).ok();
+        std::fs::create_dir_all(path.join("sessions")).expect("sessions dir");
         unsafe {
-            std::env::set_var("API_ROUTER_WEB_CODEX_CODEX_HOME", &temp_path);
+            std::env::set_var(key, &path);
         }
-        TestWebCodexHomeGuard { previous }
+        TestWebCodexHomeGuard { key, previous }
     }
 
     #[test]
     fn session_manager_resolves_workspace_home_override() {
+        let _win_home = isolate_windows_web_codex_home();
+        let _wsl_home = isolate_wsl_web_codex_home();
         _clear_workspace_runtime_registry_for_test();
         let windows = CodexSessionManager::new(parse_workspace_target("windows"));
         let wsl2 = CodexSessionManager::new(parse_workspace_target("wsl2"));
@@ -1092,6 +1110,7 @@ mod tests {
     #[tokio::test]
     async fn turn_start_uses_workspace_scoped_request_home() {
         let _guard = crate::codex_app_server::lock_test_globals();
+        let _home = isolate_windows_web_codex_home();
         _clear_workspace_runtime_registry_for_test();
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_ref = calls.clone();
@@ -1254,6 +1273,7 @@ mod tests {
     #[tokio::test]
     async fn loaded_thread_ids_reads_workspace_scoped_loaded_list() {
         let _guard = crate::codex_app_server::lock_test_globals();
+        let _home = isolate_windows_web_codex_home();
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
             move |home, method, _params| {
                 assert!(home.is_some());

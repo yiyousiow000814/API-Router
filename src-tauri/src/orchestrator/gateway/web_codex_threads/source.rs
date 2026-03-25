@@ -1834,6 +1834,7 @@ mod tests {
     #[tokio::test]
     async fn wsl_runtime_overlay_uses_workspace_scoped_rpc() {
         let _test_guard = codex_app_server::lock_test_globals();
+        let _home = EnvGuard::set("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
         codex_app_server::_set_test_request_handler(Some(Arc::new(
             move |home, method, params| {
                 assert!(

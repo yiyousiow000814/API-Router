@@ -81,20 +81,6 @@ fn resolve_reachable_gateway_ipv4(
         .collect()
 }
 
-#[cfg(windows)]
-pub(crate) fn detected_tailscale_ipv4_addrs() -> Vec<std::net::IpAddr> {
-    let Ok(parsed) = tailscale_status_json() else {
-        return Vec::new();
-    };
-    let (connected, _dns_name, ipv4) = parse_tailscale_summary(&parsed);
-    if !connected {
-        return Vec::new();
-    }
-    ipv4.into_iter()
-        .filter_map(|ip| ip.parse::<std::net::IpAddr>().ok())
-        .collect()
-}
-
 #[tauri::command]
 pub(crate) async fn tailscale_status(
     state: tauri::State<'_, crate::app_state::AppState>,
