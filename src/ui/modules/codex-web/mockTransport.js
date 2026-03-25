@@ -241,6 +241,7 @@ export function createMockCodexTransport(deps) {
     state,
     setStatus = () => {},
     transportMode = "mock",
+    seedDefaultThreads = false,
     liveApi = async () => {
       throw new Error("Live API is unavailable.");
     },
@@ -303,6 +304,7 @@ export function createMockCodexTransport(deps) {
 
   function initSeedData() {
     if (mockState.threads.size > 0) return;
+    if (!seedDefaultThreads) return;
     seedThread({
       id: "mock-thread-1",
       workspace: "windows",

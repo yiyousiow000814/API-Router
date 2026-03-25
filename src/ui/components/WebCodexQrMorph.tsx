@@ -133,7 +133,7 @@ function buildParticles(value: string, size: number): Particle[] {
   const margin = size * 0.12
   const usable = size - margin * 2
   const cell = usable / count
-  const total = Array.from({ length: count * count }).reduce((sum, _, flatIndex) => {
+  const total = Array.from({ length: count * count }).reduce<number>((sum, _, flatIndex) => {
     const row = Math.floor(flatIndex / count)
     const col = flatIndex % count
     return sum + (qr.modules.get(row, col) ? PARTICLES_PER_MODULE : 0)

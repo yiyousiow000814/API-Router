@@ -144,6 +144,7 @@ export function createWsClientModule(deps) {
     WS_RECONNECT_BASE_MS = 800,
     WS_RECONNECT_MAX_MS = 5000,
     transportMode = "live",
+    seedDefaultThreads = false,
   } = deps;
 
   async function liveApi(path, options = {}) {
@@ -171,6 +172,7 @@ export function createWsClientModule(deps) {
           state,
           setStatus,
           transportMode,
+          seedDefaultThreads,
           liveApi,
           handleWsPayload: (payload) => handleWsPayload(payload),
         })

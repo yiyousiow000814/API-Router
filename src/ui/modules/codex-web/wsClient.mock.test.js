@@ -52,6 +52,7 @@ function createModule(state, notifications, fetchRef, transportMode = "mock") {
     localStorageRef: { getItem() { return null; }, setItem() {}, removeItem() {} },
     windowRef: { location: { protocol: "http:", host: "127.0.0.1:5173" } },
     transportMode,
+    seedDefaultThreads: true,
   });
 }
 
