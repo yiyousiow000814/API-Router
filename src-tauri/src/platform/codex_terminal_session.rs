@@ -43,6 +43,7 @@ fn session_matches_workspace(
     }
 }
 
+#[cfg(target_os = "windows")]
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }

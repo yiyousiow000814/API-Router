@@ -39,6 +39,7 @@ pub struct SessionDiscoverySnapshot {
     pub fresh: bool,
 }
 
+#[cfg(any(windows, test))]
 pub(crate) fn terminal_session_marker(wt_session: Option<&str>, pid: u32) -> Option<String> {
     let explicit = wt_session
         .map(str::trim)
