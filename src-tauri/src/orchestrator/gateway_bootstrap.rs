@@ -8,47 +8,58 @@ pub(crate) struct PreparedGatewayListeners {
     pub(crate) listeners: Vec<(SocketAddr, std::net::TcpListener)>,
 }
 
+#[cfg(windows)]
 fn push_unique_addr(addrs: &mut Vec<SocketAddr>, addr: SocketAddr) {
     if !addrs.contains(&addr) {
         addrs.push(addr);
     }
 }
 
+#[cfg(windows)]
 fn gateway_listen_addrs_with_overlays(
     listen_host: &str,
     listen_port: u16,
     extra_ips: &[IpAddr],
 ) -> anyhow::Result<Vec<SocketAddr>> {
     let primary: SocketAddr = format!("{listen_host}:{listen_port}").parse()?;
-    #[cfg(windows)]
     let mut addrs = vec![primary];
-    #[cfg(not(windows))]
-    let addrs = vec![primary];
-    #[cfg(windows)]
-    {
-        let primary_ip = primary.ip().to_string();
-        if primary_ip == crate::constants::GATEWAY_WINDOWS_HOST {
-            let wsl_host = crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(None);
-            let parsed_wsl_ip: std::net::IpAddr = wsl_host.parse()?;
-            if parsed_wsl_ip != primary.ip() {
-                push_unique_addr(&mut addrs, SocketAddr::new(parsed_wsl_ip, listen_port));
-            }
-            for extra_ip in extra_ips {
-                if *extra_ip != primary.ip() {
-                    push_unique_addr(&mut addrs, SocketAddr::new(*extra_ip, listen_port));
-                }
+
+    let primary_ip = primary.ip().to_string();
+    if primary_ip == crate::constants::GATEWAY_WINDOWS_HOST {
+        let wsl_host = crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(None);
+        let parsed_wsl_ip: std::net::IpAddr = wsl_host.parse()?;
+        if parsed_wsl_ip != primary.ip() {
+            push_unique_addr(&mut addrs, SocketAddr::new(parsed_wsl_ip, listen_port));
+        }
+        for extra_ip in extra_ips {
+            if *extra_ip != primary.ip() {
+                push_unique_addr(&mut addrs, SocketAddr::new(*extra_ip, listen_port));
             }
         }
     }
+
     Ok(addrs)
+}
+
+#[cfg(not(windows))]
+fn gateway_listen_addrs_with_overlays(
+    listen_host: &str,
+    listen_port: u16,
+) -> anyhow::Result<Vec<SocketAddr>> {
+    let primary: SocketAddr = format!("{listen_host}:{listen_port}").parse()?;
+    Ok(vec![primary])
 }
 
 fn gateway_listen_addrs(listen_host: &str, listen_port: u16) -> anyhow::Result<Vec<SocketAddr>> {
     #[cfg(windows)]
-    let extra_ips = crate::commands::detected_tailscale_ipv4_addrs();
+    {
+        let extra_ips = crate::commands::detected_tailscale_ipv4_addrs();
+        gateway_listen_addrs_with_overlays(listen_host, listen_port, &extra_ips)
+    }
     #[cfg(not(windows))]
-    let extra_ips: Vec<IpAddr> = Vec::new();
-    gateway_listen_addrs_with_overlays(listen_host, listen_port, &extra_ips)
+    {
+        gateway_listen_addrs_with_overlays(listen_host, listen_port)
+    }
 }
 
 fn persist_gateway_runtime_port(
