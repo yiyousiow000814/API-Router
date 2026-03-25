@@ -43,29 +43,27 @@ export function WebCodexPanel({ listenPort }: Props) {
   const gatewayPort = String(normalizeGatewayPort(listenPort))
   const localUrl = useMemo(() => `http://127.0.0.1:${gatewayPort}/codex-web`, [gatewayPort])
   const previewUrl = useMemo(() => 'http://127.0.0.1:5173/codex-web', [])
+  const devPreviewStatus = useMemo<TailscaleStatus | null>(() => {
+    if (!devPreview) return null
+    if (devPreviewTailscaleState === 'on') {
+      return {
+        ...devTailscaleStatus,
+        ipv4: [...devTailscaleStatus.ipv4],
+      }
+    }
+    return {
+      installed: false,
+      connected: false,
+      dnsName: null,
+      ipv4: [],
+      downloadUrl: 'https://tailscale.com/download',
+    }
+  }, [devPreview, devPreviewTailscaleState])
 
   useEffect(() => {
     let cancelled = false
+    if (devPreview) return () => { cancelled = true }
     setTailscaleLoading(true)
-
-    if (devPreview) {
-      setTailscale(devPreviewTailscaleState === 'on'
-        ? {
-            ...devTailscaleStatus,
-            ipv4: [...devTailscaleStatus.ipv4],
-          }
-        : {
-            installed: false,
-            connected: false,
-            dnsName: null,
-            ipv4: [],
-            downloadUrl: 'https://tailscale.com/download',
-          })
-      setTailscaleLoading(false)
-      return () => {
-        cancelled = true
-      }
-    }
 
     void invoke<TailscaleStatus>('tailscale_status')
       .then((value) => {
@@ -90,15 +88,18 @@ export function WebCodexPanel({ listenPort }: Props) {
     return () => {
       cancelled = true
     }
-  }, [devPreview, devPreviewTailscaleState])
+  }, [devPreview])
+
+  const effectiveTailscale = devPreview ? devPreviewStatus : tailscale
+  const effectiveTailscaleLoading = devPreview ? false : tailscaleLoading
 
   const tailscaleHost = useMemo(() => {
-    if (!tailscale) return ''
-    if (tailscale.dnsName?.trim()) return tailscale.dnsName.trim()
-    if (tailscale.ipv4?.length) return tailscale.ipv4[0]
+    if (!effectiveTailscale) return ''
+    if (effectiveTailscale.dnsName?.trim()) return effectiveTailscale.dnsName.trim()
+    if (effectiveTailscale.ipv4?.length) return effectiveTailscale.ipv4[0]
     return ''
-  }, [tailscale])
-  const tailscaleIp = useMemo(() => tailscale?.ipv4?.[0] || '', [tailscale])
+  }, [effectiveTailscale])
+  const tailscaleIp = useMemo(() => effectiveTailscale?.ipv4?.[0] || '', [effectiveTailscale])
   const phoneDnsUrl = useMemo(() => {
     if (!tailscaleHost) return ''
     return `http://${tailscaleHost}:${gatewayPort}/codex-web`
@@ -108,7 +109,9 @@ export function WebCodexPanel({ listenPort }: Props) {
     return `http://${tailscaleIp}:${gatewayPort}/codex-web`
   }, [tailscaleIp, gatewayPort])
   const phoneUrl = phoneIpUrl || phoneDnsUrl
-  const phoneReady = !!(!tailscaleLoading && tailscale?.installed && tailscale?.connected && phoneUrl)
+  const phoneQrValue = phoneUrl || localUrl
+  const phoneReady = !!(!effectiveTailscaleLoading && effectiveTailscale?.installed && effectiveTailscale?.connected && phoneUrl)
+  const phoneStateClass = phoneReady ? 'is-ready' : 'is-setup'
 
   return (
     <section className="aoPanel webCodexAccess">
@@ -158,45 +161,46 @@ export function WebCodexPanel({ listenPort }: Props) {
                 <div className="webCodexCardLabel">Phone</div>
                 <div className="webCodexCardTitle">Scan to open</div>
               </div>
-              {phoneReady ? <div className="webCodexStatePill">Tailscale ready</div> : null}
+              <div className={`webCodexStatePill${phoneReady ? ' is-visible' : ''}`}>Tailscale ready</div>
             </div>
 
-            {phoneReady ? (
-              <div className="webCodexPhoneReady">
-                <div className="webCodexQrFrame">
-                  <WebCodexQrMorph ready={phoneReady} value={phoneUrl} size={qrSize} />
-                </div>
-                <div className="webCodexPhoneInfo">
-                  <div className="webCodexPhoneHost">{tailscaleIp || shortenHost(tailscaleHost)}</div>
-                  <code className="webCodexPhoneUrl">{phoneUrl}</code>
-                  {phoneDnsUrl && phoneIpUrl ? <div className="webCodexPhoneFallback">DNS {phoneDnsUrl}</div> : null}
-                </div>
+            <div className={`webCodexPhoneShell ${phoneStateClass}`}>
+              <div className={`webCodexQrFrame${phoneReady ? '' : ' is-ambient'}`}>
+                <WebCodexQrMorph ready={phoneReady} value={phoneQrValue} size={qrSize} />
               </div>
-            ) : (
-              <div className="webCodexPhoneSetup">
-                <div className="webCodexQrFrame is-ambient">
-                  <WebCodexQrMorph ready={phoneReady} value={phoneUrl || localUrl} size={qrSize} />
-                </div>
-                <div className="webCodexPhoneInfo">
-                  <div className="webCodexPhoneHost">Phone</div>
-                  <div className="webCodexPhoneSetupText">
-                    Install Tailscale on this computer and your phone, then join the same tailnet.
+              <div className={`webCodexPhoneInfo ${phoneStateClass}`}>
+                <div className="webCodexPhoneInfoStage">
+                  <div className="webCodexPhoneCopy webCodexPhoneCopyReady">
+                    <div className="webCodexPhoneHost">{tailscaleIp || shortenHost(tailscaleHost) || 'Phone'}</div>
+                    <code className="webCodexPhoneUrl">{phoneUrl || localUrl}</code>
+                    {phoneDnsUrl && phoneIpUrl ? <div className="webCodexPhoneFallback">DNS {phoneDnsUrl}</div> : null}
                   </div>
-                  <a
-                    className="webCodexCta webCodexInstallBtn"
-                    href={tailscale?.downloadUrl || 'https://tailscale.com/download'}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <span className="webCodexButtonLabel">Install Tailscale</span>
-                  </a>
+                  <div className="webCodexPhoneCopy webCodexPhoneCopySetup">
+                    <div className="webCodexPhoneHost">Phone</div>
+                    <div className="webCodexPhoneSetupText">
+                      Install Tailscale on this computer and your phone, then join the same tailnet.
+                    </div>
+                  </div>
+                </div>
+                <div className="webCodexPhoneActionsStage">
+                  <div className="webCodexPhoneActionsReady" aria-hidden={!phoneReady} />
+                  <div className="webCodexPhoneSetupActions">
+                    <a
+                      className="webCodexCta webCodexInstallBtn"
+                      href={effectiveTailscale?.downloadUrl || 'https://tailscale.com/download'}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <span className="webCodexButtonLabel">Install Tailscale</span>
+                    </a>
+                  </div>
                 </div>
               </div>
-            )}
+            </div>
           </div>
         </div>
 
-        {tailscaleLoading ? <div className="aoHint">Checking Tailscale status...</div> : null}
+        {effectiveTailscaleLoading ? <div className="aoHint">Checking Tailscale status...</div> : null}
       </div>
     </section>
   )

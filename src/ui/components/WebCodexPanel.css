@@ -260,15 +260,33 @@
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  opacity: 0;
+  transform: translateY(4px) scale(0.985);
+  transition:
+    opacity 180ms ease,
+    transform 220ms ease;
 }
 
-.webCodexPhoneReady {
+.webCodexStatePill.is-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.webCodexPhoneShell {
   display: grid;
   grid-template-columns: 150px minmax(0, 1fr);
   gap: 22px;
   align-items: center;
   align-content: center;
   min-height: 164px;
+}
+
+.webCodexPhoneShell.is-setup {
+  align-items: center;
+}
+
+.webCodexPhoneShell.is-ready {
+  align-items: center;
 }
 
 .webCodexQrFrame {
@@ -305,25 +323,98 @@
   display: grid;
   align-content: center;
   justify-items: start;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
   align-self: center;
   padding-top: 0;
+}
+
+.webCodexPhoneInfoStage,
+.webCodexPhoneActionsStage {
+  display: grid;
+  width: 100%;
+  position: relative;
+}
+
+.webCodexPhoneInfoStage {
+  min-height: 72px;
+}
+
+.webCodexPhoneActionsStage {
+  min-height: 40px;
+}
+
+.webCodexPhoneCopy,
+.webCodexPhoneSetupActions,
+.webCodexPhoneActionsReady {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  align-content: center;
+}
+
+.webCodexPhoneCopy,
+.webCodexPhoneSetupActions,
+.webCodexPhoneActionsReady {
+  position: absolute;
+  inset: 0;
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+.webCodexPhoneInfo.is-ready .webCodexPhoneCopyReady,
+.webCodexPhoneInfo.is-setup .webCodexPhoneCopySetup,
+.webCodexPhoneInfo.is-setup .webCodexPhoneSetupActions {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.webCodexPhoneInfo.is-ready {
+  grid-template-rows: 1fr;
+}
+
+.webCodexPhoneInfo.is-setup {
+  grid-template-rows: auto auto;
+}
+
+.webCodexPhoneInfo.is-ready .webCodexPhoneCopySetup,
+.webCodexPhoneInfo.is-setup .webCodexPhoneCopyReady,
+.webCodexPhoneInfo.is-ready .webCodexPhoneSetupActions,
+.webCodexPhoneInfo.is-setup .webCodexPhoneActionsReady {
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+}
+
+.webCodexPhoneInfo.is-ready .webCodexPhoneActionsReady {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.webCodexPhoneInfo.is-ready .webCodexPhoneInfoStage,
+.webCodexPhoneInfo.is-ready .webCodexPhoneActionsStage {
+  min-height: 0;
+}
+
+.webCodexPhoneInfo.is-ready .webCodexPhoneActionsStage {
+  display: none;
+}
+
+.webCodexPhoneInfo.is-setup .webCodexPhoneInfoStage {
+  min-height: 72px;
+}
+
+.webCodexPhoneInfo.is-setup .webCodexPhoneActionsStage {
+  min-height: 40px;
 }
 
 .webCodexPhoneHost {
   font-size: 17px;
   font-weight: 700;
   color: rgba(13, 18, 32, 0.88);
-}
-
-.webCodexPhoneSetup {
-  display: grid;
-  grid-template-columns: 150px minmax(0, 1fr);
-  gap: 22px;
-  align-items: center;
-  align-content: center;
-  min-height: 164px;
 }
 
 .webCodexInstallBtn {
@@ -341,11 +432,7 @@
     font-size: 30px;
   }
 
-  .webCodexPhoneReady {
-    grid-template-columns: 1fr;
-  }
-
-  .webCodexPhoneSetup {
+  .webCodexPhoneShell {
     grid-template-columns: 1fr;
   }
 
