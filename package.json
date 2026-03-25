@@ -10,9 +10,10 @@
   "scripts": {
     "check:gateway-provider-id": "node scripts/check-gateway-provider-id.mjs",
     "check:line-endings": "node scripts/check-line-endings.mjs",
+    "check:web-codex-assets": "node scripts/check-web-codex-assets.mjs",
     "check:codex-gateway": "node scripts/check-codex-gateway.mjs",
     "dev": "npm run check:gateway-provider-id && vite",
-    "build": "npm run check:gateway-provider-id && npm run check:line-endings && tsc && vite build",
+    "build": "npm run check:gateway-provider-id && npm run check:line-endings && npm run check:web-codex-assets && tsc && vite build",
     "preview": "vite preview",
     "tauri": "node scripts/run-with-win-sdk.mjs tauri",
     "build:root-exe": "node scripts/run-with-win-sdk.mjs tauri build --no-bundle && node scripts/copy-root-exe.mjs && node scripts/open-root-exe.mjs",

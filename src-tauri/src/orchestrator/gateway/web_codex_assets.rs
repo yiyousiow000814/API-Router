@@ -34,6 +34,30 @@ const WEB_CODEX_HEADER_UI_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/headerUi.js");
 const WEB_CODEX_HISTORY_LOADER_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/historyLoader.js");
+const WEB_CODEX_HISTORY_COMMENTARY_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/historyCommentary.js");
+const WEB_CODEX_HISTORY_PREPARATION_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/historyPreparation.js");
+const WEB_CODEX_HISTORY_PAGE_STATE_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/historyPageState.js");
+const WEB_CODEX_HISTORY_APPLY_STATE_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/historyApplyState.js");
+const WEB_CODEX_HISTORY_APPLY_FLOW_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/historyApplyFlow.js");
+const WEB_CODEX_HISTORY_LOAD_FLOW_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/historyLoadFlow.js");
+const WEB_CODEX_HISTORY_LIVE_COMMENTARY_STATE_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/historyLiveCommentaryState.js");
+const WEB_CODEX_HISTORY_MESSAGE_MAPPING_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/historyMessageMapping.js");
+const WEB_CODEX_HISTORY_RENDER_APPLY_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/historyRenderApply.js");
+const WEB_CODEX_HISTORY_RENDER_STRATEGY_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/historyRenderStrategy.js");
+const WEB_CODEX_HISTORY_OLDER_CHUNK_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/historyOlderChunk.js");
+const WEB_CODEX_HISTORY_WINDOW_CONTROL_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/historyWindowControl.js");
 const WEB_CODEX_IMAGE_VIEWER_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/imageViewer.js");
 const WEB_CODEX_LIVE_NOTIFICATIONS_JS: &str =
@@ -94,7 +118,21 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/debugTools.js" => Some(WEB_CODEX_DEBUG_TOOLS_JS),
         "codex-web/folderPicker.js" => Some(WEB_CODEX_FOLDER_PICKER_JS),
         "codex-web/headerUi.js" => Some(WEB_CODEX_HEADER_UI_JS),
+        "codex-web/historyApplyFlow.js" => Some(WEB_CODEX_HISTORY_APPLY_FLOW_JS),
+        "codex-web/historyApplyState.js" => Some(WEB_CODEX_HISTORY_APPLY_STATE_JS),
+        "codex-web/historyCommentary.js" => Some(WEB_CODEX_HISTORY_COMMENTARY_JS),
+        "codex-web/historyLiveCommentaryState.js" => {
+            Some(WEB_CODEX_HISTORY_LIVE_COMMENTARY_STATE_JS)
+        }
+        "codex-web/historyLoadFlow.js" => Some(WEB_CODEX_HISTORY_LOAD_FLOW_JS),
         "codex-web/historyLoader.js" => Some(WEB_CODEX_HISTORY_LOADER_JS),
+        "codex-web/historyMessageMapping.js" => Some(WEB_CODEX_HISTORY_MESSAGE_MAPPING_JS),
+        "codex-web/historyOlderChunk.js" => Some(WEB_CODEX_HISTORY_OLDER_CHUNK_JS),
+        "codex-web/historyPageState.js" => Some(WEB_CODEX_HISTORY_PAGE_STATE_JS),
+        "codex-web/historyPreparation.js" => Some(WEB_CODEX_HISTORY_PREPARATION_JS),
+        "codex-web/historyRenderApply.js" => Some(WEB_CODEX_HISTORY_RENDER_APPLY_JS),
+        "codex-web/historyRenderStrategy.js" => Some(WEB_CODEX_HISTORY_RENDER_STRATEGY_JS),
+        "codex-web/historyWindowControl.js" => Some(WEB_CODEX_HISTORY_WINDOW_CONTROL_JS),
         "codex-web/imageViewer.js" => Some(WEB_CODEX_IMAGE_VIEWER_JS),
         "codex-web/liveNotifications.js" => Some(WEB_CODEX_LIVE_NOTIFICATIONS_JS),
         "codex-web/messageData.js" => Some(WEB_CODEX_MESSAGE_DATA_JS),
@@ -216,7 +254,19 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/debugTools.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/folderPicker.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/headerUi.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/historyApplyFlow.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/historyApplyState.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/historyCommentary.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/historyLiveCommentaryState.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/historyLoadFlow.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/historyLoader.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/historyMessageMapping.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/historyOlderChunk.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/historyPageState.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/historyPreparation.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/historyRenderApply.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/historyRenderStrategy.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/historyWindowControl.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/imageViewer.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/liveNotifications.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/messageData.js").is_some());
