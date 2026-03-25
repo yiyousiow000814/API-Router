@@ -1,6 +1,9 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useMemo, useState } from 'react'
+import { devTailscaleStatus } from '../devMockData'
 import { normalizeGatewayPort } from '../utils/gatewayUrl'
+import { WebCodexQrMorph } from './WebCodexQrMorph'
+import './WebCodexPanel.css'
 
 type TailscaleStatus = {
   installed: boolean
@@ -14,18 +17,56 @@ type Props = {
   listenPort?: number | null
 }
 
+function isDevPreviewRuntime() {
+  if (!import.meta.env.DEV) return false
+  if (typeof window === 'undefined') return false
+  const w = window as unknown as { __TAURI__?: { core?: { invoke?: unknown } } }
+  return !Boolean(w.__TAURI__?.core?.invoke)
+}
+
+function shortenHost(host: string) {
+  if (host.length <= 34) return host
+  return `${host.slice(0, 18)}...${host.slice(-12)}`
+}
+
 export function WebCodexPanel({ listenPort }: Props) {
+  const qrSize = 132
   const [tailscale, setTailscale] = useState<TailscaleStatus | null>(null)
   const [tailscaleLoading, setTailscaleLoading] = useState<boolean>(true)
+  const devPreview = useMemo(() => isDevPreviewRuntime(), [])
+  const devFlags = useMemo(
+    () => (typeof window === 'undefined' ? new URLSearchParams() : new URLSearchParams(window.location.search)),
+    [],
+  )
+  const initialDevState = devFlags.get('tailscale') === 'off' ? 'off' : 'on'
+  const [devPreviewTailscaleState, setDevPreviewTailscaleState] = useState<'on' | 'off'>(initialDevState)
   const gatewayPort = String(normalizeGatewayPort(listenPort))
-  const appWebCodexUrl = useMemo(() => `http://127.0.0.1:${gatewayPort}/codex-web`, [gatewayPort])
-  const appWsUrl = useMemo(() => `ws://127.0.0.1:${gatewayPort}/codex/ws?token=YOUR_GATEWAY_TOKEN`, [gatewayPort])
-  const sandboxWebCodexUrl = useMemo(() => 'http://127.0.0.1:5173/sandbox/codex-web', [])
-  const sandboxQuickUrl = useMemo(() => 'http://127.0.0.1:5173/codex-web', [])
+  const localUrl = useMemo(() => `http://127.0.0.1:${gatewayPort}/codex-web`, [gatewayPort])
+  const previewUrl = useMemo(() => 'http://127.0.0.1:5173/codex-web', [])
 
   useEffect(() => {
     let cancelled = false
     setTailscaleLoading(true)
+
+    if (devPreview) {
+      setTailscale(devPreviewTailscaleState === 'on'
+        ? {
+            ...devTailscaleStatus,
+            ipv4: [...devTailscaleStatus.ipv4],
+          }
+        : {
+            installed: false,
+            connected: false,
+            dnsName: null,
+            ipv4: [],
+            downloadUrl: 'https://tailscale.com/download',
+          })
+      setTailscaleLoading(false)
+      return () => {
+        cancelled = true
+      }
+    }
+
     void invoke<TailscaleStatus>('tailscale_status')
       .then((value) => {
         if (cancelled) return
@@ -45,168 +86,117 @@ export function WebCodexPanel({ listenPort }: Props) {
         if (cancelled) return
         setTailscaleLoading(false)
       })
+
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [devPreview, devPreviewTailscaleState])
 
   const tailscaleHost = useMemo(() => {
     if (!tailscale) return ''
-    if (tailscale.dnsName && tailscale.dnsName.trim()) return tailscale.dnsName.trim()
+    if (tailscale.dnsName?.trim()) return tailscale.dnsName.trim()
     if (tailscale.ipv4?.length) return tailscale.ipv4[0]
     return ''
   }, [tailscale])
   const tailscaleIp = useMemo(() => tailscale?.ipv4?.[0] || '', [tailscale])
-  const tailscaleWebUrl = useMemo(() => {
+  const phoneDnsUrl = useMemo(() => {
     if (!tailscaleHost) return ''
     return `http://${tailscaleHost}:${gatewayPort}/codex-web`
   }, [tailscaleHost, gatewayPort])
-  const tailscaleWebUrlByIp = useMemo(() => {
+  const phoneIpUrl = useMemo(() => {
     if (!tailscaleIp) return ''
     return `http://${tailscaleIp}:${gatewayPort}/codex-web`
   }, [tailscaleIp, gatewayPort])
-  const tailscaleWsUrl = useMemo(() => {
-    if (!tailscaleHost) return ''
-    return `ws://${tailscaleHost}:${gatewayPort}/codex/ws?token=YOUR_GATEWAY_TOKEN`
-  }, [tailscaleHost, gatewayPort])
-  const tailscaleTemplateUrl = useMemo(() => `http://<your-device>.ts.net:${gatewayPort}/codex-web`, [gatewayPort])
+  const phoneUrl = phoneIpUrl || phoneDnsUrl
+  const phoneReady = !!(!tailscaleLoading && tailscale?.installed && tailscale?.connected && phoneUrl)
 
   return (
-    <section className="aoPanel">
-      <div className="aoPanelHead">
-        <div className="aoPanelTitle">Web Codex Access</div>
-        <div className="aoPanelHint">Tailscale-ready links for phone and desktop</div>
-      </div>
-      <div className="aoPanelBody" style={{ display: 'grid', gap: 10 }}>
-        {tailscaleLoading ? (
-          <div className="aoCard">
-            <div className="aoHint">Checking Tailscale status...</div>
-          </div>
-        ) : null}
-
-        {!tailscaleLoading && tailscale && (!tailscale.installed || !tailscale.connected || !tailscaleHost) ? (
-          <div className="aoCard">
-            <div className="aoCardHeader">
-              <div className="aoCardTitle">Step 1: Install Tailscale</div>
+    <section className="aoPanel webCodexAccess">
+      <div className="webCodexPage">
+        <div className="webCodexHero">
+            <div className="webCodexHeroCopy">
+              <div className="webCodexHeroEyebrow">Web Codex</div>
+              <h2 className="webCodexHeroTitle">Web Codex</h2>
+              <div className="webCodexHeroCaption">Desk to phone, one thread.</div>
             </div>
-            <div className="aoHint">
-              Tailscale is not ready on this machine yet.
-            </div>
-            <div className="aoRow" style={{ marginTop: 10 }}>
-              <a
-                className="aoBtn aoBtnPrimary"
-                href={tailscale.downloadUrl}
-                target="_blank"
-                rel="noreferrer"
-                style={{ borderRadius: 999, paddingInline: 16 }}
+          {devPreview ? (
+            <div className="webCodexPreviewToggle" role="tablist" aria-label="Tailscale preview states">
+              <button
+                className={`webCodexPreviewToggleBtn${devPreviewTailscaleState === 'on' ? ' is-active' : ''}`}
+                onClick={() => setDevPreviewTailscaleState('on')}
               >
-                Download Tailscale
+                Tailscale ready
+              </button>
+              <button
+                className={`webCodexPreviewToggleBtn${devPreviewTailscaleState === 'off' ? ' is-active' : ''}`}
+                onClick={() => setDevPreviewTailscaleState('off')}
+              >
+                Not installed
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="webCodexLayout">
+          <div className="webCodexDesktopCard">
+            <div className="webCodexDesktopMain">
+              <div className="webCodexCardLabel">Desktop</div>
+              <code className="webCodexPrimaryUrl">{localUrl}</code>
+              <a className="webCodexCta webCodexDesktopAction" href={localUrl} target="_blank" rel="noreferrer">
+                <span className="webCodexButtonLabel">Open in browser</span>
               </a>
             </div>
-            <ol className="aoHint" style={{ marginTop: 10, paddingLeft: 18 }}>
-              <li>Install Tailscale on computer and phone.</li>
-              <li>Sign in to the same tailnet on both devices.</li>
-              <li>On computer, run <code>tailscale up</code> once.</li>
-              <li>Reopen this tab and URLs will auto-fill.</li>
-            </ol>
+            <div className="webCodexDesktopFoot">
+              <span className="webCodexDesktopPreviewLabel">Preview</span>
+              <code className="webCodexDesktopPreviewUrl">{previewUrl}</code>
+            </div>
           </div>
-        ) : null}
 
-        <div className="aoCard">
-          <div className="aoCardHeader">
-            <div className="aoCardTitle">Ports</div>
-          </div>
-          <ul className="aoHint" style={{ margin: 0, paddingLeft: 18 }}>
-            <li><code>{gatewayPort}</code> (App): real gateway + real Web Codex. Desktop open: <code>{appWebCodexUrl}</code>.</li>
-            <li><code>5173</code> (Dev): sandbox preview (read-only). Desktop open: <code>{sandboxWebCodexUrl}</code>.</li>
-            <li>Quick sandbox alias: <code>{sandboxQuickUrl}</code>.</li>
-          </ul>
-        </div>
+          <div className="webCodexPhoneCard">
+            <div className="webCodexCardHead">
+              <div className="webCodexCardHeadCopy">
+                <div className="webCodexCardLabel">Phone</div>
+                <div className="webCodexCardTitle">Scan to open</div>
+              </div>
+              {phoneReady ? <div className="webCodexStatePill">Tailscale ready</div> : null}
+            </div>
 
-        {!tailscaleLoading && tailscale && tailscale.installed && tailscale.connected && tailscaleHost ? (
-          <>
-        <div className="aoCard">
-          <div className="aoCardHeader">
-            <div className="aoCardTitle">Access URL</div>
-          </div>
-          <div className="aoKvp">
-            <div className="aoKey">Tailscale</div>
-            <div className="aoKvpRight">
-              <code className="aoVal">{tailscaleWebUrl}</code>
-            </div>
-            <div className="aoKey">Tailscale IP</div>
-            <div className="aoKvpRight">
-              <code className="aoVal">{tailscaleWebUrlByIp || '(no Tailscale IPv4 found)'}</code>
-            </div>
-            <div className="aoKey">Tailscale Template</div>
-            <div className="aoKvpRight">
-              <code className="aoVal">{tailscaleTemplateUrl}</code>
-            </div>
-            <div className="aoKey">Local</div>
-            <div className="aoKvpRight">
-              <code className="aoVal">{appWebCodexUrl}</code>
-            </div>
-            <div className="aoKey">Tailscale WS</div>
-            <div className="aoKvpRight">
-              <code className="aoVal">{tailscaleWsUrl}</code>
-            </div>
-            <div className="aoKey">Local WS</div>
-            <div className="aoKvpRight">
-              <code className="aoVal">{appWsUrl}</code>
-            </div>
+            {phoneReady ? (
+              <div className="webCodexPhoneReady">
+                <div className="webCodexQrFrame">
+                  <WebCodexQrMorph ready={phoneReady} value={phoneUrl} size={qrSize} />
+                </div>
+                <div className="webCodexPhoneInfo">
+                  <div className="webCodexPhoneHost">{tailscaleIp || shortenHost(tailscaleHost)}</div>
+                  <code className="webCodexPhoneUrl">{phoneUrl}</code>
+                  {phoneDnsUrl && phoneIpUrl ? <div className="webCodexPhoneFallback">DNS {phoneDnsUrl}</div> : null}
+                </div>
+              </div>
+            ) : (
+              <div className="webCodexPhoneSetup">
+                <div className="webCodexQrFrame is-ambient">
+                  <WebCodexQrMorph ready={phoneReady} value={phoneUrl || localUrl} size={qrSize} />
+                </div>
+                <div className="webCodexPhoneInfo">
+                  <div className="webCodexPhoneHost">Phone</div>
+                  <div className="webCodexPhoneSetupText">
+                    Install Tailscale on this computer and your phone, then join the same tailnet.
+                  </div>
+                  <a
+                    className="webCodexCta webCodexInstallBtn"
+                    href={tailscale?.downloadUrl || 'https://tailscale.com/download'}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <span className="webCodexButtonLabel">Install Tailscale</span>
+                  </a>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="aoCard">
-          <div className="aoCardHeader">
-            <div className="aoCardTitle">How To Connect (Phone)</div>
-          </div>
-          <ol className="aoHint" style={{ margin: 0, paddingLeft: 18 }}>
-            <li>Start API Router (gateway on port <code>{gatewayPort}</code>) and keep this machine online.</li>
-            <li>Ensure phone + computer are logged into the same Tailscale account/tailnet.</li>
-            <li>Open <code>{tailscaleWebUrl}</code> on phone browser (or use <code>{tailscaleWebUrlByIp}</code>).</li>
-            <li>Paste Gateway Token, click Connect.</li>
-            <li>Use Codex on phone directly (threads, resume, slash, attachments, approvals).</li>
-          </ol>
-        </div>
-
-        <div className="aoCard">
-          <div className="aoCardHeader">
-            <div className="aoCardTitle">How To Connect (Desktop)</div>
-          </div>
-          <ol className="aoHint" style={{ margin: 0, paddingLeft: 18 }}>
-            <li>Real mode: open <code>{appWebCodexUrl}</code>.</li>
-            <li>Sandbox mode (read-only): open <code>{sandboxWebCodexUrl}</code>.</li>
-            <li>If using <code>5173</code>, keep Vite dev server running.</li>
-          </ol>
-        </div>
-
-          </>
-        ) : null}
-
-        <div className="aoCard">
-          <div className="aoCardHeader">
-            <div className="aoCardTitle">Notes</div>
-          </div>
-          <ul className="aoHint" style={{ margin: 0, paddingLeft: 18 }}>
-            <li>Web Codex runs independently at <code>/codex-web</code>, not inside the dashboard UI.</li>
-            <li>This tab now provides entry and setup guidance only (no embedded iframe).</li>
-            <li>Protocol switching is automatic: HTTP → WS, HTTPS → WSS.</li>
-            <li>Web Codex local storage is per browser/device: token, workspace, start folder, favorites, selected model, reasoning effort, current tab, fast mode, permission preset, live inspector, cached models, cached threads, last event cursor.</li>
-            <li>Web chat toggles should stay local to Web Codex; do not silently write <code>config.toml</code>.</li>
-          </ul>
-        </div>
-
-        <div className="aoCard">
-          <div className="aoCardHeader">
-            <div className="aoCardTitle">State Scope</div>
-          </div>
-          <ul className="aoHint" style={{ margin: 0, paddingLeft: 18 }}>
-            <li><strong>Web Codex local</strong>: saved in this browser/device only, applies immediately after refresh reopen.</li>
-            <li><strong>Codex default</strong>: if you ever add an explicit apply-default action later, that should write <code>config.toml</code> for terminal defaults on the next Codex launch.</li>
-            <li>Do not use normal Web toggles to silently change terminal defaults.</li>
-          </ul>
-        </div>
+        {tailscaleLoading ? <div className="aoHint">Checking Tailscale status...</div> : null}
       </div>
     </section>
   )

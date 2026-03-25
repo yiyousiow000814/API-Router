@@ -1,5 +1,5 @@
 use std::io::ErrorKind;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use serde_json::json;
 
@@ -8,7 +8,17 @@ pub(crate) struct PreparedGatewayListeners {
     pub(crate) listeners: Vec<(SocketAddr, std::net::TcpListener)>,
 }
 
-fn gateway_listen_addrs(listen_host: &str, listen_port: u16) -> anyhow::Result<Vec<SocketAddr>> {
+fn push_unique_addr(addrs: &mut Vec<SocketAddr>, addr: SocketAddr) {
+    if !addrs.contains(&addr) {
+        addrs.push(addr);
+    }
+}
+
+fn gateway_listen_addrs_with_overlays(
+    listen_host: &str,
+    listen_port: u16,
+    extra_ips: &[IpAddr],
+) -> anyhow::Result<Vec<SocketAddr>> {
     let primary: SocketAddr = format!("{listen_host}:{listen_port}").parse()?;
     #[cfg(windows)]
     let mut addrs = vec![primary];
@@ -21,11 +31,24 @@ fn gateway_listen_addrs(listen_host: &str, listen_port: u16) -> anyhow::Result<V
             let wsl_host = crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(None);
             let parsed_wsl_ip: std::net::IpAddr = wsl_host.parse()?;
             if parsed_wsl_ip != primary.ip() {
-                addrs.push(SocketAddr::new(parsed_wsl_ip, listen_port));
+                push_unique_addr(&mut addrs, SocketAddr::new(parsed_wsl_ip, listen_port));
+            }
+            for extra_ip in extra_ips {
+                if *extra_ip != primary.ip() {
+                    push_unique_addr(&mut addrs, SocketAddr::new(*extra_ip, listen_port));
+                }
             }
         }
     }
     Ok(addrs)
+}
+
+fn gateway_listen_addrs(listen_host: &str, listen_port: u16) -> anyhow::Result<Vec<SocketAddr>> {
+    #[cfg(windows)]
+    let extra_ips = crate::commands::detected_tailscale_ipv4_addrs();
+    #[cfg(not(windows))]
+    let extra_ips: Vec<IpAddr> = Vec::new();
+    gateway_listen_addrs_with_overlays(listen_host, listen_port, &extra_ips)
 }
 
 fn persist_gateway_runtime_port(
@@ -131,12 +154,25 @@ pub(crate) fn prepare_gateway_listeners(
 
 #[cfg(test)]
 mod tests {
-    use super::gateway_listen_addrs;
+    use super::{gateway_listen_addrs, gateway_listen_addrs_with_overlays};
 
     #[test]
     fn local_bind_keeps_primary_listener() {
         let addrs = gateway_listen_addrs("127.0.0.1", 4000).unwrap();
         assert!(!addrs.is_empty());
         assert_eq!(addrs[0].to_string(), "127.0.0.1:4000");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_bind_adds_tailscale_overlay_listener() {
+        let overlays = vec!["100.64.208.117".parse().unwrap()];
+        let addrs = gateway_listen_addrs_with_overlays("127.0.0.1", 4000, &overlays).unwrap();
+        assert!(addrs
+            .iter()
+            .any(|addr| addr.to_string() == "127.0.0.1:4000"));
+        assert!(addrs
+            .iter()
+            .any(|addr| addr.to_string() == "100.64.208.117:4000"));
     }
 }

@@ -1,5 +1,13 @@
 import type { Config, Status } from './types'
 
+export const devTailscaleStatus = {
+  installed: true,
+  connected: true,
+  dnsName: 'desktop-kk6sa2d-1.tail997985.ts.net',
+  ipv4: ['100.64.208.117'],
+  downloadUrl: 'https://tailscale.com/download',
+} as const
+
 export type SpendHistoryRow = {
   provider: string
   api_key_ref?: string | null
