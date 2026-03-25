@@ -81,18 +81,18 @@ describe("threadListView", () => {
     };
   }
 
-  it("builds stable workspace entries grouped by label", () => {
+  it("builds stable workspace entries grouped by first visible order", () => {
     const entries = buildWorkspaceEntries(
       [
-        { id: "1", workspaceLabel: "WSL2" },
-        { id: "2", workspaceLabel: "WIN" },
-        { id: "3", workspaceLabel: "wsl2" },
+        { id: "2", workspaceLabel: "zzz-project" },
+        { id: "1", workspaceLabel: "aaa-project" },
+        { id: "3", workspaceLabel: "AAA-project" },
       ],
       (thread) => thread.workspaceLabel
     );
     expect(entries.map(([label, items]) => [label, items.map((item) => item.id)])).toEqual([
-      ["WIN", ["2"]],
-      ["WSL2", ["1", "3"]],
+      ["zzz-project", ["2"]],
+      ["aaa-project", ["1", "3"]],
     ]);
   });
 

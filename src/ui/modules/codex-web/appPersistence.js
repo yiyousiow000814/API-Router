@@ -20,11 +20,19 @@ export function relativeTimeLabel(input) {
     ts = Date.parse(String(input));
   }
   if (!Number.isFinite(ts)) return "";
-  const deltaSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (deltaSec < 86400) return "today";
-  if (deltaSec < 2592000) return `${Math.floor(deltaSec / 86400)}d`;
-  if (deltaSec < 31536000) return `${Math.floor(deltaSec / 2592000)}m`;
-  return `${Math.floor(deltaSec / 31536000)}y`;
+  const now = new Date(Date.now());
+  const target = new Date(ts);
+  const startOfNow = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfTarget = new Date(
+    target.getFullYear(),
+    target.getMonth(),
+    target.getDate()
+  ).getTime();
+  const dayDiff = Math.max(0, Math.floor((startOfNow - startOfTarget) / 86400000));
+  if (dayDiff === 0) return "today";
+  if (dayDiff < 30) return `${dayDiff}d`;
+  if (dayDiff < 365) return `${Math.floor(dayDiff / 30)}m`;
+  return `${Math.floor(dayDiff / 365)}y`;
 }
 
 export function createAppPersistenceModule(deps) {

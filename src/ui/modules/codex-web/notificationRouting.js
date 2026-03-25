@@ -228,6 +228,45 @@ function extractNotificationTextPreview(value) {
   return "";
 }
 
+function isFilteredTestThreadCwd(raw) {
+  const text = String(raw || "").trim().replace(/\//g, "\\").toLowerCase();
+  return (
+    text.includes("\\.tmp-codex-web") ||
+    text.endsWith("\\usersyiyouapi-router") ||
+    text.endsWith("\\home\\yiyou\\.tmp-codex-web-live-sync-debug")
+  );
+}
+
+function isAuxiliaryThreadPreviewText(raw) {
+  const text = String(raw || "").trim().toLowerCase();
+  return (
+    text.startsWith("# agents.md instructions") ||
+    text.startsWith("<permissions instructions>") ||
+    text.startsWith("review the code changes against the base branch") ||
+    text.includes("<environment_context>") ||
+    text.includes("<turn_context>") ||
+    text.includes("another language model started to solve this problem") ||
+    text.includes("<user_action>") ||
+    text.includes("<turn_aborted>") ||
+    text === "say ok only" ||
+    text === "say ok only." ||
+    text.startsWith("reply with ok only.") ||
+    text.startsWith("reply with ok only [") ||
+    text.startsWith("reply with ok only. [") ||
+    text.startsWith("reply with exactly") ||
+    (text.startsWith("reply with ") &&
+      (text.includes(" only") || text.includes("nothing else"))) ||
+    text.startsWith("use the shell to ") ||
+    text.startsWith("sync smoke test") ||
+    text.startsWith("embedfix_") ||
+    text.startsWith("livefix_") ||
+    text.startsWith("histchk_") ||
+    text.startsWith("live_real_") ||
+    text.startsWith("livee2e") ||
+    text.startsWith("zxqw_")
+  );
+}
+
 export function synthesizeProvisionalThreadItem(
   notification,
   fallbackWorkspace = "windows",
@@ -251,6 +290,9 @@ export function synthesizeProvisionalThreadItem(
     extractNotificationTextPreview(thread) ||
     extractNotificationTextPreview(params) ||
     "";
+  if (isFilteredTestThreadCwd(cwd) || isAuxiliaryThreadPreviewText(preview)) {
+    return null;
+  }
   const status = readNotificationStatus(record);
   const updatedAt = Number.isFinite(nowMs) ? nowMs : Date.now();
   const nextItem = {

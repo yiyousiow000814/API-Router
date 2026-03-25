@@ -102,4 +102,25 @@ describe("notificationRouting", () => {
       title: "build exe",
     });
   });
+
+  it("drops temporary .tmp codex-web threads from live notifications", () => {
+    const item = synthesizeProvisionalThreadItem(
+      {
+        method: "codex/event/response_item",
+        params: {
+          cwd: "C:\\Users\\yiyou\\API-Router\\.tmp-codex-web-real-send-3844e4a6",
+          payload: {
+            type: "message",
+            role: "user",
+            thread_id: "thread-tmp",
+            content: [{ type: "input_text", text: "Reply with OK only. [codex-web-real-send]" }],
+          },
+        },
+      },
+      "windows",
+      1742340000000
+    );
+
+    expect(item).toBeNull();
+  });
 });

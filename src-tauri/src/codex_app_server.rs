@@ -113,6 +113,7 @@ struct RolloutTrackedFile {
     offset: u64,
     partial_line: String,
     drop_first_partial_line: bool,
+    source_timestamp: Option<Value>,
     thread_id: Option<String>,
     cwd: Option<String>,
     pending_calls: HashMap<String, RolloutPendingCall>,
@@ -272,6 +273,7 @@ impl RolloutTrackedFile {
             offset,
             partial_line: String::new(),
             drop_first_partial_line: offset > 0,
+            source_timestamp: None,
             thread_id: None,
             cwd: None,
             pending_calls: HashMap::new(),
@@ -303,6 +305,7 @@ impl RolloutTrackedFile {
             self.offset = 0;
             self.partial_line.clear();
             self.drop_first_partial_line = false;
+            self.source_timestamp = None;
             self.cwd = None;
             self.pending_calls.clear();
             self.recent_line_hashes.clear();
@@ -374,6 +377,10 @@ impl RolloutTrackedFile {
         let Some(payload) = object.get("payload").and_then(Value::as_object) else {
             return Vec::new();
         };
+        self.source_timestamp = object
+            .get("timestamp")
+            .cloned()
+            .or_else(|| payload.get("timestamp").cloned());
         match record_type {
             "session_meta" => {
                 self.thread_id = payload
@@ -401,6 +408,10 @@ impl RolloutTrackedFile {
         let Some(root) = notification.as_object_mut() else {
             return;
         };
+        if let Some(timestamp) = self.source_timestamp.as_ref() {
+            root.entry("timestamp".to_string())
+                .or_insert_with(|| timestamp.clone());
+        }
         let params = if let Some(params) = root.get_mut("params").and_then(Value::as_object_mut) {
             Some(params)
         } else {
@@ -419,6 +430,11 @@ impl RolloutTrackedFile {
         params
             .entry("path".to_string())
             .or_insert_with(|| Value::String(rollout_path));
+        if let Some(timestamp) = self.source_timestamp.as_ref() {
+            params
+                .entry("timestamp".to_string())
+                .or_insert_with(|| timestamp.clone());
+        }
         if let Some(cwd) = self.cwd.as_deref() {
             params
                 .entry("cwd".to_string())
@@ -1389,15 +1405,6 @@ pub async fn replay_notifications_since_in_home(
     let guard = map.lock().await;
     let Some(st) = guard.get(key.as_ref()) else {
         drop(guard);
-        push_debug_event(
-            "app.notification.replay.empty_home",
-            serde_json::json!({
-                "home": key.as_ref(),
-                "sinceEventId": since_event_id,
-                "max": cap,
-            }),
-        )
-        .await;
         return (Vec::new(), None, None, false);
     };
     let first = st.items.front().map(|(id, _)| *id);
@@ -1417,19 +1424,21 @@ pub async fn replay_notifications_since_in_home(
     }
     let out_len = out.len();
     drop(guard);
-    push_debug_event(
-        "app.notification.replay",
-        serde_json::json!({
-            "home": key.as_ref(),
-            "sinceEventId": since_event_id,
-            "max": cap,
-            "count": out_len,
-            "firstEventId": first,
-            "lastEventId": last,
-            "gap": gap,
-        }),
-    )
-    .await;
+    if out_len > 0 || gap {
+        push_debug_event(
+            "app.notification.replay",
+            serde_json::json!({
+                "home": key.as_ref(),
+                "sinceEventId": since_event_id,
+                "max": cap,
+                "count": out_len,
+                "firstEventId": first,
+                "lastEventId": last,
+                "gap": gap,
+            }),
+        )
+        .await;
+    }
     (out, first, last, gap)
 }
 
@@ -2163,6 +2172,34 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_notifications_skip_debug_trace_for_empty_polls() {
+        let _guard = lock_tests();
+        let _home = isolate_default_codex_home();
+        _clear_notifications_for_test().await;
+
+        let (items, first, last, gap) = replay_notifications_since_in_home(None, 0, 10).await;
+        assert!(items.is_empty());
+        assert_eq!(first, None);
+        assert_eq!(last, None);
+        assert!(!gap);
+
+        let snapshot = debug_snapshot().await;
+        let recent = snapshot
+            .get("recent")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            recent.iter().all(|entry| {
+                entry.get("kind").and_then(Value::as_str) != Some("app.notification.replay")
+                    && entry.get("kind").and_then(Value::as_str)
+                        != Some("app.notification.replay.empty_home")
+            }),
+            "empty replay polls should not emit debug trace entries"
+        );
+    }
+
     #[cfg(target_os = "windows")]
     #[tokio::test(flavor = "current_thread")]
     async fn wsl_homes_route_requests_through_bridge_transport() {
@@ -2298,10 +2335,10 @@ mod tests {
         std::fs::write(
             &rollout,
             concat!(
-                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-live\"}}\n",
-                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_started\",\"thread_id\":\"thread-live\",\"turn_id\":\"turn-1\"}}\n",
-                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_reasoning\",\"thread_id\":\"thread-live\",\"text\":\"thinking live\"}}\n",
-                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_complete\",\"thread_id\":\"thread-live\",\"turn_id\":\"turn-1\"}}\n"
+                "{\"timestamp\":\"2026-03-17T12:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-live\"}}\n",
+                "{\"timestamp\":\"2026-03-17T12:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_started\",\"thread_id\":\"thread-live\",\"turn_id\":\"turn-1\"}}\n",
+                "{\"timestamp\":\"2026-03-17T12:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_reasoning\",\"thread_id\":\"thread-live\",\"text\":\"thinking live\"}}\n",
+                "{\"timestamp\":\"2026-03-17T12:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_complete\",\"thread_id\":\"thread-live\",\"turn_id\":\"turn-1\"}}\n"
             ),
         )
         .expect("write rollout");
@@ -2325,6 +2362,17 @@ mod tests {
         assert_eq!(
             items[2].get("method").and_then(Value::as_str),
             Some("codex/event/agent_reasoning")
+        );
+        assert_eq!(
+            items[0].get("timestamp").and_then(Value::as_str),
+            Some("2026-03-17T12:00:01Z")
+        );
+        assert_eq!(
+            items[0]
+                .get("params")
+                .and_then(|value| value.get("timestamp"))
+                .and_then(Value::as_str),
+            Some("2026-03-17T12:00:01Z")
         );
         assert_eq!(
             items[3].get("method").and_then(Value::as_str),

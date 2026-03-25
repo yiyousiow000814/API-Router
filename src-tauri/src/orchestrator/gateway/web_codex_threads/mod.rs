@@ -1,5 +1,6 @@
 use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
 use crate::orchestrator::gateway::web_codex_session_runtime::workspace_thread_runtime_snapshot;
+use chrono::DateTime;
 use serde_json::{json, Value};
 
 mod source;
@@ -41,6 +42,51 @@ fn current_unix_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|v| v.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn notification_timestamp_value(notification: &Value) -> Option<&Value> {
+    notification
+        .get("timestamp")
+        .or_else(|| {
+            notification
+                .get("params")
+                .and_then(|value| value.get("timestamp"))
+        })
+        .or_else(|| {
+            notification
+                .get("payload")
+                .and_then(|value| value.get("timestamp"))
+        })
+}
+
+fn parse_notification_timestamp_secs(notification: &Value) -> Option<i64> {
+    let value = notification_timestamp_value(notification)?;
+    match value {
+        Value::Number(number) => number.as_i64().map(|raw| {
+            if raw.abs() >= 1_000_000_000_000 {
+                raw / 1000
+            } else {
+                raw
+            }
+        }),
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if let Ok(raw) = trimmed.parse::<i64>() {
+                return Some(if raw.abs() >= 1_000_000_000_000 {
+                    raw / 1000
+                } else {
+                    raw
+                });
+            }
+            DateTime::parse_from_rfc3339(trimmed)
+                .ok()
+                .map(|value| value.timestamp())
+        }
+        _ => None,
+    }
 }
 
 fn threads_workspace_index() -> &'static std::sync::Mutex<ThreadsWorkspaceIndex> {
@@ -372,7 +418,7 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
             WorkspaceTarget::Wsl2 => "wsl2",
         },
         "source": "live-notification",
-        "updatedAt": current_unix_secs(),
+        "updatedAt": parse_notification_timestamp_secs(notification).unwrap_or_else(current_unix_secs),
     });
     if notification_is_subagent(notification) {
         if let Some(obj) = item.as_object_mut() {
@@ -954,6 +1000,38 @@ mod tests {
                 .iter()
                 .all(|item| item.get("id").and_then(Value::as_str) != Some("thread-agent-role")),
             "agent-role live notifications should not surface in sidebar"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_notification_hint_uses_notification_timestamp_for_updated_at() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+
+        upsert_thread_notification_hint(
+            WorkspaceTarget::Windows,
+            &serde_json::json!({
+                "method": "turn/started",
+                "timestamp": "2026-03-24T18:48:43.600Z",
+                "params": {
+                    "threadId": "thread-timestamp",
+                    "cwd": "C:\\Users\\yiyou\\API-Router",
+                    "rolloutPath": "C:\\Users\\yiyou\\.codex\\sessions\\2026\\03\\24\\rollout-thread-timestamp.jsonl"
+                }
+            }),
+        );
+
+        let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
+        let item = snapshot
+            .items
+            .iter()
+            .find(|candidate| {
+                candidate.get("id").and_then(Value::as_str) == Some("thread-timestamp")
+            })
+            .expect("thread timestamp item");
+        assert_eq!(
+            item.get("updatedAt").and_then(Value::as_i64),
+            Some(1774378123)
         );
     }
 

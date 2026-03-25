@@ -10,14 +10,7 @@ export function buildWorkspaceEntries(sourceItems, workspaceKeyOfThread) {
     if (!groupLabels.has(key)) groupLabels.set(key, keyLabel);
     groups.get(key).push(thread);
   }
-  return Array.from(groups.entries())
-    .map(([key, items]) => [groupLabels.get(key) || key, items, key])
-    .sort((a, b) =>
-      String(a[0] || "").localeCompare(String(b[0] || ""), undefined, {
-        sensitivity: "base",
-        numeric: true,
-      })
-    );
+  return Array.from(groups.entries()).map(([key, items]) => [groupLabels.get(key) || key, items, key]);
 }
 
 export function filterWorkspaceSectionThreads(threads, favoriteSet, query, workspaceLabel) {
