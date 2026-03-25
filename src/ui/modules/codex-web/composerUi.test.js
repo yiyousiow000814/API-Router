@@ -1382,7 +1382,8 @@ describe("composerUi", () => {
       status: "running",
     }, { threadId: "thread-1", timestamp: 100 });
 
-    expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain("Edited src/ui/modules/codex-web/chatTimeline.js");
+    expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain('<span class="msgToolPrefix">Edited </span>');
+    expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toContain('<code class="msgInlineCode">src/ui/modules/codex-web/chatTimeline.js</code>');
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).not.toContain("apply_patch");
   });
 
@@ -1523,7 +1524,8 @@ describe("composerUi", () => {
     }, { threadId: "thread-1", timestamp: 100 });
 
     const html = chatBox.querySelector("#runtimeToolInline").innerHTML;
-    expect(html).toContain("Edited src/ui/modules/codex-web/chatTimeline.test.js");
+    expect(html).toContain('<span class="msgToolPrefix">Edited </span>');
+    expect(html).toContain('<code class="msgInlineCode">src/ui/modules/codex-web/chatTimeline.test.js</code>');
     expect(html).toContain("runtimeToolItemDiffAdd");
     expect(html).toContain("runtimeToolItemDiffDel");
     expect(html).toContain("+11");
@@ -1574,7 +1576,8 @@ describe("composerUi", () => {
     }, { threadId: "thread-1", timestamp: 100 });
 
     const html = chatBox.querySelector("#runtimeToolInline").innerHTML;
-    expect(html).toContain("Edited 2 files");
+    expect(html).toContain('<span class="msgToolPrefix">Edited </span>');
+    expect(html).toContain(">2 files</span>");
     expect(html).toContain("runtimeToolItemDiffAdd");
     expect(html).toContain("runtimeToolItemDiffDel");
   });

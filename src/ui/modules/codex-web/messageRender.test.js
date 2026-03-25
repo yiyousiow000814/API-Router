@@ -134,14 +134,23 @@ describe("messageRender", () => {
   it("renders apply_patch summaries with colored diff counts", () => {
     const html = renderToolSummaryHtml("Edited 2 files (+2 -0)");
     expect(html).toContain('class="msgToolLine state-complete icon-patch"');
-    expect(html).toContain("Edited 2 files");
+    expect(html).toContain('<span class="msgToolPrefix">Edited </span>');
+    expect(html).toContain(">2 files</span>");
     expect(html).toContain('class="msgToolDiffAdd">+2</span>');
+    expect(html).toContain('class="msgToolDiffDel">-0</span>');
+  });
+
+  it("renders single-file apply_patch summaries with a plain prefix and coded path", () => {
+    const html = renderToolSummaryHtml("Edited `src/ui/modules/codex-web/composerUi.js` (+42 -0)");
+    expect(html).toContain('<span class="msgToolPrefix">Edited </span>');
+    expect(html).toContain('<code class="msgInlineCode">src/ui/modules/codex-web/composerUi.js</code>');
+    expect(html).toContain('class="msgToolDiffAdd">+42</span>');
     expect(html).toContain('class="msgToolDiffDel">-0</span>');
   });
 
   it("renders searched web summaries with the search icon", () => {
     const html = renderToolSummaryHtml("Searched web for `openai codex previous messages animation final message divider`");
-    expect(html).toContain('class="msgToolLine state-complete icon-search"');
+    expect(html).toContain('class="msgToolLine state-complete icon-search mono"');
     expect(html).toContain("<code class=\"msgInlineCode\">openai codex previous messages animation final message divider</code>");
   });
 
@@ -171,6 +180,18 @@ describe("messageRender", () => {
     });
     expect(html).toContain('<span class="msgToolPrefix">Ran </span>');
     expect(html).toContain('<code class="msgInlineCode">git status --short</code>');
+  });
+
+  it("renders edited tool previews with a plain prefix and coded path", () => {
+    const html = renderStructuredToolPreviewHtml("Edited `src/ui/modules/codex-web/composerUi.js` (+42 -0)", {
+      className: "runtimeToolItemPreview",
+      moreClassName: "runtimeToolItemMeta",
+      diffPrefix: "runtimeToolItem",
+    });
+    expect(html).toContain('<span class="msgToolPrefix">Edited </span>');
+    expect(html).toContain('<code class="msgInlineCode">src/ui/modules/codex-web/composerUi.js</code>');
+    expect(html).toContain('class="runtimeToolItemDiffAdd">+42</span>');
+    expect(html).toContain('class="runtimeToolItemDiffDel">-0</span>');
   });
 
   it("unescapes escaped backticks in plain tool-like sentences", () => {

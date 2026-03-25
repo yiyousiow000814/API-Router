@@ -1243,7 +1243,11 @@ async fn push_notification(codex_home: Option<&str>, value: Value) {
     .await;
 }
 
-async fn poll_rollout_live_sync_in_home(codex_home: Option<&str>, force_poll: bool) {
+async fn poll_rollout_live_sync_in_home(
+    codex_home: Option<&str>,
+    force_discovery: bool,
+    force_poll_tracked: bool,
+) {
     let Some(sessions_root) = resolve_rollout_sessions_root(codex_home) else {
         return;
     };
@@ -1252,15 +1256,16 @@ async fn poll_rollout_live_sync_in_home(codex_home: Option<&str>, force_poll: bo
     let (run_discovery, run_poll) = {
         let mut guard = rollout_live_sync_map().lock().await;
         let state = guard.entry(key.clone()).or_default();
-        let run_discovery = should_run_live_sync_pass(
-            state.last_discovery_at,
-            now,
-            ROLLOUT_LIVE_SYNC_DISCOVERY_INTERVAL,
-        );
+        let run_discovery = force_discovery
+            || should_run_live_sync_pass(
+                state.last_discovery_at,
+                now,
+                ROLLOUT_LIVE_SYNC_DISCOVERY_INTERVAL,
+            );
         if run_discovery {
             state.last_discovery_at = Some(now);
         }
-        let run_poll = force_poll
+        let run_poll = force_poll_tracked
             || run_discovery
             || should_run_live_sync_pass(state.last_poll_at, now, ROLLOUT_LIVE_SYNC_POLL_INTERVAL);
         if run_poll {
@@ -1348,7 +1353,12 @@ pub async fn replay_notifications_since_in_home(
     max: usize,
 ) -> (Vec<Value>, Option<u64>, Option<u64>, bool) {
     let has_local_rollout_root = resolve_rollout_sessions_root(codex_home).is_some();
-    poll_rollout_live_sync_in_home(codex_home, true).await;
+    // Replay is a hot path for websocket subscriptions. Keep live sync opportunistic
+    // and let the poll interval decide when rollout files need to be touched instead
+    // of forcing a filesystem scan on every replay request.
+    // Replay should immediately drain already-tracked rollout files so freshly appended
+    // terminal events stay visible, but directory discovery can remain throttled.
+    poll_rollout_live_sync_in_home(codex_home, false, true).await;
     if !has_local_rollout_root {
         if let Some(result) = crate::codex_wsl_bridge::try_replay_notifications_since_in_home(
             codex_home,

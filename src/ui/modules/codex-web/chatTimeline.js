@@ -19,6 +19,7 @@ export function createChatTimelineModule(deps) {
     documentRef = document,
   } = deps;
   let archiveViewportAdjustToken = 0;
+  let lastCommentaryArchiveRenderSig = "";
 
   function pushLiveDebugEvent(kind, payload = {}) {
     if (!Array.isArray(state.liveDebugEvents)) state.liveDebugEvents = [];
@@ -102,6 +103,40 @@ export function createChatTimelineModule(deps) {
   function removeCommentaryArchiveMount() {
     const mount = byId("commentaryArchiveMount");
     mount?.remove?.();
+  }
+
+  function buildCommentaryArchiveRenderSig(archive, options = {}, box = null) {
+    const assistantCount = Array.from(box?.querySelectorAll?.(".assistant") || []).length;
+    return JSON.stringify({
+      inlineArchiveCount: Math.max(0, Number(state.activeThreadInlineCommentaryArchiveCount || 0)),
+      visible: state.activeThreadCommentaryArchiveVisible === true && Array.isArray(archive) && archive.length > 0,
+      expanded: state.activeThreadCommentaryArchiveExpanded === true,
+      assistantCount,
+      explicitAnchor: !!(options.anchorNode && options.anchorNode.parentElement === box),
+      archive: Array.isArray(archive)
+        ? archive.map((block) => ({
+            key: String(block?.key || ""),
+            text: String(block?.text || ""),
+            summaryOnly: block?.summaryOnly === true,
+            tools: Array.isArray(block?.tools) ? block.tools.map((tool) => String(tool || "")) : [],
+            plan: block?.plan
+              ? {
+                  threadId: String(block.plan.threadId || ""),
+                  turnId: String(block.plan.turnId || ""),
+                  title: String(block.plan.title || ""),
+                  explanation: String(block.plan.explanation || ""),
+                  deltaText: String(block.plan.deltaText || ""),
+                  steps: Array.isArray(block.plan.steps)
+                    ? block.plan.steps.map((step) => ({
+                        step: String(step?.step || ""),
+                        status: String(step?.status || ""),
+                      }))
+                    : [],
+                }
+              : null,
+          }))
+        : [],
+    });
   }
 
   function formatCommentaryArchiveSummary(commentaryCount, toolCount) {
@@ -274,6 +309,13 @@ export function createChatTimelineModule(deps) {
         })
       : [];
     const visible = state.activeThreadCommentaryArchiveVisible === true && archive.length > 0;
+    const renderSig = buildCommentaryArchiveRenderSig(archive, options, box);
+    const existingMount = byId("commentaryArchiveMount");
+    if (lastCommentaryArchiveRenderSig === renderSig) {
+      if ((!visible || inlineArchiveCount > 0) && !existingMount) return;
+      if (visible && inlineArchiveCount === 0 && existingMount) return;
+    }
+    lastCommentaryArchiveRenderSig = renderSig;
     removeCommentaryArchiveMount();
     if (!visible || inlineArchiveCount > 0) return;
 
@@ -457,6 +499,7 @@ export function createChatTimelineModule(deps) {
     if (overlay && overlay.parentElement === box) keep.push(overlay);
     box.replaceChildren(...keep);
     if (!preserveScroll) box.scrollTop = 0;
+    lastCommentaryArchiveRenderSig = "";
     state.activeThreadRenderSig = "";
     state.activeThreadMessages = [];
     if (!preservePendingTurn) {

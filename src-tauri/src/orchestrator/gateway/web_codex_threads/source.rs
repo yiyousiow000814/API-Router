@@ -12,12 +12,37 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use tokio::process::Command;
 
 const THREADS_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
 const THREADS_MAX_ITEMS: usize = 600;
 const WSL_SCAN_TIMEOUT_SECS: u64 = 5;
 const LOADED_THREAD_OVERLAY_MAX_ITEMS: usize = 48;
+
+#[derive(Clone)]
+struct SessionFileScanCacheEntry {
+    file_len: u64,
+    modified_unix_ms: u128,
+    scan: Option<SessionFileScan>,
+}
+
+#[derive(Clone)]
+struct HistoryPreviewMapCacheEntry {
+    file_len: u64,
+    modified_unix_ms: u128,
+    previews: HashMap<String, String>,
+}
+
+fn session_file_scan_cache() -> &'static Mutex<HashMap<PathBuf, SessionFileScanCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, SessionFileScanCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn history_preview_map_cache() -> &'static Mutex<HashMap<PathBuf, HistoryPreviewMapCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, HistoryPreviewMapCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ThreadFilterReason {
@@ -202,6 +227,7 @@ fn extract_user_preview_from_session_file(path: &Path) -> Option<String> {
     scan_session_file(path).and_then(|scan| scan.preview)
 }
 
+#[derive(Clone)]
 struct SessionFileScan {
     id: String,
     cwd: String,
@@ -209,6 +235,16 @@ struct SessionFileScan {
     is_subagent: bool,
     preview: Option<String>,
     filter_reason: Option<ThreadFilterReason>,
+}
+
+fn session_file_fingerprint(path: &Path) -> Option<(u64, u128)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let modified_unix_ms = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    Some((metadata.len(), modified_unix_ms))
 }
 
 fn classify_thread_filter_reason(
@@ -234,6 +270,40 @@ fn classify_thread_filter_reason(
 }
 
 fn scan_session_file(path: &Path) -> Option<SessionFileScan> {
+    let normalized_path = path.to_path_buf();
+    let (file_len, modified_unix_ms) = session_file_fingerprint(path)?;
+    {
+        let cache = session_file_scan_cache();
+        let guard = match cache.lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        if let Some(entry) = guard.get(&normalized_path) {
+            if entry.file_len == file_len && entry.modified_unix_ms == modified_unix_ms {
+                return entry.scan.clone();
+            }
+        }
+    }
+    let scan = scan_session_file_uncached(path);
+    {
+        let cache = session_file_scan_cache();
+        let mut guard = match cache.lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        guard.insert(
+            normalized_path,
+            SessionFileScanCacheEntry {
+                file_len,
+                modified_unix_ms,
+                scan: scan.clone(),
+            },
+        );
+    }
+    scan
+}
+
+fn scan_session_file_uncached(path: &Path) -> Option<SessionFileScan> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
     let mut fallback_event_preview: Option<String> = None;
@@ -398,6 +468,7 @@ fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
         Ok(v) => v,
         Err(_) => return,
     };
+    let now_unix_secs = current_unix_secs();
     for entry in read.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -410,12 +481,29 @@ fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
             .map(|v| v.eq_ignore_ascii_case("jsonl"))
             .unwrap_or(false);
         if is_jsonl {
+            let updated_at = file_updated_unix_secs(&path);
+            if updated_at > 0 && now_unix_secs.saturating_sub(updated_at) > THREADS_MAX_AGE_SECS {
+                continue;
+            }
             out.push(path);
         }
     }
 }
 
 fn parse_history_preview_map(history_path: &Path) -> HashMap<String, String> {
+    let normalized_path = history_path.to_path_buf();
+    if let Some((file_len, modified_unix_ms)) = session_file_fingerprint(history_path) {
+        let cache = history_preview_map_cache();
+        let guard = match cache.lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        if let Some(entry) = guard.get(&normalized_path) {
+            if entry.file_len == file_len && entry.modified_unix_ms == modified_unix_ms {
+                return entry.previews.clone();
+            }
+        }
+    }
     let mut map = HashMap::new();
     let file = match File::open(history_path) {
         Ok(v) => v,
@@ -447,6 +535,21 @@ fn parse_history_preview_map(history_path: &Path) -> HashMap<String, String> {
                 map.entry(id.to_string()).or_insert(text);
             }
         }
+    }
+    if let Some((file_len, modified_unix_ms)) = session_file_fingerprint(history_path) {
+        let cache = history_preview_map_cache();
+        let mut guard = match cache.lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        guard.insert(
+            normalized_path,
+            HistoryPreviewMapCacheEntry {
+                file_len,
+                modified_unix_ms,
+                previews: map.clone(),
+            },
+        );
     }
     map
 }
@@ -490,8 +593,10 @@ import json
 import re
 from pathlib import Path
 import os
+import time
 
 MAX_ITEMS = {THREADS_MAX_ITEMS}
+MAX_AGE_SECS = {THREADS_MAX_AGE_SECS}
 
 def normalize_preview_text(raw):
     text = " ".join(str(raw).split()).strip()
@@ -610,6 +715,8 @@ for p in sessions_dir.rglob("*.jsonl"):
     saw_aux_prompt = False
     saw_non_aux_prompt = False
     updated_at = int(p.stat().st_mtime)
+    if updated_at > 0 and int(time.time()) - updated_at > MAX_AGE_SECS:
+        continue
     try:
         with p.open("r", encoding="utf-8", errors="ignore") as fh:
             for idx, line in enumerate(fh):
@@ -881,6 +988,26 @@ fn hydrate_missing_previews_from_session_files(items: &mut [Value]) {
     }
 }
 
+#[cfg(test)]
+fn clear_session_file_scan_cache_for_test() {
+    let cache = session_file_scan_cache();
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    guard.clear();
+}
+
+#[cfg(test)]
+fn clear_history_preview_map_cache_for_test() {
+    let cache = history_preview_map_cache();
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    guard.clear();
+}
+
 pub(super) fn normalize_thread_items_shape(items: &mut [Value]) {
     for item in items {
         let Some(obj) = item.as_object_mut() else {
@@ -1098,10 +1225,11 @@ fn filter_auxiliary_threads(items: &mut Vec<Value>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_threads_from_session_dir, filter_auxiliary_threads, find_rollout_path_in_items,
-        merge_items_without_duplicates, overlay_loaded_thread_runtime, parse_history_preview_map,
-        parse_wsl_thread_scan_output, scan_session_file, sort_threads_by_updated_desc,
-        ThreadFilterReason,
+        build_threads_from_session_dir, clear_history_preview_map_cache_for_test,
+        clear_session_file_scan_cache_for_test, collect_jsonl_files, filter_auxiliary_threads,
+        find_rollout_path_in_items, merge_items_without_duplicates, overlay_loaded_thread_runtime,
+        parse_history_preview_map, parse_wsl_thread_scan_output, scan_session_file,
+        sort_threads_by_updated_desc, ThreadFilterReason, THREADS_MAX_AGE_SECS,
     };
     use crate::codex_app_server;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
@@ -1202,6 +1330,66 @@ mod tests {
     }
 
     #[test]
+    fn collect_jsonl_files_skips_sessions_older_than_thread_window() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let recent = temp.path().join("recent.jsonl");
+        let old = temp.path().join("old.jsonl");
+        std::fs::write(&recent, "{}\n").expect("write recent");
+        std::fs::write(&old, "{}\n").expect("write old");
+        let old_secs = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(
+                (THREADS_MAX_AGE_SECS as u64) + 60,
+            ))
+            .expect("old timestamp");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&old)
+            .expect("open old")
+            .set_modified(old_secs)
+            .expect("set old modified");
+
+        let mut files = Vec::new();
+        collect_jsonl_files(temp.path(), &mut files);
+
+        assert!(files.contains(&recent));
+        assert!(!files.contains(&old));
+    }
+
+    #[test]
+    fn scan_session_file_cache_invalidates_when_file_changes() {
+        clear_session_file_scan_cache_for_test();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let session = temp.path().join("session.jsonl");
+        std::fs::write(
+            &session,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"cwd\":\"C:\\\\repo\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"first prompt\"}]}}\n"
+            ),
+        )
+        .expect("write session");
+
+        let first = scan_session_file(&session).expect("first scan");
+        assert_eq!(first.preview.as_deref(), Some("first prompt"));
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(
+            &session,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"cwd\":\"C:\\\\repo\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"second prompt with more text\"}]}}\n"
+            ),
+        )
+        .expect("rewrite session");
+
+        let second = scan_session_file(&session).expect("second scan");
+        assert_eq!(
+            second.preview.as_deref(),
+            Some("second prompt with more text")
+        );
+    }
+
+    #[test]
     fn build_threads_from_session_dir_prefers_live_rollout_over_imported_copy_for_same_thread() {
         let temp = tempfile::tempdir().expect("temp dir");
         let sessions_dir = temp.path().join(".codex").join("sessions");
@@ -1251,6 +1439,37 @@ mod tests {
         assert_eq!(
             preview_map.get("thread-1").map(String::as_str),
             Some("old preview")
+        );
+    }
+
+    #[test]
+    fn parse_history_preview_map_cache_invalidates_when_file_changes() {
+        clear_history_preview_map_cache_for_test();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let history_path = temp.path().join("history.jsonl");
+        std::fs::write(
+            &history_path,
+            "{\"session_id\":\"thread-1\",\"text\":\"preview one\"}\n",
+        )
+        .expect("write history");
+
+        let first = parse_history_preview_map(&history_path);
+        assert_eq!(
+            first.get("thread-1").map(String::as_str),
+            Some("preview one")
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(
+            &history_path,
+            "{\"session_id\":\"thread-1\",\"text\":\"preview two\"}\n",
+        )
+        .expect("rewrite history");
+
+        let second = parse_history_preview_map(&history_path);
+        assert_eq!(
+            second.get("thread-1").map(String::as_str),
+            Some("preview two")
         );
     }
 

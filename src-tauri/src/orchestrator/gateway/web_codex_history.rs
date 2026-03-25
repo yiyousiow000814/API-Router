@@ -321,6 +321,14 @@ mod tests {
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
     use std::io::Write;
 
+    fn lock_history_test_globals() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        match LOCK.get_or_init(|| std::sync::Mutex::new(())).lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        }
+    }
+
     struct EnvGuard {
         key: &'static str,
         prev: Option<String>,
@@ -496,6 +504,7 @@ mod tests {
 
     #[test]
     fn history_page_cache_reuses_parsed_turns_across_pages() {
+        let _guard = lock_history_test_globals();
         _clear_history_turns_cache_for_test();
         reset_history_parse_counter();
         let rollout = write_rollout(&[
@@ -559,6 +568,7 @@ mod tests {
 
     #[test]
     fn history_page_reparses_incomplete_rollout_even_when_file_key_is_unchanged() {
+        let _guard = lock_history_test_globals();
         _clear_history_turns_cache_for_test();
         reset_history_parse_counter();
         let rollout = tempfile::NamedTempFile::new().expect("temp rollout");

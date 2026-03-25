@@ -582,15 +582,30 @@ function renderDiffSummaryHtml(additions, deletions, prefix = "msgTool") {
   );
 }
 
+function renderEditedToolPreviewHtml(text, options = {}) {
+  const edited = parseEditedToolSummary(text);
+  if (!edited) return null;
+  const className = String(options.className || "").trim();
+  const classAttr = className ? ` class="${escapeHtml(className)}"` : "";
+  const prefixHtml = '<span class="msgToolPrefix">Edited </span>';
+  const previewHtml = edited.mode === "single"
+    ? `<code class="msgInlineCode">${escapeHtml(String(edited.path || "").trim())}</code>`
+    : `<span>${escapeHtml(`${String(edited.fileCount || 0)} files`)}</span>`;
+  const diffHtml = renderDiffSummaryHtml(
+    edited.additions,
+    edited.deletions,
+    String(options.diffPrefix || "msgTool")
+  );
+  const diffSpacer = diffHtml ? " " : "";
+  return `<span${classAttr}>${prefixHtml}${previewHtml}${diffSpacer}${diffHtml}</span>`;
+}
+
 export function renderToolPreviewHtml(text, options = {}) {
   const source = String(text || "").trim();
   const className = String(options.className || "").trim();
-  const edited = parseEditedToolSummary(source);
-  if (edited) {
-    const label = escapeHtml(edited.label || source);
-    const diffHtml = renderDiffSummaryHtml(edited.additions, edited.deletions, String(options.diffPrefix || "msgTool"));
-    const classAttr = className ? ` class="${escapeHtml(className)}"` : "";
-    return `<span${classAttr}>${label}${diffHtml ? ` ${diffHtml}` : ""}</span>`;
+  const editedHtml = renderEditedToolPreviewHtml(source, options);
+  if (editedHtml) {
+    return editedHtml;
   }
   if (options.code === true) {
     return `<code class="msgInlineCode">${escapeHtml(source)}</code>`;

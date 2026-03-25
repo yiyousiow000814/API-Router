@@ -28,6 +28,7 @@ export function createComposerUiModule(deps) {
   const MAX_VISIBLE_ACTIVE_COMMANDS = 3;
   const animatedRuntimeEntryKeys = new Set();
   const animatedRuntimePlanKeys = new Set();
+  let lastRuntimePanelsRenderSig = "";
 
   function normalizeRunningState(value, fallback = "complete") {
     const normalized = normalizeType(value);
@@ -512,6 +513,46 @@ export function createComposerUiModule(deps) {
           tone: fallbackActivity.tone || "running",
         }
       : null;
+    const runtimeRenderSig = JSON.stringify({
+      threadId: String(state.activeThreadId || ""),
+      inChat,
+      commands: commands.map((entry) => ({
+        key: String(entry?.key || ""),
+        state: String(entry?.state || ""),
+        text: String(entry?.text || ""),
+        label: String(entry?.label || ""),
+        detail: String(entry?.detail || ""),
+        icon: String(entry?.icon || ""),
+      })),
+      plan: plan
+        ? {
+            threadId: String(plan.threadId || ""),
+            turnId: String(plan.turnId || ""),
+            title: String(plan.title || ""),
+            explanation: String(plan.explanation || ""),
+            deltaText: String(plan.deltaText || ""),
+            steps: Array.isArray(plan.steps)
+              ? plan.steps.map((step) => ({
+                  step: String(step?.step || ""),
+                  status: String(step?.status || ""),
+                }))
+              : [],
+          }
+        : null,
+      thinkingText,
+      activity: activity
+        ? {
+            threadId: String(activity.threadId || ""),
+            title: String(activity.title || ""),
+            detail: String(activity.detail || ""),
+            tone: String(activity.tone || ""),
+          }
+        : null,
+      pendingThreadId: String(state.activeThreadPendingTurnThreadId || ""),
+      pendingTurnRunning: state.activeThreadPendingTurnRunning === true,
+    });
+    if (lastRuntimePanelsRenderSig === runtimeRenderSig) return;
+    lastRuntimePanelsRenderSig = runtimeRenderSig;
     const chatBox = byId("chatBox");
     let chatMount = null;
     let planNode = null;
@@ -586,6 +627,7 @@ export function createComposerUiModule(deps) {
     state.activeThreadActivity = null;
     state.activeThreadActiveCommands = [];
     state.activeThreadPlan = null;
+    lastRuntimePanelsRenderSig = "";
     renderRuntimePanels();
   }
 

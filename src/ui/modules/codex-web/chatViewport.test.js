@@ -75,12 +75,12 @@ describe("chatViewport", () => {
     expect(btn.parentElement).toBe(panel);
   });
 
-  it("shows the jump button as soon as chat is no longer sticky", () => {
+  it("shows the jump button when chat is non-sticky and meaningfully away from bottom", () => {
     const toggles = [];
     const attrs = [];
     const chatBox = {
       scrollHeight: 1200,
-      scrollTop: 820,
+      scrollTop: 600,
       clientHeight: 250,
       children: [],
       appendChild(node) {
@@ -146,5 +146,78 @@ describe("chatViewport", () => {
     expect(attrs).toContainEqual(["aria-hidden", "false"]);
     expect(btn.disabled).toBe(false);
     expect(btn.tabIndex).toBe(0);
+  });
+
+  it("hides the jump button when chat is already near bottom even if sticky mode is off", () => {
+    const toggles = [];
+    const attrs = [];
+    const chatBox = {
+      scrollHeight: 1200,
+      scrollTop: 820,
+      clientHeight: 250,
+      children: [],
+      appendChild(node) {
+        node.parentElement = this;
+        this.children.push(node);
+      },
+    };
+    const btn = {
+      __wired: false,
+      parentElement: null,
+      onclick: null,
+      style: {},
+      disabled: false,
+      tabIndex: 0,
+      classList: {
+        toggle(name, value) {
+          toggles.push([name, value]);
+        },
+      },
+      setAttribute(name, value) {
+        attrs.push([name, value]);
+      },
+      blur() {},
+    };
+    const state = {
+      chatShouldStickToBottom: false,
+    };
+    const module = createChatViewportModule({
+      state,
+      byId(id) {
+        if (id === "chatBox") return chatBox;
+        if (id === "scrollToBottomBtn") return btn;
+        return null;
+      },
+      dbgSet() {},
+      documentRef: {
+        activeElement: null,
+        createElement() {
+          return {
+            id: "",
+            className: "",
+            parentElement: null,
+            children: [],
+            appendChild(node) {
+              node.parentElement = this;
+              this.children.push(node);
+            },
+          };
+        },
+      },
+      windowRef: {},
+      requestAnimationFrameRef(callback) {
+        return callback(0);
+      },
+      cancelAnimationFrameRef() {},
+      CHAT_LIVE_FOLLOW_MAX_STEP_PX: 64,
+      CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS: 66,
+    });
+
+    module.updateScrollToBottomBtn();
+
+    expect(toggles).toContainEqual(["show", false]);
+    expect(attrs).toContainEqual(["aria-hidden", "true"]);
+    expect(btn.disabled).toBe(true);
+    expect(btn.tabIndex).toBe(-1);
   });
 });
