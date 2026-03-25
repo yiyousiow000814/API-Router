@@ -5,6 +5,8 @@ use serde_json::{json, Value};
 
 mod source;
 
+type JsonMap = serde_json::Map<String, Value>;
+
 use self::source::{
     find_rollout_path_in_items, has_missing_session_rollout_path, is_auxiliary_thread_preview_text,
     is_filtered_test_thread_cwd, merge_items_without_duplicates, normalize_thread_items_shape,
@@ -44,23 +46,7 @@ fn current_unix_secs() -> i64 {
         .unwrap_or(0)
 }
 
-fn notification_timestamp_value(notification: &Value) -> Option<&Value> {
-    notification
-        .get("timestamp")
-        .or_else(|| {
-            notification
-                .get("params")
-                .and_then(|value| value.get("timestamp"))
-        })
-        .or_else(|| {
-            notification
-                .get("payload")
-                .and_then(|value| value.get("timestamp"))
-        })
-}
-
-fn parse_notification_timestamp_secs(notification: &Value) -> Option<i64> {
-    let value = notification_timestamp_value(notification)?;
+fn parse_timestamp_secs(value: &Value) -> Option<i64> {
     match value {
         Value::Number(number) => number.as_i64().map(|raw| {
             if raw.abs() >= 1_000_000_000_000 {
@@ -86,6 +72,122 @@ fn parse_notification_timestamp_secs(notification: &Value) -> Option<i64> {
                 .map(|value| value.timestamp())
         }
         _ => None,
+    }
+}
+
+struct NotificationScopes<'a> {
+    notification: &'a Value,
+    params: Option<&'a JsonMap>,
+    thread: Option<&'a JsonMap>,
+    item: Option<&'a JsonMap>,
+    payload: Option<&'a JsonMap>,
+    method_lower: String,
+}
+
+impl<'a> NotificationScopes<'a> {
+    fn new(notification: &'a Value) -> Self {
+        let params = notification
+            .get("params")
+            .and_then(Value::as_object)
+            .or_else(|| notification.get("payload").and_then(Value::as_object));
+        let thread = params.and_then(|map| map.get("thread").and_then(Value::as_object));
+        let item = params
+            .and_then(|map| map.get("item").and_then(Value::as_object))
+            .or_else(|| params.and_then(|map| map.get("payload").and_then(Value::as_object)));
+        let payload = params
+            .and_then(|map| map.get("payload").and_then(Value::as_object))
+            .or(item);
+        let method_lower = notification
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        Self {
+            notification,
+            params,
+            thread,
+            item,
+            payload,
+            method_lower,
+        }
+    }
+
+    fn first_non_empty_str(&self, objects: &[Option<&JsonMap>], keys: &[&str]) -> Option<String> {
+        objects.iter().flatten().find_map(|map| {
+            keys.iter()
+                .find_map(|key| map.get(*key).and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+    }
+
+    fn thread_id(&self) -> Option<String> {
+        self.first_non_empty_str(
+            &[self.params, self.item, self.payload],
+            &["threadId", "thread_id"],
+        )
+    }
+
+    fn rollout_path(&self) -> Option<String> {
+        self.first_non_empty_str(
+            &[self.params, self.thread, self.item, self.payload],
+            &["rolloutPath", "rollout_path", "path"],
+        )
+    }
+
+    fn cwd(&self) -> Option<String> {
+        self.first_non_empty_str(
+            &[self.params, self.thread, self.item, self.payload],
+            &["cwd"],
+        )
+    }
+
+    fn status(&self) -> Option<String> {
+        self.first_non_empty_str(&[self.params], &["status"])
+            .or_else(|| {
+                if self.method_lower.contains("turn/started") {
+                    Some("running".to_string())
+                } else if self.method_lower.contains("turn/completed")
+                    || self.method_lower.contains("turn/finished")
+                {
+                    Some("completed".to_string())
+                } else if self.method_lower.contains("turn/failed") {
+                    Some("failed".to_string())
+                } else if self.method_lower.contains("turn/cancelled") {
+                    Some("interrupted".to_string())
+                } else {
+                    None
+                }
+            })
+    }
+
+    fn preview(&self) -> Option<String> {
+        let preview = self
+            .payload
+            .and_then(|payload| payload.get("content").and_then(Value::as_array))
+            .and_then(|parts| {
+                parts.iter().find_map(|part| {
+                    part.get("text")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                })
+            })?;
+        if is_auxiliary_thread_preview_text(&preview) {
+            return None;
+        }
+        Some(preview)
+    }
+
+    fn timestamp_secs(&self) -> Option<i64> {
+        self.notification
+            .get("timestamp")
+            .or_else(|| self.params.and_then(|value| value.get("timestamp")))
+            .or_else(|| self.payload.and_then(|value| value.get("timestamp")))
+            .and_then(parse_timestamp_secs)
     }
 }
 
@@ -267,144 +369,13 @@ fn notification_is_subagent(notification: &Value) -> bool {
     scan(params, 0)
 }
 
-fn notification_thread_id(notification: &Value) -> Option<String> {
-    let params = notification
-        .get("params")
-        .and_then(Value::as_object)
-        .or_else(|| notification.get("payload").and_then(Value::as_object));
-    let direct = params
-        .and_then(|map| map.get("threadId").and_then(Value::as_str))
-        .or_else(|| params.and_then(|map| map.get("thread_id").and_then(Value::as_str)));
-    if let Some(thread_id) = direct {
-        return Some(thread_id.trim().to_string()).filter(|value| !value.is_empty());
-    }
-    params
-        .and_then(|map| map.get("item").and_then(Value::as_object))
-        .or_else(|| params.and_then(|map| map.get("payload").and_then(Value::as_object)))
-        .and_then(|item| {
-            item.get("threadId")
-                .and_then(Value::as_str)
-                .or_else(|| item.get("thread_id").and_then(Value::as_str))
-        })
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn notification_rollout_path(notification: &Value) -> Option<String> {
-    let params = notification
-        .get("params")
-        .and_then(Value::as_object)
-        .or_else(|| notification.get("payload").and_then(Value::as_object));
-    let thread = params.and_then(|map| map.get("thread").and_then(Value::as_object));
-    let item = params
-        .and_then(|map| map.get("item").and_then(Value::as_object))
-        .or_else(|| params.and_then(|map| map.get("payload").and_then(Value::as_object)));
-    [
-        params.and_then(|map| map.get("rolloutPath").and_then(Value::as_str)),
-        params.and_then(|map| map.get("rollout_path").and_then(Value::as_str)),
-        params.and_then(|map| map.get("path").and_then(Value::as_str)),
-        thread.and_then(|map| map.get("rolloutPath").and_then(Value::as_str)),
-        thread.and_then(|map| map.get("rollout_path").and_then(Value::as_str)),
-        thread.and_then(|map| map.get("path").and_then(Value::as_str)),
-        item.and_then(|map| map.get("rolloutPath").and_then(Value::as_str)),
-        item.and_then(|map| map.get("rollout_path").and_then(Value::as_str)),
-        item.and_then(|map| map.get("path").and_then(Value::as_str)),
-    ]
-    .into_iter()
-    .flatten()
-    .map(str::trim)
-    .find(|value| !value.is_empty())
-    .map(str::to_string)
-}
-
-fn notification_cwd(notification: &Value) -> Option<String> {
-    let params = notification
-        .get("params")
-        .and_then(Value::as_object)
-        .or_else(|| notification.get("payload").and_then(Value::as_object));
-    let thread = params.and_then(|map| map.get("thread").and_then(Value::as_object));
-    let item = params
-        .and_then(|map| map.get("item").and_then(Value::as_object))
-        .or_else(|| params.and_then(|map| map.get("payload").and_then(Value::as_object)));
-    [
-        params.and_then(|map| map.get("cwd").and_then(Value::as_str)),
-        thread.and_then(|map| map.get("cwd").and_then(Value::as_str)),
-        item.and_then(|map| map.get("cwd").and_then(Value::as_str)),
-    ]
-    .into_iter()
-    .flatten()
-    .map(str::trim)
-    .find(|value| !value.is_empty())
-    .map(str::to_string)
-}
-
-fn notification_status(notification: &Value) -> Option<String> {
-    let method = notification
-        .get("method")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let params = notification
-        .get("params")
-        .and_then(Value::as_object)
-        .or_else(|| notification.get("payload").and_then(Value::as_object));
-    let status = params
-        .and_then(|map| map.get("status").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    status.or_else(|| {
-        if method.contains("turn/started") {
-            Some("running".to_string())
-        } else if method.contains("turn/completed") || method.contains("turn/finished") {
-            Some("completed".to_string())
-        } else if method.contains("turn/failed") {
-            Some("failed".to_string())
-        } else if method.contains("turn/cancelled") {
-            Some("interrupted".to_string())
-        } else {
-            None
-        }
-    })
-}
-
-fn notification_preview(notification: &Value) -> Option<String> {
-    let payload = notification
-        .get("params")
-        .and_then(Value::as_object)
-        .and_then(|map| map.get("payload"))
-        .or_else(|| {
-            notification
-                .get("params")
-                .and_then(Value::as_object)
-                .and_then(|map| map.get("item"))
-        })
-        .and_then(Value::as_object)?;
-    let preview = payload
-        .get("content")
-        .and_then(Value::as_array)
-        .and_then(|parts| {
-            parts.iter().find_map(|part| {
-                part.get("text")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string)
-            })
-        })?;
-    if is_auxiliary_thread_preview_text(&preview) {
-        return None;
-    }
-    Some(preview)
-}
-
 pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notification: &Value) {
-    let Some(thread_id) = notification_thread_id(notification) else {
+    let scopes = NotificationScopes::new(notification);
+    let Some(thread_id) = scopes.thread_id() else {
         return;
     };
-    if notification_cwd(notification)
+    let cwd = scopes.cwd();
+    if cwd
         .as_deref()
         .map(is_filtered_test_thread_cwd)
         .unwrap_or(false)
@@ -418,30 +389,30 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
             WorkspaceTarget::Wsl2 => "wsl2",
         },
         "source": "live-notification",
-        "updatedAt": parse_notification_timestamp_secs(notification).unwrap_or_else(current_unix_secs),
+        "updatedAt": scopes.timestamp_secs().unwrap_or_else(current_unix_secs),
     });
     if notification_is_subagent(notification) {
         if let Some(obj) = item.as_object_mut() {
             obj.insert("isSubagent".to_string(), Value::Bool(true));
         }
     }
-    if let Some(path) = notification_rollout_path(notification) {
+    if let Some(path) = scopes.rollout_path() {
         if let Some(obj) = item.as_object_mut() {
             obj.insert("path".to_string(), Value::String(path));
         }
     }
-    if let Some(cwd) = notification_cwd(notification) {
+    if let Some(cwd) = cwd {
         if let Some(obj) = item.as_object_mut() {
             obj.insert("cwd".to_string(), Value::String(cwd));
         }
     }
-    if let Some(preview) = notification_preview(notification) {
+    if let Some(preview) = scopes.preview() {
         if let Some(obj) = item.as_object_mut() {
             obj.insert("preview".to_string(), Value::String(preview.clone()));
             obj.insert("title".to_string(), Value::String(preview));
         }
     }
-    if let Some(status) = notification_status(notification) {
+    if let Some(status) = scopes.status() {
         if let Some(obj) = item.as_object_mut() {
             obj.insert("status".to_string(), json!({ "type": status }));
         }
