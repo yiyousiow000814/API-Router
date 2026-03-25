@@ -3,7 +3,8 @@ use axum::extract::{Path as AxumPath, Query};
 use serde::Deserialize;
 
 use crate::orchestrator::gateway::web_codex_session_manager::{
-    merge_runtime_thread_overlay, runtime_thread_path, runtime_thread_payload, CodexSessionManager,
+    merge_runtime_thread_overlay, runtime_thread_path, runtime_thread_payload,
+    thread_id_from_response, CodexSessionManager,
 };
 use crate::orchestrator::gateway::web_codex_thread_options::build_thread_resume_params;
 
@@ -180,24 +181,6 @@ fn build_threads_response_with_meta(items: Vec<Value>, meta: Value) -> Response 
     .into_response()
 }
 
-fn thread_id_from_create_response(value: &Value) -> Option<String> {
-    value
-        .get("id")
-        .and_then(Value::as_str)
-        .or_else(|| value.get("threadId").and_then(Value::as_str))
-        .or_else(|| value.get("thread_id").and_then(Value::as_str))
-        .or_else(|| {
-            value
-                .get("thread")
-                .and_then(Value::as_object)
-                .and_then(|thread| thread.get("id"))
-                .and_then(Value::as_str)
-        })
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
-}
-
 fn attach_rollout_path_to_create_response(mut value: Value, rollout_path: Option<&str>) -> Value {
     let Some(path) = rollout_path.map(str::trim).filter(|path| !path.is_empty()) else {
         return value;
@@ -224,7 +207,7 @@ fn synthesize_thread_list_item(
     create_response: &Value,
     runtime_response: Option<&Value>,
 ) -> Option<Value> {
-    let thread_id = thread_id_from_create_response(create_response)?;
+    let thread_id = thread_id_from_response(create_response)?;
     let runtime_thread = runtime_response.and_then(runtime_thread_payload);
     let path = runtime_thread_path(runtime_response.unwrap_or(create_response))
         .or_else(|| {
@@ -651,10 +634,7 @@ mod tests {
                 .and_then(Value::as_str),
             Some("C:\\temp\\rollout.jsonl")
         );
-        assert_eq!(
-            thread_id_from_create_response(&next).as_deref(),
-            Some("thread-1")
-        );
+        assert_eq!(thread_id_from_response(&next).as_deref(), Some("thread-1"));
     }
 
     #[test]

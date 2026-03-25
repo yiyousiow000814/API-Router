@@ -529,37 +529,25 @@ impl CodexSessionManager {
             )
             .map_err(|import_error| format!("import failed: {import_error}"))?;
         }
-
-        match self.request("thread/resume", params.clone()).await {
-            Ok(value) => {
-                record_runtime_thread_state(self.workspace_target, self.home_override(), &value);
-                Ok(value)
-            }
+        match resume_thread_once(self, &params).await {
+            Ok(value) => Ok(value),
             Err(first_error) => {
                 if !resume_error_looks_like_missing_rollout(&first_error) {
                     return Err(first_error);
                 }
 
                 if let Some(rollout_path) = known_rollout_path {
-                    match import_rollout_from_known_path(
+                    let imported = import_rollout_from_known_path(
                         self.home_override(),
                         thread_id,
                         self.workspace_target,
                         rollout_path,
-                    ) {
-                        Ok(true) => {
-                            let value = self.request("thread/resume", params.clone()).await?;
-                            record_runtime_thread_state(
-                                self.workspace_target,
-                                self.home_override(),
-                                &value,
-                            );
-                            return Ok(value);
-                        }
-                        Ok(false) => {}
-                        Err(import_error) => {
-                            return Err(format!("{first_error}; import failed: {import_error}"));
-                        }
+                    )
+                    .map_err(|import_error| {
+                        format!("{first_error}; import failed: {import_error}")
+                    })?;
+                    if imported {
+                        return resume_thread_once(self, &params).await;
                     }
                 }
 
@@ -571,15 +559,7 @@ impl CodexSessionManager {
                         continue;
                     }
                     let retry_manager = Self::new(Some(target));
-                    let value = retry_manager
-                        .request("thread/resume", params.clone())
-                        .await?;
-                    record_runtime_thread_state(
-                        retry_manager.workspace_target,
-                        retry_manager.home_override(),
-                        &value,
-                    );
-                    return Ok(value);
+                    return resume_thread_once(&retry_manager, &params).await;
                 }
 
                 Err(first_error)
@@ -599,22 +579,38 @@ fn unsupported_or_null_value(error: &str) -> Value {
     }
 }
 
-fn thread_id_from_response(value: &Value) -> Option<String> {
+async fn resume_thread_once(
+    manager: &CodexSessionManager,
+    params: &Value,
+) -> Result<Value, String> {
+    let value = manager.request("thread/resume", params.clone()).await?;
+    record_runtime_thread_state(manager.workspace_target, manager.home_override(), &value);
+    Ok(value)
+}
+
+fn read_non_empty_str(value: Option<&Value>) -> Option<String> {
     value
-        .get("id")
         .and_then(Value::as_str)
-        .or_else(|| value.get("threadId").and_then(Value::as_str))
-        .or_else(|| value.get("thread_id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn read_object_string_alias(map: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| read_non_empty_str(map.get(*key)))
+}
+
+pub(super) fn thread_id_from_response(value: &Value) -> Option<String> {
+    read_non_empty_str(value.get("id"))
+        .or_else(|| read_non_empty_str(value.get("threadId")))
+        .or_else(|| read_non_empty_str(value.get("thread_id")))
         .or_else(|| {
             value
                 .get("thread")
                 .and_then(Value::as_object)
-                .and_then(|thread| thread.get("id"))
-                .and_then(Value::as_str)
+                .and_then(|thread| read_non_empty_str(thread.get("id")))
         })
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
 }
 
 fn thread_start_requested_cwd(params: &Value) -> Option<String> {
@@ -740,21 +736,16 @@ fn record_notification_thread_state(
         .get("params")
         .and_then(Value::as_object)
         .or_else(|| notification.get("payload").and_then(Value::as_object));
-    let direct_thread_id = params
-        .and_then(|map| map.get("threadId").and_then(Value::as_str))
-        .or_else(|| params.and_then(|map| map.get("thread_id").and_then(Value::as_str)));
+    let direct_thread_id =
+        params.and_then(|map| read_object_string_alias(map, &["threadId", "thread_id"]));
     let nested_payload = params
         .and_then(|map| map.get("payload").and_then(Value::as_object))
         .or_else(|| params.and_then(|map| map.get("item").and_then(Value::as_object)));
     let thread_id = direct_thread_id.or_else(|| {
-        nested_payload.and_then(|payload| {
-            payload
-                .get("threadId")
-                .and_then(Value::as_str)
-                .or_else(|| payload.get("thread_id").and_then(Value::as_str))
-        })
+        nested_payload
+            .and_then(|payload| read_object_string_alias(payload, &["threadId", "thread_id"]))
     });
-    let Some(thread_id) = thread_id else {
+    let Some(thread_id) = thread_id.as_deref() else {
         return;
     };
     let method = notification
@@ -764,42 +755,39 @@ fn record_notification_thread_state(
         .to_ascii_lowercase();
     let thread = params.and_then(|map| map.get("thread").and_then(Value::as_object));
     let rollout_path = params
-        .and_then(|map| map.get("rolloutPath").and_then(Value::as_str))
-        .or_else(|| params.and_then(|map| map.get("rollout_path").and_then(Value::as_str)))
-        .or_else(|| params.and_then(|map| map.get("path").and_then(Value::as_str)))
-        .or_else(|| thread.and_then(|map| map.get("path").and_then(Value::as_str)));
+        .and_then(|map| read_object_string_alias(map, &["rolloutPath", "rollout_path", "path"]))
+        .or_else(|| thread.and_then(|map| read_object_string_alias(map, &["path"])));
     let cwd = params
-        .and_then(|map| map.get("cwd").and_then(Value::as_str))
-        .or_else(|| thread.and_then(|map| map.get("cwd").and_then(Value::as_str)));
+        .and_then(|map| read_object_string_alias(map, &["cwd"]))
+        .or_else(|| thread.and_then(|map| read_object_string_alias(map, &["cwd"])));
     let status = params
-        .and_then(|map| map.get("status").and_then(Value::as_str))
+        .and_then(|map| read_object_string_alias(map, &["status"]))
         .or_else(|| {
             if method.contains("turn/started") {
-                Some("running")
+                Some("running".to_string())
             } else if method.contains("turn/completed") || method.contains("turn/finished") {
-                Some("completed")
+                Some("completed".to_string())
             } else if method.contains("turn/failed") {
-                Some("failed")
+                Some("failed".to_string())
             } else if method.contains("turn/cancelled") {
-                Some("interrupted")
+                Some("interrupted".to_string())
             } else {
                 None
             }
         });
     let last_turn_id = params
-        .and_then(|map| map.get("turnId").and_then(Value::as_str))
-        .or_else(|| params.and_then(|map| map.get("turn_id").and_then(Value::as_str)))
-        .or_else(|| thread.and_then(|map| map.get("lastTurnId").and_then(Value::as_str)));
+        .and_then(|map| read_object_string_alias(map, &["turnId", "turn_id"]))
+        .or_else(|| thread.and_then(|map| read_object_string_alias(map, &["lastTurnId"])));
     upsert_workspace_thread_runtime(
         workspace_target,
         home_override,
         WorkspaceThreadRuntimeUpdate {
             thread_id,
-            cwd,
-            rollout_path,
-            status,
+            cwd: cwd.as_deref(),
+            rollout_path: rollout_path.as_deref(),
+            status: status.as_deref(),
             last_event_id: notification.get("eventId").and_then(Value::as_u64),
-            last_turn_id,
+            last_turn_id: last_turn_id.as_deref(),
         },
     );
 }

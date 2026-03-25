@@ -285,6 +285,66 @@ export function createComposerUiModule(deps) {
     };
   }
 
+  function normalizeActivity(activity, threadId) {
+    if (!activity) return null;
+    return {
+      threadId: String(activity.threadId || threadId || state.activeThreadId || ""),
+      title: activity.title || "",
+      detail: activity.detail || "",
+      tone: activity.tone || "running",
+    };
+  }
+
+  function resolveRuntimeActivity(threadId, options = {}) {
+    const currentThreadId = String(threadId || state.activeThreadId || "").trim();
+    const commands = Array.isArray(options.commands) ? options.commands : [];
+    const latestRunning = commands.length ? commands[commands.length - 1] : null;
+    const plan = options.plan || null;
+    const commentary = options.commentary || null;
+    const explicitActivity = options.explicitActivity || null;
+    const pendingThreadId = String(options.pendingThreadId || state.activeThreadPendingTurnThreadId || "").trim();
+    const pendingTurnRunning = options.pendingTurnRunning === true;
+    const pendingTurnActivity =
+      pendingTurnRunning && pendingThreadId && pendingThreadId === currentThreadId
+        ? {
+            threadId: currentThreadId,
+            title: "Thinking",
+            detail: "",
+            tone: "running",
+          }
+        : null;
+    return normalizeActivity(
+      pendingTurnActivity ||
+        explicitActivity ||
+        (latestRunning ? { threadId: currentThreadId, ...toActivityFromEntry(latestRunning) } : null) ||
+        (commentary
+          ? {
+              threadId: currentThreadId,
+              title: String(commentary.text || "").trim() ? "Thinking" : "Working",
+              detail: String(commentary.text || "").trim(),
+              tone: "running",
+            }
+          : null) ||
+        (plan
+          ? {
+              threadId: currentThreadId,
+              title: "Planning",
+              detail: plan.explanation || "",
+              tone: "running",
+            }
+          : null) ||
+        (options.allowIncompletePlaceholder === true
+          ? {
+              threadId: currentThreadId,
+              title: "Thinking",
+              detail: "",
+              tone: "running",
+            }
+          : null),
+      currentThreadId
+    );
+  }
+
   function renderActivityHtml(activity) {
     if (!activity) return "";
     const dots = '<span class="runtimeActivityDots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>';
@@ -491,28 +551,14 @@ export function createComposerUiModule(deps) {
     const explicitActivity = state.activeThreadActivity && state.activeThreadActivity.threadId === state.activeThreadId
       ? state.activeThreadActivity
       : null;
-    const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
-    const pendingTurnRunning = state.activeThreadPendingTurnRunning === true;
-    const pendingTurnActivity = pendingTurnRunning && pendingThreadId && pendingThreadId === String(state.activeThreadId || "").trim()
-      ? {
-          threadId: String(state.activeThreadId || ""),
-          title: "Thinking",
-          detail: "",
-          tone: "running",
-        }
-      : null;
-    const fallbackActivity = pendingTurnActivity
-      || explicitActivity
-      || (plan ? { threadId: state.activeThreadId, title: "Planning", detail: plan.explanation || "", tone: "running" } : null)
-      || (commands.length ? toActivityFromEntry(commands[commands.length - 1]) : null);
-    const activity = fallbackActivity
-      ? {
-          threadId: String(fallbackActivity.threadId || state.activeThreadId || ""),
-          title: fallbackActivity.title || "",
-          detail: fallbackActivity.detail || "",
-          tone: fallbackActivity.tone || "running",
-        }
-      : null;
+    const activity = resolveRuntimeActivity(state.activeThreadId, {
+      commands,
+      plan,
+      commentary,
+      explicitActivity,
+      pendingThreadId: state.activeThreadPendingTurnThreadId,
+      pendingTurnRunning: state.activeThreadPendingTurnRunning === true,
+    });
     const runtimeRenderSig = JSON.stringify({
       threadId: String(state.activeThreadId || ""),
       inChat,
@@ -707,34 +753,15 @@ export function createComposerUiModule(deps) {
     const commands = Array.isArray(state.activeThreadActiveCommands)
       ? state.activeThreadActiveCommands.filter((entry) => entry && entry.state === "running")
       : [];
-    const latestRunning = commands.length ? commands[commands.length - 1] : null;
-    if (latestRunning) {
-      setRuntimeActivity({ threadId: currentThreadId, ...toActivityFromEntry(latestRunning) });
-      return;
-    }
     const commentary = state.activeThreadCommentaryCurrent &&
       String(state.activeThreadCommentaryCurrent.threadId || "").trim() === currentThreadId
       ? state.activeThreadCommentaryCurrent
       : null;
-    if (commentary) {
-      setRuntimeActivity({
-        threadId: currentThreadId,
-        title: String(commentary.text || "").trim() ? "Thinking" : "Working",
-        detail: String(commentary.text || "").trim(),
-        tone: "running",
-      });
-      return;
-    }
-    if (plan) {
-      setRuntimeActivity({
-        threadId: currentThreadId,
-        title: "Planning",
-        detail: plan.explanation || "",
-        tone: "running",
-      });
-      return;
-    }
-    setRuntimeActivity(null);
+    setRuntimeActivity(resolveRuntimeActivity(currentThreadId, {
+      commands,
+      plan,
+      commentary,
+    }));
   }
 
   function syncRuntimeStateFromHistory(thread) {
@@ -791,36 +818,16 @@ export function createComposerUiModule(deps) {
     }
     assignActivePlan(plan);
     assignActiveCommands(commands);
-    if (latestRunning) {
-      assignRuntimeActivity({ threadId, ...toActivityFromEntry(latestRunning) });
-      renderRuntimePanels();
-      return;
-    }
     const commentary = state.activeThreadCommentaryCurrent &&
       String(state.activeThreadCommentaryCurrent.threadId || "").trim() === threadId
       ? state.activeThreadCommentaryCurrent
       : null;
-    if (commentary) {
-      assignRuntimeActivity({
-        threadId,
-        title: String(commentary.text || "").trim() ? "Thinking" : "Working",
-        detail: String(commentary.text || "").trim(),
-        tone: "running",
-      });
-      renderRuntimePanels();
-      return;
-    }
-    if (plan) {
-      assignRuntimeActivity({ threadId, title: "Thinking", detail: "", tone: "running" });
-      renderRuntimePanels();
-      return;
-    }
-    if (pageIncomplete && commands.length === 0) {
-      assignRuntimeActivity({ threadId, title: "Thinking", detail: "", tone: "running" });
-      renderRuntimePanels();
-      return;
-    }
-    assignRuntimeActivity(null);
+    assignRuntimeActivity(resolveRuntimeActivity(threadId, {
+      commands: latestRunning ? [latestRunning] : [],
+      plan,
+      commentary,
+      allowIncompletePlaceholder: pageIncomplete && commands.length === 0,
+    }));
     renderRuntimePanels();
   }
 
