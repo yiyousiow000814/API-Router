@@ -317,13 +317,20 @@ export function createChatViewportModule(deps) {
     const panel = box.parentElement || null;
     const panelRect = panel?.getBoundingClientRect?.();
     const chatRect = box.getBoundingClientRect?.();
+    const composer = panel?.querySelector?.(".composer");
+    const composerRect = composer?.getBoundingClientRect?.();
     const panelBottom = Number(panelRect?.bottom);
     const chatBottom = Number(chatRect?.bottom);
-    const overlayBottomPx =
+    const composerTop = Number(composerRect?.top);
+    const overlayFromChatPx =
       Number.isFinite(panelBottom) && Number.isFinite(chatBottom)
         ? Math.max(12, Math.round(panelBottom - chatBottom + 12))
         : 12;
-    btn.style.bottom = `${overlayBottomPx}px`;
+    const overlayFromComposerPx =
+      Number.isFinite(panelBottom) && Number.isFinite(composerTop)
+        ? Math.max(12, Math.round(panelBottom - composerTop + 14))
+        : 0;
+    btn.style.bottom = `${Math.max(overlayFromChatPx, overlayFromComposerPx)}px`;
   }
 
   return {

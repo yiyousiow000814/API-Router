@@ -437,6 +437,7 @@ export function createCodexWebComposition(deps) {
     state: deps.state,
     byId: deps.byId,
     installDebugAndE2E: debugTools.installDebugAndE2E,
+    installMobileViewportSync: deps.installMobileViewportSync,
     getEmbeddedToken: deps.getEmbeddedToken,
     localStorageRef,
     documentRef,

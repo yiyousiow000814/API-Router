@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
   <title>Web Codex</title>
   <style>
     :root {
@@ -27,6 +27,10 @@
       --scrollbar-size: 8px;
       --scrollbar-thumb: rgba(13, 18, 32, 0.32);
       --scrollbar-thumb-hover: rgba(13, 18, 32, 0.44);
+      --app-height: 100vh;
+      --visual-viewport-height: 100vh;
+      --keyboard-offset: 0px;
+      --composer-float-height: 148px;
 
       /* z-index scale (sequential, no gaps). */
       --z-chat-opening: 1;  /* "Opening chat..." overlay inside #chatBox only */
@@ -58,7 +62,11 @@
     }
     *::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 
-    html, body { height: 100%; min-height: 100vh; }
+    html, body {
+      height: 100%;
+      min-height: var(--app-height, 100vh);
+      overscroll-behavior: none;
+    }
     body {
       margin: 0;
       overflow: hidden;
@@ -71,10 +79,17 @@
       -webkit-font-smoothing: antialiased;
       text-rendering: optimizeLegibility;
     }
+    body.mobile-keyboard-open.floating-composer-layout {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      overflow: hidden;
+      touch-action: manipulation;
+    }
 
     .shell {
-      min-height: 100vh;
-      height: 100dvh;
+      min-height: var(--app-height, 100vh);
+      height: var(--app-height, 100dvh);
       display: grid;
       grid-template-rows: 1fr;
       gap: 10px;
@@ -2258,6 +2273,47 @@
       background: linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(244, 248, 255, 0.84));
       border-radius: 0 0 var(--radius) var(--radius);
     }
+    body.floating-composer-layout .chatPanel {
+      position: fixed;
+      top: 8px;
+      right: 8px;
+      bottom: 8px;
+      left: 8px;
+      height: auto;
+      min-height: 0;
+      overflow: visible;
+    }
+    body.floating-composer-layout #mainLayout {
+      min-height: var(--visual-viewport-height, var(--app-height, 100vh));
+      height: var(--visual-viewport-height, var(--app-height, 100dvh));
+    }
+    body.floating-composer-layout .messages {
+      padding-bottom: calc(var(--composer-float-height, 148px) + 20px + env(safe-area-inset-bottom, 0px) + var(--keyboard-offset, 0px));
+    }
+    body.floating-composer-layout .composer {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: calc(10px + env(safe-area-inset-bottom, 0px) + var(--keyboard-offset, 0px));
+      z-index: var(--z-chat-header);
+      padding: 10px;
+      gap: 8px;
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      border-radius: 22px;
+      background: rgba(248, 250, 255, 0.94);
+      box-shadow: 0 14px 40px rgba(13, 18, 32, 0.12);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+    }
+    body.floating-composer-layout .mobileComposerMetaRow {
+      padding-inline: 2px;
+    }
+    body.floating-composer-layout .runtimeDock {
+      margin-right: 0;
+    }
+    body.floating-composer-layout .queuedTurnCard {
+      margin-bottom: 6px;
+    }
     .chatOpeningOverlay {
       position: absolute;
       top: 0;
@@ -2650,15 +2706,15 @@
       border-radius: 22px;
       min-height: 40px;
       width: 100%;
-      padding: 9px 14px;
+      padding: 8px 14px;
       margin: 0;
       box-sizing: border-box;
       background: rgba(255, 255, 255, 0.94);
       border-color: rgba(13, 18, 32, 0.16);
       color: #0d1220;
-      font-size: 13px;
+      font-size: 16px;
       font-weight: 400;
-      line-height: 20px;
+      line-height: 22px;
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
       letter-spacing: -0.01em;
       resize: none;
@@ -2838,6 +2894,9 @@
       transform: translate3d(0, 6px, 0) scale(0.98);
       transform-origin: right bottom;
       pointer-events: none;
+    }
+    body.floating-composer-layout .composerActionMenu {
+      bottom: calc(100% + 16px);
     }
     .composerActionMenu.open {
       display: flex;
@@ -4112,6 +4171,21 @@
       }
       .mobileComposerRow { display: flex; align-items: flex-end; gap: 8px; }
       .composerActionRail { height: 40px; }
+      body.floating-composer-layout .chatPanel {
+        overflow: visible;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+      body.floating-composer-layout .messages {
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.72);
+        scrollbar-gutter: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      body.floating-composer-layout .messages::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+      }
       .leftPanel,
       .rightPanel {
         position: fixed;

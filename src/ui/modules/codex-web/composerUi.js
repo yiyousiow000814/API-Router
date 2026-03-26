@@ -30,6 +30,18 @@ export function createComposerUiModule(deps) {
   const animatedRuntimePlanKeys = new Set();
   let lastRuntimePanelsRenderSig = "";
 
+  function syncFloatingComposerMetrics() {
+    const root = doc?.documentElement;
+    const composer = doc?.querySelector?.(".composer");
+    if (!root || !composer) return;
+    const composerHeight = Math.max(
+      Number(composer.offsetHeight || 0),
+      Number(composer.getBoundingClientRect?.().height || 0),
+      0
+    );
+    root.style.setProperty("--composer-float-height", `${Math.round(composerHeight)}px`);
+  }
+
   function normalizeRunningState(value, fallback = "complete") {
     const normalized = normalizeType(value);
     if (/failed|error|cancelled|timeout|denied/.test(normalized)) return "error";
@@ -978,6 +990,7 @@ export function createComposerUiModule(deps) {
     wrap.classList.toggle("has-text", hasText);
     wrap.classList.toggle("is-running", running);
     wrap.classList.toggle("has-queued-turn", hasQueuedTurn);
+    syncFloatingComposerMetrics();
     if (sendBtn) {
       if (running && !hasText) {
         sendBtn.innerHTML =
@@ -1111,6 +1124,7 @@ export function createComposerUiModule(deps) {
           if (typeof setTimeout === "function") setTimeout(focusEditor, 0);
         }
       }
+    scheduleFrame(syncFloatingComposerMetrics);
   }
 
   function setComposerActionMenuOpen(open) {

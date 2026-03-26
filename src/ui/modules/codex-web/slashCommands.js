@@ -412,6 +412,27 @@ export function createSlashCommandsModule(deps) {
 
   function positionSlashMenu(menu) {
     if (!menu?.style) return;
+    const floatingComposerLayout = documentRef?.body?.classList?.contains?.("floating-composer-layout") === true;
+    if (floatingComposerLayout) {
+      resetSlashMenuPosition(menu);
+      const wrap = byId("mobilePromptWrap");
+      const row = byId("mobileComposerRow");
+      const wrapRect = wrap?.getBoundingClientRect?.();
+      const rowRect = row?.getBoundingClientRect?.();
+      menu.style.position = "absolute";
+      if (wrapRect && rowRect) {
+        menu.style.left = `${Math.round(rowRect.left - wrapRect.left)}px`;
+        menu.style.right = `${Math.round(wrapRect.right - rowRect.right)}px`;
+      } else {
+        menu.style.left = "0px";
+        menu.style.right = "0px";
+      }
+      menu.style.bottom = "calc(100% + 16px)";
+      menu.style.width = "auto";
+      menu.style.maxWidth = "none";
+      menu.style.transform = "";
+      return;
+    }
     const wrap = byId("mobilePromptWrap");
     const input = byId("mobilePromptInput");
     const anchor = wrap || input;

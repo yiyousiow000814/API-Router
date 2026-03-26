@@ -75,6 +75,70 @@ describe("chatViewport", () => {
     expect(btn.parentElement).toBe(panel);
   });
 
+  it("positions the jump button above the floating composer when present", () => {
+    const composer = {
+      getBoundingClientRect() {
+        return { top: 420 };
+      },
+    };
+    const panel = {
+      children: [],
+      appendChild(node) {
+        node.parentElement = this;
+        this.children.push(node);
+      },
+      getBoundingClientRect() {
+        return { bottom: 600 };
+      },
+      querySelector(selector) {
+        return selector === ".composer" ? composer : null;
+      },
+    };
+    const chatBox = {
+      parentElement: panel,
+      scrollHeight: 1200,
+      scrollTop: 600,
+      clientHeight: 250,
+      getBoundingClientRect() {
+        return { bottom: 560 };
+      },
+    };
+    const btn = {
+      __wired: false,
+      parentElement: null,
+      onclick: null,
+      style: {},
+      disabled: true,
+      tabIndex: -1,
+      classList: { toggle() {} },
+      setAttribute() {},
+      blur() {},
+    };
+    const module = createChatViewportModule({
+      state: { chatShouldStickToBottom: false },
+      byId(id) {
+        if (id === "chatBox") return chatBox;
+        if (id === "scrollToBottomBtn") return btn;
+        return null;
+      },
+      dbgSet() {},
+      documentRef: {
+        activeElement: null,
+      },
+      windowRef: {},
+      requestAnimationFrameRef(callback) {
+        return callback(0);
+      },
+      cancelAnimationFrameRef() {},
+      CHAT_LIVE_FOLLOW_MAX_STEP_PX: 64,
+      CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS: 66,
+    });
+
+    module.updateScrollToBottomBtn();
+
+    expect(btn.style.bottom).toBe("194px");
+  });
+
   it("shows the jump button when chat is non-sticky and meaningfully away from bottom", () => {
     const toggles = [];
     const attrs = [];

@@ -59,6 +59,7 @@ export function createBootstrapModule(deps) {
     requestAnimationFrameRef = requestAnimationFrame,
     MutationObserverRef = MutationObserver,
     installDebugAndE2E,
+    installMobileViewportSync = () => {},
     getEmbeddedToken,
     normalizeWorkspaceTarget,
     normalizeStartCwd,
@@ -108,6 +109,7 @@ export function createBootstrapModule(deps) {
 
   function bootstrap() {
     installDebugAndE2E();
+    installMobileViewportSync();
     const embeddedToken = getEmbeddedToken();
     const savedToken = localStorageRef.getItem(TOKEN_STORAGE_KEY) || "";
     const savedWorkspaceTarget = localStorageRef.getItem(WORKSPACE_TARGET_KEY) || "windows";

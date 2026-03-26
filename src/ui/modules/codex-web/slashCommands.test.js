@@ -1816,4 +1816,72 @@ describe("slashCommands", () => {
     expect(input.value).toBe("/review uncommitted");
     expect(state.slashMenuOpen).toBe(false);
   });
+
+  it("expands slash menu to the floating composer row in floating composer layout", () => {
+    const state = {
+      slashCommands: [
+        { command: "/compact", usage: "/compact", insertText: "/compact", description: "Compact", children: [] },
+      ],
+      slashCommandsLoaded: true,
+      slashCommandsLoading: false,
+      slashCommandsError: "",
+      slashMenuItems: [],
+      slashMenuOpen: false,
+      slashMenuSelectedIndex: 0,
+      slashMenuSelectionVisible: false,
+      slashMenuContextKey: "",
+    };
+    const menu = {
+      style: {},
+      innerHTML: "",
+      querySelector() { return null; },
+      addEventListener() {},
+      classList: { remove() {}, add() {} },
+    };
+    const input = { value: "/", focus() {}, setSelectionRange() {} };
+    const wrap = {
+      getBoundingClientRect() {
+        return { left: 74, right: 748 };
+      },
+    };
+    const row = {
+      getBoundingClientRect() {
+        return { left: 24, right: 796 };
+      },
+    };
+    const documentRef = {
+      activeElement: input,
+      body: {
+        classList: {
+          contains(name) {
+            return name === "floating-composer-layout";
+          },
+        },
+      },
+    };
+    const module = createSlashCommandsModule({
+      state,
+      byId(id) {
+        if (id === "slashCommandMenu") return menu;
+        if (id === "mobilePromptInput") return input;
+        if (id === "mobilePromptWrap") return wrap;
+        if (id === "mobileComposerRow") return row;
+        return null;
+      },
+      api: async () => ({ commands: [] }),
+      setStatus() {},
+      documentRef,
+      windowRef: {
+        innerWidth: 834,
+        addEventListener() {},
+      },
+    });
+
+    module.syncSlashCommandMenu();
+
+    expect(menu.style.position).toBe("absolute");
+    expect(menu.style.left).toBe("-50px");
+    expect(menu.style.right).toBe("-48px");
+    expect(menu.style.bottom).toBe("calc(100% + 16px)");
+  });
 });

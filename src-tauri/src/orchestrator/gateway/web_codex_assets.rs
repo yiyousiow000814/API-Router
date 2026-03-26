@@ -66,6 +66,8 @@ const WEB_CODEX_MESSAGE_RENDER_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/messageRender.js");
 const WEB_CODEX_MESSAGE_DATA_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/messageData.js");
+const WEB_CODEX_MOBILE_VIEWPORT_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/mobileViewport.js");
 const WEB_CODEX_MOBILE_SHELL_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/mobileShell.js");
 const WEB_CODEX_MOCK_TRANSPORT_JS: &str =
@@ -138,6 +140,7 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/messageData.js" => Some(WEB_CODEX_MESSAGE_DATA_JS),
         "codex-web/mockTransport.js" => Some(WEB_CODEX_MOCK_TRANSPORT_JS),
         "codex-web/messageRender.js" => Some(WEB_CODEX_MESSAGE_RENDER_JS),
+        "codex-web/mobileViewport.js" => Some(WEB_CODEX_MOBILE_VIEWPORT_JS),
         "codex-web/mobileShell.js" => Some(WEB_CODEX_MOBILE_SHELL_JS),
         "codex-web/modelPicker.js" => Some(WEB_CODEX_MODEL_PICKER_JS),
         "codex-web/notificationRouting.js" => Some(WEB_CODEX_NOTIFICATION_ROUTING_JS),
@@ -271,6 +274,7 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/liveNotifications.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/messageData.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/mockTransport.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/mobileViewport.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/modelPicker.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/mobileShell.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/notificationRouting.js").is_some());

@@ -42,6 +42,7 @@ describe("bootstrapApp", () => {
       requestAnimationFrameRef(cb) { cb(); },
       MutationObserverRef: class { observe() {} },
       installDebugAndE2E() {},
+      installMobileViewportSync() { calls.push("viewport"); },
       getEmbeddedToken() { return ""; },
       normalizeWorkspaceTarget(value) { return value === "wsl2" ? "wsl2" : "windows"; },
       normalizeStartCwd(value) { return value; },
@@ -98,6 +99,7 @@ describe("bootstrapApp", () => {
     await Promise.resolve();
 
     expect(calls).toContain("refresh");
+    expect(calls).toContain("viewport");
     expect(calls.filter((entry) => entry === "settings").length).toBeGreaterThan(0);
     expect(calls).toContain("tab:settings");
     expect(calls).toContain('connect:{"switchToChat":false}');

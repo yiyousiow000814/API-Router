@@ -94,4 +94,31 @@ describe("codex-web runtime layout", () => {
     expect(pseudoLinkMatch?.[1] || "").toMatch(/line-height:\s*inherit/i);
     expect(pseudoLinkMatch?.[1] || "").toMatch(/font-weight:\s*inherit/i);
   });
+
+  it("drives the mobile shell height from synced viewport CSS variables", () => {
+    expect(source).toContain("--app-height: 100vh;");
+    expect(source).toContain("--visual-viewport-height: 100vh;");
+    expect(source).toContain("--keyboard-offset: 0px;");
+    const shellMatch = source.match(/\.shell\s*\{([^}]+)\}/s);
+    expect(shellMatch).toBeTruthy();
+    expect(shellMatch?.[1] || "").toMatch(/height:\s*var\(--app-height,\s*100dvh\)/i);
+    expect(shellMatch?.[1] || "").toMatch(/min-height:\s*var\(--app-height,\s*100vh\)/i);
+  });
+
+  it("floats the mobile composer above the bottom edge and keyboard offset", () => {
+    expect(source).toContain("--composer-float-height: 148px;");
+    expect(source).toContain("body.floating-composer-layout .chatPanel");
+    expect(source).toContain("body.floating-composer-layout .composer");
+    expect(source).toContain("body.floating-composer-layout .messages");
+    expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?bottom:\s*8px/);
+    expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?height:\s*auto/);
+    expect(source).toMatch(/body\.floating-composer-layout \.composer\s*\{[\s\S]*?bottom:\s*calc\(10px \+ env\(safe-area-inset-bottom, 0px\) \+ var\(--keyboard-offset, 0px\)\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.messages\s*\{[\s\S]*?padding-bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ env\(safe-area-inset-bottom, 0px\) \+ var\(--keyboard-offset, 0px\)\)/);
+  });
+
+  it("hides the mobile chat scrollbar gutter for a cleaner floating chat surface", () => {
+    expect(source).toMatch(/\.messages\s*\{[\s\S]*?scrollbar-gutter:\s*auto/i);
+    expect(source).toMatch(/\.messages\s*\{[\s\S]*?scrollbar-width:\s*none/i);
+    expect(source).toContain(".messages::-webkit-scrollbar");
+  });
 });

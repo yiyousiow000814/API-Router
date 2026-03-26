@@ -65,6 +65,7 @@ import { createDebugToolsModule } from "./modules/codex-web/debugTools.js";
 import { createThreadLiveModule } from "./modules/codex-web/threadLive.js";
 import { createBootstrapModule } from "./modules/codex-web/bootstrapApp.js";
 import { createCodexWebComposition } from "./modules/codex-web/composition.js";
+import { installMobileViewportSync } from "./modules/codex-web/mobileViewport.js";
 import {
   ACTIVE_MAIN_TAB_KEY,
   ACTIVE_THREAD_LIVE_POLL_MS,
@@ -481,6 +482,11 @@ const composition = createCodexWebComposition({
   createDebugToolsModule,
   createThreadLiveModule,
   createBootstrapModule,
+  installMobileViewportSync: () => installMobileViewportSync({
+    windowRef: window,
+    documentRef: document,
+    updateMobileComposerState: (...args) => updateMobileComposerState(...args),
+  }),
   localStorageRef: localStorage,
   documentRef: document,
   requestAnimationFrameRef: requestAnimationFrame,
