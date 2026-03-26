@@ -2277,9 +2277,10 @@
       position: fixed;
       top: 8px;
       right: 8px;
-      bottom: 8px;
+      bottom: auto;
       left: 8px;
-      height: auto;
+      height: calc(var(--visual-viewport-height, var(--app-height, 100vh)) - 16px);
+      max-height: calc(var(--visual-viewport-height, var(--app-height, 100vh)) - 16px);
       min-height: 0;
       overflow: visible;
     }
@@ -2288,13 +2289,13 @@
       height: var(--visual-viewport-height, var(--app-height, 100dvh));
     }
     body.floating-composer-layout .messages {
-      padding-bottom: calc(var(--composer-float-height, 148px) + 20px + env(safe-area-inset-bottom, 0px) + var(--keyboard-offset, 0px));
+      padding-bottom: calc(var(--composer-float-height, 148px) + 20px + env(safe-area-inset-bottom, 0px));
     }
     body.floating-composer-layout .composer {
       position: absolute;
       left: 8px;
       right: 8px;
-      bottom: calc(10px + env(safe-area-inset-bottom, 0px) + var(--keyboard-offset, 0px));
+      bottom: calc(10px + env(safe-area-inset-bottom, 0px));
       z-index: var(--z-chat-header);
       padding: 10px;
       gap: 8px;

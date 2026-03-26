@@ -69,6 +69,7 @@ export function createActionBindingsModule(deps) {
     sendNowTurn = async () => null,
     sendQueuedTurnNow = async () => null,
     sendTurn,
+    scrollToBottomReliable = () => {},
     steerTurn = async () => null,
     setComposerActionMenuOpen = () => {},
     syncSlashCommandMenu = () => {},
@@ -163,6 +164,10 @@ export function createActionBindingsModule(deps) {
       updateMobileComposerState();
       maybeRestoreDeferredQueuedTurnEdit();
       syncSlashCommandMenu();
+    });
+    bindInput("mobilePromptInput", "focus", () => {
+      updateMobileComposerState();
+      scrollToBottomReliable();
     });
     bindInput("queuedTurnCard", "input", (event) => {
       const target = event?.target;

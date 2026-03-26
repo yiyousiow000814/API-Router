@@ -347,6 +347,7 @@ export function createCodexWebComposition(deps) {
       sendNowTurn: turnActions.sendNowTurn,
       sendQueuedTurnNow: turnActions.sendQueuedTurnNow,
       sendTurn: turnActions.sendTurn,
+      scrollToBottomReliable: chatViewport.scrollToBottomReliable,
       steerTurn: turnActions.steerTurn,
       setComposerActionMenuOpen: deps.setComposerActionMenuOpen,
       syncSlashCommandMenu: deps.syncSlashCommandMenu,

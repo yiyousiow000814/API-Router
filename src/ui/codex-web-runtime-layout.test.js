@@ -110,10 +110,10 @@ describe("codex-web runtime layout", () => {
     expect(source).toContain("body.floating-composer-layout .chatPanel");
     expect(source).toContain("body.floating-composer-layout .composer");
     expect(source).toContain("body.floating-composer-layout .messages");
-    expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?bottom:\s*8px/);
-    expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?height:\s*auto/);
-    expect(source).toMatch(/body\.floating-composer-layout \.composer\s*\{[\s\S]*?bottom:\s*calc\(10px \+ env\(safe-area-inset-bottom, 0px\) \+ var\(--keyboard-offset, 0px\)\)/);
-    expect(source).toMatch(/body\.floating-composer-layout \.messages\s*\{[\s\S]*?padding-bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ env\(safe-area-inset-bottom, 0px\) \+ var\(--keyboard-offset, 0px\)\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?bottom:\s*auto/);
+    expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?height:\s*calc\(var\(--visual-viewport-height,\s*var\(--app-height,\s*100vh\)\)\s*-\s*16px\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.composer\s*\{[\s\S]*?bottom:\s*calc\(10px \+ env\(safe-area-inset-bottom, 0px\)\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.messages\s*\{[\s\S]*?padding-bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ env\(safe-area-inset-bottom, 0px\)\)/);
   });
 
   it("hides the mobile chat scrollbar gutter for a cleaner floating chat surface", () => {

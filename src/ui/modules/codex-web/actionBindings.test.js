@@ -811,6 +811,73 @@ describe("actionBindings", () => {
     expect(deps.__synced).toBe(1);
   });
 
+  it("reconciles chat scroll when the prompt input regains focus", () => {
+    const handlers = new Map();
+    const promptNode = {
+      addEventListener(eventName, handler) {
+        handlers.set(`mobilePromptInput:${eventName}`, handler);
+      },
+    };
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId(id) {
+        if (id === "mobilePromptInput") return promptNode;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput(id, eventName, handler) {
+        const node = id === "mobilePromptInput" ? promptNode : null;
+        node?.addEventListener(eventName, handler);
+      },
+      setStatus() {},
+      updateMobileComposerState() {
+        deps.__updated = (deps.__updated || 0) + 1;
+      },
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      scrollToBottomReliable() {
+        deps.__reconciled = (deps.__reconciled || 0) + 1;
+      },
+      syncSlashCommandMenu() {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    handlers.get("mobilePromptInput:focus")?.({});
+
+    expect(deps.__updated).toBe(1);
+    expect(deps.__reconciled).toBe(1);
+  });
+
   it("does not immediately reopen the slash menu on keyup after escape closes it", () => {
     const handlers = new Map();
     const promptNode = {
