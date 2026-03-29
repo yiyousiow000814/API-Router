@@ -1,12 +1,36 @@
+import { lazy, Suspense } from 'react'
 import { DashboardPanel } from './DashboardPanel'
-import { EventLogPanel, type EventLogFocusRequest } from './EventLogPanel'
-import { ProviderSwitchboardPanel } from './ProviderSwitchboardPanel'
-import { UsageAnalyticsPanel } from './UsageAnalyticsPanel'
-import { UsageRequestsPanel } from './UsageRequestsPanel'
+import type { EventLogFocusRequest } from './EventLogPanel'
+import { LoadingSurface } from './LoadingSurface'
 import type { LastErrorJump } from './ProvidersTable'
 
+const EventLogPanel = lazy(async () => {
+  const module = await import('./EventLogPanel')
+  return { default: module.EventLogPanel }
+})
+
+const ProviderSwitchboardPanel = lazy(async () => {
+  const module = await import('./ProviderSwitchboardPanel')
+  return { default: module.ProviderSwitchboardPanel }
+})
+
+const UsageAnalyticsPanel = lazy(async () => {
+  const module = await import('./UsageAnalyticsPanel')
+  return { default: module.UsageAnalyticsPanel }
+})
+
+const UsageRequestsPanel = lazy(async () => {
+  const module = await import('./UsageRequestsPanel')
+  return { default: module.UsageRequestsPanel }
+})
+
+const WebCodexPanel = lazy(async () => {
+  const module = await import('./WebCodexPanel')
+  return { default: module.WebCodexPanel }
+})
+
 type Props = {
-  activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
+  activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log' | 'web_codex'
   status: any
   config: any
   providers: any[]
@@ -42,6 +66,7 @@ type Props = {
   onEventLogFocusRequestHandled: (nonce: number) => void
   usageProps: any
   switchboardProps: any
+  usageStatistics?: any
 }
 
 export function AppMainContent(props: Props) {
@@ -82,32 +107,70 @@ export function AppMainContent(props: Props) {
     onEventLogFocusRequestHandled,
     usageProps,
     switchboardProps,
+    usageStatistics,
   } = props
+  const pageFallback = (
+    <LoadingSurface
+      compact
+      eyebrow="API Router"
+      title="Loading this view"
+      detail="Fetching the data and modules needed for this page."
+    />
+  )
   if (activePage === 'usage_statistics') {
-    return <UsageAnalyticsPanel usageProps={usageProps} />
+    return (
+      <Suspense fallback={pageFallback}>
+        <UsageAnalyticsPanel usageProps={usageProps} />
+      </Suspense>
+    )
   }
 
   if (activePage === 'usage_requests') {
-    return <UsageRequestsPanel usageProps={usageProps} />
+    return (
+      <Suspense fallback={pageFallback}>
+        <UsageRequestsPanel usageProps={usageProps} />
+      </Suspense>
+    )
   }
 
   if (activePage === 'provider_switchboard') {
-    return <ProviderSwitchboardPanel {...switchboardProps} />
+    return (
+      <Suspense fallback={pageFallback}>
+        <ProviderSwitchboardPanel {...switchboardProps} />
+      </Suspense>
+    )
   }
 
   if (activePage === 'event_log') {
     return (
-      <EventLogPanel
-        events={eventLogSeedEvents}
-        dailyStatsSeed={eventLogSeedDailyStats}
-        focusRequest={eventLogFocusRequest}
-        onFocusRequestHandled={onEventLogFocusRequestHandled}
-      />
+      <Suspense fallback={pageFallback}>
+        <EventLogPanel
+          events={eventLogSeedEvents}
+          dailyStatsSeed={eventLogSeedDailyStats}
+          focusRequest={eventLogFocusRequest}
+          onFocusRequestHandled={onEventLogFocusRequestHandled}
+        />
+      </Suspense>
+    )
+  }
+
+  if (activePage === 'web_codex') {
+    return (
+      <Suspense fallback={pageFallback}>
+        <WebCodexPanel listenPort={status?.listen?.port} />
+      </Suspense>
     )
   }
 
   if (!status) {
-    return <div className="aoHint">Loading...</div>
+    return (
+      <LoadingSurface
+        compact
+        eyebrow="Dashboard"
+        title="Preparing live status"
+        detail="Restoring the last known snapshot and syncing the latest gateway state."
+      />
+    )
   }
 
   return (
@@ -139,6 +202,7 @@ export function AppMainContent(props: Props) {
         refreshingProviders={refreshingProviders}
         onRefreshQuota={onRefreshQuota}
         onOpenLastErrorInEventLog={onOpenLastErrorInEventLog}
+        usageStatistics={usageStatistics}
         clientSessions={clientSessions ?? []}
         updatingSessionPref={updatingSessionPref}
         onSetSessionPreferred={onSetSessionPreferred}

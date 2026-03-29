@@ -7,10 +7,16 @@ type ProviderCrudActions = Pick<
   | 'config'
   | 'isDevPreview'
   | 'setConfig'
+  | 'providerBaseUrlModal'
   | 'newProviderName'
   | 'newProviderBaseUrl'
+  | 'newProviderKey'
+  | 'newProviderKeyStorage'
+  | 'setProviderBaseUrlModal'
   | 'setNewProviderName'
   | 'setNewProviderBaseUrl'
+  | 'setNewProviderKey'
+  | 'setNewProviderKeyStorage'
   | 'refreshStatus'
   | 'refreshConfig'
   | 'flashToast'
@@ -20,14 +26,82 @@ export function useProviderCrudActions({
   config,
   isDevPreview,
   setConfig,
+  providerBaseUrlModal,
   newProviderName,
   newProviderBaseUrl,
+  newProviderKey,
+  newProviderKeyStorage,
+  setProviderBaseUrlModal,
   setNewProviderName,
   setNewProviderBaseUrl,
+  setNewProviderKey,
+  setNewProviderKeyStorage,
   refreshStatus,
   refreshConfig,
   flashToast,
 }: ProviderCrudActions) {
+  const openProviderBaseUrlModal = useCallback(
+    (provider: string, current: string) => {
+      setProviderBaseUrlModal({
+        open: true,
+        provider,
+        value: current,
+      })
+    },
+    [setProviderBaseUrlModal],
+  )
+
+  const saveProviderBaseUrl = useCallback(async () => {
+    const provider = providerBaseUrlModal.provider.trim()
+    const baseUrl = providerBaseUrlModal.value.trim()
+    if (!provider || !baseUrl || !config?.providers?.[provider]) return
+
+    if (isDevPreview) {
+      setConfig((prev) => {
+        if (!prev?.providers?.[provider]) return prev
+        return {
+          ...prev,
+          providers: {
+            ...prev.providers,
+            [provider]: {
+              ...prev.providers[provider],
+              base_url: baseUrl,
+            },
+          },
+        }
+      })
+      setProviderBaseUrlModal({ open: false, provider: '', value: '' })
+      flashToast(`[TEST] Base URL updated: ${provider}`)
+      return
+    }
+
+    try {
+      const current = config.providers[provider]
+      await invoke('upsert_provider', {
+        name: provider,
+        displayName: current.display_name,
+        baseUrl,
+        group: (current.group ?? '').trim() || null,
+      })
+      setProviderBaseUrlModal({ open: false, provider: '', value: '' })
+      flashToast(`Base URL updated: ${provider}`)
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }, [
+    config,
+    flashToast,
+    isDevPreview,
+    providerBaseUrlModal.provider,
+    providerBaseUrlModal.value,
+    refreshConfig,
+    refreshStatus,
+    setConfig,
+    setProviderBaseUrlModal,
+  ])
+
   const setProviderGroup = useCallback(
     async (name: string, group: string | null) => {
       if (isDevPreview) {
@@ -182,6 +256,7 @@ export function useProviderCrudActions({
   const addProvider = useCallback(async () => {
     const name = newProviderName.trim()
     const baseUrl = newProviderBaseUrl.trim()
+    const key = newProviderKey.trim()
     if (!name || !baseUrl) return
 
     if (isDevPreview) {
@@ -209,7 +284,7 @@ export function useProviderCrudActions({
                 monthly: true,
               },
               disabled: false,
-              has_key: false,
+              has_key: Boolean(key),
               key_preview: null,
             },
           },
@@ -217,6 +292,8 @@ export function useProviderCrudActions({
       })
       setNewProviderName('')
       setNewProviderBaseUrl('')
+      setNewProviderKey('')
+      setNewProviderKeyStorage('auth_json')
       flashToast(`[TEST] Added: ${name}`)
       return
     }
@@ -228,8 +305,13 @@ export function useProviderCrudActions({
         baseUrl,
         group: null,
       })
+      if (key) {
+        await invoke('set_provider_key', { provider: name, key, storageMode: newProviderKeyStorage })
+      }
       setNewProviderName('')
       setNewProviderBaseUrl('')
+      setNewProviderKey('')
+      setNewProviderKeyStorage('auth_json')
       flashToast(`Added: ${name}`)
       await refreshStatus()
       await refreshConfig()
@@ -241,20 +323,26 @@ export function useProviderCrudActions({
     flashToast,
     isDevPreview,
     newProviderBaseUrl,
+    newProviderKey,
+    newProviderKeyStorage,
     newProviderName,
     refreshConfig,
     refreshStatus,
     setConfig,
     setNewProviderBaseUrl,
+    setNewProviderKey,
+    setNewProviderKeyStorage,
     setNewProviderName,
   ])
 
   return {
     saveProvider,
+    saveProviderBaseUrl,
     setProviderGroup,
     setProvidersGroup,
     setProviderDisabled,
     deleteProvider,
+    openProviderBaseUrlModal,
     addProvider,
   }
 }

@@ -1,0 +1,19 @@
+import { describe, expect, it } from 'vitest'
+import { statusPollIntervalMs } from './useAppPolling'
+
+describe('useAppPolling', () => {
+  it('keeps dashboard polling fast while visible', () => {
+    expect(statusPollIntervalMs('dashboard', true)).toBe(1500)
+    expect(statusPollIntervalMs('provider_switchboard', true)).toBe(1500)
+  })
+
+  it('slows non-dashboard polling while visible', () => {
+    expect(statusPollIntervalMs('web_codex', true)).toBe(5000)
+    expect(statusPollIntervalMs('event_log', true)).toBe(5000)
+  })
+
+  it('uses the slowest poll interval when hidden', () => {
+    expect(statusPollIntervalMs('dashboard', false)).toBe(15000)
+    expect(statusPollIntervalMs('web_codex', false)).toBe(15000)
+  })
+})

@@ -1,5 +1,13 @@
 import type { Config, Status } from './types'
 
+export const devTailscaleStatus = {
+  installed: true,
+  connected: true,
+  dnsName: 'desktop-kk6sa2d-1.tail997985.ts.net',
+  ipv4: ['100.64.208.117'],
+  downloadUrl: 'https://tailscale.com/download',
+} as const
+
 export type SpendHistoryRow = {
   provider: string
   api_key_ref?: string | null
@@ -499,7 +507,7 @@ export const devConfig: Config = {
       display_name: 'provider_2',
       base_url: 'https://codex-api.packycode.com/v1',
       usage_adapter: 'packycode',
-      usage_base_url: 'https://codex-api.packycode.com',
+      usage_base_url: 'https://codex.packycode.com',
       quota_hard_cap: {
         daily: false,
         weekly: true,

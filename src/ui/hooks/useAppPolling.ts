@@ -1,10 +1,17 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { computeActiveRefreshDelayMs, computeIdleRefreshDelayMs } from '../utils/usageRefresh'
+
+type TopPage =
+  | 'dashboard'
+  | 'usage_statistics'
+  | 'usage_requests'
+  | 'provider_switchboard'
+  | 'event_log'
+  | 'web_codex'
 
 type UseAppPollingOptions = {
+  activePage: TopPage
   isDevPreview: boolean
-  statusLastActivityUnixMs: number | undefined
   codexSwapDir1: string
   codexSwapDir2: string
   codexSwapUseWindows: boolean
@@ -12,14 +19,19 @@ type UseAppPollingOptions = {
   refreshStatus: () => Promise<void>
   refreshConfig: () => Promise<void>
   refreshProviderSwitchStatus: () => Promise<void>
-  refreshQuotaAll: (options?: { silent?: boolean }) => Promise<unknown>
   onDevPreviewBootstrap: () => void
   onDevPreviewTick: () => void
 }
 
+export function statusPollIntervalMs(activePage: TopPage, isDocumentVisible: boolean): number {
+  if (!isDocumentVisible) return 15_000
+  if (activePage === 'dashboard' || activePage === 'provider_switchboard') return 1_500
+  return 5_000
+}
+
 export function useAppPolling({
+  activePage,
   isDevPreview,
-  statusLastActivityUnixMs,
   codexSwapDir1,
   codexSwapDir2,
   codexSwapUseWindows,
@@ -27,27 +39,35 @@ export function useAppPolling({
   refreshStatus,
   refreshConfig,
   refreshProviderSwitchStatus,
-  refreshQuotaAll,
   onDevPreviewBootstrap,
   onDevPreviewTick,
 }: UseAppPollingOptions) {
   const refreshStatusRef = useRef(refreshStatus)
   const refreshConfigRef = useRef(refreshConfig)
   const refreshProviderSwitchStatusRef = useRef(refreshProviderSwitchStatus)
-  const refreshQuotaAllRef = useRef(refreshQuotaAll)
-  const usageRefreshTimerRef = useRef<number | null>(null)
-  const idleUsageSchedulerRef = useRef<(() => void) | null>(null)
-  const usageActiveRef = useRef<boolean>(false)
-  const activeUsageTimerRef = useRef<number | null>(null)
   const providerSwitchRefreshTimerRef = useRef<number | null>(null)
   const providerSwitchDirWatcherPrimedRef = useRef<boolean>(false)
+  const [isDocumentVisible, setIsDocumentVisible] = useState<boolean>(
+    typeof document === 'undefined' || document.visibilityState !== 'hidden',
+  )
 
   useEffect(() => {
     refreshStatusRef.current = refreshStatus
     refreshConfigRef.current = refreshConfig
     refreshProviderSwitchStatusRef.current = refreshProviderSwitchStatus
-    refreshQuotaAllRef.current = refreshQuotaAll
-  }, [refreshConfig, refreshProviderSwitchStatus, refreshQuotaAll, refreshStatus])
+  }, [refreshConfig, refreshProviderSwitchStatus, refreshStatus])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const handleVisibilityChange = () => {
+      setIsDocumentVisible(document.visibilityState !== 'hidden')
+    }
+    handleVisibilityChange()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [])
 
   useEffect(() => {
     if (isDevPreview) {
@@ -57,32 +77,10 @@ export function useAppPolling({
       return () => window.clearInterval(timer)
     }
     void refreshStatusRef.current()
-    void refreshConfigRef.current()
-    const once = window.setTimeout(() => void refreshQuotaAllRef.current({ silent: true }), 850)
-    const scheduleUsageRefresh = () => {
-      if (usageActiveRef.current) return
-      if (usageRefreshTimerRef.current) {
-        window.clearTimeout(usageRefreshTimerRef.current)
-      }
-      const nowMs = Date.now()
-      const jitterMs = (Math.random() * 10 - 5) * 60 * 1000
-      const delayMs = computeIdleRefreshDelayMs(nowMs, jitterMs)
-      usageRefreshTimerRef.current = window.setTimeout(() => {
-        if (usageActiveRef.current) {
-          if (usageRefreshTimerRef.current) {
-            window.clearTimeout(usageRefreshTimerRef.current)
-            usageRefreshTimerRef.current = null
-          }
-          return
-        }
-        void refreshQuotaAllRef.current({ silent: true }).finally(() => {
-          if (!usageActiveRef.current) scheduleUsageRefresh()
-        })
-      }, delayMs)
-    }
-    idleUsageSchedulerRef.current = scheduleUsageRefresh
-    scheduleUsageRefresh()
-    const t = setInterval(() => void refreshStatusRef.current(), 1500)
+    const t = setInterval(
+      () => void refreshStatusRef.current(),
+      statusPollIntervalMs(activePage, isDocumentVisible),
+    )
     const codexRefresh = window.setInterval(() => {
       invoke('codex_account_refresh').catch((e) => {
         console.warn('Codex refresh failed', e)
@@ -91,60 +89,36 @@ export function useAppPolling({
     return () => {
       clearInterval(t)
       window.clearInterval(codexRefresh)
-      window.clearTimeout(once)
-      if (usageRefreshTimerRef.current) {
-        window.clearTimeout(usageRefreshTimerRef.current)
-      }
-      idleUsageSchedulerRef.current = null
     }
-  }, [isDevPreview, onDevPreviewBootstrap, onDevPreviewTick])
+  }, [activePage, isDevPreview, isDocumentVisible, onDevPreviewBootstrap, onDevPreviewTick])
 
   useEffect(() => {
     if (isDevPreview) return
-    const lastActivity = statusLastActivityUnixMs ?? 0
-    const isActive = lastActivity > 0 && Date.now() - lastActivity <= 5 * 60 * 1000
-    usageActiveRef.current = isActive
-    if (isActive && usageRefreshTimerRef.current) {
-      window.clearTimeout(usageRefreshTimerRef.current)
-      usageRefreshTimerRef.current = null
-    }
-    const clearActiveTimer = () => {
-      if (activeUsageTimerRef.current) {
-        window.clearTimeout(activeUsageTimerRef.current)
-        activeUsageTimerRef.current = null
+    let cancelled = false
+    let timeoutId: number | null = null
+    let idleId: number | null = null
+    const rafId = window.requestAnimationFrame(() => {
+      const runRefreshConfig = () => {
+        if (cancelled) return
+        void refreshConfigRef.current()
       }
-    }
-    if (!isActive) {
-      clearActiveTimer()
-      if (!usageRefreshTimerRef.current && idleUsageSchedulerRef.current) idleUsageSchedulerRef.current()
-      return
-    }
-    if (!activeUsageTimerRef.current) {
-      const schedule = () => {
-        const jitterMs = (Math.random() * 2 - 1) * 60 * 1000
-        const delayMs = computeActiveRefreshDelayMs(jitterMs)
-        activeUsageTimerRef.current = window.setTimeout(() => {
-          if (!usageActiveRef.current) {
-            if (idleUsageSchedulerRef.current) idleUsageSchedulerRef.current()
-            return
-          }
-          void refreshQuotaAllRef.current({ silent: true }).finally(() => {
-            if (usageActiveRef.current) schedule()
-          })
-        }, delayMs)
+      if (typeof window.requestIdleCallback === 'function') {
+        idleId = window.requestIdleCallback(runRefreshConfig, { timeout: 1200 })
+        return
       }
-      schedule()
-    }
-  }, [isDevPreview, statusLastActivityUnixMs])
-
-  useEffect(() => {
+      timeoutId = window.setTimeout(runRefreshConfig, 120)
+    })
     return () => {
-      if (activeUsageTimerRef.current) {
-        window.clearTimeout(activeUsageTimerRef.current)
-        activeUsageTimerRef.current = null
+      cancelled = true
+      window.cancelAnimationFrame(rafId)
+      if (idleId != null && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleId)
+      }
+      if (timeoutId != null) {
+        window.clearTimeout(timeoutId)
       }
     }
-  }, [])
+  }, [isDevPreview])
 
   useEffect(() => {
     if (!providerSwitchDirWatcherPrimedRef.current) {
