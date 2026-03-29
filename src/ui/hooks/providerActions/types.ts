@@ -5,6 +5,7 @@ export type KeyModalState = {
   open: boolean
   provider: string
   value: string
+  storage: 'auth_json' | 'config_toml_experimental_bearer_token'
   loading: boolean
   loadFailed: boolean
 }
@@ -63,6 +64,7 @@ export type UseProviderActionsParams = {
   newProviderName: string
   newProviderBaseUrl: string
   newProviderKey: string
+  newProviderKeyStorage: 'auth_json' | 'config_toml_experimental_bearer_token'
   setKeyModal: Dispatch<SetStateAction<KeyModalState>>
   setUsageBaseModal: Dispatch<SetStateAction<UsageBaseModalState>>
   setUsageAuthModal: Dispatch<SetStateAction<UsageAuthModalState>>
@@ -71,6 +73,7 @@ export type UseProviderActionsParams = {
   setNewProviderName: Dispatch<SetStateAction<string>>
   setNewProviderBaseUrl: Dispatch<SetStateAction<string>>
   setNewProviderKey: Dispatch<SetStateAction<string>>
+  setNewProviderKeyStorage: Dispatch<SetStateAction<'auth_json' | 'config_toml_experimental_bearer_token'>>
   setRefreshingProviders: Dispatch<SetStateAction<Record<string, boolean>>>
   refreshStatus: (options?: { refreshSwapStatus?: boolean }) => Promise<void>
   refreshConfig: (options?: { refreshProviderSwitchStatus?: boolean }) => Promise<void>

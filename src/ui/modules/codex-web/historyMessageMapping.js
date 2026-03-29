@@ -1,4 +1,5 @@
 import { clonePlanState, extractPlanUpdate } from "./runtimePlan.js";
+import { extractProposedPlanArtifacts } from "./proposedPlan.js";
 import {
   buildCommentaryArchiveMessage,
   cloneArchiveBlock,
@@ -16,6 +17,7 @@ export async function mapThreadReadMessages(thread, deps = {}) {
     normalizeThreadItemText,
     pushHistoryMessage,
     isVisibleAssistantHistoryPhase,
+    pushLiveDebugEvent = () => {},
   } = deps;
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
   const messages = [];
@@ -87,8 +89,7 @@ export async function mapThreadReadMessages(thread, deps = {}) {
                 pendingPlan,
                 pendingTools,
                 threadId,
-                String(turn?.id || "").trim(),
-                { allowEmpty: commentaryBlocks.length === 0 }
+                String(turn?.id || "").trim()
               )
             : null;
         const archiveMessage = buildCommentaryArchiveMessage(
@@ -100,7 +101,30 @@ export async function mapThreadReadMessages(thread, deps = {}) {
         currentCommentaryBlock = null;
         pendingPlan = null;
         if (!isVisibleAssistantHistoryPhase(item?.phase)) continue;
-        pushHistoryMessage(messages, { role: "assistant", text, kind: "" });
+        const proposedPlan = extractProposedPlanArtifacts(text, {
+          threadId,
+          turnId: String(turn?.id || "").trim(),
+          itemId: String(item?.id || item?.messageId || item?.message_id || "").trim(),
+        });
+        pushLiveDebugEvent("history.inspect:proposed_plan_detection", {
+          source: "history.thread",
+          threadId,
+          turnId: String(turn?.id || "").trim(),
+          itemId: String(item?.id || item?.messageId || item?.message_id || "").trim(),
+          hasPlan: !!proposedPlan.planMessage?.plan,
+          hasPendingUserInput: !!proposedPlan.pendingConfirmation,
+          rawPreview: String(text || "").replace(/\s+/g, " ").trim().slice(0, 220),
+          cleanedPreview: String(proposedPlan.cleanedText || "").replace(/\s+/g, " ").trim().slice(0, 220),
+        });
+        if (proposedPlan.cleanedText) {
+          pushHistoryMessage(messages, { role: "assistant", text: proposedPlan.cleanedText, kind: "" });
+        }
+        if (proposedPlan.planMessage?.plan) {
+          pushHistoryMessage(messages, proposedPlan.planMessage);
+        }
+        if (!proposedPlan.cleanedText && !proposedPlan.planMessage?.plan) {
+          pushHistoryMessage(messages, { role: "assistant", text, kind: "" });
+        }
         continue;
       }
       const toolText = String(normalizeThreadItemText(item, { compact: true }) || "").trim();
@@ -129,6 +153,7 @@ export async function mapSessionHistoryMessages(items, deps = {}) {
     stripCodexImageBlocks,
     pushHistoryMessage,
     isVisibleAssistantHistoryPhase,
+    pushLiveDebugEvent = () => {},
   } = deps;
   const historyItems = Array.isArray(items) ? items : [];
   const messages = [];
@@ -161,7 +186,22 @@ export async function mapSessionHistoryMessages(items, deps = {}) {
         normalizeType,
         stripCodexImageBlocks,
       });
-      if (text) pushHistoryMessage(messages, { role: "assistant", text, kind: "" });
+      const proposedPlan = extractProposedPlanArtifacts(text, {
+        itemId: String(item?.id || item?.messageId || item?.message_id || "").trim(),
+      });
+      pushLiveDebugEvent("history.inspect:proposed_plan_detection", {
+        source: "history.session",
+        itemId: String(item?.id || item?.messageId || item?.message_id || "").trim(),
+        hasPlan: !!proposedPlan.planMessage?.plan,
+        hasPendingUserInput: !!proposedPlan.pendingConfirmation,
+        rawPreview: String(text || "").replace(/\s+/g, " ").trim().slice(0, 220),
+        cleanedPreview: String(proposedPlan.cleanedText || "").replace(/\s+/g, " ").trim().slice(0, 220),
+      });
+      if (proposedPlan.cleanedText) pushHistoryMessage(messages, { role: "assistant", text: proposedPlan.cleanedText, kind: "" });
+      if (proposedPlan.planMessage?.plan) pushHistoryMessage(messages, proposedPlan.planMessage);
+      if (text && !proposedPlan.cleanedText && !proposedPlan.planMessage?.plan) {
+        pushHistoryMessage(messages, { role: "assistant", text, kind: "" });
+      }
     }
   }
   return messages;

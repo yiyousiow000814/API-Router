@@ -141,6 +141,7 @@ export type Config = {
       account_email?: string | null
       has_key: boolean
       key_preview?: string | null
+      key_storage?: 'auth_json' | 'config_toml_experimental_bearer_token'
       has_usage_token?: boolean
       has_usage_login?: boolean
     }

@@ -55,4 +55,50 @@ describe("historyPreparation", () => {
     expect(prepared.liveCommentarySnapshot).toEqual({ threadId: "thread-1", epoch: 1 });
     expect(typeof prepared.renderSig).toBe("string");
   });
+
+  it("drops trailing artifacts from the latest incomplete turn after a local interrupt", async () => {
+    const prepared = await prepareThreadHistoryView(
+      {
+        id: "thread-1",
+        page: { incomplete: true },
+        turns: [{ id: "turn-1" }],
+      },
+      { workspace: "windows" },
+      {
+        state: {
+          activeThreadId: "thread-1",
+          suppressedIncompleteHistoryRuntimeByThreadId: { "thread-1": true },
+        },
+        async mapSessionHistoryMessages() {
+          return [];
+        },
+        async mapThreadReadMessages() {
+          return [
+            { role: "user", text: "我们继续上次未完成的 plan", kind: "", images: [] },
+            { role: "assistant", text: "这是未完成 turn 里残留的 assistant 片段", kind: "" },
+            { role: "system", text: "Updated Plan", kind: "planCard" },
+          ];
+        },
+        normalizeThreadItemText() {
+          return "";
+        },
+        captureLiveCommentarySnapshot(threadId) {
+          return { threadId, epoch: 2 };
+        },
+        normalizeThreadTokenUsage(value) {
+          return value ?? { total: 0 };
+        },
+        detectThreadWorkspaceTarget() {
+          return "windows";
+        },
+      }
+    );
+
+    expect(prepared.rawMessages).toEqual([
+      { role: "user", text: "我们继续上次未完成的 plan", kind: "", images: [] },
+    ]);
+    expect(prepared.messages).toEqual([
+      { role: "user", text: "我们继续上次未完成的 plan", kind: "", images: [] },
+    ]);
+  });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createActionBindingsModule,
@@ -196,6 +196,86 @@ describe("actionBindings", () => {
     }
   });
 
+  it("toggles pending preview from settings", async () => {
+    const handlers = new Map();
+    const statusCalls = [];
+    let open = false;
+    const windowRef = {
+      addEventListener() {},
+      __webCodexDebug: {
+        previewPending() {
+          open = !open;
+          return { ok: true, open };
+        },
+      },
+    };
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId() { return null; },
+      bindClick(id, handler) {
+        handlers.set(id, handler);
+      },
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus(message, isError = false) {
+        statusCalls.push({ message, isError });
+      },
+      updateMobileComposerState() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef,
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+    const previousDocument = globalThis.document;
+    const previousWindow = globalThis.window;
+    const previousNotification = globalThis.Notification;
+    globalThis.document = { addEventListener() {} };
+    globalThis.window = windowRef;
+    globalThis.Notification = deps.NotificationRef;
+
+    try {
+      createActionBindingsModule(deps).wireActions();
+      await handlers.get("previewPendingBtn")();
+      await handlers.get("previewPendingBtn")();
+
+      expect(statusCalls).toEqual([
+        { message: "Pending preview shown.", isError: false },
+        { message: "Pending preview hidden.", isError: false },
+      ]);
+    } finally {
+      globalThis.document = previousDocument;
+      globalThis.window = previousWindow;
+      globalThis.Notification = previousNotification;
+    }
+  });
+
   it("opens a managed terminal from the header workspace badge", async () => {
     const handlers = new Map();
     const statusCalls = [];
@@ -265,6 +345,446 @@ describe("actionBindings", () => {
       globalThis.window = previousWindow;
       globalThis.Notification = previousNotification;
     }
+  });
+
+  it("wires pending approval and user-input actions from the tools panel", async () => {
+    const approvalHandlers = {};
+    const userInputHandlers = {};
+    const approvalCalls = [];
+    const userInputCalls = [];
+    const statusCalls = [];
+    const approvalList = {
+      addEventListener(type, handler) {
+        approvalHandlers[type] = handler;
+      },
+    };
+    const userInputList = {
+      addEventListener(type, handler) {
+        userInputHandlers[type] = handler;
+      },
+    };
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId(id) {
+        if (id === "approvalPendingList") return approvalList;
+        if (id === "userInputPendingList") return userInputList;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus(message, isError = false) {
+        statusCalls.push({ message, isError });
+      },
+      updateMobileComposerState() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async (payload) => { approvalCalls.push(payload); },
+      resolveUserInput: async (payload) => { userInputCalls.push(payload); },
+      refreshPending: async () => {},
+      getPendingUserInputDraftAnswers: (id) => (id === "input-1" ? { route: "Debug" } : {}),
+      setPendingUserInputDraftAnswer(...args) {
+        deps.__draftCall = args;
+      },
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+
+    approvalHandlers.click({
+      target: {
+        closest(selector) {
+          if (selector === "[data-pending-approval-decision]") {
+            return {
+              getAttribute(name) {
+                return name === "data-pending-approval-id" ? "approval-1" : "approve";
+              },
+            };
+          }
+          return null;
+        },
+      },
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    userInputHandlers.click({
+      target: {
+        closest(selector) {
+          if (selector === "[data-pending-answer-key]") {
+            return {
+              getAttribute(name) {
+                if (name === "data-pending-user-input-id") return "input-1";
+                if (name === "data-pending-answer-key") return "route";
+                if (name === "data-pending-answer-value") return "Debug";
+                return "";
+              },
+            };
+          }
+          return null;
+        },
+      },
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    await userInputHandlers.click({
+      target: {
+        closest(selector) {
+          if (selector === "[data-pending-answer-key]") return null;
+          if (selector === "[data-pending-user-input-submit]") {
+            return {
+              getAttribute() {
+                return "input-1";
+              },
+            };
+          }
+          return null;
+        },
+      },
+      preventDefault() {},
+      stopPropagation() {},
+    });
+
+    expect(approvalCalls).toEqual([{ id: "approval-1", decision: "approve" }]);
+    expect(deps.__draftCall).toEqual(["input-1", "route", "Debug", { mode: "option" }]);
+    expect(userInputCalls).toEqual([{ id: "input-1", answers: { route: "Debug" } }]);
+    expect(statusCalls).toEqual([]);
+  });
+
+  it("wires pending approval and user-input actions from inline chat cards", async () => {
+    const chatHandlers = {};
+    const approvalCalls = [];
+    const userInputCalls = [];
+    const chatBox = {
+      addEventListener(type, handler) {
+        chatHandlers[type] = handler;
+      },
+    };
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId(id) {
+        if (id === "chatBox") return chatBox;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async (payload) => { approvalCalls.push(payload); },
+      resolveUserInput: async (payload) => { userInputCalls.push(payload); },
+      refreshPending: async () => {},
+      getPendingUserInputDraftAnswers: () => ({ route: "Debug" }),
+      setPendingUserInputDraftAnswer(...args) {
+        deps.__draft = args;
+      },
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+
+    await chatHandlers.click({
+      target: {
+        closest(selector) {
+          if (selector === "[data-pending-approval-decision]") {
+            return {
+              getAttribute(name) {
+                return name === "data-pending-approval-id" ? "approval-inline" : "approve";
+              },
+            };
+          }
+          return null;
+        },
+      },
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    await chatHandlers.click({
+      target: {
+        closest(selector) {
+          if (selector === "[data-pending-approval-decision]") return null;
+          if (selector === "[data-pending-answer-key]") {
+            return {
+              getAttribute(name) {
+                if (name === "data-pending-user-input-id") return "input-inline";
+                if (name === "data-pending-answer-key") return "route";
+                if (name === "data-pending-answer-value") return "Debug";
+                return "";
+              },
+            };
+          }
+          return null;
+        },
+      },
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    await chatHandlers.click({
+      target: {
+        closest(selector) {
+          if (selector === "[data-pending-approval-decision]") return null;
+          if (selector === "[data-pending-answer-key]") return null;
+          if (selector === "[data-pending-user-input-submit]") {
+            return { getAttribute() { return "input-inline"; } };
+          }
+          return null;
+        },
+      },
+      preventDefault() {},
+      stopPropagation() {},
+    });
+
+    expect(approvalCalls).toEqual([{ id: "approval-inline", decision: "approve" }]);
+    expect(deps.__draft).toEqual(["input-inline", "route", "Debug", { mode: "option" }]);
+    expect(userInputCalls).toEqual([{ id: "input-inline", answers: { route: "Debug" } }]);
+  });
+
+  it("animates inline freeform exit before switching back to an option", async () => {
+    const chatHandlers = {};
+    const timeoutCalls = [];
+    const blurCalls = [];
+    const removedClasses = [];
+    const chatBox = {
+      addEventListener(type, handler) {
+        chatHandlers[type] = handler;
+      },
+    };
+    const freeformInput = {
+      blur() {
+        blurCalls.push("blur");
+      },
+    };
+    const freeformWrap = {
+      dataset: {},
+      classList: {
+        remove(name) {
+          removedClasses.push(name);
+        },
+      },
+      querySelector(selector) {
+        if (selector === "[data-pending-freeform-input]") return freeformInput;
+        return null;
+      },
+    };
+    const question = {
+      querySelector(selector) {
+        if (selector === ".pendingInlineFreeformWrap.is-visible") return freeformWrap;
+        return null;
+      },
+    };
+    const optionBtn = {
+      getAttribute(name) {
+        if (name === "data-pending-user-input-id") return "input-inline";
+        if (name === "data-pending-answer-key") return "route";
+        if (name === "data-pending-answer-value") return "Debug";
+        return "";
+      },
+      closest(selector) {
+        if (selector === ".pendingInlineQuestion") return question;
+        return null;
+      },
+    };
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId(id) {
+        if (id === "chatBox") return chatBox;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      getPendingUserInputDraftAnswers: () => ({}),
+      setPendingUserInputDraftAnswer(...args) {
+        deps.__draft = args;
+      },
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: {
+        addEventListener() {},
+        setTimeout(callback, delay) {
+          timeoutCalls.push(delay);
+          return callback();
+        },
+      },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+
+    await chatHandlers.click({
+      target: {
+        closest(selector) {
+          if (selector === "[data-pending-approval-decision]") return null;
+          if (selector === "[data-pending-answer-key]") return optionBtn;
+          return null;
+        },
+      },
+      preventDefault() {},
+      stopPropagation() {},
+    });
+
+    expect(removedClasses).toEqual(["is-visible"]);
+    expect(blurCalls).toEqual(["blur"]);
+    expect(timeoutCalls).toEqual([180]);
+    expect(deps.__draft).toEqual(["input-inline", "route", "Debug", { mode: "option" }]);
+  });
+
+  it("stores freeform input from inline pending cards", async () => {
+    const chatHandlers = {};
+    const chatBox = {
+      addEventListener(type, handler) {
+        chatHandlers[type] = handler;
+      },
+    };
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId(id) {
+        if (id === "chatBox") return chatBox;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      getPendingUserInputDraftAnswers: () => ({}),
+      setPendingUserInputDraftAnswer(...args) {
+        deps.__draft = args;
+      },
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+
+    chatHandlers.input({
+      target: {
+        closest(selector) {
+          if (selector === "[data-pending-freeform-input]") {
+            return {
+              value: "My custom answer",
+              getAttribute(name) {
+                if (name === "data-pending-user-input-id") return "input-inline";
+                if (name === "data-pending-answer-key") return "route";
+                return "";
+              },
+            };
+          }
+          return null;
+        },
+      },
+    });
+
+    expect(deps.__draft).toEqual(["input-inline", "route", "My custom answer", { mode: "freeform" }]);
   });
 
   it("updates real default toggles from settings without changing the prompt", async () => {

@@ -138,11 +138,13 @@ export default function App() {
   const [newProviderName, setNewProviderName] = useState<string>('')
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
   const [newProviderKey, setNewProviderKey] = useState<string>('')
+  const [newProviderKeyStorage, setNewProviderKeyStorage] = useState<'auth_json' | 'config_toml_experimental_bearer_token'>('auth_json')
   const [providerPanelsOpen, setProviderPanelsOpen] = useState<Record<string, boolean>>({})
   const [keyModal, setKeyModal] = useState<KeyModalState>({
     open: false,
     provider: '',
     value: '',
+    storage: 'auth_json',
     loading: false,
     loadFailed: false,
   })
@@ -1093,6 +1095,7 @@ export default function App() {
     newProviderName,
     newProviderBaseUrl,
     newProviderKey,
+    newProviderKeyStorage,
     setKeyModal,
     setProviderBaseUrlModal,
     setProviderEmailModal,
@@ -1101,6 +1104,7 @@ export default function App() {
     setNewProviderName,
     setNewProviderBaseUrl,
     setNewProviderKey,
+    setNewProviderKeyStorage,
     setRefreshingProviders,
     refreshStatus,
     refreshConfig,
@@ -1382,10 +1386,12 @@ export default function App() {
             newProviderName={newProviderName}
             newProviderBaseUrl={newProviderBaseUrl}
             newProviderKey={newProviderKey}
+            newProviderKeyStorage={newProviderKeyStorage}
             nextProviderPlaceholder={nextProviderPlaceholder}
             setNewProviderName={setNewProviderName}
             setNewProviderBaseUrl={setNewProviderBaseUrl}
             setNewProviderKey={setNewProviderKey}
+            setNewProviderKeyStorage={setNewProviderKeyStorage}
             addProvider={addProvider}
             openProviderGroupManager={openProviderGroupManager}
             setConfigModalOpen={setConfigModalOpen}

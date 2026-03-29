@@ -34,10 +34,12 @@ describe('ConfigModal', () => {
         newProviderName=""
         newProviderBaseUrl=""
         newProviderKey=""
+        newProviderKeyStorage="auth_json"
         nextProviderPlaceholder="provider1"
         setNewProviderName={() => undefined}
         setNewProviderBaseUrl={() => undefined}
         setNewProviderKey={() => undefined}
+        setNewProviderKeyStorage={() => undefined}
         onAddProvider={() => undefined}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
@@ -63,10 +65,12 @@ describe('ConfigModal', () => {
         newProviderName=""
         newProviderBaseUrl=""
         newProviderKey=""
+        newProviderKeyStorage="auth_json"
         nextProviderPlaceholder="provider1"
         setNewProviderName={() => undefined}
         setNewProviderBaseUrl={() => undefined}
         setNewProviderKey={() => undefined}
+        setNewProviderKeyStorage={() => undefined}
         onAddProvider={() => undefined}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}

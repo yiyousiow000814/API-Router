@@ -280,6 +280,23 @@ fn strip_notification_event_id(value: &Value) -> Value {
     Value::Object(next)
 }
 
+fn normalize_remote_app_server_params(method: &str, params: Value) -> Value {
+    let Some(obj) = params.as_object() else {
+        return params;
+    };
+    let mut next = obj.clone();
+    if method == "thread/start" {
+        next.remove("persistExtendedHistory");
+        next.remove("persistFullHistory");
+    }
+    if method == "turn/start" {
+        next.remove("collaborationMode");
+        next.remove("collaboration_mode");
+        next.remove("collaboration_mode_kind");
+    }
+    Value::Object(next)
+}
+
 pub(super) async fn codex_ws(
     State(st): State<GatewayState>,
     headers: HeaderMap,
@@ -399,7 +416,20 @@ async fn codex_app_server_ws_loop(
                                     }
                                     continue;
                                 }
-                                let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
+                                let params = normalize_remote_app_server_params(
+                                    method,
+                                    value.get("params").cloned().unwrap_or_else(|| json!({})),
+                                );
+                                if method == "thread/start" {
+                                    let _ = super::web_codex_storage::append_codex_live_trace_entry(&json!({
+                                        "source": "backend.appws",
+                                        "entry": {
+                                            "kind": "appws.thread_start",
+                                            "at": unix_ms(),
+                                            "params": params,
+                                        }
+                                    }));
+                                }
                                 let Some(id) = id else {
                                     continue;
                                 };
@@ -1319,19 +1349,44 @@ mod tests {
 
             let deadline = Instant::now() + Duration::from_secs(6);
             let mut payloads = Vec::new();
-            while payloads.len() < 6 && Instant::now() < deadline {
+            let mut saw_thread_win = false;
+            let mut saw_thread_wsl = false;
+            let mut saw_workspace_win = false;
+            let mut saw_workspace_wsl = false;
+            while Instant::now() < deadline
+                && !(saw_thread_win && saw_thread_wsl && saw_workspace_win && saw_workspace_wsl)
+            {
                 let value = recv_ws_json(&mut socket).await;
                 if value.get("type").and_then(Value::as_str) != Some("rpc.notification") {
                     continue;
                 }
-                payloads.push(value.get("payload").cloned().unwrap_or(Value::Null));
+                let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+                let payload_text =
+                    serde_json::to_string(&payload).expect("serialize notification payload");
+                saw_thread_win |= payload_text.contains("thread-win-dual");
+                saw_thread_wsl |= payload_text.contains("thread-wsl-dual");
+                saw_workspace_win |= payload_text.contains("\"workspace\":\"windows\"");
+                saw_workspace_wsl |= payload_text.contains("\"workspace\":\"wsl2\"");
+                payloads.push(payload);
             }
 
             let payload_text = serde_json::to_string(&payloads).expect("serialize payloads");
-            assert!(payload_text.contains("thread-win-dual"));
-            assert!(payload_text.contains("thread-wsl-dual"));
-            assert!(payload_text.contains("\"workspace\":\"windows\""));
-            assert!(payload_text.contains("\"workspace\":\"wsl2\""));
+            assert!(
+                saw_thread_win,
+                "missing windows thread notification: {payload_text}"
+            );
+            assert!(
+                saw_thread_wsl,
+                "missing wsl thread notification: {payload_text}"
+            );
+            assert!(
+                saw_workspace_win,
+                "missing windows workspace notification: {payload_text}"
+            );
+            assert!(
+                saw_workspace_wsl,
+                "missing wsl workspace notification: {payload_text}"
+            );
 
             drop(socket);
         })
@@ -1947,5 +2002,323 @@ mod tests {
         crate::codex_app_server::_set_test_request_handler(None).await;
         crate::codex_app_server::_clear_notifications_for_test().await;
         test_result.expect("app-server websocket proxy timed out");
+    }
+
+    #[tokio::test]
+    async fn app_server_websocket_root_route_forwards_requests_and_replays_notifications() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("codex-home");
+        std::fs::create_dir_all(&home).expect("create codex home");
+        let home_text = home.to_string_lossy().to_string();
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new({
+            let home_text = home_text.clone();
+            move |codex_home, method, params| match method {
+                "thread/read" => {
+                    assert_eq!(codex_home, Some(home_text.as_str()));
+                    assert_eq!(params.get("id").and_then(Value::as_str), Some("thread-1"));
+                    Ok(json!({ "thread": { "id": "thread-1" } }))
+                }
+                other => Err(format!("unsupported test rpc method: {other}")),
+            }
+        })))
+        .await;
+        let state = build_test_gateway_state(&tmp);
+        let app = build_router(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let test_result = tokio::time::timeout(Duration::from_secs(10), async {
+            let home_query = urlencoding::encode(&home_text);
+            let ws_url = format!(
+                "ws://127.0.0.1:{}/?token=test-token&home={}",
+                addr.port(),
+                home_query
+            );
+            let (mut socket, _) = connect_async(&ws_url).await.expect("connect ws");
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {
+                                "name": "codex-tui",
+                                "version": "test"
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send initialize");
+            let init = recv_matching_ws_json(&mut socket, json!(1)).await;
+            assert_eq!(
+                init.get("result")
+                    .and_then(|value| value.get("platformOs"))
+                    .and_then(Value::as_str),
+                Some(std::env::consts::OS)
+            );
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "method": "initialized",
+                        "params": {}
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send initialized");
+
+            crate::codex_app_server::_push_notification_for_test(
+                Some(&home_text),
+                json!({
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "thread-1"
+                    }
+                }),
+            )
+            .await;
+            let notif = recv_ws_json(&mut socket).await;
+            assert_eq!(
+                notif.get("method").and_then(Value::as_str),
+                Some("turn/started")
+            );
+            assert!(notif.get("eventId").is_none());
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "id": 2,
+                        "method": "thread/read",
+                        "params": {
+                            "id": "thread-1"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send thread/read");
+            let response = recv_matching_ws_json(&mut socket, json!(2)).await;
+            assert_eq!(
+                response
+                    .get("result")
+                    .and_then(|value| value.get("thread"))
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str),
+                Some("thread-1")
+            );
+
+            drop(socket);
+        })
+        .await;
+
+        server.abort();
+        crate::codex_app_server::_set_test_request_handler(None).await;
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        test_result.expect("app-server root route timed out");
+    }
+
+    #[tokio::test]
+    async fn app_server_websocket_thread_start_strips_extended_history_flags() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_codex_home, method, params| match method {
+                "thread/start" => {
+                    assert!(params.get("persistExtendedHistory").is_none());
+                    assert!(params.get("persistFullHistory").is_none());
+                    assert_eq!(params.get("model").and_then(Value::as_str), Some("gpt-5.4"));
+                    Ok(json!({ "thread": { "id": "thread-1" } }))
+                }
+                other => Err(format!("unsupported test rpc method: {other}")),
+            },
+        )))
+        .await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = build_test_gateway_state(&tmp);
+        let app = build_router(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let test_result = tokio::time::timeout(Duration::from_secs(10), async {
+            let ws_url = format!("ws://127.0.0.1:{}/?token=test-token", addr.port());
+            let (mut socket, _) = connect_async(&ws_url).await.expect("connect ws");
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {
+                                "name": "codex-tui",
+                                "version": "test"
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send initialize");
+            let _ = recv_matching_ws_json(&mut socket, json!(1)).await;
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "method": "initialized",
+                        "params": {}
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send initialized");
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "id": 2,
+                        "method": "thread/start",
+                        "params": {
+                            "model": "gpt-5.4",
+                            "persistExtendedHistory": true,
+                            "persistFullHistory": true
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send thread/start");
+            let response = recv_matching_ws_json(&mut socket, json!(2)).await;
+            assert_eq!(
+                response
+                    .get("result")
+                    .and_then(|value| value.get("thread"))
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str),
+                Some("thread-1")
+            );
+
+            drop(socket);
+        })
+        .await;
+
+        server.abort();
+        crate::codex_app_server::_set_test_request_handler(None).await;
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        test_result.expect("app-server thread/start strip timed out");
+    }
+
+    #[tokio::test]
+    async fn app_server_websocket_turn_start_strips_collaboration_mode() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_codex_home, method, params| match method {
+                "turn/start" => {
+                    assert!(params.get("collaborationMode").is_none());
+                    assert!(params.get("collaboration_mode").is_none());
+                    assert!(params.get("collaboration_mode_kind").is_none());
+                    assert_eq!(
+                        params.get("threadId").and_then(Value::as_str),
+                        Some("thread-1")
+                    );
+                    Ok(json!({ "turn": { "id": "turn-1" } }))
+                }
+                other => Err(format!("unsupported test rpc method: {other}")),
+            },
+        )))
+        .await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = build_test_gateway_state(&tmp);
+        let app = build_router(state);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let test_result = tokio::time::timeout(Duration::from_secs(10), async {
+            let ws_url = format!("ws://127.0.0.1:{}/?token=test-token", addr.port());
+            let (mut socket, _) = connect_async(&ws_url).await.expect("connect ws");
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {
+                                "name": "codex-tui",
+                                "version": "test"
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send initialize");
+            let _ = recv_matching_ws_json(&mut socket, json!(1)).await;
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "method": "initialized",
+                        "params": {}
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send initialized");
+
+            socket
+                .send(WsMessage::Text(
+                    json!({
+                        "id": 2,
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": "thread-1",
+                            "collaborationMode": "plan",
+                            "collaboration_mode_kind": "plan"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .await
+                .expect("send turn/start");
+            let response = recv_matching_ws_json(&mut socket, json!(2)).await;
+            assert_eq!(
+                response
+                    .get("result")
+                    .and_then(|value| value.get("turn"))
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str),
+                Some("turn-1")
+            );
+
+            drop(socket);
+        })
+        .await;
+
+        server.abort();
+        crate::codex_app_server::_set_test_request_handler(None).await;
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        test_result.expect("app-server turn/start strip timed out");
     }
 }

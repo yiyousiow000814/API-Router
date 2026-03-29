@@ -329,16 +329,19 @@ async function main() {
           const archiveNodes = Array.from(document.querySelectorAll('#chatBox .commentaryArchiveMount'));
           return {
             assistantNodes,
+            finalAnswerCount: assistantNodes.filter((text) => text === 'final answer').length,
             archiveCount: archiveNodes.length,
             archiveTexts: archiveNodes.map((node) => String(node.querySelector('.commentaryArchiveCount')?.textContent || '').trim()),
             globalArchiveExists: !!document.querySelector('#commentaryArchiveMount'),
             runtimeHtml: String(document.querySelector('#runtimeToolInline')?.innerHTML || ''),
           };
         `)
-        return result.assistantNodes.includes('final answer') &&
+        return result.finalAnswerCount === 1 &&
+          result.assistantNodes.includes('final answer') &&
           result.assistantNodes.includes('second final answer') &&
           result.archiveCount === 2 &&
-          result.archiveTexts.every((text) => text.includes('previous message')) &&
+          result.archiveTexts[0] === '2 commentary messages, 2 used tools' &&
+          result.archiveTexts[1] === '1 commentary message, 1 used tool' &&
           result.globalArchiveExists === false
       }, 5000, 'final answers and inline commentary archives')
     } catch (error) {

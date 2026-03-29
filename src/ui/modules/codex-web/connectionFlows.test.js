@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createConnectionFlowsModule,
+  getVisiblePendingUserInputs,
+  normalizePendingUserInputQuestions,
+  parsePendingOptionDisplay,
   normalizePendingSelection,
   pickPendingDefaults,
 } from "./connectionFlows.js";
@@ -31,6 +34,73 @@ describe("connectionFlows", () => {
       normalizePendingSelection([{ id: "a1" }, { id: "a2" }], "missing", "a1")
     ).toBe("a1");
     expect(normalizePendingSelection([], "missing", "")).toBe("");
+  });
+
+  it("normalizes request_user_input questions and options", () => {
+    expect(
+      normalizePendingUserInputQuestions({
+        questions: [
+          {
+            id: "route",
+            header: "Question 1/1",
+            question: "Which path?",
+            options: [
+              { label: "Debug", description: "Use mock transport" },
+              { label: "Runtime", description: "Hit app-server" },
+            ],
+          },
+        ],
+      })
+    ).toEqual([
+      {
+        id: "route",
+        header: "Question 1/1",
+        prompt: "Which path?",
+        options: [
+          { label: "Debug", description: "Use mock transport" },
+          { label: "Runtime", description: "Hit app-server" },
+        ],
+      },
+    ]);
+  });
+
+  it("parses option display metadata including recommended badge", () => {
+    expect(
+      parsePendingOptionDisplay(
+        { label: "Debug hooks (Recommended)", description: "Use injected samples." },
+        0
+      )
+    ).toEqual({
+      label: "Debug hooks",
+      description: "Use injected samples.",
+      recommended: true,
+      ordinal: 1,
+    });
+  });
+
+  it("filters real pending user inputs to the active thread when thread ids are present", () => {
+    expect(
+      getVisiblePendingUserInputs({
+        activeThreadId: "thread-1",
+        pendingUserInputs: [
+          { id: "u1", threadId: "thread-1" },
+          { id: "u2", threadId: "thread-2" },
+        ],
+      })
+    ).toEqual([{ id: "u1", threadId: "thread-1" }]);
+  });
+
+  it("hides pending user inputs for interrupted active thread history", () => {
+    expect(
+      getVisiblePendingUserInputs({
+        activeThreadId: "thread-1",
+        activeThreadHistoryStatusType: "interrupted",
+        pendingUserInputs: [{ id: "u1", threadId: "thread-1" }],
+        syntheticPendingUserInputsByThreadId: {
+          "thread-1": [{ id: "s1", prompt: "Question" }],
+        },
+      })
+    ).toEqual([]);
   });
 
   it("ignores host rendering when host list UI is absent", () => {
@@ -195,6 +265,7 @@ describe("connectionFlows", () => {
           className: "",
           innerHTML: "",
           onclick: null,
+          classList: { add() {} },
         };
       },
     };
@@ -243,6 +314,78 @@ describe("connectionFlows", () => {
       expect(approvalIdInput.value).toBe("a2");
       expect(userInputIdInput.value).toBe("u2");
       expect(statusMessages).toEqual(["Selected approval a2", "Selected user_input u2"]);
+    } finally {
+      delete globalThis.document;
+    }
+  });
+
+  it("stores draft answers for pending user inputs and prunes removed ids", () => {
+    const approvalIdInput = { value: "" };
+    const userInputIdInput = { value: "" };
+    const approvalList = { innerHTML: "", appendChild() {} };
+    const userInputList = { innerHTML: "", appendChild() {} };
+    const state = {
+      activeHostId: "",
+      pendingApprovals: [],
+      pendingUserInputs: [],
+      pendingUserInputAnswersById: {},
+      pendingUserInputAnswerModesById: {},
+      selectedPendingApprovalId: "",
+      selectedPendingUserInputId: "",
+    };
+    globalThis.document = {
+      createElement() {
+        return {
+          className: "",
+          innerHTML: "",
+          onclick: null,
+          classList: { add() {} },
+        };
+      },
+    };
+    const module = createConnectionFlowsModule({
+      state,
+      byId(id) {
+        if (id === "approvalIdInput") return approvalIdInput;
+        if (id === "userInputIdInput") return userInputIdInput;
+        if (id === "approvalPendingList") return approvalList;
+        if (id === "userInputPendingList") return userInputList;
+        return null;
+      },
+      api: async () => ({}),
+      wsSend: () => false,
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      ensureArrayItems: (value) => (Array.isArray(value) ? value : []),
+      escapeHtml: (value) => String(value || ""),
+      blockInSandbox: () => false,
+      TOKEN_STORAGE_KEY: "token",
+      getEmbeddedToken: () => "",
+      refreshModels: async () => {},
+      refreshCodexVersions: async () => {},
+      refreshThreads: async () => {},
+      getWorkspaceTarget: () => "windows",
+      isWorkspaceAvailable: () => false,
+      setStatus: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      addChat: () => {},
+    });
+
+    try {
+      module.applyPendingPayloads([], [{ id: "u1", prompt: "Which path?", questions: [{ id: "route", question: "Which path?", options: [{ label: "Debug" }] }] }]);
+      expect(module.getPendingUserInputDraftAnswers("u1")).toEqual({});
+
+      module.setPendingUserInputDraftAnswer("u1", "route", "Debug");
+      expect(module.getPendingUserInputDraftAnswers("u1")).toEqual({ route: "Debug" });
+
+      module.setPendingUserInputDraftAnswer("u1", "route", "Custom path", { mode: "freeform" });
+      expect(module.getPendingUserInputDraftMode("u1", "route")).toBe("freeform");
+      expect(module.getPendingUserInputDraftAnswers("u1")).toEqual({ route: "Custom path" });
+
+      module.applyPendingPayloads([], [{ id: "u2", prompt: "Other?" }]);
+      expect(module.getPendingUserInputDraftAnswers("u1")).toEqual({});
+      expect(module.getPendingUserInputDraftAnswers("u2")).toEqual({});
     } finally {
       delete globalThis.document;
     }

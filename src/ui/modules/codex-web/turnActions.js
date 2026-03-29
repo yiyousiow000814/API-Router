@@ -2,9 +2,14 @@ import {
   activeThreadHistoryTurnCount,
   clearPendingTurnRuntimePlaceholder as clearPendingTurnRuntimePlaceholderState,
   primePendingTurnRuntime as primePendingTurnRuntimeState,
+  resetPendingTurnRuntime,
   resetTurnPresentationState,
   syncPendingTurnRuntime,
 } from "./runtimeState.js";
+import {
+  clearProposedPlanConfirmation,
+  getProposedPlanConfirmation,
+} from "./proposedPlan.js";
 
 export function buildTurnPayload({
   activeThreadId,
@@ -189,6 +194,10 @@ export function createTurnActionsModule(deps) {
     refreshThreads,
     refreshHosts,
     refreshPending,
+    clearPendingUserInputs = () => false,
+    clearSyntheticPendingUserInputById = () => false,
+    setSyntheticPendingUserInputs = () => false,
+    suppressSyntheticPendingUserInputs = () => false,
     setStatus,
     setActiveThread,
     setMainTab,
@@ -206,6 +215,30 @@ export function createTurnActionsModule(deps) {
     TextDecoderRef = TextDecoder,
   } = deps;
   const storage = localStorageRef ?? globalThis.localStorage ?? { setItem() {} };
+  function shouldMirrorPendingResolutionToChat() {
+    return !(globalThis.window?.__webCodexDebug?.isPreviewPendingActive?.() === true);
+  }
+
+  function buildApprovedPlanPrompt(confirmation) {
+    const plan = confirmation?.plan && typeof confirmation.plan === "object" ? confirmation.plan : null;
+    const markdownBody = String(plan?.markdownBody || "").trim();
+    if (markdownBody) {
+      return `Implement this approved plan exactly:\n\n${markdownBody}`;
+    }
+    const title = String(plan?.title || "").trim();
+    const explanation = String(plan?.explanation || "").trim();
+    const stepLines = Array.isArray(plan?.steps)
+      ? plan.steps
+          .map((step) => String(step?.step || "").trim())
+          .filter(Boolean)
+          .map((step) => `- ${step}`)
+      : [];
+    return [
+      title ? `Implement this approved plan: ${title}` : "Implement this approved plan.",
+      explanation,
+      ...stepLines,
+    ].filter(Boolean).join("\n");
+  }
 
   function setAttachPending(active = false) {
     state.activeThreadAttachPendingUntil = active ? Date.now() + 2400 : 0;
@@ -287,8 +320,55 @@ export function createTurnActionsModule(deps) {
   }
 
   function resetLiveTurnStateForNewTurn() {
+    const threadId = String(state.activeThreadId || state.activeThreadPendingTurnThreadId || "").trim();
     state.activeThreadHistoryReqSeq = Math.max(0, Number(state.activeThreadHistoryReqSeq || 0)) + 1;
     resetTurnPresentationState(state, { bumpLiveEpoch: true });
+    if (threadId && state.suppressedIncompleteHistoryRuntimeByThreadId) {
+      delete state.suppressedIncompleteHistoryRuntimeByThreadId[threadId];
+    }
+    if (threadId) clearProposedPlanConfirmation(state, threadId);
+    if (threadId) setSyntheticPendingUserInputs(threadId, []);
+    clearTransientToolMessages();
+    clearTransientThinkingMessages();
+    syncPendingTurnUi();
+    updateMobileComposerState();
+  }
+
+  function clearPlanTurnArtifacts(threadId, options = {}) {
+    const normalizedThreadId = String(threadId || state.activeThreadPendingTurnThreadId || state.activeThreadId || "").trim();
+    const liveAssistantThreadId = String(state.activeThreadLiveAssistantThreadId || "").trim();
+    const liveAssistantIndex = Number(state.activeThreadLiveAssistantIndex);
+    const liveAssistantMsgNode = state.activeThreadLiveAssistantMsgNode;
+    if (
+      normalizedThreadId &&
+      liveAssistantThreadId === normalizedThreadId &&
+      Array.isArray(state.activeThreadMessages) &&
+      liveAssistantIndex >= 0 &&
+      liveAssistantIndex < state.activeThreadMessages.length
+    ) {
+      state.activeThreadMessages.splice(liveAssistantIndex, 1);
+    }
+    liveAssistantMsgNode?.remove?.();
+    resetTurnPresentationState(state, { bumpLiveEpoch: options.bumpLiveEpoch === true });
+    resetPendingTurnRuntime(state);
+    if (normalizedThreadId) {
+      state.suppressedIncompleteHistoryRuntimeByThreadId = {
+        ...(state.suppressedIncompleteHistoryRuntimeByThreadId && typeof state.suppressedIncompleteHistoryRuntimeByThreadId === "object"
+          ? state.suppressedIncompleteHistoryRuntimeByThreadId
+          : {}),
+        [normalizedThreadId]: true,
+      };
+      state.suppressedLiveInterruptByThreadId = {
+        ...(state.suppressedLiveInterruptByThreadId && typeof state.suppressedLiveInterruptByThreadId === "object"
+          ? state.suppressedLiveInterruptByThreadId
+          : {}),
+        [normalizedThreadId]: true,
+      };
+      clearProposedPlanConfirmation(state, normalizedThreadId);
+      clearPendingUserInputs({ threadId: normalizedThreadId });
+      setSyntheticPendingUserInputs(normalizedThreadId, []);
+      suppressSyntheticPendingUserInputs(normalizedThreadId, true);
+    }
     clearTransientToolMessages();
     clearTransientThinkingMessages();
     syncPendingTurnUi();
@@ -554,20 +634,45 @@ export function createTurnActionsModule(deps) {
     const turnId = String(state.activeThreadPendingTurnId || "").trim();
     if (!threadId) throw new Error("No running turn to stop.");
     const workspace = String(state.activeThreadWorkspace || state.workspaceTarget || "").trim();
-    const result = turnId
-      ? await api(`/codex/turns/${encodeURIComponent(turnId)}/interrupt`, {
-          method: "POST",
-        })
-      : await api(
+    const attachTransport =
+      String(
+        state.activeThreadAttachTransport ||
+        state.threadAttachTransportById?.get?.(threadId) ||
+        ""
+      )
+        .trim()
+        .toLowerCase();
+    const useThreadInterrupt = attachTransport === "terminal-session" || !turnId;
+    pushLiveDebugEvent("turn.interrupt:request", {
+      threadId,
+      turnId,
+      workspace,
+      attachTransport,
+      useThreadInterrupt,
+      historyStatusType: String(state.activeThreadHistoryStatusType || "").trim().toLowerCase(),
+      pendingRunning: state.activeThreadPendingTurnRunning === true,
+    });
+    const result = useThreadInterrupt
+      ? await api(
           `/codex/threads/${encodeURIComponent(threadId)}/interrupt${
             workspace === "windows" || workspace === "wsl2"
               ? `?workspace=${encodeURIComponent(workspace)}`
               : ""
           }`,
           { method: "POST" }
-        );
+        )
+      : await api(`/codex/turns/${encodeURIComponent(turnId)}/interrupt`, {
+          method: "POST",
+        });
+    clearPlanTurnArtifacts(threadId, { bumpLiveEpoch: true });
+    await refreshPending().catch(() => {});
+    pushLiveDebugEvent("turn.interrupt:cleared", {
+      threadId,
+      turnId,
+      historyStatusType: String(state.activeThreadHistoryStatusType || "").trim().toLowerCase(),
+      pendingRunning: state.activeThreadPendingTurnRunning === true,
+    });
     if (options.setStatus !== false) setStatus("Stopping current turn...");
-    updateMobileComposerState();
     return result;
   }
 
@@ -1085,11 +1190,12 @@ export function createTurnActionsModule(deps) {
     setStatus(`Attachment uploaded: ${data.fileName || file.name}`);
   }
 
-  async function resolveApproval() {
+  async function resolveApproval(options = {}) {
     if (blockInSandbox("approval resolve")) return;
-    const id = String(state.selectedPendingApprovalId || byId("approvalIdInput").value || "").trim();
-    const decision = byId("approvalDecisionSelect").value;
+    const id = String(options.id || state.selectedPendingApprovalId || byId("approvalIdInput")?.value || "").trim();
+    const decision = String(options.decision || byId("approvalDecisionSelect")?.value || "").trim();
     if (!id) throw new Error("approval id required");
+    if (!decision) throw new Error("approval decision required");
     connectWs();
     let data;
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
@@ -1100,17 +1206,23 @@ export function createTurnActionsModule(deps) {
         body: { decision },
       });
     }
-    addChat("system", `approval resolved: ${JSON.stringify(data)}`);
+    if (shouldMirrorPendingResolutionToChat()) {
+      addChat("system", `approval resolved: ${JSON.stringify(data)}`);
+    }
     await refreshPending();
   }
 
-  async function resolveUserInput() {
+  async function resolveUserInput(options = {}) {
     if (blockInSandbox("user input resolve")) return;
-    const id = String(state.selectedPendingUserInputId || byId("userInputIdInput").value || "").trim();
-    const answerKey = byId("userInputAnswerKeyInput").value.trim();
-    const answerValue = byId("userInputAnswerValueInput").value.trim();
-    if (!id || !answerKey) throw new Error("user_input id and answer key required");
-    const answers = { [answerKey]: answerValue };
+    const id = String(options.id || state.selectedPendingUserInputId || byId("userInputIdInput")?.value || "").trim();
+    const explicitAnswers =
+      options.answers && typeof options.answers === "object" ? options.answers : null;
+    const answerKey = String(byId("userInputAnswerKeyInput")?.value || "").trim();
+    const answerValue = String(byId("userInputAnswerValueInput")?.value || "").trim();
+    const answers = explicitAnswers || (answerKey ? { [answerKey]: answerValue } : null);
+    if (!id || !answers || !Object.keys(answers).length) {
+      throw new Error("user_input id and answers required");
+    }
     connectWs();
     let data;
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
@@ -1121,8 +1233,33 @@ export function createTurnActionsModule(deps) {
         body: { answers },
       });
     }
-    addChat("system", `user input resolved: ${JSON.stringify(data)}`);
+    if (shouldMirrorPendingResolutionToChat()) {
+      addChat("system", `user input resolved: ${JSON.stringify(data)}`);
+    }
+    clearSyntheticPendingUserInputById(id);
     await refreshPending();
+  }
+
+  async function resolveProposedPlanConfirmation(options = {}) {
+    const threadId = String(options.threadId || state.activeThreadId || "").trim();
+    if (!threadId) throw new Error("thread id required");
+    const confirmation = getProposedPlanConfirmation(state, threadId);
+    if (!confirmation) throw new Error("no proposed plan confirmation available");
+    const decision = String(options.decision || "").trim().toLowerCase();
+    if (decision !== "approve" && decision !== "stay") {
+      throw new Error("plan decision required");
+    }
+    clearProposedPlanConfirmation(state, threadId);
+    if (decision === "approve") {
+      state.planModeEnabled = false;
+      renderComposerContextLeft();
+      updateHeaderUi();
+      setStatus("Switching to Default and implementing plan.");
+      await sendTurn(buildApprovedPlanPrompt(confirmation));
+      return { ok: true, local: true, action: "implement" };
+    }
+    setStatus("Staying in Plan mode.");
+    return { ok: true, local: true, action: "stay" };
   }
 
   return {
@@ -1139,6 +1276,7 @@ export function createTurnActionsModule(deps) {
     openManagedTerminalSurface,
     queueFollowUpTurn,
     resolveApproval,
+    resolveProposedPlanConfirmation,
     resolveUserInput,
     saveQueuedTurnEdit,
     sendNowTurn,

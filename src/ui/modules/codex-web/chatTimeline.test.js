@@ -447,6 +447,72 @@ describe("chatTimeline", () => {
     expect(node.querySelector(".commentaryArchiveBody")?.attributes.get("aria-hidden")).toBe("true");
   });
 
+  it("renders pending approvals and questions inline in the chat flow", () => {
+    state.pendingApprovals = [{ id: "approval-1", prompt: "Allow command?" }];
+    state.pendingUserInputs = [{
+      id: "input-1",
+      prompt: "Choose path",
+      questions: [{
+        id: "route",
+        header: "Question 1/1",
+        question: "Which path?",
+        options: [{ label: "Debug" }, { label: "Runtime" }],
+      }],
+    }];
+    state.pendingUserInputAnswersById = { "input-1": { route: "Debug" } };
+
+    module.renderPendingInline();
+
+    const mount = dom.documentRef.getElementById("pendingInlineMount");
+    expect(mount).not.toBeNull();
+    expect(String(mount?.className || "")).toContain("kind-pending");
+    const itemTitles = mount?.querySelectorAll(".itemTitle") || [];
+    expect(itemTitles.some((node) => String(node.textContent || "").includes("approval-1"))).toBe(true);
+    expect(String(mount?.__webCodexRawText || "")).toContain("1 approval");
+  });
+
+  it("renders synthetic pending questions for the active thread", () => {
+    module.addChat("assistant", "older", { animate: false, scroll: false });
+    state.activeThreadId = "thread-1";
+    state.pendingApprovals = [];
+    state.pendingUserInputs = [];
+    state.syntheticPendingUserInputsByThreadId = {
+      "thread-1": [
+        {
+          id: "input-tool-1",
+          prompt: "Where should preview appear?",
+          questions: [
+            {
+              id: "scope",
+              header: "Question 1/1",
+              question: "Where should preview appear?",
+              options: [{ label: "Current chat" }],
+            },
+          ],
+        },
+      ],
+    };
+
+    module.renderPendingInline();
+
+    const mount = dom.documentRef.getElementById("pendingInlineMount");
+    const itemTitles = mount?.querySelectorAll(".itemTitle") || [];
+    expect(itemTitles.length).toBe(0);
+    expect(String(mount?.querySelector?.(".pendingInlineTitle")?.textContent || "")).toContain("Question 1/1");
+    expect(mount?.querySelector?.(".pendingInlineQuestionHeader")).toBeNull();
+    expect(dom.chatBox.children[dom.chatBox.children.length - 1]).toBe(mount);
+  });
+
+  it("keeps pending inline mount at the end of the timeline", () => {
+    state.pendingApprovals = [{ id: "approval-2", prompt: "Allow write?" }];
+    module.renderPendingInline();
+
+    const pendingMount = dom.documentRef.getElementById("pendingInlineMount");
+    module.addChat("assistant", "done", { animate: false, scroll: false });
+
+    expect(dom.chatBox.children[dom.chatBox.children.length - 1]).toBe(pendingMount);
+  });
+
   it("renders commentary archive plan cards before thinking and tools", () => {
     const node = module.buildMsgNode({
       role: "system",

@@ -76,8 +76,43 @@ export function latestTurnContainsPendingUserEcho(thread, state = {}, parseUserM
   return false;
 }
 
+export function isTerminalInterruptedHistory(thread, state = {}) {
+  const threadStatusType = String(thread?.status?.type || "").trim().toLowerCase();
+  const historyStatusType = String(state.activeThreadHistoryStatusType || "").trim().toLowerCase();
+  const statusType = threadStatusType || historyStatusType;
+  if (!statusType) return false;
+  return statusType === "interrupted" || statusType === "cancelled";
+}
+
+export function shouldOmitLatestIncompleteTurnArtifacts(thread, state = {}) {
+  if (thread?.page?.incomplete !== true) return false;
+  const threadId = String(thread?.id || state.activeThreadId || "").trim();
+  if (threadId && state.suppressedIncompleteHistoryRuntimeByThreadId?.[threadId] === true) {
+    return true;
+  }
+  return isTerminalInterruptedHistory(thread, state);
+}
+
+export function omitLatestIncompleteTurnArtifacts(messages, enabled = false) {
+  const items = Array.isArray(messages) ? messages : [];
+  if (!enabled || !items.length) return items;
+  let trimIndex = items.length;
+  while (trimIndex > 0) {
+    const entry = items[trimIndex - 1];
+    const role = String(entry?.role || "").trim().toLowerCase();
+    if (role === "assistant" || role === "system") {
+      trimIndex -= 1;
+      continue;
+    }
+    break;
+  }
+  return trimIndex === items.length ? items : items.slice(0, trimIndex);
+}
+
 export function shouldSuppressStalePendingHistoryLiveState(thread, state = {}, parseUserMessageParts) {
   const threadId = String(thread?.id || state.activeThreadId || "").trim();
+  if (threadId && state.suppressedIncompleteHistoryRuntimeByThreadId?.[threadId] === true) return true;
+  if (isTerminalInterruptedHistory(thread, state)) return true;
   const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
   const pendingRunning = state.activeThreadPendingTurnRunning === true;
   const finalAssistantThreadId = String(state.activeThreadLastFinalAssistantThreadId || "").trim();

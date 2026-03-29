@@ -429,6 +429,91 @@ describe("historyLoader", () => {
     expect(messages).toEqual([{ role: "assistant", text: "done", kind: "" }]);
   });
 
+  it("detects standalone plan markdown in session history and records diagnostics", async () => {
+    const state = { liveDebugEvents: [] };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: {},
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 20,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "unknown"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").replace(/[^a-z]/gi, "").toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+    });
+
+    const messages = await module.mapSessionHistoryMessages([
+      {
+        type: "message",
+        role: "assistant",
+        phase: "final_answer",
+        id: "assistant-plan-1",
+        content: [{
+          type: "output_text",
+          text: `# Fix Plan Rendering
+
+## Summary
+Ensure the web client recognizes plan responses even when the wrapper heading is omitted.
+
+### Changes
+- Detect standalone plan markdown before the confirmation prompt
+- Render the inline plan card and local confirmation question
+
+Implement this plan?
+1. Yes, implement this plan
+2. No, stay in Plan mode`,
+        }],
+      },
+    ]);
+
+    expect(messages).toEqual([
+      expect.objectContaining({
+        role: "system",
+        kind: "planCard",
+        plan: expect.objectContaining({ title: "Fix Plan Rendering" }),
+      }),
+    ]);
+    expect(state.liveDebugEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "history.inspect:proposed_plan_detection",
+        source: "history.session",
+        itemId: "assistant-plan-1",
+        hasPlan: true,
+        hasPendingUserInput: true,
+      }),
+    ]));
+  });
+
   it("extracts the latest turn commentary archive from raw turn items", () => {
     const archive = extractLatestCommentaryArchive(
       {
@@ -1175,6 +1260,8 @@ describe("historyLoader", () => {
               turnId: "",
               title: "Updated Plan",
               explanation: "",
+              kind: "",
+              markdownBody: "",
               steps: [
                 { step: "Step 1", status: "pending" },
                 { step: "Step 2", status: "pending" },
@@ -2172,15 +2259,10 @@ describe("historyLoader", () => {
       ],
     });
 
-    expect(added[1]?.kind).toBe("commentaryArchive");
-    expect(added[1]?.archiveBlocks).toEqual([
-      expect.objectContaining({
-        text: "",
-        tools: [],
-        summaryOnly: true,
-      }),
+    expect(added).toEqual([
+      expect.objectContaining({ role: "user", text: "hello", kind: "" }),
+      expect.objectContaining({ role: "assistant", text: "done one", kind: "" }),
     ]);
-    expect(added[2]).toEqual(expect.objectContaining({ role: "assistant", text: "done one", kind: "" }));
   });
 
   it("reconstructs the current commentary block from history on full render while the turn is incomplete", async () => {

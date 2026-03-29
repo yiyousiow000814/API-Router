@@ -366,6 +366,7 @@ const composition = createCodexWebComposition({
   applyToolItemRuntimeUpdate: (...args) => applyToolItemRuntimeUpdate(...args),
   applyPlanDeltaUpdate: (...args) => applyPlanDeltaUpdate(...args),
   applyPlanSnapshotUpdate: (...args) => applyPlanSnapshotUpdate(...args),
+  upsertSyntheticPendingUserInput: (...args) => upsertSyntheticPendingUserInput(...args),
   finalizeRuntimeState: (...args) => finalizeRuntimeState(...args),
   parseUserMessageParts,
   isBootstrapAgentsPrompt,
@@ -498,12 +499,17 @@ const {
   addChat,
   appendStreamingDelta,
   bootstrap,
+  clearPendingUserInputs,
   createAssistantStreamingMessage,
+  suppressSyntheticPendingUserInputs: suppressSyntheticPendingUserInputsFromComposition,
+  setSyntheticPendingUserInputs,
+  upsertSyntheticPendingUserInput,
   executeSlashCommand: executeSlashCommandFromComposition,
   finalizeAssistantMessage,
   flushQueuedTurn,
   renderCommentaryArchive: renderCommentaryArchiveFromComposition,
   renderAssistantLiveBody: renderAssistantLiveBodyFromComposition,
+  renderPendingInline: renderPendingInlineFromComposition,
   getActiveWorkspaceBadgeLabel,
   getStartCwdForWorkspace: getStartCwdForWorkspaceFromComposition,
   getWorkspaceTarget: getWorkspaceTargetFromComposition,
@@ -532,6 +538,7 @@ renderThreads = (...args) => renderThreadsFromComposition(...args);
 executeSlashCommand = (...args) => executeSlashCommandFromComposition(...args);
 renderCommentaryArchive = (...args) => renderCommentaryArchiveFromComposition(...args);
 renderAssistantLiveBody = (...args) => renderAssistantLiveBodyFromComposition(...args);
+const renderPendingInline = (...args) => renderPendingInlineFromComposition(...args);
 
 ({
   blockInSandbox,
@@ -590,6 +597,8 @@ renderAssistantLiveBody = (...args) => renderAssistantLiveBodyFromComposition(..
   normalizeType,
   escapeHtml,
   updateHeaderUi: (...args) => updateHeaderUi(...args),
+  setSyntheticPendingUserInputs: (...args) => setSyntheticPendingUserInputs(...args),
+  upsertSyntheticPendingUserInput: (...args) => upsertSyntheticPendingUserInput(...args),
   LIVE_INSPECTOR_ENABLED_KEY,
   localStorageRef: localStorage,
   documentRef: document,
@@ -651,8 +660,13 @@ renderAssistantLiveBody = (...args) => renderAssistantLiveBodyFromComposition(..
   applyToolItemRuntimeUpdate: (...args) => applyToolItemRuntimeUpdate(...args),
   applyPlanDeltaUpdate: (...args) => applyPlanDeltaUpdate(...args),
   applyPlanSnapshotUpdate: (...args) => applyPlanSnapshotUpdate(...args),
+  clearPendingUserInputs: (...args) => clearPendingUserInputs(...args),
+  setSyntheticPendingUserInputs: (...args) => setSyntheticPendingUserInputs(...args),
+  suppressSyntheticPendingUserInputs: (...args) => suppressSyntheticPendingUserInputsFromComposition(...args),
+  upsertSyntheticPendingUserInput: (...args) => upsertSyntheticPendingUserInput(...args),
   finalizeRuntimeState: (...args) => finalizeRuntimeState(...args),
   flushQueuedTurn: (...args) => flushQueuedTurn(...args),
+  renderPendingInline: (...args) => renderPendingInline(...args),
   renderCommentaryArchive: (...args) => renderCommentaryArchive(...args),
   normalizeType,
   normalizeInline,

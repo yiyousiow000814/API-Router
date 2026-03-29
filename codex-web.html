@@ -1120,7 +1120,333 @@
       color: #1f56be;
     }
     .settingsChoiceBtn:active {
-      transform: scale(0.985);
+      transform: none;
+    }
+    .pendingInlineMount {
+      margin-top: 10px;
+      min-width: 0;
+    }
+    .msg.system.kind-pending {
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      border-color: rgba(15, 23, 42, 0.08);
+      background: #f5f7fb;
+      color: #243043;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+      padding: 12px 14px;
+      transition: border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+    }
+    .msg.system.kind-pending .msgHead {
+      color: #71829b;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .pendingInlineCard {
+      display: grid;
+      gap: 14px;
+      padding: 0;
+      min-width: 0;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .pendingInlineTitle {
+      font-size: 12px;
+      font-weight: 800;
+      color: #23334f;
+      line-height: 1.35;
+    }
+    .pendingInlineSection {
+      display: grid;
+      gap: 8px;
+    }
+    .pendingInlineLabel {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: #7a8aa2;
+      margin: 0 2px;
+    }
+    .pendingInlineItem {
+      display: grid;
+      gap: 12px;
+      padding: 14px;
+      min-width: 0;
+      width: 100%;
+      box-sizing: border-box;
+      border-radius: 14px;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      background: rgba(255, 255, 255, 0.98);
+      transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease, transform 180ms ease;
+    }
+    .pendingInlineItem.is-selected {
+      border-color: rgba(96, 165, 250, 0.32);
+      box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.14);
+    }
+    .pendingInlineSelect {
+      display: grid;
+      gap: 6px;
+      width: 100%;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+      color: inherit;
+    }
+    .pendingInlineSelect .itemTitle {
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.3;
+      color: #203049;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .pendingInlineSelect .itemSub {
+      font-size: 12px;
+      line-height: 1.5;
+      color: #6c7b92;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .pendingInlineActions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .pendingInlineOptions {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+      width: 100%;
+    }
+    .pendingInlineQuestions {
+      display: grid;
+      gap: 10px;
+      min-width: 0;
+      width: 100%;
+    }
+    .pendingInlineQuestion {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      min-width: 0;
+      width: 100%;
+      box-sizing: border-box;
+      border-radius: 12px;
+      background: #f8fafc;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      transition: border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+    }
+    .pendingInlineQuestion-animated {
+      animation: pending-inline-question-in 220ms cubic-bezier(.22, .61, .36, 1);
+    }
+    @keyframes pending-inline-question-in {
+      from {
+        opacity: 0;
+        transform: translate3d(0, 8px, 0) scale(.985);
+      }
+      to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0) scale(1);
+      }
+    }
+    .pendingInlineQuestionHeader {
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: #6f7f98;
+    }
+    .pendingInlineQuestionPrompt {
+      color: #1b2940;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+    .pendingInlineOptionCard {
+      appearance: none;
+      width: 100%;
+      min-width: 0;
+      display: grid;
+      gap: 6px;
+      text-align: left;
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      background: #ffffff;
+      color: #2a3c57;
+      border-radius: 14px;
+      padding: 10px 12px;
+      box-sizing: border-box;
+      font: inherit;
+      cursor: pointer;
+      transition: transform 180ms ease, background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+    }
+    .pendingInlineOptionCard:hover {
+      border-color: rgba(148, 163, 184, 0.34);
+      background: #fcfdff;
+    }
+    .pendingInlineOptionCard.is-active {
+      border-color: rgba(96, 165, 250, 0.34);
+      background: rgba(219, 234, 254, 0.72);
+      box-shadow: inset 0 0 0 1px rgba(191, 219, 254, 0.4);
+    }
+    .pendingInlineOptionCard-ghost {
+      background: #f8fafc;
+    }
+    .pendingInlineOptionTop {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: flex-start;
+      gap: 8px;
+      min-width: 0;
+    }
+    .pendingInlineOptionTitle {
+      min-width: 0;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.35;
+      color: #22324b;
+      overflow-wrap: anywhere;
+    }
+    .pendingInlineOptionBadge {
+      flex: none;
+      max-width: 100%;
+      border-radius: 999px;
+      background: rgba(191, 219, 254, 0.8);
+      color: #215293;
+      padding: 4px 8px;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      transition: background 160ms ease, color 160ms ease, transform 180ms ease;
+    }
+    .pendingInlineOptionDesc {
+      display: block;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #66768f;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      text-wrap: pretty;
+    }
+    .pendingInlineOption {
+      appearance: none;
+      border: 1px solid rgba(148, 163, 184, 0.26);
+      background: #ffffff;
+      color: #37506f;
+      border-radius: 999px;
+      padding: 8px 12px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+    }
+    .pendingInlineOption.is-active {
+      border-color: rgba(96, 165, 250, 0.34);
+      background: rgba(219, 234, 254, 0.88);
+      color: #1f4f94;
+    }
+    .pendingInlineFreeformWrap {
+      display: grid;
+      grid-template-rows: 0fr;
+      min-width: 0;
+      width: 100%;
+      opacity: 0;
+      transform: translate3d(0, -4px, 0);
+      transition: grid-template-rows 220ms ease, opacity 180ms ease, transform 220ms ease;
+    }
+    .pendingInlineFreeformWrap.is-visible {
+      grid-template-rows: 1fr;
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+    .pendingInlineFreeformInner {
+      min-height: 0;
+      min-width: 0;
+      overflow: hidden;
+      opacity: 0;
+      transform: translate3d(0, -6px, 0) scale(.985);
+      transition: opacity 180ms ease, transform 220ms cubic-bezier(.22, .61, .36, 1);
+    }
+    .pendingInlineFreeformWrap.is-visible .pendingInlineFreeformInner {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+      animation: pending-inline-freeform-inner-in 220ms cubic-bezier(.22, .61, .36, 1);
+    }
+    .settingsPendingQuestionHeader,
+    .settingsPendingQuestionPrompt,
+    .settingsPendingOptionTitle,
+    .settingsPendingOptionDesc {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .settingsPendingOptionDesc {
+      display: block;
+      line-height: 1.45;
+    }
+    @keyframes pending-inline-freeform-inner-in {
+      from {
+        opacity: 0;
+        transform: translate3d(0, -6px, 0) scale(.985);
+      }
+      to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0) scale(1);
+      }
+    }
+    .pendingInlineFreeform {
+      display: block;
+      width: 100%;
+      min-width: 0;
+      min-height: 76px;
+      pointer-events: none;
+      resize: none;
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      background: #ffffff;
+      color: #1f2d3d;
+      padding: 10px 12px;
+      font: inherit;
+      font-size: 13px;
+      line-height: 1.45;
+      box-sizing: border-box;
+      margin-top: 0;
+      opacity: 0;
+      transform: translate3d(0, -8px, 0);
+      transition: opacity 150ms ease, transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+    }
+    .pendingInlineFreeformWrap.is-visible .pendingInlineFreeform {
+      pointer-events: auto;
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+      animation: pending-inline-freeform-in 240ms cubic-bezier(.22, .61, .36, 1);
+    }
+    @keyframes pending-inline-freeform-in {
+      from {
+        opacity: 0;
+        transform: translate3d(0, -8px, 0);
+      }
+      to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+      }
+    }
+    .pendingInlineFreeform::placeholder {
+      color: #8a98ad;
+    }
+    .pendingInlineFreeform:focus {
+      outline: none;
+      border-color: rgba(96, 165, 250, 0.42);
+      box-shadow: 0 0 0 3px rgba(191, 219, 254, 0.32);
     }
     .welcomeCard {
       width: min(100%, 440px);
@@ -1253,6 +1579,14 @@
     .msg.system {
       border-color: rgba(255, 203, 102, 0.4);
       background: rgba(43, 33, 13, 0.42);
+    }
+    .msg.system.kind-planCard {
+      border-color: transparent;
+      background: transparent;
+      box-shadow: none;
+      padding: 0;
+      width: 100%;
+      max-width: 100%;
     }
     .msg.system.kind-tool {
       border-color: transparent;
@@ -1397,6 +1731,9 @@
     }
     .commentaryArchivePlanCard {
       animation: none;
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
     }
     .commentaryArchiveTools {
       display: grid;
@@ -1687,6 +2024,32 @@
       margin: 0 0 8px;
       min-width: 0;
     }
+    .msgBody h1,
+    .msgBody h2,
+    .msgBody h3,
+    .msgBody h4,
+    .msgBody h5,
+    .msgBody h6 {
+      margin: 10px 0 6px;
+      min-width: 0;
+      color: #0d1220;
+      font-weight: 700;
+      line-height: 1.3;
+    }
+    .msgBody h1:first-child,
+    .msgBody h2:first-child,
+    .msgBody h3:first-child,
+    .msgBody h4:first-child,
+    .msgBody h5:first-child,
+    .msgBody h6:first-child {
+      margin-top: 0;
+    }
+    .msgBody h1 { font-size: 18px; }
+    .msgBody h2 { font-size: 16px; }
+    .msgBody h3 { font-size: 14px; }
+    .msgBody h4,
+    .msgBody h5,
+    .msgBody h6 { font-size: 13px; }
     .msgBody p:last-child {
       margin-bottom: 0;
     }
@@ -2185,6 +2548,9 @@
       box-shadow: 0 10px 22px rgba(13, 18, 32, 0.05);
       padding: 10px 12px;
     }
+    .runtimePlanCard.runtimePlanCard-proposed {
+      padding: 12px 14px;
+    }
     .runtimePlanCard.runtimePlanCardEnter {
       animation: runtime-panel-in 180ms cubic-bezier(.22,1,.36,1);
     }
@@ -2220,6 +2586,83 @@
       line-height: 1.45;
       color: #16233c;
       margin-bottom: 8px;
+    }
+    .runtimePlanRichBody {
+      font-size: 13px;
+      line-height: 1.5;
+      color: #16233c;
+      min-width: 0;
+    }
+    .runtimePlanRichBody > :last-child {
+      margin-bottom: 0;
+    }
+    .runtimePlanRichBody p {
+      margin: 0 0 8px;
+      min-width: 0;
+    }
+    .runtimePlanRichBody h1,
+    .runtimePlanRichBody h2,
+    .runtimePlanRichBody h3,
+    .runtimePlanRichBody h4,
+    .runtimePlanRichBody h5,
+    .runtimePlanRichBody h6 {
+      margin: 10px 0 6px;
+      min-width: 0;
+      color: #0d1220;
+      font-weight: 700;
+      line-height: 1.3;
+    }
+    .runtimePlanRichBody h1:first-child,
+    .runtimePlanRichBody h2:first-child,
+    .runtimePlanRichBody h3:first-child,
+    .runtimePlanRichBody h4:first-child,
+    .runtimePlanRichBody h5:first-child,
+    .runtimePlanRichBody h6:first-child {
+      margin-top: 0;
+    }
+    .runtimePlanRichBody h1 { font-size: 18px; }
+    .runtimePlanRichBody h2 { font-size: 16px; }
+    .runtimePlanRichBody h3 { font-size: 14px; }
+    .runtimePlanRichBody h4,
+    .runtimePlanRichBody h5,
+    .runtimePlanRichBody h6 { font-size: 13px; }
+    .runtimePlanRichBody p:last-child {
+      margin-bottom: 0;
+    }
+    .runtimePlanRichBody .msgBlankLine {
+      height: 0.9em;
+    }
+    .runtimePlanRichBody ul,
+    .runtimePlanRichBody ol {
+      margin: 4px 0 8px;
+      padding-left: 20px;
+      list-style: none;
+    }
+    .runtimePlanRichBody li {
+      margin: 2px 0;
+      min-width: 0;
+      position: relative;
+    }
+    .runtimePlanRichBody li::before {
+      content: attr(data-list-marker);
+      position: absolute;
+      left: -20px;
+      top: 0;
+      min-width: 16px;
+      text-align: right;
+      color: #52627d;
+      font-variant-numeric: tabular-nums;
+    }
+    .runtimePlanRichBody li > ul,
+    .runtimePlanRichBody li > ol {
+      margin-top: 4px;
+    }
+    .runtimePlanRichBody .msgListItem {
+      margin-left: 0;
+    }
+    .runtimePlanRichBody strong {
+      font-weight: 700;
+      color: #0d1220;
     }
     .runtimePlanSteps {
       display: grid;
@@ -4471,6 +4914,7 @@
                   <div class="row wrap settingsActions settingsActionsDebug">
                     <button id="toggleLiveInspectorBtn">Live inspector: Off</button>
                     <button id="previewUpdatedPlanBtn">Plan Preview: Off</button>
+                    <button id="previewPendingBtn">Pending Preview: Off</button>
                     <span id="liveInspectorState" class="muted">Hidden</span>
                   </div>
                 </section>

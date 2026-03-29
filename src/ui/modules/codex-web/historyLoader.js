@@ -31,6 +31,7 @@ import {
 import {
   captureLiveCommentarySnapshot as captureLiveCommentarySnapshotImpl,
   createCommentarySnapshotFromHistory,
+  isTerminalInterruptedHistory,
   resolveLiveCommentarySnapshot,
   shouldSuppressStalePendingHistoryLiveState,
 } from "./historyLiveCommentaryState.js";
@@ -234,6 +235,8 @@ export function findLatestIncompleteToolMessage(thread, normalizeThreadItemText)
 
 function syncPendingTurnStateFromIncompleteHistory(thread, state = {}) {
   const threadId = String(thread?.id || state.activeThreadId || "").trim();
+  const suppressRuntime = state.suppressedIncompleteHistoryRuntimeByThreadId?.[threadId] === true;
+  const suppressedPending = state.suppressedSyntheticPendingUserInputsByThreadId?.[threadId] === true;
   const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
   const pendingRunning = state.activeThreadPendingTurnRunning === true;
   const pendingUser = String(state.activeThreadPendingUserMessage || "").trim();
@@ -243,6 +246,28 @@ function syncPendingTurnStateFromIncompleteHistory(thread, state = {}) {
   const hasFinalAssistantSnapshot = finalAssistantThreadId === threadId && !!finalAssistantText;
   const pageIncomplete = !!thread?.page?.incomplete;
   if (!threadId) return;
+  if (!pageIncomplete || isTerminalInterruptedHistory(thread, state)) {
+    if (
+      state.suppressedIncompleteHistoryRuntimeByThreadId &&
+      state.suppressedIncompleteHistoryRuntimeByThreadId[threadId] === true
+    ) {
+      delete state.suppressedIncompleteHistoryRuntimeByThreadId[threadId];
+    }
+  }
+  if (suppressRuntime) {
+    if (pendingThreadId && pendingThreadId === threadId) {
+      setPendingTurnRunning(state, threadId, false);
+      resetPendingTurnRuntime(state);
+    }
+    return;
+  }
+  if (suppressedPending) {
+    if (pendingThreadId && pendingThreadId === threadId) {
+      setPendingTurnRunning(state, threadId, false);
+      resetPendingTurnRuntime(state);
+    }
+    return;
+  }
   if (!pageIncomplete) {
     if (pendingThreadId && pendingThreadId === threadId && !pendingUser && !pendingAssistant) {
       setPendingTurnRunning(state, threadId, false);
@@ -436,6 +461,7 @@ export function createHistoryLoaderModule(deps) {
       normalizeThreadItemText,
       pushHistoryMessage,
       isVisibleAssistantHistoryPhase,
+      pushLiveDebugEvent,
     });
   }
 
@@ -450,6 +476,7 @@ export function createHistoryLoaderModule(deps) {
       stripCodexImageBlocks,
       pushHistoryMessage,
       isVisibleAssistantHistoryPhase,
+      pushLiveDebugEvent,
     });
   }
 

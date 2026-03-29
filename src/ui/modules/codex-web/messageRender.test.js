@@ -207,6 +207,21 @@ describe("messageRender", () => {
     expect(html).toContain('msgListItem depth-1');
   });
 
+  it("renders markdown headings as real heading tags instead of plain paragraphs", () => {
+    const html = renderMessageRichHtml(
+      [
+        "## Summary",
+        "Keep the plan card readable.",
+        "",
+        "### Assumptions",
+        "- The turn is awaiting confirmation.",
+      ].join("\n")
+    );
+    expect(html).toContain("<h2>Summary</h2>");
+    expect(html).toContain("<h3>Assumptions</h3>");
+    expect(html).toContain("<p>Keep the plan card readable.</p>");
+  });
+
   it("does not create a phantom outer ordered item for indented top-level numbering", () => {
     const html = renderMessageRichHtml(
       [

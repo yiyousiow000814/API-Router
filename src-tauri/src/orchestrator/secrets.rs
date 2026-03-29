@@ -11,6 +11,8 @@ struct SecretsFile {
     #[serde(default)]
     providers: BTreeMap<String, String>,
     #[serde(default)]
+    provider_key_storage_modes: BTreeMap<String, String>,
+    #[serde(default)]
     provider_account_emails: BTreeMap<String, String>,
     /// Optional non-upstream secrets used by the app (e.g. usage JWTs).
     #[serde(default)]
@@ -108,6 +110,9 @@ pub struct SecretStore {
 }
 
 const GATEWAY_TOKEN_KEY: &str = "__gateway_token__";
+const PROVIDER_KEY_STORAGE_AUTH_JSON: &str = "auth_json";
+const PROVIDER_KEY_STORAGE_CONFIG_TOML_EXPERIMENTAL_BEARER_TOKEN: &str =
+    "config_toml_experimental_bearer_token";
 
 impl SecretStore {
     pub fn path(&self) -> &std::path::Path {
@@ -159,6 +164,19 @@ impl SecretStore {
         self.inner.lock().providers.get(provider).cloned()
     }
 
+    pub fn get_provider_key_storage_mode(&self, provider: &str) -> String {
+        self.inner
+            .lock()
+            .provider_key_storage_modes
+            .get(provider)
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| {
+                value == PROVIDER_KEY_STORAGE_AUTH_JSON
+                    || value == PROVIDER_KEY_STORAGE_CONFIG_TOML_EXPERIMENTAL_BEARER_TOKEN
+            })
+            .unwrap_or_else(|| PROVIDER_KEY_STORAGE_AUTH_JSON.to_string())
+    }
+
     pub fn get_provider_account_email(&self, provider: &str) -> Option<String> {
         self.inner
             .lock()
@@ -187,14 +205,34 @@ impl SecretStore {
     }
 
     pub fn set_provider_key(&self, provider: &str, key: &str) -> Result<(), String> {
+        self.set_provider_key_with_storage_mode(provider, key, None)
+    }
+
+    pub fn set_provider_key_with_storage_mode(
+        &self,
+        provider: &str,
+        key: &str,
+        storage_mode: Option<&str>,
+    ) -> Result<(), String> {
         let mut data = self.inner.lock();
         data.providers.insert(provider.to_string(), key.to_string());
+        let normalized_storage = storage_mode
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| PROVIDER_KEY_STORAGE_AUTH_JSON.to_string());
+        if normalized_storage == PROVIDER_KEY_STORAGE_AUTH_JSON {
+            data.provider_key_storage_modes.remove(provider);
+        } else {
+            data.provider_key_storage_modes
+                .insert(provider.to_string(), normalized_storage);
+        }
         self.persist(&data)
     }
 
     pub fn clear_provider_key(&self, provider: &str) -> Result<(), String> {
         let mut data = self.inner.lock();
         data.providers.remove(provider);
+        data.provider_key_storage_modes.remove(provider);
         self.persist(&data)
     }
 
@@ -288,6 +326,9 @@ impl SecretStore {
         let mut data = self.inner.lock();
         if let Some(v) = data.providers.remove(old) {
             data.providers.insert(new.to_string(), v);
+        }
+        if let Some(v) = data.provider_key_storage_modes.remove(old) {
+            data.provider_key_storage_modes.insert(new.to_string(), v);
         }
         if let Some(v) = data.provider_account_emails.remove(old) {
             data.provider_account_emails.insert(new.to_string(), v);
@@ -894,5 +935,42 @@ mod tests {
 
         reloaded.clear_usage_login("p1").expect("clear usage login");
         assert_eq!(reloaded.get_usage_login("p1"), None);
+    }
+
+    #[test]
+    fn provider_key_storage_mode_roundtrip_and_rename() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path.clone());
+
+        store
+            .set_provider_key_with_storage_mode(
+                "p1",
+                "sk-test",
+                Some("config_toml_experimental_bearer_token"),
+            )
+            .expect("set provider key with storage mode");
+        assert_eq!(
+            store.get_provider_key_storage_mode("p1"),
+            "config_toml_experimental_bearer_token"
+        );
+
+        let reloaded = SecretStore::new(path);
+        assert_eq!(
+            reloaded.get_provider_key_storage_mode("p1"),
+            "config_toml_experimental_bearer_token"
+        );
+
+        reloaded
+            .rename_provider("p1", "p2")
+            .expect("rename provider");
+        assert_eq!(
+            reloaded.get_provider_key_storage_mode("p2"),
+            "config_toml_experimental_bearer_token"
+        );
+        assert_eq!(
+            reloaded.get_provider_key_storage_mode("missing"),
+            "auth_json"
+        );
     }
 }

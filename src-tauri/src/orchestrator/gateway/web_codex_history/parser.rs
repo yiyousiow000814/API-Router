@@ -178,7 +178,9 @@ impl HistoryTurnBuilder {
         match event_type {
             "turn_started" | "task_started" => self.handle_turn_started(payload),
             "turn_complete" | "task_complete" => self.handle_turn_complete(),
-            "turn_aborted" | "task_aborted" => self.handle_turn_aborted(),
+            "turn_aborted" | "task_aborted" | "task_interrupted" | "taskinterrupted" => {
+                self.handle_turn_aborted()
+            }
             "user_message" => self.handle_user_message(payload),
             "agent_message" => self.handle_agent_message(payload),
             "token_count" => self.handle_token_count(payload),
@@ -1043,13 +1045,13 @@ mod tests {
             r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
             r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}"#,
             r#"{"type":"event_msg","payload":{"type":"user_message","message":"again","images":[],"local_images":[],"text_elements":[]}}"#,
-            r#"{"type":"event_msg","payload":{"type":"task_aborted"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_interrupted"}}"#,
         ]);
 
         let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
         assert!(
             !parsed.incomplete,
-            "task_complete/task_aborted should close the current turn"
+            "task_complete/task_interrupted should close the current turn"
         );
         assert_eq!(
             parsed.turns.len(),
@@ -1069,6 +1071,33 @@ mod tests {
         assert_eq!(
             parsed.turns[1].items[0]["type"].as_str(),
             Some("userMessage")
+        );
+    }
+
+    #[test]
+    fn parser_closes_task_interrupted_events_as_turn_boundaries() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-task-interrupted"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hello","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"working notes","phase":"commentary"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_interrupted"}}"#,
+        ]);
+
+        let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
+        assert!(
+            !parsed.incomplete,
+            "task_interrupted should close the current turn"
+        );
+        assert_eq!(parsed.turns.len(), 1);
+        assert_eq!(parsed.turns[0].id, "turn-1");
+        assert_eq!(
+            parsed.turns[0].items[0]["type"].as_str(),
+            Some("userMessage")
+        );
+        assert_eq!(
+            parsed.turns[0].items[1]["phase"].as_str(),
+            Some("commentary")
         );
     }
 

@@ -136,11 +136,15 @@ struct QuotaCredentials<'a> {
     usage_login: Option<&'a UsageLoginConfig>,
 }
 
+#[derive(Clone, Copy)]
+struct QuotaSnapshotStrategies {
+    provider_strategy: PackageExpiryStrategy,
+    package_expiry_fetch_strategy: PackageExpiryStrategy,
+}
+
 const USAGE_BASE_MIN_GAP_MS: u64 = 1_250;
 const USAGE_BASE_429_BACKOFF_MS: u64 = 20_000;
 const USAGE_BASE_MAX_INLINE_WAIT_MS: u64 = 2_500;
-const ACTIVE_PROVIDER_REFRESH_MIN_MS: u64 = 10 * 60_000;
-const IDLE_PROVIDER_REFRESH_MIN_MS: u64 = 30 * 60_000;
 
 fn usage_base_refresh_gate() -> &'static Mutex<HashMap<String, u64>> {
     static STATE: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
@@ -356,31 +360,7 @@ pub fn detect_usage_kind(provider: &ProviderConfig) -> UsageKind {
     UsageKind::None
 }
 
-fn quota_refresh_min_interval_ms(
-    is_active_provider: bool,
-    is_preferred_provider: bool,
-    has_successful_snapshot: bool,
-    _shared_provider_count: usize,
-    last_error: &str,
-) -> u64 {
-    let base = if !last_error.trim().is_empty() {
-        20 * 60_000
-    } else if is_active_provider || is_preferred_provider {
-        ACTIVE_PROVIDER_REFRESH_MIN_MS
-    } else if has_successful_snapshot {
-        IDLE_PROVIDER_REFRESH_MIN_MS
-    } else {
-        15 * 60_000
-    };
-    base
-}
-
-fn is_rate_limited_quota_error(err: &str) -> bool {
-    let normalized = err.trim().to_ascii_lowercase();
-    normalized.contains("http 429") || normalized.contains("rate limited")
-}
-
-fn next_rate_limited_refresh_at<Tz>(now: chrono::DateTime<Tz>) -> chrono::DateTime<Tz>
+fn next_daily_reset_refresh_at<Tz>(now: chrono::DateTime<Tz>) -> chrono::DateTime<Tz>
 where
     Tz: chrono::TimeZone,
     Tz::Offset: Copy,
@@ -389,25 +369,15 @@ where
         .with_second(0)
         .and_then(|dt| dt.with_nanosecond(0))
         .unwrap_or(now);
-    if base.minute() < 30 {
-        return base.with_minute(30).unwrap_or(base);
+    if base.hour() == 0 && base.minute() < 1 {
+        return base.with_minute(1).unwrap_or(base);
     }
-    if base.minute() < 58 {
-        return base.with_minute(58).unwrap_or(base);
-    }
-    (base + chrono::Duration::hours(1))
-        .with_minute(30)
+    (base + chrono::Duration::days(1))
+        .with_hour(0)
+        .and_then(|dt| dt.with_minute(1))
         .and_then(|dt| dt.with_second(0))
         .and_then(|dt| dt.with_nanosecond(0))
-        .unwrap_or(base + chrono::Duration::hours(1))
-}
-
-fn next_rate_limited_refresh_due_unix_ms(now_ms: u64) -> u64 {
-    let now = chrono::Local
-        .timestamp_millis_opt(now_ms as i64)
-        .single()
-        .unwrap_or_else(chrono::Local::now);
-    next_rate_limited_refresh_at(now).timestamp_millis().max(0) as u64
+        .unwrap_or(base + chrono::Duration::days(1))
 }
 
 fn next_packycode_refresh_at<Tz>(now: chrono::DateTime<Tz>) -> chrono::DateTime<Tz>
@@ -427,6 +397,30 @@ where
         .and_then(|dt| dt.with_second(0))
         .and_then(|dt| dt.with_nanosecond(0))
         .unwrap_or(base + chrono::Duration::hours(1))
+}
+
+fn next_standard_quota_refresh_at<Tz>(now: chrono::DateTime<Tz>) -> chrono::DateTime<Tz>
+where
+    Tz: chrono::TimeZone,
+    Tz::Offset: Copy,
+{
+    let hourly = next_packycode_refresh_at(now);
+    let daily = next_daily_reset_refresh_at(now);
+    if hourly <= daily {
+        hourly
+    } else {
+        daily
+    }
+}
+
+fn next_standard_quota_refresh_due_unix_ms(now_ms: u64) -> u64 {
+    let now = chrono::Local
+        .timestamp_millis_opt(now_ms as i64)
+        .single()
+        .unwrap_or_else(chrono::Local::now);
+    next_standard_quota_refresh_at(now)
+        .timestamp_millis()
+        .max(0) as u64
 }
 
 fn next_packycode_refresh_due_unix_ms(now_ms: u64) -> u64 {
@@ -509,13 +503,14 @@ async fn compute_quota_snapshot(
     provider_name: &str,
     kind: UsageKind,
     bases: &[String],
+    explicit_usage_endpoint: Option<&str>,
     credentials: QuotaCredentials<'_>,
-    provider_strategy: PackageExpiryStrategy,
-    package_expiry_fetch_strategy: PackageExpiryStrategy,
+    strategies: QuotaSnapshotStrategies,
 ) -> QuotaSnapshot {
-    let should_use_packycode_usage_flow = provider_strategy == PackageExpiryStrategy::Packycode
+    let should_use_packycode_usage_flow = strategies.provider_strategy
+        == PackageExpiryStrategy::Packycode
         && (credentials.usage_token.is_some()
-            || package_expiry_fetch_strategy == PackageExpiryStrategy::Packycode);
+            || strategies.package_expiry_fetch_strategy == PackageExpiryStrategy::Packycode);
     if should_use_packycode_usage_flow {
         let mut budget_errors: Vec<String> = Vec::new();
 
@@ -542,7 +537,7 @@ async fn compute_quota_snapshot(
                     provider_name,
                     bases,
                     Some(token),
-                    package_expiry_fetch_strategy,
+                    strategies.package_expiry_fetch_strategy,
                 )
                 .await;
                 if budget.last_error.is_empty() {
@@ -559,7 +554,7 @@ async fn compute_quota_snapshot(
                     provider_name,
                     bases,
                     Some(token),
-                    package_expiry_fetch_strategy,
+                    strategies.package_expiry_fetch_strategy,
                 )
                 .await;
                 if budget.last_error.is_empty() {
@@ -574,9 +569,10 @@ async fn compute_quota_snapshot(
                 st,
                 provider_name,
                 bases,
+                explicit_usage_endpoint,
                 credentials.provider_key,
                 credentials.usage_token,
-                package_expiry_fetch_strategy,
+                strategies.package_expiry_fetch_strategy,
             )
             .await;
             if !stats.last_error.is_empty() && !budget_errors.is_empty() {
@@ -607,15 +603,30 @@ async fn compute_quota_snapshot(
         .await;
     }
 
+    if let Some(endpoint_url) = explicit_usage_endpoint {
+        let direct = fetch_explicit_usage_endpoint_any(
+            st,
+            provider_name,
+            endpoint_url,
+            credentials.provider_key,
+            credentials.usage_token,
+        )
+        .await;
+        if direct.last_error.is_empty() {
+            return direct;
+        }
+    }
+
     match kind {
         UsageKind::TokenStats => {
             fetch_token_stats_any(
                 st,
                 provider_name,
                 bases,
+                explicit_usage_endpoint,
                 credentials.provider_key,
                 credentials.usage_token,
-                package_expiry_fetch_strategy,
+                strategies.package_expiry_fetch_strategy,
             )
             .await
         }
@@ -625,7 +636,7 @@ async fn compute_quota_snapshot(
                 provider_name,
                 bases,
                 credentials.usage_token,
-                package_expiry_fetch_strategy,
+                strategies.package_expiry_fetch_strategy,
             )
             .await
         }
@@ -645,9 +656,10 @@ async fn compute_quota_snapshot(
                     st,
                     provider_name,
                     bases,
+                    explicit_usage_endpoint,
                     credentials.provider_key,
                     credentials.usage_token,
-                    package_expiry_fetch_strategy,
+                    strategies.package_expiry_fetch_strategy,
                 )
                 .await;
                 if s.last_error.is_empty() {
@@ -658,7 +670,7 @@ async fn compute_quota_snapshot(
                         provider_name,
                         bases,
                         credentials.usage_token,
-                        package_expiry_fetch_strategy,
+                        strategies.package_expiry_fetch_strategy,
                     )
                     .await
                 } else if credentials.usage_login.is_some()
@@ -681,7 +693,7 @@ async fn compute_quota_snapshot(
                     provider_name,
                     bases,
                     credentials.usage_token,
-                    package_expiry_fetch_strategy,
+                    strategies.package_expiry_fetch_strategy,
                 )
                 .await
             } else if credentials.usage_login.is_some()
@@ -940,59 +952,34 @@ pub(crate) fn uses_packycode_usage_schedule(provider: &ProviderConfig) -> bool {
 
 fn quota_refresh_interval_ms(
     now_ms: u64,
-    is_active_provider: bool,
-    is_preferred_provider: bool,
-    has_successful_snapshot: bool,
-    shared_provider_count: usize,
-    last_error: &str,
+    _is_active_provider: bool,
+    _is_preferred_provider: bool,
+    _has_successful_snapshot: bool,
+    _shared_provider_count: usize,
+    _last_error: &str,
     provider_strategy: PackageExpiryStrategy,
 ) -> u64 {
     if provider_strategy == PackageExpiryStrategy::Packycode {
         return next_packycode_refresh_due_unix_ms(now_ms).saturating_sub(now_ms);
     }
-    if is_rate_limited_quota_error(last_error) {
-        return next_rate_limited_refresh_due_unix_ms(now_ms).saturating_sub(now_ms);
-    }
-    let min_ms = quota_refresh_min_interval_ms(
-        is_active_provider,
-        is_preferred_provider,
-        has_successful_snapshot,
-        shared_provider_count,
-        last_error,
-    );
-    fastrand::u64(min_ms..=min_ms.saturating_mul(2))
+    next_standard_quota_refresh_due_unix_ms(now_ms).saturating_sub(now_ms)
 }
 
 fn initial_quota_refresh_due_unix_ms(
     now_ms: u64,
     existing_snapshot: Option<&QuotaSnapshot>,
-    is_active_provider: bool,
-    is_preferred_provider: bool,
-    shared_provider_count: usize,
+    _is_active_provider: bool,
+    _is_preferred_provider: bool,
+    _shared_provider_count: usize,
     provider_strategy: PackageExpiryStrategy,
 ) -> Option<u64> {
     if provider_strategy == PackageExpiryStrategy::Packycode {
         return Some(next_packycode_refresh_due_unix_ms(now_ms));
     }
-    let existing = existing_snapshot?;
-    if existing.updated_at_unix_ms == 0 {
+    if existing_snapshot.is_some_and(|existing| existing.updated_at_unix_ms == 0) {
         return None;
     }
-    if is_rate_limited_quota_error(&existing.last_error) {
-        return Some(next_rate_limited_refresh_due_unix_ms(now_ms));
-    }
-    if !existing.last_error.is_empty() {
-        return None;
-    }
-    let min_interval_ms = quota_refresh_min_interval_ms(
-        is_active_provider,
-        is_preferred_provider,
-        true,
-        shared_provider_count,
-        "",
-    );
-    let due_at = existing.updated_at_unix_ms.saturating_add(min_interval_ms);
-    (due_at > now_ms).then_some(due_at)
+    Some(next_standard_quota_refresh_due_unix_ms(now_ms))
 }
 
 fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
@@ -1222,13 +1209,16 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
         provider_name,
         kind,
         &bases,
+        explicit_usage_endpoint_url(p).as_deref(),
         QuotaCredentials {
             provider_key: provider_key.as_deref(),
             usage_token: usage_token.as_deref(),
             usage_login: usage_login.as_ref(),
         },
-        provider_strategy,
-        package_expiry_fetch_strategy,
+        QuotaSnapshotStrategies {
+            provider_strategy,
+            package_expiry_fetch_strategy,
+        },
     )
     .await;
     if snap.effective_usage_base.is_none() {
@@ -1288,13 +1278,16 @@ async fn refresh_quota_for_provider_cached(
             provider_name,
             kind,
             &bases,
+            explicit_usage_endpoint_url(p).as_deref(),
             QuotaCredentials {
                 provider_key: provider_key.as_deref(),
                 usage_token: usage_token.as_deref(),
                 usage_login: usage_login.as_ref(),
             },
-            provider_strategy,
-            package_expiry_fetch_strategy,
+            QuotaSnapshotStrategies {
+                provider_strategy,
+                package_expiry_fetch_strategy,
+            },
         )
         .await;
         if computed.effective_usage_base.is_none() {

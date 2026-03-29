@@ -78,10 +78,14 @@ const WEB_CODEX_NOTIFICATION_ROUTING_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/notificationRouting.js");
 const WEB_CODEX_PROMPT_STATE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/promptState.js");
+const WEB_CODEX_PROPOSED_PLAN_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/proposedPlan.js");
 const WEB_CODEX_RUNTIME_STATE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/runtimeState.js");
 const WEB_CODEX_RUNTIME_PLAN_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/runtimePlan.js");
+const WEB_CODEX_RUNTIME_USER_INPUT_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/runtimeUserInput.js");
 const WEB_CODEX_SLASH_COMMANDS_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/slashCommands.js");
 const WEB_CODEX_THREAD_LIST_REFRESH_JS: &str =
@@ -146,8 +150,10 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/notificationRouting.js" => Some(WEB_CODEX_NOTIFICATION_ROUTING_JS),
         "codex-web/pendingThreadResume.js" => Some(WEB_CODEX_PENDING_THREAD_RESUME_JS),
         "codex-web/promptState.js" => Some(WEB_CODEX_PROMPT_STATE_JS),
+        "codex-web/proposedPlan.js" => Some(WEB_CODEX_PROPOSED_PLAN_JS),
         "codex-web/runtimeState.js" => Some(WEB_CODEX_RUNTIME_STATE_JS),
         "codex-web/runtimePlan.js" => Some(WEB_CODEX_RUNTIME_PLAN_JS),
+        "codex-web/runtimeUserInput.js" => Some(WEB_CODEX_RUNTIME_USER_INPUT_JS),
         "codex-web/slashCommands.js" => Some(WEB_CODEX_SLASH_COMMANDS_JS),
         "codex-web/threadListRefresh.js" => Some(WEB_CODEX_THREAD_LIST_REFRESH_JS),
         "codex-web/threadLive.js" => Some(WEB_CODEX_THREAD_LIVE_JS),
@@ -278,8 +284,10 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/modelPicker.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/mobileShell.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/notificationRouting.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/proposedPlan.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/runtimeState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/runtimePlan.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/runtimeUserInput.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadListRefresh.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadLive.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadMeta.js").is_some());

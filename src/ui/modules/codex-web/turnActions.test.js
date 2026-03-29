@@ -2417,6 +2417,7 @@ describe("turnActions", () => {
   });
 
   it("clears stale live commentary state before starting a new turn", async () => {
+    const syntheticClears = [];
     const state = {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
@@ -2485,6 +2486,9 @@ describe("turnActions", () => {
       refreshThreads: async () => {},
       refreshHosts: async () => {},
       refreshPending: async () => {},
+      setSyntheticPendingUserInputs(threadId, items) {
+        syntheticClears.push({ threadId, items });
+      },
       setStatus: () => {},
       setActiveThread: (id) => {
         state.activeThreadId = id;
@@ -2516,6 +2520,9 @@ describe("turnActions", () => {
     expect(state.activeThreadActiveCommands).toEqual([]);
     expect(state.activeThreadPlan).toBeNull();
     expect(state.activeThreadLiveAssistantThreadId).toBe("");
+    expect(syntheticClears.length).toBeGreaterThan(0);
+    expect(syntheticClears.every((entry) => entry.threadId === "thread-1")).toBe(true);
+    expect(syntheticClears.every((entry) => Array.isArray(entry.items) && entry.items.length === 0)).toBe(true);
     expect(uiOps).toHaveLength(2);
     expect(uiOps[0]).toEqual({
       thinking: "",
@@ -2523,6 +2530,134 @@ describe("turnActions", () => {
       archiveVisible: false,
       commands: [],
     });
+  });
+
+  it("clears synthetic pending questions when interrupting a running turn", async () => {
+    const syntheticClears = [];
+    const calls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      suppressedIncompleteHistoryRuntimeByThreadId: {},
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        calls.push({ path, method: options.method || "GET" });
+        return { ok: true };
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setSyntheticPendingUserInputs(threadId, items) {
+        syntheticClears.push({ threadId, items });
+      },
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      updateMobileComposerState: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.interruptTurn();
+
+    expect(calls).toEqual([{ path: "/codex/turns/turn-1/interrupt", method: "POST" }]);
+    expect(syntheticClears).toEqual([{ threadId: "thread-1", items: [] }]);
+    expect(state.suppressedIncompleteHistoryRuntimeByThreadId).toEqual({ "thread-1": true });
+  });
+
+  it("interrupts terminal-session threads by thread even when history already assigned a turn id", async () => {
+    const calls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "wsl2",
+      activeThreadAttachTransport: "terminal-session",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-live",
+      activeThreadPendingTurnRunning: true,
+      suppressedIncompleteHistoryRuntimeByThreadId: {},
+      threadAttachTransportById: new Map([["thread-1", "terminal-session"]]),
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        calls.push({ path, method: options.method || "GET" });
+        return { ok: true };
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "wsl2",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      updateMobileComposerState: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.interruptTurn();
+
+    expect(calls).toEqual([
+      { path: "/codex/threads/thread-1/interrupt?workspace=wsl2", method: "POST" },
+    ]);
   });
 
   it("resolves approval using the selected pending approval id from state", async () => {
@@ -2652,5 +2787,307 @@ describe("turnActions", () => {
         body: { answers: { choice: "yes" } },
       },
     ]);
+  });
+
+  it("resolves pending actions from explicit payloads", async () => {
+    const calls = [];
+    const module = createTurnActionsModule({
+      state: {
+        selectedPendingApprovalId: "",
+        selectedPendingUserInputId: "",
+        ws: null,
+      },
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        calls.push({ path, method: options.method || "GET", body: options.body || null });
+        return { ok: true };
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.resolveApproval({ id: "approval-9", decision: "reject" });
+    await module.resolveUserInput({ id: "input-9", answers: { route: "Runtime" } });
+
+    expect(calls).toEqual([
+      {
+        path: "/codex/approvals/approval-9/resolve",
+        method: "POST",
+        body: { decision: "reject" },
+      },
+      {
+        path: "/codex/user-input/input-9/resolve",
+        method: "POST",
+        body: { answers: { route: "Runtime" } },
+      },
+    ]);
+  });
+
+  it("does not add preview-only pending resolution messages to chat", async () => {
+    const calls = [];
+    const addChatCalls = [];
+    const originalWindow = globalThis.window;
+    globalThis.window = {
+      __webCodexDebug: {
+        isPreviewPendingActive() {
+          return true;
+        },
+      },
+    };
+    try {
+      const module = createTurnActionsModule({
+        state: {
+          selectedPendingApprovalId: "",
+          selectedPendingUserInputId: "",
+          ws: null,
+        },
+        byId: () => ({ value: "" }),
+        api: async (path, options = {}) => {
+          calls.push({ path, method: options.method || "GET", body: options.body || null });
+          return { ok: true };
+        },
+        wsSend: () => false,
+        wsCall: async () => ({}),
+        nextReqId: () => "req-1",
+        connectWs: () => {},
+        syncEventSubscription: () => {},
+        getPromptValue: () => "",
+        getWorkspaceTarget: () => "windows",
+        getStartCwdForWorkspace: () => "",
+        waitPendingThreadResume: async () => {},
+        registerPendingThreadResume: () => {},
+        updateHeaderUi: () => {},
+        addChat: (...args) => { addChatCalls.push(args); },
+        clearChatMessages: () => {},
+        hideWelcomeCard: () => {},
+        showWelcomeCard: () => {},
+        clearPromptValue: () => {},
+        renderComposerContextLeft: () => {},
+        scrollToBottomReliable: () => {},
+        scheduleChatLiveFollow: () => {},
+        createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+        appendStreamingDelta: () => {},
+        finalizeAssistantMessage: () => {},
+        normalizeTextPayload: (value) => value,
+        maybeNotifyTurnDone: () => {},
+        renderAttachmentPills: () => {},
+        refreshThreads: async () => {},
+        refreshHosts: async () => {},
+        refreshPending: async () => {},
+        setStatus: () => {},
+        setActiveThread: () => {},
+        setMainTab: () => {},
+        setMobileTab: () => {},
+        setChatOpening: () => {},
+        blockInSandbox: () => false,
+      });
+
+      await module.resolveApproval({ id: "approval-preview", decision: "approve" });
+      await module.resolveUserInput({ id: "input-preview", answers: { route: "Runtime" } });
+
+      expect(calls).toEqual([
+        {
+          path: "/codex/approvals/approval-preview/resolve",
+          method: "POST",
+          body: { decision: "approve" },
+        },
+        {
+          path: "/codex/user-input/input-preview/resolve",
+          method: "POST",
+          body: { answers: { route: "Runtime" } },
+        },
+      ]);
+      expect(addChatCalls).toEqual([]);
+    } finally {
+      globalThis.window = originalWindow;
+    }
+  });
+
+  it("clears synthetic pending user input after resolving an answer", async () => {
+    const cleared = [];
+    const module = createTurnActionsModule({
+      state: {
+        activeThreadId: "thread-1",
+        selectedPendingUserInputId: "",
+        ws: null,
+      },
+      byId: () => ({ value: "" }),
+      api: async () => ({ ok: true }),
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      clearSyntheticPendingUserInputById(id) {
+        cleared.push(id);
+      },
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.resolveUserInput({ id: "input-tool-1", answers: { scope: "Current chat" } });
+
+    expect(cleared).toEqual(["input-tool-1"]);
+  });
+
+  it("handles local proposed-plan confirmation without calling user_input APIs", async () => {
+    const apiCalls = [];
+    const statuses = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadNeedsResume: false,
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      planModeEnabled: true,
+      proposedPlanConfirmationsByThreadId: {
+        "thread-1": {
+          id: "plan_confirm:thread-1:assistant-1",
+          threadId: "thread-1",
+          prompt: "Implement this plan?",
+          plan: {
+            threadId: "thread-1",
+            title: "Cleanup Plan",
+            markdownBody: "# Cleanup Plan\n\n- Clear stale pending UI.",
+            steps: [{ step: "Clear stale pending UI.", status: "pending" }],
+          },
+        },
+      },
+      permissionPresetByWorkspace: { windows: "/permission auto", wsl2: "/permission auto" },
+      ws: null,
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        apiCalls.push({ path, method: options.method || "GET", body: options.body || null });
+        if (path === "/codex/turns/start") return { threadId: "thread-1", turnId: "turn-2" };
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus(message) {
+        statuses.push(message);
+      },
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      syncPendingTurnUi: () => {},
+      updateMobileComposerState: () => {},
+      clearTransientToolMessages: () => {},
+      clearTransientThinkingMessages: () => {},
+      hideSlashCommandMenu: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.resolveProposedPlanConfirmation({
+      threadId: "thread-1",
+      decision: "approve",
+    });
+
+    expect(state.proposedPlanConfirmationsByThreadId).toEqual({});
+    expect(state.planModeEnabled).toBe(false);
+    expect(apiCalls).toEqual([
+      expect.objectContaining({
+        path: "/codex/turns/start",
+        method: "POST",
+        body: expect.objectContaining({
+          threadId: "thread-1",
+          prompt: "Implement this approved plan exactly:\n\n# Cleanup Plan\n\n- Clear stale pending UI.",
+          collaborationMode: undefined,
+        }),
+      }),
+    ]);
+    expect(statuses).toContain("Switching to Default and implementing plan.");
   });
 });

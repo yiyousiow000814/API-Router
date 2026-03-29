@@ -70,6 +70,26 @@ fn build_models_url(base: &str) -> String {
     }
 }
 
+fn explicit_usage_endpoint_url(provider: &ProviderConfig) -> Option<String> {
+    let raw = provider.usage_base_url.as_deref()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(raw).ok()?;
+    let path = parsed.path().trim_end_matches('/');
+    if path.is_empty() || path == "/" {
+        return None;
+    }
+    let normalized = path.to_ascii_lowercase();
+    if matches!(
+        normalized.as_str(),
+        "/v1" | "/api" | "/web/api/v1" | "/user/api/v1" | "/backend"
+    ) {
+        return None;
+    }
+    Some(raw.trim_end_matches('/').to_string())
+}
+
 fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push_unique = |value: String| {

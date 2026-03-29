@@ -594,7 +594,7 @@ pub(crate) fn get_usage_statistics(
                 continue;
             };
             let manual_total =
-                as_f64(day.get("manual_total_usd")).filter(|v| v.is_finite() && *v > 0.0);
+                as_f64(day.get("manual_total_usd")).filter(|v| v.is_finite() && *v != 0.0);
             let manual_per_req =
                 as_f64(day.get("manual_usd_per_req")).filter(|v| v.is_finite() && *v > 0.0);
             if manual_total.is_some() || manual_per_req.is_some() {

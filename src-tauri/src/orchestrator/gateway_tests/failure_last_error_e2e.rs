@@ -228,22 +228,7 @@ async fn e2e_recovery_success_resets_failures_but_keeps_last_error() {
         )
         .await
         .unwrap();
-    assert_eq!(first.status(), StatusCode::BAD_GATEWAY);
-
-    let second = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/v1/responses")
-                .method("POST")
-                .header("content-type", "application/json")
-                .header("session_id", "sid-e2e-recovery")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(first.status(), StatusCode::OK);
     assert_eq!(hit_counter.load(Ordering::Relaxed), 2);
 
     let status_resp = app
@@ -276,13 +261,10 @@ async fn e2e_recovery_success_resets_failures_but_keeps_last_error() {
         p1.get("cooldown_until_unix_ms").and_then(|v| v.as_u64()),
         Some(0)
     );
-    let last_error = p1
-        .get("last_error")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    assert!(
-        last_error.contains("upstream p1 returned 500"),
-        "unexpected last_error: {last_error}"
+    assert_eq!(
+        p1.get("last_error").and_then(|v| v.as_str()),
+        Some(""),
+        "transient retry recovery should not leave provider in failed state"
     );
     assert!(
         p1.get("last_ok_at_unix_ms")

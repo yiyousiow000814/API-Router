@@ -245,6 +245,7 @@ describe("composerUi", () => {
       "toggleLiveInspectorBtn",
       "liveInspectorState",
       "previewUpdatedPlanBtn",
+      "previewPendingBtn",
       "settingsDefaultsWorkspace",
       "settingsFullAccessOnBtn",
       "settingsFullAccessOffBtn",
@@ -281,6 +282,9 @@ describe("composerUi", () => {
           isPreviewUpdatedPlanActive() {
             return true;
           },
+          isPreviewPendingActive() {
+            return true;
+          },
         },
         addEventListener() {},
       },
@@ -291,6 +295,7 @@ describe("composerUi", () => {
 
     expect(nodes.get("settingsDefaultsWorkspace")?.textContent).toBe("Applies to current WSL2 chat");
     expect(nodes.get("previewUpdatedPlanBtn")?.textContent).toBe("Plan Preview: On");
+    expect(nodes.get("previewPendingBtn")?.textContent).toBe("Pending Preview: On");
     expect(nodes.get("settingsFullAccessOnBtn")?.classList.contains("is-active")).toBe(true);
     expect(nodes.get("settingsFullAccessOffBtn")?.classList.contains("is-active")).toBe(false);
     expect(nodes.get("settingsFastOnBtn")?.classList.contains("is-active")).toBe(true);
@@ -703,6 +708,51 @@ describe("composerUi", () => {
     expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
     expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("npm test");
     expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("Updated Plan");
+  });
+
+  it("keeps runtime chat panels above the pending inline card", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    const pendingMount = makeNode();
+    pendingMount.id = "pendingInlineMount";
+    chatBox.appendChild(pendingMount);
+    nodes.set("chatBox", chatBox);
+    nodes.set("pendingInlineMount", pendingMount);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [{ key: "cmd-1", text: "Running `npm test`", state: "running", icon: "command" }],
+      activeThreadActivity: { threadId: "thread-1", title: "Running command", detail: "", tone: "running" },
+      activeThreadPlan: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.renderRuntimePanels();
+
+    expect(chatBox.children.map((child) => child.id)).toEqual(["runtimeChatPanels", "pendingInlineMount"]);
   });
 
   it("prepares runtime panels synchronously during chat opening without per-item enter animations", () => {
@@ -2054,6 +2104,210 @@ describe("composerUi", () => {
     expect(nodes.get("runtimeDock").style.display).toBe("none");
   });
 
+  it("does not rebuild runtime panels from interrupted incomplete history", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [{ key: "cmd-old", state: "running", text: "old" }],
+      activeThreadActivity: { threadId: "thread-1", title: "Working", detail: "", tone: "running" },
+      activeThreadPlan: { threadId: "thread-1", title: "Updated Plan", explanation: "old", steps: [] },
+      activeThreadCommentaryCurrent: null,
+      activeThreadHistoryStatusType: "interrupted",
+    };
+    const syntheticPendingCalls = [];
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      setSyntheticPendingUserInputs(threadId, items) {
+        syntheticPendingCalls.push({ threadId, items });
+      },
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.syncRuntimeStateFromHistory({
+      id: "thread-1",
+      status: { type: "interrupted" },
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "agentMessage", id: "commentary-1", phase: "commentary", text: "thinking" },
+            { type: "plan", text: "Inspect" },
+            {
+              id: "request-1",
+              type: "toolCall",
+              tool: "request_user_input",
+              status: "running",
+              arguments: JSON.stringify({
+                questions: [{ id: "q-1", header: "Question 1/1", question: "Keep waiting?" }],
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(syntheticPendingCalls).toEqual([{ threadId: "thread-1", items: [] }]);
+    expect(nodes.get("runtimeActivityBar").innerHTML).toBe("");
+    expect(nodes.get("runtimeDock").style.display).toBe("none");
+  });
+
+  it("does not restore proposed plan confirmation from interrupted history", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const syntheticPendingCalls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+      activeThreadHistoryStatusType: "interrupted",
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage() { return ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      setSyntheticPendingUserInputs(threadId, items) {
+        syntheticPendingCalls.push({ threadId, items });
+      },
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.syncRuntimeStateFromHistory({
+      id: "thread-1",
+      status: { type: "interrupted" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            {
+              id: "assistant-1",
+              type: "assistantMessage",
+              phase: "final_answer",
+              text: `<proposed_plan>
+# Cleanup Plan
+
+- Clear stale pending UI.
+</proposed_plan>`,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(syntheticPendingCalls).toEqual([{ threadId: "thread-1", items: [] }]);
+    expect(nodes.get("runtimeActivityBar").innerHTML).toBe("");
+    expect(nodes.get("runtimeDock").style.display).toBe("none");
+  });
+
+  it("does not rebuild runtime panels from locally interrupted incomplete history before terminal status catches up", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [{ key: "cmd-old", state: "running", text: "old" }],
+      activeThreadActivity: { threadId: "thread-1", title: "Working", detail: "", tone: "running" },
+      activeThreadPlan: { threadId: "thread-1", title: "Updated Plan", explanation: "old", steps: [] },
+      activeThreadCommentaryCurrent: null,
+      suppressedIncompleteHistoryRuntimeByThreadId: { "thread-1": true },
+    };
+    const syntheticPendingCalls = [];
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      setSyntheticPendingUserInputs(threadId, items) {
+        syntheticPendingCalls.push({ threadId, items });
+      },
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.syncRuntimeStateFromHistory({
+      id: "thread-1",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "agentMessage", id: "commentary-1", phase: "commentary", text: "thinking" },
+            { type: "plan", text: "Inspect" },
+            { type: "commandExecution", command: "npm test", status: "running" },
+          ],
+        },
+      ],
+    });
+
+    expect(syntheticPendingCalls).toEqual([{ threadId: "thread-1", items: [] }]);
+    expect(nodes.get("runtimeActivityBar").innerHTML).toBe("");
+    expect(nodes.get("runtimeDock").style.display).toBe("none");
+    expect(state.activeThreadActiveCommands).toEqual([]);
+    expect(state.activeThreadActivity).toBeNull();
+  });
+
   it("keeps the activity bar on Thinking while an incomplete turn only has a plan update", () => {
     const nodes = new Map();
     const runtimeDock = makeNode();
@@ -2486,6 +2740,301 @@ describe("composerUi", () => {
     expect(chatBox.querySelector("#runtimeToolInline").innerHTML).toBe("");
     expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
     expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("Updated Plan");
+  });
+
+  it("maps request_user_input tool calls into synthetic pending questions", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const syntheticCalls = [];
+    const upsertCalls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage() {
+        return "Waiting for input";
+      },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      setSyntheticPendingUserInputs(threadId, items) {
+        syntheticCalls.push({ threadId, items });
+      },
+      upsertSyntheticPendingUserInput(threadId, item) {
+        upsertCalls.push({ threadId, item });
+      },
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.applyToolItemRuntimeUpdate({
+      id: "input-tool-1",
+      type: "toolCall",
+      tool: "request_user_input",
+      status: "running",
+      arguments: JSON.stringify({
+        questions: [
+          {
+            id: "scope",
+            header: "Question 1/1",
+            question: "Where should preview appear?",
+            options: [{ label: "Current chat" }],
+          },
+        ],
+      }),
+    }, { threadId: "thread-1", timestamp: 100 });
+
+    module.syncRuntimeStateFromHistory({
+      id: "thread-1",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            {
+              id: "input-tool-1",
+              type: "toolCall",
+              tool: "request_user_input",
+              status: "running",
+              arguments: JSON.stringify({
+                questions: [
+                  {
+                    id: "scope",
+                    header: "Question 1/1",
+                    question: "Where should preview appear?",
+                    options: [{ label: "Current chat" }],
+                  },
+                ],
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(upsertCalls).toEqual([
+      {
+        threadId: "thread-1",
+        item: {
+          id: "input-tool-1",
+          prompt: "Where should preview appear?",
+          title: "",
+          questions: [
+            {
+              id: "scope",
+              header: "Question 1/1",
+              question: "Where should preview appear?",
+              options: [{ label: "Current chat" }],
+            },
+          ],
+        },
+      },
+    ]);
+    expect(syntheticCalls).toEqual([
+      {
+        threadId: "thread-1",
+        items: [
+          {
+            id: "input-tool-1",
+            prompt: "Where should preview appear?",
+            title: "",
+            questions: [
+              {
+                id: "scope",
+                header: "Question 1/1",
+                question: "Where should preview appear?",
+                options: [{ label: "Current chat" }],
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    expect(state.activeThreadActiveCommands).toEqual([]);
+    expect(chatBox.querySelector("#runtimeToolInline")).toBeNull();
+  });
+
+  it("keeps request_user_input questions visible even when the tool item is completed", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const syntheticCalls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage() { return "Waiting for input"; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      setSyntheticPendingUserInputs(threadId, items) {
+        syntheticCalls.push({ threadId, items });
+      },
+      upsertSyntheticPendingUserInput() {},
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.syncRuntimeStateFromHistory({
+      id: "thread-1",
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            {
+              id: "input-tool-complete",
+              type: "toolCall",
+              tool: "request_user_input",
+              status: "completed",
+              arguments: JSON.stringify({
+                questions: [
+                  {
+                    id: "scope",
+                    question: "Implement now?",
+                    options: [{ label: "Yes" }, { label: "No" }],
+                  },
+                ],
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(syntheticCalls).toEqual([
+      {
+        threadId: "thread-1",
+        items: [
+          {
+            id: "input-tool-complete",
+            prompt: "Implement now?",
+            title: "",
+            questions: [
+              {
+                id: "scope",
+                question: "Implement now?",
+                options: [{ label: "Yes" }, { label: "No" }],
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("does not restore proposed plan confirmation from completed history", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const syntheticCalls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage() { return ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      setSyntheticPendingUserInputs(threadId, items) {
+        syntheticCalls.push({ threadId, items });
+      },
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.syncRuntimeStateFromHistory({
+      id: "thread-1",
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            {
+              id: "assistant-1",
+              type: "assistantMessage",
+              phase: "final_answer",
+              text: `<proposed_plan>
+# Cleanup Plan
+
+### Summary
+- Clear stale pending UI.
+</proposed_plan>`,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(syntheticCalls).toEqual([
+      {
+        threadId: "thread-1",
+        items: [],
+      },
+    ]);
   });
 
   it("keeps the pending activity bar on Thinking when a live update_plan arrives before commentary", () => {

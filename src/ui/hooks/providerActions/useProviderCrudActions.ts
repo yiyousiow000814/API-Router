@@ -11,10 +11,12 @@ type ProviderCrudActions = Pick<
   | 'newProviderName'
   | 'newProviderBaseUrl'
   | 'newProviderKey'
+  | 'newProviderKeyStorage'
   | 'setProviderBaseUrlModal'
   | 'setNewProviderName'
   | 'setNewProviderBaseUrl'
   | 'setNewProviderKey'
+  | 'setNewProviderKeyStorage'
   | 'refreshStatus'
   | 'refreshConfig'
   | 'flashToast'
@@ -28,10 +30,12 @@ export function useProviderCrudActions({
   newProviderName,
   newProviderBaseUrl,
   newProviderKey,
+  newProviderKeyStorage,
   setProviderBaseUrlModal,
   setNewProviderName,
   setNewProviderBaseUrl,
   setNewProviderKey,
+  setNewProviderKeyStorage,
   refreshStatus,
   refreshConfig,
   flashToast,
@@ -289,6 +293,7 @@ export function useProviderCrudActions({
       setNewProviderName('')
       setNewProviderBaseUrl('')
       setNewProviderKey('')
+      setNewProviderKeyStorage('auth_json')
       flashToast(`[TEST] Added: ${name}`)
       return
     }
@@ -301,11 +306,12 @@ export function useProviderCrudActions({
         group: null,
       })
       if (key) {
-        await invoke('set_provider_key', { provider: name, key })
+        await invoke('set_provider_key', { provider: name, key, storageMode: newProviderKeyStorage })
       }
       setNewProviderName('')
       setNewProviderBaseUrl('')
       setNewProviderKey('')
+      setNewProviderKeyStorage('auth_json')
       flashToast(`Added: ${name}`)
       await refreshStatus()
       await refreshConfig()
@@ -318,12 +324,14 @@ export function useProviderCrudActions({
     isDevPreview,
     newProviderBaseUrl,
     newProviderKey,
+    newProviderKeyStorage,
     newProviderName,
     refreshConfig,
     refreshStatus,
     setConfig,
     setNewProviderBaseUrl,
     setNewProviderKey,
+    setNewProviderKeyStorage,
     setNewProviderName,
   ])
 

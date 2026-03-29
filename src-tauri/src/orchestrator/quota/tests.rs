@@ -206,6 +206,52 @@ mod tests {
         (url, h)
     }
 
+    async fn start_yunyi_me_mock_server() -> (String, tokio::task::JoinHandle<()>) {
+        use axum::http::{HeaderMap, StatusCode};
+        use axum::routing::get;
+        use axum::{Json, Router};
+
+        let app = Router::new().route(
+            "/user/api/v1/me",
+            get(|headers: HeaderMap| async move {
+                let auth = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default();
+                if auth != "Bearer provider-key" {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({ "message": "invalid token" })),
+                    );
+                }
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "quota": {
+                            "daily_quota": 4500,
+                            "daily_spent": 28,
+                            "daily_remaining": 4472
+                        },
+                        "usage": {
+                            "total_spent": 28
+                        },
+                        "timestamps": {
+                            "expires_at": "2026-04-04T14:57:44.674Z"
+                        }
+                    })),
+                )
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}:{}", addr.ip(), addr.port());
+        let h = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (url, h)
+    }
+
     fn mk_state(base_url: String, secrets: SecretStore) -> GatewayState {
         let explicit_usage_base = derive_origin(&base_url);
         mk_state_with_providers(
@@ -471,6 +517,81 @@ mod tests {
         };
         let bases = candidate_quota_bases(&p);
         assert_eq!(bases, vec!["https://api-vip.codex-for.vip".to_string()]);
+    }
+
+    #[test]
+    fn explicit_usage_endpoint_url_detects_direct_endpoint_only() {
+        let mut provider = ProviderConfig {
+            display_name: "P".to_string(),
+            base_url: "https://yunyi.rdzhvip.com/codex".to_string(),
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: Some("https://yunyi.rdzhvip.com/user/api/v1/me".to_string()),
+            api_key: String::new(),
+        };
+        assert_eq!(
+            explicit_usage_endpoint_url(&provider).as_deref(),
+            Some("https://yunyi.rdzhvip.com/user/api/v1/me")
+        );
+
+        provider.usage_base_url = Some("https://yunyi.rdzhvip.com/user/api/v1".to_string());
+        assert_eq!(explicit_usage_endpoint_url(&provider), None);
+    }
+
+    #[tokio::test]
+    async fn explicit_usage_endpoint_fetches_yunyi_budget_info_via_provider_key() {
+        let (base, handle) = start_yunyi_me_mock_server().await;
+        let endpoint = format!("{base}/user/api/v1/me");
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "provider-key").unwrap();
+        let st = mk_state("https://yunyi.rdzhvip.com/codex".to_string(), secrets);
+        {
+            let mut cfg = st.cfg.write();
+            if let Some(provider) = cfg.providers.get_mut("p1") {
+                provider.base_url = "https://yunyi.rdzhvip.com/codex".to_string();
+                provider.usage_base_url = Some(endpoint.clone());
+            }
+        }
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        handle.abort();
+
+        assert!(snap.last_error.is_empty(), "unexpected refresh error: {}", snap.last_error);
+        assert_eq!(snap.kind, UsageKind::BudgetInfo);
+        assert_eq!(snap.remaining, Some(44.72));
+        assert_eq!(snap.daily_budget_usd, Some(45.0));
+        assert_eq!(snap.daily_spent_usd, Some(0.28));
+        assert_eq!(snap.monthly_spent_usd, None);
+        assert_eq!(snap.package_expires_at_unix_ms, Some(1_775_314_664_674));
+        assert_eq!(snap.effective_usage_base.as_deref(), Some(endpoint.as_str()));
+    }
+
+    #[tokio::test]
+    async fn explicit_usage_endpoint_falls_back_from_stale_usage_token_to_provider_key() {
+        let (base, handle) = start_yunyi_me_mock_server().await;
+        let endpoint = format!("{base}/user/api/v1/me");
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "provider-key").unwrap();
+        secrets.set_usage_token("p1", "stale-usage-token").unwrap();
+        let st = mk_state("https://yunyi.rdzhvip.com/codex".to_string(), secrets);
+        {
+            let mut cfg = st.cfg.write();
+            if let Some(provider) = cfg.providers.get_mut("p1") {
+                provider.base_url = "https://yunyi.rdzhvip.com/codex".to_string();
+                provider.usage_base_url = Some(endpoint.clone());
+            }
+        }
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        handle.abort();
+
+        assert!(snap.last_error.is_empty(), "unexpected refresh error: {}", snap.last_error);
+        assert_eq!(snap.kind, UsageKind::BudgetInfo);
+        assert_eq!(snap.daily_spent_usd, Some(0.28));
+        assert_eq!(snap.daily_budget_usd, Some(45.0));
     }
 
     #[tokio::test]
@@ -1517,53 +1638,38 @@ mod tests {
     }
 
     #[test]
-    fn initial_refresh_due_reuses_fresh_snapshot_for_recently_used_provider() {
-        let mut snapshot = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-        snapshot.updated_at_unix_ms = 100_000;
-        let due = initial_quota_refresh_due_unix_ms(
-            100_001,
-            Some(&snapshot),
-            true,
-            false,
-            4,
-            PackageExpiryStrategy::None,
-        )
-        .expect("fresh due");
-        assert!(due > 100_001);
-        assert_eq!(due, 100_000 + 10 * 60_000);
-    }
-
-    #[test]
-    fn rate_limited_refresh_aligns_to_half_hour_windows() {
+    fn standard_quota_refresh_prefers_0058_before_next_daily_reset() {
         use chrono::{FixedOffset, TimeZone, Timelike};
 
         let tz = FixedOffset::east_opt(8 * 3600).unwrap();
         let now = tz.with_ymd_and_hms(2026, 3, 10, 11, 25, 42).unwrap();
-        let due = next_rate_limited_refresh_at(now);
-        assert_eq!(due.minute(), 30);
-        assert_eq!(due.second(), 0);
-
-        let now = tz.with_ymd_and_hms(2026, 3, 10, 11, 35, 1).unwrap();
-        let due = next_rate_limited_refresh_at(now);
+        let due = next_standard_quota_refresh_at(now);
+        assert_eq!(due.hour(), 11);
         assert_eq!(due.minute(), 58);
-        assert_eq!(due.second(), 0);
-
-        let now = tz.with_ymd_and_hms(2026, 3, 10, 11, 58, 0).unwrap();
-        let due = next_rate_limited_refresh_at(now);
-        assert_eq!(due.hour(), 12);
-        assert_eq!(due.minute(), 30);
         assert_eq!(due.second(), 0);
     }
 
     #[test]
-    fn initial_refresh_due_uses_rate_limit_window_for_failed_snapshot() {
+    fn standard_quota_refresh_uses_0001_after_2358() {
+        use chrono::{FixedOffset, TimeZone, Timelike};
+
+        let tz = FixedOffset::east_opt(8 * 3600).unwrap();
+        let now = tz.with_ymd_and_hms(2026, 3, 10, 23, 58, 0).unwrap();
+        let due = next_standard_quota_refresh_at(now);
+        assert_eq!(due.hour(), 0);
+        assert_eq!(due.minute(), 1);
+        assert_eq!(due.second(), 0);
+    }
+
+    #[test]
+    fn standard_quota_refresh_uses_0058_after_daily_reset_window() {
         use chrono::{Duration, Local, Timelike};
 
         let now = Local::now();
         let now_ms = now.timestamp_millis().max(0) as u64;
         let mut snapshot = QuotaSnapshot::empty(UsageKind::BudgetInfo);
         snapshot.updated_at_unix_ms = now_ms.saturating_sub(Duration::minutes(5).num_milliseconds() as u64);
-        snapshot.last_error = "http 429 from https://codex.packycode.com".to_string();
+        snapshot.last_error = "http 429 from https://usage-router.example".to_string();
 
         let due = initial_quota_refresh_due_unix_ms(
             now_ms,
@@ -1573,10 +1679,32 @@ mod tests {
             1,
             PackageExpiryStrategy::None,
         )
-        .expect("rate limited due");
+        .expect("standard due");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
         assert!(due > now_ms);
-        assert!(matches!(due_dt.minute(), 30 | 58));
+        assert!(matches!(due_dt.minute(), 1 | 58));
+        assert_eq!(due_dt.second(), 0);
+    }
+
+    #[test]
+    fn initial_standard_refresh_due_without_snapshot_waits_for_aligned_window() {
+        use chrono::{Local, Timelike};
+
+        let now = Local::now();
+        let now_ms = now.timestamp_millis().max(0) as u64;
+
+        let due = initial_quota_refresh_due_unix_ms(
+            now_ms,
+            None,
+            true,
+            true,
+            1,
+            PackageExpiryStrategy::None,
+        )
+        .expect("standard due without snapshot");
+        let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
+        assert!(due > now_ms);
+        assert!(matches!(due_dt.minute(), 1 | 58));
         assert_eq!(due_dt.second(), 0);
     }
 

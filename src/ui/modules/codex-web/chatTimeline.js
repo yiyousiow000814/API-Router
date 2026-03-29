@@ -1,4 +1,12 @@
 import { renderPlanCardHtml } from "./runtimePlan.js";
+import {
+  getPendingUserInputProgress,
+  getVisiblePendingUserInputs,
+  normalizePendingUserInputQuestions,
+  parsePendingOptionDisplay,
+} from "./connectionFlows.js";
+import { renderMessageRichHtml } from "./messageRender.js";
+import { getProposedPlanConfirmation } from "./proposedPlan.js";
 
 import { resetPendingTurnRuntime, resetTurnPresentationState } from "./runtimeState.js";
 
@@ -20,6 +28,7 @@ export function createChatTimelineModule(deps) {
   } = deps;
   let archiveViewportAdjustToken = 0;
   let lastCommentaryArchiveRenderSig = "";
+  let lastPendingInlineRenderSig = "";
 
   function pushLiveDebugEvent(kind, payload = {}) {
     if (!Array.isArray(state.liveDebugEvents)) state.liveDebugEvents = [];
@@ -93,10 +102,272 @@ export function createChatTimelineModule(deps) {
         key: msg?.archiveKey,
       });
     }
+    if (msg?.kind === "planCard") {
+      return createPlanCardNode(msg?.plan, {
+        source: "buildMsgNode",
+      });
+    }
     return createMessageNode(msg?.role || "", msg?.text || "", {
       kind: msg?.kind || "",
       attachments: msg?.images || [],
       source: "buildMsgNode",
+    });
+  }
+
+  function removePendingInlineMount() {
+    const mount = byId("pendingInlineMount");
+    mount?.remove?.();
+  }
+
+  function formatPendingInlineSummary() {
+    const approvalCount = Array.isArray(state.pendingApprovals) ? state.pendingApprovals.length : 0;
+    const inputCount = getVisiblePendingUserInputs(state).length;
+    const proposedPlanConfirmation = getProposedPlanConfirmation(state);
+    const onlyInput = inputCount === 1 ? getVisiblePendingUserInputs(state)[0] : null;
+    const onlyInputProgress = onlyInput ? getPendingUserInputProgress(state, onlyInput) : null;
+    if (approvalCount === 0 && inputCount === 0 && proposedPlanConfirmation) {
+      return "Plan confirmation";
+    }
+    if (
+      approvalCount === 0 &&
+      onlyInputProgress &&
+      onlyInputProgress.totalQuestions > 0 &&
+      !onlyInputProgress.isComplete
+    ) {
+      return `Question ${Math.min(onlyInputProgress.completedCount + 1, onlyInputProgress.totalQuestions)}/${onlyInputProgress.totalQuestions}`;
+    }
+    const parts = [];
+    if (approvalCount > 0) parts.push(`${approvalCount} approval${approvalCount === 1 ? "" : "s"}`);
+    if (inputCount > 0) parts.push(`${inputCount} question${inputCount === 1 ? "" : "s"}`);
+    return parts.join(" · ") || "Pending actions";
+  }
+
+  function buildPendingInlineRenderSig() {
+    const approvals = Array.isArray(state.pendingApprovals) ? state.pendingApprovals : [];
+    const userInputs = getVisiblePendingUserInputs(state);
+    const proposedPlanConfirmation = getProposedPlanConfirmation(state);
+    return JSON.stringify({
+      approvals: approvals.map((item) => ({
+        id: String(item?.id || ""),
+        prompt: String(item?.prompt || item?.title || item?.message || ""),
+      })),
+      userInputs: userInputs.map((item) => ({
+        id: String(item?.id || ""),
+        prompt: String(item?.prompt || item?.title || item?.question || ""),
+        questions: normalizePendingUserInputQuestions(item).map((question) => ({
+          id: question.id,
+          prompt: question.prompt,
+          options: question.options.map((option) => option.label),
+        })),
+      })),
+      proposedPlanConfirmation: proposedPlanConfirmation
+        ? {
+            id: String(proposedPlanConfirmation.id || ""),
+            title: String(proposedPlanConfirmation.plan?.title || proposedPlanConfirmation.title || ""),
+            prompt: String(proposedPlanConfirmation.prompt || ""),
+          }
+        : null,
+      answers: state.pendingUserInputAnswersById || {},
+      completed: state.pendingUserInputCompletedKeysById || {},
+      selectedApprovalId: String(state.selectedPendingApprovalId || ""),
+      selectedUserInputId: String(state.selectedPendingUserInputId || ""),
+    });
+  }
+
+  function createPendingInlineMount() {
+    const approvals = Array.isArray(state.pendingApprovals) ? state.pendingApprovals : [];
+    const userInputs = getVisiblePendingUserInputs(state);
+    const proposedPlanConfirmation = getProposedPlanConfirmation(state);
+    if (!approvals.length && !userInputs.length && !proposedPlanConfirmation) return null;
+    const mount = documentRef.createElement("div");
+    mount.id = "pendingInlineMount";
+    mount.className = "msg system kind-pending pendingInlineMount";
+    const head = documentRef.createElement("div");
+    head.className = "msgHead";
+    head.textContent = "pending";
+    const body = documentRef.createElement("div");
+    body.className = "msgBody";
+    const card = documentRef.createElement("div");
+    card.className = "pendingInlineCard";
+    const title = documentRef.createElement("div");
+    title.className = "pendingInlineTitle";
+    title.textContent = formatPendingInlineSummary();
+    card.appendChild(title);
+
+    if (approvals.length) {
+      const section = documentRef.createElement("div");
+      section.className = "pendingInlineSection";
+      section.innerHTML = `<div class="pendingInlineLabel">Permission Requests</div>`;
+      for (const item of approvals) {
+        const id = String(item?.id || "").trim();
+        const row = documentRef.createElement("div");
+        row.className = "pendingInlineItem";
+        if (String(state.selectedPendingApprovalId || "").trim() === id) row.classList.add("is-selected");
+        row.innerHTML =
+          `<button class="pendingInlineSelect" type="button" data-pending-approval-select="${escapeHtml(id)}">` +
+            `<div class="itemTitle">${escapeHtml(id || "approval")}</div>` +
+            `<div class="itemSub">${escapeHtml(item?.prompt || item?.title || item?.message || "Permission request")}</div>` +
+          `</button>` +
+          `<div class="pendingInlineActions">` +
+            `<button class="settingsChoiceBtn" type="button" data-pending-approval-id="${escapeHtml(id)}" data-pending-approval-decision="approve">Approve</button>` +
+            `<button class="settingsChoiceBtn" type="button" data-pending-approval-id="${escapeHtml(id)}" data-pending-approval-decision="reject">Reject</button>` +
+          `</div>`;
+        section.appendChild(row);
+      }
+      card.appendChild(section);
+    }
+
+    if (userInputs.length) {
+      const section = documentRef.createElement("div");
+      section.className = "pendingInlineSection";
+      section.innerHTML = `<div class="pendingInlineLabel">Questions</div>`;
+      const showUserInputHeader = userInputs.length > 1;
+      for (const item of userInputs) {
+        const id = String(item?.id || "").trim();
+        const draftAnswers =
+          state.pendingUserInputAnswersById && typeof state.pendingUserInputAnswersById === "object"
+            ? state.pendingUserInputAnswersById[id] || {}
+            : {};
+        const progress = getPendingUserInputProgress(state, item);
+        const question = progress.currentQuestion;
+        const progressLabel = progress.totalQuestions > 0
+          ? `Question ${Math.min(progress.completedCount + 1, progress.totalQuestions)}/${progress.totalQuestions}`
+          : "Question";
+        const submitLabel =
+          progress.totalQuestions <= 1 || progress.unansweredCount <= 1
+            ? "Submit answer"
+            : "Next";
+        const summaryLabel = progress.isComplete
+          ? "Ready to submit"
+          : `${progress.unansweredCount} unanswered`;
+        const showInlineQuestionHeader = !(
+          approvals.length === 0 &&
+          userInputs.length === 1 &&
+          progress.totalQuestions > 0 &&
+          !progress.isComplete &&
+          formatPendingInlineSummary() === progressLabel
+        );
+        const row = documentRef.createElement("div");
+        row.className = "pendingInlineItem";
+        if (String(state.selectedPendingUserInputId || "").trim() === id) row.classList.add("is-selected");
+        const questionsHtml = question
+          ? [question]
+          .map((currentQuestion) => {
+            const mode =
+              String(state.pendingUserInputAnswerModesById?.[id]?.[currentQuestion.id] || "").trim().toLowerCase() === "freeform"
+                ? "freeform"
+                : "option";
+            const typedValue = String(draftAnswers?.[currentQuestion.id] || "");
+            const optionsHtml = currentQuestion.options.length
+              ? currentQuestion.options
+                  .map((option) => {
+                    const meta = parsePendingOptionDisplay(option, currentQuestion.options.indexOf(option));
+                    const active = mode !== "freeform" && String(draftAnswers?.[currentQuestion.id] || "").trim() === option.label;
+                    return `<button class="pendingInlineOptionCard${active ? " is-active" : ""}" type="button" data-pending-user-input-id="${escapeHtml(id)}" data-pending-answer-key="${escapeHtml(currentQuestion.id)}" data-pending-answer-value="${escapeHtml(option.label)}">
+                      <span class="pendingInlineOptionTop">
+                        <span class="pendingInlineOptionTitle">${escapeHtml(`${meta.ordinal}. ${meta.label}`)}</span>
+                        ${meta.recommended ? '<span class="pendingInlineOptionBadge">Recommended</span>' : ""}
+                      </span>
+                      ${meta.description ? `<span class="pendingInlineOptionDesc">${escapeHtml(meta.description)}</span>` : ""}
+                    </button>`;
+                  })
+                  .join("")
+              : `<div class="itemSub">No preset options.</div>`;
+            return (
+              `<div class="pendingInlineQuestion">` +
+                `${showInlineQuestionHeader ? `<div class="pendingInlineQuestionHeader">${escapeHtml(progressLabel)}</div>` : ""}` +
+                `<div class="pendingInlineQuestionPrompt">${escapeHtml(currentQuestion.prompt || item?.prompt || item?.title || item?.question || "Question")}</div>` +
+                `<div class="pendingInlineOptions">${optionsHtml}</div>` +
+                `<div class="pendingInlineOptions"><button class="pendingInlineOptionCard pendingInlineOptionCard-ghost${mode === "freeform" ? " is-active" : ""}" type="button" data-pending-user-input-id="${escapeHtml(id)}" data-pending-answer-key="${escapeHtml(currentQuestion.id)}" data-pending-answer-mode="freeform"><span class="pendingInlineOptionTop"><span class="pendingInlineOptionTitle">None of the above</span></span><span class="pendingInlineOptionDesc">Add your own answer in a note below.</span></button></div>` +
+                `<div class="pendingInlineFreeformWrap${mode === "freeform" ? " is-visible" : ""}"><div class="pendingInlineFreeformInner"><textarea class="pendingInlineFreeform" data-pending-freeform-input="1" data-pending-user-input-id="${escapeHtml(id)}" data-pending-answer-key="${escapeHtml(currentQuestion.id)}" placeholder="Type your answer...">${escapeHtml(mode === "freeform" ? typedValue : "")}</textarea></div></div>` +
+              `</div>`
+            );
+          })
+          .join("")
+          : `<div class="pendingInlineQuestion"><div class="pendingInlineQuestionHeader">${escapeHtml(progressLabel)}</div><div class="pendingInlineQuestionPrompt">${escapeHtml(summaryLabel)}</div></div>`;
+        row.innerHTML =
+          `${showUserInputHeader ? (
+            `<button class="pendingInlineSelect" type="button" data-pending-user-input-select="${escapeHtml(id)}">` +
+              `<div class="itemTitle">${escapeHtml(progressLabel)}</div>` +
+              `<div class="itemSub">${escapeHtml(summaryLabel)}</div>` +
+            `</button>`
+          ) : ""}` +
+          `<div class="pendingInlineQuestions">${questionsHtml}</div>` +
+          `<div class="pendingInlineActions">` +
+            `<button class="settingsChoiceBtn" type="button" data-pending-user-input-submit="${escapeHtml(id)}">${submitLabel}</button>` +
+          `</div>`;
+        section.appendChild(row);
+      }
+      card.appendChild(section);
+    }
+
+    if (proposedPlanConfirmation) {
+      const section = documentRef.createElement("div");
+      section.className = "pendingInlineSection";
+      const planTitle = String(proposedPlanConfirmation.plan?.title || "").trim();
+      const planPrompt = String(proposedPlanConfirmation.prompt || proposedPlanConfirmation.title || "").trim();
+      section.innerHTML =
+        `<div class="pendingInlineLabel">Plan Review</div>` +
+        `<div class="pendingInlineItem">` +
+          `<div class="pendingInlineQuestions">` +
+            `<div class="pendingInlineQuestion">` +
+              `<div class="pendingInlineQuestionHeader">${escapeHtml(planTitle || "Proposed Plan")}</div>` +
+              `<div class="pendingInlineQuestionPrompt">${escapeHtml(planPrompt || "Implement this plan?")}</div>` +
+            `</div>` +
+          `</div>` +
+          `<div class="pendingInlineActions">` +
+            `<button class="settingsChoiceBtn" type="button" data-proposed-plan-decision="approve">Implement</button>` +
+            `<button class="settingsChoiceBtn" type="button" data-proposed-plan-decision="stay">Stay in Plan</button>` +
+          `</div>` +
+        `</div>`;
+      card.appendChild(section);
+    }
+
+    body.appendChild(card);
+    mount.appendChild(head);
+    mount.appendChild(body);
+    attachMessageDebugMeta(mount, {
+      role: "system",
+      kind: "pending",
+      text: formatPendingInlineSummary(),
+      source: "pendingInline",
+      transient: false,
+    });
+    return mount;
+  }
+
+  function renderPendingInline() {
+    const box = byId("chatBox");
+    if (!box) return;
+    const approvals = Array.isArray(state.pendingApprovals) ? state.pendingApprovals : [];
+    const userInputs = getVisiblePendingUserInputs(state);
+    const proposedPlanConfirmation = getProposedPlanConfirmation(state);
+    const renderSig = buildPendingInlineRenderSig();
+    if (lastPendingInlineRenderSig === renderSig && byId("pendingInlineMount")) return;
+    lastPendingInlineRenderSig = renderSig;
+    removePendingInlineMount();
+    const mount = createPendingInlineMount();
+    if (!mount) {
+      pushLiveDebugEvent("pending.inline:render", {
+        threadId: String(state.activeThreadId || "").trim(),
+        approvalCount: approvals.length,
+        userInputCount: userInputs.length,
+        proposedPlanConfirmation: !!proposedPlanConfirmation,
+        visible: false,
+      });
+      return;
+    }
+    box.appendChild(mount);
+    const children = Array.isArray(box.children) ? box.children : [];
+    pushLiveDebugEvent("pending.inline:render", {
+      threadId: String(state.activeThreadId || "").trim(),
+      approvalCount: approvals.length,
+      userInputCount: userInputs.length,
+      proposedPlanConfirmation: !!proposedPlanConfirmation,
+      visible: true,
+      pendingIndex: children.indexOf(mount),
+      runtimeIndex: children.findIndex((node) => String(node?.id || "").trim() === "runtimeChatPanels"),
+      commentaryIndex: children.findIndex((node) => String(node?.id || "").trim() === "commentaryArchiveMount"),
     });
   }
 
@@ -262,6 +533,7 @@ export function createChatTimelineModule(deps) {
         planNode.className = "commentaryArchivePlan";
         planNode.innerHTML = renderPlanCardHtml(block.plan, {
           escapeHtml,
+          renderRichTextHtml: renderMessageRichHtml,
           cardClass: "commentaryArchivePlanCard",
         });
         blockNode.appendChild(planNode);
@@ -295,6 +567,24 @@ export function createChatTimelineModule(deps) {
       syncViewport();
     });
     syncExpandedUi();
+    return mount;
+  }
+
+  function createPlanCardNode(plan, options = {}) {
+    const mount = documentRef.createElement("div");
+    mount.className = "msg system kind-planCard";
+    mount.innerHTML = `<div class="msgBody">${renderPlanCardHtml(plan, {
+      escapeHtml,
+      renderRichTextHtml: renderMessageRichHtml,
+      cardClass: "commentaryArchivePlanCard",
+    })}</div>`;
+    attachMessageDebugMeta(mount, {
+      role: "system",
+      kind: "planCard",
+      text: String(options.text || ""),
+      source: String(options.source || "").trim() || "planCard",
+      transient: false,
+    });
     return mount;
   }
 
@@ -350,7 +640,9 @@ export function createChatTimelineModule(deps) {
       fallbackAssistantAnchor ||
       box.querySelector("#runtimeChatPanels") ||
       null;
+    const pendingMount = byId("pendingInlineMount");
     if (anchorNode) box.insertBefore(mount, anchorNode);
+    else if (pendingMount && pendingMount.parentElement === box) box.insertBefore(mount, pendingMount);
     else box.appendChild(mount);
   }
 
@@ -364,6 +656,11 @@ export function createChatTimelineModule(deps) {
           source: String(options.source || "").trim() || "addChat",
           key: options.archiveKey,
         })
+      : options.kind === "planCard"
+        ? createPlanCardNode(options.plan, {
+            source: String(options.source || "").trim() || "addChat",
+            text,
+          })
       : createMessageNode(role, text, {
           kind: options.kind,
           attachments: options.attachments,
@@ -375,7 +672,9 @@ export function createChatTimelineModule(deps) {
       const delayMs = Number.isFinite(Number(options.delayMs)) ? Number(options.delayMs) : defaultDelay;
       animateMessageNode(node, delayMs);
     }
-    box.appendChild(node);
+    const pendingMount = byId("pendingInlineMount");
+    if (pendingMount && pendingMount.parentElement === box) box.insertBefore(node, pendingMount);
+    else box.appendChild(node);
     renderRuntimePanels();
     if (options.scroll !== false) {
       state.chatShouldStickToBottom = true;
@@ -523,6 +822,8 @@ export function createChatTimelineModule(deps) {
     state.activeThreadHistoryInFlightThreadId = "";
     state.activeThreadHistoryPendingRefresh = null;
     renderRuntimePanels();
+    lastPendingInlineRenderSig = "";
+    renderPendingInline();
   }
 
   function setChatOpening(isOpening) {
@@ -570,7 +871,9 @@ export function createChatTimelineModule(deps) {
     flushStreamingBody,
     renderCommentaryArchive,
     renderAssistantLiveBody,
+    renderPendingInline,
     removeCommentaryArchiveMount,
+    removePendingInlineMount,
     setChatOpening,
   };
 }

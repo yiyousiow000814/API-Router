@@ -337,8 +337,8 @@ impl CodexSessionManager {
         thread_id: &str,
         cwd_override: Option<&str>,
     ) -> Result<crate::platform::codex_terminal_session::TerminalSessionAttachAck, String> {
-        let normalized_thread_id = thread_id.trim();
-        if normalized_thread_id.is_empty() {
+        let requested_thread_id = thread_id.trim();
+        if requested_thread_id.is_empty() {
             return Err("thread id is required".to_string());
         }
         let Some(workspace_target) = self.workspace_target else {
@@ -355,17 +355,19 @@ impl CodexSessionManager {
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .or_else(|| {
-                self.thread_runtime_snapshot(normalized_thread_id)
+                self.thread_runtime_snapshot(requested_thread_id)
                     .and_then(|snapshot| snapshot.cwd)
             });
+        let Some(cwd) = cwd else {
+            return Err("cwd is required to open managed terminal".to_string());
+        };
 
         crate::platform::codex_managed_terminal::launch_managed_terminal_surface(
             &crate::platform::codex_managed_terminal::ManagedTerminalLaunchRequest {
                 server_port: bridge.server_port,
                 gateway_token: bridge.gateway_token.clone(),
                 workspace_target,
-                thread_id: normalized_thread_id.to_string(),
-                cwd,
+                cwd: Some(cwd.clone()),
                 home_override: self.home.clone(),
             },
         )?;
@@ -374,11 +376,11 @@ impl CodexSessionManager {
             + std::time::Duration::from_millis(MANAGED_TERMINAL_DISCOVERY_TIMEOUT_MS);
         loop {
             if let Some(attached) =
-                crate::platform::codex_terminal_session::lookup_live_session_by_thread(
+                crate::platform::codex_terminal_session::try_attach_live_session(
                     bridge.server_port,
                     bridge.gateway_token.as_deref(),
                     self.workspace_target,
-                    normalized_thread_id,
+                    &cwd,
                 )
                 .await?
             {
@@ -394,7 +396,7 @@ impl CodexSessionManager {
         }
 
         Err(format!(
-            "managed terminal launch for thread {normalized_thread_id} was not discovered"
+            "managed terminal launch for thread {requested_thread_id} was not discovered"
         ))
     }
 
@@ -1052,6 +1054,7 @@ mod tests {
     struct TestWebCodexHomeGuard {
         key: &'static str,
         previous: Option<String>,
+        path: std::path::PathBuf,
     }
 
     impl Drop for TestWebCodexHomeGuard {
@@ -1065,37 +1068,40 @@ mod tests {
                     std::env::remove_var(self.key);
                 }
             }
+            let _ = std::fs::remove_dir_all(&self.path);
         }
     }
 
     fn isolate_windows_web_codex_home() -> TestWebCodexHomeGuard {
-        isolate_web_codex_home(
-            "API_ROUTER_WEB_CODEX_CODEX_HOME",
-            std::env::temp_dir().join("api-router-web-codex-home-win"),
-        )
+        isolate_web_codex_home("API_ROUTER_WEB_CODEX_CODEX_HOME", "win")
     }
 
     fn isolate_wsl_web_codex_home() -> TestWebCodexHomeGuard {
-        isolate_web_codex_home(
-            "API_ROUTER_WEB_CODEX_WSL_CODEX_HOME",
-            std::env::temp_dir().join("api-router-web-codex-home-wsl"),
-        )
+        isolate_web_codex_home("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "wsl")
     }
 
-    fn isolate_web_codex_home(
-        key: &'static str,
-        path: std::path::PathBuf,
-    ) -> TestWebCodexHomeGuard {
+    fn isolate_web_codex_home(key: &'static str, scope: &str) -> TestWebCodexHomeGuard {
         let previous = std::env::var(key).ok();
+        let unique = format!(
+            "api-router-web-codex-home-{scope}-{}-{}",
+            std::process::id(),
+            crate::orchestrator::store::unix_ms()
+        );
+        let path = std::env::temp_dir().join(unique);
         std::fs::create_dir_all(path.join("sessions")).expect("sessions dir");
         unsafe {
             std::env::set_var(key, &path);
         }
-        TestWebCodexHomeGuard { key, previous }
+        TestWebCodexHomeGuard {
+            key,
+            previous,
+            path,
+        }
     }
 
     #[test]
     fn session_manager_resolves_workspace_home_override() {
+        let _guard = crate::codex_app_server::lock_test_globals();
         let _win_home = isolate_windows_web_codex_home();
         let _wsl_home = isolate_wsl_web_codex_home();
         _clear_workspace_runtime_registry_for_test();
@@ -1512,7 +1518,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_managed_terminal_surface_launches_remote_terminal_and_waits_for_discovery() {
+    async fn open_managed_terminal_surface_discovers_remote_terminal_by_cwd() {
         let _guard = crate::codex_app_server::lock_test_globals();
         _clear_workspace_runtime_registry_for_test();
         crate::platform::codex_terminal_session::_set_test_discovery_sessions(None);
@@ -1536,9 +1542,9 @@ mod tests {
                         wsl_distro: None,
                         cwd: Some("C:\\repo".to_string()),
                         rollout_path: Some(
-                            "C:\\repo\\.codex\\sessions\\rollout-thread-managed.jsonl".to_string(),
+                            "C:\\repo\\.codex\\sessions\\rollout-thread-terminal.jsonl".to_string(),
                         ),
-                        codex_session_id: Some("thread-managed".to_string()),
+                        codex_session_id: Some("thread-terminal".to_string()),
                         reported_model_provider: None,
                         reported_base_url: None,
                         agent_parent_session_id: None,
@@ -1554,15 +1560,15 @@ mod tests {
         let manager = CodexSessionManager::new(parse_workspace_target("windows"))
             .with_terminal_bridge(4000, Some("token-1".to_string()));
         let attached = manager
-            .open_managed_terminal_surface("thread-managed", Some("C:\\repo"))
+            .open_managed_terminal_surface("thread-web", Some("C:\\repo"))
             .await
             .expect("managed terminal surface should be discovered");
 
-        assert_eq!(attached.thread_id, "thread-managed");
+        assert_eq!(attached.thread_id, "thread-terminal");
         assert_eq!(attached.cwd.as_deref(), Some("C:\\repo"));
         assert_eq!(
             attached.rollout_path.as_deref(),
-            Some("C:\\repo\\.codex\\sessions\\rollout-thread-managed.jsonl")
+            Some("C:\\repo\\.codex\\sessions\\rollout-thread-terminal.jsonl")
         );
 
         let spec = captured
@@ -1572,19 +1578,22 @@ mod tests {
             .expect("captured launch spec");
         assert_eq!(spec.program, "cmd.exe");
         assert_eq!(spec.args.first().map(String::as_str), Some("/C"));
-        assert!(spec.args.iter().any(|arg| arg == "codex"));
-        assert!(spec.args.iter().any(|arg| arg == "resume"));
-        assert!(spec.args.iter().any(|arg| arg == "thread-managed"));
-        assert!(spec.args.iter().any(|arg| arg == "--remote"));
-        assert!(
-            spec.args
-                .iter()
-                .any(|arg| arg.contains("/codex/app-server/ws"))
-                && spec
-                    .args
-                    .iter()
-                    .any(|arg| arg.contains("workspace=windows"))
-        );
+        assert!(spec.args.iter().any(|arg| arg == "powershell.exe"));
+        assert!(spec.args.iter().any(|arg| arg.contains("codex.cmd")));
+        assert!(!spec.args.iter().any(|arg| arg.contains("thread-web")));
+        assert!(!spec.args.iter().any(|arg| arg.contains("thread-terminal")));
+        assert!(spec
+            .args
+            .iter()
+            .any(|arg| arg.contains("ws://127.0.0.1:4000/")));
+        assert!(spec
+            .args
+            .iter()
+            .any(|arg| arg.contains("--remote-auth-token-env")));
+        assert!(spec
+            .env
+            .iter()
+            .any(|(key, value)| { key == "API_ROUTER_GATEWAY_TOKEN" && value == "token-1" }));
 
         crate::platform::codex_managed_terminal::_set_test_launch_handler(None);
         crate::platform::codex_terminal_session::_set_test_discovery_sessions(None);

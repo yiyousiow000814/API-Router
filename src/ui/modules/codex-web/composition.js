@@ -248,6 +248,7 @@ export function createCodexWebComposition(deps) {
     setMainTab: deps.setMainTab,
     setMobileTab: deps.setMobileTab,
     addChat: chatTimeline.addChat,
+    renderPendingInline: (...args) => chatTimeline.renderPendingInline(...args),
   });
 
   const turnActions = deps.createTurnActionsModule({
@@ -283,6 +284,10 @@ export function createCodexWebComposition(deps) {
     refreshThreads: (...args) => refreshThreads(...args),
     refreshHosts: connectionFlows.refreshHosts,
     refreshPending: connectionFlows.refreshPending,
+    clearPendingUserInputs: connectionFlows.clearPendingUserInputs,
+    clearSyntheticPendingUserInputById: connectionFlows.clearSyntheticPendingUserInputById,
+    setSyntheticPendingUserInputs: connectionFlows.setSyntheticPendingUserInputs,
+    suppressSyntheticPendingUserInputs: connectionFlows.suppressSyntheticPendingUserInputs,
     setStatus: deps.setStatus,
     setActiveThread: deps.setActiveThread,
     setMainTab: deps.setMainTab,
@@ -290,6 +295,7 @@ export function createCodexWebComposition(deps) {
     setChatOpening: chatTimeline.setChatOpening,
     syncPendingTurnUi: () => {
       chatTimeline.renderCommentaryArchive();
+      chatTimeline.renderPendingInline();
       deps.renderRuntimePanels();
     },
     setComposerActionMenuOpen: deps.setComposerActionMenuOpen,
@@ -333,8 +339,13 @@ export function createCodexWebComposition(deps) {
     wireThreadPullToRefresh,
     addHost: turnActions.addHost,
     resolveApproval: turnActions.resolveApproval,
+    resolveProposedPlanConfirmation: turnActions.resolveProposedPlanConfirmation,
     resolveUserInput: turnActions.resolveUserInput,
     refreshPending: connectionFlows.refreshPending,
+    getPendingUserInputDraftAnswers: connectionFlows.getPendingUserInputDraftAnswers,
+    getPendingUserInputSubmissionState: connectionFlows.getPendingUserInputSubmissionState,
+    setPendingUserInputDraftAnswer: connectionFlows.setPendingUserInputDraftAnswer,
+    setPendingUserInputQuestionCompleted: connectionFlows.setPendingUserInputQuestionCompleted,
     uploadAttachment: turnActions.uploadAttachment,
       executeSlashCommand: turnActions.executeSlashCommand,
       cancelQueuedTurnEditing: turnActions.cancelQueuedTurnEditing,
@@ -376,6 +387,9 @@ export function createCodexWebComposition(deps) {
     normalizeThreadTokenUsage: deps.normalizeThreadTokenUsage,
     renderRuntimePanels: deps.renderRuntimePanels,
     renderCommentaryArchive: chatTimeline.renderCommentaryArchive,
+    renderPendingInline: chatTimeline.renderPendingInline,
+    renderPendingLists: connectionFlows.renderPendingLists,
+    getVisiblePendingUserInputs: connectionFlows.getVisiblePendingUserInputs,
     renderComposerContextLeft: deps.renderComposerContextLeft,
     clearChatMessages: chatTimeline.clearChatMessages,
     showWelcomeCard: deps.showWelcomeCard,
@@ -532,6 +546,7 @@ export function createCodexWebComposition(deps) {
     finalizeAssistantMessage,
     renderCommentaryArchive,
     renderAssistantLiveBody,
+    renderPendingInline,
     setChatOpening,
   } = chatTimeline;
   const { applyThreadToChat, loadThreadMessages, updateLoadOlderControl } = historyLoader;
@@ -564,7 +579,11 @@ export function createCodexWebComposition(deps) {
   } = folderPicker;
   const {
     applyPendingPayloads,
+    clearPendingUserInputs,
+    clearSyntheticPendingUserInputById,
     connect,
+    getVisiblePendingUserInputs,
+    getPendingUserInputSubmissionState,
     refreshAll,
     refreshHosts,
     refreshPending,
@@ -572,6 +591,9 @@ export function createCodexWebComposition(deps) {
     renderHosts,
     renderPendingLists,
     setActiveHost,
+    suppressSyntheticPendingUserInputs,
+    setSyntheticPendingUserInputs,
+    upsertSyntheticPendingUserInput,
   } = connectionFlows;
   const { addHost, clearQueuedTurn, editQueuedTurn, executeSlashCommand, flushQueuedTurn, interruptTurn, newThread, queueFollowUpTurn, resolveApproval, resolveUserInput, sendNowTurn, sendQueuedTurnNow, sendTurn, steerTurn, uploadAttachment } =
     turnActions;
@@ -620,6 +642,7 @@ export function createCodexWebComposition(deps) {
     finalizeAssistantMessage,
     renderCommentaryArchive,
     renderAssistantLiveBody,
+    renderPendingInline,
     setChatOpening,
     applyThreadToChat,
     loadThreadMessages,
@@ -648,13 +671,19 @@ export function createCodexWebComposition(deps) {
     switchFolderPickerWorkspace,
     applyPendingPayloads,
     connect,
+    getVisiblePendingUserInputs,
     refreshAll,
     refreshHosts,
     refreshPending,
     refreshPendingFromHttp,
     renderHosts,
     renderPendingLists,
+    clearPendingUserInputs,
+    clearSyntheticPendingUserInputById,
     setActiveHost,
+    suppressSyntheticPendingUserInputs,
+    setSyntheticPendingUserInputs,
+    upsertSyntheticPendingUserInput,
     addHost,
     clearQueuedTurn,
     editQueuedTurn,

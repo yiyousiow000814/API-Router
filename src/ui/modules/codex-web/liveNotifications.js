@@ -1,9 +1,15 @@
 import { toolItemToMessage } from "./messageData.js";
 import { clonePlanState, extractPlanUpdate } from "./runtimePlan.js";
 import {
+  clearProposedPlanConfirmation,
+  extractProposedPlanArtifacts,
+  setProposedPlanConfirmation,
+} from "./proposedPlan.js";
+import {
   clearActiveAssistantLiveState as clearActiveAssistantLiveStateRuntime,
   finishPendingTurnRun as finishPendingTurnRunRuntime,
   rememberFinalAssistant as rememberFinalAssistantRuntime,
+  resetPendingTurnRuntime as resetPendingTurnRuntimeRuntime,
   resetTurnPresentationState as resetTurnPresentationStateRuntime,
   setPendingTurnRunning as setPendingTurnRunningRuntime,
   syncPendingTurnRuntime as syncPendingTurnRuntimeState,
@@ -227,8 +233,13 @@ export function createLiveNotificationsModule(deps) {
     applyToolItemRuntimeUpdate = () => {},
     applyPlanDeltaUpdate = () => {},
     applyPlanSnapshotUpdate = () => {},
+    clearPendingUserInputs = () => false,
+    setSyntheticPendingUserInputs = () => {},
+    suppressSyntheticPendingUserInputs = () => {},
+    upsertSyntheticPendingUserInput = () => {},
     finalizeRuntimeState = () => {},
     flushQueuedTurn = async () => false,
+    renderPendingInline = () => {},
     renderCommentaryArchive = () => {},
     normalizeType,
     normalizeInline,
@@ -273,6 +284,8 @@ export function createLiveNotificationsModule(deps) {
   }
 
   function toToolLikeMessage(item) {
+    const normalizedTool = normalizeType(item?.tool || item?.name);
+    if (normalizedTool === "requestuserinput") return "";
     return toolItemToMessage(item, { compact: true });
   }
 
@@ -602,8 +615,7 @@ export function createLiveNotificationsModule(deps) {
         String(state.activeThreadId || "").trim(),
         state.activeThreadCommentaryPendingPlan,
         state.activeThreadCommentaryPendingTools,
-        state.activeThreadCommentaryPendingToolKeys,
-        { allowEmpty: state.activeThreadCommentaryArchive.length === 0 }
+        state.activeThreadCommentaryPendingToolKeys
       );
       if (summaryBlock) archiveCommentaryBlock(summaryBlock);
     }
@@ -700,6 +712,10 @@ export function createLiveNotificationsModule(deps) {
     setPendingTurnRunningRuntime(state, threadId, running, options);
   }
 
+  function resetPendingTurnRuntime() {
+    resetPendingTurnRuntimeRuntime(state);
+  }
+
   function findAssistantLiveStream(box, threadId) {
     const nodes = Array.from(box?.querySelectorAll?.('.msg.assistant[data-live-assistant="1"]') || []);
     for (let index = nodes.length - 1; index >= 0; index -= 1) {
@@ -764,7 +780,9 @@ export function createLiveNotificationsModule(deps) {
       msg.setAttribute?.("data-live-assistant", "1");
       msg.setAttribute?.("data-live-thread-id", threadId);
     } catch {}
-    box.appendChild(msg);
+    const pendingMount = box.querySelector?.("#pendingInlineMount") || null;
+    if (pendingMount && pendingMount.parentElement === box) box.insertBefore(msg, pendingMount);
+    else box.appendChild(msg);
     state.activeThreadLiveAssistantThreadId = threadId;
     state.activeThreadLiveAssistantIndex = Array.isArray(state.activeThreadMessages)
       ? state.activeThreadMessages.length
@@ -904,6 +922,7 @@ export function createLiveNotificationsModule(deps) {
         chars: nextText.length,
       });
       finishPendingTurnRun(threadId);
+      resetPendingTurnRuntime();
       finalizeAssistantLive(threadId);
       if (
         (!Array.isArray(state.activeThreadActiveCommands) || state.activeThreadActiveCommands.length === 0) &&
@@ -944,6 +963,59 @@ export function createLiveNotificationsModule(deps) {
     scheduleChatLiveFollow(800);
   }
 
+  function discardAssistantLive(threadId) {
+    if (!threadId || String(state.activeThreadLiveAssistantThreadId || "") !== threadId) {
+      pushLiveDebugEvent("live.skip:discard_assistant_mismatch", {
+        threadId: String(threadId || ""),
+        liveThreadId: String(state.activeThreadLiveAssistantThreadId || ""),
+      });
+      return;
+    }
+    const msg = state.activeThreadLiveAssistantMsgNode;
+    const index = Number(state.activeThreadLiveAssistantIndex);
+    if (
+      Array.isArray(state.activeThreadMessages) &&
+      index >= 0 &&
+      index < state.activeThreadMessages.length
+    ) {
+      state.activeThreadMessages.splice(index, 1);
+    }
+    msg?.remove?.();
+    clearActiveAssistantLiveState();
+    pushLiveDebugEvent("live.render:assistant_discard", {
+      threadId: String(threadId || ""),
+    });
+  }
+
+  function appendPlanCardMessage(threadId, planMessage) {
+    if (!planMessage?.plan) return false;
+    const signature = String(planMessage.text || "").trim();
+    const last = Array.isArray(state.activeThreadMessages) && state.activeThreadMessages.length
+      ? state.activeThreadMessages[state.activeThreadMessages.length - 1]
+      : null;
+    if (
+      last &&
+      last.role === "system" &&
+      String(last.kind || "").trim() === "planCard" &&
+      String(last.text || "").trim() === signature
+    ) {
+      return false;
+    }
+    addChat("system", signature, {
+      kind: "planCard",
+      plan: planMessage.plan,
+      source: "liveProposedPlan",
+    });
+    if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
+    state.activeThreadMessages.push({
+      role: "system",
+      kind: "planCard",
+      text: signature,
+      plan: planMessage.plan,
+    });
+    return true;
+  }
+
   function collapseLiveRuntimeBeforeVisibleAssistant(threadId, anchorNode = null) {
     finalizeCommentaryArchive(anchorNode);
     clearTransientToolMessages();
@@ -973,6 +1045,15 @@ export function createLiveNotificationsModule(deps) {
       threadId: String(threadId || ""),
       activeThreadId: String(state.activeThreadId || ""),
     });
+    const interruptSuppressed =
+      !!threadId &&
+      state.suppressedLiveInterruptByThreadId &&
+      state.suppressedLiveInterruptByThreadId[threadId] === true;
+    const terminalMethod =
+      method.includes("turn/completed") ||
+      method.includes("turn/finished") ||
+      method.includes("turn/failed") ||
+      method.includes("turn/cancelled");
     if (
       toolItem ||
       method.includes("codex/event/") ||
@@ -1030,6 +1111,13 @@ export function createLiveNotificationsModule(deps) {
       });
     }
     if (!threadId || threadId === state.activeThreadId) {
+      if (interruptSuppressed && !terminalMethod && !method.includes("turn/started")) {
+        pushLiveDebugEvent("live.status:suppress_after_interrupt", {
+          method,
+          threadId: String(threadId || ""),
+          activeThreadId: String(state.activeThreadId || ""),
+        });
+      } else {
       const nextStatus = deriveLiveStatusFromNotification(record, {
         normalizeType,
         normalizeInline,
@@ -1044,6 +1132,7 @@ export function createLiveNotificationsModule(deps) {
           isWarn: nextStatus.isWarn === true,
         });
         setStatus(nextStatus.message, nextStatus.isWarn === true);
+      }
       }
     }
     if (!threadId) {
@@ -1062,7 +1151,24 @@ export function createLiveNotificationsModule(deps) {
       return;
     }
 
+    if (interruptSuppressed && !terminalMethod && !method.includes("turn/started")) {
+      pushLiveDebugEvent("live.drop:suppress_after_interrupt", {
+        method,
+        threadId: String(threadId || ""),
+      });
+      return;
+    }
+
     if (method.includes("turn/started")) {
+      if (
+        state.suppressedLiveInterruptByThreadId &&
+        state.suppressedLiveInterruptByThreadId[threadId] === true
+      ) {
+        delete state.suppressedLiveInterruptByThreadId[threadId];
+      }
+      clearProposedPlanConfirmation(state, threadId);
+      suppressSyntheticPendingUserInputs(threadId, false);
+      setSyntheticPendingUserInputs(threadId, []);
       syncPendingTurnRuntime(threadId, {
         turnId: params?.turnId || params?.turn_id || params?.turn?.id || params?.id || "",
         running: true,
@@ -1107,19 +1213,53 @@ export function createLiveNotificationsModule(deps) {
         threadId,
         state.activeThreadLiveAssistantMsgNode || null
       );
+      const proposedPlan = extractProposedPlanArtifacts(assistantUpdate.text, {
+        threadId,
+        itemId: assistantUpdate.itemId,
+      });
       const toolStatus = normalizeType(toolItem?.status);
       const isFinalAssistantUpdate =
         assistantUpdate.mode === "snapshot" &&
         (method.includes("completed") ||
           method.includes("finished") ||
           (!isRunningLiveStatus(toolStatus) && toolStatus !== "updating"));
+      const nextAssistantText = proposedPlan.plan
+        ? proposedPlan.cleanedText
+        : assistantUpdate.text;
       pushLiveDebugEvent("live.match:assistant_update", {
         method,
         threadId: String(threadId || ""),
         mode: assistantUpdate.mode,
         final: isFinalAssistantUpdate,
       });
-      renderAssistantSnapshot(threadId, assistantUpdate.text, { final: isFinalAssistantUpdate });
+      pushLiveDebugEvent("live.inspect:proposed_plan_detection", {
+        source: "live",
+        method,
+        threadId: String(threadId || ""),
+        itemId: String(assistantUpdate.itemId || ""),
+        phase: String(assistantUpdate.phase || ""),
+        final: isFinalAssistantUpdate,
+        hasPlan: !!proposedPlan.planMessage?.plan,
+        hasPendingUserInput: !!proposedPlan.pendingConfirmation,
+        rawPreview: summarizePreview(assistantUpdate.text, 220),
+        cleanedPreview: summarizePreview(proposedPlan.cleanedText, 220),
+      });
+      if (!nextAssistantText && proposedPlan.planMessage?.plan && isFinalAssistantUpdate) {
+        const liveMsgNode = state.activeThreadLiveAssistantMsgNode;
+        liveMsgNode?.remove?.();
+        clearActiveAssistantLiveState();
+        finishPendingTurnRun(threadId);
+        resetPendingTurnRuntime();
+      } else {
+        renderAssistantSnapshot(threadId, nextAssistantText, { final: isFinalAssistantUpdate });
+      }
+      if (proposedPlan.planMessage?.plan && isFinalAssistantUpdate) {
+        appendPlanCardMessage(threadId, proposedPlan.planMessage);
+      }
+      if (proposedPlan.pendingConfirmation && isFinalAssistantUpdate) {
+        setProposedPlanConfirmation(state, threadId, proposedPlan.pendingConfirmation);
+        renderPendingInline();
+      }
       return;
     }
     if (method.includes("turn/plan/updated")) {
@@ -1194,11 +1334,31 @@ export function createLiveNotificationsModule(deps) {
       setRuntimeActivity({ threadId, title: "Thinking", detail: "", tone: "running" });
       return;
     }
-    if (method.includes("turn/completed") || method.includes("turn/finished") || method.includes("turn/failed") || method.includes("turn/cancelled")) {
+    if (terminalMethod) {
       pushLiveDebugEvent("live.render:turn_terminal", {
         method,
         threadId: String(threadId || ""),
       });
+      const turnCancelled = method.includes("turn/cancelled");
+      if (
+        state.suppressedLiveInterruptByThreadId &&
+        state.suppressedLiveInterruptByThreadId[threadId] === true
+      ) {
+        delete state.suppressedLiveInterruptByThreadId[threadId];
+      }
+      if (method.includes("turn/failed") || turnCancelled) {
+        if (String(state.activeThreadLiveAssistantThreadId || "") === String(threadId || "").trim()) {
+          discardAssistantLive(threadId);
+        }
+        if (turnCancelled) {
+          resetTurnPresentationState({ bumpLiveEpoch: true });
+        }
+        clearProposedPlanConfirmation(state, threadId);
+        clearPendingUserInputs({ threadId });
+        suppressSyntheticPendingUserInputs(threadId, true);
+        setSyntheticPendingUserInputs(threadId, []);
+        resetPendingTurnRuntime();
+      }
       finishPendingTurnRun(threadId);
       if (
         state.activeThreadCommentaryCurrent &&
@@ -1206,7 +1366,9 @@ export function createLiveNotificationsModule(deps) {
       ) {
         finalizeCommentaryArchive(null);
       }
-      finalizeAssistantLive(threadId);
+      if (!(turnCancelled || method.includes("turn/failed"))) {
+        finalizeAssistantLive(threadId);
+      }
       const finalizedAssistantThreadId = String(state.activeThreadLastFinalAssistantThreadId || "").trim();
       if (method.includes("turn/failed") || method.includes("turn/cancelled")) {
         syncPendingAssistantState(threadId, "");
@@ -1216,6 +1378,10 @@ export function createLiveNotificationsModule(deps) {
       clearTransientToolMessages();
       clearTransientThinkingMessages();
       finalizeRuntimeState(threadId);
+      if (turnCancelled) {
+        renderCommentaryArchive();
+        renderPendingInline();
+      }
       void flushQueuedTurn(threadId);
     }
   }

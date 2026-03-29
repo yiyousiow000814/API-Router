@@ -132,6 +132,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                   "account_email": account_email,
                   "has_key": has_key
                   ,"key_preview": key_preview,
+                  "key_storage": state.secrets.get_provider_key_storage_mode(name),
                   "has_usage_token": usage_token.is_some(),
                   "has_usage_login": usage_login.is_some()
                 }),
@@ -985,11 +986,18 @@ pub(crate) fn set_provider_key(
     state: tauri::State<'_, app_state::AppState>,
     provider: String,
     key: String,
+    storage_mode: Option<String>,
 ) -> Result<(), String> {
     if !state.gateway.cfg.read().providers.contains_key(&provider) {
         return Err(format!("unknown provider: {provider}"));
     }
-    state.secrets.set_provider_key(&provider, &key)?;
+    let normalized_storage_mode = storage_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    state
+        .secrets
+        .set_provider_key_with_storage_mode(&provider, &key, normalized_storage_mode)?;
     if let Err(e) =
         crate::provider_switchboard::sync_active_provider_target_for_key(&state, &provider)
     {
@@ -1007,8 +1015,10 @@ pub(crate) fn set_provider_key(
         &provider,
         "info",
         "config.provider_key_updated",
-        "provider key updated (stored in user-data/secrets.json)",
-        serde_json::Value::Null,
+        "provider key updated",
+        serde_json::json!({
+            "storage_mode": normalized_storage_mode.unwrap_or("auth_json")
+        }),
     );
     Ok(())
 }

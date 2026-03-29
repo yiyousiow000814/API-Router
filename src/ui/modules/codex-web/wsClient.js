@@ -339,16 +339,26 @@ export function createWsClientModule(deps) {
       return;
     }
     if (payload.type === "approval.requested") {
+      pushLiveDebugEvent("pending.ws:approval_requested", {
+        approvalCount: Array.isArray(payload.payload) ? payload.payload.length : 0,
+      });
       applyPendingPayloads(payload.payload, state.pendingUserInputs);
       setStatus("Approval requested.");
       return;
     }
     if (payload.type === "user_input.requested") {
+      pushLiveDebugEvent("pending.ws:user_input_requested", {
+        userInputCount: Array.isArray(payload.payload) ? payload.payload.length : 0,
+      });
       applyPendingPayloads(state.pendingApprovals, payload.payload);
       setStatus("User input requested.");
       return;
     }
     if (payload.type === "events.snapshot") {
+      pushLiveDebugEvent("pending.ws:events_snapshot", {
+        approvalCount: Array.isArray(payload?.payload?.approvals) ? payload.payload.approvals.length : 0,
+        userInputCount: Array.isArray(payload?.payload?.userInputs) ? payload.payload.userInputs.length : 0,
+      });
       applyPendingPayloads(payload?.payload?.approvals || [], payload?.payload?.userInputs || []);
       return;
     }

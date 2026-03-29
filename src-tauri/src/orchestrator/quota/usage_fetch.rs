@@ -2,11 +2,25 @@ async fn fetch_token_stats_any(
     st: &GatewayState,
     provider_name: &str,
     bases: &[String],
+    explicit_usage_endpoint: Option<&str>,
     provider_key: Option<&str>,
     usage_token: Option<&str>,
     package_expiry_strategy: PackageExpiryStrategy,
 ) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::TokenStats);
+    if let Some(endpoint_url) = explicit_usage_endpoint {
+        let direct = fetch_explicit_usage_endpoint_any(
+            st,
+            provider_name,
+            endpoint_url,
+            provider_key,
+            usage_token,
+        )
+        .await;
+        if direct.last_error.is_empty() {
+            return direct;
+        }
+    }
     let Some(k) = provider_key else {
         out.last_error = "missing provider key".to_string();
         return out;
@@ -49,8 +63,11 @@ async fn fetch_token_stats_any(
         {
             Ok(resp) => {
                 let status = resp.status().as_u16();
-                let backoff_ms =
-                    parse_rate_limit_backoff_ms(resp.headers(), unix_ms(), USAGE_BASE_429_BACKOFF_MS);
+                let backoff_ms = parse_rate_limit_backoff_ms(
+                    resp.headers(),
+                    unix_ms(),
+                    USAGE_BASE_429_BACKOFF_MS,
+                );
                 let j = resp.json::<Value>().await.unwrap_or(Value::Null);
                 if !(200..300).contains(&status) {
                     if status == 429 {
@@ -336,7 +353,9 @@ async fn send_packycode_devtools_command(
         }
         return Ok(payload);
     }
-    Err(format!("devtools websocket closed before {method} completed"))
+    Err(format!(
+        "devtools websocket closed before {method} completed"
+    ))
 }
 
 fn build_packycode_auth_storage_seed(token: &str) -> String {
@@ -355,7 +374,9 @@ fn extract_packycode_browser_auth_storage_user(root: &Value) -> Result<Value, St
         .pointer("/result/result/value")
         .ok_or_else(|| "missing devtools evaluate result".to_string())?;
     if let Some(err) = result.get("__parseError").and_then(Value::as_str) {
-        return Err(format!("Packycode dashboard auth-storage parse failed: {err}"));
+        return Err(format!(
+            "Packycode dashboard auth-storage parse failed: {err}"
+        ));
     }
     let storage = if let Some(raw) = result.as_str() {
         let raw = raw.trim();
@@ -382,10 +403,7 @@ fn extract_packycode_browser_auth_storage_user(root: &Value) -> Result<Value, St
     Ok(user)
 }
 
-fn packycode_usage_browser_args(
-    data_dir: &std::path::Path,
-    dashboard_url: &str,
-) -> Vec<String> {
+fn packycode_usage_browser_args(data_dir: &std::path::Path, dashboard_url: &str) -> Vec<String> {
     vec![
         "--headless=new".to_string(),
         "--disable-gpu".to_string(),
@@ -428,6 +446,181 @@ fn apply_packycode_budget_payload(
     Ok(())
 }
 
+fn apply_explicit_usage_endpoint_payload(
+    out: &mut QuotaSnapshot,
+    root: &Value,
+    endpoint_url: &str,
+    now_ms: u64,
+) -> Result<(), String> {
+    let normalize_money = |value: Option<f64>| {
+        if endpoint_url
+            .trim_end_matches('/')
+            .to_ascii_lowercase()
+            .ends_with("/user/api/v1/me")
+        {
+            value.map(|amount| amount / 100.0)
+        } else {
+            value
+        }
+    };
+    let daily_budget_usd = root
+        .pointer("/quota/daily_quota")
+        .and_then(|value| as_f64(Some(value)))
+        .or_else(|| {
+            root.pointer("/daily_quota")
+                .and_then(|value| as_f64(Some(value)))
+        })
+        .or_else(|| {
+            root.pointer("/daily_budget_usd")
+                .and_then(|value| as_f64(Some(value)))
+        });
+    let daily_spent_usd = root
+        .pointer("/quota/daily_spent")
+        .and_then(|value| as_f64(Some(value)))
+        .or_else(|| {
+            root.pointer("/quota/daily_total_spent")
+                .and_then(|value| as_f64(Some(value)))
+        })
+        .or_else(|| {
+            root.pointer("/usage/daily_spent")
+                .and_then(|value| as_f64(Some(value)))
+        })
+        .or_else(|| {
+            root.pointer("/usage/daily_total_spent")
+                .and_then(|value| as_f64(Some(value)))
+        })
+        .or_else(|| {
+            root.pointer("/daily_spent_usd")
+                .and_then(|value| as_f64(Some(value)))
+        });
+    let remaining = root
+        .pointer("/quota/daily_remaining")
+        .and_then(|value| as_f64(Some(value)))
+        .or_else(|| {
+            root.pointer("/remaining_quota")
+                .and_then(|value| as_f64(Some(value)))
+        })
+        .or_else(|| {
+            root.pointer("/balance")
+                .and_then(|value| as_f64(Some(value)))
+        });
+    let package_expires_at_unix_ms = root
+        .pointer("/timestamps/expires_at")
+        .and_then(|value| parse_unix_ms_from_value(Some(value)))
+        .or_else(|| parse_unix_ms_from_value(root.pointer("/expires_at")));
+    if daily_budget_usd.is_none()
+        && daily_spent_usd.is_none()
+        && remaining.is_none()
+        && package_expires_at_unix_ms.is_none()
+    {
+        return Err(format!("unexpected response from {endpoint_url}"));
+    }
+
+    let daily_budget_usd = normalize_money(daily_budget_usd);
+    let daily_spent_usd = normalize_money(daily_spent_usd);
+    let remaining = normalize_money(remaining);
+
+    out.kind = if daily_budget_usd.is_some() || daily_spent_usd.is_some() {
+        UsageKind::BudgetInfo
+    } else {
+        UsageKind::BalanceInfo
+    };
+    out.remaining = remaining;
+    out.daily_budget_usd = daily_budget_usd;
+    out.daily_spent_usd = daily_spent_usd;
+    out.package_expires_at_unix_ms = package_expires_at_unix_ms;
+    out.effective_usage_base = Some(endpoint_url.to_string());
+    out.effective_usage_source = Some("usage_base".to_string());
+    out.updated_at_unix_ms = now_ms;
+    out.last_error.clear();
+    Ok(())
+}
+
+async fn fetch_explicit_usage_endpoint_any(
+    st: &GatewayState,
+    provider_name: &str,
+    endpoint_url: &str,
+    provider_key: Option<&str>,
+    usage_token: Option<&str>,
+) -> QuotaSnapshot {
+    let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+    let endpoint_url = endpoint_url.trim().trim_end_matches('/');
+    if endpoint_url.is_empty() {
+        out.last_error = "missing quota base".to_string();
+        return out;
+    }
+
+    let client = match build_usage_http_client(st, provider_name) {
+        Ok(client) => client,
+        Err(err) => {
+            out.last_error = err;
+            return out;
+        }
+    };
+
+    let mut auth_candidates: Vec<&str> = Vec::new();
+    if let Some(token) = usage_token.map(str::trim).filter(|token| !token.is_empty()) {
+        auth_candidates.push(token);
+    }
+    if let Some(token) = provider_key
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
+        if !auth_candidates.contains(&token) {
+            auth_candidates.push(token);
+        }
+    }
+    if auth_candidates.is_empty() {
+        out.last_error = "missing credentials for quota refresh".to_string();
+        return out;
+    }
+
+    let mut last_err = String::new();
+    for token in auth_candidates {
+        if let Err(err) = wait_for_usage_base_refresh_slot(endpoint_url).await {
+            out.last_error = err;
+            return out;
+        }
+        let resp = match client
+            .get(endpoint_url)
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                last_err = format_reqwest_error_for_logs(&err);
+                continue;
+            }
+        };
+        let status = resp.status().as_u16();
+        let response_now_ms = unix_ms();
+        let backoff_ms =
+            parse_rate_limit_backoff_ms(resp.headers(), response_now_ms, USAGE_BASE_429_BACKOFF_MS);
+        let payload = resp.json::<Value>().await.unwrap_or(Value::Null);
+        if !(200..300).contains(&status) {
+            if status == 429 {
+                note_usage_base_rate_limited(endpoint_url, response_now_ms, backoff_ms);
+            }
+            last_err = format!("http {status} from {endpoint_url}");
+            continue;
+        }
+        let root = payload.get("data").unwrap_or(&payload);
+        match apply_explicit_usage_endpoint_payload(&mut out, root, endpoint_url, response_now_ms) {
+            Ok(()) => return out,
+            Err(err) => last_err = err,
+        }
+    }
+
+    out.last_error = if last_err.is_empty() {
+        format!("unexpected response from {endpoint_url}")
+    } else {
+        last_err
+    };
+    out
+}
+
 async fn fetch_packycode_budget_info_via_browser_context(
     st: &GatewayState,
     provider_name: &str,
@@ -446,12 +639,15 @@ async fn fetch_packycode_budget_info_via_browser_context(
     let browser_path = match resolve_packycode_browser_path_for_usage_context() {
         Some(path) => path,
         None => {
-            out.last_error = "no supported browser found for Packycode browser usage sync".to_string();
+            out.last_error =
+                "no supported browser found for Packycode browser usage sync".to_string();
             return out;
         }
     };
 
-    let _ = std::fs::remove_file(packycode_devtools_active_port_path_for_usage_context(&data_dir));
+    let _ = std::fs::remove_file(packycode_devtools_active_port_path_for_usage_context(
+        &data_dir,
+    ));
     let launch_args = packycode_usage_browser_args(&data_dir, PACKYCODE_DASHBOARD_URL);
     let mut child = match tokio::process::Command::new(&browser_path)
         .args(&launch_args)
@@ -462,15 +658,15 @@ async fn fetch_packycode_budget_info_via_browser_context(
     {
         Ok(child) => child,
         Err(err) => {
-            out.last_error =
-                format!("failed to launch Packycode browser usage session: {err}");
+            out.last_error = format!("failed to launch Packycode browser usage session: {err}");
             return out;
         }
     };
 
     let result = async {
         let port = wait_for_packycode_devtools_port_for_usage_context(&data_dir).await?;
-        let Some(ws_url) = fetch_packycode_devtools_page_ws_url_for_usage_context(port).await? else {
+        let Some(ws_url) = fetch_packycode_devtools_page_ws_url_for_usage_context(port).await?
+        else {
             return Err("Packycode browser page websocket not found".to_string());
         };
         let (mut socket, _) = connect_async(ws_url)
@@ -500,8 +696,10 @@ async fn fetch_packycode_budget_info_via_browser_context(
         .await?;
 
         if let Some(token) = usage_token.map(str::trim).filter(|value| !value.is_empty()) {
-            let auth_storage_seed = serde_json::to_string(&build_packycode_auth_storage_seed(token))
-                .map_err(|err| format!("failed to encode Packycode auth-storage seed: {err}"))?;
+            let auth_storage_seed = serde_json::to_string(&build_packycode_auth_storage_seed(
+                token,
+            ))
+            .map_err(|err| format!("failed to encode Packycode auth-storage seed: {err}"))?;
             let _ = send_packycode_devtools_command(
                 &mut socket,
                 4,
@@ -942,7 +1140,9 @@ async fn fetch_codex_for_me_balance_any(
             Err(err) if !login_attempted && err.contains("http 401") && usage_login.is_some() => {
                 let login = usage_login.expect("checked is_some");
                 match fetch_codex_for_me_login_token(&client, base, login).await {
-                    Ok(fresh_token) => fetch_codex_for_me_summary(&client, base, &fresh_token).await,
+                    Ok(fresh_token) => {
+                        fetch_codex_for_me_summary(&client, base, &fresh_token).await
+                    }
                     Err(login_err) => Err(login_err),
                 }
             }
@@ -951,8 +1151,7 @@ async fn fetch_codex_for_me_balance_any(
 
         match payload {
             Ok(payload) => {
-                let Some(summary) = extract_codex_for_me_summary_snapshot(&payload)
-                else {
+                let Some(summary) = extract_codex_for_me_summary_snapshot(&payload) else {
                     last_err = format!("unexpected response from {base}");
                     non_404_err.get_or_insert_with(|| last_err.clone());
                     continue;
@@ -1072,7 +1271,9 @@ async fn fetch_budget_info_any(
 
                 // Some endpoints wrap the payload in { success, data }.
                 let root = j.get("data").unwrap_or(&j);
-                if let Err(err) = apply_packycode_budget_payload(&mut out, root, base, response_now_ms) {
+                if let Err(err) =
+                    apply_packycode_budget_payload(&mut out, root, base, response_now_ms)
+                {
                     last_err = err.clone();
                     non_404_err.get_or_insert(err);
                     continue;

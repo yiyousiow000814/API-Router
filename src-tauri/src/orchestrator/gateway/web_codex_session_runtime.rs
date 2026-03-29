@@ -290,6 +290,10 @@ mod tests {
         upsert_workspace_thread_runtime, workspace_runtime_snapshot,
         workspace_thread_runtime_count, workspace_thread_runtime_snapshot,
     };
+
+    fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
+        crate::codex_app_server::lock_test_globals()
+    }
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
 
     #[test]
@@ -311,6 +315,7 @@ mod tests {
 
     #[test]
     fn workspace_runtime_marks_connected_and_replay_progress() {
+        let _guard = lock_tests();
         _clear_workspace_runtime_registry_for_test();
         ensure_workspace_runtime_registered(
             Some(WorkspaceTarget::Wsl2),
@@ -336,6 +341,7 @@ mod tests {
 
     #[test]
     fn workspace_thread_runtime_snapshot_tracks_latest_thread_state() {
+        let _guard = lock_tests();
         _clear_workspace_runtime_registry_for_test();
         upsert_workspace_thread_runtime(
             Some(WorkspaceTarget::Windows),

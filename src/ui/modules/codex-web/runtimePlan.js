@@ -20,6 +20,12 @@ function parseJsonObject(value) {
   }
 }
 
+function looksLikeMarkdownPlanBody(text) {
+  const source = String(text || "").replace(/\r\n/g, "\n").trim();
+  if (!source) return false;
+  return /(^|\n)\s*#{1,6}\s+\S/.test(source) || /(^|\n)\s*(?:[-*•]|\d+\.)\s+\S/.test(source) || /\n\s*\n/.test(source);
+}
+
 export function normalizePlanSteps(value, normalizeType = defaultNormalizeType) {
   const items = Array.isArray(value) ? value : [];
   return items
@@ -48,13 +54,17 @@ export function clonePlanState(plan, fallbackThreadId = "") {
   const explanation = readText(plan.explanation);
   const steps = normalizePlanSteps(plan.steps);
   const deltaText = readText(plan.deltaText);
-  if (!title && !explanation && !steps.length && !deltaText) return null;
+  const kind = readText(plan.kind);
+  const markdownBody = readText(plan.markdownBody);
+  if (!title && !explanation && !steps.length && !deltaText && !markdownBody) return null;
   return {
     threadId: readText(plan.threadId || fallbackThreadId),
     turnId: readText(plan.turnId),
     title,
     explanation,
     steps,
+    kind,
+    markdownBody,
     deltaText,
   };
 }
@@ -64,12 +74,15 @@ export function extractPlanUpdate(item, options = {}) {
   const threadId = readText(options.threadId || options.fallbackThreadId || item?.threadId || item?.thread_id);
   const itemType = normalizeType(item?.type);
   if (itemType === "plan") {
+    const text = readText(item?.text);
+    const markdownBody = looksLikeMarkdownPlanBody(text) ? text : "";
     return {
       threadId,
       turnId: readText(item?.turnId || item?.turn_id),
       title: "Updated Plan",
       explanation: "",
-      steps: parsePlanStepsFromText(item?.text),
+      steps: markdownBody ? [] : parsePlanStepsFromText(text),
+      markdownBody,
       deltaText: "",
     };
   }
@@ -99,9 +112,11 @@ export function buildPlanSignature(plan) {
   const snapshot = clonePlanState(plan);
   if (!snapshot) return "";
   return [
+    readText(snapshot.kind),
     readText(snapshot.title),
     readText(snapshot.explanation),
     ...snapshot.steps.map((step) => readText(step?.step)),
+    readText(snapshot.markdownBody),
     readText(snapshot.deltaText),
   ].filter(Boolean).join("\n");
 }
@@ -109,6 +124,10 @@ export function buildPlanSignature(plan) {
 export function renderPlanCardHtml(plan, deps = {}) {
   const escapeHtml = typeof deps.escapeHtml === "function" ? deps.escapeHtml : (value) => String(value || "");
   const normalizeType = typeof deps.normalizeType === "function" ? deps.normalizeType : defaultNormalizeType;
+  const renderRichTextHtml =
+    typeof deps.renderRichTextHtml === "function"
+      ? deps.renderRichTextHtml
+      : (value) => escapeHtml(String(value || ""));
   const snapshot = clonePlanState(plan);
   if (!snapshot) return "";
   const title = escapeHtml(snapshot.title || "Updated Plan");
@@ -116,6 +135,23 @@ export function renderPlanCardHtml(plan, deps = {}) {
   const deltaText = readText(snapshot.deltaText);
   const enterClass = deps.animateEnter === true ? String(deps.enterClass || " runtimePlanCardEnter") : "";
   const extraClass = readText(deps.cardClass);
+  if (snapshot.kind === "proposed" && snapshot.markdownBody) {
+    return (
+      `<div class="runtimePlanCard runtimePlanCard-proposed${extraClass ? ` ${escapeHtml(extraClass)}` : ""}${enterClass}">` +
+        `<div class="runtimePlanHeader">Proposed Plan</div>` +
+        `<div class="runtimePlanRichBody">${renderRichTextHtml(snapshot.markdownBody)}</div>` +
+      `</div>`
+    );
+  }
+  if (snapshot.markdownBody) {
+    return (
+      `<div class="runtimePlanCard${extraClass ? ` ${escapeHtml(extraClass)}` : ""}${enterClass}">` +
+        `<div class="runtimePlanHeader">${title}</div>` +
+        `${explanation ? `<div class="runtimePlanExplanation">${escapeHtml(explanation)}</div>` : ""}` +
+        `<div class="runtimePlanRichBody">${renderRichTextHtml(snapshot.markdownBody)}</div>` +
+      `</div>`
+    );
+  }
   const renderedSteps = snapshot.steps.map((step) => {
     const status = escapeHtml(normalizeType(step?.status) || "pending");
     const text = escapeHtml(readText(step?.step));

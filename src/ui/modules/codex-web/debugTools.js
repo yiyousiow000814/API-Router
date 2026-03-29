@@ -45,6 +45,45 @@ export function collectPendingLiveTraceEvents(state, limit = 40) {
   return events.filter((event) => event && event.__traceUploaded !== true).slice(0, max);
 }
 
+function normalizeDebugText(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+export function detectPlanInterruptCleanupAnomaly(snapshot) {
+  const diagnostics = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const active = diagnostics.active && typeof diagnostics.active === "object" ? diagnostics.active : {};
+  const pendingUi =
+    diagnostics.pendingUi && typeof diagnostics.pendingUi === "object" ? diagnostics.pendingUi : {};
+  const reasons = [];
+  const statusLine = normalizeDebugText(active.statusLine);
+  const pendingAssistantMessage = normalizeDebugText(active.activeThreadPendingAssistantMessage);
+  const pendingUserMessage = normalizeDebugText(active.activeThreadPendingUserMessage);
+  const pendingMountText = normalizeDebugText(pendingUi.pendingMount?.text);
+
+  if (pendingUi.pendingMount?.visible === true) reasons.push("pending-inline-visible");
+  if (pendingUi.commentaryArchive?.visible === true) reasons.push("commentary-visible");
+  if (pendingUi.runtimePanels?.visible === true) reasons.push("runtime-panels-visible");
+  if (active.activeThreadPendingTurnRunning === true) reasons.push("pending-turn-running");
+  if (statusLine && /working|waiting for input|stopping current turn|interrupting current turn/.test(statusLine)) {
+    reasons.push("status-line-stale");
+  }
+  if (pendingAssistantMessage && /working|waiting for input/.test(pendingAssistantMessage)) {
+    reasons.push("pending-assistant-stale");
+  }
+  if (pendingUserMessage) reasons.push("pending-user-stale");
+  if (pendingMountText && /question\s+\d+\/\d+|type your answer|none of the above/.test(pendingMountText)) {
+    reasons.push("pending-inline-question-stale");
+  }
+
+  return {
+    anomalous: reasons.length > 0,
+    reasons,
+  };
+}
+
 export function createDebugToolsModule(deps) {
   const {
     state,
@@ -63,6 +102,9 @@ export function createDebugToolsModule(deps) {
     renderRuntimePanels = () => {},
     renderCommentaryArchive = () => {},
     renderComposerContextLeft,
+    renderPendingInline = () => {},
+    renderPendingLists = () => {},
+    getVisiblePendingUserInputs = () => [],
     clearChatMessages,
     showWelcomeCard,
     updateHeaderUi,
@@ -101,6 +143,18 @@ export function createDebugToolsModule(deps) {
   const doc = documentRef ?? globalThis.document;
   const win = windowRef ?? globalThis.window ?? {};
   const perf = performanceRef ?? globalThis.performance;
+  const setTimeoutRef = win.setTimeout?.bind(win) || globalThis.setTimeout?.bind(globalThis);
+  const clearTimeoutRef = win.clearTimeout?.bind(win) || globalThis.clearTimeout?.bind(globalThis);
+  const setIntervalRef = win.setInterval?.bind(win) || globalThis.setInterval?.bind(globalThis);
+
+  const AUTO_PLAN_INTERRUPT_PERSIST_DELAY_MS = 2200;
+  const AUTO_PLAN_INTERRUPT_CONFIRM_DELAY_MS = 5200;
+  const AUTO_PLAN_INTERRUPT_CLEANUP_DELAY_MS = 16000;
+  const AUTO_PLAN_INTERRUPT_DIAGNOSTIC_LIMIT = 120;
+
+  let planInterruptMonitorTimer = 0;
+  const scheduledPlanInterruptChecks = new Map();
+  let lastAutoPlanInterruptReport = null;
 
   function getActiveState() {
     return {
@@ -187,6 +241,187 @@ export function createDebugToolsModule(deps) {
       },
       recent,
     };
+  }
+
+  function getPendingUiSnapshot(limit = 24) {
+    const activeThreadId = String(state.activeThreadId || "").trim();
+    const visibleUserInputs = ensureArrayItems(getVisiblePendingUserInputs(state, activeThreadId));
+    const realUserInputs = Array.isArray(state.pendingUserInputs) ? state.pendingUserInputs : [];
+    const syntheticMap =
+      state.syntheticPendingUserInputsByThreadId && typeof state.syntheticPendingUserInputsByThreadId === "object"
+        ? state.syntheticPendingUserInputsByThreadId
+        : {};
+    const syntheticUserInputs = Array.isArray(syntheticMap[activeThreadId]) ? syntheticMap[activeThreadId] : [];
+    const chatBox = doc?.getElementById?.("chatBox") || null;
+    const chatChildren = Array.from(chatBox?.children || []);
+    const pendingMount = doc?.getElementById?.("pendingInlineMount") || null;
+    const runtimePanels = doc?.getElementById?.("runtimeChatPanels") || null;
+    const commentaryMount = doc?.getElementById?.("commentaryArchiveMount") || null;
+    return {
+      activeThreadId,
+      historyStatusType: String(state.activeThreadHistoryStatusType || "").trim().toLowerCase(),
+      suppressedSynthetic:
+        activeThreadId && state.suppressedSyntheticPendingUserInputsByThreadId?.[activeThreadId] === true,
+      selectedPendingApprovalId: String(state.selectedPendingApprovalId || "").trim(),
+      selectedPendingUserInputId: String(state.selectedPendingUserInputId || "").trim(),
+      approvalIds: (Array.isArray(state.pendingApprovals) ? state.pendingApprovals : [])
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean)
+        .slice(0, limit),
+      realUserInputIds: realUserInputs
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean)
+        .slice(0, limit),
+      syntheticUserInputIds: syntheticUserInputs
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean)
+        .slice(0, limit),
+      visibleUserInputIds: visibleUserInputs
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean)
+        .slice(0, limit),
+      pendingMount: {
+        visible: !!pendingMount,
+        text: String(pendingMount?.textContent || "").trim(),
+        index: pendingMount ? chatChildren.indexOf(pendingMount) : -1,
+      },
+      runtimePanels: {
+        visible: !!runtimePanels,
+        index: runtimePanels ? chatChildren.indexOf(runtimePanels) : -1,
+      },
+      commentaryArchive: {
+        visible: !!commentaryMount,
+        index: commentaryMount ? chatChildren.indexOf(commentaryMount) : -1,
+      },
+      chatOrder: chatChildren.slice(0, limit).map((node, index) => ({
+        index,
+        id: String(node?.id || "").trim(),
+        className: String(node?.className || "").trim(),
+        role: String(node?.__webCodexRole || "").trim(),
+        kind: String(node?.__webCodexKind || "").trim(),
+      })),
+    };
+  }
+
+  function buildPlanInterruptDiagnostics(limit = 120) {
+    const max = Math.max(1, Number(limit || 120) | 0);
+    return {
+      capturedAt: new Date().toISOString(),
+      active: getActiveState(),
+      pendingUi: getPendingUiSnapshot(Math.min(max, 40)),
+      pipeline: getLivePipelineSnapshot(Math.min(max, 80)),
+      messages: win.__webCodexDebug?.dumpMessages
+        ? win.__webCodexDebug.dumpMessages(Math.min(max, 20))
+        : Array.from(doc?.querySelectorAll?.("#chatBox .msg") || [])
+            .slice(Math.max(0, (doc?.querySelectorAll?.("#chatBox .msg")?.length || 0) - Math.min(max, 20)))
+            .map((node, index) => readDebugMessageNode(node, index)),
+      recentEvents: Array.isArray(state.liveDebugEvents)
+        ? state.liveDebugEvents.slice(Math.max(0, state.liveDebugEvents.length - max))
+        : [],
+    };
+  }
+
+  async function postClientLiveTraceEntries(events, context = {}) {
+    const batch = Array.isArray(events) ? events.filter((event) => event && typeof event === "object") : [];
+    if (!batch.length) return { ok: false, skipped: true };
+    const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const res = await win.fetch("/codex/debug/live/client", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionId,
+        page: String(context.page || win.location?.pathname || ""),
+        events: batch,
+      }),
+    });
+    return res.ok ? res.json().catch(() => ({ ok: true })) : { ok: false, status: res.status };
+  }
+
+  async function capturePlanInterruptCleanupAnomaly(entry, phase) {
+    if (!entry || entry.uploaded === true) return;
+    const diagnostics = buildPlanInterruptDiagnostics(AUTO_PLAN_INTERRUPT_DIAGNOSTIC_LIMIT);
+    const analysis = detectPlanInterruptCleanupAnomaly(diagnostics);
+    entry.snapshots.push({
+      phase,
+      at: new Date().toISOString(),
+      reasons: analysis.reasons.slice(),
+    });
+    if (!analysis.anomalous || phase !== "confirm") return;
+    entry.uploaded = true;
+    const event = {
+      at: Date.now(),
+      kind: "plan.interrupt:cleanup_anomaly",
+      threadId: String(entry.threadId || ""),
+      turnId: String(entry.turnId || ""),
+      interruptAt: Number(entry.at || 0),
+      reasons: analysis.reasons.slice(),
+      snapshots: entry.snapshots.slice(),
+      diagnostics,
+    };
+    lastAutoPlanInterruptReport = event;
+    try {
+      await postClientLiveTraceEntries([event]);
+    } catch {}
+  }
+
+  function schedulePlanInterruptCleanupCheck(event) {
+    const key = [
+      String(event?.threadId || ""),
+      String(event?.turnId || ""),
+      String(event?.at || ""),
+    ].join(":");
+    if (!key || scheduledPlanInterruptChecks.has(key) || !setTimeoutRef) return;
+    const entry = {
+      key,
+      at: Number(event?.at || Date.now()),
+      threadId: String(event?.threadId || ""),
+      turnId: String(event?.turnId || ""),
+      uploaded: false,
+      snapshots: [],
+      timers: [],
+    };
+    const arm = (delayMs, phase) => {
+      const timer = setTimeoutRef(() => {
+        capturePlanInterruptCleanupAnomaly(entry, phase).catch(() => {});
+      }, delayMs);
+      entry.timers.push(timer);
+    };
+    arm(AUTO_PLAN_INTERRUPT_PERSIST_DELAY_MS, "persist");
+    arm(AUTO_PLAN_INTERRUPT_CONFIRM_DELAY_MS, "confirm");
+    entry.timers.push(
+      setTimeoutRef(() => {
+        for (const timer of entry.timers) {
+          try {
+            clearTimeoutRef?.(timer);
+          } catch {}
+        }
+        scheduledPlanInterruptChecks.delete(key);
+      }, AUTO_PLAN_INTERRUPT_CLEANUP_DELAY_MS)
+    );
+    scheduledPlanInterruptChecks.set(key, entry);
+  }
+
+  function installPlanInterruptAutoCapture() {
+    if (planInterruptMonitorTimer || !setIntervalRef) return;
+    const observe = () => {
+      const events = Array.isArray(state.liveDebugEvents) ? state.liveDebugEvents : [];
+      for (const event of events) {
+        if (!event || event.__planInterruptObserved === true) continue;
+        const kind = String(event.kind || "");
+        const method = String(event.method || "").trim().toLowerCase();
+        const isDirectInterrupt = kind === "turn.interrupt:cleared";
+        const isTerminalCancelled =
+          kind === "live.render:turn_terminal" && method.includes("turn/cancelled");
+        if (!isDirectInterrupt && !isTerminalCancelled) continue;
+        event.__planInterruptObserved = true;
+        schedulePlanInterruptCleanupCheck(event);
+      }
+    };
+    observe();
+    planInterruptMonitorTimer = setIntervalRef(observe, 400);
   }
 
   function formatLiveEventLine(event) {
@@ -537,13 +772,24 @@ export function createDebugToolsModule(deps) {
 
   function installWebCodexDebug() {
     try {
+      let previewPendingSnapshot = null;
       const isPreviewUpdatedPlanActive = () =>
         String(state.activeThreadPlan?.turnId || "").trim() === "debug-preview-plan";
+      const isPreviewPendingActive = () => !!previewPendingSnapshot;
       const emitPreviewUpdatedPlanChanged = () => {
         try {
           win.dispatchEvent?.(
             new CustomEvent("web-codex-preview-plan-changed", {
               detail: { open: isPreviewUpdatedPlanActive() },
+            })
+          );
+        } catch {}
+      };
+      const emitPreviewPendingChanged = () => {
+        try {
+          win.dispatchEvent?.(
+            new CustomEvent("web-codex-preview-pending-changed", {
+              detail: { open: isPreviewPendingActive() },
             })
           );
         } catch {}
@@ -602,6 +848,20 @@ export function createDebugToolsModule(deps) {
           const events = Array.isArray(state.liveDebugEvents) ? state.liveDebugEvents : [];
           return events.slice(Math.max(0, events.length - max));
         },
+        getPendingUiSnapshot,
+        getPlanInterruptDiagnostics(limit = 120) {
+          return buildPlanInterruptDiagnostics(limit);
+        },
+        getLastAutoPlanInterruptReport() {
+          return lastAutoPlanInterruptReport;
+        },
+        exportPlanInterruptDiagnostics(limit = 120, spacing = 2) {
+          return JSON.stringify(
+            buildPlanInterruptDiagnostics(limit),
+            null,
+            Math.max(0, Math.min(8, Number(spacing || 2) | 0))
+          );
+        },
         findMessage(needle) {
           const query = String(needle || "");
           const nodes = Array.from(doc?.querySelectorAll?.("#chatBox .msg") || []);
@@ -656,6 +916,7 @@ export function createDebugToolsModule(deps) {
           };
         },
         isPreviewUpdatedPlanActive,
+        isPreviewPendingActive,
         previewUpdatedPlan(force) {
           const threadId = String(state.activeThreadId || "").trim();
           const shouldOpen =
@@ -689,6 +950,77 @@ export function createDebugToolsModule(deps) {
           });
           emitPreviewUpdatedPlanChanged();
           return { ok: true, threadId, open: true };
+        },
+        previewPending(force) {
+          const shouldOpen =
+            typeof force === "boolean" ? force : !isPreviewPendingActive();
+          setMainTab("chat");
+          setMobileTab("chat");
+          if (!shouldOpen) {
+            if (previewPendingSnapshot) {
+              state.pendingApprovals = previewPendingSnapshot.pendingApprovals;
+              state.pendingUserInputs = previewPendingSnapshot.pendingUserInputs;
+              state.pendingUserInputAnswersById = previewPendingSnapshot.pendingUserInputAnswersById;
+              state.pendingUserInputCompletedKeysById = previewPendingSnapshot.pendingUserInputCompletedKeysById;
+              state.selectedPendingApprovalId = previewPendingSnapshot.selectedPendingApprovalId;
+              state.selectedPendingUserInputId = previewPendingSnapshot.selectedPendingUserInputId;
+            }
+            previewPendingSnapshot = null;
+            renderPendingLists();
+            renderPendingInline();
+            emitPreviewPendingChanged();
+            return { ok: true, open: false };
+          }
+          previewPendingSnapshot = {
+            pendingApprovals: Array.isArray(state.pendingApprovals) ? state.pendingApprovals.slice() : [],
+            pendingUserInputs: Array.isArray(state.pendingUserInputs) ? state.pendingUserInputs.slice() : [],
+            pendingUserInputAnswersById:
+              state.pendingUserInputAnswersById && typeof state.pendingUserInputAnswersById === "object"
+                ? { ...state.pendingUserInputAnswersById }
+                : {},
+            pendingUserInputCompletedKeysById:
+              state.pendingUserInputCompletedKeysById && typeof state.pendingUserInputCompletedKeysById === "object"
+                ? { ...state.pendingUserInputCompletedKeysById }
+                : {},
+            selectedPendingApprovalId: String(state.selectedPendingApprovalId || ""),
+            selectedPendingUserInputId: String(state.selectedPendingUserInputId || ""),
+          };
+          state.pendingApprovals = [
+            {
+              id: "approval-preview",
+              prompt: "Allow applying the inline pending-card patch?",
+            },
+          ];
+          state.pendingUserInputs = [
+            {
+              id: "input-preview",
+              prompt: "Which validation path should we use first?",
+              questions: [
+                {
+                  id: "route",
+                  header: "Question 1/1",
+                  question: "Which validation path should we use first?",
+                  options: [
+                    { label: "Debug hooks (Recommended)", description: "Use injected samples and mock transport." },
+                    { label: "Runtime endpoint", description: "Verify against the app-server flow." },
+                    { label: "Both", description: "Keep both debug and runtime validation." },
+                  ],
+                },
+              ],
+            },
+          ];
+          state.pendingUserInputAnswersById = {
+            "input-preview": { route: "Debug hooks (Recommended)" },
+          };
+          state.pendingUserInputCompletedKeysById = {
+            "input-preview": {},
+          };
+          state.selectedPendingApprovalId = "approval-preview";
+          state.selectedPendingUserInputId = "input-preview";
+          renderPendingLists();
+          renderPendingInline();
+          emitPreviewPendingChanged();
+          return { ok: true, open: true };
         },
       };
     } catch {}
@@ -766,6 +1098,7 @@ export function createDebugToolsModule(deps) {
   function installDebugAndE2E() {
     try {
       installWebCodexDebug();
+      installPlanInterruptAutoCapture();
       const debugLiveEnabled =
         hasQueryFlag(win.location?.search || "", "debuglive") ||
         String(storage.getItem(LIVE_INSPECTOR_ENABLED_KEY) || "").trim() === "1";
@@ -916,6 +1249,35 @@ export function createDebugToolsModule(deps) {
         },
         getThreadHistory(threadId) {
           return historyByThreadId.get(String(threadId || ""));
+        },
+        markLocalInterrupt(threadId = "") {
+          const normalizedThreadId = String(threadId || state.activeThreadId || this._activeThreadId || "").trim();
+          if (!normalizedThreadId) return { ok: false, error: "missing threadId" };
+          state.suppressedIncompleteHistoryRuntimeByThreadId = {
+            ...(state.suppressedIncompleteHistoryRuntimeByThreadId &&
+            typeof state.suppressedIncompleteHistoryRuntimeByThreadId === "object"
+              ? state.suppressedIncompleteHistoryRuntimeByThreadId
+              : {}),
+            [normalizedThreadId]: true,
+          };
+          state.suppressedLiveInterruptByThreadId = {
+            ...(state.suppressedLiveInterruptByThreadId &&
+            typeof state.suppressedLiveInterruptByThreadId === "object"
+              ? state.suppressedLiveInterruptByThreadId
+              : {}),
+            [normalizedThreadId]: true,
+          };
+          if (!String(state.activeThreadPendingTurnThreadId || "").trim()) {
+            state.activeThreadPendingTurnThreadId = normalizedThreadId;
+          }
+          state.activeThreadPendingTurnRunning = false;
+          state.activeThreadPendingUserMessage = "";
+          state.activeThreadPendingAssistantMessage = "";
+          setStatus("Stopping current turn...");
+          return { ok: true, threadId: normalizedThreadId };
+        },
+        getPlanInterruptDiagnostics(limit = 120) {
+          return win.__webCodexDebug?.getPlanInterruptDiagnostics?.(limit) || null;
         },
         setThreadHistory(threadId, thread) {
           const id = String(threadId || "").trim();
@@ -1256,7 +1618,9 @@ export function createDebugToolsModule(deps) {
     collectPendingLiveTraceEvents,
     installDebugAndE2E,
     installLiveTraceBackgroundSync,
+    installPlanInterruptAutoCapture,
     installThreadAnimDebug,
     installWebCodexDebug,
+    postClientLiveTraceEntries,
   };
 }

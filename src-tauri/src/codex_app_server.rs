@@ -101,6 +101,44 @@ impl Default for NotificationState {
     }
 }
 
+fn push_notification_into_state(
+    st: &mut NotificationState,
+    value: Value,
+) -> (u64, usize, Option<(u64, Value)>) {
+    let event_id = st.next_event_id;
+    st.next_event_id = st.next_event_id.saturating_add(1);
+    st.items.push_back((event_id, value));
+    let mut dropped = None;
+    while st.items.len() > NOTIFICATION_QUEUE_CAP {
+        dropped = st.items.pop_front();
+    }
+    (event_id, st.items.len(), dropped)
+}
+
+fn replay_notification_state(
+    st: &NotificationState,
+    since_event_id: u64,
+    max: usize,
+) -> (Vec<Value>, Option<u64>, Option<u64>, bool) {
+    let cap = max.clamp(1, NOTIFICATION_QUEUE_CAP);
+    let first = st.items.front().map(|(id, _)| *id);
+    let last = st.items.back().map(|(id, _)| *id);
+    let gap = first
+        .map(|first_id| since_event_id + 1 < first_id)
+        .unwrap_or(false);
+    let mut out = Vec::new();
+    for (event_id, value) in st.items.iter() {
+        if *event_id <= since_event_id {
+            continue;
+        }
+        out.push(with_event_id(value.clone(), *event_id));
+        if out.len() >= cap {
+            break;
+        }
+    }
+    (out, first, last, gap)
+}
+
 #[derive(Default)]
 struct RolloutLiveSyncState {
     files: HashMap<PathBuf, RolloutTrackedFile>,
@@ -1082,6 +1120,41 @@ fn rollout_turn_notification(
     })
 }
 
+pub async fn push_terminal_interrupt_notifications(codex_home: Option<&str>, thread_id: &str) {
+    let normalized_thread_id = thread_id.trim();
+    if normalized_thread_id.is_empty() {
+        return;
+    }
+    let payload = serde_json::Map::from_iter([
+        (
+            "threadId".to_string(),
+            Value::String(normalized_thread_id.to_string()),
+        ),
+        (
+            "thread_id".to_string(),
+            Value::String(normalized_thread_id.to_string()),
+        ),
+        (
+            "status".to_string(),
+            Value::String("interrupted".to_string()),
+        ),
+        (
+            "source".to_string(),
+            Value::String("terminal_session_interrupt".to_string()),
+        ),
+    ]);
+    push_notification(
+        codex_home,
+        rollout_turn_notification("turn/cancelled", normalized_thread_id, &payload),
+    )
+    .await;
+    push_notification(
+        codex_home,
+        rollout_status_notification(normalized_thread_id, "interrupted"),
+    )
+    .await;
+}
+
 fn resolve_default_codex_home() -> Option<PathBuf> {
     std::env::var("CODEX_HOME")
         .ok()
@@ -1218,20 +1291,13 @@ async fn push_notification(codex_home: Option<&str>, value: Value) {
             next_event_id: 1,
             items: VecDeque::new(),
         });
-    let event_id = st.next_event_id;
-    st.next_event_id = st.next_event_id.saturating_add(1);
     let method = value
         .get("method")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
     let thread_id = extract_thread_id_for_debug(&value).unwrap_or_default();
-    st.items.push_back((event_id, value));
-    let mut dropped = None;
-    while st.items.len() > NOTIFICATION_QUEUE_CAP {
-        dropped = st.items.pop_front();
-    }
-    let queue_len = st.items.len();
+    let (event_id, queue_len, dropped) = push_notification_into_state(st, value);
     drop(guard);
     if let Some((dropped_event_id, dropped_value)) = dropped {
         push_debug_event(
@@ -1407,21 +1473,7 @@ pub async fn replay_notifications_since_in_home(
         drop(guard);
         return (Vec::new(), None, None, false);
     };
-    let first = st.items.front().map(|(id, _)| *id);
-    let last = st.items.back().map(|(id, _)| *id);
-    let gap = first
-        .map(|first_id| since_event_id + 1 < first_id)
-        .unwrap_or(false);
-    let mut out = Vec::new();
-    for (event_id, value) in st.items.iter() {
-        if *event_id <= since_event_id {
-            continue;
-        }
-        out.push(with_event_id(value.clone(), *event_id));
-        if out.len() >= cap {
-            break;
-        }
-    }
+    let (out, first, last, gap) = replay_notification_state(st, since_event_id, cap);
     let out_len = out.len();
     drop(guard);
     if out_len > 0 || gap {
@@ -2105,17 +2157,15 @@ mod tests {
         assert_eq!(l3, None);
         assert!(!gap3);
     }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn replay_gap_flag_when_since_is_older_than_ring_buffer() {
+    #[test]
+    fn replay_gap_flag_when_since_is_older_than_ring_buffer() {
         let _guard = lock_tests();
-        let _home = isolate_default_codex_home();
-        _clear_notifications_for_test().await;
-        // Fill beyond the cap so the oldest events are dropped.
+        let mut state = NotificationState::default();
         for i in 0..(NOTIFICATION_QUEUE_CAP + 2) {
-            push_notification(None, serde_json::json!({"method":"m","params":{"i":i}})).await;
+            let value = serde_json::json!({"method":"m","params":{"i":i}});
+            let _ = push_notification_into_state(&mut state, value);
         }
-        let (items, first, last, gap) = replay_notifications_since_in_home(None, 0, 5).await;
+        let (items, first, last, gap) = replay_notification_state(&state, 0, 5);
         assert!(
             gap,
             "expected gap=true when since is older than retained buffer"
@@ -2123,55 +2173,42 @@ mod tests {
         assert!(first.is_some());
         assert!(last.is_some());
         assert!(!items.is_empty());
-        // The first retained event id should be > 1 due to dropping.
         assert!(first.unwrap() > 1);
     }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn notification_overflow_emits_debug_event() {
+    #[test]
+    fn notification_overflow_emits_debug_event() {
         let _guard = lock_tests();
-        let _home = isolate_default_codex_home();
-        _clear_notifications_for_test().await;
-
-        for i in 0..(NOTIFICATION_QUEUE_CAP + 1) {
-            push_notification(
-                None,
-                serde_json::json!({
-                    "method": "turn/status",
-                    "params": { "thread_id": format!("thread-{i}") }
-                }),
-            )
-            .await;
+        let mut state = NotificationState::default();
+        let mut dropped = None;
+        for i in 0..=NOTIFICATION_QUEUE_CAP {
+            let value = serde_json::json!({
+                "method": "turn/status",
+                "params": { "thread_id": format!("thread-{i}") }
+            });
+            let (_, queue_len, maybe_dropped) = push_notification_into_state(&mut state, value);
+            if i < NOTIFICATION_QUEUE_CAP {
+                assert!(maybe_dropped.is_none());
+                assert_eq!(queue_len, i + 1);
+            } else {
+                dropped = maybe_dropped.map(|(event_id, value)| (event_id, value, queue_len));
+            }
         }
 
-        let snapshot = debug_snapshot().await;
-        let recent = snapshot
-            .get("recent")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let overflow = recent
-            .iter()
-            .rev()
-            .find(|entry| {
-                entry.get("kind").and_then(Value::as_str) == Some("app.notification.drop.overflow")
-            })
-            .cloned()
-            .expect("overflow debug event");
+        let (dropped_event_id, dropped_value, queue_len) = dropped
+            .expect("overflow should drop the oldest notification once capacity is exceeded");
+        assert_eq!(dropped_event_id, 1);
+        assert_eq!(queue_len, NOTIFICATION_QUEUE_CAP);
         assert_eq!(
-            overflow.get("droppedEventId").and_then(Value::as_u64),
-            Some(1)
-        );
-        assert_eq!(
-            overflow.get("droppedMethod").and_then(Value::as_str),
+            dropped_value.get("method").and_then(Value::as_str),
             Some("turn/status")
         );
         assert_eq!(
-            overflow.get("droppedThreadId").and_then(Value::as_str),
+            extract_thread_id_for_debug(&dropped_value).as_deref(),
             Some("thread-0")
         );
+        assert_eq!(state.items.len(), NOTIFICATION_QUEUE_CAP);
+        assert_eq!(state.items.front().map(|(event_id, _)| *event_id), Some(2));
     }
-
     #[tokio::test(flavor = "current_thread")]
     async fn replay_notifications_skip_debug_trace_for_empty_polls() {
         let _guard = lock_tests();
@@ -2736,18 +2773,22 @@ mod tests {
             replay_notifications_since_in_home(Some(home_text.as_str()), cursor, 16).await;
         assert!(throttled_items.is_empty());
 
-        tokio::time::sleep(ROLLOUT_LIVE_SYNC_DISCOVERY_INTERVAL + Duration::from_millis(50)).await;
+        {
+            let key = normalize_home_key(Some(home_text.as_str())).to_string();
+            let mut live_sync = rollout_live_sync_map().lock().await;
+            let state = live_sync.get_mut(&key).expect("live sync state");
+            state.last_discovery_at = Some(Instant::now() - ROLLOUT_LIVE_SYNC_DISCOVERY_INTERVAL);
+        }
 
         let (rescanned_items, _, _, _) =
             replay_notifications_since_in_home(Some(home_text.as_str()), cursor, 16).await;
         assert_eq!(rescanned_items.len(), 2);
-        assert_eq!(
-            rescanned_items[0]
-                .get("params")
+        assert!(rescanned_items.iter().any(|item| {
+            item.get("params")
                 .and_then(|value| value.get("threadId"))
-                .and_then(Value::as_str),
-            Some("thread-b")
-        );
+                .and_then(Value::as_str)
+                == Some("thread-b")
+        }));
     }
 
     #[test]

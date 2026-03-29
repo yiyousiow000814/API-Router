@@ -618,6 +618,10 @@ class Builder:
                 self.handle_turn_aborted()
             elif event_type == "task_aborted":
                 self.handle_turn_aborted()
+            elif event_type == "task_interrupted":
+                self.handle_turn_aborted()
+            elif event_type == "taskinterrupted":
+                self.handle_turn_aborted()
             elif event_type == "user_message":
                 self.handle_user_message(payload)
             elif event_type == "agent_message":
@@ -1087,10 +1091,15 @@ def handle_self_test_mode():
             "payload": {"type": "user_message", "message": "hello", "images": [], "local_images": []},
         }
     )
-    alias_builder.handle_record({"type": "event_msg", "payload": {"type": "task_complete"}})
+    alias_builder.handle_record({"type": "event_msg", "payload": {"type": "task_interrupted"}})
     alias_parsed = alias_builder.finish()
     alias_turns = alias_parsed.get("turns") if isinstance(alias_parsed, dict) else None
-    if not isinstance(alias_turns, list) or not alias_turns or alias_turns[0].get("id") != "task-1":
+    if (
+        not isinstance(alias_turns, list)
+        or not alias_turns
+        or alias_turns[0].get("id") != "task-1"
+        or alias_parsed.get("incomplete") is not False
+    ):
         raise SystemExit("self-test failed: task_* aliases should map to turn boundaries")
     rollout_lines = [
         {"type": "session_meta", "payload": {"id": "thread-fast-tail"}},

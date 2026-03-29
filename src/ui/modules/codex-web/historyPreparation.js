@@ -1,5 +1,9 @@
 import { extractLatestCommentaryState } from "./historyCommentary.js";
 import { buildHistoryRenderSig, mergePendingLiveMessages } from "./historyLoader.js";
+import {
+  omitLatestIncompleteTurnArtifacts,
+  shouldOmitLatestIncompleteTurnArtifacts,
+} from "./historyLiveCommentaryState.js";
 
 export async function prepareThreadHistoryView(thread, options = {}, deps = {}) {
   const {
@@ -14,9 +18,11 @@ export async function prepareThreadHistoryView(thread, options = {}, deps = {}) 
 
   const threadId = String(thread?.id || state.activeThreadId || "").trim();
   const historyItems = Array.isArray(thread?.historyItems) ? thread.historyItems : [];
-  const rawMessages = historyItems.length
+  const omitIncompleteTurnArtifacts = shouldOmitLatestIncompleteTurnArtifacts(thread, state);
+  const mappedMessages = historyItems.length
     ? await mapSessionHistoryMessages(historyItems)
-    : await mapThreadReadMessages(thread);
+    : await mapThreadReadMessages(thread, { omitIncompleteTurnArtifacts });
+  const rawMessages = omitLatestIncompleteTurnArtifacts(mappedMessages, omitIncompleteTurnArtifacts);
   const historyCommentary = extractLatestCommentaryState(thread, { normalizeThreadItemText });
   const messages = mergePendingLiveMessages(rawMessages, state, threadId, {
     historyIncomplete: thread?.page?.incomplete === true,

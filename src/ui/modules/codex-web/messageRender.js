@@ -328,6 +328,14 @@ export function renderMessageRichHtml(text) {
   if (!source.trim()) return "";
   let html = "";
   let pendingBlankLines = 0;
+  const parseHeadingLine = (line) => {
+    const match = String(line || "").match(/^(#{1,6})\s+(.+)$/);
+    if (!match) return null;
+    return {
+      level: Math.min(6, String(match[1] || "").length),
+      text: String(match[2] || "").trim(),
+    };
+  };
   const parseListLine = (line) => {
     const match = String(line || "").match(/^(\s*)([-*•]|\d+\.)\s+(.+)$/);
     if (!match) return null;
@@ -461,6 +469,7 @@ export function renderMessageRichHtml(text) {
     const line = lines[lineIdx];
     const trimmedStart = String(line || "").trimStart();
     const isFenceLine = trimmedStart.startsWith("```");
+    const heading = parseHeadingLine(line);
     if (inCodeBlock) {
       if (isFenceLine) {
         flushCode();
@@ -492,6 +501,12 @@ export function renderMessageRichHtml(text) {
       continue;
     }
     flushBlankLines();
+    if (heading) {
+      flushParagraph();
+      flushList();
+      html += `<h${String(heading.level)}>${renderInlineMessageText(heading.text)}</h${String(heading.level)}>`;
+      continue;
+    }
     if (isListLine(line)) {
       flushParagraph();
       listLines.push(line);

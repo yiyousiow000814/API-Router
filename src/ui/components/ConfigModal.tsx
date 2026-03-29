@@ -7,10 +7,12 @@ type Props = {
   newProviderName: string
   newProviderBaseUrl: string
   newProviderKey: string
+  newProviderKeyStorage: 'auth_json' | 'config_toml_experimental_bearer_token'
   nextProviderPlaceholder: string
   setNewProviderName: (next: string) => void
   setNewProviderBaseUrl: (next: string) => void
   setNewProviderKey: (next: string) => void
+  setNewProviderKeyStorage: (next: 'auth_json' | 'config_toml_experimental_bearer_token') => void
   onAddProvider: () => void
   onOpenGroupManager: () => void
   onClose: () => void
@@ -28,10 +30,12 @@ export function ConfigModal({
   newProviderName,
   newProviderBaseUrl,
   newProviderKey,
+  newProviderKeyStorage,
   nextProviderPlaceholder,
   setNewProviderName,
   setNewProviderBaseUrl,
   setNewProviderKey,
+  setNewProviderKeyStorage,
   onAddProvider,
   onOpenGroupManager,
   onClose,
@@ -88,7 +92,19 @@ export function ConfigModal({
                       value={newProviderKey}
                       onChange={(e) => setNewProviderKey(e.target.value)}
                     />
-                    <button className="aoBtn aoBtnPrimary" onClick={onAddProvider}>
+                    <select
+                      className="aoSelect aoAddProviderStorageSelect"
+                      value={newProviderKeyStorage}
+                      onChange={(e) =>
+                        setNewProviderKeyStorage(
+                          e.target.value as 'auth_json' | 'config_toml_experimental_bearer_token',
+                        )
+                      }
+                    >
+                      <option value="auth_json">auth.json</option>
+                      <option value="config_toml_experimental_bearer_token">experimental_bearer_token</option>
+                    </select>
+                    <button className="aoBtn aoBtnPrimary aoAddProviderSubmit" onClick={onAddProvider}>
                       Add
                     </button>
                   </div>

@@ -1,11 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   collectPendingLiveTraceEvents,
   createDebugToolsModule,
+  detectPlanInterruptCleanupAnomaly,
   hasQueryFlag,
   readDebugMessageNode,
 } from "./debugTools.js";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("debugTools", () => {
   it("detects query flags", () => {
@@ -67,6 +72,216 @@ describe("debugTools", () => {
       { at: 2, kind: "b" },
       { at: 3, kind: "c" },
     ]);
+  });
+
+  it("detects stale plan interrupt cleanup residue", () => {
+    expect(
+      detectPlanInterruptCleanupAnomaly({
+        active: {
+          activeThreadPendingTurnRunning: false,
+          activeThreadPendingAssistantMessage: "working",
+          statusLine: "Stopping current turn...",
+        },
+        pendingUi: {
+          pendingMount: { visible: true, text: "Question 1/3 Type your answer" },
+          commentaryArchive: { visible: true },
+          runtimePanels: { visible: false },
+        },
+      })
+    ).toEqual({
+      anomalous: true,
+      reasons: [
+        "pending-inline-visible",
+        "commentary-visible",
+        "status-line-stale",
+        "pending-assistant-stale",
+        "pending-inline-question-stale",
+      ],
+    });
+  });
+
+  it("auto-uploads a persistent plan interrupt cleanup anomaly", async () => {
+    vi.useFakeTimers();
+    const fetchCalls = [];
+    const windowRef = {
+      location: { search: "", pathname: "/codex-web" },
+      fetch: vi.fn(async (_url, init = {}) => {
+        fetchCalls.push(JSON.parse(String(init.body || "{}")));
+        return {
+          ok: true,
+          json: async () => ({ ok: true, accepted: 1 }),
+        };
+      }),
+      addEventListener() {},
+      dispatchEvent() {},
+    };
+    const pendingMount = { textContent: "Question 1/1 Type your answer" };
+    const commentaryMount = { textContent: "stale commentary" };
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadPendingAssistantMessage: "working",
+      liveDebugEvents: [
+        { at: 123, kind: "turn.interrupt:cleared", threadId: "thread-1", turnId: "turn-1" },
+      ],
+    };
+    const module = createDebugToolsModule({
+      state,
+      byId() { return null; },
+      renderInlineMessageText(value) { return String(value || ""); },
+      findNextInlineCodeSpan() { return null; },
+      normalizeWorkspaceTarget(value) { return value === "wsl2" ? "wsl2" : "windows"; },
+      normalizeModelOption(value) { return value; },
+      ensureArrayItems(value) { return Array.isArray(value) ? value : []; },
+      pickLatestModelId() { return ""; },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) { return value; },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() { return "windows"; },
+      getStartCwdForWorkspace() { return ""; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      renderMessageAttachments() { return ""; },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      loadThreadMessages: async () => {},
+      refreshThreads: async () => {},
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() { return { msg: null, body: null }; },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() { return false; },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        querySelectorAll(selector) {
+          if (selector === "#chatBox .msg") return [];
+          if (selector === "#chatBox > *") return [commentaryMount, pendingMount];
+          return [];
+        },
+        getElementById(id) {
+          if (id === "statusLine") return { textContent: "working..." };
+          if (id === "pendingInlineMount") return pendingMount;
+          if (id === "commentaryArchiveMount") return commentaryMount;
+          if (id === "runtimeChatPanels") return null;
+          return null;
+        },
+      },
+      windowRef,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installDebugAndE2E();
+    await vi.advanceTimersByTimeAsync(6000);
+
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]?.events?.[0]?.kind).toBe("plan.interrupt:cleanup_anomaly");
+    expect(fetchCalls[0]?.events?.[0]?.threadId).toBe("thread-1");
+    expect(fetchCalls[0]?.events?.[0]?.reasons).toContain("commentary-visible");
+    expect(fetchCalls[0]?.events?.[0]?.reasons).toContain("status-line-stale");
+    expect(windowRef.__webCodexDebug?.getLastAutoPlanInterruptReport?.()?.kind).toBe(
+      "plan.interrupt:cleanup_anomaly"
+    );
+  });
+
+  it("also auto-uploads a cleanup anomaly after terminal-side turn cancellation", async () => {
+    vi.useFakeTimers();
+    const fetchCalls = [];
+    const windowRef = {
+      location: { search: "", pathname: "/codex-web" },
+      fetch: vi.fn(async (_url, init = {}) => {
+        fetchCalls.push(JSON.parse(String(init.body || "{}")));
+        return {
+          ok: true,
+          json: async () => ({ ok: true, accepted: 1 }),
+        };
+      }),
+      addEventListener() {},
+      dispatchEvent() {},
+    };
+    const pendingMount = { textContent: "Question 1/1 Type your answer" };
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadPendingAssistantMessage: "",
+      liveDebugEvents: [
+        {
+          at: 456,
+          kind: "live.render:turn_terminal",
+          method: "turn/cancelled",
+          threadId: "thread-1",
+        },
+      ],
+    };
+    const module = createDebugToolsModule({
+      state,
+      byId() { return null; },
+      renderInlineMessageText(value) { return String(value || ""); },
+      findNextInlineCodeSpan() { return null; },
+      normalizeWorkspaceTarget(value) { return value === "wsl2" ? "wsl2" : "windows"; },
+      normalizeModelOption(value) { return value; },
+      ensureArrayItems(value) { return Array.isArray(value) ? value : []; },
+      pickLatestModelId() { return ""; },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) { return value; },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() { return "windows"; },
+      getStartCwdForWorkspace() { return ""; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      renderMessageAttachments() { return ""; },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      loadThreadMessages: async () => {},
+      refreshThreads: async () => {},
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() { return { msg: null, body: null }; },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() { return false; },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        querySelectorAll(selector) {
+          if (selector === "#chatBox .msg") return [];
+          if (selector === "#chatBox > *") return [pendingMount];
+          return [];
+        },
+        getElementById(id) {
+          if (id === "statusLine") return { textContent: "" };
+          if (id === "pendingInlineMount") return pendingMount;
+          if (id === "commentaryArchiveMount") return null;
+          if (id === "runtimeChatPanels") return null;
+          return null;
+        },
+      },
+      windowRef,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installDebugAndE2E();
+    await vi.advanceTimersByTimeAsync(6000);
+
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]?.events?.[0]?.kind).toBe("plan.interrupt:cleanup_anomaly");
+    expect(fetchCalls[0]?.events?.[0]?.threadId).toBe("thread-1");
+    expect(fetchCalls[0]?.events?.[0]?.reasons).toContain("pending-inline-visible");
   });
 
   it("exposes thread list snapshot in debug hooks", () => {
@@ -389,6 +604,114 @@ describe("debugTools", () => {
     expect(snapshot?.commentary.lastState?.action).toBe("update");
   });
 
+  it("exports plan interrupt diagnostics with pending ui snapshot and chat order", () => {
+    const pendingMount = { id: "pendingInlineMount", textContent: "Question 1/1", className: "msg system kind-pending" };
+    const runtimePanels = { id: "runtimeChatPanels", textContent: "", className: "runtimeChatPanels" };
+    const commentaryMount = { id: "commentaryArchiveMount", textContent: "", className: "commentaryArchiveMount" };
+    const chatBox = {
+      children: [commentaryMount, runtimePanels, pendingMount],
+    };
+    const windowRef = {};
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "C:\\rollout.jsonl",
+      activeThreadRenderSig: "sig",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadHistoryStatusType: "interrupted",
+      pendingApprovals: [],
+      pendingUserInputs: [{ id: "real-1", threadId: "thread-1" }],
+      syntheticPendingUserInputsByThreadId: {
+        "thread-1": [{ id: "synthetic-1", prompt: "Where?" }],
+      },
+      suppressedSyntheticPendingUserInputsByThreadId: {},
+      liveDebugEvents: [{ at: 1, kind: "turn.interrupt:request", threadId: "thread-1" }],
+      wsSubscribedEvents: true,
+      ws: { readyState: 1 },
+    };
+    const module = createDebugToolsModule({
+      state,
+      byId(id) {
+        if (id === "chatBox") return chatBox;
+        if (id === "pendingInlineMount") return pendingMount;
+        if (id === "runtimeChatPanels") return runtimePanels;
+        if (id === "commentaryArchiveMount") return commentaryMount;
+        return null;
+      },
+      renderInlineMessageText(value) { return String(value || ""); },
+      findNextInlineCodeSpan() { return null; },
+      normalizeWorkspaceTarget(value) { return String(value || "windows"); },
+      normalizeModelOption(value) { return value; },
+      ensureArrayItems(value) { return Array.isArray(value) ? value : []; },
+      pickLatestModelId() { return ""; },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) { return value; },
+      getVisiblePendingUserInputs() {
+        return [{ id: "visible-1", threadId: "thread-1" }];
+      },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      renderMessageAttachments() { return ""; },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      loadThreadMessages: async () => {},
+      refreshThreads: async () => {},
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() { return { msg: null, body: null }; },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() { return false; },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        querySelectorAll(selector) {
+          if (selector === "#chatBox .msg") return [commentaryMount, pendingMount];
+          return [];
+        },
+        getElementById(id) {
+          if (id === "chatBox") return chatBox;
+          if (id === "pendingInlineMount") return pendingMount;
+          if (id === "runtimeChatPanels") return runtimePanels;
+          if (id === "commentaryArchiveMount") return commentaryMount;
+          if (id === "statusLine") return { textContent: "Stopping current turn..." };
+          return null;
+        },
+      },
+      windowRef,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installWebCodexDebug();
+    const diagnostics = windowRef.__webCodexDebug?.getPlanInterruptDiagnostics?.(20);
+    const exported = windowRef.__webCodexDebug?.exportPlanInterruptDiagnostics?.(20);
+    const parsed = JSON.parse(exported);
+
+    expect(diagnostics?.pendingUi?.historyStatusType).toBe("interrupted");
+    expect(diagnostics?.pendingUi?.visibleUserInputIds).toEqual(["visible-1"]);
+    expect(diagnostics?.pendingUi?.pendingMount?.index).toBe(2);
+    expect(diagnostics?.pendingUi?.runtimePanels?.index).toBe(1);
+    expect(diagnostics?.pendingUi?.chatOrder?.map((item) => item.id)).toEqual([
+      "commentaryArchiveMount",
+      "runtimeChatPanels",
+      "pendingInlineMount",
+    ]);
+    expect(parsed.pendingUi.pendingMount.text).toContain("Question 1/1");
+    expect(parsed.recentEvents[0].kind).toBe("turn.interrupt:request");
+  });
+
   it("toggles an Updated Plan card through the debug hook", () => {
     const windowRef = {};
     const setActivePlanCalls = [];
@@ -467,6 +790,90 @@ describe("debugTools", () => {
     expect(setRuntimeActivityCalls[0]?.title).toBe("Updated Plan");
     expect(setRuntimeActivityCalls[0]?.tone).toBe("running");
     expect(setRuntimeActivityCalls[1]).toBe(null);
+  });
+
+  it("opens and closes the pending preview", () => {
+    const setMainTabCalls = [];
+    const setMobileTabCalls = [];
+    const renderPendingListsCalls = [];
+    const renderPendingInlineCalls = [];
+    const windowRef = {
+      location: { search: "" },
+      addEventListener() {},
+      dispatchEvent() {},
+    };
+    const state = {
+      activeThreadId: "thread-1",
+      pendingApprovals: [],
+      pendingUserInputs: [],
+      pendingUserInputAnswersById: {},
+      selectedPendingApprovalId: "",
+      selectedPendingUserInputId: "",
+      liveDebugEvents: [],
+    };
+    const module = createDebugToolsModule({
+      state,
+      byId() { return null; },
+      addChat() {},
+      renderInlineMessageText(value) { return String(value || ""); },
+      findNextInlineCodeSpan() { return null; },
+      normalizeWorkspaceTarget(value) { return value; },
+      detectThreadWorkspaceTarget() { return "windows"; },
+      normalizeModelOption(value) { return value; },
+      ensureArrayItems(value) { return Array.isArray(value) ? value : []; },
+      pickLatestModelId() { return ""; },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) { return value; },
+      renderRuntimePanels() {},
+      renderCommentaryArchive() {},
+      renderPendingLists() { renderPendingListsCalls.push("lists"); },
+      renderPendingInline() { renderPendingInlineCalls.push("inline"); },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() { return "windows"; },
+      getStartCwdForWorkspace() { return ""; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      renderMessageAttachments() { return ""; },
+      setMainTab(value) { setMainTabCalls.push(value); },
+      setMobileTab(value) { setMobileTabCalls.push(value); },
+      setActiveThread() {},
+      setActivePlan() {},
+      setActiveCommands() {},
+      setRuntimeActivity() {},
+      setChatOpening() {},
+      loadThreadMessages: async () => {},
+      refreshThreads: async () => {},
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() { return { msg: null, body: null }; },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() { return false; },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        querySelectorAll() { return []; },
+        getElementById() { return null; },
+      },
+      windowRef,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installWebCodexDebug();
+    const result = windowRef.__webCodexDebug?.previewPending?.();
+    const closeResult = windowRef.__webCodexDebug?.previewPending?.();
+
+    expect(result).toEqual({ ok: true, open: true });
+    expect(closeResult).toEqual({ ok: true, open: false });
+    expect(setMainTabCalls).toEqual(["chat", "chat"]);
+    expect(setMobileTabCalls).toEqual(["chat", "chat"]);
+    expect(renderPendingListsCalls).toEqual(["lists", "lists"]);
+    expect(renderPendingInlineCalls).toEqual(["inline", "inline"]);
   });
 
   it("opens e2e threads with resolved workspace metadata instead of stale active state", async () => {
@@ -726,7 +1133,7 @@ describe("debugTools", () => {
 
     module.installDebugAndE2E();
 
-    expect(intervalCalls).toBe(0);
+    expect(intervalCalls).toBe(1);
   });
 
   it("renders live inspector with a single title and top edge resize affordance", () => {

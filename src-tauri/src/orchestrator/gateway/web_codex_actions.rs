@@ -41,7 +41,31 @@ pub(super) fn turn_thread_id(req: &TurnStartRequest) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
+const PLAN_PROTOCOL_INSTRUCTION: &str = "If you present an implementation plan for approval in Plan mode, wrap only the plan body in <proposed_plan>...</proposed_plan>. Keep any follow-up confirmation prompt outside those tags.";
+
+fn prompt_with_plan_protocol(prompt: &str, collaboration_mode: Option<&str>) -> String {
+    let normalized_prompt = prompt.trim();
+    if normalized_prompt.is_empty() {
+        return String::new();
+    }
+    let is_plan_mode = collaboration_mode
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|value| value.eq_ignore_ascii_case("plan"));
+    if !is_plan_mode {
+        return normalized_prompt.to_string();
+    }
+    if normalized_prompt
+        .to_ascii_lowercase()
+        .contains("<proposed_plan>")
+    {
+        return normalized_prompt.to_string();
+    }
+    format!("{normalized_prompt}\n\n{PLAN_PROTOCOL_INSTRUCTION}")
+}
+
 pub(super) fn build_turn_start_params(thread_id: &str, req: &TurnStartRequest) -> Value {
+    let prompt = prompt_with_plan_protocol(&req.prompt, req.collaboration_mode.as_deref());
     let mut params = serde_json::Map::from_iter([
         ("threadId".to_string(), Value::String(thread_id.to_string())),
         (
@@ -49,7 +73,7 @@ pub(super) fn build_turn_start_params(thread_id: &str, req: &TurnStartRequest) -
             json!([
                 {
                     "type": "text",
-                    "text": req.prompt,
+                    "text": prompt,
                     "textElements": []
                 }
             ]),
@@ -193,7 +217,7 @@ async fn try_terminal_turn_start(
         expected_gateway_token,
         workspace_target,
         thread_id,
-        &req.prompt,
+        &prompt_with_plan_protocol(&req.prompt, req.collaboration_mode.as_deref()),
         &options,
     )
     .await?;
@@ -461,6 +485,10 @@ pub(super) async fn codex_thread_interrupt(
         return resp;
     }
     let workspace_target = query.workspace.as_deref().and_then(parse_workspace_target);
+    let codex_home =
+        crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(
+            workspace_target,
+        );
     let gateway_token = st.secrets.get_gateway_token().unwrap_or_default();
     let expected_gateway_token =
         (!gateway_token.trim().is_empty()).then_some(gateway_token.as_str());
@@ -473,8 +501,15 @@ pub(super) async fn codex_thread_interrupt(
     )
     .await
     {
-        Ok(true) => Json(json!({ "ok": true, "transport": "terminal-session", "threadId": id }))
-            .into_response(),
+        Ok(true) => {
+            crate::codex_app_server::push_terminal_interrupt_notifications(
+                codex_home.as_deref(),
+                &id,
+            )
+            .await;
+            Json(json!({ "ok": true, "transport": "terminal-session", "threadId": id }))
+                .into_response()
+        }
         Ok(false) => api_error(
             StatusCode::BAD_REQUEST,
             "no live terminal session for thread",
@@ -1409,8 +1444,8 @@ pub(super) async fn codex_rpc_proxy(
 mod tests {
     use super::{
         build_turn_start_params, build_turn_start_response, parse_slash_command,
-        service_tier_override_json, supported_slash_commands, turn_thread_id, ServiceTierOverride,
-        TurnStartRequest,
+        prompt_with_plan_protocol, service_tier_override_json, supported_slash_commands,
+        turn_thread_id, ServiceTierOverride, TurnStartRequest,
     };
     use serde_json::{json, Value};
 
@@ -1467,6 +1502,26 @@ mod tests {
         let req: TurnStartRequest = serde_json::from_str(raw).expect("deserialize");
         let params = build_turn_start_params("t1", &req);
         assert_eq!(params["collaborationMode"], "plan");
+        assert!(params["input"][0]["text"]
+            .as_str()
+            .is_some_and(|value| value.contains("<proposed_plan>...</proposed_plan>")));
+    }
+
+    #[test]
+    fn prompt_with_plan_protocol_only_wraps_plan_mode_prompts() {
+        let plain = prompt_with_plan_protocol("hi", None);
+        assert_eq!(plain, "hi");
+
+        let plan = prompt_with_plan_protocol("Draft the migration plan.", Some("plan"));
+        assert!(plan.starts_with("Draft the migration plan."));
+        assert!(plan.contains("<proposed_plan>...</proposed_plan>"));
+
+        let already_wrapped =
+            prompt_with_plan_protocol("Return <proposed_plan>body</proposed_plan>", Some("plan"));
+        assert_eq!(
+            already_wrapped,
+            "Return <proposed_plan>body</proposed_plan>"
+        );
     }
 
     #[test]
@@ -1519,6 +1574,33 @@ mod tests {
         assert_eq!(response["threadId"], "thread-1");
         assert_eq!(response["turnId"], "turn-1");
         assert_eq!(response["rolloutPath"], "C:\\temp\\rollout.jsonl");
+    }
+
+    #[tokio::test]
+    async fn terminal_interrupt_notifications_are_enqueued_for_workspace_home() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        let home = "test-terminal-interrupt-home";
+
+        crate::codex_app_server::push_terminal_interrupt_notifications(
+            Some(home),
+            "thread-terminal",
+        )
+        .await;
+
+        let (items, first, last, gap) =
+            crate::codex_app_server::replay_notifications_since_in_home(Some(home), 0, 8).await;
+        assert!(!gap);
+        assert_eq!(first, Some(1));
+        assert_eq!(last, Some(2));
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["method"], "turn/cancelled");
+        assert_eq!(items[0]["params"]["threadId"], "thread-terminal");
+        assert_eq!(items[0]["params"]["status"], "interrupted");
+        assert_eq!(items[0]["params"]["source"], "terminal_session_interrupt");
+        assert_eq!(items[1]["method"], "thread/status/changed");
+        assert_eq!(items[1]["params"]["threadId"], "thread-terminal");
+        assert_eq!(items[1]["params"]["status"], "interrupted");
     }
 
     #[test]

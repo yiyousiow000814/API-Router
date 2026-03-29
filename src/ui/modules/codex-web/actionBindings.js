@@ -55,8 +55,13 @@ export function createActionBindingsModule(deps) {
     wireThreadPullToRefresh,
     addHost,
     resolveApproval,
+    resolveProposedPlanConfirmation = async () => null,
     resolveUserInput,
     refreshPending,
+    getPendingUserInputDraftAnswers = () => ({}),
+    getPendingUserInputSubmissionState = () => ({}),
+    setPendingUserInputDraftAnswer = () => false,
+    setPendingUserInputQuestionCompleted = () => false,
     uploadAttachment,
     executeSlashCommand = async () => null,
     cancelQueuedTurnEditing = () => {},
@@ -86,6 +91,82 @@ export function createActionBindingsModule(deps) {
   const win = windowRef ?? globalThis.window ?? {};
   const doc = documentRef ?? globalThis.document;
   const NotificationApi = NotificationRef ?? globalThis.Notification;
+  const scheduleTimeout =
+    typeof win?.setTimeout === "function"
+      ? win.setTimeout.bind(win)
+      : typeof globalThis.setTimeout === "function"
+        ? globalThis.setTimeout.bind(globalThis)
+        : (callback) => callback();
+    const PENDING_FREEFORM_EXIT_MS = 180;
+
+  function advanceOrResolvePendingUserInput(id) {
+    const submission = getPendingUserInputSubmissionState(id);
+    if (!submission?.item) {
+      const answers = getPendingUserInputDraftAnswers(id);
+      return resolveUserInput({ id, answers });
+    }
+    if (submission.isComplete) {
+      const answers = getPendingUserInputDraftAnswers(id);
+      return resolveUserInput({ id, answers });
+    }
+    if (!submission.currentQuestionId) {
+      throw new Error("question state unavailable");
+    }
+    if (!String(submission.currentAnswer || "").trim()) {
+      throw new Error("answer required");
+    }
+    setPendingUserInputQuestionCompleted(id, submission.currentQuestionId, true);
+    const nextState = getPendingUserInputSubmissionState(id);
+    if (nextState.isComplete) {
+      const answers = getPendingUserInputDraftAnswers(id);
+      return resolveUserInput({ id, answers });
+    }
+    return Promise.resolve();
+  }
+
+  function applyPendingUserInputOptionSelection(optionBtn) {
+    const nextMode =
+      optionBtn.getAttribute("data-pending-answer-mode") === "freeform"
+        ? "freeform"
+        : "option";
+    const applySelection = () =>
+      setPendingUserInputDraftAnswer(
+        optionBtn.getAttribute("data-pending-user-input-id"),
+        optionBtn.getAttribute("data-pending-answer-key"),
+        nextMode === "freeform"
+          ? ""
+          : optionBtn.getAttribute("data-pending-answer-value"),
+        { mode: nextMode }
+      );
+    if (nextMode === "freeform") {
+      applySelection();
+      setPendingUserInputQuestionCompleted(
+        optionBtn.getAttribute("data-pending-user-input-id"),
+        optionBtn.getAttribute("data-pending-answer-key"),
+        false
+      );
+      return;
+    }
+    const question = optionBtn.closest?.(".pendingInlineQuestion");
+    const freeformWrap = question?.querySelector?.(".pendingInlineFreeformWrap.is-visible");
+    if (!freeformWrap || freeformWrap.dataset.pendingExit === "1") {
+      applySelection();
+      return;
+    }
+    freeformWrap.dataset.pendingExit = "1";
+    freeformWrap.classList.remove("is-visible");
+    const freeformInput = freeformWrap.querySelector?.("[data-pending-freeform-input]");
+    freeformInput?.blur?.();
+    scheduleTimeout(() => {
+      delete freeformWrap.dataset.pendingExit;
+      applySelection();
+      setPendingUserInputQuestionCompleted(
+        optionBtn.getAttribute("data-pending-user-input-id"),
+        optionBtn.getAttribute("data-pending-answer-key"),
+        false
+      );
+    }, PENDING_FREEFORM_EXIT_MS);
+  }
 
   function wireActions() {
     bindClick("addHostBtn", () => addHost().catch((e) => setStatus(resolveActionErrorMessage(e), true)));
@@ -98,6 +179,108 @@ export function createActionBindingsModule(deps) {
     bindClick("refreshPendingBtn", () =>
       refreshPending().catch((e) => setStatus(resolveActionErrorMessage(e), true))
     );
+    {
+      const approvalList = byId("approvalPendingList");
+      if (approvalList && !approvalList.__wiredPendingApprovalActions) {
+        approvalList.__wiredPendingApprovalActions = true;
+        approvalList.addEventListener("click", (event) => {
+          const actionBtn = event?.target?.closest?.("[data-pending-approval-decision]");
+          if (!actionBtn) return;
+          event.preventDefault();
+          event.stopPropagation();
+          resolveApproval({
+            id: actionBtn.getAttribute("data-pending-approval-id"),
+            decision: actionBtn.getAttribute("data-pending-approval-decision"),
+          }).catch((e) => setStatus(resolveActionErrorMessage(e), true));
+        });
+      }
+    }
+    {
+      const userInputList = byId("userInputPendingList");
+      if (userInputList && !userInputList.__wiredPendingUserInputActions) {
+        userInputList.__wiredPendingUserInputActions = true;
+        userInputList.addEventListener("click", (event) => {
+          const planDecisionBtn = event?.target?.closest?.("[data-proposed-plan-decision]");
+          if (planDecisionBtn) {
+            event.preventDefault();
+            event.stopPropagation();
+            resolveProposedPlanConfirmation({
+              decision: planDecisionBtn.getAttribute("data-proposed-plan-decision"),
+            }).catch((e) => setStatus(resolveActionErrorMessage(e), true));
+            return;
+          }
+          const optionBtn = event?.target?.closest?.("[data-pending-answer-key]");
+          if (optionBtn) {
+            event.preventDefault();
+            event.stopPropagation();
+            applyPendingUserInputOptionSelection(optionBtn);
+            return;
+          }
+          const submitBtn = event?.target?.closest?.("[data-pending-user-input-submit]");
+          if (!submitBtn) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const id = String(submitBtn.getAttribute("data-pending-user-input-submit") || "").trim();
+          Promise.resolve().then(() => advanceOrResolvePendingUserInput(id)).catch((e) => setStatus(resolveActionErrorMessage(e), true));
+        });
+      }
+    }
+    {
+      const chatBox = byId("chatBox");
+      if (chatBox && !chatBox.__wiredPendingInlineActions) {
+        chatBox.__wiredPendingInlineActions = true;
+        chatBox.addEventListener("click", (event) => {
+          const planDecisionBtn = event?.target?.closest?.("[data-proposed-plan-decision]");
+          if (planDecisionBtn) {
+            event.preventDefault();
+            event.stopPropagation();
+            resolveProposedPlanConfirmation({
+              decision: planDecisionBtn.getAttribute("data-proposed-plan-decision"),
+            }).catch((e) => setStatus(resolveActionErrorMessage(e), true));
+            return;
+          }
+          const approvalBtn = event?.target?.closest?.("[data-pending-approval-decision]");
+          if (approvalBtn) {
+            event.preventDefault();
+            event.stopPropagation();
+            resolveApproval({
+              id: approvalBtn.getAttribute("data-pending-approval-id"),
+              decision: approvalBtn.getAttribute("data-pending-approval-decision"),
+            }).catch((e) => setStatus(resolveActionErrorMessage(e), true));
+            return;
+          }
+          const optionBtn = event?.target?.closest?.("[data-pending-answer-key]");
+          if (optionBtn) {
+            event.preventDefault();
+            event.stopPropagation();
+            applyPendingUserInputOptionSelection(optionBtn);
+            return;
+          }
+          const submitBtn = event?.target?.closest?.("[data-pending-user-input-submit]");
+          if (!submitBtn) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const id = String(submitBtn.getAttribute("data-pending-user-input-submit") || "").trim();
+          Promise.resolve().then(() => advanceOrResolvePendingUserInput(id)).catch((e) => setStatus(resolveActionErrorMessage(e), true));
+        });
+      }
+    }
+    {
+      const chatBox = byId("chatBox");
+      if (chatBox && !chatBox.__wiredPendingInlineInputs) {
+        chatBox.__wiredPendingInlineInputs = true;
+        chatBox.addEventListener("input", (event) => {
+          const input = event?.target?.closest?.("[data-pending-freeform-input]");
+          if (!input) return;
+          setPendingUserInputDraftAnswer(
+            input.getAttribute("data-pending-user-input-id"),
+            input.getAttribute("data-pending-answer-key"),
+            input.value || "",
+            { mode: "freeform" }
+          );
+        });
+      }
+    }
     bindInput("attachInput", "change", (event) => {
       uploadAttachment(event.target?.files?.[0]).catch((e) =>
         setStatus(resolveActionErrorMessage(e), true)
@@ -257,6 +440,19 @@ export function createActionBindingsModule(deps) {
         setStatus(resolveActionErrorMessage(error, "Failed to preview Updated Plan."), true);
       }
     });
+    bindClick("previewPendingBtn", () => {
+      try {
+        const result = win.__webCodexDebug?.previewPending?.();
+        if (result?.ok === false && result?.error) {
+          setStatus(String(result.error), true);
+          return;
+        }
+        syncSettingsControlsFromMain();
+        setStatus(result?.open === false ? "Pending preview hidden." : "Pending preview shown.");
+      } catch (error) {
+        setStatus(resolveActionErrorMessage(error, "Failed to preview pending actions."), true);
+      }
+    });
     bindClick("settingsFullAccessOnBtn", () =>
       executeSlashCommand("/permission full-access", {
         clearPrompt: false,
@@ -390,6 +586,16 @@ export function createActionBindingsModule(deps) {
       syncSettingsControlsFromMain();
       refreshCodexVersions().catch(() => {});
       setMobileTab("chat");
+    });
+    bindClick("openToolsBtn", () => {
+      setMainTab("settings");
+      syncSettingsControlsFromMain();
+      refreshPending().catch(() => {});
+      setMobileTab("chat");
+    });
+    bindClick("openThreadsBtn", () => {
+      setMainTab("chat");
+      setMobileTab("threads");
     });
     bindClick("welcomeWorkspaceBtn", () =>
       openFolderPicker().catch((e) => setStatus(resolveActionErrorMessage(e), true))

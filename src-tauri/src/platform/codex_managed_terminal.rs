@@ -6,7 +6,6 @@ pub struct ManagedTerminalLaunchRequest {
     pub server_port: u16,
     pub gateway_token: Option<String>,
     pub workspace_target: WorkspaceTarget,
-    pub thread_id: String,
     pub cwd: Option<String>,
     pub home_override: Option<String>,
 }
@@ -27,6 +26,10 @@ fn normalize_optional_text(value: Option<&str>) -> Option<String> {
 
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn powershell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 #[cfg(test)]
@@ -104,6 +107,8 @@ fn resolved_wsl_identity() -> Result<(String, String), String> {
     resolve_wsl_identity()
 }
 
+const REMOTE_AUTH_TOKEN_ENV: &str = "API_ROUTER_GATEWAY_TOKEN";
+
 fn remote_host_for_workspace(workspace_target: WorkspaceTarget) -> String {
     match workspace_target {
         WorkspaceTarget::Windows => "127.0.0.1".to_string(),
@@ -111,59 +116,79 @@ fn remote_host_for_workspace(workspace_target: WorkspaceTarget) -> String {
     }
 }
 
-pub fn build_remote_ws_url(request: &ManagedTerminalLaunchRequest) -> Result<String, String> {
+pub fn build_remote_addr(request: &ManagedTerminalLaunchRequest) -> Result<String, String> {
     let mut url = Url::parse(&format!(
-        "ws://{}:{}/codex/app-server/ws",
+        "ws://{}:{}",
         remote_host_for_workspace(request.workspace_target),
         request.server_port
     ))
     .map_err(|error| error.to_string())?;
-    {
-        let mut query = url.query_pairs_mut();
-        if let Some(token) = normalize_optional_text(request.gateway_token.as_deref()) {
-            query.append_pair("token", &token);
-        }
-        query.append_pair(
-            "workspace",
-            match request.workspace_target {
-                WorkspaceTarget::Windows => "windows",
-                WorkspaceTarget::Wsl2 => "wsl2",
-            },
-        );
-        if let Some(home) = normalize_optional_text(request.home_override.as_deref()) {
-            query.append_pair("home", &home);
-        }
-    }
+    url.set_query(None);
+    url.set_path("");
     Ok(url.to_string())
 }
 
 pub fn build_managed_terminal_launch_spec(
     request: &ManagedTerminalLaunchRequest,
 ) -> Result<ManagedTerminalLaunchSpec, String> {
-    let normalized_thread_id = request.thread_id.trim();
-    if normalized_thread_id.is_empty() {
-        return Err("thread id is required".to_string());
-    }
-    let remote_url = build_remote_ws_url(request)?;
+    let remote_addr = build_remote_addr(request)?;
     let cwd = normalize_optional_text(request.cwd.as_deref());
+    if cwd.is_none() {
+        return Err("cwd is required".to_string());
+    }
     let home_override = normalize_optional_text(request.home_override.as_deref());
+    let gateway_token = normalize_optional_text(request.gateway_token.as_deref());
     match request.workspace_target {
         WorkspaceTarget::Windows => {
-            let mut args = vec![
+            let mut script_parts = Vec::new();
+            if let Some(cwd) = cwd.as_deref() {
+                let transcript_path = format!("{}\\api-router-managed-terminal.log", cwd);
+                script_parts.push(format!(
+                    "Start-Transcript -Path {} -Force | Out-Null",
+                    powershell_single_quote(&transcript_path)
+                ));
+            }
+            if let Some(token) = gateway_token.as_deref() {
+                script_parts.push(format!(
+                    "$env:{}={}",
+                    REMOTE_AUTH_TOKEN_ENV,
+                    powershell_single_quote(token)
+                ));
+            }
+            if let Some(home_override) = home_override.as_deref() {
+                script_parts.push(format!(
+                    "$env:CODEX_HOME={}",
+                    powershell_single_quote(home_override)
+                ));
+            }
+            let mut launch_script = format!(
+                "& (Join-Path $env:APPDATA 'npm\\codex.cmd') --remote {}",
+                powershell_single_quote(&remote_addr)
+            );
+            if gateway_token.is_some() {
+                launch_script.push_str(&format!(
+                    " --remote-auth-token-env {}",
+                    powershell_single_quote(REMOTE_AUTH_TOKEN_ENV)
+                ));
+            }
+            if let Some(cwd) = cwd.as_deref() {
+                launch_script.push_str(&format!(" --cd {}", powershell_single_quote(cwd)));
+            }
+            script_parts.push(launch_script);
+            let args = vec![
                 "/C".to_string(),
                 "start".to_string(),
                 "".to_string(),
-                "codex".to_string(),
-                "resume".to_string(),
-                normalized_thread_id.to_string(),
-                "--remote".to_string(),
-                remote_url,
+                "powershell.exe".to_string(),
+                "-NoLogo".to_string(),
+                "-NoExit".to_string(),
+                "-Command".to_string(),
+                script_parts.join("; "),
             ];
-            if let Some(cwd) = cwd {
-                args.push("--cd".to_string());
-                args.push(cwd);
-            }
             let mut env = Vec::new();
+            if let Some(token) = gateway_token {
+                env.push((REMOTE_AUTH_TOKEN_ENV.to_string(), token));
+            }
             if let Some(home_override) = home_override {
                 env.push(("CODEX_HOME".to_string(), home_override));
             }
@@ -176,6 +201,13 @@ pub fn build_managed_terminal_launch_spec(
         WorkspaceTarget::Wsl2 => {
             let (distro, _home) = resolved_wsl_identity()?;
             let mut script = Vec::new();
+            if let Some(token) = gateway_token {
+                script.push(format!(
+                    "export {}={}",
+                    REMOTE_AUTH_TOKEN_ENV,
+                    shell_single_quote(&token)
+                ));
+            }
             if let Some(home_override) = home_override {
                 script.push(format!(
                     "export CODEX_HOME={}",
@@ -185,11 +217,18 @@ pub fn build_managed_terminal_launch_spec(
             if let Some(cwd) = cwd {
                 script.push(format!("cd {}", shell_single_quote(&cwd)));
             }
-            script.push(format!(
-                "exec codex resume {} --remote {}",
-                shell_single_quote(normalized_thread_id),
-                shell_single_quote(&remote_url)
-            ));
+            let mut command = format!("exec codex --remote {}", shell_single_quote(&remote_addr));
+            if request
+                .gateway_token
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                command.push_str(&format!(
+                    " --remote-auth-token-env {}",
+                    shell_single_quote(REMOTE_AUTH_TOKEN_ENV)
+                ));
+            }
+            script.push(command);
             Ok(ManagedTerminalLaunchSpec {
                 program: "cmd.exe".to_string(),
                 args: vec![
@@ -240,35 +279,30 @@ pub fn launch_managed_terminal_surface(
 mod tests {
     use super::{
         _set_test_wsl_gateway_host, _set_test_wsl_identity, build_managed_terminal_launch_spec,
-        build_remote_ws_url, ManagedTerminalLaunchRequest,
+        build_remote_addr, ManagedTerminalLaunchRequest, REMOTE_AUTH_TOKEN_ENV,
     };
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
 
     #[test]
-    fn build_remote_ws_url_includes_workspace_token_and_home() {
-        let url = build_remote_ws_url(&ManagedTerminalLaunchRequest {
+    fn build_remote_addr_uses_base_router_socket() {
+        let url = build_remote_addr(&ManagedTerminalLaunchRequest {
             server_port: 4000,
             gateway_token: Some("token-1".to_string()),
             workspace_target: WorkspaceTarget::Windows,
-            thread_id: "thread-1".to_string(),
             cwd: Some("C:\\repo".to_string()),
             home_override: Some("C:\\Users\\yiyou\\.codex".to_string()),
         })
         .expect("remote ws url");
 
-        assert_eq!(
-            url,
-            "ws://127.0.0.1:4000/codex/app-server/ws?token=token-1&workspace=windows&home=C%3A%5CUsers%5Cyiyou%5C.codex"
-        );
+        assert_eq!(url, "ws://127.0.0.1:4000/");
     }
 
     #[test]
-    fn windows_launch_spec_uses_remote_resume_and_codex_home() {
+    fn windows_launch_spec_uses_remote_interactive_launch_and_codex_home() {
         let spec = build_managed_terminal_launch_spec(&ManagedTerminalLaunchRequest {
             server_port: 4000,
             gateway_token: Some("token-1".to_string()),
             workspace_target: WorkspaceTarget::Windows,
-            thread_id: "thread-1".to_string(),
             cwd: Some("C:\\repo".to_string()),
             home_override: Some("C:\\Users\\yiyou\\.codex".to_string()),
         })
@@ -276,26 +310,36 @@ mod tests {
 
         assert_eq!(spec.program, "cmd.exe");
         assert_eq!(
-            spec.args,
-            vec![
+            spec.args[..7],
+            [
                 "/C",
                 "start",
                 "",
-                "codex",
-                "resume",
-                "thread-1",
-                "--remote",
-                "ws://127.0.0.1:4000/codex/app-server/ws?token=token-1&workspace=windows&home=C%3A%5CUsers%5Cyiyou%5C.codex",
-                "--cd",
-                "C:\\repo",
+                "powershell.exe",
+                "-NoLogo",
+                "-NoExit",
+                "-Command",
             ]
         );
+        let command = spec.args.get(7).expect("powershell command");
+        assert!(command.contains("Start-Transcript"));
+        assert!(command.contains("api-router-managed-terminal.log"));
+        assert!(command.contains("$env:API_ROUTER_GATEWAY_TOKEN='token-1'"));
+        assert!(command.contains("$env:CODEX_HOME='C:\\Users\\yiyou\\.codex'"));
+        assert!(command.contains("Join-Path $env:APPDATA 'npm\\codex.cmd'"));
+        assert!(!command.contains("resume "));
+        assert!(command.contains("--remote 'ws://127.0.0.1:4000/'"));
+        assert!(command.contains("--remote-auth-token-env 'API_ROUTER_GATEWAY_TOKEN'"));
+        assert!(command.contains("--cd 'C:\\repo'"));
         assert_eq!(
             spec.env,
-            vec![(
-                "CODEX_HOME".to_string(),
-                "C:\\Users\\yiyou\\.codex".to_string()
-            )]
+            vec![
+                (REMOTE_AUTH_TOKEN_ENV.to_string(), "token-1".to_string()),
+                (
+                    "CODEX_HOME".to_string(),
+                    "C:\\Users\\yiyou\\.codex".to_string()
+                )
+            ]
         );
     }
 
@@ -308,7 +352,6 @@ mod tests {
             server_port: 4000,
             gateway_token: Some("token-2".to_string()),
             workspace_target: WorkspaceTarget::Wsl2,
-            thread_id: "thread-2".to_string(),
             cwd: Some("/home/yiyou/repo".to_string()),
             home_override: Some("/home/yiyou/.codex".to_string()),
         })
@@ -327,7 +370,7 @@ mod tests {
                 "--",
                 "bash",
                 "-lc",
-                "export CODEX_HOME='/home/yiyou/.codex'; cd '/home/yiyou/repo'; exec codex resume 'thread-2' --remote 'ws://172.29.144.1:4000/codex/app-server/ws?token=token-2&workspace=wsl2&home=%2Fhome%2Fyiyou%2F.codex'",
+                "export API_ROUTER_GATEWAY_TOKEN='token-2'; export CODEX_HOME='/home/yiyou/.codex'; cd '/home/yiyou/repo'; exec codex --remote 'ws://172.29.144.1:4000/' --remote-auth-token-env 'API_ROUTER_GATEWAY_TOKEN'",
             ]
         );
 

@@ -183,7 +183,7 @@ pub(crate) fn get_spend_history(
                 continue;
             };
             let manual_total =
-                as_f64(day.get("manual_total_usd")).filter(|v| v.is_finite() && *v > 0.0);
+                as_f64(day.get("manual_total_usd")).filter(|v| v.is_finite() && *v != 0.0);
             let manual_per_req =
                 as_f64(day.get("manual_usd_per_req")).filter(|v| v.is_finite() && *v > 0.0);
             let updated_at = day
@@ -346,7 +346,7 @@ pub(crate) fn set_spend_history_entry(
         return Err("day_key must be YYYY-MM-DD".to_string());
     }
     let total_used_usd = total_used_usd
-        .filter(|v| v.is_finite() && *v > 0.0)
+        .filter(|v| v.is_finite() && *v != 0.0)
         .or(None);
     let usd_per_req = usd_per_req.filter(|v| v.is_finite() && *v > 0.0).or(None);
 

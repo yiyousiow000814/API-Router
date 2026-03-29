@@ -400,6 +400,86 @@ async fn refresh_usage_once_after_first_failure(
     }
 }
 
+const TRANSIENT_UPSTREAM_RETRY_ATTEMPTS: usize = 2;
+const TRANSIENT_UPSTREAM_RETRY_DELAY_MS: u64 = 250;
+
+fn upstream_error_code_from_body(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|json| {
+            json.get("error")
+                .and_then(|value| value.get("code"))
+                .and_then(Value::as_str)
+                .map(|value| value.trim().to_ascii_lowercase())
+        })
+        .filter(|value| !value.is_empty())
+}
+
+fn is_retryable_upstream_status(code: u16) -> bool {
+    matches!(code, 408 | 409 | 425 | 429) || (500..=599).contains(&code)
+}
+
+fn should_retry_upstream_request_error(err: &reqwest::Error) -> bool {
+    err.is_timeout() || err.is_connect() || err.is_request() || err.is_body()
+}
+
+fn should_fallback_stream_response_to_non_stream(code: u16, body: &str) -> bool {
+    if is_retryable_upstream_status(code) {
+        return true;
+    }
+    code == 401
+        && upstream_error_code_from_body(body)
+            .is_some_and(|err_code| err_code == "token_invalidated")
+}
+
+fn log_upstream_retry_event(
+    st: &GatewayState,
+    provider_name: &str,
+    kind: &str,
+    detail: &str,
+    attempt: usize,
+    max_attempts: usize,
+    stream: bool,
+) {
+    st.store.add_event(
+        provider_name,
+        "warning",
+        "gateway.upstream_retry",
+        detail,
+        json!({
+            "kind": kind,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "stream": stream,
+        }),
+    );
+}
+
+#[cfg(test)]
+mod upstream_retry_tests {
+    use super::{
+        is_retryable_upstream_status, should_fallback_stream_response_to_non_stream,
+        upstream_error_code_from_body,
+    };
+
+    #[test]
+    fn retryable_upstream_status_matches_transient_codes() {
+        assert!(is_retryable_upstream_status(429));
+        assert!(is_retryable_upstream_status(500));
+        assert!(!is_retryable_upstream_status(401));
+    }
+
+    #[test]
+    fn stream_fallback_treats_token_invalidated_as_suspicious() {
+        let body = r#"{"error":{"code":"token_invalidated","type":"invalid_request_error","message":"bad token"}}"#;
+        assert_eq!(
+            upstream_error_code_from_body(body).as_deref(),
+            Some("token_invalidated")
+        );
+        assert!(should_fallback_stream_response_to_non_stream(401, body));
+    }
+}
+
 pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: usize) -> Router {
     let router = Router::new()
         .route("/health", get(health))
@@ -407,6 +487,7 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
         .route("/responses", post(responses))
+        .route("/", get(codex_app_server_ws))
         .route("/codex-web", get(codex_web_index))
         .route("/codex-web/app.js", get(codex_web_app_js))
         .route("/codex-web/modules/*path", get(codex_web_module_js))
@@ -863,13 +944,11 @@ async fn responses(
             .get(&provider_name)
             .cloned()
             .unwrap_or(true);
-        let mut retried_without_prev = false;
         let timeout = cfg.routing.request_timeout_seconds;
 
         for _ in 0..2 {
             let switching_provider = has_prev && !is_first_attempt;
-            let use_prev_id =
-                has_prev && provider_supports_prev && !switching_provider && !retried_without_prev;
+            let use_prev_id = has_prev && provider_supports_prev && !switching_provider;
 
             let mut body_for_provider = base_body.clone();
             scrub_session_id_aliases_from_body(&mut body_for_provider);
@@ -956,156 +1035,231 @@ async fn responses(
                     .as_object_mut()
                     .map(|m| m.insert("stream".to_string(), Value::Bool(true)));
                 let api_key = st.secrets.get_provider_key(&provider_name);
-                match st
-                    .upstream
-                    .post_sse(
-                        &p,
-                        "/v1/responses",
-                        &body_for_provider,
-                        api_key.as_deref(),
-                        client_auth,
-                        timeout,
-                    )
-                    .await
-                {
-                    Ok(resp) if resp.status().is_success() => {
-                        let prev = st.last_used_by_session.read().get(&session_key).cloned();
-                        st.last_used_by_session.write().insert(
-                            session_key.clone(),
-                            LastUsedRoute {
-                                provider: provider_name.clone(),
-                                reason: reason.to_string(),
-                                preferred: preferred.to_string(),
-                                unix_ms: unix_ms(),
-                            },
-                        );
-                        st.router.mark_success(&provider_name, unix_ms());
-                        // Avoid spamming the event log for routine successful requests; only
-                        // surface interesting routing outcomes (failover / non-preferred).
-                        if should_log_routing_path_event(
-                            prev.as_ref(),
-                            &provider_name,
-                            reason,
-                            preferred,
-                            is_first_attempt,
-                        ) {
-                            st.store.add_event(
-                                &provider_name,
-                                "info",
-                                "routing.stream",
-                                &format!("Streaming via {provider_name} ({reason})"),
-                                json!({
-                                    "provider": provider_name,
-                                    "reason": reason,
-                                    "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
-                                    "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
-                                    "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
-                                }),
-                            );
-                        } else if is_back_to_preferred_transition(
-                            prev.as_ref(),
-                            &provider_name,
-                            preferred,
-                        ) {
-                            // Only log "back to preferred" when we were previously using a
-                            // different provider.
-                            st.store.add_event(
-                                &provider_name,
-                                "info",
-                                "routing.back_to_preferred",
-                                &format!(
-                                    "Back to preferred: {provider_name} (from {})",
-                                    prev.as_ref()
-                                        .map(|p| p.provider.as_str())
-                                        .unwrap_or("unknown")
-                                ),
-                                json!({
-                                    "provider": provider_name,
-                                    "from_provider": prev.as_ref().map(|p| p.provider.clone()),
-                                    "from_reason": prev.as_ref().map(|p| p.reason.clone()),
-                                    "from_preferred": prev.as_ref().map(|p| p.preferred.clone()),
-                                    "preferred": preferred,
-                                    "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
-                                    "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
-                                    "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
-                                }),
-                            );
-                        }
-                        return passthrough_sse_and_persist(
-                            resp,
-                            st.clone(),
-                            provider_name,
+                let mut should_fallback_to_non_stream = false;
+                for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
+                    match st
+                        .upstream
+                        .post_sse(
+                            &p,
+                            "/v1/responses",
+                            &body_for_provider,
+                            api_key.as_deref(),
+                            client_auth,
                             timeout,
-                            SsePersistContext {
-                                api_key_ref: api_key_ref_from_raw(api_key.as_deref()),
-                                session_key: session_key.clone(),
-                                requested_model: requested_model.clone(),
-                                request_origin: request_origin.to_string(),
-                            },
-                        );
-                    }
-                    Ok(resp) => {
-                        let code = resp.status().as_u16();
-                        let txt = resp.text().await.unwrap_or_default();
-                        if use_prev_id && is_prev_id_unsupported_error(&txt) {
-                            provider_supports_prev = false;
-                            st.prev_id_support_cache
-                                .write()
-                                .insert(provider_name.clone(), false);
+                        )
+                        .await
+                    {
+                        Ok(resp) if resp.status().is_success() => {
+                            let prev = st.last_used_by_session.read().get(&session_key).cloned();
+                            st.last_used_by_session.write().insert(
+                                session_key.clone(),
+                                LastUsedRoute {
+                                    provider: provider_name.clone(),
+                                    reason: reason.to_string(),
+                                    preferred: preferred.to_string(),
+                                    unix_ms: unix_ms(),
+                                },
+                            );
+                            st.router.mark_success(&provider_name, unix_ms());
+                            if should_log_routing_path_event(
+                                prev.as_ref(),
+                                &provider_name,
+                                reason,
+                                preferred,
+                                is_first_attempt,
+                            ) {
+                                st.store.add_event(
+                                    &provider_name,
+                                    "info",
+                                    "routing.stream",
+                                    &format!("Streaming via {provider_name} ({reason})"),
+                                    json!({
+                                        "provider": provider_name,
+                                        "reason": reason,
+                                        "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
+                                        "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
+                                        "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
+                                    }),
+                                );
+                            } else if is_back_to_preferred_transition(
+                                prev.as_ref(),
+                                &provider_name,
+                                preferred,
+                            ) {
+                                st.store.add_event(
+                                    &provider_name,
+                                    "info",
+                                    "routing.back_to_preferred",
+                                    &format!(
+                                        "Back to preferred: {provider_name} (from {})",
+                                        prev.as_ref()
+                                            .map(|p| p.provider.as_str())
+                                            .unwrap_or("unknown")
+                                    ),
+                                    json!({
+                                        "provider": provider_name,
+                                        "from_provider": prev.as_ref().map(|p| p.provider.clone()),
+                                        "from_reason": prev.as_ref().map(|p| p.reason.clone()),
+                                        "from_preferred": prev.as_ref().map(|p| p.preferred.clone()),
+                                        "preferred": preferred,
+                                        "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
+                                        "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
+                                        "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
+                                    }),
+                                );
+                            }
+                            return passthrough_sse_and_persist(
+                                resp,
+                                st.clone(),
+                                provider_name,
+                                timeout,
+                                SsePersistContext {
+                                    api_key_ref: api_key_ref_from_raw(api_key.as_deref()),
+                                    session_key: session_key.clone(),
+                                    requested_model: requested_model.clone(),
+                                    request_origin: request_origin.to_string(),
+                                },
+                            );
+                        }
+                        Ok(resp) => {
+                            let code = resp.status().as_u16();
+                            let txt = resp.text().await.unwrap_or_default();
+                            if use_prev_id && is_prev_id_unsupported_error(&txt) {
+                                provider_supports_prev = false;
+                                st.prev_id_support_cache
+                                    .write()
+                                    .insert(provider_name.clone(), false);
+                                st.store.add_event(
+                                    &provider_name,
+                                    "info",
+                                    "gateway.retry_without_prev_id",
+                                    "retrying without previous_response_id",
+                                    Value::Null,
+                                );
+                                continue;
+                            }
+                            let can_retry = attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+                                && is_retryable_upstream_status(code);
+                            let can_fallback =
+                                should_fallback_stream_response_to_non_stream(code, &txt);
+                            if can_retry {
+                                log_upstream_retry_event(
+                                    &st,
+                                    &provider_name,
+                                    "http_status",
+                                    &format!(
+                                        "retrying upstream stream after http {code} from {provider_name}"
+                                    ),
+                                    attempt,
+                                    TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
+                                    true,
+                                );
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
+                                ))
+                                .await;
+                                continue;
+                            }
+                            if can_fallback {
+                                should_fallback_to_non_stream = true;
+                                last_err = format!(
+                                    "upstream {provider_name} returned {code} (responses stream): {txt}"
+                                );
+                                st.store.add_event(
+                                    &provider_name,
+                                    "warning",
+                                    "gateway.stream_fallback_to_non_stream",
+                                    "streaming failed; retrying once with non-stream responses",
+                                    json!({
+                                        "http_status": code,
+                                        "endpoint": "/v1/responses",
+                                        "stream": true
+                                    }),
+                                );
+                                break;
+                            }
+                            last_err = format!(
+                                "upstream {provider_name} returned {code} (responses stream): {txt}"
+                            );
+                            st.router
+                                .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                             st.store.add_event(
                                 &provider_name,
-                                "info",
-                                "gateway.retry_without_prev_id",
-                                "retrying without previous_response_id",
-                                Value::Null,
+                                "error",
+                                "upstream.http_error",
+                                &last_err,
+                                json!({
+                                    "http_status": code,
+                                    "endpoint": "/v1/responses",
+                                    "stream": true
+                                }),
                             );
-                            retried_without_prev = true;
-                            continue;
+                            refresh_usage_once_after_first_failure(
+                                &st,
+                                &provider_name,
+                                &mut usage_refreshed_after_first_failure,
+                            )
+                            .await;
+                            break;
                         }
-                        last_err = format!(
-                            "upstream {provider_name} returned {code} (responses stream): {txt}"
-                        );
-                        st.router
-                            .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
-                        st.store.add_event(
-                            &provider_name,
-                            "error",
-                            "upstream.http_error",
-                            &last_err,
-                            json!({
-                                "http_status": code,
-                                "endpoint": "/v1/responses",
-                                "stream": true
-                            }),
-                        );
-                        refresh_usage_once_after_first_failure(
-                            &st,
-                            &provider_name,
-                            &mut usage_refreshed_after_first_failure,
-                        )
-                        .await;
-                        break;
+                        Err(e) => {
+                            let can_retry = attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+                                && should_retry_upstream_request_error(&e);
+                            if can_retry {
+                                log_upstream_retry_event(
+                                    &st,
+                                    &provider_name,
+                                    "request_error",
+                                    &format!(
+                                        "retrying upstream stream after request error from {provider_name}: {e}"
+                                    ),
+                                    attempt,
+                                    TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
+                                    true,
+                                );
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
+                                ))
+                                .await;
+                                continue;
+                            }
+                            if should_retry_upstream_request_error(&e) {
+                                should_fallback_to_non_stream = true;
+                                last_err = format!(
+                                    "upstream {provider_name} error (responses stream): {e}"
+                                );
+                                st.store.add_event(
+                                    &provider_name,
+                                    "warning",
+                                    "gateway.stream_fallback_to_non_stream",
+                                    "streaming request failed; retrying once with non-stream responses",
+                                    json!({ "endpoint": "/v1/responses", "stream": true }),
+                                );
+                                break;
+                            }
+                            last_err =
+                                format!("upstream {provider_name} error (responses stream): {e}");
+                            st.router
+                                .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
+                            st.store.add_event(
+                                &provider_name,
+                                "error",
+                                "upstream.request_error",
+                                &last_err,
+                                json!({ "endpoint": "/v1/responses", "stream": true }),
+                            );
+                            refresh_usage_once_after_first_failure(
+                                &st,
+                                &provider_name,
+                                &mut usage_refreshed_after_first_failure,
+                            )
+                            .await;
+                            break;
+                        }
                     }
-                    Err(e) => {
-                        last_err =
-                            format!("upstream {provider_name} error (responses stream): {e}");
-                        st.router
-                            .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
-                        st.store.add_event(
-                            &provider_name,
-                            "error",
-                            "upstream.request_error",
-                            &last_err,
-                            json!({ "endpoint": "/v1/responses", "stream": true }),
-                        );
-                        refresh_usage_once_after_first_failure(
-                            &st,
-                            &provider_name,
-                            &mut usage_refreshed_after_first_failure,
-                        )
-                        .await;
-                        break;
-                    }
+                }
+                if !should_fallback_to_non_stream && !last_err.is_empty() {
+                    break;
                 }
             }
 
@@ -1115,19 +1269,63 @@ async fn responses(
                 .map(|m| m.insert("stream".to_string(), Value::Bool(false)));
 
             let api_key = st.secrets.get_provider_key(&provider_name);
-            let upstream_result = st
-                .upstream
-                .post_json(
-                    &p,
-                    "/v1/responses",
-                    &body_for_provider,
-                    api_key.as_deref(),
-                    client_auth,
-                    timeout,
-                )
-                .await;
+            let mut upstream_result = None;
+            for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
+                let result = st
+                    .upstream
+                    .post_json(
+                        &p,
+                        "/v1/responses",
+                        &body_for_provider,
+                        api_key.as_deref(),
+                        client_auth,
+                        timeout,
+                    )
+                    .await;
+                let should_retry = match &result {
+                    Ok((code, _)) => {
+                        is_retryable_upstream_status(*code)
+                            && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+                    }
+                    Err(e) => {
+                        should_retry_upstream_request_error(e)
+                            && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+                    }
+                };
+                if should_retry {
+                    let detail = match &result {
+                        Ok((code, _)) => format!(
+                            "retrying upstream non-stream after http {code} from {provider_name}"
+                        ),
+                        Err(e) => format!(
+                            "retrying upstream non-stream after request error from {provider_name}: {e}"
+                        ),
+                    };
+                    let kind = if result.is_ok() {
+                        "http_status"
+                    } else {
+                        "request_error"
+                    };
+                    log_upstream_retry_event(
+                        &st,
+                        &provider_name,
+                        kind,
+                        &detail,
+                        attempt,
+                        TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
+                        false,
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
+                    ))
+                    .await;
+                    continue;
+                }
+                upstream_result = Some(result);
+                break;
+            }
 
-            match upstream_result {
+            match upstream_result.expect("non-stream attempt result") {
                 Ok((code, upstream_json)) if (200..300).contains(&code) => {
                     let prev = st.last_used_by_session.read().get(&session_key).cloned();
                     st.last_used_by_session.write().insert(
@@ -1241,7 +1439,6 @@ async fn responses(
                             "retrying without previous_response_id",
                             Value::Null,
                         );
-                        retried_without_prev = true;
                         continue;
                     }
                     last_err = format!("upstream {provider_name} returned {code}: {msg}");

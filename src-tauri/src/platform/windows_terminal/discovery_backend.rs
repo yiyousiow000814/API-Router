@@ -465,9 +465,7 @@ fn discover_sessions_using_router_uncached(
             String::from_utf8_lossy(bytes).to_string()
         }
 
-        let out = hidden_wsl_command()
-            .args(["-l", "-q"])
-            .output();
+        let out = hidden_wsl_command().args(["-l", "-q"]).output();
         let Ok(out) = out else {
             return Vec::new();
         };
@@ -477,7 +475,13 @@ fn discover_sessions_using_router_uncached(
         decode_wsl_output(&out.stdout)
             .lines()
             .map(|s| s.replace('\0', ""))
-            .map(|s| s.trim().trim_start_matches('*').trim().trim_start_matches('\u{feff}').to_string())
+            .map(|s| {
+                s.trim()
+                    .trim_start_matches('*')
+                    .trim()
+                    .trim_start_matches('\u{feff}')
+                    .to_string()
+            })
             .filter(|s| !s.is_empty())
             .collect()
     }
@@ -579,10 +583,7 @@ fn discover_sessions_using_router_uncached(
             }
         }
 
-        fn wsl_read_env_bundle(
-            distro: &str,
-            pid: u32,
-        ) -> Option<WslEnvBundle> {
+        fn wsl_read_env_bundle(distro: &str, pid: u32) -> Option<WslEnvBundle> {
             let out = hidden_wsl_command()
                 .args(["-d", distro, "--", "cat", &format!("/proc/{pid}/environ")])
                 .output()
@@ -688,13 +689,15 @@ fn discover_sessions_using_router_uncached(
         }
 
         let mut sessions = Vec::new();
-        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
         let mut session_owner_wt: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
         // Cache "real Codex UUID per WSL tab" so temporary inference misses do not make
         // session ids flap between real UUID and WT_SESSION fallback.
-        static FROZEN_WSL_SESSION_BY_TAB: OnceLock<Mutex<std::collections::HashMap<String, String>>> =
-            OnceLock::new();
+        static FROZEN_WSL_SESSION_BY_TAB: OnceLock<
+            Mutex<std::collections::HashMap<String, String>>,
+        > = OnceLock::new();
         let frozen_by_tab =
             FROZEN_WSL_SESSION_BY_TAB.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
         for raw in String::from_utf8_lossy(&out.stdout).lines() {
@@ -718,8 +721,7 @@ fn discover_sessions_using_router_uncached(
             };
             let etimes = etimes_s.parse::<u64>().unwrap_or(0);
 
-            let Some(env) = wsl_read_env_bundle(distro, pid)
-            else {
+            let Some(env) = wsl_read_env_bundle(distro, pid) else {
                 continue;
             };
             let wt = env.wt;
@@ -730,11 +732,14 @@ fn discover_sessions_using_router_uncached(
 
             let codex_home_linux =
                 codex_home_raw.or_else(|| home.clone().map(|h| format!("{h}/.codex")));
-            let cwd_linux = parse_cwd_from_cmdline(&cmd).or_else(|| wsl_read_cwd_from_proc(distro, pid));
+            let cwd_linux =
+                parse_cwd_from_cmdline(&cmd).or_else(|| wsl_read_cwd_from_proc(distro, pid));
             let codex_home_unc = codex_home_linux
                 .as_deref()
                 .and_then(|p| wsl_path_to_unc(distro, p));
-            let cwd_unc = cwd_linux.as_deref().and_then(|p| wsl_path_to_unc(distro, p));
+            let cwd_unc = cwd_linux
+                .as_deref()
+                .and_then(|p| wsl_path_to_unc(distro, p));
 
             let start = SystemTime::now()
                 .checked_sub(Duration::from_secs(etimes))
@@ -943,7 +948,6 @@ fn discover_sessions_using_router_uncached(
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd
     }
-
     let mut out: Vec<InferredWtSession> = Vec::new();
     // Processes created after this app starts are safe to classify from their startup config
     // snapshot (frozen per pid/create_time) even if config mtime appears untrusted.
@@ -975,8 +979,6 @@ fn discover_sessions_using_router_uncached(
             let is_new_since_app_started = app_started_unix_ms > 0
                 && pid_created_unix_ms >= app_started_unix_ms.saturating_sub(5_000);
 
-            // Prefer WT_SESSION when present, but keep ordinary console-hosted Codex sessions in
-            // the same discovery path via a stable pid marker.
             let wt = crate::platform::windows_terminal::terminal_session_marker(
                 crate::platform::windows_loopback_peer::read_process_env_var(pid, "WT_SESSION")
                     .as_deref(),
@@ -984,10 +986,7 @@ fn discover_sessions_using_router_uncached(
             );
             if let Some(wt) = wt {
                 let cmd = crate::platform::windows_loopback_peer::read_process_command_line(pid);
-                let _cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid)
-                    .map(|p| p.to_string_lossy().to_string());
 
-                // Ignore Codex background helpers that are not user sessions.
                 if cmd
                     .as_deref()
                     .is_some_and(|s| s.to_ascii_lowercase().contains("app-server"))
@@ -996,14 +995,12 @@ fn discover_sessions_using_router_uncached(
                     continue;
                 }
 
-                // Infer session id early; we can use it as a stronger signal than the current on-disk config.
                 let codex_session_id = frozen_codex_session_id(pid, cmd.as_deref(), server_port);
                 let Some(codex_session_id) = codex_session_id else {
                     ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
                     continue;
                 };
 
-                // The rollout meta reflects what the process actually launched/resumed with.
                 let codex_home = process_codex_home(pid);
                 let rollout_meta = codex_home.as_deref().and_then(|h| {
                     let p = latest_rollout_for_session(h, &codex_session_id)?;
@@ -1042,9 +1039,9 @@ fn discover_sessions_using_router_uncached(
                 let is_agent = rollout_meta.as_ref().map(|m| m.is_agent).unwrap_or(false);
                 let is_review = rollout_meta.as_ref().map(|m| m.is_review).unwrap_or(false);
                 let agent_parent_session_id = if is_agent {
-                    codex_home
-                        .as_deref()
-                        .and_then(|home| infer_parent_session_id_from_tui_log(home, &codex_session_id))
+                    codex_home.as_deref().and_then(|home| {
+                        infer_parent_session_id_from_tui_log(home, &codex_session_id)
+                    })
                 } else {
                     None
                 };
@@ -1062,9 +1059,7 @@ fn discover_sessions_using_router_uncached(
                     reported_model_provider: rollout_meta
                         .as_ref()
                         .and_then(|m| m.model_provider.clone())
-                        .or_else(|| {
-                            frozen_codex_model_provider(pid, is_new_since_app_started)
-                        }),
+                        .or_else(|| frozen_codex_model_provider(pid, is_new_since_app_started)),
                     reported_base_url: rollout_meta.as_ref().and_then(|m| m.base_url.clone()),
                     agent_parent_session_id,
                     codex_session_id: Some(codex_session_id),

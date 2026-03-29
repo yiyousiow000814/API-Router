@@ -1,5 +1,8 @@
-import { renderStructuredToolPreviewHtml, renderToolPreviewHtml } from "./messageRender.js";
+import { renderMessageRichHtml, renderStructuredToolPreviewHtml, renderToolPreviewHtml } from "./messageRender.js";
 import { extractPlanUpdate, renderPlanCardHtml } from "./runtimePlan.js";
+import { clearProposedPlanConfirmation } from "./proposedPlan.js";
+import { extractRequestUserInput } from "./runtimeUserInput.js";
+import { isTerminalInterruptedHistory } from "./historyLiveCommentaryState.js";
 
 export function createComposerUiModule(deps) {
   const {
@@ -14,6 +17,8 @@ export function createComposerUiModule(deps) {
     normalizeType = (value) => String(value || "").trim().toLowerCase(),
     escapeHtml = (value) => String(value || ""),
     updateHeaderUi,
+    setSyntheticPendingUserInputs = () => {},
+    upsertSyntheticPendingUserInput = () => {},
     LIVE_INSPECTOR_ENABLED_KEY,
     localStorageRef,
     documentRef,
@@ -187,6 +192,9 @@ export function createComposerUiModule(deps) {
     const toolName = readText(item?.tool || item?.name);
     const lowerToolName = normalizeType(toolName);
     if (compactMessage == null && lowerToolName === "writestdin") {
+      return null;
+    }
+    if (lowerToolName === "requestuserinput") {
       return null;
     }
     const directCommand = readText(item?.command || item?.cmd);
@@ -486,6 +494,7 @@ export function createComposerUiModule(deps) {
     return renderPlanCardHtml(plan, {
       escapeHtml,
       normalizeType,
+      renderRichTextHtml: renderMessageRichHtml,
       animateEnter: shouldAnimateEnter && state.chatOpening !== true,
     });
   }
@@ -669,8 +678,16 @@ export function createComposerUiModule(deps) {
     activityNode.style.display = activity ? "" : "none";
     if (chatMount && chatBox) {
       if (plan || thinkingText || commands.length) {
-        const lastChild = Array.isArray(chatBox.children) ? chatBox.children[chatBox.children.length - 1] : null;
-        if (lastChild !== chatMount) chatBox.appendChild(chatMount);
+        const pendingMount = chatBox.querySelector?.("#pendingInlineMount") || null;
+        const pendingParent = pendingMount?.parentElement || pendingMount?.parentNode || null;
+        if (pendingMount && pendingParent === chatBox) {
+          if (chatMount.nextSibling !== pendingMount || chatMount.parentElement !== chatBox) {
+            chatBox.insertBefore(chatMount, pendingMount);
+          }
+        } else {
+          const lastChild = Array.isArray(chatBox.children) ? chatBox.children[chatBox.children.length - 1] : null;
+          if (lastChild !== chatMount) chatBox.appendChild(chatMount);
+        }
       } else {
         chatMount.remove();
       }
@@ -778,14 +795,32 @@ export function createComposerUiModule(deps) {
 
   function syncRuntimeStateFromHistory(thread) {
     const threadId = String(thread?.id || state.activeThreadId || "").trim();
+    const suppressSyntheticPending = state.suppressedSyntheticPendingUserInputsByThreadId?.[threadId] === true;
+    const suppressIncompleteRuntime = state.suppressedIncompleteHistoryRuntimeByThreadId?.[threadId] === true;
     const pageIncomplete = !!thread?.page?.incomplete;
-    if (!pageIncomplete || !threadId || threadId !== state.activeThreadId) {
-      clearRuntimeState();
-      return;
-    }
+    const interruptedHistory = isTerminalInterruptedHistory(thread, state);
     const turns = Array.isArray(thread?.turns) ? thread.turns : [];
     const lastTurn = turns.length ? turns[turns.length - 1] : null;
     const items = Array.isArray(lastTurn?.items) ? lastTurn.items : [];
+    if (!pageIncomplete || interruptedHistory || !threadId || threadId !== state.activeThreadId) {
+      if (threadId) clearProposedPlanConfirmation(state, threadId);
+      if (
+        threadId &&
+        state.suppressedIncompleteHistoryRuntimeByThreadId &&
+        state.suppressedIncompleteHistoryRuntimeByThreadId[threadId] === true
+      ) {
+        delete state.suppressedIncompleteHistoryRuntimeByThreadId[threadId];
+      }
+      if (threadId) setSyntheticPendingUserInputs(threadId, []);
+      clearRuntimeState();
+      return;
+    }
+    if (suppressIncompleteRuntime) {
+      clearProposedPlanConfirmation(state, threadId);
+      setSyntheticPendingUserInputs(threadId, []);
+      clearRuntimeState();
+      return;
+    }
     const commands = [];
     let latestRunning = null;
     let plan = null;
@@ -803,6 +838,8 @@ export function createComposerUiModule(deps) {
       hasVisibleAssistant = true;
     }
     if (hasVisibleAssistant) {
+      clearProposedPlanConfirmation(state, threadId);
+      setSyntheticPendingUserInputs(threadId, []);
       if (String(state.activeThreadCommentaryCurrent?.threadId || "").trim() === threadId) {
         state.activeThreadCommentaryCurrent = null;
       }
@@ -812,6 +849,7 @@ export function createComposerUiModule(deps) {
       clearRuntimeState();
       return;
     }
+    const syntheticUserInputs = [];
     for (let index = 0; index < items.length; index += 1) {
       const item = items[index];
       const type = String(item?.type || "").trim();
@@ -821,6 +859,10 @@ export function createComposerUiModule(deps) {
         plan = updatePlan;
         continue;
       }
+      const requestUserInput = extractRequestUserInput(item, { normalizeType });
+      if (requestUserInput && !suppressSyntheticPending) {
+        syntheticUserInputs.push(requestUserInput);
+      }
       if (type === "userMessage" || type === "assistantMessage" || type === "agentMessage") continue;
       if (latestCommentaryIndex >= 0 && !hasVisibleAssistant && index < latestCommentaryIndex) continue;
       const entry = toActiveCommandEntry(item);
@@ -828,6 +870,7 @@ export function createComposerUiModule(deps) {
       commands.push(entry);
       if (isRuntimeActiveState(entry.state)) latestRunning = entry;
     }
+    setSyntheticPendingUserInputs(threadId, syntheticUserInputs);
     assignActivePlan(plan);
     assignActiveCommands(commands);
     const commentary = state.activeThreadCommentaryCurrent &&
@@ -838,7 +881,7 @@ export function createComposerUiModule(deps) {
       commands: latestRunning ? [latestRunning] : [],
       plan,
       commentary,
-      allowIncompletePlaceholder: pageIncomplete && commands.length === 0,
+      allowIncompletePlaceholder: suppressSyntheticPending !== true && pageIncomplete && commands.length === 0 && !syntheticUserInputs.length,
     }));
     renderRuntimePanels();
   }
@@ -856,6 +899,13 @@ export function createComposerUiModule(deps) {
       });
       setActivePlan(planUpdate);
       return;
+    }
+    const requestUserInput = extractRequestUserInput(item, { normalizeType });
+    if (requestUserInput) {
+      if (state.suppressedSyntheticPendingUserInputsByThreadId?.[threadId] === true) {
+        delete state.suppressedSyntheticPendingUserInputsByThreadId[threadId];
+      }
+      upsertSyntheticPendingUserInput(threadId, requestUserInput);
     }
     const entry = toActiveCommandEntry(item, options);
     if (!entry) return;
@@ -1156,6 +1206,7 @@ export function createComposerUiModule(deps) {
     const stateNode = byId("liveInspectorState");
     const workspaceNode = byId("settingsDefaultsWorkspace");
     const previewPlanBtn = byId("previewUpdatedPlanBtn");
+    const previewPendingBtn = byId("previewPendingBtn");
     const fullAccessOnBtn = byId("settingsFullAccessOnBtn");
     const fullAccessOffBtn = byId("settingsFullAccessOffBtn");
     const fastOnBtn = byId("settingsFastOnBtn");
@@ -1174,10 +1225,12 @@ export function createComposerUiModule(deps) {
     const fullAccessEnabled = permissionPreset === "/permission full-access";
     const fastEnabled = state.fastModeEnabled === true;
     const previewPlanOpen = !!win.__webCodexDebug?.isPreviewUpdatedPlanActive?.();
+    const previewPendingOpen = !!win.__webCodexDebug?.isPreviewPendingActive?.();
     if (toggleBtn) toggleBtn.textContent = `Live inspector: ${enabled ? "On" : "Off"}`;
     if (stateNode) stateNode.textContent = open ? "Visible" : "Hidden";
     if (workspaceNode) workspaceNode.textContent = `Applies to current ${workspaceLabel} chat`;
     if (previewPlanBtn) previewPlanBtn.textContent = `Plan Preview: ${previewPlanOpen ? "On" : "Off"}`;
+    if (previewPendingBtn) previewPendingBtn.textContent = `Pending Preview: ${previewPendingOpen ? "On" : "Off"}`;
     if (fullAccessOnBtn) {
       fullAccessOnBtn.classList.toggle("is-active", fullAccessEnabled);
       fullAccessOnBtn.setAttribute("aria-pressed", fullAccessEnabled ? "true" : "false");
@@ -1203,6 +1256,9 @@ export function createComposerUiModule(deps) {
         syncSettingsControlsFromMain();
       });
       win.addEventListener?.("web-codex-preview-plan-changed", () => {
+        syncSettingsControlsFromMain();
+      });
+      win.addEventListener?.("web-codex-preview-pending-changed", () => {
         syncSettingsControlsFromMain();
       });
     }

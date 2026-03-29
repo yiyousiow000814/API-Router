@@ -91,10 +91,12 @@ type Props = {
   newProviderName: string
   newProviderBaseUrl: string
   newProviderKey: string
+  newProviderKeyStorage: 'auth_json' | 'config_toml_experimental_bearer_token'
   nextProviderPlaceholder: string
   setNewProviderName: Dispatch<SetStateAction<string>>
   setNewProviderBaseUrl: Dispatch<SetStateAction<string>>
   setNewProviderKey: Dispatch<SetStateAction<string>>
+  setNewProviderKeyStorage: Dispatch<SetStateAction<'auth_json' | 'config_toml_experimental_bearer_token'>>
   addProvider: () => Promise<void>
   openProviderGroupManager: (provider?: string) => void
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
@@ -268,10 +270,12 @@ export function AppModals(props: Props) {
     newProviderName,
     newProviderBaseUrl,
     newProviderKey,
+    newProviderKeyStorage,
     nextProviderPlaceholder,
     setNewProviderName,
     setNewProviderBaseUrl,
     setNewProviderKey,
+    setNewProviderKeyStorage,
     addProvider,
     openProviderGroupManager,
     setConfigModalOpen,
@@ -412,10 +416,14 @@ export function AppModals(props: Props) {
         open={keyModal.open}
         provider={keyModal.provider}
         value={keyModal.value}
+        storage={keyModal.storage}
         loading={keyModal.loading}
         loadFailed={keyModal.loadFailed}
         onChange={(value) => setKeyModal((m) => ({ ...m, value }))}
-        onCancel={() => setKeyModal({ open: false, provider: '', value: '', loading: false, loadFailed: false })}
+        onChangeStorage={(storage) => setKeyModal((m) => ({ ...m, storage }))}
+        onCancel={() =>
+          setKeyModal({ open: false, provider: '', value: '', storage: 'auth_json', loading: false, loadFailed: false })
+        }
         onSave={() => void saveKey()}
       />
 
@@ -569,10 +577,12 @@ requires_openai_auth = true`}
         newProviderName={newProviderName}
         newProviderBaseUrl={newProviderBaseUrl}
         newProviderKey={newProviderKey}
+        newProviderKeyStorage={newProviderKeyStorage}
         nextProviderPlaceholder={nextProviderPlaceholder}
         setNewProviderName={setNewProviderName}
         setNewProviderBaseUrl={setNewProviderBaseUrl}
         setNewProviderKey={setNewProviderKey}
+        setNewProviderKeyStorage={setNewProviderKeyStorage}
         onAddProvider={() => void addProvider()}
         onOpenGroupManager={() => openProviderGroupManager()}
         onClose={() => setConfigModalOpen(false)}

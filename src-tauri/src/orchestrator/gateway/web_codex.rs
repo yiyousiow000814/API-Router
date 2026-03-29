@@ -17,9 +17,8 @@ static UNSUPPORTED_RPC_METHOD_CACHE: OnceLock<Mutex<HashSet<String>>> = OnceLock
 
 fn unsupported_rpc_method_cache() -> &'static Mutex<HashSet<String>> {
     UNSUPPORTED_RPC_METHOD_CACHE.get_or_init(|| {
-        let initial =
-            crate::orchestrator::gateway::web_codex_storage::read_unsupported_rpc_cache()
-                .unwrap_or_default();
+        let initial = crate::orchestrator::gateway::web_codex_storage::read_unsupported_rpc_cache()
+            .unwrap_or_default();
         Mutex::new(initial)
     })
 }
@@ -43,7 +42,8 @@ fn mark_rpc_method_unsupported(codex_home: Option<&str>, method: &str) {
     let key = unsupported_rpc_cache_key(codex_home, method);
     let mut guard = unsupported_rpc_method_cache().lock();
     if guard.insert(key) {
-        let _ = crate::orchestrator::gateway::web_codex_storage::write_unsupported_rpc_cache(&guard);
+        let _ =
+            crate::orchestrator::gateway::web_codex_storage::write_unsupported_rpc_cache(&guard);
     }
 }
 
@@ -55,13 +55,18 @@ pub(super) fn workspace_target_from_params(params: &Value) -> Option<WorkspaceTa
 }
 
 pub(super) async fn codex_rpc_call(method: &str, params: Value) -> Result<Value, Response> {
-    let home =
-        crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(
-            workspace_target_from_params(&params),
-        );
+    let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(
+        workspace_target_from_params(&params),
+    );
     crate::codex_app_server::request_in_home(home.as_deref(), method, params)
         .await
-        .map_err(|e| api_error_detail(StatusCode::BAD_GATEWAY, "codex app-server request failed", e))
+        .map_err(|e| {
+            api_error_detail(
+                StatusCode::BAD_GATEWAY,
+                "codex app-server request failed",
+                e,
+            )
+        })
 }
 
 pub(super) async fn codex_try_request_with_fallback(
@@ -126,6 +131,7 @@ mod web_codex_tests {
 
     #[tokio::test]
     async fn fallback_skips_rpc_methods_marked_unsupported() {
+        let _guard = crate::codex_app_server::lock_test_globals();
         unsupported_rpc_method_cache().lock().clear();
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_ref = calls.clone();
