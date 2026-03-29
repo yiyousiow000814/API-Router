@@ -228,7 +228,6 @@ impl RouterState {
             h.cooldown_until_unix_ms = 0;
             h.cooldown_from_transient_warnings = false;
             h.usage_confirmation_required = false;
-            h.transient_warning_timestamps_unix_ms.clear();
             h.last_ok_at_unix_ms = now_ms;
         }
     }
@@ -536,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn success_resets_transient_warning_streak_before_threshold() {
+    fn success_does_not_clear_transient_warning_streak_before_threshold() {
         let mut cfg = AppConfig::default_config();
         cfg.routing.failure_threshold = 10;
         let provider = "official";
@@ -549,7 +548,7 @@ mod tests {
 
         let snapshot = router.snapshot(4_000);
         let health = snapshot.get(provider).expect("provider health snapshot");
-        assert_eq!(health.status, "healthy");
-        assert_eq!(health.cooldown_until_unix_ms, 0);
+        assert_eq!(health.status, "cooldown");
+        assert_eq!(health.cooldown_until_unix_ms, 4_000 + 600_000);
     }
 }
