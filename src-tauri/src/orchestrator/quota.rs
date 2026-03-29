@@ -857,11 +857,7 @@ fn preserved_quota_snapshot_for_storage(
     }
 
     QuotaSnapshot {
-        kind: if snap.kind == UsageKind::None {
-            previous.kind
-        } else {
-            snap.kind
-        },
+        kind: previous.kind,
         updated_at_unix_ms: previous.updated_at_unix_ms,
         remaining: previous.remaining,
         today_used: previous.today_used,

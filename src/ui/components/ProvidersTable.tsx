@@ -206,28 +206,6 @@ export function ProvidersTable({
                   </button>
                 </div>
               </div>
-            ) : kind === 'balance_info' ? (
-              <div className="aoUsageMini">
-                <div className="aoUsageSplit">
-                  <div className="aoUsageText">
-                    <div className="aoUsageLine">balance: ${fmtUsd(q?.remaining)}</div>
-                    <div className="aoUsageLine">account summary</div>
-                  </div>
-                  <button
-                    className={`aoUsageRefreshBtn${refreshingProviders[p] ? ' aoUsageRefreshBtnSpin' : ''}`}
-                    title="Refresh usage"
-                    aria-label="Refresh usage"
-                    onClick={() => onRefreshQuota(p)}
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M23 4v6h-6" />
-                      <path d="M1 20v-6h6" />
-                      <path d="M3.5 9a9 9 0 0 1 14.1-3.4L23 10" />
-                      <path d="M1 14l5.3 5.3A9 9 0 0 0 20.5 15" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
             ) : (
               <div className="aoUsageMini">
                 <div className="aoUsageSplit">

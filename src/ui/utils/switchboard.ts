@@ -277,9 +277,9 @@ export function buildSwitchboardProviderCards(
       }
       usagePct = dailyLeftPct
     } else if (kind === 'balance_info') {
-      usageHeadline = `Balance $${options.fmtUsd(quota?.remaining ?? null)}`
-      usageDetail = 'Account summary'
-      usageSub = quota?.package_expires_at_unix_ms ? `Ends ${new Date(quota.package_expires_at_unix_ms).toLocaleDateString('en-GB')}` : null
+      usageHeadline = 'No usage data'
+      usageDetail = 'Refresh after first request'
+      usageSub = null
     }
 
     return {

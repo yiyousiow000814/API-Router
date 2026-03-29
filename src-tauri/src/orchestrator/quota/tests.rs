@@ -206,6 +206,100 @@ mod tests {
         (url, h)
     }
 
+    #[test]
+    fn failed_refresh_preserves_previous_budget_snapshot_kind() {
+        let provider_name = "codex-for.me";
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            },
+            routing: RoutingConfig {
+                preferred_provider: provider_name.to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 1,
+                failure_threshold: 1,
+                cooldown_seconds: 1,
+                request_timeout_seconds: 5,
+            },
+            providers: std::collections::BTreeMap::from([(
+                provider_name.to_string(),
+                ProviderConfig {
+                    display_name: "Codex For Me".to_string(),
+                    base_url: "https://codex-for.me/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            )]),
+            provider_order: vec![provider_name.to_string()],
+        };
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+        let st = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg)),
+            router,
+            store,
+            upstream: UpstreamClient::new(),
+            secrets: SecretStore::new(tmp.path().join("secrets.json")),
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+        let previous = QuotaSnapshot {
+            kind: UsageKind::BudgetInfo,
+            updated_at_unix_ms: 1_000,
+            remaining: Some(3_402.19),
+            today_used: None,
+            today_added: None,
+            daily_spent_usd: Some(25.93),
+            daily_budget_usd: Some(200.0),
+            weekly_spent_usd: None,
+            weekly_budget_usd: None,
+            monthly_spent_usd: Some(2_597.81),
+            monthly_budget_usd: Some(6_000.0),
+            package_expires_at_unix_ms: Some(1_900_000_000_000),
+            last_error: String::new(),
+            effective_usage_base: Some("https://codex-for.me".to_string()),
+            effective_usage_source: Some("codex_for_me_balance".to_string()),
+        };
+        store_quota_snapshot(&st, provider_name, &previous);
+
+        let failed_refresh = QuotaSnapshot {
+            kind: UsageKind::BalanceInfo,
+            updated_at_unix_ms: 0,
+            remaining: None,
+            today_used: None,
+            today_added: None,
+            daily_spent_usd: None,
+            daily_budget_usd: None,
+            weekly_spent_usd: None,
+            weekly_budget_usd: None,
+            monthly_spent_usd: None,
+            monthly_budget_usd: None,
+            package_expires_at_unix_ms: None,
+            last_error: "http 500 from https://codex-for.me".to_string(),
+            effective_usage_base: None,
+            effective_usage_source: None,
+        };
+
+        let preserved = preserved_quota_snapshot_for_storage(&st, provider_name, &failed_refresh);
+        assert_eq!(preserved.kind, UsageKind::BudgetInfo);
+        assert_eq!(preserved.remaining, previous.remaining);
+        assert_eq!(preserved.daily_spent_usd, previous.daily_spent_usd);
+        assert_eq!(preserved.monthly_spent_usd, previous.monthly_spent_usd);
+        assert_eq!(preserved.last_error, failed_refresh.last_error);
+    }
+
     async fn start_yunyi_me_mock_server() -> (String, tokio::task::JoinHandle<()>) {
         use axum::http::{HeaderMap, StatusCode};
         use axum::routing::get;
