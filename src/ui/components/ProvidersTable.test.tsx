@@ -289,4 +289,49 @@ describe('ProvidersTable', () => {
     expect(html).not.toContain('balance: $5,959.08')
     expect(html).not.toContain('account summary')
   })
+
+  it('hides balance-only snapshots from the usage preview', () => {
+    const status = buildStatus()
+    status.providers = {
+      'codex-for.me': {
+        status: 'healthy',
+        consecutive_failures: 0,
+        cooldown_until_unix_ms: 0,
+        last_error: '',
+        last_ok_at_unix_ms: 0,
+        last_fail_at_unix_ms: 0,
+      },
+    }
+    status.quota = {
+      'codex-for.me': {
+        kind: 'balance_info',
+        updated_at_unix_ms: 1234,
+        remaining: 3402.19,
+        today_used: null,
+        today_added: null,
+        daily_spent_usd: null,
+        daily_budget_usd: null,
+        weekly_spent_usd: null,
+        weekly_budget_usd: null,
+        monthly_spent_usd: null,
+        monthly_budget_usd: null,
+        package_expires_at_unix_ms: 1_900_000_000_000,
+        last_error: '',
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['codex-for.me']}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).not.toContain('balance: $3,402.19')
+    expect(html).not.toContain('account summary')
+    expect(html).toContain('<span class="aoHint">-</span>')
+  })
 })
