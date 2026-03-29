@@ -129,6 +129,33 @@ describe('ProvidersTable', () => {
     expect(jumpButtons).toHaveLength(2)
   })
 
+  it('shows retry when unhealthy cooldown has already expired', () => {
+    const status = buildStatus()
+    status.providers = {
+      packycode: {
+        status: 'unhealthy',
+        consecutive_failures: 3,
+        cooldown_until_unix_ms: Date.now() - 1_000,
+        last_error: 'stream failed',
+        last_ok_at_unix_ms: 1_000,
+        last_fail_at_unix_ms: 2_000,
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['packycode']}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('retry')
+    expect(html).not.toContain('>no<')
+  })
+
   it('hides unticked hard-cap usage rows from dashboard usage preview', () => {
     const config: Config = {
       listen: { host: '127.0.0.1', port: 4000 },

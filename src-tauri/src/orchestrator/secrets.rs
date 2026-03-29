@@ -103,6 +103,83 @@ pub struct ProviderPricingConfig {
     pub gap_fill_amount_usd: Option<f64>,
 }
 
+pub fn resolve_provider_pricing_config<'a>(
+    pricing: &'a BTreeMap<String, ProviderPricingConfig>,
+    provider_name: &str,
+    api_key_ref: Option<&str>,
+    at_unix_ms: u64,
+) -> Option<&'a ProviderPricingConfig> {
+    if let Some(cfg) = pricing.get(provider_name) {
+        return Some(cfg);
+    }
+    let target_key_ref = api_key_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "-")?;
+    let mut matched: Option<(&'a ProviderPricingConfig, u64)> = None;
+    for cfg in pricing.values() {
+        for period in &cfg.periods {
+            if period.mode != "package_total" && period.mode != "per_request" {
+                continue;
+            }
+            if !period.amount_usd.is_finite() || period.amount_usd <= 0.0 {
+                continue;
+            }
+            let period_key_ref = period.api_key_ref.trim();
+            if period_key_ref.is_empty()
+                || period_key_ref == "-"
+                || period_key_ref != target_key_ref
+            {
+                continue;
+            }
+            let ended = period.ended_at_unix_ms.unwrap_or(u64::MAX);
+            if !(period.started_at_unix_ms <= at_unix_ms && at_unix_ms < ended) {
+                continue;
+            }
+            let replace = matched
+                .as_ref()
+                .map(|(_, started_at)| period.started_at_unix_ms >= *started_at)
+                .unwrap_or(true);
+            if replace {
+                matched = Some((cfg, period.started_at_unix_ms));
+            }
+        }
+    }
+    matched.map(|(cfg, _)| cfg)
+}
+
+pub fn pricing_per_request_amount_at(
+    pricing_cfg: Option<&ProviderPricingConfig>,
+    ts_unix_ms: u64,
+) -> Option<f64> {
+    let cfg = pricing_cfg?;
+    let mut matched: Option<(f64, u64)> = None;
+    for period in cfg.periods.iter() {
+        if period.mode != "per_request"
+            || !period.amount_usd.is_finite()
+            || period.amount_usd <= 0.0
+        {
+            continue;
+        }
+        let ended = period.ended_at_unix_ms.unwrap_or(u64::MAX);
+        if period.started_at_unix_ms <= ts_unix_ms && ts_unix_ms < ended {
+            let replace = matched
+                .as_ref()
+                .map(|(_, started)| period.started_at_unix_ms >= *started)
+                .unwrap_or(true);
+            if replace {
+                matched = Some((period.amount_usd, period.started_at_unix_ms));
+            }
+        }
+    }
+    if let Some((amount, _)) = matched {
+        return Some(amount);
+    }
+    if cfg.mode == "per_request" && cfg.amount_usd.is_finite() && cfg.amount_usd > 0.0 {
+        return Some(cfg.amount_usd);
+    }
+    None
+}
+
 #[derive(Clone)]
 pub struct SecretStore {
     path: PathBuf,
@@ -745,7 +822,10 @@ impl SecretStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderQuotaHardCapConfig, SecretStore, UsageLoginConfig};
+    use super::{
+        pricing_per_request_amount_at, resolve_provider_pricing_config, ProviderPricingConfig,
+        ProviderPricingPeriod, ProviderQuotaHardCapConfig, SecretStore, UsageLoginConfig,
+    };
     use std::sync::{Arc, Barrier};
 
     #[test]
@@ -971,6 +1051,39 @@ mod tests {
         assert_eq!(
             reloaded.get_provider_key_storage_mode("missing"),
             "auth_json"
+        );
+    }
+
+    #[test]
+    fn resolve_provider_pricing_config_matches_renamed_per_request_period_by_key_ref() {
+        let pricing = std::collections::BTreeMap::from([(
+            "codex-for.me".to_string(),
+            ProviderPricingConfig {
+                mode: "per_request".to_string(),
+                amount_usd: 0.0,
+                periods: vec![ProviderPricingPeriod {
+                    id: "period-1".to_string(),
+                    mode: "per_request".to_string(),
+                    amount_usd: 0.035,
+                    api_key_ref: "sk-tPN******hxNs".to_string(),
+                    started_at_unix_ms: 1_700_000_000_000,
+                    ended_at_unix_ms: Some(1_800_000_000_000),
+                }],
+                gap_fill_mode: None,
+                gap_fill_amount_usd: None,
+            },
+        )]);
+
+        let resolved = resolve_provider_pricing_config(
+            &pricing,
+            "packycode",
+            Some("sk-tPN******hxNs"),
+            1_700_100_000_000,
+        );
+
+        assert_eq!(
+            pricing_per_request_amount_at(resolved, 1_700_100_000_000),
+            Some(0.035)
         );
     }
 }

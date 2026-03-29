@@ -65,12 +65,15 @@ export function ProvidersTable({
           const quotaHardCap = config?.providers?.[p]?.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
           const isClosed = h.status === 'closed'
           const cooldownActive = !isClosed && h.cooldown_until_unix_ms > Date.now()
+          const retryDue = !isClosed && h.status === 'unhealthy' && !cooldownActive
           const isActive = (status.active_provider_counts?.[p] ?? 0) > 0
           const healthLabel =
             isClosed
               ? 'closed'
               : isActive
                 ? 'effective'
+                : retryDue
+                  ? 'retry'
                 : h.status === 'healthy'
                   ? 'yes'
                   : h.status === 'unhealthy' || h.status === 'cooldown'
@@ -81,6 +84,8 @@ export function ProvidersTable({
               ? 'aoDot aoDotBad'
               : isActive
                 ? 'aoDot'
+                : retryDue
+                  ? 'aoDot aoDotMuted'
                 : h.status === 'healthy'
                   ? 'aoDot'
                   : h.status === 'unhealthy' || h.status === 'cooldown'

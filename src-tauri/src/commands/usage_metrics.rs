@@ -563,7 +563,12 @@ pub(crate) fn get_usage_statistics(
         } else {
             0.0
         };
-        let pricing_cfg = provider_pricing.get(provider);
+        let pricing_cfg = crate::orchestrator::secrets::resolve_provider_pricing_config(
+            &provider_pricing,
+            provider,
+            Some(&provider_api_key_ref(&state, provider)),
+            now,
+        );
         let mode = pricing_cfg
             .map(|cfg| cfg.mode.trim().to_ascii_lowercase())
             .unwrap_or_else(|| "none".to_string());

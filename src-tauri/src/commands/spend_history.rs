@@ -1,49 +1,3 @@
-fn resolve_history_pricing_config<'a>(
-    pricing: &'a std::collections::BTreeMap<
-        String,
-        crate::orchestrator::secrets::ProviderPricingConfig,
-    >,
-    provider_name: &str,
-    api_key_ref: &str,
-    day_start_unix_ms: u64,
-) -> Option<&'a crate::orchestrator::secrets::ProviderPricingConfig> {
-    if let Some(cfg) = pricing.get(provider_name) {
-        return Some(cfg);
-    }
-    let target_key_ref = api_key_ref.trim();
-    if target_key_ref.is_empty() || target_key_ref == "-" {
-        return None;
-    }
-    let mut matched: Option<(
-        &'a crate::orchestrator::secrets::ProviderPricingConfig,
-        u64,
-    )> = None;
-    for cfg in pricing.values() {
-        for period in &cfg.periods {
-            if period.mode != "package_total" {
-                continue;
-            }
-            let period_key_ref = period.api_key_ref.trim();
-            if period_key_ref.is_empty() || period_key_ref == "-" || period_key_ref != target_key_ref
-            {
-                continue;
-            }
-            let ended = period.ended_at_unix_ms.unwrap_or(u64::MAX);
-            if !(period.started_at_unix_ms <= day_start_unix_ms && day_start_unix_ms < ended) {
-                continue;
-            }
-            let replace = matched
-                .as_ref()
-                .map(|(_, started_at)| period.started_at_unix_ms >= *started_at)
-                .unwrap_or(true);
-            if replace {
-                matched = Some((cfg, period.started_at_unix_ms));
-            }
-        }
-    }
-    matched.map(|(cfg, _)| cfg)
-}
-
 #[tauri::command]
 pub(crate) fn get_spend_history(
     state: tauri::State<'_, app_state::AppState>,
@@ -272,10 +226,10 @@ pub(crate) fn get_spend_history(
                 .unwrap_or_else(|| "-".to_string());
             let (req_count, total_tokens, usage_updated_at) =
                 usage_by_day.get(&day_key).copied().unwrap_or((0, 0, 0));
-            let pricing_cfg = resolve_history_pricing_config(
+            let pricing_cfg = crate::orchestrator::secrets::resolve_provider_pricing_config(
                 &pricing,
                 &provider_name,
-                &history_api_key_ref,
+                Some(&history_api_key_ref),
                 day_start,
             );
             let package_profile = package_profile_for_day(pricing_cfg, day_start);
@@ -443,8 +397,9 @@ pub(crate) fn set_spend_history_entry(
 
 #[cfg(test)]
 mod spend_history_tests {
-    use super::resolve_history_pricing_config;
-    use crate::orchestrator::secrets::{ProviderPricingConfig, ProviderPricingPeriod};
+    use crate::orchestrator::secrets::{
+        resolve_provider_pricing_config, ProviderPricingConfig, ProviderPricingPeriod,
+    };
 
     #[test]
     fn resolves_history_pricing_by_api_key_ref_when_provider_was_renamed() {
@@ -466,14 +421,45 @@ mod spend_history_tests {
             },
         )]);
 
-        let resolved = resolve_history_pricing_config(
+        let resolved = resolve_provider_pricing_config(
             &pricing,
             "packycode",
-            "sk-tPN******hxNs",
+            Some("sk-tPN******hxNs"),
             1_700_100_000_000,
         );
 
         assert!(resolved.is_some());
         assert_eq!(resolved.expect("pricing").amount_usd, 56.10);
+    }
+
+    #[test]
+    fn resolves_history_per_request_pricing_by_api_key_ref_when_provider_was_renamed() {
+        let pricing = std::collections::BTreeMap::from([(
+            "codex-for.me".to_string(),
+            ProviderPricingConfig {
+                mode: "per_request".to_string(),
+                amount_usd: 0.035,
+                periods: vec![ProviderPricingPeriod {
+                    id: "period-1".to_string(),
+                    mode: "per_request".to_string(),
+                    amount_usd: 0.035,
+                    api_key_ref: "sk-tPN******hxNs".to_string(),
+                    started_at_unix_ms: 1_700_000_000_000,
+                    ended_at_unix_ms: Some(1_800_000_000_000),
+                }],
+                gap_fill_mode: None,
+                gap_fill_amount_usd: None,
+            },
+        )]);
+
+        let resolved = resolve_provider_pricing_config(
+            &pricing,
+            "packycode",
+            Some("sk-tPN******hxNs"),
+            1_700_100_000_000,
+        );
+
+        assert!(resolved.is_some());
+        assert_eq!(resolved.expect("pricing").amount_usd, 0.035);
     }
 }
