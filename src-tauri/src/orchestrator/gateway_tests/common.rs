@@ -13,9 +13,9 @@ use tower::ServiceExt;
 use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
 use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
 use crate::orchestrator::gateway::{
-    build_router, build_router_with_body_limit, decide_provider,
-    is_back_to_preferred_transition, open_store_dir, should_log_routing_path_event,
-    ClientSessionRuntime, GatewayState, LastUsedRoute,
+    build_router, build_router_with_body_limit, decide_provider, is_back_to_preferred_transition,
+    open_store_dir, should_log_routing_path_event, ClientSessionRuntime, GatewayState,
+    LastUsedRoute,
 };
 use crate::orchestrator::router::RouterState;
 use crate::orchestrator::secrets::SecretStore;

@@ -778,15 +778,24 @@ async fn responses(
     // be owned by helper processes.
     if !session_key.starts_with("peer:") {
         let now_unix_ms = unix_ms();
+        let is_review_session = review_request;
         let mut map = st.client_sessions.write();
         let entry = map
             .entry(session_key.clone())
             .or_insert_with(|| ClientSessionRuntime {
                 codex_session_id: session_key.clone(),
-                pid: client_session.as_ref().map(|s| s.pid).unwrap_or(0),
-                wt_session: inferred_wt_marker
-                    .as_deref()
-                    .and_then(|wt| windows_terminal::merge_wt_session_marker(None, wt)),
+                pid: if is_review_session {
+                    0
+                } else {
+                    client_session.as_ref().map(|s| s.pid).unwrap_or(0)
+                },
+                wt_session: if is_review_session {
+                    None
+                } else {
+                    inferred_wt_marker
+                        .as_deref()
+                        .and_then(|wt| windows_terminal::merge_wt_session_marker(None, wt))
+                },
                 last_request_unix_ms: 0,
                 last_discovered_unix_ms: 0,
                 last_reported_model_provider: None,
@@ -797,7 +806,10 @@ async fn responses(
                 is_review: false,
                 confirmed_router: true,
             });
-        if let Some(inferred) = client_session.as_ref() {
+        if is_review_session {
+            entry.pid = 0;
+            entry.wt_session = None;
+        } else if let Some(inferred) = client_session.as_ref() {
             entry.pid = inferred.pid;
             if let Some(observed_wt) = inferred_wt_marker.as_deref() {
                 entry.wt_session = windows_terminal::merge_wt_session_marker(
@@ -805,6 +817,8 @@ async fn responses(
                     observed_wt,
                 );
             }
+        }
+        if let Some(inferred) = client_session.as_ref() {
             if inferred.is_agent {
                 entry.is_agent = true;
             }
@@ -812,7 +826,7 @@ async fn responses(
                 entry.is_review = true;
             }
         }
-        if request_is_wsl {
+        if request_is_wsl && !is_review_session {
             if let Some(existing_wt) = entry.wt_session.as_deref() {
                 let forced_wsl = format!(
                     "wsl:{}",
