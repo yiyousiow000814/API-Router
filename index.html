@@ -24,6 +24,45 @@
   </head>
   <body>
     <div id="app"></div>
+    <script>
+      ;(() => {
+        const startNow =
+          typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? performance.now()
+            : 0
+        const stages = []
+        const mark = (stage, detail) => {
+          stages.push({
+            stage,
+            elapsedMs:
+              typeof performance !== 'undefined' && typeof performance.now === 'function'
+                ? Math.round(performance.now() - startNow)
+                : 0,
+            detail: detail ?? null,
+          })
+        }
+        window.__API_ROUTER_STARTUP_TRACE__ = {
+          startNow,
+          stages,
+          mark,
+        }
+        mark('index_inline_start')
+        document.addEventListener(
+          'DOMContentLoaded',
+          () => {
+            mark('index_dom_content_loaded', document.readyState)
+          },
+          { once: true },
+        )
+        window.addEventListener(
+          'load',
+          () => {
+            mark('index_window_load', document.readyState)
+          },
+          { once: true },
+        )
+      })()
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

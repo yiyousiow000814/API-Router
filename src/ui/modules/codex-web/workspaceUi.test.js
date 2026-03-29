@@ -1,0 +1,196 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  buildRuntimeStateUrl,
+  createWorkspaceUiModule,
+  folderDisplayName,
+  normalizeRuntimeStatePayload,
+  normalizeStartCwd,
+} from "./workspaceUi.js";
+
+describe("workspaceUi", () => {
+  it("normalizes windows and wsl cwd values", () => {
+    expect(normalizeStartCwd("C:\\repo\\", "windows")).toBe("C:\\repo");
+    expect(normalizeStartCwd("/home/user/project/", "wsl2")).toBe("/home/user/project");
+    expect(normalizeStartCwd("relative/path", "windows")).toBe("");
+  });
+
+  it("builds display labels from folder paths", () => {
+    expect(folderDisplayName("C:\\repo\\demo", "windows")).toBe("demo");
+    expect(folderDisplayName("D:", "windows")).toBe("D:\\");
+    expect(folderDisplayName("/home/user/demo", "wsl2")).toBe("demo");
+  });
+
+  it("builds runtime-state urls and normalizes payloads", () => {
+    expect(buildRuntimeStateUrl("wsl2")).toBe("/codex/runtime/state?workspace=wsl2");
+    expect(
+      normalizeRuntimeStatePayload({
+        workspace: "windows",
+        connected: true,
+        connectedAtUnixSecs: 11,
+        lastReplayCursor: 22,
+        lastReplayLastEventId: 33,
+        lastReplayAtUnixSecs: 44,
+      })
+    ).toEqual({
+      workspace: "windows",
+      homeOverride: "",
+      connected: true,
+      connectedAtUnixSecs: 11,
+      lastReplayCursor: 22,
+      lastReplayLastEventId: 33,
+      lastReplayAtUnixSecs: 44,
+      loaded: true,
+      loading: false,
+    });
+  });
+
+  it("resubscribes live events when switching workspace target", async () => {
+    const statuses = [];
+    let subscriptionSyncCount = 0;
+    const module = createWorkspaceUiModule({
+      state: {
+        workspaceTarget: "windows",
+        workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+        collapsedWorkspaceKeys: new Set(),
+        collapsedWorkspaceKeysByWorkspace: { windows: new Set(), wsl2: new Set() },
+        threadItemsByWorkspace: { windows: [], wsl2: [] },
+        threadWorkspaceHydratedByWorkspace: { windows: false, wsl2: false },
+        threadListRenderSigByWorkspace: { windows: "", wsl2: "" },
+        threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+        startCwdByWorkspace: { windows: "", wsl2: "" },
+        threadItemsAll: [],
+        threadItems: [],
+        folderPickerOpen: false,
+      },
+      byId() {
+        return null;
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      localStorageRef: { setItem() {} },
+      WORKSPACE_TARGET_KEY: "workspace",
+      START_CWD_BY_WORKSPACE_KEY: "cwd",
+      detectThreadWorkspaceTarget() {
+        return "unknown";
+      },
+      updateHeaderUi() {},
+      renderFolderPicker() {},
+      setStatus(message) {
+        statuses.push(message);
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return false;
+      },
+      buildThreadRenderSig() {
+        return "";
+      },
+      applyThreadFilter() {},
+      refreshThreads() {
+        return Promise.resolve();
+      },
+      syncEventSubscription() {
+        subscriptionSyncCount += 1;
+        return true;
+      },
+      renderThreads() {},
+    });
+
+    await module.setWorkspaceTarget("wsl2");
+
+    expect(subscriptionSyncCount).toBe(1);
+    expect(statuses).toContain("Workspace target: WSL2");
+  });
+
+  it("refreshes canonical runtime state for the requested workspace", async () => {
+    const updates = [];
+    const state = {
+      workspaceTarget: "windows",
+      activeThreadWorkspace: "windows",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      collapsedWorkspaceKeys: new Set(),
+      collapsedWorkspaceKeysByWorkspace: { windows: new Set(), wsl2: new Set() },
+      threadItemsByWorkspace: { windows: [], wsl2: [] },
+      threadWorkspaceHydratedByWorkspace: { windows: false, wsl2: false },
+      threadListRenderSigByWorkspace: { windows: "", wsl2: "" },
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      startCwdByWorkspace: { windows: "", wsl2: "" },
+      threadItemsAll: [],
+      threadItems: [],
+      folderPickerOpen: false,
+      workspaceRuntimeByTarget: {
+        windows: {
+          workspace: "windows",
+          homeOverride: "",
+          connected: false,
+          connectedAtUnixSecs: null,
+          lastReplayCursor: 0,
+          lastReplayLastEventId: null,
+          lastReplayAtUnixSecs: null,
+          loaded: false,
+          loading: false,
+        },
+      },
+      workspaceRuntimeRefreshReqSeqByWorkspace: { windows: 0, wsl2: 0 },
+    };
+    const module = createWorkspaceUiModule({
+      state,
+      byId() {
+        return null;
+      },
+      api(path) {
+        updates.push(path);
+        return Promise.resolve({
+          workspace: "windows",
+          connected: true,
+          connectedAtUnixSecs: 7,
+          lastReplayCursor: 8,
+          lastReplayLastEventId: 9,
+          lastReplayAtUnixSecs: 10,
+        });
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      localStorageRef: { setItem() {} },
+      WORKSPACE_TARGET_KEY: "workspace",
+      START_CWD_BY_WORKSPACE_KEY: "cwd",
+      detectThreadWorkspaceTarget() {
+        return "unknown";
+      },
+      updateHeaderUi() {},
+      renderFolderPicker() {},
+      setStatus() {},
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return false;
+      },
+      buildThreadRenderSig() {
+        return "";
+      },
+      applyThreadFilter() {},
+      refreshThreads() {
+        return Promise.resolve();
+      },
+      syncEventSubscription() {
+        return true;
+      },
+      renderThreads() {},
+    });
+
+    const runtime = await module.refreshWorkspaceRuntimeState("windows", { silent: true });
+
+    expect(updates).toEqual(["/codex/runtime/state?workspace=windows"]);
+    expect(runtime).toMatchObject({
+      workspace: "windows",
+      connected: true,
+      lastReplayCursor: 8,
+    });
+    expect(module.getWorkspaceRuntimeState("windows")).toMatchObject({
+      connected: true,
+      loaded: true,
+    });
+  });
+});

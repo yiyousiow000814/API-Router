@@ -9,9 +9,11 @@ describe('KeyModal', () => {
         open
         provider="provider_1"
         value=""
+        storage="auth_json"
         loading
         loadFailed={false}
         onChange={() => {}}
+        onChangeStorage={() => {}}
         onCancel={() => {}}
         onSave={() => {}}
       />,

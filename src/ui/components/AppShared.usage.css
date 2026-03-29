@@ -25,6 +25,18 @@
   gap: 8px;
 }
 
+.aoConfigHeaderMeta {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.aoConfigHeaderSub {
+  margin: 0;
+  white-space: nowrap;
+}
+
 .aoConfigHeaderBtn {
   min-width: 84px;
 }
@@ -188,6 +200,18 @@
   margin: 0 0 8px;
 }
 
+@media (max-width: 820px) {
+  .aoConfigHeaderMeta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .aoConfigHeaderSub {
+    white-space: normal;
+  }
+}
+
 .aoConfigDeck {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -206,9 +230,59 @@
 
 .aoAddProviderRow {
   display: grid;
-  grid-template-columns: minmax(140px, 0.7fr) minmax(240px, 1.3fr) auto;
+  grid-template-columns:
+    minmax(140px, 0.55fr)
+    minmax(220px, 1.05fr)
+    minmax(150px, 0.72fr)
+    minmax(220px, 220px)
+    minmax(92px, auto);
   gap: 8px;
   align-items: center;
+}
+
+.aoAddProviderStorageSelect {
+  min-width: 220px;
+  white-space: nowrap;
+}
+
+.aoAddProviderSubmit {
+  white-space: nowrap;
+}
+
+.aoKeyModalSub {
+  display: grid;
+  gap: 4px;
+}
+
+.aoKeyStorageOptions {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  margin-top: 10px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.aoKeyStorageOption {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  color: rgba(13, 18, 32, 0.88);
+  font-size: 13px;
+}
+
+.aoKeyStorageOption input {
+  margin: 0;
+}
+
+.aoKeyStorageOptions::-webkit-scrollbar {
+  display: none;
 }
 
 .aoGroupManagerLayout {
@@ -390,6 +464,12 @@
   min-height: 24px;
 }
 
+.aoGroupManagerMemberActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .aoGroupManagerMemberRemove {
   width: 22px;
   height: 22px;
@@ -500,6 +580,7 @@
   border-radius: 16px;
   border: 1px dashed rgba(13, 18, 32, 0.12);
   background: rgba(13, 18, 32, 0.02);
+  min-height: 56px;
 }
 
 .aoProviderConfigDragOver {
@@ -588,15 +669,11 @@
 }
 
 .aoStatusSwitchOn .aoStatusSwitchThumb {
-  transform: translateX(22px);
+  transform: translateX(16px);
 }
 
 .aoStatusSwitchOff {
   background: #a2a9b3;
-}
-
-.aoProviderHeadActions .aoActionBtnDanger {
-  margin-right: 6px;
 }
 
 .aoStatusSwitchOff .aoStatusSwitchThumb {
@@ -625,27 +702,57 @@
 
 .aoProviderConfigBody {
   display: grid;
-  grid-template-columns: minmax(300px, 0.98fr) minmax(340px, 1.02fr);
-  gap: 12px;
-  align-items: start;
+  grid-template-columns: minmax(320px, 1fr) minmax(300px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
 }
 
 .aoProviderField {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding-top: 6px;
+  padding-top: 0;
 }
 
 .aoProviderLeft {
-  padding-right: 12px;
+  padding-right: 10px;
 }
 
 .aoProviderRight {
-  align-self: stretch;
+  align-self: center;
+  justify-content: center;
   border-left: 1px solid rgba(13, 18, 32, 0.08);
-  padding-left: 16px;
-  padding-top: 6px;
+  padding-left: 10px;
+  padding-top: 0;
+}
+
+.aoProviderDeleteSlot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  align-self: stretch;
+}
+
+.aoProviderDeleteBtn {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  padding: 0;
+  border-radius: 999px;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(181, 41, 71, 0.86);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.aoProviderDeleteBtn:hover {
+  color: rgba(181, 41, 71, 1);
+  background: rgba(255, 94, 125, 0.1);
 }
 
 @media (max-width: 700px) {
@@ -672,6 +779,10 @@
     padding-left: 0;
     padding-top: 12px;
   }
+
+  .aoProviderDeleteSlot {
+    justify-content: flex-start;
+  }
 }
 
 .aoProviderHeadRow {
@@ -679,27 +790,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 6px;
-}
-
-.aoProviderConfigCollapsed .aoProviderConfigBody {
-  align-items: center;
-}
-
-.aoProviderConfigCollapsed .aoProviderField {
-  padding-top: 0;
-}
-
-.aoProviderConfigCollapsed .aoProviderHeadRow {
   margin-bottom: 0;
-}
-
-.aoProviderConfigCollapsed .aoProviderRight {
-  justify-content: center;
-}
-
-.aoProviderConfigCollapsed .aoProviderRight > .aoHint {
-  display: none;
 }
 
 .aoProviderHeadActions {
@@ -708,11 +799,6 @@
   gap: 8px;
   flex-wrap: nowrap;
   flex: 0 0 auto;
-}
-
-.aoToggleBtn {
-  height: 24px;
-  letter-spacing: 0.04em;
 }
 
 .aoKeyRow {
@@ -903,6 +989,24 @@
   stroke-linecap: round;
   stroke-linejoin: round;
   shape-rendering: geometricPrecision;
+}
+
+.aoProviderHeadBtn {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.aoProviderHeadBtn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.aoProviderHeadSwitch {
+  width: 40px;
+  height: 24px;
 }
 
 .aoActionBtnDanger {
@@ -1122,7 +1226,7 @@
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 12px;
+  gap: 18px;
   flex-wrap: wrap;
 }
 
@@ -1137,7 +1241,7 @@
   align-items: center;
   justify-content: flex-start;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 10px;
 }
 
 .aoUsageHardCapGrid {
@@ -1182,4 +1286,16 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
   transition: background 120ms ease, border-color 120ms ease;
+}
+
+.aoTinyBtnDangerSoft {
+  border-color: rgba(255, 94, 125, 0.18);
+  background: rgba(255, 94, 125, 0.045);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  color: rgba(156, 28, 58, 0.9);
+}
+
+.aoTinyBtnDangerSoft:hover {
+  border-color: rgba(255, 94, 125, 0.32);
+  background: rgba(255, 94, 125, 0.08);
 }

@@ -10,6 +10,12 @@ type HeroRoutingProps = {
   onPreferredChange: (next: string) => void
 }
 
+export function isPreferredProviderDisabled(
+  routeMode: 'follow_preferred_auto' | 'balanced_auto',
+): boolean {
+  return routeMode === 'balanced_auto'
+}
+
 export function HeroRoutingCard({
   config,
   providers,
@@ -25,6 +31,7 @@ export function HeroRoutingCard({
         .map(([name]) => name)
     : []
   const routeSelection = override === '' ? routeMode : `lock:${override}`
+  const preferredProviderDisabled = isPreferredProviderDisabled(routeMode)
   const lockOptions = providers.map((provider) => ({
     value: `lock:${provider}`,
     label: `Lock to ${provider}`,
@@ -85,6 +92,7 @@ export function HeroRoutingCard({
             <select
               className="aoSelect"
               value={config.routing.preferred_provider}
+              disabled={preferredProviderDisabled}
               onChange={(e) => onPreferredChange(e.target.value)}
             >
               {preferredProviders.map((p) => (

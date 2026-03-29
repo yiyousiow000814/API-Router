@@ -17,13 +17,14 @@ function buildConfig(): Config {
     providers: {
       p1: {
         display_name: 'Provider 1',
-        base_url: 'https://example.com/p1',
+        base_url: 'https://codex.packycode.com/v1',
         group: 'G1',
         has_key: true,
+        has_usage_token: true,
       },
       p2: {
         display_name: 'Provider 2',
-        base_url: 'https://example.com/p2',
+        base_url: 'https://codex.packycode.com/v1',
         group: 'G1',
         has_key: true,
       },
@@ -94,7 +95,7 @@ function buildStatusWithMixedWindows(): Status {
 }
 
 describe('ProviderGroupManagerModal', () => {
-  it('shows only hard-cap periods that are visible in any group member usage window', () => {
+  it('shows group usage controls with per-member packycode login', () => {
     const html = renderToStaticMarkup(
       <ProviderGroupManagerModal
         open
@@ -105,12 +106,19 @@ describe('ProviderGroupManagerModal', () => {
         onAssignGroup={async () => {}}
         onSetUsageBase={async () => {}}
         onClearUsageBase={async () => {}}
+        onClearUsageAuth={async () => {}}
         onSetHardCap={async () => {}}
+        onOpenProviderEmailModal={() => {}}
+        onOpenPackycodeLogin={async () => {}}
+        onOpenUsageAuthModal={async () => {}}
       />,
     )
 
-    expect(html).toContain('daily hard cap')
-    expect(html).toContain('weekly hard cap')
-    expect(html).not.toContain('monthly hard cap')
+    expect(html).toContain('Email')
+    expect(html).toContain('daily cap')
+    expect(html).toContain('weekly cap')
+    expect(html).not.toContain('monthly cap')
+    expect(html.match(/Usage URL/g)?.length ?? 0).toBe(1)
+    expect(html).toContain('Logout')
   })
 })

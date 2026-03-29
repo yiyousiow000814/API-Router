@@ -1,6 +1,7 @@
-import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status } from '../types'
+import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status, UsageStatistics } from '../types'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
 import { normalizePathForCompare } from './path'
+import { simulateQuotaForDisplay } from './quotaSimulation'
 
 export function resolveCliHomes(
   windowsDir: string,
@@ -209,6 +210,7 @@ export function buildSwitchboardProviderCards(
   managedProviderNames: string[],
   config: Config | null,
   status: Status | null,
+  usageStatistics: UsageStatistics | null,
   options: {
     fmtPct: (value: number | null) => string
     fmtAmount: (value: number | null) => string
@@ -218,8 +220,13 @@ export function buildSwitchboardProviderCards(
 ): SwitchboardCard[] {
   return managedProviderNames.map((name) => {
     const providerCfg = config?.providers?.[name]
-    const quota = status?.quota?.[name]
-    const kind = (quota?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
+    const quota = simulateQuotaForDisplay(
+      name,
+      status?.quota?.[name],
+      status?.ledgers?.[name],
+      usageStatistics,
+    )
+    const kind = (quota?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info' | 'balance_info'
     let usageHeadline = 'No usage data'
     let usageDetail = 'Refresh after first request'
     let usageSub: string | null = null
@@ -240,16 +247,39 @@ export function buildSwitchboardProviderCards(
       const dailyBudget = quota?.daily_budget_usd ?? null
       const dailyLeft = dailySpent != null && dailyBudget != null ? Math.max(0, dailyBudget - dailySpent) : null
       const dailyLeftPct = options.pctOf(dailyLeft, dailyBudget)
-      usageHeadline = `Remaining ${options.fmtPct(dailyLeftPct)} (Daily)`
-      usageDetail = `Daily $${options.fmtUsd(dailySpent)} / $${options.fmtUsd(dailyBudget)}`
+      usageHeadline =
+        dailySpent != null && dailyBudget != null
+          ? `Remaining ${options.fmtPct(dailyLeftPct)} (Daily)`
+          : quota?.remaining != null
+            ? `Balance $${options.fmtUsd(quota?.remaining ?? null)}`
+            : 'Usage available'
+      usageDetail =
+        dailySpent != null && dailyBudget != null
+          ? `Daily $${options.fmtUsd(dailySpent)} / $${options.fmtUsd(dailyBudget)}`
+          : dailySpent != null
+            ? `Daily $${options.fmtUsd(dailySpent)}`
+            : dailyBudget != null
+              ? `Daily budget $${options.fmtUsd(dailyBudget)}`
+              : 'Refresh after first request'
       const hasWeekly = quota?.weekly_spent_usd != null && quota?.weekly_budget_usd != null
-      const hasMonthly = quota?.monthly_spent_usd != null || quota?.monthly_budget_usd != null
+      const hasMonthlySpent = quota?.monthly_spent_usd != null
+      const hasMonthlyBudget = quota?.monthly_budget_usd != null
+      const hasMonthly = hasMonthlySpent || hasMonthlyBudget
       if (hasWeekly) {
         usageSub = `Weekly $${options.fmtUsd(quota?.weekly_spent_usd ?? null)} / $${options.fmtUsd(quota?.weekly_budget_usd ?? null)}`
       } else if (hasMonthly) {
-        usageSub = `Monthly $${options.fmtUsd(quota?.monthly_spent_usd ?? null)} / $${options.fmtUsd(quota?.monthly_budget_usd ?? null)}`
+        usageSub =
+          hasMonthlySpent && hasMonthlyBudget
+            ? `Monthly $${options.fmtUsd(quota?.monthly_spent_usd ?? null)} / $${options.fmtUsd(quota?.monthly_budget_usd ?? null)}`
+            : hasMonthlySpent
+              ? `Used $${options.fmtUsd(quota?.monthly_spent_usd ?? null)}`
+              : `Monthly budget $${options.fmtUsd(quota?.monthly_budget_usd ?? null)}`
       }
       usagePct = dailyLeftPct
+    } else if (kind === 'balance_info') {
+      usageHeadline = 'No usage data'
+      usageDetail = 'Refresh after first request'
+      usageSub = null
     }
 
     return {

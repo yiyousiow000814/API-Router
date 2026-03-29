@@ -128,6 +128,51 @@ mod tests {
     }
 
     #[test]
+    fn model_mismatch_versioned_variants_do_not_pollute_daily_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        // Insert raw events (simulating legacy polluted history).
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('m1', 1_700_000_000_000, 'p1', 'warning', 'routing.model_mismatch', 'x', ?1)",
+                [r#"{"requested_model":"gpt-5.2","response_model":"gpt-5.2-2025-12-11"}"#],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('m2', 1_700_000_000_100, 'p1', 'warning', 'routing.model_mismatch', 'y', ?1)",
+                [r#"{"requested_model":"gpt-5.2","response_model":"gpt-5.3-codex"}"#],
+            )
+            .unwrap();
+            // Duplicate spam of the same mismatch should only count once per day after rebuild.
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('m3', 1_700_000_000_200, 'p1', 'warning', 'routing.model_mismatch', 'x2', ?1)",
+                [r#"{"requested_model":"gpt-5.2","response_model":"gpt-5.2-2025-12-11"}"#],
+            )
+            .unwrap();
+            // Force rebuild even if Store::open already ran it.
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
+                [Store::EVENT_DAY_COUNTS_INDEX_VERSION_KEY],
+            )
+            .unwrap();
+        }
+
+        store.rebuild_event_day_counts_index_if_needed().unwrap();
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        // Dedupe duplicates: (gpt-5.2 -> gpt-5.2-2025-12-11) counts once, and the real mismatch counts once.
+        assert_eq!(row.get("total").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(row.get("warnings").and_then(|v| v.as_u64()), Some(2));
+    }
+
+    #[test]
     fn list_session_route_assignments_since_filters_old_rows() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();

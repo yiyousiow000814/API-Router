@@ -126,6 +126,12 @@ npm run build:root-exe
 
 The EXE will be written to the repo root as `API Router.exe`.
 
+To build Windows installer bundles (`msi` / `nsis`) as well, run:
+
+```powershell
+npm run build:root-installers
+```
+
 ## Checks
 
 ```powershell

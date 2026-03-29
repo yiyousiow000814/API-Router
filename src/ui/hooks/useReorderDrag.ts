@@ -14,6 +14,7 @@ import {
   captureRects,
   findScrollableParent,
   hasOrderChanged,
+  measureDragItemHeight,
   pruneItemRefs,
 } from './useReorderDrag.stateHelpers'
 
@@ -308,7 +309,7 @@ export function useReorderDrag<T extends string>({
       dragStartTopRef.current = rect?.top ?? 0
       dragStartTopInListRef.current = rect && listRect ? rect.top - listRect.top : 0
 
-      const h = rect?.height ?? 0
+      const h = measureDragItemHeight(node)
       dragCardHeightRef.current = h
       setDragCardHeight(h)
 

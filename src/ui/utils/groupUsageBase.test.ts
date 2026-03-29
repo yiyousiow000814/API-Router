@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Config } from '../types'
-import { resolveGroupUsageBaseAction } from './groupUsageBase'
+import { inferGroupUsageBase, resolveGroupUsageBaseAction, SHARED_PACKYCODE_USAGE_BASE } from './groupUsageBase'
 
 function buildConfig(overrides: Record<string, string | null | undefined>): Config {
   return {
@@ -46,5 +46,18 @@ describe('resolveGroupUsageBaseAction', () => {
     expect(
       resolveGroupUsageBaseAction(config, ['provider_1', 'provider_2'], null),
     ).toEqual({ mode: 'clear', value: null })
+  })
+})
+
+describe('inferGroupUsageBase', () => {
+  it('canonicalizes packycode groups to codex.packycode.com', () => {
+    const config = buildConfig({
+      packy_1: '',
+      packy_2: '',
+    })
+    config.providers.packy_1.base_url = 'https://codex-api.packycode.com/v1'
+    config.providers.packy_2.base_url = 'https://share.packycode.com/v1'
+
+    expect(inferGroupUsageBase(config, ['packy_1', 'packy_2'])).toBe(SHARED_PACKYCODE_USAGE_BASE)
   })
 })

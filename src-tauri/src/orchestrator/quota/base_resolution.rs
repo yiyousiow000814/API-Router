@@ -15,6 +15,36 @@ fn is_packycode_base(base_url: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn canonical_packycode_usage_base(base_url: &str) -> Option<String> {
+    if is_packycode_base(base_url) {
+        Some("https://codex.packycode.com".to_string())
+    } else {
+        None
+    }
+}
+
+fn is_codex_for_me_host(host: &str) -> bool {
+    host.contains("codex-for")
+}
+
+fn is_codex_for_me_origin(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .map(|host| is_codex_for_me_host(&host))
+        .unwrap_or(false)
+}
+
+fn is_codex_for_me_base(_provider_name: &str, bases: &[String]) -> bool {
+    bases.iter().any(|base| {
+        reqwest::Url::parse(base)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.to_string()))
+            .map(|host| is_codex_for_me_host(&host))
+            .unwrap_or(false)
+    })
+}
+
 fn is_ppchat_base(base_url: &str) -> bool {
     reqwest::Url::parse(base_url)
         .ok()
@@ -40,6 +70,26 @@ fn build_models_url(base: &str) -> String {
     }
 }
 
+fn explicit_usage_endpoint_url(provider: &ProviderConfig) -> Option<String> {
+    let raw = provider.usage_base_url.as_deref()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(raw).ok()?;
+    let path = parsed.path().trim_end_matches('/');
+    if path.is_empty() || path == "/" {
+        return None;
+    }
+    let normalized = path.to_ascii_lowercase();
+    if matches!(
+        normalized.as_str(),
+        "/v1" | "/api" | "/web/api/v1" | "/user/api/v1" | "/backend"
+    ) {
+        return None;
+    }
+    Some(raw.trim_end_matches('/').to_string())
+}
+
 fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push_unique = |value: String| {
@@ -51,44 +101,36 @@ fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
         }
     };
 
-    // Keep user-provided usage_base_url as the first-choice endpoint, but still
-    // append provider-derived fallbacks so we can recover when a saved endpoint
-    // later becomes invalid or returns an unexpected payload.
+    let is_ppchat = is_ppchat_base(&provider.base_url);
+    let is_pumpkin = is_pumpkinai_base(&provider.base_url);
+    let packycode_usage_base = canonical_packycode_usage_base(&provider.base_url);
+
+    // Only keep explicit URLs for generic providers. Built-in inference is canonical for providers
+    // whose usage endpoint family is known and stable.
     if let Some(u) = provider.usage_base_url.as_deref() {
         let t = u.trim().trim_end_matches('/');
         if !t.is_empty() {
-            push_unique(t.to_string());
+            if let Some(canonical) = canonical_packycode_usage_base(t) {
+                push_unique(canonical);
+            } else {
+                push_unique(t.to_string());
+            }
         }
     }
-
-    let is_ppchat = is_ppchat_base(&provider.base_url);
-    let is_pumpkin = is_pumpkinai_base(&provider.base_url);
 
     if is_ppchat || is_pumpkin {
         // Prefer the shared history/usage endpoint for ppchat/pumpkinai.
         push_unique("https://his.ppchat.vip".to_string());
     }
 
-    if let Some(origin) = derive_origin(&provider.base_url) {
-        push_unique(origin.clone());
-
-        // Heuristic: if upstream uses a "*-api." hostname, also try the non-api hostname.
-        // This stays generic and does not encode any provider-specific domains.
-        if let Ok(mut u) = reqwest::Url::parse(&origin) {
-            if let Some(host) = u.host_str().map(|s| s.to_string()) {
-                if host.contains("-api.") {
-                    let alt = host.replacen("-api.", ".", 1);
-                    if u.set_host(Some(&alt)).is_ok() {
-                        push_unique(u.as_str().trim_end_matches('/').to_string());
-                    }
-                }
-            }
-        }
+    if let Some(canonical) = packycode_usage_base {
+        push_unique(canonical);
     }
 
-    if is_packycode_base(&provider.base_url) {
-        push_unique("https://www.packycode.com".to_string());
-        push_unique("https://packycode.com".to_string());
+    if is_codex_for_me_origin(&provider.base_url) {
+        if let Some(origin) = derive_origin(&provider.base_url) {
+            push_unique(origin);
+        }
     }
 
     if is_ppchat || is_pumpkin {
@@ -99,11 +141,13 @@ fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
     out
 }
 
-async fn probe_usage_base_speed(base: &str, api_key: &str) -> Option<Duration> {
-    let client = reqwest::Client::builder()
-        .user_agent("api-router/0.1")
-        .build()
-        .ok()?;
+async fn probe_usage_base_speed(
+    st: &GatewayState,
+    provider_name: &str,
+    base: &str,
+    api_key: &str,
+) -> Option<Duration> {
+    let client = build_usage_http_client(st, provider_name).ok()?;
     let url = build_models_url(base);
     let start = Instant::now();
     let resp = client
@@ -158,8 +202,8 @@ async fn reorder_bases_for_speed(
     let ppchat = "https://code.ppchat.vip";
     let pumpkin = "https://code.pumpkinai.vip";
     let (ppchat_latency, pumpkin_latency) = tokio::join!(
-        probe_usage_base_speed(ppchat, api_key),
-        probe_usage_base_speed(pumpkin, api_key)
+        probe_usage_base_speed(st, provider_name, ppchat, api_key),
+        probe_usage_base_speed(st, provider_name, pumpkin, api_key)
     );
 
     let mut ordered_pair = vec![ppchat.to_string(), pumpkin.to_string()];

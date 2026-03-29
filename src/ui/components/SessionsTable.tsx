@@ -25,10 +25,21 @@ type Props = {
   sessions: SessionRow[]
   providers: string[]
   globalPreferred: string
+  routeMode?: 'follow_preferred_auto' | 'balanced_auto'
   wslGatewayHost?: string
   updating: Record<string, boolean>
   onSetPreferred: (sessionId: string, provider: string | null) => void
   allowPreferredChanges?: boolean
+}
+
+export function sessionPreferredPlaceholderLabel(
+  globalPreferred: string,
+  routeMode: 'follow_preferred_auto' | 'balanced_auto' = 'follow_preferred_auto',
+): string {
+  if (routeMode === 'balanced_auto') {
+    return '(follow balanced mode)'
+  }
+  return `(follow global: ${globalPreferred})`
 }
 
 export function isWslSessionRow(
@@ -104,7 +115,6 @@ export function arrangeSessionRowsByMainParent(
       childRowsByMainSessionId.set(parentMainSessionId, rowsForMainSession)
       continue
     }
-    if (isAgentOrReview) continue
     rootRows.push(row)
   }
 
@@ -127,6 +137,7 @@ export function SessionsTable({
   sessions,
   providers,
   globalPreferred,
+  routeMode = 'follow_preferred_auto',
   wslGatewayHost = GATEWAY_WSL2_HOST,
   updating,
   onSetPreferred,
@@ -224,7 +235,7 @@ export function SessionsTable({
       ]
         .join(' ')
         .trim()
-      const childRoleLabel = isChildRow
+      const childRoleLabel = isAgent
         ? s.is_review === true
           ? 'REVIEW'
           : 'AGENT'
@@ -238,7 +249,7 @@ export function SessionsTable({
             {codexSession ? (
               <div className={sessionIdClass} title={title}>
                 {!isChildRow && <span className={originBadgeClass}>{originLabel}</span>}
-                {isChildRow && childRoleLabel && (
+                {childRoleLabel && (
                   <span className="aoSessionChildRoleBadge">{childRoleLabel}</span>
                 )}
                 {codexSession}
@@ -260,22 +271,24 @@ export function SessionsTable({
           <td className="aoSessionsMono">{modelName}</td>
           <td className="aoSessionsMono" title={currentReason}>{currentProvider}</td>
           <td>
-            <select
-              className="aoSelect"
-              value={s.preferred_provider ?? ''}
-              disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession || isAgent}
-              onChange={(e) => {
-                const v = e.target.value
-                onSetPreferred(s.id, v ? v : null)
-              }}
-            >
-              <option value="">{`(follow global: ${globalPreferred})`}</option>
-              {providers.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
+            <div className="aoSessionsActions">
+              <select
+                className="aoSelect aoSessionsPreferredSelect"
+                value={s.preferred_provider ?? ''}
+                disabled={!!updating[s.id] || !allowPreferredChanges || !verified || !codexSession || isAgent}
+                onChange={(e) => {
+                  const v = e.target.value
+                  onSetPreferred(s.id, v ? v : null)
+                }}
+              >
+                <option value="">{sessionPreferredPlaceholderLabel(globalPreferred, routeMode)}</option>
+                {providers.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
           </td>
         </tr>
       )

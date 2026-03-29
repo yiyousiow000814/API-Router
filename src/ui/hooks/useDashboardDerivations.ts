@@ -93,13 +93,13 @@ export function useDashboardDerivations(params: Params) {
   )
   const switchboardProviderCards = useMemo(
     () =>
-      buildSwitchboardProviderCards(managedProviderNames, config, status, {
+      buildSwitchboardProviderCards(managedProviderNames, config, status, usageStatistics, {
         fmtPct,
         fmtAmount,
         fmtUsd,
         pctOf,
       }),
-    [config, status, managedProviderNames],
+    [config, managedProviderNames, pctOf, status, usageStatistics, fmtAmount, fmtPct, fmtUsd],
   )
 
   const switchboardModeLabel = providerSwitchStatus?.mode ?? '-'

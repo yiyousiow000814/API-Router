@@ -1,4 +1,5 @@
 type ItemNodeMap = Record<string, HTMLDivElement | null>
+const MIN_DRAG_PLACEHOLDER_HEIGHT_PX = 56
 
 export function buildNextOrder<T extends string>(rest: T[], draggingId: T, insertIdx: number): T[] {
   const next = [...rest]
@@ -63,4 +64,18 @@ export function pruneItemRefs<T extends string>(itemRefs: ItemNodeMap, items: T[
   for (const key of Object.keys(itemRefs)) {
     if (!alive.has(key as T)) delete itemRefs[key]
   }
+}
+
+export function measureDragItemHeight(node: HTMLDivElement | null): number {
+  if (!node) return 0
+
+  const rectHeight =
+    typeof node.getBoundingClientRect === 'function' ? node.getBoundingClientRect().height : 0
+  const offsetHeight = Number(node.offsetHeight || 0)
+  const clientHeight = Number(node.clientHeight || 0)
+  const scrollHeight = Number(node.scrollHeight || 0)
+
+  const measured = Math.max(rectHeight || 0, offsetHeight, clientHeight, scrollHeight)
+  if (Number.isFinite(measured) && measured > 1) return measured
+  return MIN_DRAG_PLACEHOLDER_HEIGHT_PX
 }

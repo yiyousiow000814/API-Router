@@ -1,6 +1,8 @@
 mod app_state;
 mod codex_app_server;
 mod codex_cli_swap;
+mod codex_home_env;
+mod codex_wsl_bridge;
 mod commands;
 mod constants;
 mod orchestrator;
@@ -11,10 +13,12 @@ use tauri::Manager;
 
 use crate::app_state::build_state;
 use crate::orchestrator::gateway::serve_in_background;
+use crate::orchestrator::gateway_bootstrap::prepare_gateway_listeners;
 use crate::orchestrator::store::unix_ms;
 use chrono::{Duration as ChronoDuration, Local};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 fn normalize_profile_name(raw: &str) -> String {
     let trimmed = raw.trim().to_ascii_lowercase();
@@ -84,12 +88,104 @@ fn profile_data_dir_name(profile: &str) -> String {
     }
 }
 
+fn should_use_local_user_data_dir(local_user_data_dir: &std::path::Path) -> bool {
+    // Default to a stable per-user app-data directory so rebuilds don't force re-login.
+    // Only use a local ./user-data (next to the EXE) when explicitly requested for portability.
+    //
+    // This avoids the common dev-repo footgun: a checked-in ./user-data directory would otherwise
+    // silently override the real app data directory and make users appear "signed out".
+    if std::env::var("API_ROUTER_USE_LOCAL_USER_DATA")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        return true;
+    }
+    local_user_data_dir.join(".portable").exists()
+}
+
 fn should_reset_profile_data(profile: &str, is_ui_tauri: bool) -> bool {
     !is_ui_tauri && profile == "test"
 }
 
 fn should_seed_mock_data(profile: &str, is_ui_tauri: bool) -> bool {
     !is_ui_tauri && profile == "test"
+}
+
+fn resolve_codex_home(user_data_dir: &Path, _is_ui_tauri: bool, _app_profile: &str) -> PathBuf {
+    let isolated = user_data_dir.join("codex-home");
+
+    if let Ok(explicit) = std::env::var("API_ROUTER_CODEX_HOME") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+
+    // Keep app auth/session isolated by default so login state is stable inside API Router.
+    isolated
+}
+
+fn app_startup_diag_path() -> Option<PathBuf> {
+    let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
+    let trimmed = user_data_dir.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(trimmed).join("app-startup.json"))
+}
+
+fn reset_app_startup_diag() {
+    let Some(path) = app_startup_diag_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let payload = json!({
+        "updatedAtUnixMs": unix_ms(),
+        "stages": [],
+    });
+    let _ = std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
+}
+
+fn write_app_startup_diag(stage: &str, elapsed_ms: u128, detail: Option<&str>) {
+    let Some(path) = app_startup_diag_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut payload = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .unwrap_or_else(|| json!({ "stages": [] }));
+    if let Some(stages) = payload
+        .get_mut("stages")
+        .and_then(|value| value.as_array_mut())
+    {
+        stages.push(json!({
+            "stage": stage,
+            "elapsedMs": elapsed_ms,
+            "detail": detail,
+            "updatedAtUnixMs": unix_ms(),
+        }));
+    } else {
+        payload["stages"] = json!([{
+            "stage": stage,
+            "elapsedMs": elapsed_ms,
+            "detail": detail,
+            "updatedAtUnixMs": unix_ms(),
+        }]);
+    }
+    payload["updatedAtUnixMs"] = json!(unix_ms());
+    let _ = std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
 }
 
 fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
@@ -322,7 +418,7 @@ pub fn run() {
                     let exe = std::env::current_exe().ok()?;
                     let dir = exe.parent()?.to_path_buf();
                     let local = dir.join("user-data");
-                    if local.exists() {
+                    if local.exists() && should_use_local_user_data_dir(&local) {
                         return Some(local);
                     }
                     None
@@ -337,16 +433,28 @@ pub fn run() {
                 let _ = std::fs::create_dir_all(&user_data_dir);
             }
 
-            // Isolate Codex auth/session from the default ~/.codex directory to avoid overwrites.
-            // This keeps the app's login independent from CLI logins.
-            let codex_home = user_data_dir.join("codex-home");
+            // Share the existing ~/.codex history in the default profile so Web Codex can
+            // show real chats, while still allowing isolated homes for test/non-default profiles.
+            let codex_home = resolve_codex_home(&user_data_dir, is_ui_tauri, &app_profile);
             let _ = std::fs::create_dir_all(&codex_home);
-            std::env::set_var("CODEX_HOME", &codex_home);
+            // Coordinate with tests/commands that also set CODEX_HOME (process-global env).
+            {
+                let _lock = crate::codex_home_env::lock_env();
+                std::env::set_var("CODEX_HOME", &codex_home);
+            }
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", &user_data_dir);
+            reset_app_startup_diag();
 
+            let build_state_started = Instant::now();
             let state = build_state(
                 user_data_dir.join("config.toml"),
                 user_data_dir.join("data"),
             )?;
+            write_app_startup_diag(
+                "build_state",
+                build_state_started.elapsed().as_millis(),
+                None,
+            );
             if should_seed_mock_data(&app_profile, is_ui_tauri) {
                 if let Err(e) = seed_test_profile_data(&state) {
                     eprintln!("failed to seed test profile mock data: {e}");
@@ -357,16 +465,53 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let st = app_handle.state::<app_state::AppState>();
-                    app_state::run_startup_gateway_token_sync(&st);
+                    let started = Instant::now();
+                    let updated = app_state::run_startup_usage_key_ref_backfill(&st);
+                    let detail = format!("updated_rows={updated}");
+                    write_app_startup_diag(
+                        "usage_key_ref_backfill",
+                        started.elapsed().as_millis(),
+                        Some(&detail),
+                    );
                 });
             }
 
             if !is_ui_tauri {
-                // Spawn the local OpenAI-compatible gateway.
-                let st = app.state::<app_state::AppState>();
-                let gateway = st.gateway.clone();
+                // Spawn the local OpenAI-compatible gateway without blocking Tauri setup.
+                let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = serve_in_background(gateway).await {
+                    let (gateway, prepared_gateway) = {
+                        let st = app_handle.state::<app_state::AppState>();
+                        let prepare_started = Instant::now();
+                        let prepared_gateway = match prepare_gateway_listeners(&st) {
+                            Ok(prepared) => prepared,
+                            Err(err) => {
+                                let detail = err.to_string();
+                                write_app_startup_diag(
+                                    "prepare_gateway_listeners_failed",
+                                    prepare_started.elapsed().as_millis(),
+                                    Some(&detail),
+                                );
+                                log::error!("prepare gateway listeners failed: {detail}");
+                                return;
+                            }
+                        };
+                        write_app_startup_diag(
+                            "prepare_gateway_listeners",
+                            prepare_started.elapsed().as_millis(),
+                            Some(&format!("listen_port={}", prepared_gateway.listen_port)),
+                        );
+
+                        let token_sync_started = Instant::now();
+                        app_state::run_startup_gateway_token_sync(&st);
+                        write_app_startup_diag(
+                            "startup_gateway_token_sync",
+                            token_sync_started.elapsed().as_millis(),
+                            None,
+                        );
+                        (st.gateway.clone(), prepared_gateway)
+                    };
+                    if let Err(e) = serve_in_background(gateway, prepared_gateway).await {
                         log::error!("gateway exited: {e:?}");
                     }
                 });
@@ -444,6 +589,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
+            commands::record_app_startup_stage,
             commands::get_event_log_entries,
             commands::get_event_log_years,
             commands::get_event_log_daily_stats,
@@ -465,13 +611,20 @@ pub fn run() {
             commands::get_provider_key,
             commands::set_provider_key,
             commands::clear_provider_key,
+            commands::set_provider_account_email,
+            commands::clear_provider_account_email,
             commands::refresh_quota,
             commands::refresh_quota_shared,
             commands::refresh_quota_all,
+            commands::open_packycode_login_window,
+            commands::get_usage_auth,
+            commands::set_usage_auth,
+            commands::clear_usage_auth,
             commands::set_usage_token,
             commands::clear_usage_token,
             commands::set_usage_base_url,
             commands::clear_usage_base_url,
+            commands::set_usage_proxy_pool,
             commands::set_provider_quota_hard_cap,
             commands::set_provider_quota_hard_cap_field,
             commands::set_provider_manual_pricing,
@@ -491,10 +644,7 @@ pub fn run() {
             commands::set_codex_cli_config_toml,
             commands::provider_switchboard_status,
             commands::provider_switchboard_set_target,
-            commands::wsl_gateway_access_status,
-            commands::wsl_gateway_access_quick_status,
-            commands::wsl_gateway_authorize_access,
-            commands::wsl_gateway_revoke_access,
+            commands::tailscale_status,
             commands::codex_account_login,
             commands::codex_account_logout,
             commands::codex_account_refresh,
@@ -512,8 +662,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        app_profile_name_from_inputs, profile_data_dir_name, should_reset_profile_data,
-        should_seed_mock_data,
+        app_profile_name_from_inputs, profile_data_dir_name, resolve_codex_home,
+        should_reset_profile_data, should_seed_mock_data, should_use_local_user_data_dir,
     };
 
     #[test]
@@ -542,5 +692,37 @@ mod tests {
         assert!(!should_seed_mock_data("test", true));
         assert!(!should_reset_profile_data("default", false));
         assert!(!should_seed_mock_data("default", false));
+    }
+
+    #[test]
+    fn local_user_data_requires_portable_marker_or_env_flag() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let local = tmp.path().join("user-data");
+        std::fs::create_dir_all(&local).unwrap();
+
+        // No marker, no env => do not use local.
+        std::env::remove_var("API_ROUTER_USE_LOCAL_USER_DATA");
+        assert!(!should_use_local_user_data_dir(&local));
+
+        // Marker file enables local.
+        std::fs::write(local.join(".portable"), b"").unwrap();
+        assert!(should_use_local_user_data_dir(&local));
+
+        // Env flag enables local even without marker.
+        let local2 = tmp.path().join("user-data-2");
+        std::fs::create_dir_all(&local2).unwrap();
+        std::env::set_var("API_ROUTER_USE_LOCAL_USER_DATA", "1");
+        assert!(should_use_local_user_data_dir(&local2));
+        std::env::remove_var("API_ROUTER_USE_LOCAL_USER_DATA");
+    }
+
+    #[test]
+    fn resolve_codex_home_defaults_to_isolated() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let user_data = tmp.path().join("user-data");
+        std::fs::create_dir_all(&user_data).unwrap();
+        std::env::remove_var("API_ROUTER_CODEX_HOME");
+        let got = resolve_codex_home(&user_data, false, "default");
+        assert_eq!(got, user_data.join("codex-home"));
     }
 }

@@ -46,7 +46,7 @@ export type Status = {
   quota: Record<
     string,
     {
-      kind: 'none' | 'token_stats' | 'budget_info'
+      kind: 'none' | 'token_stats' | 'budget_info' | 'balance_info'
       updated_at_unix_ms: number
       remaining: number | null
       today_used: number | null
@@ -65,6 +65,7 @@ export type Status = {
   ledgers: Record<
     string,
     {
+      since_last_quota_refresh_requests?: number
       since_last_quota_refresh_total_tokens: number
       last_reset_unix_ms: number
     }
@@ -137,9 +138,12 @@ export type Config = {
       manual_pricing_expires_at_unix_ms?: number | null
       manual_gap_fill_mode?: 'per_request' | 'total' | 'per_day_average' | null
       manual_gap_fill_amount_usd?: number | null
+      account_email?: string | null
       has_key: boolean
       key_preview?: string | null
+      key_storage?: 'auth_json' | 'config_toml_experimental_bearer_token'
       has_usage_token?: boolean
+      has_usage_login?: boolean
     }
   >
   provider_order?: string[]
