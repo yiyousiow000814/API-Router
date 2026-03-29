@@ -441,6 +441,9 @@ fn log_upstream_retry_event(
     max_attempts: usize,
     stream: bool,
 ) {
+    let cfg = st.cfg.read().clone();
+    st.router
+        .mark_transient_warning(provider_name, &cfg, detail, unix_ms());
     st.store.add_event(
         provider_name,
         "warning",
@@ -1176,6 +1179,12 @@ async fn responses(
                                         "stream": true
                                     }),
                                 );
+                                st.router.mark_transient_warning(
+                                    &provider_name,
+                                    &cfg,
+                                    &last_err,
+                                    unix_ms(),
+                                );
                                 break;
                             }
                             last_err = format!(
@@ -1234,6 +1243,12 @@ async fn responses(
                                     "gateway.stream_fallback_to_non_stream",
                                     "streaming request failed; retrying once with non-stream responses",
                                     json!({ "endpoint": "/v1/responses", "stream": true }),
+                                );
+                                st.router.mark_transient_warning(
+                                    &provider_name,
+                                    &cfg,
+                                    &last_err,
+                                    unix_ms(),
                                 );
                                 break;
                             }

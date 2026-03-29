@@ -165,7 +165,7 @@ fn assignment_is_fresh_for_current_window(assigned_at_unix_ms: u64, now_ms: u64)
 }
 
 fn unhealthy_retry_delay_ms(cfg: &AppConfig) -> u64 {
-    cfg.routing.cooldown_seconds.max(1).saturating_mul(1000)
+    cfg.routing.effective_cooldown_seconds().saturating_mul(1000)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

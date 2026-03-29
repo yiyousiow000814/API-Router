@@ -21,7 +21,9 @@ struct ProviderHealth {
     state: HealthState,
     consecutive_failures: u32,
     cooldown_until_unix_ms: u64,
+    cooldown_from_transient_warnings: bool,
     usage_confirmation_required: bool,
+    transient_warning_timestamps_unix_ms: Vec<u64>,
     last_error: String,
     last_ok_at_unix_ms: u64,
     last_fail_at_unix_ms: u64,
@@ -40,7 +42,9 @@ impl ProviderHealth {
             state: HealthState::Unknown,
             consecutive_failures: 0,
             cooldown_until_unix_ms: 0,
+            cooldown_from_transient_warnings: false,
             usage_confirmation_required: false,
+            transient_warning_timestamps_unix_ms: Vec::new(),
             last_error: String::new(),
             last_ok_at_unix_ms: 0,
             last_fail_at_unix_ms: 0,
@@ -48,7 +52,11 @@ impl ProviderHealth {
     }
 
     fn in_cooldown(&self) -> bool {
-        self.cooldown_until_unix_ms != 0 && unix_ms() < self.cooldown_until_unix_ms
+        self.in_cooldown_at(unix_ms())
+    }
+
+    fn in_cooldown_at(&self, now_ms: u64) -> bool {
+        self.cooldown_until_unix_ms != 0 && now_ms < self.cooldown_until_unix_ms
     }
 }
 
@@ -211,24 +219,75 @@ impl RouterState {
     pub fn mark_success(&self, provider: &str, now_ms: u64) {
         let mut health = self.health.write();
         if let Some(h) = health.get_mut(provider) {
+            if h.in_cooldown_at(now_ms) && h.cooldown_from_transient_warnings {
+                h.last_ok_at_unix_ms = now_ms;
+                return;
+            }
             h.state = HealthState::Healthy;
             h.consecutive_failures = 0;
             h.cooldown_until_unix_ms = 0;
+            h.cooldown_from_transient_warnings = false;
             h.usage_confirmation_required = false;
+            h.transient_warning_timestamps_unix_ms.clear();
             h.last_ok_at_unix_ms = now_ms;
         }
     }
 
     pub fn mark_failure(&self, provider: &str, cfg: &AppConfig, err: &str, now_ms: u64) {
+        self.apply_failure(provider, err, now_ms, cfg.routing.failure_threshold, cfg);
+    }
+
+    pub fn mark_transient_warning(&self, provider: &str, cfg: &AppConfig, err: &str, now_ms: u64) {
         let mut health = self.health.write();
         if let Some(h) = health.get_mut(provider) {
+            const TRANSIENT_WARNING_THRESHOLD: usize = 3;
+            let warning_window_ms = cfg
+                .routing
+                .effective_cooldown_seconds()
+                .saturating_mul(1000);
+            let threshold_ms = now_ms.saturating_sub(warning_window_ms);
+            h.transient_warning_timestamps_unix_ms
+                .retain(|ts| *ts >= threshold_ms);
+            h.transient_warning_timestamps_unix_ms.push(now_ms);
+            if h.transient_warning_timestamps_unix_ms.len() >= TRANSIENT_WARNING_THRESHOLD {
+                h.transient_warning_timestamps_unix_ms.clear();
+                h.consecutive_failures = 0;
+                h.state = HealthState::Unhealthy;
+                h.cooldown_from_transient_warnings = true;
+                h.last_error = err.to_string();
+                h.last_fail_at_unix_ms = now_ms;
+                h.cooldown_until_unix_ms = now_ms
+                    + cfg
+                        .routing
+                        .effective_cooldown_seconds()
+                        .saturating_mul(1000);
+            }
+        }
+    }
+
+    fn apply_failure(
+        &self,
+        provider: &str,
+        err: &str,
+        now_ms: u64,
+        threshold: u32,
+        cfg: &AppConfig,
+    ) {
+        let mut health = self.health.write();
+        if let Some(h) = health.get_mut(provider) {
+            h.transient_warning_timestamps_unix_ms.clear();
             h.state = HealthState::Unhealthy;
             h.consecutive_failures = h.consecutive_failures.saturating_add(1);
             h.last_error = err.to_string();
             h.last_fail_at_unix_ms = now_ms;
 
-            if h.consecutive_failures >= cfg.routing.failure_threshold {
-                h.cooldown_until_unix_ms = now_ms + (cfg.routing.cooldown_seconds * 1000);
+            if h.consecutive_failures >= threshold {
+                h.cooldown_from_transient_warnings = false;
+                h.cooldown_until_unix_ms = now_ms
+                    + cfg
+                        .routing
+                        .effective_cooldown_seconds()
+                        .saturating_mul(1000);
             }
         }
     }
@@ -263,12 +322,12 @@ impl RouterState {
             .is_some_and(|h| h.usage_confirmation_required)
     }
 
-    pub fn snapshot(&self, _now_ms: u64) -> HashMap<String, ProviderHealthSnapshot> {
+    pub fn snapshot(&self, now_ms: u64) -> HashMap<String, ProviderHealthSnapshot> {
         let health = self.health.read();
         health
             .iter()
             .map(|(k, v)| {
-                let status = if v.in_cooldown() {
+                let status = if v.in_cooldown_at(now_ms) {
                     "cooldown"
                 } else {
                     match v.state {
@@ -361,7 +420,7 @@ mod tests {
     fn mark_success_keeps_last_error_but_resets_failure_state() {
         let mut cfg = AppConfig::default_config();
         cfg.routing.failure_threshold = 1;
-        cfg.routing.cooldown_seconds = 30;
+        cfg.routing.cooldown_seconds = 10 * 60;
         let provider = "official";
         let router = RouterState::new(&cfg, 0);
 
@@ -427,5 +486,70 @@ mod tests {
         let mut second = HashMap::new();
         second.insert(provider.clone(), false);
         assert_eq!(router.record_unhealthy_states(&second), vec![provider]);
+    }
+
+    #[test]
+    fn transient_warnings_trigger_cooldown_after_three_hits() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 10;
+        cfg.routing.cooldown_seconds = 30;
+        let provider = "official";
+        let router = RouterState::new(&cfg, 0);
+
+        router.mark_transient_warning(provider, &cfg, "warn-1", 1_000);
+        router.mark_transient_warning(provider, &cfg, "warn-2", 2_000);
+        let before_threshold = router.snapshot(2_000);
+        assert_eq!(
+            before_threshold
+                .get(provider)
+                .expect("provider health snapshot")
+                .status,
+            "unknown"
+        );
+
+        router.mark_transient_warning(provider, &cfg, "warn-3", 3_000);
+        let after_threshold = router.snapshot(3_000);
+        let health = after_threshold
+            .get(provider)
+            .expect("provider health snapshot");
+        assert_eq!(health.status, "cooldown");
+        assert_eq!(health.cooldown_until_unix_ms, 3_000 + 600_000);
+        assert_eq!(health.last_error, "warn-3");
+    }
+
+    #[test]
+    fn success_during_cooldown_does_not_clear_cooldown_state() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 10;
+        let provider = "official";
+        let router = RouterState::new(&cfg, 0);
+
+        router.mark_transient_warning(provider, &cfg, "warn-1", 1_000);
+        router.mark_transient_warning(provider, &cfg, "warn-2", 2_000);
+        router.mark_transient_warning(provider, &cfg, "warn-3", 3_000);
+        router.mark_success(provider, 4_000);
+
+        let snapshot = router.snapshot(4_000);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+        assert_eq!(health.status, "cooldown");
+        assert_eq!(health.cooldown_until_unix_ms, 3_000 + 600_000);
+    }
+
+    #[test]
+    fn success_resets_transient_warning_streak_before_threshold() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 10;
+        let provider = "official";
+        let router = RouterState::new(&cfg, 0);
+
+        router.mark_transient_warning(provider, &cfg, "warn-1", 1_000);
+        router.mark_transient_warning(provider, &cfg, "warn-2", 2_000);
+        router.mark_success(provider, 3_000);
+        router.mark_transient_warning(provider, &cfg, "warn-3", 4_000);
+
+        let snapshot = router.snapshot(4_000);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+        assert_eq!(health.status, "healthy");
+        assert_eq!(health.cooldown_until_unix_ms, 0);
     }
 }

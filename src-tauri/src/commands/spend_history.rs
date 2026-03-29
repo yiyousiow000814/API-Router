@@ -1,3 +1,49 @@
+fn resolve_history_pricing_config<'a>(
+    pricing: &'a std::collections::BTreeMap<
+        String,
+        crate::orchestrator::secrets::ProviderPricingConfig,
+    >,
+    provider_name: &str,
+    api_key_ref: &str,
+    day_start_unix_ms: u64,
+) -> Option<&'a crate::orchestrator::secrets::ProviderPricingConfig> {
+    if let Some(cfg) = pricing.get(provider_name) {
+        return Some(cfg);
+    }
+    let target_key_ref = api_key_ref.trim();
+    if target_key_ref.is_empty() || target_key_ref == "-" {
+        return None;
+    }
+    let mut matched: Option<(
+        &'a crate::orchestrator::secrets::ProviderPricingConfig,
+        u64,
+    )> = None;
+    for cfg in pricing.values() {
+        for period in &cfg.periods {
+            if period.mode != "package_total" {
+                continue;
+            }
+            let period_key_ref = period.api_key_ref.trim();
+            if period_key_ref.is_empty() || period_key_ref == "-" || period_key_ref != target_key_ref
+            {
+                continue;
+            }
+            let ended = period.ended_at_unix_ms.unwrap_or(u64::MAX);
+            if !(period.started_at_unix_ms <= day_start_unix_ms && day_start_unix_ms < ended) {
+                continue;
+            }
+            let replace = matched
+                .as_ref()
+                .map(|(_, started_at)| period.started_at_unix_ms >= *started_at)
+                .unwrap_or(true);
+            if replace {
+                matched = Some((cfg, period.started_at_unix_ms));
+            }
+        }
+    }
+    matched.map(|(cfg, _)| cfg)
+}
+
 #[tauri::command]
 pub(crate) fn get_spend_history(
     state: tauri::State<'_, app_state::AppState>,
@@ -30,7 +76,14 @@ pub(crate) fn get_spend_history(
 
     let cfg = state.gateway.cfg.read().clone();
     let pricing = state.secrets.list_provider_pricing();
-    let mut providers: Vec<String> = cfg.providers.keys().cloned().collect();
+    let mut providers: Vec<String> = cfg
+        .providers
+        .keys()
+        .cloned()
+        .chain(state.gateway.store.list_usage_history_providers())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     providers.sort();
 
     let mut rows: Vec<Value> = Vec::new();
@@ -195,28 +248,41 @@ pub(crate) fn get_spend_history(
                 (manual_total, manual_per_req, updated_at),
             );
         }
-        let mut scheduled_by_day =
-            package_total_schedule_by_day(pricing.get(&provider_name), since, now);
-        scheduled_by_day.retain(|_, v| v.is_finite() && *v > 0.0);
-
         let mut day_keys: BTreeSet<String> = BTreeSet::new();
         day_keys.extend(usage_by_day.keys().cloned());
         day_keys.extend(tracked_by_day.keys().cloned());
         day_keys.extend(manual_by_day.keys().cloned());
-        day_keys.extend(scheduled_by_day.keys().cloned());
 
         for day_key in day_keys {
-            let Some((day_start, _day_end)) = local_day_range_from_key(&day_key) else {
+            let Some((day_start, day_end)) = local_day_range_from_key(&day_key) else {
                 continue;
             };
             if day_start < since || day_start > now {
                 continue;
             }
+            let history_api_key_ref = api_key_ref_counts_by_day
+                .get(&day_key)
+                .and_then(|counts| {
+                    counts
+                        .iter()
+                        .max_by(|a, b| a.1.cmp(b.1).then_with(|| a.0.cmp(b.0)))
+                        .map(|(key_ref, _)| key_ref.clone())
+                })
+                .or_else(|| tracked_api_key_ref_by_day.get(&day_key).cloned())
+                .unwrap_or_else(|| "-".to_string());
             let (req_count, total_tokens, usage_updated_at) =
                 usage_by_day.get(&day_key).copied().unwrap_or((0, 0, 0));
-            let package_profile = package_profile_for_day(pricing.get(&provider_name), day_start);
+            let pricing_cfg = resolve_history_pricing_config(
+                &pricing,
+                &provider_name,
+                &history_api_key_ref,
+                day_start,
+            );
+            let package_profile = package_profile_for_day(pricing_cfg, day_start);
             let tracked_total = tracked_by_day.get(&day_key).copied();
-            let scheduled_total = scheduled_by_day.get(&day_key).copied();
+            let scheduled_total = package_total_schedule_by_day(pricing_cfg, day_start, day_end)
+                .remove(&day_key)
+                .filter(|value| value.is_finite() && *value > 0.0);
             let scheduled_package_total_usd =
                 package_profile.as_ref().map(|(amount, _, _)| *amount);
             let (manual_total, manual_per_req, manual_updated_at) = manual_by_day
@@ -275,21 +341,6 @@ pub(crate) fn get_spend_history(
             let updated_at = usage_updated_at
                 .max(manual_updated_at)
                 .max(updated_by_day.get(&day_key).copied().unwrap_or(0));
-            let history_api_key_ref = api_key_ref_counts_by_day
-                .get(&day_key)
-                .and_then(|counts| {
-                    counts
-                        .iter()
-                        .max_by(|a, b| a.1.cmp(b.1).then_with(|| a.0.cmp(b.0)))
-                        .map(|(key_ref, _)| key_ref.clone())
-                })
-                .or_else(|| tracked_api_key_ref_by_day.get(&day_key).cloned())
-                .or_else(|| {
-                    package_profile
-                        .as_ref()
-                        .and_then(|(_, _, key_ref)| key_ref.clone())
-                })
-                .unwrap_or_else(|| "-".to_string());
             rows.push(serde_json::json!({
                 "provider": provider_name,
                 "api_key_ref": history_api_key_ref,
@@ -388,4 +439,41 @@ pub(crate) fn set_spend_history_entry(
         }),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod spend_history_tests {
+    use super::resolve_history_pricing_config;
+    use crate::orchestrator::secrets::{ProviderPricingConfig, ProviderPricingPeriod};
+
+    #[test]
+    fn resolves_history_pricing_by_api_key_ref_when_provider_was_renamed() {
+        let pricing = std::collections::BTreeMap::from([(
+            "codex-for.me".to_string(),
+            ProviderPricingConfig {
+                mode: "package_total".to_string(),
+                amount_usd: 56.10,
+                periods: vec![ProviderPricingPeriod {
+                    id: "period-1".to_string(),
+                    mode: "package_total".to_string(),
+                    amount_usd: 56.10,
+                    api_key_ref: "sk-tPN******hxNs".to_string(),
+                    started_at_unix_ms: 1_700_000_000_000,
+                    ended_at_unix_ms: Some(1_800_000_000_000),
+                }],
+                gap_fill_mode: None,
+                gap_fill_amount_usd: None,
+            },
+        )]);
+
+        let resolved = resolve_history_pricing_config(
+            &pricing,
+            "packycode",
+            "sk-tPN******hxNs",
+            1_700_100_000_000,
+        );
+
+        assert!(resolved.is_some());
+        assert_eq!(resolved.expect("pricing").amount_usd, 56.10);
+    }
 }

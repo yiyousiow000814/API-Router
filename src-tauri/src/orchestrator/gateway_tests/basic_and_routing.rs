@@ -1222,7 +1222,7 @@ fn decide_provider_balanced_auto_retries_unhealthy_provider_even_with_fresh_assi
         "p1",
         &cfg,
         "boom",
-        now.saturating_sub(cfg.routing.cooldown_seconds * 1000 + 1),
+        now.saturating_sub(cfg.routing.effective_cooldown_seconds() * 1000 + 1),
     );
 
     let (picked, reason) = decide_provider(&state, &cfg, "p1", "session-main");

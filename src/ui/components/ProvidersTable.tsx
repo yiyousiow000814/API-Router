@@ -73,11 +73,9 @@ export function ProvidersTable({
                 ? 'effective'
                 : h.status === 'healthy'
                   ? 'yes'
-                  : h.status === 'unhealthy'
+                  : h.status === 'unhealthy' || h.status === 'cooldown'
                     ? 'no'
-                    : h.status === 'cooldown'
-                      ? 'cooldown'
-                      : 'unknown'
+                    : 'unknown'
           const dotClass =
             isClosed
               ? 'aoDot aoDotBad'
@@ -85,9 +83,7 @@ export function ProvidersTable({
                 ? 'aoDot'
                 : h.status === 'healthy'
                   ? 'aoDot'
-                  : h.status === 'cooldown'
-                    ? 'aoDot'
-                  : h.status === 'unhealthy'
+                  : h.status === 'unhealthy' || h.status === 'cooldown'
                     ? 'aoDot aoDotBad'
                     : 'aoDot aoDotMuted'
 
