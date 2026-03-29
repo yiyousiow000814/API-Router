@@ -563,7 +563,12 @@ pub(crate) fn get_usage_statistics(
         } else {
             0.0
         };
-        let pricing_cfg = provider_pricing.get(provider);
+        let pricing_cfg = crate::orchestrator::secrets::resolve_provider_pricing_config(
+            &provider_pricing,
+            provider,
+            Some(&provider_api_key_ref(&state, provider)),
+            now,
+        );
         let mode = pricing_cfg
             .map(|cfg| cfg.mode.trim().to_ascii_lowercase())
             .unwrap_or_else(|| "none".to_string());
@@ -594,7 +599,7 @@ pub(crate) fn get_usage_statistics(
                 continue;
             };
             let manual_total =
-                as_f64(day.get("manual_total_usd")).filter(|v| v.is_finite() && *v > 0.0);
+                as_f64(day.get("manual_total_usd")).filter(|v| v.is_finite() && *v != 0.0);
             let manual_per_req =
                 as_f64(day.get("manual_usd_per_req")).filter(|v| v.is_finite() && *v > 0.0);
             if manual_total.is_some() || manual_per_req.is_some() {

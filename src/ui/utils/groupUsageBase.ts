@@ -1,6 +1,7 @@
 import type { Config } from '../types'
 
 export const SHARED_PPCHAT_USAGE_BASE = 'https://his.ppchat.vip'
+export const SHARED_PACKYCODE_USAGE_BASE = 'https://codex.packycode.com'
 
 export type GroupUsageBaseAction = { mode: 'set' | 'clear' | 'noop'; value: string | null }
 
@@ -28,8 +29,7 @@ export function inferGroupUsageBase(config: Config | null, providers: string[]):
   }
 
   if (hosts.every((host) => isPackycode(host))) {
-    const origins = [...new Set(urls.map((u) => u.origin))]
-    return origins[0] ?? null
+    return SHARED_PACKYCODE_USAGE_BASE
   }
 
   return null

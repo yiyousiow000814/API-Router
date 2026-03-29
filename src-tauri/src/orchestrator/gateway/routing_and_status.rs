@@ -165,7 +165,7 @@ fn assignment_is_fresh_for_current_window(assigned_at_unix_ms: u64, now_ms: u64)
 }
 
 fn unhealthy_retry_delay_ms(cfg: &AppConfig) -> u64 {
-    cfg.routing.cooldown_seconds.max(1).saturating_mul(1000)
+    cfg.routing.effective_cooldown_seconds().saturating_mul(1000)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -348,13 +348,38 @@ fn session_demand_ratio_for_balancing(st: &GatewayState, session_key: &str, now_
 }
 
 fn provider_per_request_cost_signal(
+    st: &GatewayState,
     pricing_map: &std::collections::BTreeMap<String, crate::orchestrator::secrets::ProviderPricingConfig>,
     provider: &str,
+    now_ms: u64,
 ) -> Option<f64> {
-    let pricing = pricing_map.get(provider)?;
-    let mode = pricing.mode.trim().to_ascii_lowercase();
-    if mode == "per_request" && pricing.amount_usd.is_finite() && pricing.amount_usd > 0.0 {
-        return Some(pricing.amount_usd);
+    let api_key_ref = st.secrets.get_provider_key(provider).map(|key| {
+        let chars: Vec<char> = key.trim().chars().collect();
+        if chars.len() < 10 {
+            return "set".to_string();
+        }
+        let start_len = std::cmp::min(6, chars.len().saturating_sub(4));
+        let start: String = chars.iter().take(start_len).collect();
+        let end: String = chars
+            .iter()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        format!("{start}******{end}")
+    });
+    let pricing = crate::orchestrator::secrets::resolve_provider_pricing_config(
+        pricing_map,
+        provider,
+        api_key_ref.as_deref(),
+        now_ms,
+    )?;
+    if let Some(amount) =
+        crate::orchestrator::secrets::pricing_per_request_amount_at(Some(pricing), now_ms)
+    {
+        return Some(amount);
     }
     if pricing
         .gap_fill_mode
@@ -529,7 +554,7 @@ fn pick_balanced_provider(
     let provider_pricing = st.secrets.list_provider_pricing();
     let mut provider_costs: HashMap<String, f64> = HashMap::new();
     for provider in candidates.iter() {
-        if let Some(cost) = provider_per_request_cost_signal(&provider_pricing, provider) {
+        if let Some(cost) = provider_per_request_cost_signal(st, &provider_pricing, provider, now_ms) {
             provider_costs.insert(provider.clone(), cost);
         }
     }
@@ -1158,7 +1183,6 @@ async fn models(
     if let Some(resp) = require_gateway_auth(&st, &headers) {
         return resp;
     }
-    st.last_activity_unix_ms.store(unix_ms(), Ordering::Relaxed);
     let cfg = st.cfg.read().clone();
 
     // Respect per-session preferred providers (keyed by Codex session id). Fall back to the global
@@ -1204,8 +1228,9 @@ async fn models(
         Ok((code, j)) if (200..300).contains(&code) => {
             // Do not update `last_used_by_session` for `/v1/models` since Codex may call it
             // opportunistically. We only want to track actual routing decisions for user
-            // requests (/v1/responses) to keep "back to preferred" semantics stable.
-            st.router.mark_success(&provider_name, unix_ms());
+            // requests (/v1/responses) to keep "back to preferred" semantics stable. It also
+            // must not update last activity / last_ok, otherwise startup model probes would look
+            // like real Codex usage and trigger quota refresh scheduling.
             (StatusCode::OK, Json(j)).into_response()
         }
         _ => (StatusCode::OK, Json(json!({"object":"list","data":[]}))).into_response(),
@@ -1417,6 +1442,27 @@ mod routing_and_status_tests {
 
     #[test]
     fn provider_per_request_cost_signal_handles_primary_and_gap_fill_modes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = crate::orchestrator::gateway::open_store_dir(tmp.path().join("data"))
+            .expect("store");
+        let secrets = crate::orchestrator::secrets::SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("primary", "sk-primary-1234").expect("key primary");
+        secrets.set_provider_key("renamed", "sk-primary-1234").expect("key renamed");
+        secrets.set_provider_key("gap_fill", "sk-gapfill-1234").expect("key gap_fill");
+        let now = crate::orchestrator::store::unix_ms();
+        let cfg = crate::orchestrator::config::AppConfig::default_config();
+        let state = crate::orchestrator::gateway::GatewayState {
+            cfg: std::sync::Arc::new(parking_lot::RwLock::new(cfg.clone())),
+            router: std::sync::Arc::new(crate::orchestrator::router::RouterState::new(&cfg, now)),
+            store,
+            upstream: crate::orchestrator::upstream::UpstreamClient::new(),
+            secrets: secrets.clone(),
+            last_activity_unix_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            last_used_by_session: std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            usage_base_speed_cache: std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            prev_id_support_cache: std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            client_sessions: std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new())),
+        };
         let mut pricing = std::collections::BTreeMap::new();
         pricing.insert(
             "primary".to_string(),
@@ -1424,6 +1470,23 @@ mod routing_and_status_tests {
                 mode: "per_request".to_string(),
                 amount_usd: 0.02,
                 periods: Vec::new(),
+                gap_fill_mode: None,
+                gap_fill_amount_usd: None,
+            },
+        );
+        pricing.insert(
+            "codex-for.me".to_string(),
+            crate::orchestrator::secrets::ProviderPricingConfig {
+                mode: "per_request".to_string(),
+                amount_usd: 0.0,
+                periods: vec![crate::orchestrator::secrets::ProviderPricingPeriod {
+                    id: "period-1".to_string(),
+                    mode: "per_request".to_string(),
+                    amount_usd: 0.017,
+                    api_key_ref: "sk-pri******1234".to_string(),
+                    started_at_unix_ms: now.saturating_sub(10_000),
+                    ended_at_unix_ms: Some(now.saturating_add(10_000)),
+                }],
                 gap_fill_mode: None,
                 gap_fill_amount_usd: None,
             },
@@ -1460,18 +1523,22 @@ mod routing_and_status_tests {
         );
 
         assert_eq!(
-            provider_per_request_cost_signal(&pricing, "primary"),
+            provider_per_request_cost_signal(&state, &pricing, "primary", now),
             Some(0.02)
         );
         assert_eq!(
-            provider_per_request_cost_signal(&pricing, "gap_fill"),
+            provider_per_request_cost_signal(&state, &pricing, "renamed", now),
+            Some(0.017)
+        );
+        assert_eq!(
+            provider_per_request_cost_signal(&state, &pricing, "gap_fill", now),
             Some(0.03)
         );
-        assert_eq!(provider_per_request_cost_signal(&pricing, "none"), None);
+        assert_eq!(provider_per_request_cost_signal(&state, &pricing, "none", now), None);
         assert_eq!(
-            provider_per_request_cost_signal(&pricing, "gap_fill_zero"),
+            provider_per_request_cost_signal(&state, &pricing, "gap_fill_zero", now),
             None
         );
-        assert_eq!(provider_per_request_cost_signal(&pricing, "missing"), None);
+        assert_eq!(provider_per_request_cost_signal(&state, &pricing, "missing", now), None);
     }
 }

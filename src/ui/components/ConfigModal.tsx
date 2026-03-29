@@ -4,13 +4,15 @@ import type { Config } from '../types'
 type Props = {
   open: boolean
   config: Config | null
-  allProviderPanelsOpen: boolean
-  setAllProviderPanels: (next: boolean) => void
   newProviderName: string
   newProviderBaseUrl: string
+  newProviderKey: string
+  newProviderKeyStorage: 'auth_json' | 'config_toml_experimental_bearer_token'
   nextProviderPlaceholder: string
   setNewProviderName: (next: string) => void
   setNewProviderBaseUrl: (next: string) => void
+  setNewProviderKey: (next: string) => void
+  setNewProviderKeyStorage: (next: 'auth_json' | 'config_toml_experimental_bearer_token') => void
   onAddProvider: () => void
   onOpenGroupManager: () => void
   onClose: () => void
@@ -25,13 +27,15 @@ type Props = {
 export function ConfigModal({
   open,
   config,
-  allProviderPanelsOpen,
-  setAllProviderPanels,
   newProviderName,
   newProviderBaseUrl,
+  newProviderKey,
+  newProviderKeyStorage,
   nextProviderPlaceholder,
   setNewProviderName,
   setNewProviderBaseUrl,
+  setNewProviderKey,
+  setNewProviderKeyStorage,
   onAddProvider,
   onOpenGroupManager,
   onClose,
@@ -43,17 +47,18 @@ export function ConfigModal({
   renderProviderCard,
 }: Props) {
   if (!open || !config) return null
+  const dragPlaceholderHeight = dragCardHeight > 0 ? dragCardHeight : 56
   return (
     <ModalBackdrop onClose={onClose}>
       <div className="aoModal aoModalWide" onClick={(e) => e.stopPropagation()}>
         <div className="aoModalHeader">
-          <div className="aoModalTitle">Config</div>
+          <div className="aoConfigHeaderMeta">
+            <div className="aoModalTitle">Config</div>
+            <div className="aoModalSub aoConfigHeaderSub">keys are stored in ./user-data/secrets.json</div>
+          </div>
           <div className="aoRow aoConfigHeaderActions">
             <button className="aoBtn aoBtnPrimary aoConfigHeaderBtn" onClick={onOpenGroupManager}>
               Group Manager
-            </button>
-            <button className="aoBtn aoConfigHeaderBtn" onClick={() => setAllProviderPanels(!allProviderPanelsOpen)}>
-              {allProviderPanelsOpen ? 'Hide all' : 'Show all'}
             </button>
             <span className="aoConfigHeaderDivider" aria-hidden="true" />
             <button className="aoBtn aoConfigHeaderBtn aoConfigHeaderBtnClose" onClick={onClose}>
@@ -63,7 +68,6 @@ export function ConfigModal({
         </div>
         <div className="aoModalBody aoConfigModalBody">
           <div className="aoConfigStickyAddProvider">
-            <div className="aoModalSub aoConfigStickySub">keys are stored in ./user-data/secrets.json</div>
             <div className="aoCard aoConfigCard">
               <div className="aoConfigDeck">
                 <div className="aoConfigPanel">
@@ -81,7 +85,26 @@ export function ConfigModal({
                       value={newProviderBaseUrl}
                       onChange={(e) => setNewProviderBaseUrl(e.target.value)}
                     />
-                    <button className="aoBtn aoBtnPrimary" onClick={onAddProvider}>
+                    <input
+                      className="aoInput"
+                      type="password"
+                      placeholder="Key"
+                      value={newProviderKey}
+                      onChange={(e) => setNewProviderKey(e.target.value)}
+                    />
+                    <select
+                      className="aoSelect aoAddProviderStorageSelect"
+                      value={newProviderKeyStorage}
+                      onChange={(e) =>
+                        setNewProviderKeyStorage(
+                          e.target.value as 'auth_json' | 'config_toml_experimental_bearer_token',
+                        )
+                      }
+                    >
+                      <option value="auth_json">auth.json</option>
+                      <option value="config_toml_experimental_bearer_token">experimental_bearer_token</option>
+                    </select>
+                    <button className="aoBtn aoBtnPrimary aoAddProviderSubmit" onClick={onAddProvider}>
                       Add
                     </button>
                   </div>
@@ -97,7 +120,7 @@ export function ConfigModal({
                   <div
                     className="aoProviderConfigPlaceholder"
                     key={`${name}-placeholder`}
-                    style={{ height: dragCardHeight || 0 }}
+                    style={{ height: dragPlaceholderHeight, minHeight: dragPlaceholderHeight }}
                   />
                 )
               }

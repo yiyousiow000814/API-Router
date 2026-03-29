@@ -286,7 +286,7 @@ mod tests {
             provider = GATEWAY_MODEL_PROVIDER_ID
         );
 
-        let out = build_direct_provider_cfg(&cfg, "ppchat", "https://code.ppchat.vip/v1");
+        let out = build_direct_provider_cfg(&cfg, "ppchat", "https://code.ppchat.vip/v1", None);
 
         // No extra blank line between model_provider and the next setting.
         assert!(out.contains("model_provider = \"ppchat\"\nmodel = \"gpt-5.2\""));
@@ -309,9 +309,22 @@ mod tests {
             "wire_api = \"responses\"\n",
             "requires_openai_auth = true\n",
         );
-        let out = build_direct_provider_cfg(cfg, "ppchat", "https://code.ppchat.vip/v1");
+        let out = build_direct_provider_cfg(cfg, "ppchat", "https://code.ppchat.vip/v1", None);
         assert!(!out.contains("[model_providers.API_Router]"));
         assert!(!out.contains("[model_providers.api_router]"));
+    }
+
+    #[test]
+    fn build_direct_provider_cfg_can_embed_experimental_bearer_token() {
+        let cfg = "model = \"gpt-5.2\"\n";
+        let out = build_direct_provider_cfg(
+            cfg,
+            "ppchat",
+            "https://code.ppchat.vip/v1",
+            Some("sk-config"),
+        );
+        assert!(out.contains("experimental_bearer_token = \"sk-config\""));
+        assert!(out.contains("requires_openai_auth = true"));
     }
 
     #[test]
@@ -394,6 +407,7 @@ mod tests {
             "model = \"gpt-5.2\"\n",
             "provider_1",
             "https://example.com/v1",
+            None,
         );
         std::fs::write(cli_cfg_path(&cli_home), current_cfg).unwrap();
 
@@ -419,6 +433,68 @@ mod tests {
             auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
             Some("sk-new")
         );
+    }
+
+    #[test]
+    fn sync_active_provider_target_writes_config_token_when_requested() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.providers.get_mut("provider_1").unwrap().base_url =
+                "https://example.com/v1".to_string();
+        }
+        state
+            .secrets
+            .set_provider_key_with_storage_mode(
+                "provider_1",
+                "sk-config",
+                Some("config_toml_experimental_bearer_token"),
+            )
+            .expect("set key");
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"OPENAI_API_KEY":"sk-old"}"#).unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        let state_dir = swap_state_dir(&cli_home);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(backup_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+        std::fs::write(backup_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        let current_cfg = build_direct_provider_cfg(
+            "model = \"gpt-5.2\"\n",
+            "provider_1",
+            "https://example.com/v1",
+            None,
+        );
+        std::fs::write(cli_cfg_path(&cli_home), current_cfg).unwrap();
+
+        let sw_path = switchboard_state_path_from_config_path(&state.config_path);
+        std::fs::create_dir_all(sw_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            sw_path,
+            serde_json::to_string_pretty(&json!({
+              "target": "provider",
+              "provider": "provider_1",
+              "cli_homes": [cli_home.to_string_lossy().to_string()]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        sync_active_provider_target_for_key_impl(&state, "provider_1").expect("sync");
+        let auth: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(cli_auth_path(&cli_home)).unwrap())
+                .unwrap();
+        assert_eq!(auth.get("OPENAI_API_KEY"), None);
+        let cfg_txt = std::fs::read_to_string(cli_cfg_path(&cli_home)).unwrap();
+        assert!(cfg_txt.contains("experimental_bearer_token = \"sk-config\""));
     }
 
     #[test]
@@ -468,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_gateway_target_for_rotated_token_does_not_rewrite_matching_auth_json() {
+    fn sync_gateway_target_for_rotated_token_rewrites_gateway_target_even_when_auth_matches() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");
         let data_dir = tmp.path().join("data");
@@ -511,7 +587,13 @@ mod tests {
         let auth: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(cli_auth_path(&cli_home)).unwrap())
                 .unwrap();
-        assert_eq!(auth.get("extra").and_then(|v| v.as_str()), Some("keep"));
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
+            Some("ao_same_gateway_token")
+        );
+        let cfg = std::fs::read_to_string(cli_cfg_path(&cli_home)).expect("read cli cfg");
+        assert!(cfg.contains("model_provider = \"api_router\""));
+        assert!(cfg.contains("base_url = \"http://127.0.0.1:4000/v1\""));
     }
 
     #[test]
@@ -551,6 +633,7 @@ mod tests {
             "model = \"gpt-5.2\"\n",
             "provider_1",
             "https://example.com/v1",
+            None,
         );
         std::fs::write(cli_cfg_path(&cli_home), current_cfg).unwrap();
 
@@ -719,7 +802,12 @@ mod tests {
         std::fs::create_dir_all(&cli_home).unwrap();
         std::fs::write(
             cli_cfg_path(&cli_home),
-            build_direct_provider_cfg("model = \"gpt-5.2\"\n", "provider_1", "https://x.invalid"),
+            build_direct_provider_cfg(
+                "model = \"gpt-5.2\"\n",
+                "provider_1",
+                "https://x.invalid",
+                None,
+            ),
         )
         .unwrap();
 

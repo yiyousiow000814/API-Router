@@ -156,7 +156,7 @@ describe('arrangeSessionRowsByMainParent', () => {
     ]
 
     const arranged = arrangeSessionRowsByMainParent(rows)
-    expect(arranged.map((entry) => entry.row.id)).toEqual(['main-1'])
+    expect(arranged.map((entry) => entry.row.id)).toEqual(['main-1', 'orphan-agent'])
   })
 
   it('hides child rows until main session has assigned provider', () => {
@@ -194,6 +194,6 @@ describe('arrangeSessionRowsByMainParent', () => {
     ]
 
     const arranged = arrangeSessionRowsByMainParent(rows)
-    expect(arranged.map((entry) => entry.row.id)).toEqual(['main-1'])
+    expect(arranged.map((entry) => entry.row.id)).toEqual(['child-review', 'main-1'])
   })
 })

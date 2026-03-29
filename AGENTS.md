@@ -38,7 +38,8 @@
 - **EXE naming policy (required)**: Treat repo-root `API Router.exe` as the canonical runtime binary name. `api_router.exe` is a build artifact under `src-tauri/target/...` and should not be used as the default launch target.
 - **Line endings**: Use LF as the repository standard. CRLF is only allowed for Windows script files (`.bat`, `.cmd`, `.ps1`).
 - **File size guideline (industry style)**: Prefer small, focused files (roughly 200-500 lines) when practical.
-- **Hard cap**: For non-lock source files, 800 lines is the maximum. If a file goes over 800 lines, split it into coherent modules/files in the same PR unless there is a clear, documented reason not to.
+- **Modularization rule (required)**: Prefer splitting code by clear responsibility boundaries instead of enforcing an arbitrary line cap. When a file grows large, refactor it into coherent modules organized by ownership and data flow (for example parsing, rendering, transport, state, tests), even if some resulting files are still larger than 500 lines.
+- **Large-file policy**: There is no automatic hard cap such as 800 lines. Large files are allowed only when the structure is still responsibility-driven and easy to navigate. If a file feels hard to reason about, hard to test, or mixes multiple concerns, split it by responsibility in the same PR unless there is a clear documented reason not to.
 - **Exceptions**: Lock/generated files are excluded from this rule (for example `Cargo.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`).
 
 
@@ -50,3 +51,52 @@
 - **No long-term compatibility:** Do NOT keep parallel implementations or long-lived compatibility layers. If external inputs vary, normalize them into one canonical internal shape and remove legacy handling as soon as possible.
 - **Breaking data changes are OK:** Destructive data changes are permitted. If the data model changes, **re-seed or migrate**; do NOT parse or support legacy formats.
 - **First-class integrations preferred:** Use direct, first-class integrations where feasible. Avoid shims/wrappers/glue/adapter layers; if an adapter is unavoidable, keep it minimal and make the canonical internal interface explicit.
+
+## Global Priorities
+1) **Root-cause first.** Do not use strong guards/forced rules/fallbacks/clamps/retries to *mask* an unknown root cause.
+2) **Evidence required.** Every fix must include: minimal repro, logs/assertion evidence, and a regression test.
+3) **Two-commit rule (preferred):**
+   - **Commit A:** diagnostics only (logs/assertions/metrics/minimal repro). No behavior change.
+   - **Commit B:** fix based on evidence + regression test.
+
+## Mandatory Self-Check Loop (Before Proposing a Fix)
+You MUST do this in order:
+
+A. **Reproduce**
+- Describe the failure mode and expected behavior.
+- Provide minimal repro steps (commands + inputs).
+
+B. **Observe**
+- Add targeted logging/assertions to capture the suspected invariants.
+- Show the exact logs/output that confirm the root cause.
+
+C. **Verify**
+- Add/extend a regression test that fails before fix and passes after fix.
+- Run: unit tests + lint/typecheck (if available) + relevant integration/e2e tests.
+
+D. **Guardrails (Allowed Only With Proof)**
+Guards/fallbacks are only allowed if:
+1) root cause is fixed OR proven external (e.g., flaky dependency)
+2) guard is paired with metrics/logging + an alertable signal
+3) a test covers the guard behavior
+
+## "Band-Aid" Red Flags (Require Explicit Justification + Tests)
+- try/catch swallowing errors, default returns, `except: pass`
+- clamp/max/min without invariant proof
+- retries/timeouts without concurrency/root-cause analysis
+- skipping inputs/files to make tests pass
+- weakening assertions or deleting failing tests
+
+## Required PR / Patch Metadata (Put In Description)
+- Root cause:
+- Minimal repro:
+- Evidence (logs/trace/screenshots):
+- Fix summary:
+- New/updated tests:
+- Risk assessment:
+- Rollback plan:
+
+## CSS Layering (z-index) Policy
+- Use the global sequential z-index scale (e.g. `--z-*` tokens) for cross-component layering.
+- **No scattered magic numbers** (e.g. 20/30/60/120). Keep the scale sequential without gaps.
+- If a new layer is required, add a new `--z-*` token and update the table/comments near `:root`.

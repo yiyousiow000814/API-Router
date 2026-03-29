@@ -353,8 +353,6 @@ export function useUsagePricingHistoryActions(params: Params) {
     const effectiveNow = historyEffectiveDisplayValue(row)
     const perReqDraft = parsePositiveAmount(draft.perReqText)
     const perReqNow = historyPerReqDisplayValue(row)
-    const trackedBase = row.tracked_total_usd ?? 0
-    const scheduledBase = row.scheduled_total_usd ?? 0
     const closeEnough = (a: number, b: number) => Math.abs(a - b) < 0.0005
     const effectiveChanged = effectiveDraft != null && (effectiveNow == null || !closeEnough(effectiveDraft, effectiveNow))
     const perReqChanged = perReqDraft != null && (perReqNow == null || !closeEnough(perReqDraft, perReqNow))
@@ -365,13 +363,9 @@ export function useUsagePricingHistoryActions(params: Params) {
       totalUsedUsd = null
       usdPerReq = perReqDraft
     } else if (field === 'effective' && effectiveChanged) {
-      const minimum = trackedBase + scheduledBase
-      if (effectiveDraft < minimum - 0.0005) {
-        if (!silent) flashToast('Effective $ cannot be lower than tracked + scheduled', 'error')
-        return
-      }
-      const delta = effectiveDraft - minimum
-      totalUsedUsd = delta > 0.0005 ? delta : null
+      const trackedBase = row.tracked_total_usd ?? 0
+      const manualTotalUsd = effectiveDraft - trackedBase
+      totalUsedUsd = Math.abs(manualTotalUsd) > 0.0005 ? manualTotalUsd : null
       usdPerReq = null
     } else {
       if (!silent) flashToast('No history change to save')

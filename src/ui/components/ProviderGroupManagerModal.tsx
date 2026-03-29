@@ -15,7 +15,23 @@ type Props = {
   onAssignGroup: (providers: string[], group: string | null) => Promise<void>
   onSetUsageBase: (provider: string, url: string) => Promise<void>
   onClearUsageBase: (provider: string) => Promise<void>
+  onClearUsageAuth: (provider: string) => Promise<void>
   onSetHardCap: (provider: string, field: QuotaHardCapField, enabled: boolean) => Promise<void>
+  onOpenProviderEmailModal: (provider: string, current: string | null | undefined) => void
+  onOpenPackycodeLogin: (provider: string) => Promise<void>
+  onOpenUsageAuthModal: (provider: string) => Promise<void>
+}
+
+function isPackycodeProviderBase(baseUrl: string | null | undefined): boolean {
+  return `${baseUrl ?? ''}`.trim().toLowerCase().includes('packycode')
+}
+
+function isCodexForProviderBase(baseUrl: string | null | undefined): boolean {
+  return `${baseUrl ?? ''}`.trim().toLowerCase().includes('codex-for')
+}
+
+function hasProviderUsageLogin(provider: Config['providers'][string] | null | undefined): boolean {
+  return Boolean(provider?.has_usage_token || provider?.has_usage_login)
 }
 
 function orderedProviders(config: Config, ordered: string[], includeDisabled = false): string[] {
@@ -37,7 +53,11 @@ export function ProviderGroupManagerModal({
   onAssignGroup,
   onSetUsageBase,
   onClearUsageBase,
+  onClearUsageAuth,
   onSetHardCap,
+  onOpenProviderEmailModal,
+  onOpenPackycodeLogin,
+  onOpenUsageAuthModal,
 }: Props) {
   const openInitKeyRef = useRef<string | null>(null)
   const [assignMode, setAssignMode] = useState<'new' | 'add'>('new')
@@ -299,29 +319,63 @@ export function ProviderGroupManagerModal({
                     <div key={`group-card-${name}`} className="aoGroupManagerGroupCard">
                       <div className="aoGroupManagerGroupHead">
                         <div className="aoProviderGroupTag">{name}</div>
-                        <button
-                          className="aoGroupManagerEditLink"
-                          onClick={() => setEditingGroupName((prev) => (prev === name ? null : name))}
-                        >
-                          {isEditingThisGroup ? 'Done' : 'Edit'}
-                        </button>
+                        <div className="aoGroupManagerMemberActions">
+                          <button
+                            className="aoGroupManagerEditLink"
+                            onClick={() => setEditingGroupName((prev) => (prev === name ? null : name))}
+                          >
+                            {isEditingThisGroup ? 'Done' : 'Edit'}
+                          </button>
+                        </div>
                       </div>
 
                       <div className="aoGroupManagerProviderList">
                         {visibleMembers.map((provider) => {
+                          const providerConfig = config.providers?.[provider]
+                          const providerBaseUrl = providerConfig?.base_url ?? ''
+                          const supportsProviderLogin =
+                            isPackycodeProviderBase(providerBaseUrl) || isCodexForProviderBase(providerBaseUrl)
+                          const hasLogin = hasProviderUsageLogin(providerConfig)
                           return (
                             <div key={`group-member-row-${name}-${provider}`} className="aoGroupManagerMemberRow">
                               <span className="aoProviderName">{provider}</span>
-                              {isEditingThisGroup ? (
+                              <div className="aoGroupManagerMemberActions">
                                 <button
-                                  className="aoGroupManagerMemberRemove"
-                                  title={`Remove ${provider} from group`}
-                                  aria-label={`Remove ${provider} from group`}
-                                  onClick={() => void onAssignGroup([provider], null).catch(() => undefined)}
+                                  className="aoTinyBtn"
+                                  onClick={() =>
+                                    onOpenProviderEmailModal(
+                                      provider,
+                                      providerConfig?.account_email ?? undefined,
+                                    )
+                                  }
                                 >
-                                  ×
+                                  Email
                                 </button>
-                              ) : null}
+                                {supportsProviderLogin ? (
+                                  <button
+                                    className={`aoTinyBtn${hasLogin ? ' aoTinyBtnDangerSoft' : ''}`}
+                                    onClick={() =>
+                                      void (hasLogin
+                                        ? onClearUsageAuth(provider)
+                                        : isPackycodeProviderBase(providerBaseUrl)
+                                          ? onOpenPackycodeLogin(provider)
+                                          : onOpenUsageAuthModal(provider))
+                                    }
+                                  >
+                                    {hasLogin ? 'Logout' : 'Login'}
+                                  </button>
+                                ) : null}
+                                {isEditingThisGroup ? (
+                                  <button
+                                    className="aoGroupManagerMemberRemove"
+                                    title={`Remove ${provider} from group`}
+                                    aria-label={`Remove ${provider} from group`}
+                                    onClick={() => void onAssignGroup([provider], null).catch(() => undefined)}
+                                  >
+                                    ×
+                                  </button>
+                                ) : null}
+                              </div>
                             </div>
                           )
                         })}
@@ -333,7 +387,7 @@ export function ProviderGroupManagerModal({
                       <div className="aoGroupUsageBaseRow">
                         <input
                           className="aoInput aoGroupUsageBaseInput"
-                          placeholder="Usage base URL"
+                          placeholder="Usage URL"
                           value={usageBaseDraft}
                           onChange={(event) =>
                             setGroupUsageBaseDrafts((prev) => ({ ...prev, [name]: event.target.value }))
@@ -374,7 +428,7 @@ export function ProviderGroupManagerModal({
                                   void onSetHardCap(groupActionTarget, period, event.target.checked)
                                 }
                               />
-                              <span>{period} hard cap</span>
+                              <span>{period} cap</span>
                             </label>
                           ))}
                         </div>

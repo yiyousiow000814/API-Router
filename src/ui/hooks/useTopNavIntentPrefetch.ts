@@ -23,6 +23,7 @@ type TopPage =
   | 'usage_requests'
   | 'provider_switchboard'
   | 'event_log'
+  | 'web_codex'
 
 type Params = {
   activePage: TopPage

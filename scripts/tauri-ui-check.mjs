@@ -381,25 +381,25 @@ async function main() {
 
       const usageBaseBtn = await waitVisible(
         driver,
-        By.xpath(`(//div[contains(@class,'aoProviderConfigCard') and @data-provider]//button[normalize-space()='Usage Base'])[1]`),
+        By.xpath(`(//div[contains(@class,'aoProviderConfigCard') and @data-provider]//button[normalize-space()='Usage URL'])[1]`),
         12000,
       )
       await usageBaseBtn.click()
       await waitVisible(
         driver,
-        By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Usage base URL']]`),
+        By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Usage URL']]`),
         12000,
       )
       await clickButtonByText(driver, 'Cancel', 12000)
       await driver.wait(
         async () => {
           const found = await driver.findElements(
-            By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Usage base URL']]`),
+            By.xpath(`//div[contains(@class,'aoModal')][.//div[contains(@class,'aoModalTitle') and normalize-space()='Usage URL']]`),
           )
           return found.length === 0
         },
         10000,
-        'Usage base URL modal should close after cancel',
+        'Usage URL modal should close after cancel',
       )
     }
 

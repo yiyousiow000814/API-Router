@@ -37,6 +37,19 @@ pub fn cached_wsl_gateway_host_lowercase() -> Option<String> {
     fast_cache_host().read().ok().and_then(|g| g.clone())
 }
 
+pub fn cached_or_default_wsl_gateway_host(config_path: Option<&Path>) -> String {
+    if let Some(host) = cached_wsl_gateway_host_lowercase() {
+        return host;
+    }
+    if let Some(path) = resolve_cache_path(config_path) {
+        if let Some(host) = read_cached_host(&path) {
+            update_fast_cache(Some(&host), now_unix_ms());
+            return host;
+        }
+    }
+    crate::constants::GATEWAY_WSL2_HOST.to_string()
+}
+
 fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

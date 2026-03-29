@@ -25,7 +25,7 @@ type ScheduleCurrencyMenuState = {
 } | null
 
 type Params = {
-  activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
+  activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log' | 'web_codex'
   refreshUsageStatistics: (options?: { silent?: boolean }) => Promise<void>
   usageWindowHours: number
   usageFilterProviders: string[]
@@ -69,6 +69,14 @@ type Params = {
   setUsageScheduleSaveError: Dispatch<SetStateAction<string>>
   queueAutoSaveTimer: (key: string, callback: () => void, delayMs?: number) => void
   autoSaveUsageScheduleRows: (rows: ProviderScheduleDraft[], signature: string) => Promise<void>
+}
+
+export function usageStatisticsRefreshIntervalMs(
+  activePage: Params['activePage'],
+): number | null {
+  if (activePage === 'usage_statistics') return 15_000
+  if (activePage === 'dashboard') return 60_000
+  return null
 }
 
 export function useAppUsageEffects(params: Params) {
@@ -127,10 +135,11 @@ export function useAppUsageEffects(params: Params) {
   }, [refreshUsageHistory])
 
   useEffect(() => {
-    if (activePage !== 'usage_statistics') return
-    const enteringUsagePage = previousActivePageRef.current !== 'usage_statistics'
+    const refreshMs = usageStatisticsRefreshIntervalMs(activePage)
+    if (refreshMs == null) return
+    const enteringUsagePage = previousActivePageRef.current !== activePage
     void refreshUsageStatistics({ silent: enteringUsagePage })
-    const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), 15_000)
+    const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), refreshMs)
     return () => window.clearInterval(t)
   }, [activePage, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins, refreshUsageStatistics])
 

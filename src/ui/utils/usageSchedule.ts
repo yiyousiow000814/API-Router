@@ -214,9 +214,14 @@ export function historyEffectiveDisplayValue(row: SpendHistoryRow): number | nul
     return row.effective_total_usd
   }
   const tracked = row.tracked_total_usd ?? 0
-  const scheduled = row.scheduled_total_usd ?? 0
-  const manual = row.manual_total_usd ?? 0
-  const total = tracked + scheduled + manual
+  const reqCount = row.req_count ?? 0
+  const manual =
+    row.manual_total_usd != null && Number.isFinite(row.manual_total_usd)
+      ? row.manual_total_usd
+      : row.manual_usd_per_req != null && Number.isFinite(row.manual_usd_per_req) && reqCount > 0
+        ? row.manual_usd_per_req * reqCount
+        : null
+  const total = tracked + (manual ?? row.scheduled_total_usd ?? 0)
   return total > 0 ? total : null
 }
 

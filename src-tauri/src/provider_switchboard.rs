@@ -398,8 +398,12 @@ fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), 
         GATEWAY_WINDOWS_HOST
     };
     let gateway_base_url = format!("http://{gateway_host}:{listen_port}/v1");
-    let next_cfg =
-        build_direct_provider_cfg(&base_cfg, GATEWAY_MODEL_PROVIDER_ID, &gateway_base_url);
+    let next_cfg = build_direct_provider_cfg(
+        &base_cfg,
+        GATEWAY_MODEL_PROVIDER_ID,
+        &gateway_base_url,
+        None,
+    );
     let next_auth = auth_with_openai_key(gateway_token.trim());
     write_swapped_files(cli_home, &next_auth, &next_cfg)
 }
@@ -521,17 +525,31 @@ fn insert_provider_section_near_top(base_cfg: &str, provider_section: &str) -> S
     lines.join(eol) + eol
 }
 
-fn build_direct_provider_cfg(orig_cfg: &str, provider: &str, base_url: &str) -> String {
+fn build_direct_provider_cfg(
+    orig_cfg: &str,
+    provider: &str,
+    base_url: &str,
+    experimental_bearer_token: Option<&str>,
+) -> String {
     // Use the switchboard base shape to avoid accumulating whitespace while switching.
     let mut base = normalize_cfg_for_switchboard_base(orig_cfg);
     base = remove_model_provider_sections(&base, &[GATEWAY_MODEL_PROVIDER_ID, provider]);
     let eol = if base.contains("\r\n") { "\r\n" } else { "\n" };
     let provider_esc = escape_toml(provider);
     let base_url_esc = escape_toml(base_url);
+    let bearer_line = experimental_bearer_token
+        .map(|value| {
+            format!(
+                "experimental_bearer_token = \"{}\"{eol}",
+                escape_toml(value)
+            )
+        })
+        .unwrap_or_default();
     let provider_section = format!(
-        "[model_providers.\"{provider}\"]{eol}name = \"{provider}\"{eol}base_url = \"{base_url}\"{eol}wire_api = \"responses\"{eol}requires_openai_auth = true{eol}",
+        "[model_providers.\"{provider}\"]{eol}name = \"{provider}\"{eol}base_url = \"{base_url}\"{eol}wire_api = \"responses\"{eol}{bearer_line}requires_openai_auth = true{eol}",
         provider = provider_esc,
         base_url = base_url_esc,
+        bearer_line = bearer_line,
         eol = eol
     );
     let base_with_section = insert_provider_section_near_top(&base, &provider_section);
@@ -550,6 +568,10 @@ fn build_direct_provider_cfg(orig_cfg: &str, provider: &str, base_url: &str) -> 
 
 fn auth_with_openai_key(key: &str) -> serde_json::Value {
     json!({ "OPENAI_API_KEY": key })
+}
+
+fn auth_without_openai_key() -> serde_json::Value {
+    json!({})
 }
 
 fn write_swapped_files(
@@ -571,6 +593,12 @@ fn write_swapped_files(
         return Err(e);
     }
     Ok(())
+}
+
+fn provider_key_storage_uses_config(storage_mode: &str) -> bool {
+    storage_mode
+        .trim()
+        .eq_ignore_ascii_case("config_toml_experimental_bearer_token")
 }
 
 fn model_provider_id(cfg_txt: &str) -> Option<String> {
@@ -863,6 +891,8 @@ fn sync_active_provider_target_for_key_impl(
     if key.trim().is_empty() {
         return Err(format!("provider key is empty: {provider}"));
     }
+    let storage_mode = state.secrets.get_provider_key_storage_mode(provider);
+    let use_config_storage = provider_key_storage_uses_config(&storage_mode);
 
     for h in &homes {
         let (mode, mp) = home_mode(h)?;
@@ -870,8 +900,17 @@ fn sync_active_provider_target_for_key_impl(
             continue;
         }
         let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
-        let next_cfg = build_direct_provider_cfg(&orig_cfg, provider, &base_url);
-        let next_auth = auth_with_openai_key(key.trim());
+        let next_cfg = build_direct_provider_cfg(
+            &orig_cfg,
+            provider,
+            &base_url,
+            use_config_storage.then_some(key.trim()),
+        );
+        let next_auth = if use_config_storage {
+            auth_without_openai_key()
+        } else {
+            auth_with_openai_key(key.trim())
+        };
         write_swapped_files(h, &next_auth, &next_cfg)?;
     }
 
@@ -902,11 +941,6 @@ fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<Vec<St
         .unwrap_or_default();
     let homes = resolve_cli_homes(homes)?;
 
-    let gateway_token = state.secrets.ensure_gateway_token()?;
-    if gateway_token.trim().is_empty() {
-        return Err("gateway token is empty".to_string());
-    }
-    let next_auth = auth_with_openai_key(gateway_token.trim());
     let mut failed_targets: Vec<String> = Vec::new();
 
     for h in &homes {
@@ -920,20 +954,9 @@ fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<Vec<St
         if mode != "gateway" {
             continue;
         }
-        let auth_path = cli_auth_path(h);
-        let current_gateway_token = read_json(&auth_path).ok().and_then(|v| {
-            v.get("OPENAI_API_KEY")
-                .and_then(|x| x.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-        });
-        if current_gateway_token.as_deref() == Some(gateway_token.trim()) {
-            continue;
-        }
-        if let Err(e) = write_json(&auth_path, &next_auth) {
+        if let Err(e) = switch_to_gateway_home_impl(state, h) {
             failed_targets.push(format!(
-                "{} (write auth.json failed: {e})",
+                "{} (rewrite gateway target failed: {e})",
                 h.to_string_lossy()
             ));
         }

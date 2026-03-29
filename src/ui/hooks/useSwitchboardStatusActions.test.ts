@@ -22,11 +22,9 @@ describe('mergeProviderSwitchDirs', () => {
 })
 
 describe('runGatewaySwitchPreflight', () => {
-  it('blocks gateway switch when wsl authorization is declined', async () => {
-    const invokeFn = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: true, authorized: false, legacy_conflict: false })
-    const confirmFn = vi.fn().mockReturnValue(false)
+  it('does not call legacy WSL gateway access commands for gateway mode', async () => {
+    const invokeFn = vi.fn()
+    const confirmFn = vi.fn()
     const flashToast = vi.fn()
 
     const ok = await runGatewaySwitchPreflight(
@@ -39,95 +37,13 @@ describe('runGatewaySwitchPreflight', () => {
       flashToast,
     )
 
-    expect(ok).toBe(false)
-  })
-
-  it('rechecks quick status after legacy cleanup before authorization decision', async () => {
-    const invokeFn = vi.fn(async (cmd: string) => {
-      if (cmd === 'wsl_gateway_access_quick_status') {
-        if (invokeFn.mock.calls.filter(([name]) => name === cmd).length === 1) {
-          return { ok: true, authorized: true, legacy_conflict: true }
-        }
-        return { ok: true, authorized: false, legacy_conflict: false }
-      }
-      if (cmd === 'wsl_gateway_revoke_access') {
-        return { ok: true, authorized: false }
-      }
-      throw new Error(`unexpected command: ${cmd}`)
-    })
-    const confirmFn = vi
-      .fn()
-      .mockReturnValueOnce(true)
-      .mockReturnValueOnce(false)
-    const flashToast = vi.fn()
-
-    const ok = await runGatewaySwitchPreflight(
-      'gateway',
-      ['\\\\wsl.localhost\\Ubuntu\\home\\a\\.codex'],
-      4000,
-      (home) => home.toLowerCase().startsWith('\\\\wsl.localhost\\'),
-      invokeFn as any,
-      confirmFn,
-      flashToast,
-    )
-
-    expect(ok).toBe(false)
-    expect(
-      invokeFn.mock.calls.filter(([name]) => name === 'wsl_gateway_access_quick_status').length,
-    ).toBe(2)
-  })
-
-  it('aborts when authorization returns authorized=false', async () => {
-    const invokeFn = vi.fn(async (cmd: string) => {
-      if (cmd === 'wsl_gateway_access_quick_status') {
-        return { ok: true, authorized: false, legacy_conflict: false }
-      }
-      if (cmd === 'wsl_gateway_authorize_access') {
-        return { ok: true, authorized: false }
-      }
-      throw new Error(`unexpected command: ${cmd}`)
-    })
-    const confirmFn = vi.fn().mockReturnValue(true)
-    const flashToast = vi.fn()
-
-    const ok = await runGatewaySwitchPreflight(
-      'gateway',
-      ['\\\\wsl.localhost\\Ubuntu\\home\\a\\.codex'],
-      4000,
-      (home) => home.toLowerCase().startsWith('\\\\wsl.localhost\\'),
-      invokeFn as any,
-      confirmFn,
-      flashToast,
-    )
-
-    expect(ok).toBe(false)
+    expect(ok).toBe(true)
+    expect(invokeFn).not.toHaveBeenCalled()
+    expect(confirmFn).not.toHaveBeenCalled()
     expect(flashToast).toHaveBeenCalledWith(
-      expect.stringContaining('authorization failed'),
-      'error',
+      'WSL2 gateway access is now native; no Windows authorization is required.',
+      'info',
     )
-  })
-
-  it('uses listen port in legacy conflict prompt', async () => {
-    const invokeFn = vi.fn(async (cmd: string) => {
-      if (cmd === 'wsl_gateway_access_quick_status') {
-        return { ok: true, authorized: true, legacy_conflict: true }
-      }
-      throw new Error(`unexpected command: ${cmd}`)
-    })
-    const confirmFn = vi.fn().mockReturnValue(false)
-    const flashToast = vi.fn()
-
-    await runGatewaySwitchPreflight(
-      'gateway',
-      ['\\\\wsl.localhost\\Ubuntu\\home\\a\\.codex'],
-      1234,
-      (home) => home.toLowerCase().startsWith('\\\\wsl.localhost\\'),
-      invokeFn as any,
-      confirmFn,
-      flashToast,
-    )
-
-    expect(confirmFn).toHaveBeenCalledWith(expect.stringContaining('port 1234'))
   })
 })
 

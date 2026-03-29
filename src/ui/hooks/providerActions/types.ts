@@ -5,6 +5,7 @@ export type KeyModalState = {
   open: boolean
   provider: string
   value: string
+  storage: 'auth_json' | 'config_toml_experimental_bearer_token'
   loading: boolean
   loadFailed: boolean
 }
@@ -12,10 +13,42 @@ export type KeyModalState = {
 export type UsageBaseModalState = {
   open: boolean
   provider: string
+  baseUrl: string
+  showUrlInput: boolean
+  showPackycodeLogin: boolean
+  hasUsageLogin: boolean
   value: string
   auto: boolean
   explicitValue: string
   effectiveValue: string
+  token: string
+  username: string
+  password: string
+  loading: boolean
+  loadFailed: boolean
+}
+
+export type UsageAuthModalState = {
+  open: boolean
+  provider: string
+  baseUrl: string
+  token: string
+  username: string
+  password: string
+  loading: boolean
+  loadFailed: boolean
+}
+
+export type ProviderEmailModalState = {
+  open: boolean
+  provider: string
+  value: string
+}
+
+export type ProviderBaseUrlModalState = {
+  open: boolean
+  provider: string
+  value: string
 }
 
 export type UseProviderActionsParams = {
@@ -25,12 +58,22 @@ export type UseProviderActionsParams = {
   setConfig: Dispatch<SetStateAction<Config | null>>
   keyModal: KeyModalState
   usageBaseModal: UsageBaseModalState
+  usageAuthModal: UsageAuthModalState
+  providerEmailModal: ProviderEmailModalState
+  providerBaseUrlModal: ProviderBaseUrlModalState
   newProviderName: string
   newProviderBaseUrl: string
+  newProviderKey: string
+  newProviderKeyStorage: 'auth_json' | 'config_toml_experimental_bearer_token'
   setKeyModal: Dispatch<SetStateAction<KeyModalState>>
   setUsageBaseModal: Dispatch<SetStateAction<UsageBaseModalState>>
+  setUsageAuthModal: Dispatch<SetStateAction<UsageAuthModalState>>
+  setProviderEmailModal: Dispatch<SetStateAction<ProviderEmailModalState>>
+  setProviderBaseUrlModal: Dispatch<SetStateAction<ProviderBaseUrlModalState>>
   setNewProviderName: Dispatch<SetStateAction<string>>
   setNewProviderBaseUrl: Dispatch<SetStateAction<string>>
+  setNewProviderKey: Dispatch<SetStateAction<string>>
+  setNewProviderKeyStorage: Dispatch<SetStateAction<'auth_json' | 'config_toml_experimental_bearer_token'>>
   setRefreshingProviders: Dispatch<SetStateAction<Record<string, boolean>>>
   refreshStatus: (options?: { refreshSwapStatus?: boolean }) => Promise<void>
   refreshConfig: (options?: { refreshProviderSwitchStatus?: boolean }) => Promise<void>
@@ -52,6 +95,11 @@ export type UseProviderActionsResult = {
   refreshQuota: (name: string) => Promise<void>
   refreshQuotaAll: (opts?: RefreshQuotaOptions) => Promise<void>
   saveUsageBaseUrl: () => Promise<void>
+  saveUsageAuth: () => Promise<void>
+  clearUsageAuth: (provider: string) => Promise<void>
+  saveProviderEmail: () => Promise<void>
+  clearProviderEmail: (provider: string) => Promise<void>
+  saveProviderBaseUrl: () => Promise<void>
   setUsageBaseUrl: (provider: string, url: string) => Promise<void>
   clearUsageBaseUrl: (name: string) => Promise<void>
   setProviderQuotaHardCap: (
@@ -60,6 +108,14 @@ export type UseProviderActionsResult = {
     enabled: boolean,
   ) => Promise<void>
   openKeyModal: (provider: string) => Promise<void>
-  openUsageBaseModal: (provider: string, current: string | null | undefined) => Promise<void>
+  openProviderBaseUrlModal: (provider: string, current: string) => void
+  openUsageBaseModal: (
+    provider: string,
+    current: string | null | undefined,
+    options?: { showUrlInput?: boolean },
+  ) => Promise<void>
+  openUsageAuthModal: (provider: string) => Promise<void>
+  openPackycodeLogin: (provider: string) => Promise<void>
+  openProviderEmailModal: (provider: string, current: string | null | undefined) => void
   addProvider: () => Promise<void>
 }

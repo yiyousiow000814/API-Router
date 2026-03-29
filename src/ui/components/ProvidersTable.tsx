@@ -1,5 +1,6 @@
 import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from '../utils/format'
-import type { Config, Status } from '../types'
+import type { Config, Status, UsageStatistics } from '../types'
+import { simulateQuotaForDisplay } from '../utils/quotaSimulation'
 
 const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
 
@@ -13,6 +14,7 @@ type Props = {
   providers: string[]
   status: Status
   config?: Config | null
+  usageStatistics?: UsageStatistics | null
   refreshingProviders: Record<string, boolean>
   onRefreshQuota: (provider: string) => void
   onOpenLastErrorInEventLog: (payload: LastErrorJump) => void
@@ -22,6 +24,7 @@ export function ProvidersTable({
   providers,
   status,
   config = null,
+  usageStatistics = null,
   refreshingProviders,
   onRefreshQuota,
   onOpenLastErrorInEventLog,
@@ -52,34 +55,40 @@ export function ProvidersTable({
       <tbody>
         {providers.map((p) => {
           const h = status.providers[p]
-          const q = status.quota?.[p]
-          const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
+          const q = simulateQuotaForDisplay(
+            p,
+            status.quota?.[p],
+            status.ledgers?.[p],
+            usageStatistics,
+          )
+          const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info' | 'balance_info'
           const quotaHardCap = config?.providers?.[p]?.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
           const isClosed = h.status === 'closed'
           const cooldownActive = !isClosed && h.cooldown_until_unix_ms > Date.now()
+          const retryDue = !isClosed && h.status === 'unhealthy' && !cooldownActive
           const isActive = (status.active_provider_counts?.[p] ?? 0) > 0
           const healthLabel =
             isClosed
               ? 'closed'
               : isActive
                 ? 'effective'
+                : retryDue
+                  ? 'retry'
                 : h.status === 'healthy'
                   ? 'yes'
-                  : h.status === 'unhealthy'
+                  : h.status === 'unhealthy' || h.status === 'cooldown'
                     ? 'no'
-                    : h.status === 'cooldown'
-                      ? 'cooldown'
-                      : 'unknown'
+                    : 'unknown'
           const dotClass =
             isClosed
               ? 'aoDot aoDotBad'
               : isActive
                 ? 'aoDot'
+                : retryDue
+                  ? 'aoDot aoDotMuted'
                 : h.status === 'healthy'
                   ? 'aoDot'
-                  : h.status === 'cooldown'
-                    ? 'aoDot'
-                  : h.status === 'unhealthy'
+                  : h.status === 'unhealthy' || h.status === 'cooldown'
                     ? 'aoDot aoDotBad'
                     : 'aoDot aoDotMuted'
 
@@ -123,15 +132,25 @@ export function ProvidersTable({
                   <div className="aoUsageText">
                     {(() => {
                       const usageLines: Array<{ key: string; content: string }> = []
-                      if (quotaHardCap.daily) {
+                      const hasDailySpent = q?.daily_spent_usd != null
+                      const hasDailyBudget = q?.daily_budget_usd != null
+                      if (quotaHardCap.daily && (hasDailySpent || hasDailyBudget)) {
+                        const dailyContent =
+                          hasDailySpent && hasDailyBudget
+                            ? `daily: $${fmtUsd(q?.daily_spent_usd)} / $${fmtUsd(q?.daily_budget_usd)}`
+                            : hasDailySpent
+                              ? `daily: $${fmtUsd(q?.daily_spent_usd)}`
+                              : `daily budget: $${fmtUsd(q?.daily_budget_usd)}`
                         usageLines.push({
                           key: 'daily',
-                          content: `daily: $${fmtUsd(q?.daily_spent_usd)} / $${fmtUsd(q?.daily_budget_usd)}`,
+                          content: dailyContent,
                         })
                       }
                       const hasWeeklySpent = q?.weekly_spent_usd != null
                       const hasWeeklyBudget = q?.weekly_budget_usd != null
-                      const hasMonthly = q?.monthly_spent_usd != null || q?.monthly_budget_usd != null
+                      const hasMonthlySpent = q?.monthly_spent_usd != null
+                      const hasMonthlyBudget = q?.monthly_budget_usd != null
+                      const hasMonthly = hasMonthlySpent || hasMonthlyBudget
 
                       // Prefer weekly only when upstream actually reports weekly (spent + budget).
                       // Some providers keep the weekly budget field but stop reporting weekly spent
@@ -144,9 +163,15 @@ export function ProvidersTable({
                           content: `weekly: $${fmtUsd(q?.weekly_spent_usd)} / $${fmtUsd(q?.weekly_budget_usd)}`,
                         })
                       } else if (quotaHardCap.monthly && hasMonthly) {
+                        const monthlyContent =
+                          hasMonthlySpent && hasMonthlyBudget
+                            ? `monthly: $${fmtUsd(q?.monthly_spent_usd)} / $${fmtUsd(q?.monthly_budget_usd)}`
+                            : hasMonthlySpent
+                              ? `used: $${fmtUsd(q?.monthly_spent_usd)}`
+                              : `monthly budget: $${fmtUsd(q?.monthly_budget_usd)}`
                         usageLines.push({
                           key: 'monthly',
-                          content: `monthly: $${fmtUsd(q?.monthly_spent_usd)} / $${fmtUsd(q?.monthly_budget_usd)}`,
+                          content: monthlyContent,
                         })
                       } else if (quotaHardCap.weekly && hasWeeklyBudget) {
                         usageLines.push({
@@ -165,6 +190,28 @@ export function ProvidersTable({
                         </div>
                       ))
                     })()}
+                  </div>
+                  <button
+                    className={`aoUsageRefreshBtn${refreshingProviders[p] ? ' aoUsageRefreshBtnSpin' : ''}`}
+                    title="Refresh usage"
+                    aria-label="Refresh usage"
+                    onClick={() => onRefreshQuota(p)}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M23 4v6h-6" />
+                      <path d="M1 20v-6h6" />
+                      <path d="M3.5 9a9 9 0 0 1 14.1-3.4L23 10" />
+                      <path d="M1 14l5.3 5.3A9 9 0 0 0 20.5 15" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            ) : kind === 'balance_info' ? (
+              <div className="aoUsageMini">
+                <div className="aoUsageSplit">
+                  <div className="aoUsageText">
+                    <div className="aoUsageLine">balance: ${fmtUsd(q?.remaining)}</div>
+                    <div className="aoUsageLine">account summary</div>
                   </div>
                   <button
                     className={`aoUsageRefreshBtn${refreshingProviders[p] ? ' aoUsageRefreshBtnSpin' : ''}`}

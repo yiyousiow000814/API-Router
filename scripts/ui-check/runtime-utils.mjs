@@ -153,9 +153,13 @@ export function ensureMsEdgeDriver() {
   // Prefer a pinned path; if it's missing, (re)download.
   const preferred = path.join(driversDir, 'msedgedriver.exe')
   const verFile = path.join(driversDir, 'msedgedriver.version')
-  const wantVer = pickEdgeDriverVersion()
+  // Fast path: if we already have a pinned driver, avoid network checks on every run.
+  // If the driver is incompatible (e.g. after a WebView2 update), Selenium will fail and
+  // the next run can re-download by deleting the version file.
   const haveVer = fs.existsSync(verFile) ? fs.readFileSync(verFile, 'utf-8').trim() : ''
-  if (fs.existsSync(preferred) && haveVer === wantVer) return preferred
+  if (fs.existsSync(preferred) && /^\d+\.\d+\.\d+\.\d+$/.test(haveVer)) return preferred
+
+  const wantVer = pickEdgeDriverVersion()
 
   const zipPath = path.join(driversDir, `edgedriver_win64_${wantVer}.zip`)
   const url = edgeDriverUrl(wantVer)
@@ -437,4 +441,3 @@ public static class CodexHiddenDesktopLauncher {
     },
   )
 }
-

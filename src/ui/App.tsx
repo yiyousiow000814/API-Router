@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import './components/AppShared.css'
+import { recordStartupStage } from './startupTrace'
 import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status, UsageStatistics } from './types'
 import { fmtAmount, fmtPct, fmtUsd, pctOf } from './utils/format'
 import {
@@ -25,9 +26,7 @@ import {
   parsePositiveAmount,
 } from './utils/currency'
 import { AppMainContent } from './components/AppMainContent'
-import { AppModals } from './components/AppModals'
 import { AppTopNav } from './components/AppTopNav'
-import { ProviderGroupManagerModal } from './components/ProviderGroupManagerModal'
 import type { EventLogDailyStat, EventLogEntry } from './components/EventLogPanel'
 import type { LastErrorJump } from './components/ProvidersTable'
 import { useConfigDrag } from './hooks/useConfigDrag'
@@ -46,7 +45,13 @@ import { useUsageOpsBridge } from './hooks/useUsageOpsBridge'
 import { useUsageUiDerived } from './hooks/useUsageUiDerived'
 import { useMainContentCallbacks } from './hooks/useMainContentCallbacks'
 import { useTopNavIntentPrefetch } from './hooks/useTopNavIntentPrefetch'
-import type { KeyModalState, UsageBaseModalState } from './hooks/providerActions/types'
+import type {
+  KeyModalState,
+  ProviderBaseUrlModalState,
+  ProviderEmailModalState,
+  UsageAuthModalState,
+  UsageBaseModalState,
+} from './hooks/providerActions/types'
 import {
   buildCodexSwapBadge,
   resolveCliHomes,
@@ -56,7 +61,24 @@ import {
   USAGE_REQUESTS_CANONICAL_QUERY_KEY,
   primeUsageRequestsPrefetchCache,
 } from './components/UsageStatisticsPanel'
-type TopPage = 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
+
+const AppModals = lazy(async () => {
+  const module = await import('./components/AppModals')
+  return { default: module.AppModals }
+})
+
+const ProviderGroupManagerModal = lazy(async () => {
+  const module = await import('./components/ProviderGroupManagerModal')
+  return { default: module.ProviderGroupManagerModal }
+})
+
+type TopPage =
+  | 'dashboard'
+  | 'usage_statistics'
+  | 'usage_requests'
+  | 'provider_switchboard'
+  | 'event_log'
+  | 'web_codex'
 const RAW_DRAFT_WINDOWS_KEY = '__draft_windows__'
 const RAW_DRAFT_WSL_KEY = '__draft_wsl2__'
 const RAW_DRAFT_STORAGE_KEY = 'ao.rawConfigDraft.shared.v1'
@@ -65,7 +87,36 @@ const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.wsl2.v1'
 const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
 const EVENT_LOG_PRELOAD_REFRESH_MS = 15_000
 const EVENT_LOG_PRELOAD_LIMIT = 5000
+const STATUS_CACHE_STORAGE_KEY = 'ao.startup.status.v1'
+const CONFIG_CACHE_STORAGE_KEY = 'ao.startup.config.v1'
+const TOKEN_CACHE_STORAGE_KEY = 'ao.startup.gatewayTokenPreview.v1'
+
+recordStartupStage('frontend_app_module_loaded')
+
+function readStartupCache<T>(key: string): T | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return null
+    return JSON.parse(raw) as T
+  } catch {
+    return null
+  }
+}
+
+function writeStartupCache(key: string, value: unknown) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // Ignore cache write failures; startup cache is best-effort only.
+  }
+}
+
 export default function App() {
+  useEffect(() => {
+    recordStartupStage('frontend_app_component_mounted')
+  }, [])
   const isDevPreview = useMemo(() => {
     if (!import.meta.env.DEV) return false
     if (typeof window === 'undefined') return false
@@ -79,31 +130,65 @@ export default function App() {
   const devMockHistoryEnabled = useMemo(() => parseDevFlag(devFlags.get('mockHistory')), [devFlags])
   const devAutoOpenHistory = useMemo(() => parseDevFlag(devFlags.get('openHistory')), [devFlags])
   const rawConfigTestMode = useMemo(() => parseDevFlag(devFlags.get('test')), [devFlags])
-  const [status, setStatus] = useState<Status | null>(null)
-  const [config, setConfig] = useState<Config | null>(null)
-  const [baselineBaseUrls, setBaselineBaseUrls] = useState<Record<string, string>>({})
+  const [status, setStatus] = useState<Status | null>(() => readStartupCache<Status>(STATUS_CACHE_STORAGE_KEY))
+  const [config, setConfig] = useState<Config | null>(() => readStartupCache<Config>(CONFIG_CACHE_STORAGE_KEY))
+  const [, setBaselineBaseUrls] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<string>('')
   const [override, setOverride] = useState<string>('') // '' => auto
   const [newProviderName, setNewProviderName] = useState<string>('')
   const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
+  const [newProviderKey, setNewProviderKey] = useState<string>('')
+  const [newProviderKeyStorage, setNewProviderKeyStorage] = useState<'auth_json' | 'config_toml_experimental_bearer_token'>('auth_json')
   const [providerPanelsOpen, setProviderPanelsOpen] = useState<Record<string, boolean>>({})
   const [keyModal, setKeyModal] = useState<KeyModalState>({
     open: false,
     provider: '',
     value: '',
+    storage: 'auth_json',
     loading: false,
     loadFailed: false,
+  })
+  const [providerBaseUrlModal, setProviderBaseUrlModal] = useState<ProviderBaseUrlModalState>({
+    open: false,
+    provider: '',
+    value: '',
   })
   const [usageBaseModal, setUsageBaseModal] = useState<UsageBaseModalState>({
     open: false,
     provider: '',
+    baseUrl: '',
+    showUrlInput: true,
+    showPackycodeLogin: false,
+    hasUsageLogin: false,
     value: '',
     auto: false,
     explicitValue: '',
     effectiveValue: '',
+    token: '',
+    username: '',
+    password: '',
+    loading: false,
+    loadFailed: false,
+  })
+  const [usageAuthModal, setUsageAuthModal] = useState<UsageAuthModalState>({
+    open: false,
+    provider: '',
+    baseUrl: '',
+    token: '',
+    username: '',
+    password: '',
+    loading: false,
+    loadFailed: false,
+  })
+  const [providerEmailModal, setProviderEmailModal] = useState<ProviderEmailModalState>({
+    open: false,
+    provider: '',
+    value: '',
   })
   const overrideDirtyRef = useRef<boolean>(false)
-  const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>('')
+  const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>(
+    () => readStartupCache<string>(TOKEN_CACHE_STORAGE_KEY) ?? '',
+  )
   const [gatewayTokenReveal, setGatewayTokenReveal] = useState<string>('')
   const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
   const [configModalOpen, setConfigModalOpen] = useState<boolean>(false)
@@ -331,6 +416,19 @@ export default function App() {
     }
   }, [eventLogSeedEvents, handleOpenLastErrorInEventLog])
   useEffect(() => {
+    if (!status) return
+    writeStartupCache(STATUS_CACHE_STORAGE_KEY, status)
+  }, [status])
+  useEffect(() => {
+    if (!config) return
+    writeStartupCache(CONFIG_CACHE_STORAGE_KEY, config)
+  }, [config])
+  useEffect(() => {
+    if (!gatewayTokenPreview.trim()) return
+    writeStartupCache(TOKEN_CACHE_STORAGE_KEY, gatewayTokenPreview)
+  }, [gatewayTokenPreview])
+  useEffect(() => {
+    if (activePage !== 'event_log') return
     let cancelled = false
     const loadEventLogPreload = async () => {
       const reqId = ++eventLogPreloadSeqRef.current
@@ -383,7 +481,7 @@ export default function App() {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [])
+  }, [activePage])
   useEffect(() => {
     rawConfigTextsRef.current = rawConfigTexts
   }, [rawConfigTexts])
@@ -725,6 +823,7 @@ export default function App() {
     applyProviderOrder,
     onDevPreviewBootstrap,
   } = useAppActions({
+    isDevPreview,
     status,
     config,
     setConfig,
@@ -978,8 +1077,10 @@ export default function App() {
     usageOriginFilterOptions,
   })
   const {
-    saveProvider, setProviderDisabled, deleteProvider, saveKey, clearKey, refreshQuota, refreshQuotaAll,
-    saveUsageBaseUrl, setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap, openKeyModal, openUsageBaseModal, addProvider,
+    setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, refreshQuota,
+    saveUsageBaseUrl, saveUsageAuth, clearUsageAuth, saveProviderEmail, clearProviderEmail,
+    setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap,
+    openKeyModal, openProviderBaseUrlModal, openUsageBaseModal, openUsageAuthModal, openPackycodeLogin, openProviderEmailModal, addProvider,
     setProvidersGroup,
   } = useProviderActions({
     config,
@@ -987,21 +1088,31 @@ export default function App() {
     isDevPreview,
     setConfig,
     keyModal,
+    providerBaseUrlModal,
+    providerEmailModal,
     usageBaseModal,
+    usageAuthModal,
     newProviderName,
     newProviderBaseUrl,
+    newProviderKey,
+    newProviderKeyStorage,
     setKeyModal,
+    setProviderBaseUrlModal,
+    setProviderEmailModal,
     setUsageBaseModal,
+    setUsageAuthModal,
     setNewProviderName,
     setNewProviderBaseUrl,
+    setNewProviderKey,
+    setNewProviderKeyStorage,
     setRefreshingProviders,
     refreshStatus,
     refreshConfig,
     flashToast,
   })
   useAppPolling({
+    activePage,
     isDevPreview,
-    statusLastActivityUnixMs: status?.last_activity_unix_ms,
     codexSwapDir1,
     codexSwapDir2,
     codexSwapUseWindows,
@@ -1009,7 +1120,6 @@ export default function App() {
     refreshStatus,
     refreshConfig,
     refreshProviderSwitchStatus,
-    refreshQuotaAll,
     onDevPreviewBootstrap,
     onDevPreviewTick,
   })
@@ -1060,12 +1170,8 @@ export default function App() {
     autoSaveUsageScheduleRows,
   })
   const {
-    setAllProviderPanels,
-    allProviderPanelsOpen,
     renderProviderCard,
   } = useProviderPanelUi({
-    orderedConfigProviders,
-    providerPanelsOpen,
     setProviderPanelsOpen,
     setEditingProviderName,
     setProviderNameDrafts,
@@ -1080,20 +1186,35 @@ export default function App() {
     onProviderHandlePointerDown,
     config,
     status,
-    setConfig,
-    baselineBaseUrls,
-    saveProvider,
     openProviderGroupManager,
     setProviderDisabled,
     deleteProvider,
     openKeyModal,
+    openProviderBaseUrlModal,
     clearKey,
     openUsageBaseModal,
+    openUsageAuthModal,
+    openProviderEmailModal,
     clearUsageBaseUrl,
     setProviderQuotaHardCap,
     editingProviderName,
   })
   const clearUsageScheduleRowsAutoSave = () => clearAutoSaveTimer('schedule:rows')
+  const shouldRenderAppModals =
+    keyModal.open ||
+    providerBaseUrlModal.open ||
+    usageBaseModal.open ||
+    usageAuthModal.open ||
+    providerEmailModal.open ||
+    gatewayModalOpen ||
+    configModalOpen ||
+    rawConfigModalOpen ||
+    instructionModalOpen ||
+    codexSwapModalOpen ||
+    usageHistoryModalOpen ||
+    usagePricingModalOpen ||
+    usageScheduleModalOpen
+
   return (
     <div className="aoRoot" ref={containerRef}>
       <div className="aoScale">
@@ -1161,6 +1282,7 @@ export default function App() {
               eventLogSeedDailyStats={eventLogPreloadDailyStats}
               eventLogFocusRequest={eventLogFocusRequest}
               onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
+              usageStatistics={usageStatistics}
               usageProps={{
                 config,
                 usageWindowHours,
@@ -1235,164 +1357,190 @@ export default function App() {
           </div>
         </div>
       </div>
-      <AppModals
-        keyModal={keyModal}
-        setKeyModal={setKeyModal}
-        saveKey={saveKey}
-        usageBaseModal={usageBaseModal}
-        setUsageBaseModal={setUsageBaseModal}
-        saveUsageBaseUrl={saveUsageBaseUrl}
-        instructionModalOpen={instructionModalOpen}
-        setInstructionModalOpen={setInstructionModalOpen}
-        openRawConfigModal={openRawConfigModal}
-        configModalOpen={configModalOpen}
-        config={config}
-        allProviderPanelsOpen={allProviderPanelsOpen}
-        setAllProviderPanels={setAllProviderPanels}
-        newProviderName={newProviderName}
-        newProviderBaseUrl={newProviderBaseUrl}
-        nextProviderPlaceholder={nextProviderPlaceholder}
-        setNewProviderName={setNewProviderName}
-        setNewProviderBaseUrl={setNewProviderBaseUrl}
-        addProvider={addProvider}
-        openProviderGroupManager={openProviderGroupManager}
-        setConfigModalOpen={setConfigModalOpen}
-        rawConfigModalOpen={rawConfigModalOpen}
-        rawConfigHomeOptions={rawConfigHomeOptions}
-        rawConfigHomeLabels={rawConfigHomeLabels}
-        rawConfigTexts={rawConfigTexts}
-        rawConfigLoadingByHome={rawConfigLoadingByHome}
-        rawConfigSavingByHome={rawConfigSavingByHome}
-        rawConfigDirtyByHome={rawConfigDirtyByHome}
-        rawConfigLoadedByHome={rawConfigLoadedByHome}
-        rawConfigDraftByHome={rawConfigDraftByHome}
-        onRawConfigTextChange={updateRawConfigText}
-        saveRawConfigHome={saveRawConfigHome}
-        retryRawConfigHome={loadRawConfigHome}
-        setRawConfigModalOpen={setRawConfigModalOpen}
-        providerListRef={providerListRef}
-        orderedConfigProviders={orderedConfigProviders}
-        dragPreviewOrder={dragPreviewOrder}
-        draggingProvider={draggingProvider}
-        dragCardHeight={dragCardHeight}
-        renderProviderCard={renderProviderCard}
-        gatewayModalOpen={gatewayModalOpen}
-        gatewayTokenPreview={gatewayTokenPreview}
-        gatewayTokenReveal={gatewayTokenReveal}
-        setGatewayModalOpen={setGatewayModalOpen}
-        setGatewayTokenReveal={setGatewayTokenReveal}
-        setGatewayTokenPreview={setGatewayTokenPreview}
-        flashToast={flashToast}
-        usageHistoryModalOpen={usageHistoryModalOpen}
-        setUsageHistoryModalOpen={setUsageHistoryModalOpen}
-        usageHistoryLoading={usageHistoryLoading}
-        usageHistoryRows={usageHistoryRows}
-        usageHistoryDrafts={usageHistoryDrafts}
-        usageHistoryEditCell={usageHistoryEditCell}
-        setUsageHistoryDrafts={setUsageHistoryDrafts}
-        setUsageHistoryEditCell={setUsageHistoryEditCell}
-        historyDraftFromRow={historyDraftFromRow}
-        historyPerReqDisplayValue={historyPerReqDisplayValue}
-        historyEffectiveDisplayValue={historyEffectiveDisplayValue}
-        formatUsdMaybe={formatUsdMaybe}
-        fmtHistorySource={fmtHistorySource}
-        queueUsageHistoryAutoSave={queueUsageHistoryAutoSave}
-        clearAutoSaveTimer={clearAutoSaveTimer}
-        saveUsageHistoryRow={saveUsageHistoryRow}
-        refreshUsageHistory={refreshUsageHistory}
-        refreshUsageStatistics={refreshUsageStatistics}
-        usageHistoryTableSurfaceRef={usageHistoryTableSurfaceRef}
-        usageHistoryTableWrapRef={usageHistoryTableWrapRef}
-        usageHistoryScrollbarOverlayRef={usageHistoryScrollbarOverlayRef}
-        usageHistoryScrollbarThumbRef={usageHistoryScrollbarThumbRef}
-        scheduleUsageHistoryScrollbarSync={scheduleUsageHistoryScrollbarSync}
-        activateUsageHistoryScrollbarUi={activateUsageHistoryScrollbarUi}
-        onUsageHistoryScrollbarPointerDown={onUsageHistoryScrollbarPointerDown}
-        onUsageHistoryScrollbarPointerMove={onUsageHistoryScrollbarPointerMove}
-        onUsageHistoryScrollbarPointerUp={onUsageHistoryScrollbarPointerUp}
-        onUsageHistoryScrollbarLostPointerCapture={onUsageHistoryScrollbarLostPointerCapture}
-        usagePricingModalOpen={usagePricingModalOpen}
-        setUsagePricingModalOpen={setUsagePricingModalOpen}
-        fxRatesDate={fxRatesDate}
-        usagePricingGroups={usagePricingGroups}
-        usagePricingProviderNames={usagePricingProviderNames}
-        usagePricingDrafts={usagePricingDrafts}
-        usagePricingSaveState={usagePricingSaveState}
-        setUsagePricingDrafts={setUsagePricingDrafts}
-        buildUsagePricingDraft={buildUsagePricingDraft}
-        queueUsagePricingAutoSaveForProviders={queueUsagePricingAutoSaveForProviders}
-        setUsagePricingSaveStateForProviders={setUsagePricingSaveStateForProviders}
-        saveUsagePricingForProviders={saveUsagePricingForProviders}
-        openUsageScheduleModal={openUsageScheduleModal}
-        providerPreferredCurrency={providerPreferredCurrency}
-        pricingDraftSignature={pricingDraftSignature}
-        usagePricingLastSavedSigRef={usagePricingLastSavedSigRef}
-        usagePricingCurrencyMenu={usagePricingCurrencyMenu}
-        setUsagePricingCurrencyMenu={setUsagePricingCurrencyMenu}
-        usagePricingCurrencyQuery={usagePricingCurrencyQuery}
-        setUsagePricingCurrencyQuery={setUsagePricingCurrencyQuery}
-        usageCurrencyOptions={usageCurrencyOptions}
-        normalizeCurrencyCode={normalizeCurrencyCode}
-        currencyLabel={currencyLabel}
-        usagePricingCurrencyMenuRef={usagePricingCurrencyMenuRef}
-        updateUsagePricingCurrency={updateUsagePricingCurrency}
-        closeUsagePricingCurrencyMenu={closeUsagePricingCurrencyMenu}
-        usageScheduleModalOpen={usageScheduleModalOpen}
-        usageScheduleLoading={usageScheduleLoading}
-        usageScheduleRows={usageScheduleRows}
-        providerDisplayName={providerDisplayName}
-        providerApiKeyLabel={providerApiKeyLabel}
-        usageScheduleCurrencyMenu={usageScheduleCurrencyMenu}
-        setUsageScheduleCurrencyMenu={setUsageScheduleCurrencyMenu}
-        usageScheduleCurrencyQuery={usageScheduleCurrencyQuery}
-        setUsageScheduleCurrencyQuery={setUsageScheduleCurrencyQuery}
-        setUsageScheduleSaveState={setUsageScheduleSaveState}
-        setUsageScheduleRows={setUsageScheduleRows}
-        usageScheduleProviderOptions={usageScheduleProviderOptions}
-        usageScheduleProvider={usageScheduleProvider}
-        parsePositiveAmount={parsePositiveAmount}
-        fxRatesByCurrency={fxRatesByCurrency}
-        convertCurrencyToUsd={convertCurrencyToUsd}
-        linkedProvidersForApiKey={linkedProvidersForApiKey}
-        newScheduleDraft={newScheduleDraft}
-        usageScheduleSaveState={usageScheduleSaveState}
-        usageScheduleSaveStatusText={usageScheduleSaveStatusText}
-        usageScheduleCurrencyMenuRef={usageScheduleCurrencyMenuRef}
-        updateUsageScheduleCurrency={updateUsageScheduleCurrency}
-        closeUsageScheduleCurrencyMenu={closeUsageScheduleCurrencyMenu}
-        clearUsageScheduleRowsAutoSave={clearUsageScheduleRowsAutoSave}
-        setUsageScheduleSaveError={setUsageScheduleSaveError}
-        setUsageScheduleModalOpen={setUsageScheduleModalOpen}
-        isDevPreview={isDevPreview}
-        listenPort={status?.listen.port}
-        codexSwapModalOpen={codexSwapModalOpen}
-        codexSwapDir1={codexSwapDir1}
-        codexSwapDir2={codexSwapDir2}
-        codexSwapUseWindows={codexSwapUseWindows}
-        codexSwapUseWsl={codexSwapUseWsl}
-        setCodexSwapDir1={setCodexSwapDir1}
-        setCodexSwapDir2={setCodexSwapDir2}
-        setCodexSwapUseWindows={setCodexSwapUseWindows}
-        setCodexSwapUseWsl={setCodexSwapUseWsl}
-        setCodexSwapModalOpen={setCodexSwapModalOpen}
-        toggleCodexSwap={toggleCodexSwap}
-        resolveCliHomes={resolveCliHomes}
-      />
-      <ProviderGroupManagerModal
-        open={providerGroupManagerOpen}
-        config={config}
-        status={status}
-        orderedConfigProviders={orderedConfigProviders}
-        focusProvider={providerGroupManagerFocusProvider}
-        onClose={() => {
-          setProviderGroupManagerOpen(false)
-          setProviderGroupManagerFocusProvider(null)
-        }}
-        onAssignGroup={setProvidersGroup}
-        onSetUsageBase={setUsageBaseUrl}
-        onClearUsageBase={clearUsageBaseUrl}
-        onSetHardCap={setProviderQuotaHardCap}
-      />
+      {shouldRenderAppModals ? (
+        <Suspense fallback={null}>
+          <AppModals
+            keyModal={keyModal}
+            setKeyModal={setKeyModal}
+            saveKey={saveKey}
+            providerBaseUrlModal={providerBaseUrlModal}
+            setProviderBaseUrlModal={setProviderBaseUrlModal}
+            saveProviderBaseUrl={saveProviderBaseUrl}
+            providerEmailModal={providerEmailModal}
+            setProviderEmailModal={setProviderEmailModal}
+            saveProviderEmail={saveProviderEmail}
+            clearProviderEmail={clearProviderEmail}
+            usageAuthModal={usageAuthModal}
+            setUsageAuthModal={setUsageAuthModal}
+            saveUsageAuth={saveUsageAuth}
+            clearUsageAuth={clearUsageAuth}
+            usageBaseModal={usageBaseModal}
+            setUsageBaseModal={setUsageBaseModal}
+            saveUsageBaseUrl={saveUsageBaseUrl}
+            openPackycodeLogin={openPackycodeLogin}
+            instructionModalOpen={instructionModalOpen}
+            setInstructionModalOpen={setInstructionModalOpen}
+            openRawConfigModal={openRawConfigModal}
+            configModalOpen={configModalOpen}
+            config={config}
+            newProviderName={newProviderName}
+            newProviderBaseUrl={newProviderBaseUrl}
+            newProviderKey={newProviderKey}
+            newProviderKeyStorage={newProviderKeyStorage}
+            nextProviderPlaceholder={nextProviderPlaceholder}
+            setNewProviderName={setNewProviderName}
+            setNewProviderBaseUrl={setNewProviderBaseUrl}
+            setNewProviderKey={setNewProviderKey}
+            setNewProviderKeyStorage={setNewProviderKeyStorage}
+            addProvider={addProvider}
+            openProviderGroupManager={openProviderGroupManager}
+            setConfigModalOpen={setConfigModalOpen}
+            rawConfigModalOpen={rawConfigModalOpen}
+            rawConfigHomeOptions={rawConfigHomeOptions}
+            rawConfigHomeLabels={rawConfigHomeLabels}
+            rawConfigTexts={rawConfigTexts}
+            rawConfigLoadingByHome={rawConfigLoadingByHome}
+            rawConfigSavingByHome={rawConfigSavingByHome}
+            rawConfigDirtyByHome={rawConfigDirtyByHome}
+            rawConfigLoadedByHome={rawConfigLoadedByHome}
+            rawConfigDraftByHome={rawConfigDraftByHome}
+            onRawConfigTextChange={updateRawConfigText}
+            saveRawConfigHome={saveRawConfigHome}
+            retryRawConfigHome={loadRawConfigHome}
+            setRawConfigModalOpen={setRawConfigModalOpen}
+            providerListRef={providerListRef}
+            orderedConfigProviders={orderedConfigProviders}
+            dragPreviewOrder={dragPreviewOrder}
+            draggingProvider={draggingProvider}
+            dragCardHeight={dragCardHeight}
+            renderProviderCard={renderProviderCard}
+            gatewayModalOpen={gatewayModalOpen}
+            gatewayTokenPreview={gatewayTokenPreview}
+            gatewayTokenReveal={gatewayTokenReveal}
+            setGatewayModalOpen={setGatewayModalOpen}
+            setGatewayTokenReveal={setGatewayTokenReveal}
+            setGatewayTokenPreview={setGatewayTokenPreview}
+            flashToast={flashToast}
+            usageHistoryModalOpen={usageHistoryModalOpen}
+            setUsageHistoryModalOpen={setUsageHistoryModalOpen}
+            usageHistoryLoading={usageHistoryLoading}
+            usageHistoryRows={usageHistoryRows}
+            usageHistoryDrafts={usageHistoryDrafts}
+            usageHistoryEditCell={usageHistoryEditCell}
+            setUsageHistoryDrafts={setUsageHistoryDrafts}
+            setUsageHistoryEditCell={setUsageHistoryEditCell}
+            historyDraftFromRow={historyDraftFromRow}
+            historyPerReqDisplayValue={historyPerReqDisplayValue}
+            historyEffectiveDisplayValue={historyEffectiveDisplayValue}
+            formatUsdMaybe={formatUsdMaybe}
+            fmtHistorySource={fmtHistorySource}
+            queueUsageHistoryAutoSave={queueUsageHistoryAutoSave}
+            clearAutoSaveTimer={clearAutoSaveTimer}
+            saveUsageHistoryRow={saveUsageHistoryRow}
+            refreshUsageHistory={refreshUsageHistory}
+            refreshUsageStatistics={refreshUsageStatistics}
+            usageHistoryTableSurfaceRef={usageHistoryTableSurfaceRef}
+            usageHistoryTableWrapRef={usageHistoryTableWrapRef}
+            usageHistoryScrollbarOverlayRef={usageHistoryScrollbarOverlayRef}
+            usageHistoryScrollbarThumbRef={usageHistoryScrollbarThumbRef}
+            scheduleUsageHistoryScrollbarSync={scheduleUsageHistoryScrollbarSync}
+            activateUsageHistoryScrollbarUi={activateUsageHistoryScrollbarUi}
+            onUsageHistoryScrollbarPointerDown={onUsageHistoryScrollbarPointerDown}
+            onUsageHistoryScrollbarPointerMove={onUsageHistoryScrollbarPointerMove}
+            onUsageHistoryScrollbarPointerUp={onUsageHistoryScrollbarPointerUp}
+            onUsageHistoryScrollbarLostPointerCapture={onUsageHistoryScrollbarLostPointerCapture}
+            usagePricingModalOpen={usagePricingModalOpen}
+            setUsagePricingModalOpen={setUsagePricingModalOpen}
+            fxRatesDate={fxRatesDate}
+            usagePricingGroups={usagePricingGroups}
+            usagePricingProviderNames={usagePricingProviderNames}
+            usagePricingDrafts={usagePricingDrafts}
+            usagePricingSaveState={usagePricingSaveState}
+            setUsagePricingDrafts={setUsagePricingDrafts}
+            buildUsagePricingDraft={buildUsagePricingDraft}
+            queueUsagePricingAutoSaveForProviders={queueUsagePricingAutoSaveForProviders}
+            setUsagePricingSaveStateForProviders={setUsagePricingSaveStateForProviders}
+            saveUsagePricingForProviders={saveUsagePricingForProviders}
+            openUsageScheduleModal={openUsageScheduleModal}
+            providerPreferredCurrency={providerPreferredCurrency}
+            pricingDraftSignature={pricingDraftSignature}
+            usagePricingLastSavedSigRef={usagePricingLastSavedSigRef}
+            usagePricingCurrencyMenu={usagePricingCurrencyMenu}
+            setUsagePricingCurrencyMenu={setUsagePricingCurrencyMenu}
+            usagePricingCurrencyQuery={usagePricingCurrencyQuery}
+            setUsagePricingCurrencyQuery={setUsagePricingCurrencyQuery}
+            usageCurrencyOptions={usageCurrencyOptions}
+            normalizeCurrencyCode={normalizeCurrencyCode}
+            currencyLabel={currencyLabel}
+            usagePricingCurrencyMenuRef={usagePricingCurrencyMenuRef}
+            updateUsagePricingCurrency={updateUsagePricingCurrency}
+            closeUsagePricingCurrencyMenu={closeUsagePricingCurrencyMenu}
+            usageScheduleModalOpen={usageScheduleModalOpen}
+            usageScheduleLoading={usageScheduleLoading}
+            usageScheduleRows={usageScheduleRows}
+            providerDisplayName={providerDisplayName}
+            providerApiKeyLabel={providerApiKeyLabel}
+            usageScheduleCurrencyMenu={usageScheduleCurrencyMenu}
+            setUsageScheduleCurrencyMenu={setUsageScheduleCurrencyMenu}
+            usageScheduleCurrencyQuery={usageScheduleCurrencyQuery}
+            setUsageScheduleCurrencyQuery={setUsageScheduleCurrencyQuery}
+            setUsageScheduleSaveState={setUsageScheduleSaveState}
+            setUsageScheduleRows={setUsageScheduleRows}
+            usageScheduleProviderOptions={usageScheduleProviderOptions}
+            usageScheduleProvider={usageScheduleProvider}
+            parsePositiveAmount={parsePositiveAmount}
+            fxRatesByCurrency={fxRatesByCurrency}
+            convertCurrencyToUsd={convertCurrencyToUsd}
+            linkedProvidersForApiKey={linkedProvidersForApiKey}
+            newScheduleDraft={newScheduleDraft}
+            usageScheduleSaveState={usageScheduleSaveState}
+            usageScheduleSaveStatusText={usageScheduleSaveStatusText}
+            usageScheduleCurrencyMenuRef={usageScheduleCurrencyMenuRef}
+            updateUsageScheduleCurrency={updateUsageScheduleCurrency}
+            closeUsageScheduleCurrencyMenu={closeUsageScheduleCurrencyMenu}
+            clearUsageScheduleRowsAutoSave={clearUsageScheduleRowsAutoSave}
+            setUsageScheduleSaveError={setUsageScheduleSaveError}
+            setUsageScheduleModalOpen={setUsageScheduleModalOpen}
+            isDevPreview={isDevPreview}
+            listenPort={status?.listen.port}
+            codexSwapModalOpen={codexSwapModalOpen}
+            codexSwapDir1={codexSwapDir1}
+            codexSwapDir2={codexSwapDir2}
+            codexSwapUseWindows={codexSwapUseWindows}
+            codexSwapUseWsl={codexSwapUseWsl}
+            setCodexSwapDir1={setCodexSwapDir1}
+            setCodexSwapDir2={setCodexSwapDir2}
+            setCodexSwapUseWindows={setCodexSwapUseWindows}
+            setCodexSwapUseWsl={setCodexSwapUseWsl}
+            setCodexSwapModalOpen={setCodexSwapModalOpen}
+            toggleCodexSwap={toggleCodexSwap}
+            resolveCliHomes={resolveCliHomes}
+          />
+        </Suspense>
+      ) : null}
+      {providerGroupManagerOpen ? (
+        <Suspense fallback={null}>
+          <ProviderGroupManagerModal
+            open={providerGroupManagerOpen}
+            config={config}
+            status={status}
+            orderedConfigProviders={orderedConfigProviders}
+            focusProvider={providerGroupManagerFocusProvider}
+            onClose={() => {
+              setProviderGroupManagerOpen(false)
+              setProviderGroupManagerFocusProvider(null)
+            }}
+            onAssignGroup={setProvidersGroup}
+            onSetUsageBase={setUsageBaseUrl}
+            onClearUsageBase={clearUsageBaseUrl}
+            onClearUsageAuth={clearUsageAuth}
+            onSetHardCap={setProviderQuotaHardCap}
+            onOpenProviderEmailModal={openProviderEmailModal}
+            onOpenPackycodeLogin={openPackycodeLogin}
+            onOpenUsageAuthModal={openUsageAuthModal}
+          />
+        </Suspense>
+      ) : null}
     </div>
   )
 }

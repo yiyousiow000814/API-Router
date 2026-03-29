@@ -10,9 +10,17 @@ use uuid::Uuid;
 struct SecretsFile {
     #[serde(default)]
     providers: BTreeMap<String, String>,
+    #[serde(default)]
+    provider_key_storage_modes: BTreeMap<String, String>,
+    #[serde(default)]
+    provider_account_emails: BTreeMap<String, String>,
     /// Optional non-upstream secrets used by the app (e.g. usage JWTs).
     #[serde(default)]
     usage_tokens: BTreeMap<String, String>,
+    #[serde(default)]
+    usage_logins: BTreeMap<String, UsageLoginSecret>,
+    #[serde(default)]
+    usage_proxy_pools: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     provider_pricing: BTreeMap<String, ProviderPricingOverride>,
     #[serde(default)]
@@ -29,6 +37,18 @@ struct ProviderPricingOverride {
     gap_fill_mode: Option<String>,
     #[serde(default)]
     gap_fill_amount_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UsageLoginSecret {
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageLoginConfig {
+    pub username: String,
+    pub password: String,
 }
 
 fn default_hard_cap_enabled() -> bool {
@@ -83,6 +103,83 @@ pub struct ProviderPricingConfig {
     pub gap_fill_amount_usd: Option<f64>,
 }
 
+pub fn resolve_provider_pricing_config<'a>(
+    pricing: &'a BTreeMap<String, ProviderPricingConfig>,
+    provider_name: &str,
+    api_key_ref: Option<&str>,
+    at_unix_ms: u64,
+) -> Option<&'a ProviderPricingConfig> {
+    if let Some(cfg) = pricing.get(provider_name) {
+        return Some(cfg);
+    }
+    let target_key_ref = api_key_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "-")?;
+    let mut matched: Option<(&'a ProviderPricingConfig, u64)> = None;
+    for cfg in pricing.values() {
+        for period in &cfg.periods {
+            if period.mode != "package_total" && period.mode != "per_request" {
+                continue;
+            }
+            if !period.amount_usd.is_finite() || period.amount_usd <= 0.0 {
+                continue;
+            }
+            let period_key_ref = period.api_key_ref.trim();
+            if period_key_ref.is_empty()
+                || period_key_ref == "-"
+                || period_key_ref != target_key_ref
+            {
+                continue;
+            }
+            let ended = period.ended_at_unix_ms.unwrap_or(u64::MAX);
+            if !(period.started_at_unix_ms <= at_unix_ms && at_unix_ms < ended) {
+                continue;
+            }
+            let replace = matched
+                .as_ref()
+                .map(|(_, started_at)| period.started_at_unix_ms >= *started_at)
+                .unwrap_or(true);
+            if replace {
+                matched = Some((cfg, period.started_at_unix_ms));
+            }
+        }
+    }
+    matched.map(|(cfg, _)| cfg)
+}
+
+pub fn pricing_per_request_amount_at(
+    pricing_cfg: Option<&ProviderPricingConfig>,
+    ts_unix_ms: u64,
+) -> Option<f64> {
+    let cfg = pricing_cfg?;
+    let mut matched: Option<(f64, u64)> = None;
+    for period in cfg.periods.iter() {
+        if period.mode != "per_request"
+            || !period.amount_usd.is_finite()
+            || period.amount_usd <= 0.0
+        {
+            continue;
+        }
+        let ended = period.ended_at_unix_ms.unwrap_or(u64::MAX);
+        if period.started_at_unix_ms <= ts_unix_ms && ts_unix_ms < ended {
+            let replace = matched
+                .as_ref()
+                .map(|(_, started)| period.started_at_unix_ms >= *started)
+                .unwrap_or(true);
+            if replace {
+                matched = Some((period.amount_usd, period.started_at_unix_ms));
+            }
+        }
+    }
+    if let Some((amount, _)) = matched {
+        return Some(amount);
+    }
+    if cfg.mode == "per_request" && cfg.amount_usd.is_finite() && cfg.amount_usd > 0.0 {
+        return Some(cfg.amount_usd);
+    }
+    None
+}
+
 #[derive(Clone)]
 pub struct SecretStore {
     path: PathBuf,
@@ -90,8 +187,15 @@ pub struct SecretStore {
 }
 
 const GATEWAY_TOKEN_KEY: &str = "__gateway_token__";
+const PROVIDER_KEY_STORAGE_AUTH_JSON: &str = "auth_json";
+const PROVIDER_KEY_STORAGE_CONFIG_TOML_EXPERIMENTAL_BEARER_TOKEN: &str =
+    "config_toml_experimental_bearer_token";
 
 impl SecretStore {
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     fn apply_provider_quota_hard_cap(
         data: &mut SecretsFile,
         provider: &str,
@@ -137,15 +241,75 @@ impl SecretStore {
         self.inner.lock().providers.get(provider).cloned()
     }
 
+    pub fn get_provider_key_storage_mode(&self, provider: &str) -> String {
+        self.inner
+            .lock()
+            .provider_key_storage_modes
+            .get(provider)
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| {
+                value == PROVIDER_KEY_STORAGE_AUTH_JSON
+                    || value == PROVIDER_KEY_STORAGE_CONFIG_TOML_EXPERIMENTAL_BEARER_TOKEN
+            })
+            .unwrap_or_else(|| PROVIDER_KEY_STORAGE_AUTH_JSON.to_string())
+    }
+
+    pub fn get_provider_account_email(&self, provider: &str) -> Option<String> {
+        self.inner
+            .lock()
+            .provider_account_emails
+            .get(provider)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn set_provider_account_email(&self, provider: &str, email: &str) -> Result<(), String> {
+        let normalized = email.trim().to_string();
+        let mut data = self.inner.lock();
+        if normalized.is_empty() {
+            data.provider_account_emails.remove(provider);
+        } else {
+            data.provider_account_emails
+                .insert(provider.to_string(), normalized);
+        }
+        self.persist(&data)
+    }
+
+    pub fn clear_provider_account_email(&self, provider: &str) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        data.provider_account_emails.remove(provider);
+        self.persist(&data)
+    }
+
     pub fn set_provider_key(&self, provider: &str, key: &str) -> Result<(), String> {
+        self.set_provider_key_with_storage_mode(provider, key, None)
+    }
+
+    pub fn set_provider_key_with_storage_mode(
+        &self,
+        provider: &str,
+        key: &str,
+        storage_mode: Option<&str>,
+    ) -> Result<(), String> {
         let mut data = self.inner.lock();
         data.providers.insert(provider.to_string(), key.to_string());
+        let normalized_storage = storage_mode
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| PROVIDER_KEY_STORAGE_AUTH_JSON.to_string());
+        if normalized_storage == PROVIDER_KEY_STORAGE_AUTH_JSON {
+            data.provider_key_storage_modes.remove(provider);
+        } else {
+            data.provider_key_storage_modes
+                .insert(provider.to_string(), normalized_storage);
+        }
         self.persist(&data)
     }
 
     pub fn clear_provider_key(&self, provider: &str) -> Result<(), String> {
         let mut data = self.inner.lock();
         data.providers.remove(provider);
+        data.provider_key_storage_modes.remove(provider);
         self.persist(&data)
     }
 
@@ -166,6 +330,72 @@ impl SecretStore {
         self.persist(&data)
     }
 
+    pub fn get_usage_login(&self, provider: &str) -> Option<UsageLoginConfig> {
+        self.inner
+            .lock()
+            .usage_logins
+            .get(provider)
+            .map(|entry| UsageLoginConfig {
+                username: entry.username.clone(),
+                password: entry.password.clone(),
+            })
+            .filter(|entry| !entry.username.trim().is_empty() && !entry.password.is_empty())
+    }
+
+    pub fn set_usage_login(
+        &self,
+        provider: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<(), String> {
+        let normalized_username = username.trim().to_string();
+        let normalized_password = password.to_string();
+        let mut data = self.inner.lock();
+        if normalized_username.is_empty() || normalized_password.is_empty() {
+            data.usage_logins.remove(provider);
+        } else {
+            data.usage_logins.insert(
+                provider.to_string(),
+                UsageLoginSecret {
+                    username: normalized_username,
+                    password: normalized_password,
+                },
+            );
+        }
+        self.persist(&data)
+    }
+
+    pub fn clear_usage_login(&self, provider: &str) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        data.usage_logins.remove(provider);
+        self.persist(&data)
+    }
+
+    pub fn get_usage_proxy_pool(&self, provider: &str) -> Vec<String> {
+        self.inner
+            .lock()
+            .usage_proxy_pools
+            .get(provider)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn set_usage_proxy_pool(&self, provider: &str, pool: Vec<String>) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        let normalized: Vec<String> = pool
+            .into_iter()
+            .map(|entry| entry.trim().to_string())
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        if normalized.is_empty() {
+            data.usage_proxy_pools.remove(provider);
+        } else {
+            data.usage_proxy_pools
+                .insert(provider.to_string(), normalized);
+        }
+        self.persist(&data)
+    }
+
     pub fn rename_provider(&self, old: &str, new: &str) -> Result<(), String> {
         if old == new {
             return Ok(());
@@ -174,8 +404,20 @@ impl SecretStore {
         if let Some(v) = data.providers.remove(old) {
             data.providers.insert(new.to_string(), v);
         }
+        if let Some(v) = data.provider_key_storage_modes.remove(old) {
+            data.provider_key_storage_modes.insert(new.to_string(), v);
+        }
+        if let Some(v) = data.provider_account_emails.remove(old) {
+            data.provider_account_emails.insert(new.to_string(), v);
+        }
         if let Some(v) = data.usage_tokens.remove(old) {
             data.usage_tokens.insert(new.to_string(), v);
+        }
+        if let Some(v) = data.usage_logins.remove(old) {
+            data.usage_logins.insert(new.to_string(), v);
+        }
+        if let Some(v) = data.usage_proxy_pools.remove(old) {
+            data.usage_proxy_pools.insert(new.to_string(), v);
         }
         if let Some(v) = data.provider_pricing.remove(old) {
             data.provider_pricing.insert(new.to_string(), v);
@@ -580,8 +822,46 @@ impl SecretStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderQuotaHardCapConfig, SecretStore};
+    use super::{
+        pricing_per_request_amount_at, resolve_provider_pricing_config, ProviderPricingConfig,
+        ProviderPricingPeriod, ProviderQuotaHardCapConfig, SecretStore, UsageLoginConfig,
+    };
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn provider_account_email_roundtrip_and_rename() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path.clone());
+
+        store
+            .set_provider_account_email("p1", "user@example.com")
+            .expect("set provider account email");
+        assert_eq!(
+            store.get_provider_account_email("p1").as_deref(),
+            Some("user@example.com")
+        );
+
+        let reloaded = SecretStore::new(path);
+        assert_eq!(
+            reloaded.get_provider_account_email("p1").as_deref(),
+            Some("user@example.com")
+        );
+
+        reloaded
+            .rename_provider("p1", "p2")
+            .expect("rename provider");
+        assert_eq!(reloaded.get_provider_account_email("p1"), None);
+        assert_eq!(
+            reloaded.get_provider_account_email("p2").as_deref(),
+            Some("user@example.com")
+        );
+
+        reloaded
+            .clear_provider_account_email("p2")
+            .expect("clear provider account email");
+        assert_eq!(reloaded.get_provider_account_email("p2"), None);
+    }
 
     #[test]
     fn quota_hard_cap_field_update_roundtrip_and_cleanup() {
@@ -705,5 +985,105 @@ mod tests {
                 got
             );
         }
+    }
+
+    #[test]
+    fn usage_login_roundtrip_and_clear() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path.clone());
+
+        store
+            .set_usage_login("p1", "alice", "secret-pass")
+            .expect("set usage login");
+        assert_eq!(
+            store.get_usage_login("p1"),
+            Some(UsageLoginConfig {
+                username: "alice".to_string(),
+                password: "secret-pass".to_string(),
+            })
+        );
+
+        let reloaded = SecretStore::new(path.clone());
+        assert_eq!(
+            reloaded.get_usage_login("p1"),
+            Some(UsageLoginConfig {
+                username: "alice".to_string(),
+                password: "secret-pass".to_string(),
+            })
+        );
+
+        reloaded.clear_usage_login("p1").expect("clear usage login");
+        assert_eq!(reloaded.get_usage_login("p1"), None);
+    }
+
+    #[test]
+    fn provider_key_storage_mode_roundtrip_and_rename() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path.clone());
+
+        store
+            .set_provider_key_with_storage_mode(
+                "p1",
+                "sk-test",
+                Some("config_toml_experimental_bearer_token"),
+            )
+            .expect("set provider key with storage mode");
+        assert_eq!(
+            store.get_provider_key_storage_mode("p1"),
+            "config_toml_experimental_bearer_token"
+        );
+
+        let reloaded = SecretStore::new(path);
+        assert_eq!(
+            reloaded.get_provider_key_storage_mode("p1"),
+            "config_toml_experimental_bearer_token"
+        );
+
+        reloaded
+            .rename_provider("p1", "p2")
+            .expect("rename provider");
+        assert_eq!(
+            reloaded.get_provider_key_storage_mode("p2"),
+            "config_toml_experimental_bearer_token"
+        );
+        assert_eq!(
+            reloaded.get_provider_key_storage_mode("missing"),
+            "auth_json"
+        );
+    }
+
+    #[test]
+    fn resolve_provider_pricing_config_matches_renamed_per_request_period_by_key_ref() {
+        let pricing = std::collections::BTreeMap::from([(
+            "codex-for.me".to_string(),
+            ProviderPricingConfig {
+                mode: "per_request".to_string(),
+                amount_usd: 0.0,
+                periods: vec![ProviderPricingPeriod {
+                    id: "period-1".to_string(),
+                    mode: "per_request".to_string(),
+                    amount_usd: 0.035,
+                    api_key_ref: "sk-tPN******hxNs".to_string(),
+                    started_at_unix_ms: 1_700_000_000_000,
+                    ended_at_unix_ms: Some(1_800_000_000_000),
+                }],
+                gap_fill_mode: None,
+                gap_fill_amount_usd: None,
+            },
+        )]);
+
+        let resolved = resolve_provider_pricing_config(
+            &pricing,
+            "packycode",
+            Some("sk-tPN******hxNs"),
+            1_700_100_000_000,
+        );
+
+        assert_eq!(
+            pricing_per_request_amount_at(resolved, 1_700_100_000_000),
+            Some(0.035)
+        );
     }
 }
