@@ -218,6 +218,14 @@ fn backend_live_debug_snapshot_value() -> Value {
     })
 }
 
+fn workspace_target_from_ws_payload(value: &Value) -> Option<WorkspaceTarget> {
+    value
+        .get("payload")
+        .and_then(|payload| payload.get("workspace"))
+        .and_then(Value::as_str)
+        .and_then(parse_workspace_target)
+}
+
 fn workspace_targets_from_ws_payload(value: &Value) -> Vec<WorkspaceTarget> {
     let Some(payload) = value.get("payload") else {
         return vec![WorkspaceTarget::Windows];
@@ -865,9 +873,21 @@ async fn codex_ws_loop(mut socket: WebSocket) {
                                     .and_then(|x| x.as_str())
                                     .unwrap_or_default()
                                     .to_string();
-                                let result = super::codex_try_request_with_fallback(
+                                let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(
+                                    workspace_target_from_ws_payload(&v),
+                                );
+                                let result = super::codex_try_request_with_fallback_in_home(
+                                    home.as_deref(),
                                     &["bridge/approvals/resolve", "approvals/resolve"],
-                                    json!({ "id": id, "decision": decision }),
+                                    json!({
+                                        "id": id,
+                                        "decision": decision,
+                                        "workspace": v
+                                            .get("payload")
+                                            .and_then(|p| p.get("workspace"))
+                                            .cloned()
+                                            .unwrap_or(Value::Null)
+                                    }),
                                 )
                                 .await;
                                 match result {
@@ -899,13 +919,25 @@ async fn codex_ws_loop(mut socket: WebSocket) {
                                     .and_then(|p| p.get("answers"))
                                     .cloned()
                                     .unwrap_or(Value::Null);
-                                let result = super::codex_try_request_with_fallback(
+                                let home = crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(
+                                    workspace_target_from_ws_payload(&v),
+                                );
+                                let result = super::codex_try_request_with_fallback_in_home(
+                                    home.as_deref(),
                                     &[
                                         "bridge/userInput/resolve",
                                         "userInput/resolve",
                                         "request_user_input/resolve",
                                     ],
-                                    json!({ "id": id, "answers": answers }),
+                                    json!({
+                                        "id": id,
+                                        "answers": answers,
+                                        "workspace": v
+                                            .get("payload")
+                                            .and_then(|p| p.get("workspace"))
+                                            .cloned()
+                                            .unwrap_or(Value::Null)
+                                    }),
                                 )
                                 .await;
                                 match result {

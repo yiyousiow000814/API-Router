@@ -4,8 +4,15 @@ export function buildWorkspaceEntries(sourceItems, workspaceKeyOfThread) {
   const groups = new Map();
   const groupLabels = new Map();
   for (const thread of Array.isArray(sourceItems) ? sourceItems : []) {
-    const keyLabel = workspaceKeyOfThread(thread);
-    const key = String(keyLabel || "").toLowerCase();
+    const workspaceRef = workspaceKeyOfThread(thread);
+    const keyLabel =
+      workspaceRef && typeof workspaceRef === "object"
+        ? String(workspaceRef.label || workspaceRef.key || "")
+        : String(workspaceRef || "");
+    const key =
+      workspaceRef && typeof workspaceRef === "object"
+        ? String(workspaceRef.key || workspaceRef.label || "").toLowerCase()
+        : String(keyLabel || "").toLowerCase();
     if (!groups.has(key)) groups.set(key, []);
     if (!groupLabels.has(key)) groupLabels.set(key, keyLabel);
     groups.get(key).push(thread);

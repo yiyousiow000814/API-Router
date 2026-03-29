@@ -698,9 +698,14 @@ export function createConnectionFlowsModule(deps) {
   }
 
   async function refreshPendingFromHttp() {
+    const workspace =
+      state.activeThreadWorkspace === "wsl2" || state.activeThreadWorkspace === "windows"
+        ? state.activeThreadWorkspace
+        : getWorkspaceTarget();
+    const workspaceQuery = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
     const [approvals, userInputs] = await Promise.all([
-      api("/codex/approvals/pending"),
-      api("/codex/user-input/pending"),
+      api(`/codex/approvals/pending${workspaceQuery}`),
+      api(`/codex/user-input/pending${workspaceQuery}`),
     ]);
     applyPendingPayloads(approvals.items, userInputs.items);
   }

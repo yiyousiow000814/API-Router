@@ -2719,7 +2719,7 @@ describe("turnActions", () => {
       {
         path: "/codex/approvals/approval-7/resolve",
         method: "POST",
-        body: { decision: "approve" },
+        body: { decision: "approve", workspace: "windows" },
       },
     ]);
   });
@@ -2784,7 +2784,7 @@ describe("turnActions", () => {
       {
         path: "/codex/user-input/input-3/resolve",
         method: "POST",
-        body: { answers: { choice: "yes" } },
+        body: { answers: { choice: "yes" }, workspace: "windows" },
       },
     ]);
   });
@@ -2845,12 +2845,12 @@ describe("turnActions", () => {
       {
         path: "/codex/approvals/approval-9/resolve",
         method: "POST",
-        body: { decision: "reject" },
+        body: { decision: "reject", workspace: "windows" },
       },
       {
         path: "/codex/user-input/input-9/resolve",
         method: "POST",
-        body: { answers: { route: "Runtime" } },
+        body: { answers: { route: "Runtime" }, workspace: "windows" },
       },
     ]);
   });
@@ -2921,12 +2921,12 @@ describe("turnActions", () => {
         {
           path: "/codex/approvals/approval-preview/resolve",
           method: "POST",
-          body: { decision: "approve" },
+          body: { decision: "approve", workspace: "windows" },
         },
         {
           path: "/codex/user-input/input-preview/resolve",
           method: "POST",
-          body: { answers: { route: "Runtime" } },
+          body: { answers: { route: "Runtime" }, workspace: "windows" },
         },
       ]);
       expect(addChatCalls).toEqual([]);

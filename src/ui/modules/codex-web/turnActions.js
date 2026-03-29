@@ -1199,11 +1199,11 @@ export function createTurnActionsModule(deps) {
     connectWs();
     let data;
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      data = await wsCall("approval.resolve", { id, decision }, "approval.resolved");
+      data = await wsCall("approval.resolve", { id, decision, workspace: getWorkspaceTarget() }, "approval.resolved");
     } else {
       data = await api(`/codex/approvals/${encodeURIComponent(id)}/resolve`, {
         method: "POST",
-        body: { decision },
+        body: { decision, workspace: getWorkspaceTarget() },
       });
     }
     if (shouldMirrorPendingResolutionToChat()) {
@@ -1226,11 +1226,11 @@ export function createTurnActionsModule(deps) {
     connectWs();
     let data;
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      data = await wsCall("user_input.resolve", { id, answers }, "user_input.resolved");
+      data = await wsCall("user_input.resolve", { id, answers, workspace: getWorkspaceTarget() }, "user_input.resolved");
     } else {
       data = await api(`/codex/user-input/${encodeURIComponent(id)}/resolve`, {
         method: "POST",
-        body: { answers },
+        body: { answers, workspace: getWorkspaceTarget() },
       });
     }
     if (shouldMirrorPendingResolutionToChat()) {

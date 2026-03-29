@@ -19,13 +19,16 @@ import {
 export function workspaceKeyOfThread(thread) {
   const raw = thread.cwd || thread.workspace || thread.project || thread.directory || thread.path || "";
   const text = String(raw || "").trim();
-  if (!text) return "Default folder";
+  if (!text) return { key: "default-folder", label: "Default folder" };
   const normalized = text
     .replace(/^\\\\\?\\/, "")
     .replace(/^\\\\\?\\UNC\\/, "\\\\")
     .replace(/[\\/]+$/, "");
   const parts = normalized.split(/[\\/]+/).filter(Boolean);
-  return parts[parts.length - 1] || "Default folder";
+  return {
+    key: normalized.toLowerCase(),
+    label: parts[parts.length - 1] || "Default folder",
+  };
 }
 
 export function isRunningLiveStatus(value) {

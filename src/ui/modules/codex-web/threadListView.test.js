@@ -96,6 +96,23 @@ describe("threadListView", () => {
     ]);
   });
 
+  it("keeps same-label folders separate when group keys differ", () => {
+    const entries = buildWorkspaceEntries(
+      [
+        { id: "1", cwd: "C:/work/api-router" },
+        { id: "2", cwd: "D:/sandbox/api-router" },
+      ],
+      (thread) => ({
+        key: String(thread.cwd || "").toLowerCase(),
+        label: "api-router",
+      })
+    );
+    expect(entries.map(([label, items, key]) => [label, items.map((item) => item.id), key])).toEqual([
+      ["api-router", ["1"], "c:/work/api-router"],
+      ["api-router", ["2"], "d:/sandbox/api-router"],
+    ]);
+  });
+
   it("filters section threads by favorites and query", () => {
     const items = [
       { id: "fav-1", title: "Alpha" },

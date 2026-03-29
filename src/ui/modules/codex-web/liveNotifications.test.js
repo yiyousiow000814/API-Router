@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   createLiveNotificationsModule,
@@ -9,8 +9,8 @@ import {
 } from "./liveNotifications.js";
 
 describe("liveNotifications", () => {
-  it("extracts workspace key from thread cwd", () => {
-    expect(workspaceKeyOfThread({ cwd: "src/ui" })).toBe("ui");
+  it("extracts workspace key and label from thread cwd", () => {
+    expect(workspaceKeyOfThread({ cwd: "src/ui" })).toEqual({ key: "src/ui", label: "ui" });
   });
 
   it("formats command execution items", () => {

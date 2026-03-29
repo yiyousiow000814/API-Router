@@ -109,8 +109,7 @@ impl CodexSessionManager {
         methods: &[&str],
         params: Value,
     ) -> Result<Value, String> {
-        let _ = self;
-        super::codex_try_request_with_fallback(methods, params).await
+        super::codex_try_request_with_fallback_in_home(self.home_override(), methods, params).await
     }
 
     pub(super) async fn ensure_server(&self) -> Result<(), String> {

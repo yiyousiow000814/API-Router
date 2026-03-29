@@ -525,6 +525,8 @@ pub(super) async fn codex_thread_interrupt(
 #[derive(Deserialize)]
 pub(super) struct ApprovalResolveRequest {
     decision: String,
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 pub(super) async fn codex_approval_resolve(
@@ -538,7 +540,7 @@ pub(super) async fn codex_approval_resolve(
     }
     match super::codex_rpc_call(
         "bridge/approvals/resolve",
-        json!({ "id": id, "decision": req.decision }),
+        json!({ "id": id, "decision": req.decision, "workspace": req.workspace }),
     )
     .await
     {
@@ -550,6 +552,8 @@ pub(super) async fn codex_approval_resolve(
 #[derive(Deserialize)]
 pub(super) struct UserInputResolveRequest {
     answers: Value,
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 pub(super) async fn codex_user_input_resolve(
@@ -563,7 +567,7 @@ pub(super) async fn codex_user_input_resolve(
     }
     match super::codex_rpc_call(
         "bridge/userInput/resolve",
-        json!({ "id": id, "answers": req.answers }),
+        json!({ "id": id, "answers": req.answers, "workspace": req.workspace }),
     )
     .await
     {

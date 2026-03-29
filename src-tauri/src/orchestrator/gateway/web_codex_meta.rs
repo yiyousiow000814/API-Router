@@ -191,14 +191,35 @@ pub(super) async fn codex_health(State(st): State<GatewayState>, headers: Header
     Json(json!({ "ok": true, "service": "web-codex" })).into_response()
 }
 
+#[derive(Deserialize)]
+pub(super) struct PendingEventsQuery {
+    #[serde(default)]
+    workspace: Option<String>,
+}
+
+fn pending_events_home_override(query: &PendingEventsQuery) -> Option<String> {
+    query
+        .workspace
+        .as_deref()
+        .and_then(super::parse_workspace_target)
+        .and_then(|target| {
+            crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(
+                Some(target),
+            )
+        })
+}
+
 pub(super) async fn codex_pending_approvals(
     State(st): State<GatewayState>,
     headers: HeaderMap,
+    Query(query): Query<PendingEventsQuery>,
 ) -> Response {
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
-    match super::codex_try_request_with_fallback(
+    let home = pending_events_home_override(&query);
+    match super::codex_try_request_with_fallback_in_home(
+        home.as_deref(),
         &["bridge/approvals/list", "approvals/list"],
         Value::Null,
     )
@@ -219,11 +240,14 @@ pub(super) async fn codex_pending_approvals(
 pub(super) async fn codex_pending_user_inputs(
     State(st): State<GatewayState>,
     headers: HeaderMap,
+    Query(query): Query<PendingEventsQuery>,
 ) -> Response {
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
-    match super::codex_try_request_with_fallback(
+    let home = pending_events_home_override(&query);
+    match super::codex_try_request_with_fallback_in_home(
+        home.as_deref(),
         &[
             "bridge/userInput/list",
             "userInput/list",

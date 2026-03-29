@@ -1,10 +1,36 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::Path;
 
 const CODEX_LIVE_TRACE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const UNSUPPORTED_RPC_CACHE_SCHEMA_VERSION: u32 = 1;
+const UNSUPPORTED_RPC_CACHE_TTL_MS: u64 = 6 * 60 * 60 * 1000;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UnsupportedRpcCacheFile {
+    schema_version: u32,
+    #[serde(default)]
+    items: Vec<UnsupportedRpcCacheEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UnsupportedRpcCacheEntry {
+    key: String,
+    recorded_at_unix_ms: u64,
+}
+
+fn unsupported_rpc_cache_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn unsupported_rpc_cache_expiry_threshold_ms(now_ms: u64) -> u64 {
+    now_ms.saturating_sub(UNSUPPORTED_RPC_CACHE_TTL_MS)
+}
 
 pub(crate) fn codex_data_dir() -> Result<PathBuf, String> {
     if let Ok(dir) = std::env::var("API_ROUTER_USER_DATA_DIR") {
@@ -63,32 +89,63 @@ fn append_codex_live_trace_entry_to_path(path: &Path, entry: &Value) -> Result<(
     writeln!(file, "{line}").map_err(|err| err.to_string())
 }
 
-pub(crate) fn read_unsupported_rpc_cache() -> Result<HashSet<String>, String> {
+pub(crate) fn read_unsupported_rpc_cache() -> Result<HashMap<String, u64>, String> {
     let path = codex_unsupported_rpc_cache_file_path()?;
     read_unsupported_rpc_cache_from_path(&path)
 }
 
-fn read_unsupported_rpc_cache_from_path(path: &Path) -> Result<HashSet<String>, String> {
+fn read_unsupported_rpc_cache_from_path(path: &Path) -> Result<HashMap<String, u64>, String> {
     if !path.exists() {
-        return Ok(HashSet::new());
+        return Ok(HashMap::new());
     }
     let text = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
-    let items = serde_json::from_str::<Vec<String>>(&text).map_err(|err| err.to_string())?;
-    Ok(items.into_iter().collect())
+    let now_ms = unsupported_rpc_cache_now_ms();
+    let threshold_ms = unsupported_rpc_cache_expiry_threshold_ms(now_ms);
+    if let Ok(file) = serde_json::from_str::<UnsupportedRpcCacheFile>(&text) {
+        if file.schema_version != UNSUPPORTED_RPC_CACHE_SCHEMA_VERSION {
+            return Ok(HashMap::new());
+        }
+        return Ok(file
+            .items
+            .into_iter()
+            .filter(|entry| {
+                !entry.key.trim().is_empty() && entry.recorded_at_unix_ms >= threshold_ms
+            })
+            .map(|entry| (entry.key, entry.recorded_at_unix_ms))
+            .collect());
+    }
+    if serde_json::from_str::<Vec<String>>(&text).is_ok() {
+        return Ok(HashMap::new());
+    }
+    Err("failed to parse unsupported rpc cache".to_string())
 }
 
-pub(crate) fn write_unsupported_rpc_cache(cache: &HashSet<String>) -> Result<(), String> {
+pub(crate) fn write_unsupported_rpc_cache(cache: &HashMap<String, u64>) -> Result<(), String> {
     let path = codex_unsupported_rpc_cache_file_path()?;
     write_unsupported_rpc_cache_to_path(&path, cache)
 }
 
-fn write_unsupported_rpc_cache_to_path(path: &Path, cache: &HashSet<String>) -> Result<(), String> {
+fn write_unsupported_rpc_cache_to_path(
+    path: &Path,
+    cache: &HashMap<String, u64>,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
-    let mut items = cache.iter().cloned().collect::<Vec<_>>();
-    items.sort();
-    let text = serde_json::to_string_pretty(&items).map_err(|err| err.to_string())?;
+    let mut items = cache
+        .iter()
+        .filter(|(key, _)| !key.trim().is_empty())
+        .map(|(key, recorded_at_unix_ms)| UnsupportedRpcCacheEntry {
+            key: key.clone(),
+            recorded_at_unix_ms: *recorded_at_unix_ms,
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| left.key.cmp(&right.key));
+    let text = serde_json::to_string_pretty(&UnsupportedRpcCacheFile {
+        schema_version: UNSUPPORTED_RPC_CACHE_SCHEMA_VERSION,
+        items,
+    })
+    .map_err(|err| err.to_string())?;
     std::fs::write(path, text).map_err(|err| err.to_string())
 }
 
@@ -210,10 +267,30 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("web-codex.unsupported-rpc.json");
 
-        let mut cache = HashSet::new();
-        cache.insert("::request_user_input/list".to_string());
+        let mut cache = HashMap::new();
+        cache.insert(
+            "::request_user_input/list".to_string(),
+            unsupported_rpc_cache_now_ms(),
+        );
         write_unsupported_rpc_cache_to_path(&path, &cache).unwrap();
         let loaded = read_unsupported_rpc_cache_from_path(&path).unwrap();
-        assert!(loaded.contains("::request_user_input/list"));
+        assert!(loaded.contains_key("::request_user_input/list"));
+    }
+
+    #[test]
+    fn unsupported_rpc_cache_drops_stale_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("web-codex.unsupported-rpc.json");
+
+        let stale = UnsupportedRpcCacheFile {
+            schema_version: UNSUPPORTED_RPC_CACHE_SCHEMA_VERSION,
+            items: vec![UnsupportedRpcCacheEntry {
+                key: "::approvals/list".to_string(),
+                recorded_at_unix_ms: 0,
+            }],
+        };
+        std::fs::write(&path, serde_json::to_string_pretty(&stale).unwrap()).unwrap();
+        let loaded = read_unsupported_rpc_cache_from_path(&path).unwrap();
+        assert!(loaded.is_empty());
     }
 }
